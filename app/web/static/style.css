@@ -1,4 +1,4 @@
-/* Code version: v2.96.2-codex.1 */
+/* Code version: v2.96.3-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -11757,4 +11757,34 @@ main[data-cache-page] .cache-event-time {
     color: var(--muted);
     font-size: var(--font-ui-sm);
     font-variant-numeric: tabular-nums;
+}
+
+/* The status summary owns the activity disclosure and its latest-item preview. */
+.agent-response-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+}
+.agent-response-toolbar > .agent-activity-panel {
+    grid-column: 1;
+    min-width: 0;
+    margin: 0;
+    border: 0;
+    background: transparent;
+}
+.agent-response-toolbar > .agent-activity-panel > summary {
+    display: block;
+    min-height: 0;
+}
+.agent-response-toolbar #agent_activity_count[hidden] {
+    display: none;
+}
+.agent-response-toolbar > .agent-activity-current {
+    grid-column: 1;
+    min-width: 0;
+    margin: 0;
+}
+.agent-response-toolbar > .agent-conversation-link {
+    grid-column: 2;
+    grid-row: 1;
 }

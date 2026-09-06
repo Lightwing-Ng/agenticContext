@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.57.0-codex.1
+Code version: v3.57.2-codex.1
 """
 
 from __future__ import annotations
@@ -195,6 +195,10 @@ PROVIDER_SESSION_BIND_POLL_MILLISECONDS = 100
 GROK_SESSION_BASELINE_PAGE_LIMIT = 100
 WEB_PROGRESS_TEXT = {"thinking", "working", "searching", "analyzing", "generating"}
 SUPPORTED_BROWSERS = frozenset({"chrome", "edge", "safari"})
+
+
+class AgentConnectionInterrupted(RuntimeError):
+    """An outstanding provider response remains recoverable in its bound session."""
 
 
 class AgentTurnLimitExceeded(RuntimeError):
@@ -6183,7 +6187,7 @@ class ComputerUseAgentService:
                 )
             failure_message = str(exc).splitlines()[0][:500]
             completion = {
-                "phase": "interrupted" if turn_limit_exhausted else "failed",
+                "phase": "interrupted" if turn_limit_exhausted or isinstance(exc, AgentConnectionInterrupted) else "failed",
                 "paused": False,
                 "pause_reason": "",
                 "message": (
@@ -8202,6 +8206,7 @@ def _run_web_action_loop(
         submission_target_url=selected_target_url,
         session_mode=session_binding.session_mode,
         availability_check=provider_availability_check,
+        on_response_state=update,
         on_submitted=lambda: update(
             phase="running",
             message=f"Prompt sent to {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; waiting for the first controller action.",
@@ -8493,6 +8498,7 @@ def _run_web_action_loop(
                     submission_target_url=selected_target_url,
                     session_mode=session_binding.session_mode,
                     availability_check=provider_availability_check,
+                    on_response_state=update,
                     on_submitted=lambda: update(
                         phase="running",
                         message=f"Final schema correction sent; waiting for the next {AGENT_PLATFORM_BY_KEY[platform]['label']} action.",
@@ -8550,6 +8556,7 @@ def _run_web_action_loop(
                     submission_target_url=selected_target_url,
                     session_mode=session_binding.session_mode,
                     availability_check=provider_availability_check,
+                    on_response_state=update,
                     on_submitted=lambda: update(
                         phase="running",
                         message=f"Bodycheck requirement sent; waiting for the next {AGENT_PLATFORM_BY_KEY[platform]['label']} action.",
@@ -8729,6 +8736,7 @@ def _run_web_action_loop(
             submission_target_url=selected_target_url,
             session_mode=session_binding.session_mode,
             availability_check=provider_availability_check,
+            on_response_state=update,
             on_submitted=lambda: update(
                 phase="running",
                 message=f"Controller observation sent; waiting for the next {AGENT_PLATFORM_BY_KEY[platform]['label']} action.",
@@ -12938,46 +12946,77 @@ def _provider_mutating_action_may_have_committed(
         return _is_transient_browser_navigation_error(detection_exc)
 
 
+def _is_provider_connection_error(exc: Exception) -> bool:
+    """Recognize transport failures without retrying identity or receipt errors."""
+    return _is_composer_wait_timeout(exc) or any(
+        marker in str(exc).casefold()
+        for marker in (
+            "connection reset", "connection closed", "connection refused",
+            "net::err_network_changed", "net::err_internet_disconnected",
+            "net::err_connection", "websocket is not open",
+        )
+    )
+
+
 def _run_recoverable_provider_read(
     action: Callable[[], Any],
     *,
     page: Any,
     platform: str,
     availability_check: Callable[[], bool | tuple[bool, float]] | None,
+    should_stop: Callable[[], bool] | None = None,
+    on_reconnecting: Callable[[], None] | None = None,
 ) -> tuple[bool, Any, float]:
-    """Retry one read-only operation after explicit provider challenge recovery."""
+    """Retry bounded reads of the same outstanding turn, never its submission."""
     paused_seconds = 0.0
     navigation_retries = 0
+    connection_retries = 0
     while True:
-        available, current_pause = _run_availability_gate(availability_check)
-        paused_seconds += current_pause
-        if not available:
+        if callable(should_stop) and should_stop():
             return False, None, paused_seconds
         try:
+            available, current_pause = _run_availability_gate(availability_check)
+            paused_seconds += current_pause
+            if not available:
+                return False, None, paused_seconds
             return True, action(), paused_seconds
         except Exception as exc:
+            if callable(should_stop) and "target page, context or browser has been closed" in str(exc).casefold():
+                raise AgentConnectionInterrupted(
+                    "The provider browser connection closed while waiting. Continue the bound conversation to recover."
+                ) from exc
+            connection_failure = callable(should_stop) and _is_provider_connection_error(exc)
+            if connection_failure:
+                if connection_retries >= 60:
+                    raise AgentConnectionInterrupted(
+                        "The provider connection did not recover. The prompt was not resent; continue the bound conversation."
+                    ) from exc
+                connection_retries += 1
+                if callable(on_reconnecting):
+                    on_reconnecting()
+                # A browser-backed wait can fail on the same broken transport.
+                started = time.monotonic()
+                time.sleep(0.5)
+                paused_seconds += time.monotonic() - started
+                continue
             challenge_reason = ""
             if callable(availability_check):
                 try:
-                    challenge_reason = _provider_human_verification_reason(
-                        page,
-                        platform,
-                    )
+                    challenge_reason = _provider_human_verification_reason(page, platform)
                 except Exception as detection_exc:
                     if not _is_transient_browser_navigation_error(detection_exc):
                         raise exc from detection_exc
             if challenge_reason:
                 navigation_retries = 0
                 continue
-            if (
-                _is_transient_browser_navigation_error(exc)
-                and navigation_retries < 20
-            ):
+            if _is_transient_browser_navigation_error(exc) and navigation_retries < 20:
                 navigation_retries += 1
-                wait_for_timeout = getattr(page, "wait_for_timeout", None)
-                if callable(wait_for_timeout):
-                    wait_for_timeout(WEB_SEND_BUTTON_POLL_MILLISECONDS)
+                time.sleep(0.5)
                 continue
+            if callable(should_stop) and _is_transient_browser_navigation_error(exc):
+                raise AgentConnectionInterrupted(
+                    "The provider page did not settle after navigation. Continue the bound conversation to recover."
+                ) from exc
             raise
 
 
@@ -12994,6 +13033,7 @@ def _submit_and_wait(
     session_mode: str = "",
     availability_check: Callable[[], bool | tuple[bool, float]] | None = None,
     timeout_seconds: float | None = None,
+    on_response_state: Callable[..., None] | None = None,
 ) -> str:
     """Submit one message and wait for one stable provider response."""
     if should_stop():
@@ -13089,6 +13129,28 @@ def _submit_and_wait(
     if should_stop():
         _stop_web_generation(page, browser_kind)
         return ""
+    last_connection_state = None
+
+    def report_connection(*, conversation: str = "", reconnecting: bool = False, generating: bool = False) -> None:
+        nonlocal last_connection_state
+        state = (conversation, reconnecting, generating)
+        if state == last_connection_state or not callable(on_response_state):
+            return
+        last_connection_state = state
+        changes = {
+            "phase": "reconnecting" if reconnecting else "running",
+            "message": (
+                "Reconnecting to the same provider response; the prompt has not been resent."
+                if reconnecting else
+                "Provider is generating; waiting for a complete controller action."
+                if generating else
+                "Connected to the provider conversation; waiting for a complete controller action."
+            ),
+        }
+        if conversation:
+            changes.update(conversation_url=conversation, conversation_bound=True)
+        on_response_state(**changes)
+
     def confirm_response_session() -> str:
         if session_recover is not None:
             return session_recover(should_stop)
@@ -13101,6 +13163,8 @@ def _submit_and_wait(
         page=page,
         platform=platform,
         availability_check=availability_check,
+        should_stop=should_stop,
+        on_reconnecting=lambda: report_connection(reconnecting=True),
     )
     if not available:
         _stop_web_generation(page, browser_kind)
@@ -13111,6 +13175,7 @@ def _submit_and_wait(
     if on_submitted is not None and not should_stop():
         on_submitted()
 
+    report_connection(conversation=str(_confirmed_session or ""))
     submitted_at = time.monotonic()
     session_bind_timeout_seconds = (
         CHATGPT_SESSION_BIND_TIMEOUT_SECONDS
@@ -13128,6 +13193,22 @@ def _submit_and_wait(
         else max(1.0, float(timeout_seconds))
     )
     deadline = submitted_at + response_timeout_seconds
+    def wait_for_response_poll() -> None:
+        nonlocal deadline, session_bind_deadline, submitted_at, stable_since
+        _available, _result, paused = _run_recoverable_provider_read(
+            lambda: _web_wait(page, browser_kind, 500),
+            page=page,
+            platform=platform,
+            availability_check=None,
+            should_stop=should_stop,
+            on_reconnecting=lambda: report_connection(reconnecting=True),
+        )
+        if paused:
+            deadline += paused
+            session_bind_deadline += paused
+            submitted_at += paused
+            stable_since = time.monotonic()
+
     while time.monotonic() < deadline:
         if should_stop():
             _stop_web_generation(page, browser_kind)
@@ -13170,6 +13251,8 @@ def _submit_and_wait(
             page=page,
             platform=platform,
             availability_check=availability_check,
+            should_stop=should_stop,
+            on_reconnecting=lambda: report_connection(reconnecting=True),
         )
         if not available:
             _stop_web_generation(page, browser_kind)
@@ -13199,9 +13282,13 @@ def _submit_and_wait(
                     "The provider did not prove a fresh conversation URL after submission. "
                     f"URL={page_url}, session_mode={session_mode}."
                 )
-            _web_wait(page, browser_kind, 500)
+            wait_for_response_poll()
             continue
         response_snapshot = read_state.get("snapshot") or {}
+        report_connection(
+            conversation=checked_response_session,
+            generating=bool(response_snapshot.get("generating")),
+        )
         current_user_receipt_visible = current_user_receipt_seen
         if browser_kind != "safari":
             response_target_url = checked_response_session or atomic_target_url
@@ -13212,7 +13299,7 @@ def _submit_and_wait(
             ):
                 previous = ""
                 stable_since = time.monotonic()
-                _web_wait(page, browser_kind, 500)
+                wait_for_response_poll()
                 continue
             count = int(response_snapshot.get("count") or 0)
             latest_response = str(response_snapshot.get("text") or "")
@@ -13273,6 +13360,12 @@ def _submit_and_wait(
         elif assistant_after_latest_user and (
             count > baseline
             or (latest_response and latest_response != baseline_response)
+            or (
+                platform == "chatgpt"
+                and _chatgpt_has_new_response_pair(
+                    baseline_snapshot, response_snapshot, submitted_message
+                )
+            )
         ):
             response = latest_response
         now = time.monotonic()
@@ -13287,7 +13380,7 @@ def _submit_and_wait(
             now=now,
         ):
             return response
-        _web_wait(page, browser_kind, 500)
+        wait_for_response_poll()
     if response_timeout_seconds == WEB_TURN_TIMEOUT_SECONDS:
         timeout_copy = "30 minutes"
     else:
@@ -14606,8 +14699,13 @@ def _provider_turn_snapshot(
             const textOf = (element) => String(
                 `${element.innerText || ''} ${element.textContent || ''}`
             );
-            const latestUserText = latestUser
-                ? (latestUser.innerText || latestUser.textContent || '').trim()
+            const latestUserBody = platform === 'chatgpt'
+                ? latestUser?.querySelector(
+                    '[data-testid="collapsible-user-message-content"], .whitespace-pre-wrap'
+                ) || latestUser
+                : latestUser;
+            const latestUserText = latestUserBody
+                ? (latestUserBody.innerText || latestUserBody.textContent || '').trim()
                 : '';
             const markerEchoed = Boolean(
                 receiptMarker
@@ -14653,6 +14751,8 @@ def _provider_turn_snapshot(
                 count: elements.length,
                 userCount: users.length,
                 latestUserText,
+                assistantMessageId: latest?.getAttribute('data-message-id') || '',
+                latestUserMessageId: latestUser?.getAttribute('data-message-id') || '',
                 markerEchoed,
                 text,
                 generating,
@@ -14685,9 +14785,32 @@ def _provider_turn_snapshot(
         "composerEmpty": bool(result.get("composerEmpty")),
         "assistantAfterLatestUser": bool(result.get("assistantAfterLatestUser")),
     }
+    if platform == "chatgpt":
+        snapshot["assistantMessageId"] = str(result.get("assistantMessageId") or "")
+        snapshot["latestUserMessageId"] = str(result.get("latestUserMessageId") or "")
     if receipt_marker:
         snapshot["markerEchoed"] = bool(result.get("markerEchoed"))
     return snapshot
+
+
+def _chatgpt_has_new_response_pair(
+    baseline: dict[str, Any],
+    current: dict[str, Any],
+    submitted_message: str,
+) -> bool:
+    """Identify repeated reply text when virtualization reuses the visible turn count."""
+    for message_key in ("assistantMessageId", "latestUserMessageId"):
+        before = str(baseline.get(message_key) or "").strip()
+        after = str(current.get(message_key) or "").strip()
+        if not before or not after or before == after:
+            return False
+    expected = " ".join(str(submitted_message or "").split())
+    observed = " ".join(str(current.get("latestUserText") or "").split())
+    return bool(
+        expected
+        and observed == expected
+        and current.get("assistantAfterLatestUser")
+    )
 
 
 def _chatgpt_response_snapshot(page: Any, selector: str) -> dict[str, Any]:

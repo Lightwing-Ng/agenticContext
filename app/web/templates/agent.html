@@ -1,4 +1,4 @@
-<!-- Code version: v3.33.0-codex.1 -->
+<!-- Code version: v3.36.0-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,8 +8,8 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.96.2-codex.1') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.0.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.96.3-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.1.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
 </head>
@@ -29,14 +29,6 @@
         <aside class="panel sidebar agent-sidebar" id="agent_sidebar">
             <section class="hero" data-layout-role="sidebar-title">
                 <h1>Agent</h1>
-            </section>
-
-            <section class="agent-execution-sessions" data-agent-execution-sessions aria-label="Agent sessions" hidden>
-                <div class="agent-execution-sessions-heading">
-                    <span class="field-label">Sessions <span data-agent-session-capacity role="status"></span></span>
-                    <button type="button" class="secondary-button" data-agent-new-task>New task</button>
-                </div>
-                <div class="agent-execution-session-list" data-agent-execution-session-list aria-label="Select an Agent session"></div>
             </section>
 
             <form class="agent-runtime-form" id="agent_runtime_form">
@@ -266,6 +258,14 @@
                 </div>
 
             </form>
+
+            <section class="agent-execution-sessions" data-agent-execution-sessions aria-label="Agent sessions" hidden>
+                <div class="agent-execution-sessions-heading">
+                    <span class="field-label">Sessions <span data-agent-session-capacity role="status"></span></span>
+                    <button type="button" class="secondary-button" data-agent-new-task>New task</button>
+                </div>
+                <div class="agent-execution-session-list" data-agent-execution-session-list aria-label="Select an Agent session"></div>
+            </section>
         </aside>
 
         <section class="panel chart-panel workspace agent-workspace" id="agent_workspace">
@@ -283,6 +283,8 @@
                 <article class="report-card workspace-article-card agent-task-card">
                     <article class="agent-response-card" aria-live="polite">
                         <div class="agent-response-toolbar">
+                        <details class="agent-activity-panel" id="agent_activity_panel"{% if agent_snapshot.running %} open{% endif %}>
+                            <summary aria-label="Toggle execution activity">
                             <p class="agent-response-status" id="agent_response_status" role="status" aria-live="polite">
                                 <span class="agent-response-status-indicator" data-agent-response-status-indicator aria-hidden="true">
                                     <span class="agent-response-status-dot" data-agent-response-status-dot></span>
@@ -290,6 +292,22 @@
                                 </span>
                                 <span class="agent-response-status-copy" data-agent-response-status-copy>{{ agent_snapshot.message or "Ready to use a signed-in Web AI session." }}</span>
                             </p>
+                                <span id="agent_activity_count" hidden>{{ agent_snapshot.activity | length }}</span>
+                            </summary>
+                            <ol class="agent-activity-list" id="agent_activity_list">
+                                {% for event in agent_snapshot.activity %}
+                                <li class="agent-activity-item" data-status="{{ event.status }}">
+                                    <span class="agent-activity-status" aria-hidden="true"><span class="cache-phase-live-marker"></span></span>
+                                    <span class="agent-activity-content">
+                                        <span class="agent-activity-label">{{ event.label }}</span>
+                                        <span class="agent-activity-detail">{{ event.detail }}</span>
+                                    </span>
+                                    {% set activity_time = format_agent_activity_time(event.timestamp) if event.timestamp else '' %}
+                                    <span class="agent-activity-meta">{{ event.meta }}{% if activity_time %} · {{ activity_time }}{% endif %}</span>
+                                </li>
+                                {% endfor %}
+                            </ol>
+                        </details>
                             <a
                                 class="browser-media-round-action browser-media-source-link agent-conversation-link"
                                 id="agent_conversation_link"
@@ -333,25 +351,6 @@
                                 Start uses <code>job_start</code>. Resume requires a complete checkpoint and an explicit <code>resume_job_id</code>.
                             </p>
                         </section>
-                        <details class="agent-activity-panel" id="agent_activity_panel"{% if agent_snapshot.running %} open{% endif %}{% if not agent_snapshot.activity %} hidden{% endif %}>
-                            <summary>
-                                <span>Activity</span>
-                                <span class="agent-activity-count" id="agent_activity_count">{{ agent_snapshot.activity | length }}</span>
-                            </summary>
-                            <ol class="agent-activity-list" id="agent_activity_list">
-                                {% for event in agent_snapshot.activity %}
-                                <li class="agent-activity-item" data-status="{{ event.status }}">
-                                    <span class="agent-activity-status" aria-hidden="true"><span class="cache-phase-live-marker"></span></span>
-                                    <span class="agent-activity-content">
-                                        <span class="agent-activity-label">{{ event.label }}</span>
-                                        <span class="agent-activity-detail">{{ event.detail }}</span>
-                                    </span>
-                                    {% set activity_time = format_agent_activity_time(event.timestamp) if event.timestamp else '' %}
-                                    <span class="agent-activity-meta">{{ event.meta }}{% if activity_time %} · {{ activity_time }}{% endif %}</span>
-                                </li>
-                                {% endfor %}
-                            </ol>
-                        </details>
                         {% set initial_history_item = agent_snapshot.history[-1] if agent_snapshot.history else none %}
                         {% set initial_finished_answer = not agent_snapshot.running and agent_snapshot.phase == 'finished' and (initial_history_item or agent_snapshot.response) %}
                         <div class="agent-response-output" id="agent_response_output" lang="zh-CN"{% if not initial_history_item and not agent_snapshot.response %} hidden{% endif %}>
@@ -522,6 +521,6 @@
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.0.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.32.0-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.36.0-codex.1') }}"></script>
 </body>
 </html>

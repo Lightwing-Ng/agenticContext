@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.56.0-codex.1
+Code version: v3.57.2-codex.1
 """
 
 from __future__ import annotations
@@ -13734,6 +13734,8 @@ def test_chatgpt_response_snapshot_keeps_url_text_count_and_generation_atomic() 
                 "count": 2,
                 "userCount": 1,
                 "latestUserText": "current prompt",
+                "assistantMessageId": "reply-id",
+                "latestUserMessageId": "prompt-id",
                 "text": '{"action":"bodycheck"}',
                 "generating": True,
                 "composerPresent": True,
@@ -13746,6 +13748,8 @@ def test_chatgpt_response_snapshot_keeps_url_text_count_and_generation_atomic() 
         "count": 2,
         "userCount": 1,
         "latestUserText": "current prompt",
+        "assistantMessageId": "reply-id",
+        "latestUserMessageId": "prompt-id",
         "text": '{"action":"bodycheck"}',
         "generating": True,
         "composerPresent": True,
@@ -15645,3 +15649,47 @@ def test_chromium_composer_fails_immediately_on_a_closed_page() -> None:
 
     assert page.composer.attempts == 1
     assert page.reload_calls == []
+
+
+@pytest.mark.parametrize("mismatch", ["", "assistant_id", "user_id", "user_text", "order", "url"])
+def test_chatgpt_identical_response_requires_a_new_matching_message_pair(monkeypatch, mismatch):
+    """Accept a repeated action after DOM virtualization only with fresh message IDs."""
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/continued-session"
+    message = "Continue the unfinished Agent task."
+    response = '```json\n{"action":"bodycheck"}\n```'
+    baseline = {
+        "url": target, "count": 4, "text": response, "generating": False,
+        "userCount": 4, "latestUserText": "Previous observation",
+        "assistantAfterLatestUser": True,
+        "assistantMessageId": "previous-assistant", "latestUserMessageId": "previous-user",
+    }
+    current = {
+        **baseline, "latestUserText": message,
+        "assistantMessageId": "current-assistant", "latestUserMessageId": "current-user",
+    }
+    if mismatch == "assistant_id":
+        current["assistantMessageId"] = baseline["assistantMessageId"]
+    elif mismatch == "user_id":
+        current["latestUserMessageId"] = baseline["latestUserMessageId"]
+    elif mismatch == "user_text":
+        current["latestUserText"] = "An unrelated user message"
+    elif mismatch == "order":
+        current["assistantAfterLatestUser"] = False
+    elif mismatch == "url":
+        current["url"] = "https://chatgpt.com/c/another-session"
+    snapshots = iter((baseline, current))
+    stopped = Event()
+    monkeypatch.setattr(agent, "_chatgpt_response_snapshot", lambda *_args: next(snapshots))
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent, "_stop_web_generation", lambda *_args: None)
+    monkeypatch.setattr(agent, "_web_wait", lambda *_args: stopped.set())
+    monkeypatch.setattr(agent, "WEB_RESPONSE_MINIMUM_SECONDS", 0)
+    monkeypatch.setattr(agent, "WEB_RESPONSE_STABLE_SECONDS", 0)
+    monkeypatch.setattr(agent.time, "monotonic", lambda: 0)
+    result = agent._submit_and_wait(
+        SimpleNamespace(url=target), "chromium", message, stopped.is_set,
+        submission_target_url=target, session_mode="recent",
+    )
+    assert result == ("" if mismatch else response)

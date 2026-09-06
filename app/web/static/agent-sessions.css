@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.1 */
+/* Code version: v1.1.0-codex.1 */
 .agent-execution-sessions {
     display: grid;
     gap: 8px;
@@ -22,10 +22,13 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     width: 100%;
-    min-height: var(--control-compact-height);
+    height: 36px;
+    min-height: 36px;
+    box-sizing: border-box;
+    align-items: center;
     gap: 8px;
     text-align: start;
-    border-radius: var(--radius-soft);
+    border-radius: var(--radius-pill);
 }
 .agent-execution-session-title {
     overflow: hidden;

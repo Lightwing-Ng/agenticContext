@@ -1,4 +1,4 @@
-/* Code version: v3.32.0-codex.1 */
+/* Code version: v3.36.0-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -107,18 +107,22 @@
     activityCurrent.className = "agent-activity-list agent-activity-current";
     activityCurrent.id = "agent_activity_current";
     activityCurrent.hidden = true;
-    elements.activityPanel?.after(activityCurrent);
     const activitySummary = elements.activityPanel?.querySelector("summary");
-    activitySummary?.firstElementChild?.classList.add("agent-activity-heading");
-    const activityLive = document.createElement("span");
-    activityLive.className = "cache-phase-live-marker agent-activity-live";
-    activityLive.setAttribute("aria-hidden", "true");
-    activitySummary?.prepend(activityLive);
+    const responseToolbar = elements.statusMessage?.closest(".agent-response-toolbar");
+    // Align warm templates with the unified status disclosure without a server restart.
+    if (responseToolbar && activitySummary && elements.activityPanel) {
+        if (elements.activityCount) elements.activityCount.hidden = true;
+        activitySummary.replaceChildren(...[elements.statusMessage, elements.activityCount].filter(Boolean));
+        activitySummary.setAttribute("aria-label", "Toggle execution activity");
+        responseToolbar.prepend(elements.activityPanel);
+        elements.activityPanel.hidden = false;
+    }
+    elements.activityPanel?.after(activityCurrent);
 
     function syncActivityCurrent() {
         const panel = elements.activityPanel;
         if (!panel) return;
-        activityCurrent.hidden = panel.hidden || panel.open || !activityWasRunning;
+        activityCurrent.hidden = panel.hidden || panel.open || !activityCurrent.childElementCount;
         activitySummary?.setAttribute("aria-expanded", String(panel.open));
     }
 
@@ -223,35 +227,68 @@
     const paginationMotion = window.CACHELIKES_PAGINATION_MOTION;
 
     let executionSessionId = "primary";
+    try { executionSessionId = window.sessionStorage.getItem("cachelikes:agent-execution-session") || "primary"; } catch (_error) {}
+    const executionConversationUrls = new Map();
+    const executionConversationTitles = new Map();
+
+    function rememberExecutionTitles(items) {
+        for (const item of items || []) {
+            const key = historyUrlKey(item.url);
+            if (key && item.title) executionConversationTitles.set(key, item.title);
+        }
+        if (executionList) executionList.dataset.signature = "";
+    }
+
     let executionSessionEpoch = 0;
     let executionSessions = [];
     let executionActiveCount = 0;
     let executionSelectionRestored = false;
     const executionDrafts = new Map();
     const executionRail = document.querySelector("[data-agent-execution-sessions]");
+    // Keep warm server templates aligned without interrupting active sessions.
+    document.querySelector("#agent_runtime_form")?.after(...(executionRail ? [executionRail] : []));
     const executionList = document.querySelector("[data-agent-execution-session-list]");
     const newTaskButton = document.querySelector("[data-agent-new-task]");
+
+    function syncExecutionWorkspace(sessionId) {
+        const session = executionSessions.find((item) => item.session_id === sessionId);
+        const path = String(session?.workspace_path || "").trim();
+        if (!path || path === String(elements.workspacePath?.value || "")) return;
+        syncProjectPath(path);
+        if (elements.projectPath instanceof HTMLInputElement) elements.projectPath.value = path;
+    }
 
     function renderExecutionSessions(payload) {
         const enabled = selectedPlatform() === "chatgpt" && selectedBrowser() === "edge";
         if (executionRail) executionRail.hidden = !enabled;
+        if (payload.agent?.session_id && payload.agent?.conversation_url) {
+            executionConversationUrls.set(payload.agent.session_id, payload.agent.conversation_url);
+        }
         if (Array.isArray(payload.sessions)) {
             executionSessions = payload.sessions;
+            if (!executionSelectionRestored) syncExecutionWorkspace(executionSessionId);
             if (!executionSelectionRestored) {
                 executionSelectionRestored = true;
                 let remembered = "";
                 try { remembered = window.sessionStorage.getItem("cachelikes:agent-execution-session") || ""; } catch (_error) {}
-                if (remembered === "new" || executionSessions.some((item) => item.session_id === remembered)) {
-                    window.queueMicrotask(() => { void selectExecutionSession(remembered); });
+                const restored = remembered === "new" || executionSessions.some((item) => item.session_id === remembered)
+                    ? remembered : executionSessions.find((item) => item.running)?.session_id || executionSessions[0]?.session_id;
+                if (restored && restored !== executionSessionId) {
+                    window.queueMicrotask(() => { void selectExecutionSession(restored); });
                 }
             }
         }
         if (Number.isInteger(payload.active_count)) executionActiveCount = payload.active_count;
         const capacity = document.querySelector("[data-agent-session-capacity]");
-        if (capacity) capacity.textContent = `· ${executionActiveCount} of 2 active`;
+        if (capacity) {
+            const visibleActive = executionSessions.filter((item) => item.running).length;
+            capacity.textContent = visibleActive === executionActiveCount
+                ? `· ${executionActiveCount} of 2 active`
+                : `· ${visibleActive} here · ${executionActiveCount} of 2 overall`;
+        }
         if (newTaskButton) newTaskButton.disabled = promptSubmissionPending;
         if (!executionList) return;
-        const signature = JSON.stringify([executionSessions, executionSessionId]);
+        const signature = JSON.stringify([executionSessions, executionSessionId, [...executionConversationTitles], [...executionConversationUrls]]);
         if (executionList.dataset.signature === signature) return;
         executionList.dataset.signature = signature;
         const focusedId = document.activeElement?.dataset?.executionSessionId;
@@ -264,12 +301,21 @@
             button.classList.toggle("is-selected", session.session_id === executionSessionId);
             const title = document.createElement("span");
             title.className = "agent-execution-session-title";
-            title.textContent = session.session_title || "Untitled session";
+            const conversationUrl = session.conversation_url || executionConversationUrls.get(session.session_id);
+            title.textContent = executionConversationTitles.get(historyUrlKey(conversationUrl))
+                || session.session_title || "Untitled session";
             const state = document.createElement("span");
             state.className = "agent-execution-session-state";
-            state.textContent = session.paused ? "Paused" : session.running ? "Running"
+            const stateLabel = session.paused ? "Paused" : session.running ? "Running"
                 : session.phase === "finished" ? "Completed" : session.phase || "Ready";
-            button.title = `${title.textContent} · ${state.textContent}`;
+            if (session.running && !session.paused) {
+                state.classList.add("suggestion-loading-spinner");
+                state.setAttribute("role", "img");
+                state.setAttribute("aria-label", stateLabel);
+            } else {
+                state.textContent = stateLabel;
+            }
+            button.title = [title.textContent, session.workspace_path, stateLabel].filter(Boolean).join(" · ");
             button.append(title, state);
             button.addEventListener("click", () => selectExecutionSession(session.session_id));
             return button;
@@ -281,6 +327,7 @@
         if (promptSubmissionPending || sessionId === executionSessionId) return;
         executionDrafts.set(executionSessionId, elements.promptInput?.value || "");
         executionSessionId = sessionId;
+        syncExecutionWorkspace(sessionId);
         try { window.sessionStorage.setItem("cachelikes:agent-execution-session", sessionId); } catch (_error) {}
         const epoch = ++executionSessionEpoch;
         lastRenderedAgentRunIdentity = "";
@@ -321,13 +368,21 @@
     newTaskButton?.addEventListener("click", () => selectExecutionSession("new"));
 
     async function requestJson(url, options = {}) {
-        const response = await fetch(url, {
-            ...options,
-            headers: {"Content-Type": "application/json", "X-CacheLikes-Agent-Session": executionSessionId, ...(options.headers || {})},
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || `Request failed with ${response.status}.`);
-        return payload;
+        const controller = new AbortController();
+        const timeout = url === "/api/agent/status"
+            ? window.setTimeout(() => controller.abort(), 8_000) : null;
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: options.signal || controller.signal,
+                headers: {"Content-Type": "application/json", "X-CacheLikes-Agent-Session": executionSessionId, ...(options.headers || {})},
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || `Request failed with ${response.status}.`);
+            return payload;
+        } finally {
+            if (timeout !== null) window.clearTimeout(timeout);
+        }
     }
 
     function formPayload(form) {
@@ -1270,6 +1325,7 @@
     }
 
     function populateProjectSessionChoices(items) {
+        rememberExecutionTitles(items);
         if (!elements.projectSessionCombobox) return;
         const input = elements.projectSessionCombobox.querySelector("[data-agent-combobox-input]");
         const menu = elements.projectSessionCombobox.querySelector("[data-agent-combobox-menu]");
@@ -1704,6 +1760,7 @@
             ? payload
             : {recent_sessions: [], projects: []};
         agentSources = sourcePayload;
+        rememberExecutionTitles(sourcePayload.recent_sessions);
         catalogState = "ready";
         catalogError = "";
         populateListCombobox(
@@ -1967,6 +2024,9 @@
         } else if (running && agent?.paused) {
             status = "paused";
             phaseLabel = "Paused";
+        } else if (running && phase === "reconnecting") {
+            status = "reconnecting";
+            phaseLabel = "Reconnecting";
         } else if (running) {
             status = "running";
             phaseLabel = "Working";
@@ -1995,7 +2055,7 @@
             status,
             copy,
             lines: runningCopy?.lines || null,
-            loading: status === "loading" || status === "running",
+            loading: ["loading", "running", "reconnecting"].includes(status),
         };
     }
 
@@ -2174,7 +2234,7 @@
                 return item;
             }));
         }
-        elements.activityPanel.hidden = safeEvents.length === 0;
+        elements.activityPanel.hidden = false;
         elements.activityCount.textContent = String(safeEvents.length);
         if (running && safeEvents.length && (!activityWasRunning || runIdentity !== activityRunIdentity)) {
             activityCloseAnimation?.cancel();
@@ -3239,6 +3299,21 @@
             const payload = await requestJson("/api/agent/status", {headers: agentStatusHeaders()});
             if (epoch === executionSessionEpoch) render(payload);
         } catch (_error) {
+            if (epoch === executionSessionEpoch && elements.statusMessage) {
+                stopResponseStatusTimer();
+                const copy = "Reconnecting · Local status is unavailable. The last known task state is preserved.";
+                elements.statusMessage.hidden = false;
+                elements.statusMessage.dataset.status = "reconnecting";
+                elements.statusMessage.setAttribute("aria-label", copy);
+                elements.statusMessage.title = copy;
+                if (elements.statusMessageCopy) elements.statusMessageCopy.textContent = copy;
+                if (elements.statusDot) elements.statusDot.hidden = true;
+                if (elements.statusSpinner) {
+                    elements.statusSpinner.hidden = false;
+                    elements.statusSpinner.classList.remove("cache-phase-live-marker");
+                    elements.statusSpinner.classList.add("suggestion-loading-spinner");
+                }
+            }
         } finally {
             window.setTimeout(
                 pollStatus,

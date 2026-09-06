@@ -96,7 +96,9 @@ def test_same_conversation_rejected_and_paused_slot_counted(sessions):
     catalog = pool.catalog("edge", "chatgpt", str(workspace))
     assert catalog["active_count"] == 2
     assert len(catalog["sessions"]) == 2
-    assert pool.catalog("edge", "chatgpt", "/unrelated")["sessions"] == []
+    assert len(pool.catalog("edge", "chatgpt", "/unrelated")["sessions"]) == 2
+    assert all(item["workspace_path"] == str(workspace) for item in catalog["sessions"])
+    assert pool.catalog("edge", "gemini", str(workspace))["sessions"] == []
 
 
 def test_guard_also_covers_direct_start_and_other_providers(sessions):

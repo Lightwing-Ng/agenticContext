@@ -9681,26 +9681,23 @@ def test_agent_activity_completion_icon_contract(disposable_browser, sidebar_ser
     try:
         page.goto(f'{sidebar_server_url}/agent/edge/chatgpt', wait_until='domcontentloaded')
         expect(page.locator('#agent_response_status')).to_have_attribute('data-status', phase)
-        icons = page.evaluate("""() => {
-            const heading = document.querySelector('.agent-activity-live');
-            return {
-                mask: getComputedStyle(heading).maskImage,
-                visible: getComputedStyle(heading).visibility,
-                shadow: getComputedStyle(heading).boxShadow,
-                ring: getComputedStyle(heading, '::before').display,
-                account: getComputedStyle(document.querySelector('.browser-session-status-checkmark')).maskImage,
-                action: getComputedStyle(document.querySelector('.agent-activity-status')).maskImage,
-            };
-        }""")
-        assert 'checkmark.circle.svg' in icons['action']
-        if phase == 'finished':
-            assert icons['mask'] == icons['account']
-            assert 'checkmark.circle.fill.green.svg' in icons['mask']
-            assert icons['visible'] == 'visible'
-            assert icons['shadow'] == 'none'
-            assert icons['ring'] == 'none'
-        else:
-            assert icons['mask'] == 'none'
+        panel = page.locator('#agent_activity_panel')
+        expect(page.locator('.agent-response-toolbar #agent_activity_panel')).to_have_count(1)
+        expect(panel.locator('summary #agent_response_status')).to_have_count(1)
+        expect(page.locator('.agent-activity-live')).to_have_count(0)
+        icons = page.locator('.agent-activity-status').first.evaluate("e => getComputedStyle(e).maskImage")
+        assert 'checkmark.circle.svg' in icons
+        if panel.evaluate('e => e.open'):
+            panel.locator('summary').click()
+        expect(panel).to_have_js_property('open', False)
+        expect(page.locator('.agent-response-toolbar #agent_activity_current')).to_be_visible()
+        expect(page.locator('#agent_activity_current')).to_contain_text('AGENTS.md')
+        expect(page.locator('#agent_activity_current > li')).to_have_count(1)
+        panel.locator('summary').click()
+        expect(panel).to_have_js_property('open', True)
+        expect(page.locator('#agent_activity_list')).to_be_visible()
+        expect(page.locator('#agent_activity_current')).to_be_hidden()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     finally:
         context.close()
 
