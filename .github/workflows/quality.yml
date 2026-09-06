@@ -5,7 +5,12 @@ permissions:
   contents: read
 jobs:
   probe:
-    name: Windows Python invocation proof
+    name: Windows ${{ matrix.group }} diagnostics
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [unit, browser]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -16,9 +21,15 @@ jobs:
       - name: Install browser
         run: python -m playwright install chromium
       - name: Collect Windows failure details
-        run: python -m pytest tests -q -m "not live" --tb=short --junitxml=test-results/windows-diagnostic.xml
+        shell: pwsh
+        run: |
+          if ("${{ matrix.group }}" -eq "unit") {
+            python -m pytest tests -q -m "not live" --tb=short --junitxml=test-results/windows-diagnostic.xml --ignore=tests/test_sidebar_e2e.py --ignore=tests/test_agent_activity_e2e.py --ignore=tests/test_style_alignment_e2e.py
+          } else {
+            python -m pytest tests/test_sidebar_e2e.py tests/test_agent_activity_e2e.py tests/test_style_alignment_e2e.py -q -m "not live" --tb=short --junitxml=test-results/windows-diagnostic.xml
+          }
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-diagnostic
+          name: windows-diagnostic-${{ matrix.group }}
           path: test-results/windows-diagnostic.xml
