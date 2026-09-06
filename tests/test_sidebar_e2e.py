@@ -7637,6 +7637,14 @@ def test_agent_response_action_rail_survives_a_short_crowded_viewport(
                 return boxes;
             }"""
         )
+        print("INITIAL_RAIL", json.dumps(desktop_rail))
+        page.wait_for_timeout(1000)
+        for css in ("/* Settled baseline */", "html {scrollbar-gutter: auto !important;}", ".global-quick-actions {position: absolute !important;}"):
+            page.add_style_tag(content=css)
+            print("RAIL_PROBE", css, page.evaluate("""() => {
+                const rect = s => { const e = document.querySelector(s), r=e.getBoundingClientRect(), c=getComputedStyle(e); return {left:r.left,right:r.right,width:r.width,position:c.position,cssRight:c.right,transform:c.transform,gutter:c.scrollbarGutter,scrollbar:c.scrollbarWidth}; };
+                return {innerWidth,clientWidth:document.documentElement.clientWidth,visualWidth:visualViewport.width,visualOffsetLeft:visualViewport.offsetLeft,scrollX, boxes:Object.fromEntries(['html','body','.page','.app-shell','.agent-workspace','.agent-response-toolbar','.global-quick-actions','#global_theme_toggle'].map(s=>[s,rect(s)]))};
+            }"""))
         assert all(desktop_rail[key] is not None for key in ("theme", "safari", "expand", "copy"))
         for action in ("safari", "expand", "copy"):
             assert desktop_rail[action]["right"] == pytest.approx(
