@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.7.7-codex.1`
+Documentation version: `v1.7.8-codex.1`
 
 ## Supported commands
 
@@ -424,3 +424,11 @@ existing cross-platform tests. The native regression workflow is a focused check
 Windows gate version: `v1.2.1-codex.1`. Other Windows Python entrypoints: `v1.0.2-codex.1`.
 The application was not launched and no dependency installation was run through the updated
 user-facing setup entrypoint during this repair.
+
+Once pytest actually executed on Windows, run 34011737226 exposed 29 collection errors sharing
+one cause: `ZoneInfoNotFoundError` for `Asia/Hong_Kong`. Runtime requirements now declare the
+Windows-only `tzdata` dependency, as recommended by the
+[Python zoneinfo data-source contract](https://docs.python.org/3/library/zoneinfo.html#data-sources).
+This supplies the missing IANA database without changing application timezones or formatting.
+An isolated Python 3.13 probe with the system timezone search disabled reproduced the exception
+without the package and resolved `Asia/Hong_Kong` to UTC+08:00 with the package installed.
