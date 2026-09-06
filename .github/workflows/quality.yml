@@ -13,5 +13,12 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m pip install -r requirements-dev.txt
-      - name: Verify Windows entrypoints and coverage rejection
-        run: python -m pytest tests/test_windows_entrypoints.py -q
+      - name: Install browser
+        run: python -m playwright install chromium
+      - name: Collect Windows failure details
+        run: python -m pytest tests -q -m "not live" --tb=short --junitxml=test-results/windows-diagnostic.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-diagnostic
+          path: test-results/windows-diagnostic.xml
