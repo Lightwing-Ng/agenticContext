@@ -1,46 +1,32 @@
-# Code version: v1.2.0-codex.1
+# Code version: v1.0.0-ci-probe.1
 name: CI failure reproduction
-
-on:
-  push:
-  pull_request:
-
+on: push
 permissions:
   contents: read
-
-concurrency:
-  group: quality-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  check:
-    name: Linux action rail reproduction
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      TZ: UTC
-
+  probe:
+    name: Windows Python invocation proof
+    runs-on: windows-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
-          cache: pip
-
-      - name: Install Python dependencies
-        run: python -m pip install -r requirements-dev.txt
-
-      - name: Install Playwright Chromium
-        run: python -m playwright install --with-deps chromium
-
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-
-      - name: Reproduce the failing action rail
-        run: ./scripts/test.sh tests/test_sidebar_e2e.py -k agent_response_action_rail_survives
-
+      - run: python -m pip install pytest ruff
+      - name: Compare Python invocations
+        shell: pwsh
+        run: |
+          . ./scripts/resolve_python.ps1
+          $Python = $env:AGENTIC_CONTEXT_RESOLVED_PYTHON
+          $PythonArgs = if ($env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS) { $env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS -split ' ' } else { @() }
+          Write-Host "RESOLVED: $Python / $PythonArgs / $($PythonArgs.GetType().FullName)"
+          & $Python @PythonArgs -c "import sys; print('RESOLVED', sys.executable, sys.argv)" one two
+          Write-Host "Resolved exit: $LASTEXITCODE"
+          & $Python @PythonArgs -m pytest --version
+          Write-Host "Pytest exit: $LASTEXITCODE"
+          [string[]]$ArrayArgs = @($PythonArgs)
+          & $Python @ArrayArgs -c "import sys; print('ARRAY', sys.executable, sys.argv)" one two
+          Write-Host "Array exit: $LASTEXITCODE"
+          & python -c "import sys; print('DIRECT', sys.executable, sys.argv)" one two
+          & python -m pytest --version
+          Get-Command py, python | Format-List Name,Source,CommandType
