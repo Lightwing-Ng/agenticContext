@@ -7601,10 +7601,15 @@ def test_agent_response_action_rail_survives_a_short_crowded_viewport(
         assert layout["horizontalOverflow"] <= 1
 
         page.set_viewport_size({"width": 1_159, "height": 863})
-        page.evaluate(
-            """() => new Promise(resolve => {
-                requestAnimationFrame(() => requestAnimationFrame(resolve));
-            })"""
+        # Chromium can lay out the fixed container before its resized touch button.
+        page.wait_for_function(
+            """() => {
+                const container = document.querySelector('.global-quick-actions').getBoundingClientRect();
+                const button = document.querySelector('#global_theme_toggle').getBoundingClientRect();
+                return Math.abs(button.width - container.width) <= 0.1
+                    && Math.abs(button.right - container.right) <= 0.1;
+            }""",
+            timeout=5_000,
         )
         desktop_rail = page.evaluate(
             """() => {
@@ -7620,31 +7625,11 @@ def test_agent_response_action_rail_survives_a_short_crowded_viewport(
                     const box = element.getBoundingClientRect();
                     return {right: box.right, top: box.top, bottom: box.bottom};
                 };
-                const boxes = Object.fromEntries(
+                return Object.fromEntries(
                     Object.entries(selectors).map(([key, selector]) => [key, rect(selector)]),
                 );
-                boxes.viewport = {
-                    innerWidth,
-                    clientWidth: document.documentElement.clientWidth,
-                    visualWidth: visualViewport?.width,
-                    visualOffsetLeft: visualViewport?.offsetLeft,
-                    rootWidth: document.documentElement.getBoundingClientRect().width,
-                    pageWidth: document.querySelector('.page').getBoundingClientRect().width,
-                    themeContainerRight: document.querySelector('.global-quick-actions').getBoundingClientRect().right,
-                    rootScrollbarWidth: getComputedStyle(document.documentElement).scrollbarWidth,
-                    rootScrollbarGutter: getComputedStyle(document.documentElement).scrollbarGutter,
-                };
-                return boxes;
             }"""
         )
-        print("INITIAL_RAIL", json.dumps(desktop_rail))
-        page.wait_for_timeout(1000)
-        for css in ("/* Settled baseline */", "html {scrollbar-gutter: auto !important;}", ".global-quick-actions {position: absolute !important;}"):
-            page.add_style_tag(content=css)
-            print("RAIL_PROBE", css, page.evaluate("""() => {
-                const rect = s => { const e = document.querySelector(s), r=e.getBoundingClientRect(), c=getComputedStyle(e); return {left:r.left,right:r.right,width:r.width,position:c.position,cssRight:c.right,transform:c.transform,gutter:c.scrollbarGutter,scrollbar:c.scrollbarWidth}; };
-                return {innerWidth,clientWidth:document.documentElement.clientWidth,visualWidth:visualViewport.width,visualOffsetLeft:visualViewport.offsetLeft,scrollX, boxes:Object.fromEntries(['html','body','.page','.app-shell','.agent-workspace','.agent-response-toolbar','.global-quick-actions','#global_theme_toggle'].map(s=>[s,rect(s)]))};
-            }"""))
         assert all(desktop_rail[key] is not None for key in ("theme", "safari", "expand", "copy"))
         for action in ("safari", "expand", "copy"):
             assert desktop_rail[action]["right"] == pytest.approx(
