@@ -12,21 +12,6 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
-      - run: python -m pip install pytest ruff
-      - name: Compare Python invocations
-        shell: pwsh
-        run: |
-          . ./scripts/resolve_python.ps1
-          $Python = $env:AGENTIC_CONTEXT_RESOLVED_PYTHON
-          $PythonArgs = if ($env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS) { $env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS -split ' ' } else { @() }
-          Write-Host "RESOLVED: $Python / $PythonArgs / $($PythonArgs.GetType().FullName)"
-          & $Python @PythonArgs -c "import sys; print('RESOLVED', sys.executable, sys.argv)" one two
-          Write-Host "Resolved exit: $LASTEXITCODE"
-          & $Python @PythonArgs -m pytest --version
-          Write-Host "Pytest exit: $LASTEXITCODE"
-          [string[]]$ArrayArgs = @($PythonArgs)
-          & $Python @ArrayArgs -c "import sys; print('ARRAY', sys.executable, sys.argv)" one two
-          Write-Host "Array exit: $LASTEXITCODE"
-          & python -c "import sys; print('DIRECT', sys.executable, sys.argv)" one two
-          & python -m pytest --version
-          Get-Command py, python | Format-List Name,Source,CommandType
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Verify Windows entrypoints and coverage rejection
+        run: python -m pytest tests/test_windows_entrypoints.py -q

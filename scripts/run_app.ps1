@@ -1,11 +1,11 @@
 # agenticContext Windows launcher.
-# Code version: v1.0.1-codex.1
+# Code version: v1.0.2-codex.1
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "resolve_python.ps1")
 $Python = $env:AGENTIC_CONTEXT_RESOLVED_PYTHON
-$PythonArgs = if ($env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS) {
+[string[]]$PythonArgs = if ($env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS) {
     $env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS -split ' '
 } else {
     @()

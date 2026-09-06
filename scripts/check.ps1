@@ -1,11 +1,11 @@
 # agenticContext Windows quality gate.
-# Code version: v1.2.0-codex.1
+# Code version: v1.2.1-codex.1
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "resolve_python.ps1")
 $Python = $env:AGENTIC_CONTEXT_RESOLVED_PYTHON
-$PythonArgs = if ($env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS) {
+[string[]]$PythonArgs = if ($env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS) {
     $env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS -split ' '
 } else {
     @()
@@ -69,6 +69,7 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     Write-Host "[4/4] Python tests with branch coverage"
+    $CoverageStartedAt = [DateTime]::UtcNow
     & $Python @PythonArgs -m pytest `
         -q `
         -p no:cacheprovider `
@@ -80,6 +81,10 @@ try {
         --cov-fail-under="$CoverageMinimum"
     $pytestExitCode = $LASTEXITCODE
     if ($pytestExitCode -ne 0) { exit $pytestExitCode }
+    $CoverageReport = Get-Item "test-results/coverage.json" -ErrorAction SilentlyContinue
+    if (-not $CoverageReport -or $CoverageReport.LastWriteTimeUtc -lt $CoverageStartedAt) {
+        throw "Pytest did not produce a fresh coverage report."
+    }
 
     Write-Host "Quality gate passed."
     exit 0
