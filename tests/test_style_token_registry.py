@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.3.1-codex.1
+Code version: v1.3.2-codex.1
 """
 
 import re
@@ -203,9 +203,12 @@ def test_cache_summary_metrics_reuse_the_foundation_metric_contract(client) -> N
     assert response.status_code == 200
     assert 'class="metric-grid foundation-metric-grid"' in html
     assert 'class="progress-metric-grid foundation-metric-grid"' in html
-    assert html.count("foundation-metric-card") == 10
-    assert html.count('class="metric-card foundation-metric-card metric-card-accent"') == 7
-    assert html.count('class="metric-card foundation-metric-card metric-card-accent progress-metric-card"') == 3
+    # Text and media retain separate cards; the runtime exposes only the selected mode.
+    assert html.count("foundation-metric-card") == 14
+    assert html.count('class="metric-card foundation-metric-card metric-card-accent"') == 9
+    assert html.count('class="metric-card foundation-metric-card metric-card-accent progress-metric-card"') == 5
+    assert html.count('data-chatgpt-metric-mode="text"') == 4
+    assert html.count('data-chatgpt-metric-mode="media" hidden') == 9
     assert 'aria-label="ChatGPT sync notice"' not in html
     assert 'class="metric-card foundation-metric-card">' not in html
 

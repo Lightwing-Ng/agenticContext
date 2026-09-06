@@ -1,4 +1,4 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.0.4-codex.1."""
+"""Activity disclosure and status glyph regressions. Code version: v1.0.5-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -32,7 +32,7 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
         summary = panel.locator("summary")
         expect(panel).to_have_js_property("open", True)
         done = panel.locator('[data-status="completed"] .agent-activity-status')
-        expect(done).to_have_css("mask-image", f'url("{sidebar_server_url}/static/images/checkmark.circle.fill.svg")')
+        expect(done).to_have_css("mask-image", f'url("{sidebar_server_url}/static/images/checkmark.circle.svg")')
         panel.locator("#agent_activity_list").evaluate("async e => { await Promise.all(e.getAnimations().map(a => a.finished)); }")
         geometry = done.evaluate("""e => {
             const label = e.parentElement.querySelector('.agent-activity-label').getBoundingClientRect();
@@ -103,7 +103,10 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
             const text = getComputedStyle(e), placeholder = getComputedStyle(e, '::placeholder');
             return ['fontSize','fontFamily','fontWeight','fontStyle','lineHeight'].every(k => text[k] === placeholder[k]);
         }""")
-        expect(summary.locator('.agent-activity-live')).to_be_hidden()
+        expect(summary.locator('.agent-activity-live')).to_be_visible()
+        expect(summary.locator('.agent-activity-live')).to_have_css(
+            'mask-image', f'url("{sidebar_server_url}/static/images/checkmark.circle.fill.green.svg")'
+        )
         summary.click()
         if motion == "no-preference":
             movement = panel.evaluate("""e => {

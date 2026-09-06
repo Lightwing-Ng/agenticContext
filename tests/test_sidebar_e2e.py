@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.30.1-codex.1
+Code version: v1.30.2-codex.1
 """
 
 from __future__ import annotations
@@ -1527,7 +1527,9 @@ def test_cache_sidebars_reuse_the_chatgpt_base_contract(
                     "gemini_stale_round_limit",
                 ):
                     expect(aside.locator(f"#{field_name}")).to_have_count(0)
-                expect(aside.locator("#start_form_gemini input")).to_have_count(1)
+                expect(aside.locator('#start_form_gemini input[name="gemini_browser"]')).to_have_count(1)
+                expect(aside.locator('#start_form_gemini input[name="cache_content_mode"]')).to_have_value("text")
+                expect(aside.locator('#start_form_gemini input:not([type="hidden"])')).to_have_count(0)
                 expect(aside.locator(".cache-settings-link")).to_have_attribute(
                     "href",
                     "/settings#settings-llm",
@@ -1668,8 +1670,7 @@ def test_agent_response_pagination_is_immersed_but_keeps_interactive_effects(
         assert contract["answer"]["overflowX"] == "hidden"
         assert contract["answer"]["overflowY"] == "auto"
         assert contract["paginationParentIsAnswerShell"]
-        assert contract["shortPosition"]["composerGap"] >= 23
-        assert contract["shortPosition"]["composerGap"] <= 25
+        assert contract["shortPosition"]["composerGap"] == pytest.approx(10, abs=1)
         assert abs(
             contract["shortPosition"]["composerGap"]
             - contract["longPosition"]["composerGap"]
@@ -1992,7 +1993,7 @@ def test_chatgpt_effort_footer_keeps_the_fifteen_pixel_label_on_one_line(
         expect(model).to_be_visible()
         expect(refresh).to_have_count(0)
         expect(submit).to_be_visible()
-        assert model.locator(".agent-model-trigger-label").text_content().strip() == "Best available"
+        expect(model.locator(".agent-model-trigger-label")).to_have_text("Latest")
         geometry = page.evaluate(
             """() => {
                 const rect = selector => {
@@ -2859,6 +2860,7 @@ def test_cache_action_row_switches_stop_visibility_with_running_state(
         1_280,
         900,
         touch=False,
+        init_script="sessionStorage.setItem('cachelikes:browser-content-mode:v1', 'media');",
     )
     try:
         action_row = page.locator("[data-cache-action-row]")
@@ -2882,7 +2884,7 @@ def test_cache_action_row_switches_stop_visibility_with_running_state(
             payload["running"] = True
             route.fulfill(response=response, json=payload)
 
-        page.route("**/api/cache/grok/status", fulfill_running_status)
+        page.route("**/api/cache/grok/status?content_mode=media", fulfill_running_status)
         page.reload(wait_until="domcontentloaded")
         expect(action_row).to_have_attribute("data-action-running", "true")
         expect(page.locator(".cache-action-row .sidebar-form-start")).to_be_hidden()
@@ -7599,10 +7601,15 @@ def test_agent_response_action_rail_survives_a_short_crowded_viewport(
         assert layout["horizontalOverflow"] <= 1
 
         page.set_viewport_size({"width": 1_159, "height": 863})
-        page.evaluate(
-            """() => new Promise(resolve => {
-                requestAnimationFrame(() => requestAnimationFrame(resolve));
-            })"""
+        # Chromium can lay out the fixed container before its resized touch button.
+        page.wait_for_function(
+            """() => {
+                const container = document.querySelector('.global-quick-actions').getBoundingClientRect();
+                const button = document.querySelector('#global_theme_toggle').getBoundingClientRect();
+                return Math.abs(button.width - container.width) <= 0.1
+                    && Math.abs(button.right - container.right) <= 0.1;
+            }""",
+            timeout=5_000,
         )
         desktop_rail = page.evaluate(
             """() => {
@@ -8540,17 +8547,21 @@ def test_successful_agent_completion_collapses_activity_without_erasing_a_new_dr
                 const question = document.querySelector('[data-agent-response-question]');
                 const output = document.querySelector('#agent_response_output');
                 const composer = document.querySelector('#agent_prompt_form');
+                const answer = document.querySelector('#agent_response_answer');
                 const headerRect = header?.getBoundingClientRect();
                 const outputRect = output?.getBoundingClientRect();
                 const composerRect = composer?.getBoundingClientRect();
                 return {
                     headerClientHeight: header?.clientHeight,
-                    headerScrollHeight: document.querySelector("#agent_response_question_scroll")?.scrollHeight,
+                    questionClientHeight: question?.clientHeight,
+                    questionScrollHeight: question?.scrollHeight,
                     questionClientWidth: question?.clientWidth,
                     questionScrollWidth: question?.scrollWidth,
                     questionFontWeight: question ? getComputedStyle(question).fontWeight : null,
                     outputBottom: outputRect?.bottom,
-                    composerTop: composerRect?.top,
+                    composerBottom: composerRect?.bottom,
+                    composerHeight: composerRect?.height,
+                    answerBottomPadding: answer ? Number.parseFloat(getComputedStyle(answer).paddingBottom) : null,
                     headerBottom: headerRect?.bottom,
                     horizontalOverflow: Math.max(
                         document.documentElement.scrollWidth,
@@ -8559,10 +8570,11 @@ def test_successful_agent_completion_collapses_activity_without_erasing_a_new_dr
                 };
             }"""
         )
-        assert question_layout["headerScrollHeight"] > question_layout["headerClientHeight"]
+        assert question_layout["questionScrollHeight"] > question_layout["questionClientHeight"]
         assert question_layout["questionScrollWidth"] <= question_layout["questionClientWidth"] + 1
         assert question_layout["questionFontWeight"] == "500"
-        assert question_layout["outputBottom"] <= question_layout["composerTop"] + 1
+        assert question_layout["outputBottom"] == pytest.approx(question_layout["composerBottom"], abs=1)
+        assert question_layout["answerBottomPadding"] >= question_layout["composerHeight"] + 12
         assert question_layout["horizontalOverflow"] <= 1
 
         activity_panel.locator("summary").click()

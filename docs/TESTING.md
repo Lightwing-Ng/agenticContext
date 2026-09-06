@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.7.5-codex.1`
+Documentation version: `v1.7.6-codex.1`
 
 ## Supported commands
 
@@ -358,3 +358,45 @@ The unresolved full-gate failures are:
 
 These failures were not changed as part of the Gemini model integration. The complete
 local log is `/tmp/agenticcontext-gemini-quality.log`; the full gate is not green.
+
+## CI contract repair, 6 Sep 2026
+
+This follow-up supersedes the unresolved gate status above. The latest failed Quality gate,
+[run 33983592896](https://github.com/Lightwing-Ng/agenticContext/actions/runs/33983592896),
+tested `ccb0e40` and reported 14 failures. Thirteen reproduced locally under UTC. The remaining
+action-rail failure reproduced independently on Linux in
+[run 34010968208](https://github.com/Lightwing-Ng/agenticContext/actions/runs/34010968208).
+
+The repair updates existing tests to the current product contracts:
+
+- Completed Activity rows use the outlined checkmark. The Activity heading remains visible with
+  the account's green completion asset; the answer status retains its filled checkmark.
+- Gemini submits browser and content-mode hidden fields. Grok's Start/Stop test explicitly selects
+  media mode and intercepts the status URL with its content-mode query parameter.
+- ChatGPT retains four text-mode and nine media-mode metric cards, plus the shared elapsed metric.
+  The automatic model label is Latest.
+- Pagination clears the immersed composer by 10px. The question text owns its scrolling; the
+  answer extends behind the composer and reserves bottom padding for its full height.
+- Resizing a touch viewport changes the theme button from 44px to 36px. Linux can report the
+  fixed container's final right edge before its child button catches up. Diagnostic snapshots
+  showed a correct 1,139px container edge and a transient 1,131px button edge, with matching root,
+  layout, and visual viewport widths. Wait for the child to fit its container, then retain the
+  original one-pixel alignment assertions. No production CSS, breakpoint, or tolerance changed.
+
+Verification:
+
+- The three complete related files passed 279 tests under UTC.
+- The final resize test passed on Linux in
+  [run 34011171889](https://github.com/Lightwing-Ng/agenticContext/actions/runs/34011171889).
+  This temporary diagnostic workflow runs only that test and is not a complete gate.
+- The complete local `./scripts/check.sh` passed 1,540 Python tests, 560 subtests, nine JavaScript
+  tests, Ruff, and JavaScript syntax checks. Branch coverage was 71.14%, above the unchanged 55%
+  threshold. Runtime: macOS 27, Python 3.13.0, Node.js 22.23.1, UTC, and an isolated Playwright
+  1.62.0 / Chromium 151.0.7922.34 installation matching the failed CI browser versions.
+- Final source versions: Activity tests `v1.0.5-codex.1`, sidebar tests `v1.30.2-codex.1`,
+  and metric registry tests `v1.3.2-codex.1`.
+
+The working tree's production files and user-owned 8666 service were preserved. Numbered-copy
+review retained 12 protected log/provider-state files and three coverage files with different
+bytes; no cleanup was authorized by the evidence. The local audit is
+`/tmp/agentic-ci-housekeeping.json`.
