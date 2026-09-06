@@ -1,4 +1,4 @@
-/* Code version: v2.95.1-codex.1 */
+/* Code version: v2.96.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -11618,4 +11618,138 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
 .chatgpt-project-combobox .agent-combobox-loading-spinner {
     flex-shrink: 0;
     margin-inline: 4px;
+}
+
+/* Cache overview v1.0.0: resource totals, current run, then scrollable activity. */
+main[data-cache-page] .cache-overview-content-card {
+    display: grid;
+    gap: 20px;
+}
+
+main[data-cache-page] .cache-summary-metrics {
+    grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+    gap: 8px 24px;
+    padding-block: 8px;
+}
+
+main[data-cache-page] .cache-summary-metrics .foundation-metric-card {
+    grid-row: span 2;
+    grid-template-rows: subgrid;
+    row-gap: 2px;
+    padding-block-end: 8px;
+}
+
+main[data-cache-page] .foundation-metric-card {
+    align-content: start;
+    padding: 0;
+}
+
+main[data-cache-page] .foundation-metric-card .metric-label {
+    color: var(--muted);
+    font-size: var(--font-ui-sm);
+    line-height: 1.45;
+    letter-spacing: 0;
+}
+
+main[data-cache-page] .foundation-metric-card strong {
+    text-align: left;
+    font-variant-numeric: tabular-nums;
+}
+
+main[data-cache-page] .cache-run-progress {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    padding-block-start: 16px;
+    border-block-start: 1px solid color-mix(in srgb, var(--muted) 18%, transparent);
+}
+
+main[data-cache-page] .cache-progress-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0;
+}
+
+main[data-cache-page] .cache-progress-heading h2,
+main[data-cache-page] #activity h2 {
+    margin: 0;
+    font-size: var(--font-ui-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.45;
+}
+
+main[data-cache-page] .cache-run-phase {
+    flex: 0 0 auto;
+    max-width: 50%;
+    overflow-wrap: anywhere;
+    padding: 4px 10px;
+    border-radius: var(--radius-pill);
+    background: color-mix(in srgb, var(--muted) 10%, transparent);
+    color: var(--muted);
+    font-size: var(--font-ui-sm);
+    line-height: 1.4;
+    text-transform: capitalize;
+}
+
+main[data-cache-page] .cache-run-phase[data-phase="failed"],
+main[data-cache-page] .cache-run-phase[data-phase="error"] {
+    color: var(--theme-error);
+}
+
+main[data-cache-page] .cache-run-progress .status-copy {
+    font-size: var(--font-ui-md);
+    overflow-wrap: anywhere;
+}
+
+main[data-cache-page] .cache-run-progress .status-progress {
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+}
+
+main[data-cache-page] .cache-run-progress .status-progress-detail {
+    margin: 0;
+}
+
+main[data-cache-page] .progress-metric-grid {
+    margin: 0;
+    grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+    gap: 12px;
+}
+
+main[data-cache-page] .progress-metric-grid:not(:has(> :not([hidden]))) {
+    display: none;
+}
+
+main[data-cache-page] .progress-metric-card strong {
+    font-size: var(--font-ui-lg);
+    color: var(--text);
+}
+
+main[data-cache-page] #activity > .report-heading-row {
+    margin-block: 4px 12px;
+}
+
+main[data-cache-page] .events-table tbody td {
+    padding-block: 10px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+main[data-cache-page] .events-table {
+    min-width: 0;
+}
+
+main[data-cache-page] .events-col-index {
+    width: 36px;
+}
+
+main[data-cache-page] .cache-event-time {
+    display: block;
+    margin-block-end: 4px;
+    color: var(--muted);
+    font-size: var(--font-ui-sm);
+    font-variant-numeric: tabular-nums;
 }

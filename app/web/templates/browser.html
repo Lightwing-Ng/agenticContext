@@ -1,4 +1,4 @@
-<!-- Code version: v1.62.0-codex.1 -->
+<!-- Code version: v1.62.1-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.2-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.95.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.96.0-codex.1') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.0-codex.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -792,11 +792,11 @@
                             </table>
                         </div>
                     </div>
-                    {% elif filters.view == "text" and text_page.session_detail %}
+                    {% elif filters.view == "text" and (text_page.session_detail or (not filters.session_view and text_page.items)) %}
                     {% if text_page.items %}
                     <div class="events-table-shell browser-session-table-shell browser-session-detail-shell">
                         <div class="events-table-scroll browser-session-table-scroll">
-                            <table class="events-table browser-session-table browser-session-detail-table" aria-label="Cached {{ text_page.current_session.source|capitalize }} session messages">
+                            <table class="events-table browser-session-table browser-session-detail-table" aria-label="{{ 'Cached ' ~ (text_page.current_session.source|capitalize) ~ ' session messages' if text_page.session_detail else 'Cached messages' }}">
                                 <thead>
                                     <tr>
                                         <th scope="col" class="browser-session-col-number">No.</th>
@@ -815,7 +815,7 @@
                                             {% if message.source == source.key %}{% set role_icon.filename = source.icon_filename %}{% endif %}
                                         {% endfor %}
                                     {% endif %}
-                                    <tr data-chat-session-id="{{ text_page.current_session.stable_id }}" data-chat-message-id="{{ message.stable_id }}">
+                                    <tr {% if text_page.session_detail %}data-chat-session-id="{{ text_page.current_session.stable_id }}" {% endif %}data-chat-message-id="{{ message.stable_id }}">
                                         <td class="browser-session-table-number">{{ ((text_page.current_page - 1) * text_page.page_size) + loop.index }}</td>
                                         <td>{{ render_browser_message_time(message.last_seen_at) }}</td>
                                         <td class="browser-session-table-role">
@@ -939,36 +939,6 @@
                                 </tbody>
                             </table>
                         </div>
-                    </div>
-                    {% elif filters.view == "text" and text_page.items %}
-                    <div class="browser-chat-list" aria-label="Cached text sessions">
-                        {% for message in text_page.items %}
-                        {% set is_media_response = message.role == "assistant" and message.media_refs and message.content_text.lstrip().startswith("{") %}
-                        {% set show_media_previews = is_media_response and ('"size"' in message.content_text or '"n"' in message.content_text) %}
-                        <article class="browser-chat-message workspace-article-card" data-chat-message-id="{{ message.stable_id }}">
-                            <header class="browser-chat-message-header">
-                                <div class="browser-chat-message-identity">
-                                    <span class="browser-chat-message-role browser-chat-message-role-{{ message.role }}">{{ message.author_label }}</span>
-                                    <a class="browser-chat-message-title" lang="zh-CN" href="{{ message.conversation_url }}" target="_blank" rel="noopener noreferrer">{{ message.conversation_title }}</a>
-                                </div>
-                                <time datetime="{{ message.last_seen_at }}">{{ format_chat_message_timestamp_label(message.last_seen_at) }}</time>
-                            </header>
-                            {% if not is_media_response %}
-                            <div class="browser-chat-message-content" lang="zh-CN">{{ render_cached_message(message.content_text, message.content_html) }}</div>
-                            {% endif %}
-                            {{ render_browser_media_previews(message.media_refs if show_media_previews else []) }}
-                            {% if message.source_links or message.conversation_url %}
-                            <footer class="browser-chat-message-links">
-                                {% for source_link in message.source_links %}
-                                <a class="browser-chat-message-link" href="{{ source_link }}" target="_blank" rel="noopener noreferrer">Open source link {{ loop.index }}</a>
-                                {% endfor %}
-                                {% if message.conversation_url %}
-                                <a class="browser-chat-message-link" href="{{ message.conversation_url }}" target="_blank" rel="noopener noreferrer">Open session</a>
-                                {% endif %}
-                            </footer>
-                            {% endif %}
-                        </article>
-                        {% endfor %}
                     </div>
                     {% endif %}
                     {% set browser_has_result = (

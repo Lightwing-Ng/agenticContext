@@ -1,4 +1,4 @@
-{# Code version: v1.12.0-codex.3 #}
+{# Code version: v1.13.0-codex.1 #}
 {% extends "_cache_page.html" %}
 {% from "_cache_page_components.html" import render_metric, render_progress_metric %}
 {% from "_number_field.html" import render_number_field %}
@@ -21,7 +21,4 @@
 {% endblock %}
 
 {% block progress_metrics %}
-{{ render_progress_metric("Cached posts", "downloaded_posts", snapshot.downloaded_posts, "progress_downloaded_posts") }}
-{{ render_progress_metric("Cached images", "downloaded_images", snapshot.downloaded_images, "progress_downloaded_images") }}
-{{ render_progress_metric("Cached videos", "downloaded_videos", snapshot.downloaded_videos, "progress_downloaded_videos") }}
 {% endblock %}

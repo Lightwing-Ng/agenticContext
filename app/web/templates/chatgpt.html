@@ -1,4 +1,4 @@
-{# Code version: v1.14.0-codex.1 #}
+{# Code version: v1.15.0-codex.1 #}
 {% extends "_cache_page.html" %}
 {% from "_cache_page_components.html" import render_metric, render_progress_metric %}
 
@@ -88,9 +88,5 @@
 
 
 {% block progress_metrics %}
-{{ render_progress_metric("Sessions cached", "cached_sessions", snapshot.cached_sessions, "progress_cached_sessions", content_mode="text") }}
-{{ render_progress_metric("Messages cached", "cached_messages", snapshot.cached_messages, "progress_cached_messages", content_mode="text") }}
-{{ render_progress_metric("Images found", "discovered_images", snapshot.discovered_images, "progress_discovered_images", content_mode="media") }}
-{{ render_progress_metric("Images cached", "downloaded_images", snapshot.downloaded_images, "progress_downloaded_images", content_mode="media") }}
 {{ render_progress_metric("Work items processed", "processed_tweets", snapshot.processed_tweets, "progress_processed_tweets", true, content_mode="media") }}
 {% endblock %}

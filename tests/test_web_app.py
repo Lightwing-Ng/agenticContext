@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.97.0-codex.1
+# Code version: v1.97.1-codex.1
 
 from __future__ import annotations
 
@@ -215,7 +215,7 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(color=color):
                 self.assertIn(color, markup)
 
-    def test_index_includes_progress_metric_counters(self) -> None:
+    def test_index_shows_resource_counters_without_duplicate_progress_metrics(self) -> None:
         app = create_app()
 
         with app.test_client() as client:
@@ -223,9 +223,12 @@ class WebAppTests(unittest.TestCase):
 
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
-        self.assertIn('id="progress_downloaded_posts"', body)
-        self.assertIn('id="progress_downloaded_images"', body)
-        self.assertIn('id="progress_downloaded_videos"', body)
+        self.assertIn('id="downloaded_posts"', body)
+        self.assertNotIn('id="progress_downloaded_posts"', body)
+        self.assertIn('id="downloaded_images"', body)
+        self.assertNotIn('id="progress_downloaded_images"', body)
+        self.assertIn('id="downloaded_videos"', body)
+        self.assertNotIn('id="progress_downloaded_videos"', body)
 
     def test_pages_declare_the_sibling_style_favicon(self) -> None:
         app = create_app()
@@ -507,7 +510,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.11.0-codex.1', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.12.0-codex.1', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.2-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt"', chatgpt_body)
@@ -637,7 +640,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.21.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.95.1-codex.1"
+                expected_style_version = "style-v2.96.0-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
                 self.assertIn('id="global_theme_toggle"', body)
@@ -3137,7 +3140,7 @@ class WebAppTests(unittest.TestCase):
             'if (!statusUrl || statusRefreshInFlight || document.hidden) return;',
             'document.addEventListener("visibilitychange", handleVisibilityChange);',
             'scheduleStatusRefresh();',
-            'const datetimeFormatter = new Intl.DateTimeFormat("en-GB",',
+            'const datetimeFormatter = new Intl.DateTimeFormat("en-US",',
             'if (element.dataset.statusFormat === "datetime")',
             'formatDatetime(rawValue)',
             'function formatRecentEvent(eventText)',
@@ -3472,7 +3475,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.95.1-codex.1", body)
+            self.assertIn("style-v2.96.0-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.31.1-codex.1', body)
@@ -3624,7 +3627,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("data-browser-session-message-toggle", browser_template)
         self.assertIn("browser-session-table-message-shell", browser_template)
         self.assertIn(
-            'format_chat_message_timestamp_label(message.last_seen_at)',
+            'render_browser_message_time(message.last_seen_at)',
             browser_template,
         )
         self.assertIn("browser-session-message-time", browser_template)

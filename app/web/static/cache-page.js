@@ -1,4 +1,4 @@
-/* Code version: v1.11.0-codex.1 */
+/* Code version: v1.12.0-codex.1 */
 
 (() => {
     "use strict";
@@ -14,9 +14,9 @@
     const statusPollIntervalMs = 3_000;
     const terminalPhases = new Set(["finished", "completed", "success", "stopped"]);
     const numberFormatter = new Intl.NumberFormat("en-US");
-    const datetimeFormatter = new Intl.DateTimeFormat("en-GB", {
-        day: "2-digit",
-        month: "2-digit",
+    const datetimeFormatter = new Intl.DateTimeFormat("en-US", {
+        day: "numeric",
+        month: "short",
         year: "numeric",
         hour: "2-digit",
         minute: "2-digit",
@@ -187,7 +187,7 @@
             : /^[A-Za-z]{3}$/.test(timezoneLabel)
                 ? timezoneLabel.toUpperCase()
                 : timezoneCodesByOffset[offsetMinutes] || "UTC";
-        return parts.day + "/" + parts.month + "/" + parts.year
+        return parts.day + " " + parts.month + " " + parts.year
             + " " + parts.hour + ":" + parts.minute + ":" + parts.second
             + " (" + timezoneCode + ")";
     }
@@ -213,6 +213,9 @@
             if (phaseChip.title !== phaseDescription) phaseChip.title = phaseDescription;
         }
         setTextIfChanged(phaseValue, normalizedPhase);
+        if (phaseValue && phaseValue.dataset.phase !== normalizedPhase) {
+            phaseValue.dataset.phase = normalizedPhase;
+        }
     }
 
     function recentEventsTotalPages() {
@@ -373,7 +376,18 @@
                 const indexCell = document.createElement("td");
                 const messageCell = document.createElement("td");
                 indexCell.textContent = String(pageStartIndex + index + 1);
-                messageCell.textContent = formatRecentEvent(eventText);
+                const formattedEvent = formatRecentEvent(eventText);
+                const timestampedEvent = formattedEvent.match(/^\[([^\]]+)\]\s*(.*)$/s);
+                if (timestampedEvent) {
+                    const timestamp = document.createElement("span");
+                    timestamp.className = "cache-event-time";
+                    timestamp.textContent = timestampedEvent[1];
+                    const description = document.createElement("span");
+                    description.textContent = timestampedEvent[2];
+                    messageCell.append(timestamp, description);
+                } else {
+                    messageCell.textContent = formattedEvent;
+                }
                 row.append(indexCell, messageCell);
                 recentEventsBody.appendChild(row);
             });

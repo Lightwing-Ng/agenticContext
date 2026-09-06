@@ -1,4 +1,4 @@
-{# Code version: v1.26.0-codex.1 #}
+{# Code version: v1.27.0-codex.1 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.95.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.96.0-codex.1') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.2-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -16,7 +16,7 @@
     <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.8.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.11.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.12.0-codex.1') }}"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -214,18 +214,16 @@
                 </header>
                 <div class="cache-workspace-content" data-layout-role="content-scrollport">
                     <article class="report-card workspace-summary-card workspace-article-card cache-overview-content-card anchor-section" id="overview" data-layout-role="result-container">
-                    <div class="metric-grid foundation-metric-grid">
+                    <div class="metric-grid foundation-metric-grid cache-summary-metrics" aria-label="Cached resources">
                         {% block primary_metrics %}{% endblock %}
-                        <div class="metric-card foundation-metric-card metric-card-accent">
-                            <span class="metric-label">Phase</span>
-                            <strong id="phase_value">{{ current_phase }}</strong>
-                        </div>
                     </div>
 
-                    <div class="report-heading-row">
-                        <div>
-                            <h2>Current progress</h2>
+                    <section class="cache-run-progress" aria-labelledby="cache_progress_heading">
+                        <div class="report-heading-row cache-progress-heading">
+                            <h2 id="cache_progress_heading">Current progress</h2>
+                            <span class="cache-run-phase" id="phase_value" data-phase="{{ current_phase }}" aria-label="Cache phase">{{ current_phase }}</span>
                         </div>
+                        <p class="status-copy" id="message" data-status-field="message">{{ snapshot.message }}</p>
                         <div
                             class="status-progress{% if cache_source.show_progress_value %} cache-progress-with-value{% endif %} is-indeterminate"
                             id="status_progress"
@@ -239,15 +237,14 @@
                             <span class="status-progress-fill" id="status_progress_fill"></span>
                             {% if cache_source.show_progress_value %}<span class="status-progress-value" id="status_progress_value">Scanning</span>{% endif %}
                         </div>
-                    </div>
                     {% if cache_source.show_progress_detail %}
                     <p class="status-progress-detail" id="status_progress_detail" aria-live="polite">Live progress updates every 3 seconds.</p>
                     {% endif %}
-                    <p class="status-copy" id="message" data-status-field="message">{{ snapshot.message }}</p>
-                    {% block source_notice %}{% endblock %}
                     <div class="progress-metric-grid foundation-metric-grid" aria-label="Cached {{ cache_source.label }} resource progress">
                         {% block progress_metrics %}{% endblock %}
                     </div>
+                    </section>
+                    {% block source_notice %}{% endblock %}
                     </article>
 
                     <section class="workspace-grid workspace-content-card">

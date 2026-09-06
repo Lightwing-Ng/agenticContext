@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.31.0-codex.1
+Code version: v1.32.1-codex.1
 """
 
 from __future__ import annotations
@@ -9721,5 +9721,128 @@ def test_cache_text_metrics_and_grok_runtime_boundary(
         expect(page.locator('#cached_messages')).not_to_be_visible()
         assert page.locator('[data-chatgpt-content-mode-input]').input_value() == "media"
         assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [982, 390])
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_cache_overview_groups_unique_metrics_and_keeps_run_progress_current(
+    disposable_browser: Browser, sidebar_server_url: str, width: int, color_scheme: str,
+    tmp_path: Path,
+) -> None:
+    """Keep source/mode totals unique and verify polling, geometry, and log paging."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 959}, color_scheme=color_scheme,
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    snapshot = {
+        "phase": "stopped", "running": False, "message": "Cache run stopped.",
+        "cached_sessions": 636, "cached_messages": 16_193,
+        "downloaded_posts": 636, "downloaded_tweets": 16_193,
+        "downloaded_images": 1_234, "downloaded_videos": 12,
+        "queued_tweets": 2_100, "processed_tweets": 420,
+        "discovered_tweets": 2_100, "progress_unit": "sessions",
+        "recent_events": [f"[2026-09-06T04:37:05Z] Cached resource {index}." for index in range(25)],
+    }
+    page.route("**/api/cache/*/status?*", lambda route: route.fulfill(json=snapshot))
+    try:
+        for source, mode in (
+            ("chatgpt", "text"), ("chatgpt", "media"), ("grok", "text"),
+            ("grok", "media"), ("claude", "text"), ("gemini", "text"), ("x", "media"),
+        ):
+            page.add_init_script(
+                f"sessionStorage.setItem('cachelikes:browser-content-mode:v1', {json.dumps(mode)})"
+            )
+            page.goto(f"{sidebar_server_url}/cache/{source}", wait_until="networkidle")
+            expect(page.locator("#phase_value")).to_have_text("stopped")
+            fields = page.locator('#overview [data-status-format="number"]:visible').evaluate_all(
+                "nodes => nodes.map(node => node.dataset.statusField)"
+            )
+            assert len(fields) == len(set(fields)), (source, mode, fields)
+            metric_rows = page.locator(".cache-summary-metrics .metric-card:visible").evaluate_all(
+                "nodes => nodes.map(node => ({top: node.getBoundingClientRect().top, "
+                "valueTop: node.querySelector('strong').getBoundingClientRect().top}))"
+            )
+            for left, right in zip(metric_rows, metric_rows[1:]):
+                if abs(left["top"] - right["top"]) <= 1:
+                    assert abs(left["valueTop"] - right["valueTop"]) <= 1
+            geometry = page.evaluate("""() => {
+                const rect = selector => document.querySelector(selector).getBoundingClientRect();
+                const metrics = rect('.cache-summary-metrics');
+                const progress = rect('.cache-run-progress');
+                const bar = rect('#status_progress');
+                const phase = rect('#phase_value');
+                const heading = rect('#cache_progress_heading');
+                const activity = rect('#activity');
+                return {
+                    overflow: document.documentElement.scrollWidth - innerWidth,
+                    metricsBottom: metrics.bottom, progressTop: progress.top,
+                    progressBottom: progress.bottom, activityTop: activity.top,
+                    barWidth: bar.width, progressWidth: progress.width,
+                    headingRight: heading.right, phaseLeft: phase.left,
+                };
+            }""")
+            assert geometry["overflow"] <= 1
+            assert geometry["metricsBottom"] <= geometry["progressTop"]
+            assert geometry["progressBottom"] <= geometry["activityTop"]
+            assert abs(geometry["barWidth"] - geometry["progressWidth"]) <= 1
+            assert geometry["headingRight"] <= geometry["phaseLeft"]
+            assert page.locator(".events-table-scroll").evaluate(
+                "node => node.scrollWidth <= node.clientWidth"
+            )
+            if source == "chatgpt":
+                page.screenshot(path=str(tmp_path / f"cache-{mode}-{color_scheme}-{width}.png"))
+        page.goto(f"{sidebar_server_url}/cache/chatgpt", wait_until="networkidle")
+        snapshot.update(phase="failed", message="Cache run failed.")
+        expect(page.locator("#phase_value")).to_have_attribute("data-phase", "failed", timeout=6_000)
+        expect(page.locator("#message")).to_have_text("Cache run failed.")
+        page.get_by_role("button", name="Event page 1", exact=True).click()
+        expect(page.locator("#recent_events_body tr")).to_have_count(12)
+        expect(page.locator("#recent_events_body tr").first).to_contain_text("6 Sep 2026")
+        page.get_by_role("button", name="Event page 3", exact=True).click()
+        expect(page.locator("#recent_events_body tr")).to_have_count(1)
+        assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_all_cached_messages_reuse_the_numbered_frosted_table(
+    disposable_browser: Browser, seeded_chatgpt_browser_server_url: str, width: int,
+) -> None:
+    """Keep the ungrouped Text view readable in the existing session table."""
+    page, context = _open_page(
+        disposable_browser,
+        f"{seeded_chatgpt_browser_server_url}/browser?view=text&session_view=0&source=all&sort=newest&q=",
+        width, 959, touch=False,
+    )
+    try:
+        table = page.get_by_role("table", name="Cached messages", exact=True)
+        expect(table).to_be_visible()
+        expect(table.locator("th")).to_have_text(["No.", "Time", "Role", "Message"])
+        expect(table.locator("tbody .browser-session-table-number")).to_have_text("1")
+        expect(table.locator(".browser-session-table-message")).to_have_text(
+            "A timestamp layout regression fixture."
+        )
+        expect(page.locator(".browser-chat-message-role, .browser-chat-message-title")).to_have_count(0)
+        geometry = table.evaluate("""table => {
+            const header = table.querySelector('th');
+            const content = table.querySelector('.browser-session-table-message');
+            return {
+                position: getComputedStyle(header).position,
+                blur: getComputedStyle(header).backdropFilter,
+                contentHeight: content.getBoundingClientRect().height,
+                lineHeight: parseFloat(getComputedStyle(content).lineHeight),
+                bodyOverflow: document.documentElement.scrollWidth - innerWidth,
+            };
+        }""")
+        assert geometry["position"] == "sticky"
+        assert "blur(" in geometry["blur"]
+        assert geometry["contentHeight"] + 1 >= geometry["lineHeight"]
+        assert geometry["bodyOverflow"] <= 1
     finally:
         context.close()

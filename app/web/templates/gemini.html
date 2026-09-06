@@ -1,4 +1,4 @@
-{# Code version: v1.0.3-codex.1 #}
+{# Code version: v1.1.0-codex.1 #}
 {% extends "_cache_page.html" %}
 {% from "_cache_page_components.html" import render_metric, render_progress_metric %}
 
@@ -26,5 +26,4 @@
 {% block progress_metrics %}
 {{ render_progress_metric("Sessions queued", "queued_tweets", snapshot.queued_tweets, "progress_queued_tweets") }}
 {{ render_progress_metric("Sessions processed", "processed_tweets", snapshot.processed_tweets, "progress_processed_tweets", true) }}
-{{ render_progress_metric("Messages cached", "downloaded_tweets", snapshot.downloaded_tweets, "progress_downloaded_tweets") }}
 {% endblock %}
