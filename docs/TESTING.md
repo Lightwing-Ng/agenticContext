@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.7.6-codex.1`
+Documentation version: `v1.7.7-codex.1`
 
 ## Supported commands
 
@@ -400,3 +400,27 @@ The working tree's production files and user-owned 8666 service were preserved. 
 review retained 12 protected log/provider-state files and three coverage files with different
 bytes; no cleanup was authorized by the evidence. The local audit is
 `/tmp/agentic-ci-housekeeping.json`.
+
+### Windows execution proof
+
+The repaired Linux complete gate passed 1,537 tests, three platform skips, and 560 subtests in
+[run 34011318221](https://github.com/Lightwing-Ng/agenticContext/actions/runs/34011318221).
+Reading that run's Windows logs exposed a separate false-success condition: Python stages
+returned immediately without pytest output or a coverage artifact.
+
+PowerShell unwrapped the launcher's single `-3.13` argument into `System.String`. Splatting that
+scalar returned exit code zero without executing the requested Python module. On the same runner,
+an explicit `string[]` executed the module correctly. All four Windows Python entrypoints now
+preserve the argument array. The quality gate also requires a coverage report written by the
+current pytest invocation, so an absent or stale report cannot produce a successful gate.
+
+Four native Windows regression cases passed in
+[run 34011631232](https://github.com/Lightwing-Ng/agenticContext/actions/runs/34011631232):
+the test entrypoint executes both passing and failing pytest probes with the correct exit codes,
+and the gate rejects a no-op interpreter with either absent or stale coverage. These tests require
+the Windows launcher and PowerShell and are explicitly platform-scoped; they do not replace any
+existing cross-platform tests. The native regression workflow is a focused check, not a full gate.
+
+Windows gate version: `v1.2.1-codex.1`. Other Windows Python entrypoints: `v1.0.2-codex.1`.
+The application was not launched and no dependency installation was run through the updated
+user-facing setup entrypoint during this repair.
