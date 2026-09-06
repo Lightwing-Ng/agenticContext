@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.32.2-codex.1
+Code version: v1.32.3-codex.1
 """
 
 from __future__ import annotations
@@ -2385,7 +2385,7 @@ def test_cache_browser_session_failure_message_matches_account_typography_and_ha
 def test_cache_notice_flows_without_overlap_and_keeps_polling(
     disposable_browser: Browser, sidebar_server_url: str, width: int, source: str,
 ) -> None:
-    """Keep notices readable after retiring the summary, without losing live status updates."""
+    """Keep source notices below current progress without losing live status updates."""
     context = disposable_browser.new_context(viewport={"width": width, "height": 1_294}, reduced_motion="reduce")
     page = context.new_page()
     polls = []
@@ -2405,7 +2405,10 @@ def test_cache_notice_flows_without_overlap_and_keeps_polling(
         notice = page.locator("#overview .notice-inline-banner")
         if source == "chatgpt":
             expect(notice).to_have_count(0)
-            expect(page.locator("#overview .progress-metric-grid")).to_be_visible()
+            expect(page.locator("#overview .cache-summary-metrics")).to_be_visible()
+            expect(page.locator("#overview .cache-run-progress")).to_be_visible()
+            expect(page.locator("#status_progress")).to_be_visible()
+            expect(page.locator("#overview .progress-metric-grid")).to_be_hidden()
             assert not errors
             return
         expect(notice).to_be_visible()
@@ -2419,7 +2422,7 @@ def test_cache_notice_flows_without_overlap_and_keeps_polling(
                 label: rect(element.querySelector('.notice-floating-label')),
                 title: rect(element.querySelector('.notice-floating-title')),
                 chip: rect(element.querySelector('.status-chip')),
-                progress: rect(document.querySelector('#overview .progress-metric-grid')),
+                progress: rect(document.querySelector('#overview .cache-run-progress')),
                 overflow: element.scrollWidth - element.clientWidth,
                 pageOverflow: document.documentElement.scrollWidth - innerWidth,
             };
@@ -2427,7 +2430,7 @@ def test_cache_notice_flows_without_overlap_and_keeps_polling(
         assert geometry["label"]["bottom"] <= geometry["title"]["top"]
         assert geometry["title"]["bottom"] <= geometry["notice"]["bottom"]
         assert geometry["chip"]["bottom"] <= geometry["notice"]["bottom"]
-        assert geometry["notice"]["bottom"] <= geometry["progress"]["top"]
+        assert geometry["progress"]["bottom"] <= geometry["notice"]["top"]
         if width > 560:
             assert geometry["title"]["right"] <= geometry["chip"]["left"]
         else:
@@ -3183,9 +3186,17 @@ def test_overlay_sidebar_is_touch_safe_across_phone_and_ipad_portraits(
                     || left.top >= right.bottom
                 );
                 return {
-                    metricColumnCount: getComputedStyle(
-                        document.querySelector(".metric-grid"),
-                    ).gridTemplateColumns.split(" ").length,
+                    metricsFitWithoutOverlap: (() => {
+                        const grid = document.querySelector('.cache-summary-metrics');
+                        const bounds = grid.getBoundingClientRect();
+                        const cards = [...grid.children].filter(node => !node.hidden)
+                            .map(node => node.getBoundingClientRect());
+                        return cards.length > 0 && cards.every((rect, index) =>
+                            rect.width > 0 && rect.height > 0
+                            && rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1
+                            && rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1
+                            && cards.slice(index + 1).every(other => !overlaps(rect, other)));
+                    })(),
                     dockOverlapsToggle: overlaps(dock, toggle),
                     actionsOverlapToggle: overlaps(actions, toggle),
                     titleOverlapsToggle: overlaps(title, toggle),
@@ -3210,7 +3221,7 @@ def test_overlay_sidebar_is_touch_safe_across_phone_and_ipad_portraits(
                 };
             }"""
         )
-        assert layout["metricColumnCount"] == (1 if width <= 560 else 3), device_name
+        assert layout["metricsFitWithoutOverlap"], device_name
         assert not layout["dockOverlapsToggle"], device_name
         assert not layout["actionsOverlapToggle"], device_name
         assert not layout["titleOverlapsToggle"], device_name
@@ -9571,7 +9582,8 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
         assert geometry["share"]["x"] >= geometry["next"]["right"]
         assert geometry["search"]["right"] <= geometry["rail"]["right"] + 1
         assert geometry["search"]["width"] >= 180
-        page.locator('[data-browser-search-focus]').click()
+        expect(page.locator('[data-browser-search-focus]')).to_have_count(0)
+        page.locator('#browser_search_input').click()
         expect(page.locator('#browser_search_input')).to_be_focused()
         page.locator('#browser_search_input').fill("crosspage needle")
         page.locator('#browser_search_input').press("Enter")

@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.19.2-codex.1`
+Documentation version: `v1.19.3-codex.1`
 
 ## Windows host operating constraints
 
@@ -15,8 +15,8 @@ Documentation version: `v1.19.2-codex.1`
   `app/core/config.py`); Agent sessions on Windows require Edge or Chrome.
 - Windows file permissions use inherited ACLs rather than the explicit POSIX `0700`/`0600` mode
   bits applied on macOS. Local stores inherit the containing directory's ACL.
-- Prefer the `py -3.13` launcher on Windows; the resolver also accepts a `python` command that
-  resolves to Python 3.13 or 3.14. Do not assume `python3` exists. `AGENTIC_CONTEXT_PYTHON`
+- Prefer the `py -3` launcher on Windows; the resolver also accepts a `python` command that
+  resolves to Python 3.13 or newer. Do not assume `python3` exists. `AGENTIC_CONTEXT_PYTHON`
   overrides the resolver on both platforms.
 
 ## Bounded local compute rollout on 1 Sep 2026

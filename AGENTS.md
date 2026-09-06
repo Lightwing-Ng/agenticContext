@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Code policy version: v1.3.1-agent-contract.0
+Code policy version: v1.3.3-agent-contract.0
 
 This file defines mandatory collaboration rules for all coding agents in this repository (Claude, Codex, Antigravity, Trae, and future agents).
 
@@ -33,13 +33,13 @@ This file defines mandatory collaboration rules for all coding agents in this re
 - Prefer clear, maintainable code over clever one-liners.
 - Avoid introducing new dependencies unless strictly necessary.
 - For UI work, read [`docs/SHARED_UI_WORKFLOW.md`](docs/SHARED_UI_WORKFLOW.md) first.
-  Treat `../antigravity/app` as this project's sibling and visual source of truth;
+  Treat `../worthward/app` as this project's sibling and visual source of truth;
   read `docs/STYLE_REFERENCE.md` before changing markup, CSS, assets, or UI behavior.
 - Before changing a UI pattern shared with the sibling project, read the single local
   synchronization ledger at `../SHARED_UI_SYNC.md` and follow its mandatory workflow.
-  `antigravity` is the canonical complete baseline and final convergence target.
+  `worthward` is the canonical complete baseline and final convergence target.
   A Cache-first improvement is only a `Candidate review` until it is promoted into
-  `antigravity` and both projects have current evidence.
+  `worthward` and both projects have current evidence.
 - A task scoped only to this repository does not authorize editing the sibling. When a
   shared component changes here, update the ledger, mark the sibling `Pending`, and report
   the required sibling-sync reminder at handoff. When the user authorizes both projects,
@@ -77,9 +77,9 @@ This file defines mandatory collaboration rules for all coding agents in this re
   and log observation: the built-in Terminal on macOS, or PowerShell on Windows.
 - Do not use PyCharm as a runtime entrypoint or process-control interface.
 - Do not close or disrupt the user's existing Terminal or PowerShell windows unless explicitly requested.
-- Use a supported Python 3.13 or 3.14 interpreter for project execution. The resolver prefers
-  `/usr/local/bin/python3.13` (or `python3`) on macOS and the `py -3.13` launcher on Windows;
-  set `AGENTIC_CONTEXT_PYTHON` to override with any supported interpreter.
+- Use Python 3.13 or newer for project execution, with no fixed minor version or upper-version cap.
+  The resolver prefers the host `python3` on macOS and the `py -3` launcher on Windows;
+  set `AGENTIC_CONTEXT_PYTHON` to override with any interpreter meeting the minimum version.
 - On macOS, treat `python3` as the valid Python alias. On Windows, prefer the `py` launcher and do
   not assume `python3` is available.
 

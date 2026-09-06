@@ -1,12 +1,13 @@
 # Architecture guide
 
-Documentation version: `v1.13.1-codex.1`
+Documentation version: `v1.13.3-codex.1`
 
 ## Runtime flow
 
 ```text
-main.py
-  -> supported Python 3.13/3.14 runtime resolution
+scripts/run_app.sh or scripts/run_app.ps1
+  -> Python 3.13 or newer runtime resolution
+  -> main.py
   -> structured logging setup
   -> app.web.app.create_app()
   -> Flask routes and static UI
@@ -14,7 +15,7 @@ main.py
 ```
 
 `main.py` is the only supported application entrypoint. The shell runtime resolver accepts Python
-3.13 or 3.14 and the module itself remains runtime-agnostic before Flask is imported.
+3.13 or newer and the module itself remains runtime-agnostic before Flask is imported.
 `create_app()` builds independent state containers for the X, Grok, and ChatGPT workflows,
 registers the local-media browser, and serves the Flask routes.
 

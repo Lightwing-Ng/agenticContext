@@ -1,4 +1,4 @@
-/* Code version: v2.1.2-codex.1 */
+/* Code version: v2.1.3-codex.1 */
 
 import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
 
@@ -225,7 +225,8 @@ import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
         if (viewField) viewField.value = "0";
     }
 
-    document.querySelector("[data-browser-search-focus]")?.addEventListener("click", () => input.focus());
+    // Remove the obsolete shortcut from pages served by a warm template cache.
+    document.querySelector("[data-browser-search-focus]")?.remove();
     searchRoot.querySelector("[data-browser-session-scope-remove]")?.addEventListener("click", () => {
         searchRoot.querySelector("[data-browser-session-tag]")?.remove();
         input.dataset.browserSearchGlobalScope = "true";

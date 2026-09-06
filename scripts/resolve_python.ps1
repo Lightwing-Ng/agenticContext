@@ -1,12 +1,14 @@
 # agenticContext Python resolver.
-# Code version: v1.0.1-codex.1
+# Code version: v1.1.1-codex.1
 
 $ErrorActionPreference = "Stop"
+$env:AGENTIC_CONTEXT_RESOLVED_PYTHON = $null
+$env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS = $null
 
 function Test-SupportedPython([string]$Executable, [string[]]$Arguments = @()) {
     try {
         $version = & $Executable @Arguments -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-        return $version -match '^3\.(13|14)$'
+        return $LASTEXITCODE -eq 0 -and ([version]$version -ge [version]'3.13')
     } catch {
         return $false
     }
@@ -23,13 +25,13 @@ if ($ExplicitPython) {
         $env:AGENTIC_CONTEXT_RESOLVED_PYTHON = $ExplicitPython
         return
     }
-    throw "AGENTIC_CONTEXT_PYTHON must point to Python 3.13 or 3.14."
+    throw "AGENTIC_CONTEXT_PYTHON must point to Python 3.13 or newer."
 }
 
 $python = Get-Command py -ErrorAction SilentlyContinue
-if ($python -and (Test-SupportedPython $python.Source @("-3.13"))) {
+if ($python -and (Test-SupportedPython $python.Source @("-3"))) {
     $env:AGENTIC_CONTEXT_RESOLVED_PYTHON = $python.Source
-    $env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS = "-3.13"
+    $env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS = "-3"
     return
 }
 
@@ -39,4 +41,4 @@ if ($python -and (Test-SupportedPython $python.Source)) {
     return
 }
 
-throw "Install Python 3.13 or 3.14, or set AGENTIC_CONTEXT_PYTHON to a supported interpreter."
+throw "Install Python 3.13 or newer, or set AGENTIC_CONTEXT_PYTHON to a supported interpreter."

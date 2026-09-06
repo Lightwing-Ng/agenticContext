@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.3.2-codex.1
+Code version: v1.3.3-codex.1
 """
 
 import re
@@ -201,14 +201,19 @@ def test_cache_summary_metrics_reuse_the_foundation_metric_contract(client) -> N
     html = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert 'class="metric-grid foundation-metric-grid"' in html
-    assert 'class="progress-metric-grid foundation-metric-grid"' in html
-    # Text and media retain separate cards; the runtime exposes only the selected mode.
-    assert html.count("foundation-metric-card") == 14
-    assert html.count('class="metric-card foundation-metric-card metric-card-accent"') == 9
-    assert html.count('class="metric-card foundation-metric-card metric-card-accent progress-metric-card"') == 5
-    assert html.count('data-chatgpt-metric-mode="text"') == 4
-    assert html.count('data-chatgpt-metric-mode="media" hidden') == 9
+    class_sets = [set(value.split()) for value in re.findall(r'class="([^"]*)"', html)]
+    assert any({"metric-grid", "foundation-metric-grid", "cache-summary-metrics"} <= classes for classes in class_sets)
+    assert any({"progress-metric-grid", "foundation-metric-grid"} <= classes for classes in class_sets)
+    # Each resource total has one owner; only distinct run work remains in the progress section.
+    assert sum("foundation-metric-card" in classes for classes in class_sets) == 9
+    assert sum("progress-metric-card" in classes for classes in class_sets) == 1
+    for field in (
+        "cached_sessions", "cached_messages", "discovered_tweets", "discovered_images",
+        "downloaded_images", "skipped_tweets", "failed_tweets", "task_failures", "progress_processed_tweets",
+    ):
+        assert html.count(f'id="{field}"') == 1, field
+    assert html.count('data-chatgpt-metric-mode="text"') == 2
+    assert html.count('data-chatgpt-metric-mode="media" hidden') == 7
     assert 'aria-label="ChatGPT sync notice"' not in html
     assert 'class="metric-card foundation-metric-card">' not in html
 

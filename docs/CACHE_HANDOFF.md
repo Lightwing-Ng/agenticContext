@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.7.0-codex.1`
+Documentation version: `v1.7.1-codex.1`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -256,8 +256,9 @@ cooldown, and the exact failure remains visible in the task event log.
 
 ## 9. Safe operator workflow
 
-Use the local Terminal (macOS) or PowerShell (Windows) as the runtime control surface. The required
-project interpreter is `/usr/local/bin/python3.13` on macOS or `py -3.13` on Windows.
+Use the local Terminal (macOS) or PowerShell (Windows) as the runtime control surface. The project
+requires Python 3.13 or newer, without an upper-version cap. Use the setup, run, and
+test wrappers to resolve the host interpreter; `AGENTIC_CONTEXT_PYTHON` selects an explicit executable.
 
 ### Before starting a sync
 
@@ -286,7 +287,7 @@ is alive.
 ### Verify the resulting file
 
 ```bash
-/usr/local/bin/python3.13 - <<'PY'
+python3 - <<'PY'
 from collections import Counter
 from pathlib import Path
 
@@ -307,7 +308,7 @@ PY
 On Windows:
 
 ```powershell
-py -3.13 -c @'
+py -3 -c @'
 from collections import Counter
 from pathlib import Path
 
@@ -409,15 +410,15 @@ report the exact missing import; do not restore or overwrite them as part of a C
 Run the focused checks first:
 
 ```bash
-/usr/local/bin/python3.13 -m pytest -q tests/test_grok_history.py
-/usr/local/bin/python3.13 -m pytest -q tests/test_web_app.py tests/test_style_tokens.py
+./scripts/test.sh tests/test_grok_history.py
+./scripts/test.sh tests/test_web_app.py tests/test_style_tokens.py
 ```
 
 On Windows:
 
 ```powershell
-py -3.13 -m pytest -q tests/test_grok_history.py
-py -3.13 -m pytest -q tests/test_web_app.py tests/test_style_tokens.py
+.\scripts\test.ps1 tests/test_grok_history.py
+.\scripts\test.ps1 tests/test_web_app.py tests/test_style_tokens.py
 ```
 
 The second command requires the Agent module set to be internally consistent.

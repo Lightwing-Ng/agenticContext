@@ -1,4 +1,4 @@
-/* Code version: v1.4.0-codex.1 */
+/* Code version: v1.4.1-codex.1 */
 
 .browser-heading-copy {
     display: flex;
@@ -306,11 +306,6 @@
 
 .browser-search-control:has(.browser-search-session-tag) .browser-search-input {
     padding-inline-start: 8px;
-}
-
-.browser-session-search-button .browser-search-icon {
-    position: static;
-    transform: none;
 }
 
 .browser-session-page-export-button .browser-session-page-export-icon {

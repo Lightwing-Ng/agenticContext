@@ -1,6 +1,6 @@
 # CI Failure Playbook
 
-Documentation version: `v1.0.3-codex.1`
+Documentation version: `v1.0.4-codex.1`
 
 Established: 21 Aug 2026
 
@@ -45,7 +45,7 @@ Do not perform any of the following without evidence that the proposed change is
 Use the CI timezone and the required local interpreter:
 
 ```bash
-TZ=UTC AGENTIC_CONTEXT_PYTHON=/usr/local/bin/python3.13 ./scripts/check.sh
+TZ=UTC ./scripts/check.sh
 ```
 
 On Windows:
@@ -57,14 +57,13 @@ $env:TZ='UTC'; .\scripts\check.ps1
 For a browser failure, run the exact test first:
 
 ```bash
-TZ=UTC AGENTIC_CONTEXT_PYTHON=/usr/local/bin/python3.13 \
-/usr/local/bin/python3.13 -m pytest -q tests/test_sidebar_e2e.py -k "exact_test_name"
+TZ=UTC ./scripts/test.sh tests/test_sidebar_e2e.py -k "exact_test_name"
 ```
 
 On Windows:
 
 ```powershell
-$env:TZ='UTC'; py -3.13 -m pytest -q tests/test_sidebar_e2e.py -k "exact_test_name"
+$env:TZ='UTC'; .\scripts\test.ps1 tests/test_sidebar_e2e.py -k "exact_test_name"
 ```
 
 Record at least:
@@ -148,7 +147,7 @@ Before handoff, confirm all items below:
 - [ ] The root cause was classified with source and log evidence.
 - [ ] The focused regression test passes.
 - [ ] The complete related suite passes.
-- [ ] The platform quality gate passes: `TZ=UTC AGENTIC_CONTEXT_PYTHON=/usr/local/bin/python3.13 ./scripts/check.sh`
+- [ ] The platform quality gate passes: `TZ=UTC ./scripts/check.sh`
       on macOS/Linux or `$env:TZ='UTC'; .\scripts\check.ps1` on Windows.
 - [ ] JavaScript syntax and static checks pass.
 - [ ] Cache-busters and durable documentation were updated when browser assets changed.

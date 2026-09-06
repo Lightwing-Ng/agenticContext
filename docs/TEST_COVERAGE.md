@@ -1,12 +1,42 @@
 # Test Suite
 
-Test-suite version: `v1.3.3-codex.1`
+Test-suite version: `v1.3.4-codex.1`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
 macOS/Linux, or `.\scripts\test.ps1` and `.\scripts\check.ps1` on Windows.
 
 ## Coverage Map
+
+This is a behavior map, not a claim of complete coverage or a current test-count baseline.
+
+- `test_test_entrypoints.py` and `test_windows_entrypoints.py`: minimum Python version,
+  interpreter arguments, safe marker selection, installer failures, pytest exit propagation,
+  and rejection of absent or stale coverage reports. Native cases are platform-scoped.
+- `test_documentation.py`: local Markdown navigation, reference links, image paths, repeated
+  heading anchors, missing destinations, and portable treatment of shared references.
+- `test_main.py` and `test_core_architecture.py`: application startup and core module boundaries.
+- `test_config_and_state.py`, `test_state.py`, and `test_notice_banner.py`: configuration,
+  state transitions, and notice behavior.
+- `test_compute_jobs.py`, `test_agent_capability_registry.py`, `test_agent_event_chain.py`, and
+  `test_agent_doctor.py`: durable jobs, capability contracts, event persistence, and recovery.
+- `test_agent_controller_hardening.py` and `test_agent_live_capabilities.py`: deterministic
+  controller safety and capability behavior; a filename containing "live" is not a pytest marker.
+- `test_agent_session_sources.py`, `test_chatgpt_agent_sources.py`, and `test_agent_activity_e2e.py`:
+  session discovery, source selection, and disposable-browser activity interactions.
+- `test_chatgpt_downloader.py`, `test_gemini_downloader.py`, `test_grok_history.py`, and
+  `test_claude_history.py`: provider parsing and persistence using isolated fixtures and fakes.
+- `test_chat_history_browser.py`, `test_local_media_browser.py`, `test_prompt_store.py`, and
+  `test_shadow_backup.py`: local resource browsing, prompts, recovery, and filesystem boundaries.
+- `test_job_lock.py`: cache job ownership and contention.
+- `test_safari_automation.py`: Safari automation protocol behavior through mocked boundaries.
+- `test_web_app.py`, `test_style_tokens.py`, `test_style_token_registry.py`,
+  `test_layout_anchor_contract.py`, and `test_style_alignment_e2e.py`: routes, design contracts,
+  and rendered alignment.
+- `test_agent_optimization.py`, `test_agent_optimization_browser.py`, and
+  `test_agent_optimization.mjs`: Site tools contracts and disposable-browser registration.
+- `test_demo_flight_agentic_crud.py`: controller CRUD in an ephemeral copy of an allowlisted
+  local demo fixture; source snapshots are read-only and the original is verified afterward.
 
 - `test_config*.py` and `test_state.py`: persisted settings, account-name safety, startup
   hydration, task state transitions, and event retention.

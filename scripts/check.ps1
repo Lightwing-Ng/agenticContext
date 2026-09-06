@@ -1,5 +1,5 @@
 # agenticContext Windows quality gate.
-# Code version: v1.2.1-codex.1
+# Code version: v1.3.0-codex.1
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -39,11 +39,15 @@ try {
 
     Write-Host "Quality gate configuration: Python=$Python $($PythonArgs -join ' '), branch coverage minimum=${CoverageMinimum}%"
 
-    Write-Host "[1/4] Python static checks"
-    & $Python @PythonArgs -m ruff check main.py app tests
+    Write-Host "[1/5] Python static checks"
+    & $Python @PythonArgs -m ruff check main.py app tests scripts
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    Write-Host "[2/4] JavaScript syntax checks"
+    Write-Host "[2/5] Local documentation checks"
+    & $Python @PythonArgs scripts/check_docs.py
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    Write-Host "[3/5] JavaScript syntax checks"
     $node = Get-Command node -ErrorAction SilentlyContinue
     if (-not $node) {
         Write-Error "Node.js is required for JavaScript syntax checks."
@@ -64,11 +68,11 @@ try {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 
-    Write-Host "[3/4] JavaScript unit tests"
+    Write-Host "[4/5] JavaScript unit tests"
     & node --test tests/test_agent_optimization.mjs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    Write-Host "[4/4] Python tests with branch coverage"
+    Write-Host "[5/5] Python tests with branch coverage"
     $CoverageStartedAt = [DateTime]::UtcNow
     & $Python @PythonArgs -m pytest `
         -q `

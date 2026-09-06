@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.16.1-codex.1`
+Documentation version: `v1.16.3-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -28,7 +28,7 @@ tools retain the complete human interface.
 
 ## Visual Style Reference
 
-This is a sibling project of `../antigravity/app`. Its visual
+This is a sibling project of `../worthward/app`. Its visual
 language is the source of truth for shared application-shell, typography, surface,
 control, and motion decisions. Read [STYLE_REFERENCE.md](docs/STYLE_REFERENCE.md) before
 making any UI change.
@@ -41,8 +41,8 @@ public reverse proxy.
 
 ## Requirements
 
-- macOS or Windows with a supported Python 3.13 or 3.14 interpreter; the resolver prefers the
-  host `python3` or the Windows `py -3.13` launcher when it is supported
+- macOS or Windows with a supported Python 3.13 or newer interpreter; the resolver prefers the
+  host `python3` or the Windows `py -3` launcher when it is supported
 - A signed-in Chrome or Edge session on Windows, or Chrome, Edge, or Safari on macOS, for the
   source you want to cache
 - Playwright Chromium for Chromium-backed X, Grok, and ChatGPT automation
@@ -58,8 +58,7 @@ bounded deliberately because each worker owns a separate authenticated browser c
 ./scripts/setup_python.sh
 ```
 
-Then open the project in PyCharm and run the shared `main` configuration with a supported
-Python 3.13 or 3.14 interpreter, or launch it from a shell:
+Then start the app from the built-in Terminal on macOS:
 
 ```bash
 ./scripts/run_app.sh
@@ -73,12 +72,12 @@ On Windows, run the PowerShell entrypoint instead:
 ```
 
 Set `AGENTIC_CONTEXT_SKIP_PLAYWRIGHT_INSTALL=1` only for an offline test-only dependency setup.
-`AGENTIC_CONTEXT_PYTHON` is an explicit Python 3.13 or 3.14 override intended primarily for CI or
+`AGENTIC_CONTEXT_PYTHON` is an explicit Python 3.13 or newer override intended primarily for CI or
 local runtime compatibility.
 
 ## Quality Checks
 
-Run the fast offline Python suite with:
+Run the offline suite, including disposable Chromium tests, with:
 
 ```bash
 ./scripts/test.sh
@@ -102,7 +101,7 @@ On Windows:
 .\scripts\check.ps1
 ```
 
-The quality gate runs Ruff, JavaScript syntax checks, the shared Agent Optimization Node contract,
+The quality gate runs Ruff, local documentation link checks, JavaScript syntax checks, the shared Agent Optimization Node contract,
 the Python suite with branch coverage, and disposable Chromium browser flows. It is the same command
 executed by GitHub Actions.
 The browser flow uses a clean context against an isolated local server; the suite never opens
@@ -111,6 +110,8 @@ The CI portability rules and failure-triage contract are documented in
 [docs/TESTING.md](docs/TESTING.md#ci-portability-contract).
 
 ## Documentation
+
+Start with the [documentation index](docs/README.md) to distinguish current contracts from dated evidence.
 
 - [Cache handoff and operating runbook](docs/CACHE_HANDOFF.md)
 - [Architecture guide](docs/ARCHITECTURE.md)
@@ -126,7 +127,7 @@ The CI portability rules and failure-triage contract are documented in
 
 ## Project Layout
 
-- `main.py`: supported Python 3.13/3.14 entrypoint
+- `main.py`: supported Python 3.13 or newer entrypoint
 - `app/core/`: cache services, browser automation, downloaders, state, storage, and logging
 - `app/web/`: Flask routes, templates, static assets, and the local-media browser
 - `tests/`: deterministic unit and Flask integration coverage

@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.9.1-codex.1`
+Documentation version: `v1.9.2-codex.1`
 
 ## Launch
 
@@ -190,13 +190,13 @@ adapter is installed.
 For a repeatable isolated measurement, run:
 
 ```bash
-/usr/local/bin/python3.13 scripts/benchmark_compute.py
+python3 scripts/benchmark_compute.py
 ```
 
 On Windows:
 
 ```powershell
-py -3.13 scripts/benchmark_compute.py
+py -3 scripts/benchmark_compute.py
 ```
 
 The benchmark creates a temporary synthetic fixture, performs one warmup and five measured runs,
@@ -216,8 +216,8 @@ you intend to discard that cache. Do not use reset operations as a routine troub
 ## Troubleshooting
 
 - Missing Playwright Chromium: on macOS run `./scripts/setup_python.sh`, or run
-  `AGENTIC_CONTEXT_PYTHON=/path/to/python3 -m playwright install chromium` with Python 3.13 or
-  3.14. On Windows run `.\scripts\setup_python.ps1` or `py -3.13 -m playwright install chromium`.
+  `python3 -m playwright install chromium` with the same Python 3.13 or newer interpreter
+  used by the application. On Windows run `.\scripts\setup_python.ps1` or `py -3 -m playwright install chromium`.
 - Missing downloader: install the project requirements so `yt-dlp` is available to the selected
   supported interpreter.
 - Browser profile lock: close duplicate normal browser windows, then retry the session probe.

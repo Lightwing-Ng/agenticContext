@@ -1,6 +1,6 @@
 # OpenAI Site tools and Agent Optimization
 
-Documentation version: `v1.3.2-codex.1`
+Documentation version: `v1.3.3-codex.1`
 
 This project implements the shared Agent Optimization contract at
 `/Users/lightwing/Desktop/SHARED_AGENT_OPTIMIZATION.md`. That file owns the cross-project naming,
@@ -111,7 +111,7 @@ Run the focused contract, rendering, and disposable-browser layers with:
 
 ```bash
 node --test tests/test_agent_optimization.mjs
-/usr/local/bin/python3.13 -m pytest -q -p no:cacheprovider \
+./scripts/test.sh \
   tests/test_agent_capability_registry.py \
   tests/test_agent_event_chain.py \
   tests/test_agent_doctor.py \
@@ -123,7 +123,7 @@ On Windows:
 
 ```powershell
 node --test tests/test_agent_optimization.mjs
-py -3.13 -m pytest -q -p no:cacheprovider `
+.\scripts\test.ps1 `
   tests/test_agent_capability_registry.py `
   tests/test_agent_event_chain.py `
   tests/test_agent_doctor.py `
@@ -134,14 +134,14 @@ py -3.13 -m pytest -q -p no:cacheprovider `
 Run the local controller acceptance separately:
 
 ```bash
-/usr/local/bin/python3.13 -m pytest -q -p no:cacheprovider \
+./scripts/test.sh \
   tests/test_demo_flight_agentic_crud.py
 ```
 
 On Windows:
 
 ```powershell
-py -3.13 -m pytest -q -p no:cacheprovider `
+.\scripts\test.ps1 `
   tests/test_demo_flight_agentic_crud.py
 ```
 
@@ -153,7 +153,7 @@ test input.
 Run the complete project gate with:
 
 ```bash
-TZ=UTC AGENTIC_CONTEXT_PYTHON=/usr/local/bin/python3.13 ./scripts/check.sh
+TZ=UTC ./scripts/check.sh
 ```
 
 On Windows:

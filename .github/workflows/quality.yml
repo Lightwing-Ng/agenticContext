@@ -1,4 +1,4 @@
-# Code version: v1.2.0-codex.1
+# Code version: v1.2.1-codex.1
 name: Quality gate
 
 on:
@@ -29,6 +29,9 @@ jobs:
         with:
           python-version: '3.13'
           cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install Python dependencies
         run: python -m pip install -r requirements-dev.txt
@@ -85,7 +88,9 @@ jobs:
 
       - name: Run the quality gate
         shell: pwsh
-        run: .\scripts\check.ps1
+        run: |
+          $env:AGENTIC_CONTEXT_PYTHON = (Get-Command python).Source
+          .\scripts\check.ps1
 
       - name: Upload coverage data
         if: always()

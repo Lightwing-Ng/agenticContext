@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.4.1-codex.1`
+Documentation version: `v1.4.2-codex.1`
 
 ## Authority
 
@@ -74,7 +74,7 @@ token-limited surface remains horizontally centered inside that surface.
 
 The normative cross-project contract is maintained in
 [`../../SHARED_UI_LAYOUT_CONTRACT.md`](../../SHARED_UI_LAYOUT_CONTRACT.md). The
-`antigravity` implementation is the complete reference; this project keeps the same
+`worthward` implementation is the complete reference; this project keeps the same
 geometry and adapts only route-specific markup and interactions.
 
 The contract is geometry-first rather than selector-first. Production templates expose
