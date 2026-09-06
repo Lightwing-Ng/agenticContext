@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.32.1-codex.1
+Code version: v1.32.2-codex.1
 """
 
 from __future__ import annotations
@@ -9844,5 +9844,31 @@ def test_all_cached_messages_reuse_the_numbered_frosted_table(
         assert "blur(" in geometry["blur"]
         assert geometry["contentHeight"] + 1 >= geometry["lineHeight"]
         assert geometry["bodyOverflow"] <= 1
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_text_source_selection_survives_global_search_form_submission(
+    disposable_browser: Browser, seeded_chatgpt_browser_server_url: str, width: int,
+) -> None:
+    """Only explicit global searches may reset the selected chat source."""
+    page, context = _open_page(
+        disposable_browser,
+        seeded_chatgpt_browser_server_url + "/browser?view=text&session_view=0&source=all&sort=newest&q=",
+        width, 959, touch=False,
+    )
+    try:
+        if width < 901:
+            page.locator("#sidebar_toggle").click()
+        for source, label in [("claude", "Claude"), ("gemini", "Gemini"), ("grok", "Grok"), ("chatgpt", "ChatGPT")]:
+            page.locator("[data-browser-source-filter-trigger]").click()
+            page.locator(f'[data-browser-source-filter-option="{source}"]').click()
+            expect(page).to_have_url(re.compile(rf"[?&]source={source}(?:&|$)"))
+            expect(page.locator("[data-browser-source-filter-trigger]")).to_have_attribute("aria-label", f"Source: {label}")
+        page.locator("#browser_search_input").fill("timestamp")
+        page.locator("#browser_search_input").press("Enter")
+        expect(page).to_have_url(re.compile(r"[?&]source=all(?:&|$)"))
+        expect(page.get_by_role("table", name="Cached messages", exact=True)).to_contain_text("timestamp layout")
     finally:
         context.close()

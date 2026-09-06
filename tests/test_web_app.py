@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.97.1-codex.1
+# Code version: v1.97.2-codex.1
 
 from __future__ import annotations
 
@@ -3248,7 +3248,7 @@ class WebAppTests(unittest.TestCase):
         self.assertGreater(body.index("data-browser-search"), body.index("</aside>"))
         self.assertIn("browser-search.css?v=browser-search-v1.4.0-codex.1", body)
         self.assertIn('type="module"', body)
-        self.assertIn("browser-search.js?v=browser-search-v2.1.1-codex.1", body)
+        self.assertIn("browser-search.js?v=browser-search-v2.1.2-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
         self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.0.0-codex.1", body)
         self.assertIn("data-browser-local-resources-header-actions", body)

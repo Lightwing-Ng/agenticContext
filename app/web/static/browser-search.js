@@ -1,4 +1,4 @@
-/* Code version: v2.1.1-codex.1 */
+/* Code version: v2.1.2-codex.1 */
 
 import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
 
@@ -318,7 +318,6 @@ import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
     });
 
     form.addEventListener("submit", () => {
-        applySearchScope();
         rememberSearch(input.value);
         setMenuOpen(false);
     });
