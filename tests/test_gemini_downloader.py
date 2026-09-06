@@ -1,6 +1,6 @@
 """Focused tests for Gemini session history Parquet persistence."""
 
-# Code version: v1.10.4-codex.1
+# Code version: v1.10.5-codex.1
 
 from __future__ import annotations
 
@@ -366,6 +366,7 @@ def test_gemini_initial_snapshot_counts_cached_rows(tmp_path: Path) -> None:
     snapshot = build_gemini_initial_snapshot("v-test", tmp_path)
 
     assert snapshot.downloaded_posts == 1
+    assert snapshot.discovered_tweets == 1
     assert snapshot.downloaded_tweets == 2
     assert snapshot.output_dir == str(path.parent)
     assert "1 session, 2 messages" in snapshot.message

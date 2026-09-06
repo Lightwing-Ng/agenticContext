@@ -1,11 +1,12 @@
 """Shared pytest fixtures for isolated agenticContext tests.
 
-Code version: v1.2.2-codex.1
+Code version: v1.2.3-codex.1
 """
 
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -27,6 +28,8 @@ os.environ["AGENTIC_CONTEXT_SETTINGS_PATH"] = str(
 
 def pytest_sessionfinish() -> None:
     """Remove the process-wide home-directory fixture after pytest exits."""
+    # Windows cannot unlink the runtime log while its file handler is open.
+    logging.shutdown()
     _TEST_RUNTIME_ROOT.cleanup()
     _TEST_HOME.cleanup()
 

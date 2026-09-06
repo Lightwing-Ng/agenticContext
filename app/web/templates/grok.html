@@ -1,17 +1,24 @@
-{# Code version: v1.12.1-codex.1 #}
+{# Code version: v1.13.0-codex.1 #}
 {% extends "_cache_page.html" %}
 {% from "_cache_page_components.html" import render_metric, render_progress_metric %}
 
 {% block primary_metrics %}
 {{ render_metric("Sessions discovered", "discovered_tweets", snapshot.discovered_tweets, "discovered_tweets") }}
-{{ render_metric("Assets cached", "downloaded_posts", snapshot.downloaded_posts, "downloaded_posts") }}
-{{ render_metric("Images", "downloaded_images", snapshot.downloaded_images, "downloaded_images") }}
-{{ render_metric("Videos", "downloaded_videos", snapshot.downloaded_videos, "downloaded_videos") }}
-{{ render_metric("Skipped", "skipped_tweets", snapshot.skipped_tweets, "skipped_tweets") }}
+{{ render_metric("Sessions cached", "downloaded_posts", snapshot.downloaded_posts, "cached_sessions", content_mode="text") }}
+{{ render_metric("Messages cached", "downloaded_tweets", snapshot.downloaded_tweets, "cached_messages", content_mode="text") }}
+{{ render_metric("Unchanged sessions", "skipped_tweets", snapshot.skipped_tweets, "unchanged_sessions", content_mode="text") }}
+{{ render_metric("Session failures", "failed_tweets", snapshot.failed_tweets, "session_failures", content_mode="text") }}
+{{ render_metric("Assets cached", "downloaded_posts", snapshot.downloaded_posts, "downloaded_posts", content_mode="media") }}
+{{ render_metric("Images", "downloaded_images", snapshot.downloaded_images, "downloaded_images", content_mode="media") }}
+{{ render_metric("Videos", "downloaded_videos", snapshot.downloaded_videos, "downloaded_videos", content_mode="media") }}
+{{ render_metric("Skipped", "skipped_tweets", snapshot.skipped_tweets, "skipped_tweets", content_mode="media") }}
 {% endblock %}
 
 {% block progress_metrics %}
-{{ render_progress_metric("Cached assets", "downloaded_posts", snapshot.downloaded_posts, "progress_downloaded_posts") }}
-{{ render_progress_metric("Cached images", "downloaded_images", snapshot.downloaded_images, "progress_downloaded_images") }}
-{{ render_progress_metric("Cached videos", "downloaded_videos", snapshot.downloaded_videos, "progress_downloaded_videos") }}
+{{ render_progress_metric("Sessions queued", "queued_tweets", snapshot.queued_tweets, "progress_queued_tweets", content_mode="text") }}
+{{ render_progress_metric("Sessions processed", "processed_tweets", snapshot.processed_tweets, "progress_processed_tweets", true, content_mode="text") }}
+{{ render_progress_metric("Messages cached", "downloaded_tweets", snapshot.downloaded_tweets, "progress_cached_messages", content_mode="text") }}
+{{ render_progress_metric("Cached assets", "downloaded_posts", snapshot.downloaded_posts, "progress_downloaded_posts", content_mode="media") }}
+{{ render_progress_metric("Cached images", "downloaded_images", snapshot.downloaded_images, "progress_downloaded_images", content_mode="media") }}
+{{ render_progress_metric("Cached videos", "downloaded_videos", snapshot.downloaded_videos, "progress_downloaded_videos", content_mode="media") }}
 {% endblock %}

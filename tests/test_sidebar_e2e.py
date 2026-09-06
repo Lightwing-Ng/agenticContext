@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.30.2-codex.1
+Code version: v1.31.0-codex.1
 """
 
 from __future__ import annotations
@@ -2900,6 +2900,10 @@ def test_cache_action_row_switches_stop_visibility_with_running_state(
             "button => button.getBoundingClientRect().right"
         )
         assert abs(running_stop_right - idle_start_right) <= 2
+        page.unroute("**/api/cache/grok/status?content_mode=media", fulfill_running_status)
+        expect(action_row).to_have_attribute("data-action-running", "false")
+        expect(start_button).to_be_visible()
+        expect(stop_form).to_be_hidden()
     finally:
         context.close()
 
@@ -4307,19 +4311,23 @@ def test_browser_text_media_switch_defaults_to_text_and_remembers_selection(
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("source_key", ("chatgpt", "grok", "gemini", "claude"))
+@pytest.mark.parametrize("width", (1_280, 390))
 def test_cache_sidebar_text_media_switcher_defaults_to_text(
     disposable_browser: Browser,
     sidebar_server_url: str,
     source_key: str,
+    width: int,
 ) -> None:
     page, context = _open_page(
         disposable_browser,
         f"{sidebar_server_url}/cache/{source_key}",
-        1_280,
+        width,
         900,
         touch=False,
     )
     try:
+        if width < 901:
+            page.locator("#sidebar_toggle").click()
         mode_control = page.locator("[data-cache-content-mode]")
         text_option = page.locator('[data-cache-content-mode-option="text"]')
         media_option = page.locator('[data-cache-content-mode-option="media"]')
@@ -4364,9 +4372,8 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
             expect(page.locator("[data-chatgpt-content-mode-input]")).to_have_value("text")
             expect(page.locator('[name="chatgpt_project_url"]')).to_be_disabled()
         else:
-            expect(page).to_have_url(
-                re.compile(rf"/browser\?view=text.*session_view=1.*source={source_key}"),
-            )
+            expect(page).to_have_url(re.compile(rf"/cache/{source_key}$"))
+            expect(page.locator('#start_button')).to_have_text("Start")
     finally:
         context.close()
 
@@ -9700,17 +9707,14 @@ def test_cache_text_metrics_and_grok_runtime_boundary(
         expect(page.locator('#cached_sessions')).to_have_text("1")
         expect(page.locator('#cached_messages')).to_have_text("1")
         expect(page.locator('#downloaded_images')).not_to_be_visible()
-        assert page.locator('[data-cache-runtime-mode]').input_value() == "text"
+        assert page.locator('[data-cache-runtime-mode]').first.input_value() == "text"
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.goto(f"{seeded_chatgpt_browser_server_url}/cache/grok", wait_until="networkidle")
-        expect(page.locator('#start_button')).to_have_text("View text history")
-        assert page.locator('[data-cache-runtime-mode]').input_value() == "text"
-        response = page.request.post(
-            f"{seeded_chatgpt_browser_server_url}/cache/grok/start",
-            form={"cache_content_mode": "text"}, max_redirects=0,
-        )
-        assert response.status == 302
-        assert 'source=grok' in response.headers['location']
+        expect(page.locator('#start_button')).to_have_text("Start")
+        assert page.locator('[data-cache-runtime-mode]').first.input_value() == "text"
+        expect(page.locator('#cached_messages')).to_be_visible()
+        expect(page.locator('#downloaded_images')).not_to_be_visible()
+        assert page.locator('.sidebar-form-stop [data-cache-runtime-mode]').input_value() == "text"
         page.evaluate("sessionStorage.setItem('cachelikes:browser-content-mode:v1', 'media')")
         page.goto(f"{seeded_chatgpt_browser_server_url}/cache/chatgpt", wait_until="networkidle")
         expect(page.locator('#downloaded_images')).to_be_visible()

@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.39.0-codex.1
+# Code version: v1.39.1-codex.1
 
 from __future__ import annotations
 
@@ -2686,3 +2686,21 @@ def test_chatgpt_discovery_records_provider_update_time() -> None:
         )
     assert len(urls) == 2
     assert revisions == {"known": "12345"}
+
+
+@pytest.mark.parametrize("attempted_failures", [0, 1])
+def test_stopped_text_sync_counts_only_attempted_failures(tmp_path: Path, attempted_failures: int) -> None:
+    state = TaskState("test")
+    store = ChatGPTHistoryStore(tmp_path / "history.parquet")
+    stops = iter([False] * attempted_failures + [True])
+    with patch(
+        "app.core.chatgpt_downloader._get_chatgpt_api_json_via_page",
+        side_effect=RuntimeError("Unavailable session"),
+    ) as fetch:
+        result = cache_chatgpt_conversation_history(
+            store, ["https://chatgpt.com/c/first", "https://chatgpt.com/c/pending"],
+            object(), {}, state, lambda: next(stops),
+        )
+    assert result == (0, 0, 0)
+    assert fetch.call_count == attempted_failures
+    assert state.snapshot()["failed_tweets"] == attempted_failures

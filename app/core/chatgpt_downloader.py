@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.47.0-codex.1
+# Code version: v1.47.1-codex.1
 
 from __future__ import annotations
 
@@ -487,6 +487,7 @@ def cache_chatgpt_conversation_history(
     processed = 0
     new_messages = 0
     unchanged_sessions = 0
+    failed_sessions = 0
     urls = tuple(conversation_urls)
     history_store.refresh_titles(conversation_titles_by_id or {})
     for index, conversation_url in enumerate(urls, start=1):
@@ -516,12 +517,14 @@ def cache_chatgpt_conversation_history(
             )
             history_store.save()
         except ChatGPTRateLimitError:
+            failed_sessions += 1
             state.append_event(
                 f"ChatGPT text history reached the API rate limit at session {index:,}/{len(urls):,}; "
                 "deferring the remaining sessions until the next cache run."
             )
             break
         except (AttributeError, RuntimeError) as exc:
+            failed_sessions += 1
             state.append_event(
                 f"Failed to cache ChatGPT text session {index:,}/{len(urls):,}: "
                 f"{str(exc).splitlines()[0][:300]}"
@@ -530,6 +533,7 @@ def cache_chatgpt_conversation_history(
         processed += 1
         new_messages += added_count
         unchanged_sessions += int(unchanged)
+    state.update(failed_tweets=failed_sessions)
     return processed, new_messages, unchanged_sessions
 
 
@@ -3825,11 +3829,12 @@ def sync_chatgpt_images(
                         )
                     )
             stopped = should_stop()
+            history_failures = state.snapshot()["failed_tweets"]
             state.update(
                 discovered_tweets=len(conversation_urls),
                 queued_tweets=len(conversation_urls),
                 processed_tweets=history_processed,
-                failed_tweets=len(conversation_urls) - history_processed,
+                failed_tweets=history_failures,
                 downloaded_tweets=history_store.cached_messages,
                 progress_unit="sessions",
                 discovery_complete=not stopped,
@@ -3844,7 +3849,7 @@ def sync_chatgpt_images(
                 cached_count=cached_count,
                 cached_messages=history_store.cached_messages,
                 incomplete=not conversation_urls or history_processed < len(conversation_urls),
-                failed_count=len(conversation_urls) - history_processed,
+                failed_count=history_failures,
                 stopped=stopped,
             )
 

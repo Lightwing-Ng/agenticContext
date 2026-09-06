@@ -1,12 +1,13 @@
 """Grok text history collection and local persistence.
 
-Code version: v1.2.0-codex.1
+Code version: v1.2.1-codex.1
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from .cache_timing import wait_for_cache_scan
 from .browser_sessions import (
     browser_descriptors,
     goto_with_retry,
+    is_grok_security_verification_page,
     launch_chromium_context,
     sync_playwright_or_error,
 )
@@ -232,6 +234,16 @@ def _grok_api_json(
                 "timeoutMs": GROK_API_REQUEST_TIMEOUT_MS,
             },
         )
+        payload = result.get("body") if isinstance(result, dict) else None
+        if isinstance(payload, str):
+            title_match = re.search(r"<title[^>]*>(.*?)</title>", payload, re.I | re.S)
+            title = title_match.group(1) if title_match else ""
+            if is_grok_security_verification_page(title, payload, payload):
+                raise RuntimeError(
+                    "Grok requires browser security verification. Open Grok in the selected "
+                    "browser and complete any verification, then retry Text caching. "
+                    "Existing cached history has been preserved."
+                )
         if isinstance(result, dict) and 200 <= int(result.get("status", 0)) < 300:
             payload = result.get("body")
             if isinstance(payload, dict):

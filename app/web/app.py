@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.63.0-codex.1
+# Code version: v1.64.0-codex.1
 
 from __future__ import annotations
 
@@ -785,6 +785,8 @@ def create_app(
         if runtime is None:
             raise KeyError(source_key)
         mode = content_mode or request.args.get("content_mode")
+        if source_key == "grok" and mode == "text":
+            return build_reconciled_grok_history_snapshot()
         if source_key == "chatgpt" and mode == "text":
             hydrated = asdict(build_chatgpt_text_snapshot(APP_VERSION, media_catalog.local_store_root))
             snapshot = reconcile_cached_snapshot(runtime.state.snapshot(), hydrated)
@@ -990,7 +992,7 @@ def create_app(
                 for source in cache_source_views_for_page(source_key)
                 if source.key in cache_runtimes
             ),
-            snapshot=build_reconciled_cache_snapshot(source_key, "text" if source_key == "chatgpt" else None),
+            snapshot=build_reconciled_cache_snapshot(source_key, request.args.get("content_mode", "text")),
             history_snapshot=(
                 build_reconciled_grok_history_snapshot() if source_key == "grok" else None
             ),
@@ -2137,7 +2139,7 @@ def create_app(
         if cache_source is None or runtime is None:
             abort(404)
         if source_key == "grok" and request.form.get("cache_content_mode") == "text":
-            return redirect(url_for("browser", view="text", session_view="1", source="grok", sort="newest"))
+            return start_grok_history_runtime()
         config = parse_form_config(saved_config, preserve_missing_booleans=True)
         saved_config = config
         save_config(saved_config)
@@ -2152,7 +2154,7 @@ def create_app(
             if source_key == "chatgpt":
                 content_mode = (
                     "media"
-                    if request.form.get("chatgpt_content_mode") == "media"
+                    if request.form.get("cache_content_mode", request.form.get("chatgpt_content_mode")) == "media"
                     else "text"
                 )
                 runtime.service.start(runtime_config, content_mode=content_mode)
@@ -2168,6 +2170,8 @@ def create_app(
 
     def stop_cache_source_runtime(source_key: str):
         """Request a safe stop for one registered runtime."""
+        if source_key == "grok" and request.form.get("cache_content_mode") == "text":
+            return stop_grok_history_runtime()
         cache_source = get_cache_source_view(source_key)
         runtime = cache_runtimes.get(source_key)
         if cache_source is None or runtime is None:

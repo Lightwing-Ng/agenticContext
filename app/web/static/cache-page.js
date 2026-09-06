@@ -1,4 +1,4 @@
-/* Code version: v1.10.0-codex.1 */
+/* Code version: v1.11.0-codex.1 */
 
 (() => {
     "use strict";
@@ -94,14 +94,12 @@
         if (!cacheContentModeControl) return;
         const normalizedMode = mode === "media" ? "media" : "text";
         syncCacheSourceSwitcherContentMode(normalizedMode);
-        const runtimeMode = page.querySelector("[data-cache-runtime-mode]");
-        if (runtimeMode) runtimeMode.value = normalizedMode;
+        page.querySelectorAll("[data-cache-runtime-mode]").forEach((input) => {
+            input.value = normalizedMode;
+        });
         page.querySelectorAll("[data-chatgpt-metric-mode]").forEach((element) => {
             element.hidden = element.dataset.chatgptMetricMode !== normalizedMode;
         });
-        if (sourceKey === "grok" && startButton) {
-            startButton.textContent = normalizedMode === "text" ? "View text history" : "Start";
-        }
         const options = Array.from(
             cacheContentModeControl.querySelectorAll("[data-cache-content-mode-option]"),
         );
@@ -130,9 +128,11 @@
         cacheContentModeControl.addEventListener("click", (event) => {
             const option = event.target.closest("[data-cache-content-mode-option]");
             if (!option || !cacheContentModeControl.contains(option)) return;
+            event.preventDefault();
             const mode = option.dataset.cacheContentModeOption;
             rememberCacheContentMode(mode);
             syncCacheContentMode(mode);
+            void refreshStatus();
         });
     }
 
@@ -711,7 +711,9 @@
     });
 
     function updateProgress(data) {
-        const strategy = progressStrategies[progressStrategyName] || progressStrategies.queue;
+        const strategy = sourceKey === "grok" && readRememberedContentMode() === "text"
+            ? progressStrategies.queue
+            : progressStrategies[progressStrategyName] || progressStrategies.queue;
         renderProgressState(strategy(data));
     }
 
@@ -764,11 +766,12 @@
         statusRefreshInFlight = true;
         try {
             const requestUrl = new URL(statusUrl, window.location.href);
-            requestUrl.searchParams.set("content_mode", readRememberedContentMode());
+            const requestedMode = readRememberedContentMode();
+            requestUrl.searchParams.set("content_mode", requestedMode);
             const response = await fetch(requestUrl, { cache: "no-store" });
             if (!response.ok) throw new Error(`Status request failed with ${response.status}`);
             const data = await response.json();
-            renderStatus(data);
+            if (requestedMode === readRememberedContentMode()) renderStatus(data);
         } catch (_error) {
             statusRefreshFailed = true;
             setTextIfChanged(statusProgressDetail, "Status refresh temporarily unavailable.");
@@ -804,5 +807,5 @@
     initializeCacheSourceSwitcher();
     initializeSectionTracking();
     setRecentEvents(readInitialEvents());
-    scheduleStatusRefresh();
+    void refreshStatus();
 })();

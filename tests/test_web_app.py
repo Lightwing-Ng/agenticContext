@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.96.0-codex.1
+# Code version: v1.97.0-codex.1
 
 from __future__ import annotations
 
@@ -507,13 +507,13 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.10.0-codex.1', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.11.0-codex.1', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.2-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt"', chatgpt_body)
         self.assertIn('data-cache-content-mode', grok_body)
         self.assertIn(
-            'href="/browser?view=text&amp;session_view=1&amp;q=&amp;source=grok&amp;sort=newest"',
+            'href="/cache/grok"',
             grok_body,
         )
         self.assertIn('href="/cache/grok"', grok_body)
@@ -522,13 +522,13 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('action="/cache/grok/text/stop"', grok_body)
         self.assertIn('data-cache-content-mode', gemini_body)
         self.assertIn(
-            'href="/browser?view=text&amp;session_view=1&amp;q=&amp;source=gemini&amp;sort=newest"',
+            'href="/cache/gemini"',
             gemini_body,
         )
         self.assertIn('href="/cache/gemini"', gemini_body)
         self.assertIn('data-cache-content-mode', claude_body)
         self.assertIn(
-            'href="/browser?view=text&amp;session_view=1&amp;q=&amp;source=claude&amp;sort=newest"',
+            'href="/cache/claude"',
             claude_body,
         )
         self.assertIn('href="/cache/claude"', claude_body)
@@ -4439,10 +4439,11 @@ if __name__ == "__main__":
 
 def test_grok_remembered_text_submission_cannot_start_media(tmp_path: Path) -> None:
     application = create_app(tmp_path / "local_store")
-    with patch("app.core.grok_service.GrokDownloadService.start") as start:
+    with patch("app.core.grok_service.GrokDownloadService.start") as start, patch("app.core.grok_history_service.GrokHistoryService.start") as text_start:
         response = application.test_client().post("/cache/grok/start", data={"cache_content_mode": "text"})
     assert response.status_code == 302
-    assert "/browser?" in response.location and "source=grok" in response.location
+    assert response.location == "/cache/grok"
+    text_start.assert_called_once()
     start.assert_not_called()
 
 
@@ -4466,3 +4467,46 @@ def test_chatgpt_text_counters_survive_app_recreation(tmp_path: Path) -> None:
         body = client.get("/cache/chatgpt").get_data(as_text=True)
         assert 'data-chatgpt-metric-mode="text"' in body
         assert 'data-status-field="cached_messages"' in body
+
+
+def test_grok_text_status_and_stop_use_the_history_runtime(tmp_path: Path) -> None:
+    application = create_app(tmp_path / "local_store")
+    history = application.extensions["grok_history_service"]
+    history._state.update(running=True, phase="downloading", downloaded_tweets=17)
+    client = application.test_client()
+    status = client.get("/api/cache/grok/status?content_mode=text").get_json()
+    assert status["running"] is True
+    assert status["downloaded_tweets"] == 17
+    body = client.get("/cache/grok").get_data(as_text=True)
+    start_button = re.search(r'<button[^>]+id="start_button"[^>]*>', body).group(0)
+    assert "hidden" not in start_button
+    assert 'class="sidebar-form sidebar-form-start" hidden' in body
+    assert client.get("/api/cache/grok/status?content_mode=media").get_json()["running"] is False
+    with patch.object(history, "request_stop") as text_stop, patch(
+        "app.core.grok_service.GrokDownloadService.request_stop"
+    ) as media_stop:
+        response = client.post("/cache/grok/stop", data={"cache_content_mode": "text"})
+    assert response.status_code == 302
+    text_stop.assert_called_once()
+    media_stop.assert_not_called()
+
+
+def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> None:
+    application = create_app(tmp_path / "local_store")
+    services = {
+        "chatgpt": "app.core.chatgpt_service.ChatGPTDownloadService.start",
+        "claude": "app.core.claude_history_service.ClaudeHistoryService.start",
+        "gemini": "app.core.gemini_service.GeminiHistoryService.start",
+        "grok": "app.core.grok_history_service.GrokHistoryService.start",
+    }
+    for source, target in services.items():
+        with patch(target) as start, patch("app.web.app.save_config"):
+            response = application.test_client().post(
+                f"/cache/{source}/start",
+                data={"cache_content_mode": "text", f"{source}_browser": "edge"},
+            )
+        assert response.status_code == 302
+        start.assert_called_once()
+        assert getattr(start.call_args.args[0], f"{source}_browser") == "edge"
+        if source == "chatgpt":
+            assert start.call_args.kwargs == {"content_mode": "text"}

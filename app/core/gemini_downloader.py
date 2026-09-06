@@ -1,6 +1,6 @@
 """Browser-backed Gemini session history caching."""
 
-# Code version: v1.10.4-codex.1
+# Code version: v1.10.5-codex.1
 
 from __future__ import annotations
 
@@ -225,6 +225,7 @@ def build_gemini_initial_snapshot(
         }
     )
     message_count = len(rows)
+    snapshot.discovered_tweets = conversation_count
     snapshot.downloaded_posts = conversation_count
     snapshot.downloaded_tweets = message_count
     snapshot.discovered_images = message_count

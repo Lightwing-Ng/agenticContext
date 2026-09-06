@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.6.0-codex.1`
+Documentation version: `v1.7.0-codex.1`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -44,13 +44,16 @@ the top of the Cache sidebar:
 - Media is the second segment and returns to the current canonical Cache page.
 - The selected segment is remembered in `sessionStorage` under
   `cachelikes:browser-content-mode:v1`.
-- Current Text destinations are source-aware where the page provides a source-specific
-  history: Grok uses `source=grok`, Gemini uses `source=gemini`, and Claude uses
-  `source=claude`. ChatGPT Text stays on `/cache/chatgpt` to run account-wide text
-  synchronization, independently of the selected Media project.
+- Both segments stay on the selected `/cache/<source>` page. Text starts history
+  synchronization for ChatGPT, Claude, Gemini, or Grok. ChatGPT Text remains
+  independent of the selected Media project.
 - The Cache source selector always stays in the Cache dock and opens the selected source's
-  canonical `/cache/<source>` page. On Grok, Gemini, and Claude, the Text segment
-  opens the read-only Local resources history view.
+  canonical `/cache/<source>` page. Local resources remains the read-only history
+  viewer; selecting Text in Cache does not navigate there.
+- Start, Stop, metrics, and status polling use the same explicit content mode.
+  Grok Text displays session/message counts from its history worker and Parquet file,
+  independently of Media asset counters. Responses for a previously selected mode
+  are discarded after a mode change.
 - The `all` source view is an aggregate view. It must include the ChatGPT, Gemini, and
   Grok and Claude history files.
 
@@ -71,19 +74,30 @@ Text status (`?content_mode=text`) hydrates sessions/messages from this file wit
 opening the media catalog. Failed or rate-limited mapping fetches and empty discovery results are reported
 as incomplete instead of a complete successful synchronization. Existing files in the former
 `local_store/media/llm/chatgpt` location are preserved; no automatic migration occurs.
+After a cooperative stop, unattempted sessions are pending rather than failed.
+The failure counter includes only attempted mapping requests that failed or were
+rate-limited; incomplete discovery and deferred work remain incomplete.
 
 Grok has two independent runtimes. This split is intentional:
 
 | Operation | UI action | Start route | Status route | Implementation |
 | --- | --- | --- | --- | --- |
 | Grok media | `Start` | `POST /cache/grok/start` | `GET /api/cache/grok/status` | `GrokDownloadService` and `grok_downloader.py` |
-| Grok Text | No sidebar action (legacy runtime) | `POST /cache/grok/text/start` | `GET /api/cache/grok/text/status` | `GrokHistoryService` and `grok_history.py` |
+| Grok Text | Text, then `Start` | `POST /cache/grok/start` with `cache_content_mode=text` | `GET /api/cache/grok/status?content_mode=text` | `GrokHistoryService` and `grok_history.py` |
 
 Text synchronization must not be implemented by scraping the currently visible Grok
 sidebar or by extending the media downloader with unrelated counters. The retained Text
 runtime uses the selected Edge profile in an isolated Chromium context, so it can read the
-authenticated session without taking over the foreground Edge window. Its redundant
-sidebar action is no longer rendered; Local resources is the user-facing text-history view.
+authenticated session without taking over the foreground Edge window. The shared
+Stop form also submits `cache_content_mode=text` to stop this worker. The dedicated
+`/cache/grok/text/start`, `/cache/grok/text/stop`, and `/api/cache/grok/text/status`
+endpoints remain compatible aliases.
+Security-verification HTML is reported as an actionable provider error without
+retries or raw page markup. Existing history is retained.
+
+Provider region and authentication errors remain blocking; a successful account
+probe does not override a later sync failure. Idle Gemini session counts are
+hydrated from the durable history file.
 
 The shared media action occupies one right-aligned slot: idle shows `Start`, and a
 running task replaces it in place with the existing red `Stop` form button.

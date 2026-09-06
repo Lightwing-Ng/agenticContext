@@ -1,4 +1,4 @@
-{# Code version: v1.25.0-codex.1 #}
+{# Code version: v1.26.0-codex.1 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -16,7 +16,7 @@
     <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.8.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.10.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.11.0-codex.1') }}"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -66,7 +66,7 @@
                 >
                     <a
                         class="segmented-control-option browser-content-mode-option is-active"
-                        href="{{ url_for('cache_source', source_key='chatgpt') if cache_source.key == 'chatgpt' else url_for('browser', view='text', session_view='1', q='', source=cache_source.key, sort='newest') }}"
+                        href="{{ url_for('cache_source', source_key=cache_source.key) }}"
                         data-cache-content-mode-option="text"
                         role="radio"
                         aria-checked="true"
@@ -194,10 +194,11 @@
                         data-wait-title="{{ cache_source.stop_wait_title }}"
                         data-wait-copy="{{ cache_source.stop_wait_copy }}"
                     >
+                        <input type="hidden" name="cache_content_mode" value="text" data-cache-runtime-mode>
                         <button type="submit" class="danger-button stop-button sidebar-action-button" id="stop_button" {% if not snapshot.running %}disabled{% endif %}>Stop</button>
                     </form>
-                    <div class="sidebar-form sidebar-form-start">
-                        <button type="submit" form="{{ cache_source.start_form_id }}" class="primary-button sidebar-action-button" id="start_button" {% if snapshot.running %}disabled hidden{% endif %}>{{ cache_source.start_button_label }}</button>
+                    <div class="sidebar-form sidebar-form-start" {% if snapshot.running %}hidden{% endif %}>
+                        <button type="submit" form="{{ cache_source.start_form_id }}" class="primary-button sidebar-action-button" id="start_button" {% if snapshot.running %}disabled{% endif %}>{{ cache_source.start_button_label }}</button>
                     </div>
                 </div>
                 {% block secondary_actions %}{% endblock %}

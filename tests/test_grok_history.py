@@ -1,8 +1,11 @@
 """Focused tests for Grok text-history persistence and API pagination."""
 
-# Code version: v1.1.0-codex.1
+# Code version: v1.2.0-codex.1
 
 from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 from app.core.chat_history_browser import query_chat_history
 from app.core.grok_history import (
@@ -85,6 +88,37 @@ def test_grok_history_is_included_in_all_source_queries(tmp_path: Path) -> None:
     page = query_chat_history(tmp_path, source="all")
     assert page.total_count == 1
     assert page.items[0].source == "grok"
+
+
+def test_grok_security_challenge_is_actionable_and_is_not_retried() -> None:
+    page = Mock()
+    page.evaluate.return_value = {
+        "status": 403,
+        "body": '<!DOCTYPE html><html><head><title>Just a moment...</title></head></html>',
+    }
+    with pytest.raises(RuntimeError, match="Grok requires browser security verification") as error:
+        _grok_api_json(page, "/rest/app-chat/conversations")
+    assert "<html>" not in str(error.value)
+    assert "preserved" in str(error.value)
+    page.evaluate.assert_called_once()
+    page.wait_for_timeout.assert_not_called()
+
+
+def test_grok_text_status_rehydrates_persisted_messages(tmp_path: Path) -> None:
+    from app.web.app import create_app
+
+    conversation = GrokConversation("conversation-1", "Test session", "", "", "https://grok.com/c/conversation-1")
+    GrokHistoryStore(tmp_path / "llm/grok/history.parquet").replace_conversation(
+        conversation, [_message("conversation-1:r1", "user", 0, "cached text")],
+        "2026-09-06T00:00:00Z",
+    )
+    for _ in range(2):
+        client = create_app(tmp_path).test_client()
+        status = client.get("/api/cache/grok/status?content_mode=text").get_json()
+        assert status["downloaded_posts"] == 1
+        assert status["downloaded_tweets"] == 1
+        assert status["downloaded_images"] == 0
+        assert status == client.get("/api/cache/grok/text/status").get_json()
 
 
 def test_grok_conversation_pagination_uses_page_token(monkeypatch) -> None:
