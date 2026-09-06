@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.56.0-codex.1
+Code version: v3.57.0-codex.1
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import binascii
 from collections import deque
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from glob import translate as translate_glob
 import hashlib
@@ -4979,6 +4980,7 @@ class ComputerUseAgentService:
         config_provider: Callable[[], CrawlConfig] | None = None,
     ) -> None:
         self._settings_store = settings_store
+        self._admission_guard = lambda settings, target_url: nullcontext()
         self._runner = runner or run_chatgpt_web_computer_use
         self._runtime_root = runtime_root
         self._browser_opener = browser_opener or open_agent_in_browser
@@ -5354,7 +5356,7 @@ class ComputerUseAgentService:
         )
         clean_session_title = _clean_agent_session_title(session_title, "")
 
-        with self._lock:
+        with self._admission_guard(settings, target_url), self._lock:
             if self._shutdown_started:
                 raise RuntimeError("The Agent service is shutting down.")
             if self._snapshot.running:

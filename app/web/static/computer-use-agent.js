@@ -1,4 +1,4 @@
-/* Code version: v3.31.5-codex.1 */
+/* Code version: v3.32.0-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -222,10 +222,108 @@
     let agentSessionListViewportDock = null;
     const paginationMotion = window.CACHELIKES_PAGINATION_MOTION;
 
+    let executionSessionId = "primary";
+    let executionSessionEpoch = 0;
+    let executionSessions = [];
+    let executionActiveCount = 0;
+    let executionSelectionRestored = false;
+    const executionDrafts = new Map();
+    const executionRail = document.querySelector("[data-agent-execution-sessions]");
+    const executionList = document.querySelector("[data-agent-execution-session-list]");
+    const newTaskButton = document.querySelector("[data-agent-new-task]");
+
+    function renderExecutionSessions(payload) {
+        const enabled = selectedPlatform() === "chatgpt" && selectedBrowser() === "edge";
+        if (executionRail) executionRail.hidden = !enabled;
+        if (Array.isArray(payload.sessions)) {
+            executionSessions = payload.sessions;
+            if (!executionSelectionRestored) {
+                executionSelectionRestored = true;
+                let remembered = "";
+                try { remembered = window.sessionStorage.getItem("cachelikes:agent-execution-session") || ""; } catch (_error) {}
+                if (remembered === "new" || executionSessions.some((item) => item.session_id === remembered)) {
+                    window.queueMicrotask(() => { void selectExecutionSession(remembered); });
+                }
+            }
+        }
+        if (Number.isInteger(payload.active_count)) executionActiveCount = payload.active_count;
+        const capacity = document.querySelector("[data-agent-session-capacity]");
+        if (capacity) capacity.textContent = `· ${executionActiveCount} of 2 active`;
+        if (newTaskButton) newTaskButton.disabled = promptSubmissionPending;
+        if (!executionList) return;
+        const signature = JSON.stringify([executionSessions, executionSessionId]);
+        if (executionList.dataset.signature === signature) return;
+        executionList.dataset.signature = signature;
+        const focusedId = document.activeElement?.dataset?.executionSessionId;
+        executionList.replaceChildren(...executionSessions.map((session) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "trade-strategy-dropdown-option agent-execution-session";
+            button.dataset.executionSessionId = session.session_id;
+            button.setAttribute("aria-pressed", String(session.session_id === executionSessionId));
+            button.classList.toggle("is-selected", session.session_id === executionSessionId);
+            const title = document.createElement("span");
+            title.className = "agent-execution-session-title";
+            title.textContent = session.session_title || "Untitled session";
+            const state = document.createElement("span");
+            state.className = "agent-execution-session-state";
+            state.textContent = session.paused ? "Paused" : session.running ? "Running"
+                : session.phase === "finished" ? "Completed" : session.phase || "Ready";
+            button.title = `${title.textContent} · ${state.textContent}`;
+            button.append(title, state);
+            button.addEventListener("click", () => selectExecutionSession(session.session_id));
+            return button;
+        }));
+        if (focusedId) Array.from(executionList.children).find((node) => node.dataset.executionSessionId === focusedId)?.focus();
+    }
+
+    async function selectExecutionSession(sessionId) {
+        if (promptSubmissionPending || sessionId === executionSessionId) return;
+        executionDrafts.set(executionSessionId, elements.promptInput?.value || "");
+        executionSessionId = sessionId;
+        try { window.sessionStorage.setItem("cachelikes:agent-execution-session", sessionId); } catch (_error) {}
+        const epoch = ++executionSessionEpoch;
+        lastRenderedAgentRunIdentity = "";
+        lastRenderedAgentRunRevision = 0;
+        lastRenderedAgentStartedAt = "";
+        lastRenderedAgentRunning = false;
+        boundAgentSessionSignature = "";
+        remoteSessionHistoryRequestId += 1;
+        remoteSessionHistory = [];
+        remoteSessionHistoryUrl = "";
+        remoteSessionHistoryLoading = false;
+        responseHistorySignature = "";
+        doctorRequestId += 1;
+        doctorPayload = null;
+        sessionTitleOverride = "";
+        if (elements.sessionMode) elements.sessionMode.value = "new";
+        if (elements.promptInput) elements.promptInput.value = executionDrafts.get(sessionId) || "";
+        promptHasLocalDraft = Boolean(elements.promptInput?.value);
+        // Clear the old stop target immediately; stale network responses cannot restore it.
+        render({...lastPayload, agent: {session_id: sessionId}});
+        if (elements.ask) elements.ask.disabled = true;
+        resizePrompt();
+        try {
+            const payload = await requestJson("/api/agent/status", {headers: agentStatusHeaders()});
+            if (epoch === executionSessionEpoch) render(payload);
+        } catch (error) {
+            if (epoch === executionSessionEpoch) setResponseStatusFallback(error.message);
+        }
+    }
+
+    function agentStatusHeaders() {
+        return {
+            "X-CacheLikes-Agent-Browser": selectedBrowser(),
+            "X-CacheLikes-Agent-Platform": selectedPlatform(),
+            "X-CacheLikes-Agent-Workspace": String(elements.workspacePath?.value || ""),
+        };
+    }
+    newTaskButton?.addEventListener("click", () => selectExecutionSession("new"));
+
     async function requestJson(url, options = {}) {
         const response = await fetch(url, {
             ...options,
-            headers: {"Content-Type": "application/json", ...(options.headers || {})},
+            headers: {"Content-Type": "application/json", "X-CacheLikes-Agent-Session": executionSessionId, ...(options.headers || {})},
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || `Request failed with ${response.status}.`);
@@ -981,6 +1079,14 @@
         }
         if (elements.sessionSource) {
             elements.sessionSource.dataset.agentSessionMode = executionMode;
+        }
+        const managed = executionSessions.some((item) => item.session_id === executionSessionId);
+        const active = lastPayload.agent || {};
+        if (managed && selectedSessionMode() === "new" && active.conversation_bound && active.conversation_url) {
+            if (elements.promptSessionMode) elements.promptSessionMode.value = active.project_url ? "project_session" : "recent";
+            if (elements.promptConversationUrl) elements.promptConversationUrl.value = active.conversation_url;
+            if (elements.promptProjectUrl) elements.promptProjectUrl.value = active.project_url || "";
+            if (elements.promptSessionTitle) elements.promptSessionTitle.value = active.session_title || "";
         }
         syncSessionModeTrigger();
         syncAgentSessionListViewport();
@@ -2677,7 +2783,7 @@
         }
         const selectedUrl = selectedConversationUrl();
         let history = localHistory;
-        if (selectedUrl) {
+        if (selectedUrl && !executionSessions.some((item) => item.session_id === executionSessionId)) {
             const localSessionMatches = historyUrlKey(agent?.conversation_url) === historyUrlKey(selectedUrl);
             if (remoteHistoryMatchesSelection()) {
                 history = [...remoteSessionHistory];
@@ -2763,6 +2869,7 @@
         const nextPayload = payload || {};
         const hasPersistedAgent = Object.prototype.hasOwnProperty.call(nextPayload, "agent");
         if (!hasPersistedAgent) return;
+        renderExecutionSessions(nextPayload);
         const persistedAgent = nextPayload.agent || {};
         const readiness = readinessState(nextPayload);
         const selectionMatchesAgent = agentSnapshotMatchesSelection(persistedAgent);
@@ -2871,7 +2978,7 @@
             elements.resume.disabled = !paused;
         }
         if (elements.ask) {
-            elements.ask.disabled = ((!readiness.ready || !sessionChoiceReady()) && !running);
+            elements.ask.disabled = ((!readiness.ready || !sessionChoiceReady() || executionActiveCount >= 2 || promptSubmissionPending) && !running);
             elements.ask.classList.toggle("is-stop", running);
             elements.ask.dataset.agentAction = running ? "stop" : "ask";
             const label = running ? "Stop Agent task" : `Ask ${platformLabel} Web`;
@@ -2905,14 +3012,22 @@
     }
 
     async function mutate(url, payload = {}) {
+        const epoch = executionSessionEpoch;
         try {
             const response = await requestJson(url, {
                 method: "POST",
                 body: JSON.stringify(payload),
             });
+            if (epoch !== executionSessionEpoch) return;
+            if (url === "/api/agent/ask" && response.agent?.session_id) {
+                executionSessionId = response.agent.session_id;
+                try { window.sessionStorage.setItem("cachelikes:agent-execution-session", executionSessionId); } catch (_error) {}
+                executionSessionEpoch += 1;
+            }
             if (response.doctor) doctorPayload = response.doctor;
             render(response, {fromAsk: url === "/api/agent/ask"});
         } catch (error) {
+            if (epoch !== executionSessionEpoch) return;
             if (url === "/api/agent/ask") {
                 promptSubmissionPending = false;
                 pendingSubmissionPreviousRunIdentity = "";
@@ -3003,7 +3118,7 @@
 
     promptForm.addEventListener("submit", (event) => {
         event.preventDefault();
-        if (elements.ask?.disabled || lastPayload.agent?.running || elements.ask?.classList.contains("is-stop")) return;
+        if (promptSubmissionPending || elements.ask?.disabled || lastPayload.agent?.running || elements.ask?.classList.contains("is-stop")) return;
         updateSessionChoiceInputs();
         schedulePreferenceSave();
         promptHasLocalDraft = false;
@@ -3119,19 +3234,15 @@
     resizePrompt();
 
     async function pollStatus() {
+        const epoch = executionSessionEpoch;
         try {
-            render(await requestJson("/api/agent/status", {
-                headers: {
-                    "X-CacheLikes-Agent-Browser": selectedBrowser(),
-                    "X-CacheLikes-Agent-Platform": selectedPlatform(),
-                    "X-CacheLikes-Agent-Workspace": String(elements.workspacePath?.value || ""),
-                },
-            }));
+            const payload = await requestJson("/api/agent/status", {headers: agentStatusHeaders()});
+            if (epoch === executionSessionEpoch) render(payload);
         } catch (_error) {
         } finally {
             window.setTimeout(
                 pollStatus,
-                lastPayload.agent?.running || lastPayload.compute_job?.active ? 800 : 2_500,
+                executionActiveCount || lastPayload.agent?.running || lastPayload.compute_job?.active ? 800 : 2_500,
             );
         }
     }

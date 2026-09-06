@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.64.0-codex.1
+# Code version: v1.65.0-codex.1
 
 from __future__ import annotations
 
@@ -51,6 +51,7 @@ from app.core.agent import (
     validate_computer_use_settings,
     validate_agent_access_password,
 )
+from app.core.agent.session_pool import AgentSessionPool
 from app.core.browser import browser_descriptors, build_browser_options, probe_browser_session
 from app.core.foundation import (
     APP_VERSION,
@@ -612,7 +613,9 @@ def create_app(
     )
     app.extensions["computer_use_settings"] = computer_use_settings
     app.extensions["computer_use_agent_service"] = computer_use_agent_service
-    atexit.register(computer_use_agent_service.stop_at_exit)
+    agent_session_pool = AgentSessionPool(computer_use_agent_service)
+    app.extensions["agent_session_pool"] = agent_session_pool
+    atexit.register(agent_session_pool.stop_at_exit)
 
     def available_agent_browser_keys() -> set[str]:
         """Return Agent browsers supported by the current host."""
@@ -1231,9 +1234,24 @@ def create_app(
             collector=collect_bootstrap,
         )
 
-    def build_agent_snapshot() -> dict[str, Any]:
+    def selected_agent_session_id() -> str:
+        return str(request.headers.get("X-CacheLikes-Agent-Session") or "primary").strip()
+
+    def selected_agent_service():
+        try:
+            return agent_session_pool.get(selected_agent_session_id())
+        except ValueError as exc:
+            abort(404, description=str(exc))
+
+    def build_agent_snapshot(session_id=None) -> dict[str, Any]:
         """Add safe rendered Markdown to the Agent status payload."""
-        snapshot = computer_use_agent_service.snapshot()
+        selected_id = session_id or selected_agent_session_id()
+        if selected_id == "new":
+            snapshot = {}
+        else:
+            service = agent_session_pool.get(session_id) if session_id else selected_agent_service()
+            snapshot = service.snapshot()
+        snapshot["session_id"] = selected_id
         snapshot["response_html"] = str(
             render_agent_response(str(snapshot.get("response", "")))
         )
@@ -1251,7 +1269,7 @@ def create_app(
 
     def build_agent_doctor() -> dict[str, Any]:
         """Combine run diagnostics with host readiness without exposing private content."""
-        doctor = computer_use_agent_service.doctor()
+        doctor = selected_agent_service().doctor()
         doctor["runtime"] = computer_use_settings.snapshot()
         doctor["capability_registry_version"] = CAPABILITY_REGISTRY_VERSION
         return doctor
@@ -1455,16 +1473,22 @@ def create_app(
             selected_browser = str(runtime_snapshot.get("browser") or "edge").strip().lower()
             selected_platform = str(runtime_snapshot.get("platform") or "chatgpt").strip().lower()
             selected_workspace = str(runtime_snapshot.get("workspace_path") or "").strip()
+        compute_service = (
+            computer_use_agent_service
+            if selected_agent_session_id() == "new"
+            else selected_agent_service()
+        )
         return jsonify(
             {
                 "runtime": runtime_snapshot,
+                **agent_session_pool.catalog(selected_browser, selected_platform, selected_workspace),
                 "agent": agent_snapshot_for_route(
                     build_agent_snapshot(),
                     selected_browser,
                     selected_platform,
                     selected_workspace,
                 ),
-                "compute_job": computer_use_agent_service.compute_job_status(
+                "compute_job": compute_service.compute_job_status(
                     selected_workspace
                 ),
             }
@@ -1483,7 +1507,7 @@ def create_app(
             or ""
         ).strip()
         try:
-            job = computer_use_agent_service.stop_compute_job(
+            job = selected_agent_service().stop_compute_job(
                 workspace_path,
                 str(payload.get("job_id") or ""),
             )
@@ -1511,7 +1535,7 @@ def create_app(
             return reject_external_agent_operation()
         payload = request.get_json(silent=True) or {}
         try:
-            recovery = computer_use_agent_service.recover(str(payload.get("action", "")))
+            recovery = selected_agent_service().recover(str(payload.get("action", "")))
         except (RuntimeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 409
         return jsonify(
@@ -1574,7 +1598,7 @@ def create_app(
         require_local_agent_request()
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
-        snapshot = computer_use_agent_service.snapshot()
+        snapshot = selected_agent_service().snapshot()
         try:
             platform = str(snapshot.get("platform", computer_use_settings.settings.platform))
             browser = str(snapshot.get("browser", computer_use_settings.settings.browser))
@@ -1598,7 +1622,8 @@ def create_app(
             return reject_external_agent_operation()
         payload = request.get_json(silent=True) or {}
         try:
-            computer_use_agent_service.start(
+            started_session_id = agent_session_pool.start(
+                selected_agent_session_id(),
                 str(payload.get("prompt", "")),
                 str(payload.get("workspace_path", "")),
                 saved_config,
@@ -1622,7 +1647,7 @@ def create_app(
         return jsonify(
             {
                 "runtime": computer_use_settings.snapshot(),
-                "agent": build_agent_snapshot(),
+                "agent": build_agent_snapshot(started_session_id),
             }
         ), 202
 
@@ -1824,7 +1849,7 @@ def create_app(
             return reject_external_agent_operation()
         return jsonify(
             {
-                "stop_requested": computer_use_agent_service.request_stop(),
+                "stop_requested": selected_agent_service().request_stop(),
                 "runtime": computer_use_settings.snapshot(),
                 "agent": build_agent_snapshot(),
             }
@@ -2452,7 +2477,7 @@ def create_app(
             return reject_external_agent_operation()
         return jsonify(
             {
-                "resume_requested": computer_use_agent_service.request_resume(),
+                "resume_requested": selected_agent_service().request_resume(),
                 "runtime": computer_use_settings.snapshot(),
                 "agent": build_agent_snapshot(),
             }

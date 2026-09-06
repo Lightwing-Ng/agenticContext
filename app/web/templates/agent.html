@@ -1,4 +1,4 @@
-<!-- Code version: v3.32.0-codex.2 -->
+<!-- Code version: v3.33.0-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,6 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.96.2-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.0.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
 </head>
@@ -28,6 +29,14 @@
         <aside class="panel sidebar agent-sidebar" id="agent_sidebar">
             <section class="hero" data-layout-role="sidebar-title">
                 <h1>Agent</h1>
+            </section>
+
+            <section class="agent-execution-sessions" data-agent-execution-sessions aria-label="Agent sessions" hidden>
+                <div class="agent-execution-sessions-heading">
+                    <span class="field-label">Sessions <span data-agent-session-capacity role="status"></span></span>
+                    <button type="button" class="secondary-button" data-agent-new-task>New task</button>
+                </div>
+                <div class="agent-execution-session-list" data-agent-execution-session-list aria-label="Select an Agent session"></div>
             </section>
 
             <form class="agent-runtime-form" id="agent_runtime_form">
@@ -513,6 +522,6 @@
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.0.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.31.5-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.32.0-codex.1') }}"></script>
 </body>
 </html>

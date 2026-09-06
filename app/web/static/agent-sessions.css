@@ -1,0 +1,36 @@
+/* Code version: v1.0.0-codex.1 */
+.agent-execution-sessions {
+    display: grid;
+    gap: 8px;
+    margin-top: 18px;
+    min-width: 0;
+}
+.agent-execution-sessions[hidden] { display: none; }
+.agent-execution-sessions-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.agent-execution-session-list {
+    display: grid;
+    gap: 4px;
+    max-height: 24vh;
+    overflow-y: auto;
+}
+.agent-execution-session {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    width: 100%;
+    min-height: var(--control-compact-height);
+    gap: 8px;
+    text-align: start;
+    border-radius: var(--radius-soft);
+}
+.agent-execution-session-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.agent-execution-session-state { font-size: var(--font-size-caption, 12px); }
+.agent-execution-session[aria-pressed="true"] { color: var(--accent-text); }
