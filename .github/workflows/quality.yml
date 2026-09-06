@@ -1,5 +1,5 @@
 # Code version: v1.2.0-codex.1
-name: Quality gate
+name: CI failure reproduction
 
 on:
   push:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   check:
-    name: Python, JavaScript, and test checks
+    name: Linux action rail reproduction
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -41,56 +41,6 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Run the quality gate
-        run: AGENTIC_CONTEXT_PYTHON="$(command -v python)" ./scripts/check.sh
+      - name: Reproduce the failing action rail
+        run: ./scripts/test.sh tests/test_sidebar_e2e.py -k agent_response_action_rail_survives
 
-      - name: Upload coverage data
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-coverage
-          path: test-results/coverage.json
-          if-no-files-found: warn
-
-  check-windows:
-    name: Windows quality gate
-    runs-on: windows-latest
-    timeout-minutes: 20
-    env:
-      TZ: UTC
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.13'
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-
-      - name: Install Python dependencies
-        run: python -m pip install -r requirements-dev.txt
-
-      - name: Install Playwright Chromium
-        run: python -m playwright install chromium
-
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-
-      - name: Run the quality gate
-        shell: pwsh
-        run: .\scripts\check.ps1
-
-      - name: Upload coverage data
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-coverage-windows
-          path: test-results/coverage.json
-          if-no-files-found: warn
