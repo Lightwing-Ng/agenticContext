@@ -1,4 +1,4 @@
-/* Code version: v1.31.2-codex.1 */
+/* Code version: v1.32.0-codex.1 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -1080,7 +1080,6 @@
         if (viewerMedia) viewerMedia.replaceChildren();
         dialog.style.removeProperty("width");
         dialog.style.removeProperty("height");
-        dialog.style.removeProperty("--browser-media-frame-radius");
     }
 
     function validExternalUrl(value) {
@@ -1125,13 +1124,13 @@
     }
 
     function resizeViewerFrame(frame, intrinsicWidth, intrinsicHeight, fallbackRatio) {
+        if (!frame.isConnected) return;
         const ratio = intrinsicWidth > 0 && intrinsicHeight > 0
             ? intrinsicWidth / intrinsicHeight
             : fallbackRatio;
         const dialogStyles = window.getComputedStyle(dialog);
         const edgeInset = parseFloat(dialogStyles.getPropertyValue("--browser-media-viewer-edge-inset")) || 48;
         const frameStyles = window.getComputedStyle(frame);
-        const frameRadius = parseFloat(frameStyles.borderTopRightRadius || "0") || 0;
         const controlSize = parseFloat(dialogStyles.getPropertyValue("--browser-media-viewer-control-size")) || 36;
         const controlGap = parseFloat(dialogStyles.getPropertyValue("--browser-media-viewer-control-gap")) || 14;
         const horizontalInset = getFrameInset(frameStyles, "paddingLeft", "paddingRight")
@@ -1154,7 +1153,6 @@
         }
         dialog.style.width = `${Math.round(mediaWidth + horizontalInset)}px`;
         dialog.style.height = `${Math.round(mediaHeight + verticalInset)}px`;
-        dialog.style.setProperty("--browser-media-frame-radius", `${frameRadius}px`);
     }
 
     function createMediaLoadingNotice(message) {

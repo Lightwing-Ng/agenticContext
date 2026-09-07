@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.48.1-codex.1
+# Code version: v1.49.0-codex.1
 
 from __future__ import annotations
 
@@ -243,11 +243,16 @@ def chatgpt_history_path(local_store_root: Path | str = LOCAL_STORE_ROOT) -> Pat
     return Path(local_store_root) / CHATGPT_HISTORY_RELATIVE_DIR / CHATGPT_HISTORY_FILENAME
 
 
+def _chatgpt_local_store_root(target_dir: Path) -> Path:
+    """Resolve shared history and exclusions outside the project media directory."""
+    if target_dir.parent.name == "chatgpt" and target_dir.parent.parent.name == "media":
+        return target_dir.parents[2]
+    return target_dir.parent.parent
+
+
 def chatgpt_history_path_for_target(target_dir: Path) -> Path:
     """Resolve history independently of the project below the canonical media tree."""
-    if target_dir.parent.name == "chatgpt" and target_dir.parent.parent.name == "media":
-        return chatgpt_history_path(target_dir.parents[2])
-    return chatgpt_history_path(target_dir.parent.parent)
+    return chatgpt_history_path(_chatgpt_local_store_root(target_dir))
 
 
 def chatgpt_history_counts(local_store_root: Path | str = LOCAL_STORE_ROOT) -> dict[str, int]:
@@ -716,6 +721,7 @@ def should_cache_chatgpt_candidate(candidate: ChatGPTImageCandidate) -> bool:
     return bool(
         candidate.source_url.strip()
         and candidate.file_id.strip()
+        and candidate.message_role.strip().lower() != "user"
         and not _is_chatgpt_thumbnail_source_url(candidate.source_url)
     )
 
@@ -1692,8 +1698,10 @@ def _extract_chatgpt_conversation_image_payloads(
                 "promptMarkdown": prompt_markdown,
             }
             previous = results_by_file_id.get(file_id)
-            if previous is None or (
-                int(candidate["width"]) * int(candidate["height"])
+            previous_is_upload = previous is not None and previous.get("messageRole") == "user"
+            if author_role == "user" or previous is None or (
+                not previous_is_upload
+                and int(candidate["width"]) * int(candidate["height"])
                 >= int(previous.get("width") or 0) * int(previous.get("height") or 0)
             ):
                 results_by_file_id[file_id] = candidate
@@ -2719,9 +2727,14 @@ def _merge_chatgpt_conversation_payload_images(
             prompt_metadata_authoritative=True,
             request_headers=dict(request_headers),
         )
+        previous = candidates_by_file_id.get(file_id)
+        if candidate.message_role.strip().lower() == "user":
+            candidates_by_file_id[file_id] = candidate
+            continue
+        if previous is not None and previous.message_role.strip().lower() == "user":
+            continue
         if not should_cache_chatgpt_candidate(candidate):
             continue
-        previous = candidates_by_file_id.get(file_id)
         if previous is None or candidate.width * candidate.height >= previous.width * previous.height:
             candidates_by_file_id[file_id] = candidate
 
@@ -2793,9 +2806,14 @@ def _merge_current_conversation_images(
             message_role=str(raw_candidate.get("messageRole") or "").strip(),
             conversation_title=conversation_title,
         )
+        previous = candidates_by_file_id.get(file_id)
+        if candidate.message_role.strip().lower() == "user":
+            candidates_by_file_id[file_id] = candidate
+            continue
+        if previous is not None and previous.message_role.strip().lower() == "user":
+            continue
         if not should_cache_chatgpt_candidate(candidate):
             continue
-        previous = candidates_by_file_id.get(file_id)
         if previous is not None:
             has_authoritative_prompt_metadata = (
                 previous.prompt_metadata_authoritative or bool(previous.request_headers)
@@ -2912,7 +2930,10 @@ def collect_conversation_images(
             break
 
     _merge_current_conversation_images(page, conversation_url, candidates_by_file_id, conversation_title)
-    return list(candidates_by_file_id.values())
+    return [
+        candidate for candidate in candidates_by_file_id.values()
+        if should_cache_chatgpt_candidate(candidate)
+    ]
 
 
 def _chatgpt_conversation_title(value: str) -> str:
@@ -3643,7 +3664,7 @@ def download_chatgpt_image(
     """Download one original image through the authenticated browser context."""
     if not should_cache_chatgpt_candidate(candidate):
         return False
-    if BrowserDeletionCatalog(target_dir.parent.parent).is_excluded("chatgpt", candidate.file_id):
+    if BrowserDeletionCatalog(_chatgpt_local_store_root(target_dir)).is_excluded("chatgpt", candidate.file_id):
         return False
     if not catalog.claim_download(candidate.file_id):
         catalog.update_metadata(candidate)

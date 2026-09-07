@@ -1,4 +1,4 @@
-<!-- Code version: v1.6.5-codex.1 -->
+<!-- Code version: v1.6.6-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -14,6 +14,7 @@
     <script defer src="{{ url_for('static', filename='resizer.js', v='resizer-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-style-tokens.js', v='settings-style-tokens-v1.2.3-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='settings-navigation.js', v='settings-navigation-v1.2.0-codex.1') }}"></script>
 </head>
 <body>
 {% include "_sidebar_bootstrap.html" %}
@@ -45,7 +46,8 @@
             <section class="hero" data-layout-role="sidebar-title">
                 <h1>Settings</h1>
             </section>
-            {% include "_style_tokens_settings_nav.html" %}
+            {% set current_category = "style-tokens" %}
+            {% include "_settings_category_nav.html" %}
         </aside>
 
         <section class="panel chart-panel workspace" id="workspace_panel">

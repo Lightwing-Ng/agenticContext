@@ -1,7 +1,7 @@
 """Focused tests for controller hardening: model verification, action parser,
 directory picker, recent-session catalog, and browser interruption recovery.
 
-Code version: v3.49.0-codex.1
+Code version: v3.49.1-codex.1
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from app.core.computer_use_agent import (
     DEFAULT_CHATGPT_MODEL,
     DEFAULT_MACOS_SYSTEM_PROMPT,
     DEFAULT_WINDOWS_SYSTEM_PROMPT,
-    INVALID_ACTION_CORRECTION_TIMEOUT_SECONDS,
     MAX_BASE64_DECODED_BYTES,
     MAX_INVALID_ACTION_RETRIES,
     SAFE_PROTOCOL_PROMPT_MARKERS,
@@ -613,12 +612,7 @@ class TestAriaDescribedbyRegression:
         final_correction = json.loads(submitted[3].splitlines()[1])
         assert '{"action":"list","path":".","depth":2}' in final_correction["instruction"]
         assert len(set(submitted[1:])) == MAX_INVALID_ACTION_RETRIES
-        assert correction_timeouts == [
-            None,
-            INVALID_ACTION_CORRECTION_TIMEOUT_SECONDS,
-            INVALID_ACTION_CORRECTION_TIMEOUT_SECONDS,
-            INVALID_ACTION_CORRECTION_TIMEOUT_SECONDS,
-        ]
+        assert correction_timeouts == [None] * (MAX_INVALID_ACTION_RETRIES + 1)
 
     def test_repeated_malformed_response_can_recover_before_the_retry_limit(
         self,
@@ -692,6 +686,89 @@ class TestAriaDescribedbyRegression:
         )
         assert len(submitted) == 4
         assert "repeated_response" in submitted[2]
+
+    @pytest.mark.parametrize("correction_delay", [180, 1_810])
+    def test_correction_uses_the_normal_bounded_provider_wait(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        correction_delay: int,
+    ) -> None:
+        import app.core.computer_use_agent as computer_use_agent
+
+        class _Page:
+            url = "https://chatgpt.com/c/slow-correction"
+
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        settings = ComputerUseSettings(workspace_path=str(workspace), max_turns=8)
+        controller = WorkspaceController(workspace, settings, lambda: False)
+        clock = 10_000.0
+        submitted_at = clock
+        submitted: list[str] = []
+        updates: list[dict[str, object]] = []
+        replies = [
+            "I should inspect several files before editing.",
+            '{"action":"bodycheck"}',
+            '{"action":"final","summary":"Recovered",'
+            '"verification":["bodycheck passed"],"limitations":[]}',
+        ]
+
+        def submit(_page: object, message: str, *_args: object, **_kwargs: object) -> None:
+            nonlocal submitted_at
+            submitted.append(message)
+            submitted_at = clock
+
+        def snapshot(*_args: object) -> dict[str, object]:
+            generating = len(submitted) == 2 and clock - submitted_at < correction_delay
+            return {
+                "url": _Page.url,
+                "count": len(submitted),
+                "text": "" if not submitted or generating else replies[len(submitted) - 1],
+                "generating": generating,
+                "assistantAfterLatestUser": bool(submitted),
+            }
+
+        def wait(*_args: object) -> None:
+            nonlocal clock
+            clock += 30
+
+        monkeypatch.setattr(computer_use_agent.time, "monotonic", lambda: clock)
+        monkeypatch.setattr(computer_use_agent, "_web_wait", wait)
+        monkeypatch.setattr(computer_use_agent, "_submit_chromium_prompt", submit)
+        monkeypatch.setattr(computer_use_agent, "_chatgpt_response_snapshot", snapshot)
+        monkeypatch.setattr(computer_use_agent, "_verify_agent_page", lambda *_args: None)
+        monkeypatch.setattr(computer_use_agent, "_select_chat_mode", lambda *_args: None)
+        monkeypatch.setattr(computer_use_agent, "_select_web_model", _select_verified_chatgpt_model)
+        monkeypatch.setattr(computer_use_agent, "_attach_context_file", lambda *_args: False)
+
+        def run() -> tuple[str, str, int, bool]:
+            return _run_web_action_loop(
+                page=_Page(),
+                browser_kind="chromium",
+                initial_message="Inspect the project.",
+                controller=controller,
+                context_path=tmp_path / "context.md",
+                settings=settings,
+                session_mode="recent",
+                selected_target_url=_Page.url,
+                should_stop=lambda: False,
+                update=lambda **changes: updates.append(changes),
+            )
+
+        if correction_delay > computer_use_agent.WEB_TURN_TIMEOUT_SECONDS:
+            with pytest.raises(RuntimeError, match="within 30 minutes"):
+                run()
+            assert len(submitted) == 2
+            assert not controller.state.bodycheck_current
+        else:
+            result = run()
+            assert result == (
+                "Recovered\n\nVerification\n- bodycheck passed", _Page.url, 2, True
+            )
+            assert len(submitted) == 3
+        assert "strict-format correction 1 of 3" in submitted[1]
+        assert any("Provider is generating" in str(item.get("message")) for item in updates)
 
     def test_stop_wins_when_the_terminal_invalid_response_is_parsed(
         self,
@@ -1157,7 +1234,6 @@ class TestRecentSessionCatalog:
         assert 'query.set("refresh", "1")' in script
         assert "loadAgentSources({forceRefresh: true})" in script
         assert 'catalogState === "error"' in script
-        assert "combobox === elements.recentSessionCombobox" in script
         assert "clearCatalogLoadingState" in script
         assert "Recent sessions timed out after 15 seconds." in script
 

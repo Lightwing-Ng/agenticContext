@@ -1,4 +1,4 @@
-<!-- Code version: v3.36.9-codex.1 -->
+<!-- Code version: v3.40.0-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,8 +8,8 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.100.1-codex.1') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.2.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.101.0-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.5.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
 </head>
@@ -194,80 +194,48 @@
                                     <img class="browser-picker-option-icon" src="{{ url_for('static', filename='images/plus.circle.svg') }}" alt="" aria-hidden="true">
                                     <span class="trade-strategy-dropdown-text">New session</span>
                                 </button>
-                                <button type="button" class="trade-strategy-dropdown-option agent-combobox-option" data-agent-combobox-option="recent" data-agent-combobox-label="Recent sessions" data-agent-combobox-icon="{{ url_for('static', filename='images/clock.fill.svg') }}" role="option" aria-selected="false" tabindex="-1">
-                                    <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
-                                    <img class="browser-picker-option-icon" src="{{ url_for('static', filename='images/clock.fill.svg') }}" alt="" aria-hidden="true">
-                                    <span class="trade-strategy-dropdown-text">Recent sessions</span>
-                                </button>
-                                <button type="button" class="trade-strategy-dropdown-option agent-combobox-option" data-agent-combobox-option="project" data-agent-combobox-label="Recent projects" data-agent-combobox-icon="{{ url_for('static', filename='images/folder.fill.svg') }}" role="option" aria-selected="false" tabindex="-1">
+
+                                <button type="button" class="trade-strategy-dropdown-option agent-combobox-option" data-agent-combobox-option="project" data-agent-combobox-label="Projects" data-agent-combobox-icon="{{ url_for('static', filename='images/folder.fill.svg') }}" role="option" aria-selected="false" tabindex="-1">
                                     <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
                                     <img class="browser-picker-option-icon" src="{{ url_for('static', filename='images/folder.fill.svg') }}" alt="" aria-hidden="true">
-                                    <span class="trade-strategy-dropdown-text">Recent projects</span>
+                                    <span class="trade-strategy-dropdown-text">Projects</span>
                                 </button>
                             </div>
                         </div>
                     </label>
 
-                    <details class="ui-collapse agent-session-collapse agent-session-detail-field" data-agent-recent-session-field data-collapse="agent-recent-sessions" open hidden>
-                        <summary>Recent sessions</summary>
-                        <div class="ui-collapse-body">
-                            <div class="agent-session-list-combobox agent-session-list-combobox-direct" data-agent-combobox data-agent-direct-list="true" data-agent-session-list="recent">
-                                <input type="hidden" value="" data-agent-combobox-input data-agent-recent-session-url>
-                                <div class="agent-session-list-state" data-agent-session-list-state aria-live="polite">
-                                    <span class="suggestion-loading-spinner agent-combobox-loading-spinner" data-agent-combobox-spinner aria-hidden="true"></span>
-                                    <span data-agent-session-list-state-copy>Loading recent sessions…</span>
-                                </div>
-                                <div class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown agent-combobox-dropdown agent-session-list-menu agent-session-list-menu-direct" data-agent-combobox-menu role="listbox" aria-label="Choose a recent {{ selected_platform.label }} session"></div>
-                            </div>
-                        </div>
-                    </details>
+
 
                     <div class="field agent-session-detail-field" data-agent-project-field hidden>
-                        <span class="field-label">Recent projects</span>
+                        <span class="field-label">Projects</span>
                         <div class="trade-strategy-combobox agent-combobox agent-session-list-combobox" data-agent-combobox data-agent-session-list="projects" data-agent-project-icon="{{ url_for('static', filename='images/chatgpt-project-terminal.svg') }}">
                             <input type="hidden" value="" data-agent-combobox-input data-agent-project-url>
-                            <button type="button" class="trade-strategy-select form-select trade-strategy-trigger agent-combobox-trigger" data-agent-combobox-trigger aria-haspopup="listbox" aria-expanded="false" aria-label="Recent projects: Loading" aria-busy="true" disabled>
+                            <button type="button" class="trade-strategy-select form-select trade-strategy-trigger agent-combobox-trigger" data-agent-combobox-trigger aria-haspopup="listbox" aria-expanded="false" aria-label="Projects: Loading" aria-busy="true" disabled>
                                 <span class="browser-session-trigger-leading">
                                     <span class="browser-picker-selected-icon-shell"{% if settings.platform != 'chatgpt' %} hidden{% endif %}>
                                         <img class="browser-picker-option-icon" src="{{ url_for('static', filename='images/chatgpt-project-terminal.svg') }}" alt="" data-agent-combobox-selected-icon aria-hidden="true">
                                     </span>
-                                    <span class="trade-strategy-trigger-label browser-session-trigger-label" data-agent-combobox-selected-label>Recent projects</span>
+                                    <span class="trade-strategy-trigger-label browser-session-trigger-label" data-agent-combobox-selected-label>Projects</span>
                                     <span class="suggestion-loading-spinner agent-combobox-loading-spinner" data-agent-combobox-spinner aria-hidden="true"></span>
                                 </span>
                                 <span class="browser-picker-trigger-chevron" aria-hidden="true"></span>
                             </button>
-                            <div class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown agent-combobox-dropdown agent-session-list-menu" data-agent-combobox-menu role="listbox" aria-label="Choose a recent project" hidden></div>
+                            <div class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown agent-combobox-dropdown agent-session-list-menu" data-agent-combobox-menu role="listbox" aria-label="Choose a project" hidden></div>
                         </div>
                     </div>
 
-                    <div class="field agent-session-detail-field" data-agent-project-session-field hidden>
-                        <span class="field-label">Project session</span>
-                        <div class="trade-strategy-combobox agent-combobox agent-session-list-combobox" data-agent-combobox data-agent-session-list="project-sessions" data-agent-new-session-icon="{{ url_for('static', filename='images/plus.circle.svg') }}">
-                            <input type="hidden" value="new" data-agent-combobox-input data-agent-project-session-url>
-                            <button type="button" class="trade-strategy-select form-select trade-strategy-trigger agent-combobox-trigger" data-agent-combobox-trigger aria-haspopup="listbox" aria-expanded="false" aria-label="Project session: Choose a project first" disabled>
-                                <span class="browser-session-trigger-leading">
-                                    <span class="browser-picker-selected-icon-shell" hidden>
-                                        <img class="browser-picker-option-icon" src="{{ url_for('static', filename='images/plus.circle.svg') }}" alt="" data-agent-combobox-selected-icon aria-hidden="true">
-                                    </span>
-                                    <span class="trade-strategy-trigger-label browser-session-trigger-label" data-agent-combobox-selected-label>Choose a project first</span>
-                                    <span class="suggestion-loading-spinner agent-combobox-loading-spinner" data-agent-combobox-spinner aria-hidden="true" hidden></span>
-                                </span>
-                                <span class="browser-picker-trigger-chevron" aria-hidden="true"></span>
-                            </button>
-                            <div class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown agent-combobox-dropdown agent-session-list-menu" data-agent-combobox-menu role="listbox" aria-label="Choose a session in this project" hidden></div>
-                        </div>
-                    </div>
                 </div>
 
             </form>
 
-            <section class="agent-execution-sessions" data-agent-execution-sessions aria-label="Agent sessions" hidden>
-                <div class="agent-execution-sessions-heading">
-                    <span class="field-label">Sessions <span data-agent-session-capacity role="status"></span></span>
-                    <button type="button" class="secondary-button" data-agent-new-task>New task</button>
+            <details class="ui-collapse agent-session-collapse agent-execution-sessions" data-agent-execution-sessions data-collapse="agent-execution-sessions" aria-label="Recent sessions" open>
+                <summary>
+                    <span class="agent-recent-sessions-title">Recent sessions <span class="agent-session-count" data-agent-session-capacity role="status" hidden></span></span>
+                </summary>
+                <div class="ui-collapse-body">
+                    <div class="agent-execution-session-list" data-agent-execution-session-list aria-label="Select an Agent session"></div>
                 </div>
-                <div class="agent-execution-session-list" data-agent-execution-session-list aria-label="Select an Agent session"></div>
-            </section>
+            </details>
         </aside>
 
         <section class="panel chart-panel workspace agent-workspace" id="agent_workspace">
@@ -524,6 +492,6 @@
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.0.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.36.8-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.40.0-codex.1') }}"></script>
 </body>
 </html>

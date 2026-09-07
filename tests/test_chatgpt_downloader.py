@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.40.0-codex.1
+# Code version: v1.41.0-codex.1
 
 from __future__ import annotations
 
@@ -66,6 +66,7 @@ from app.core.chatgpt_downloader import (
     _iter_parallel_safari_prompt_metadata_results,
     _load_chatgpt_session_request_headers,
     _merge_current_conversation_images,
+    _merge_chatgpt_conversation_payload_images,
     _wait_for_project_conversation_links,
     cache_chatgpt_conversation_history,
 )
@@ -431,19 +432,20 @@ def test_chatgpt_url_helpers_accept_original_estuary_assets() -> None:
     assert _chatgpt_project_id(DEFAULT_CHATGPT_PROJECT_URL) == "g-p-demo-project"
 
 
-def test_chatgpt_keeps_original_images_from_every_message_role() -> None:
+def test_chatgpt_excludes_user_uploads_from_every_cache_mode() -> None:
     base = {
         "source_url": "https://chatgpt.com/backend-api/estuary/content?id=file_role",
         "file_id": "file_role",
         "conversation_url": "https://chatgpt.com/g/project/c/role",
     }
 
-    assert should_cache_chatgpt_candidate(ChatGPTImageCandidate(**base, message_role="user"))
+    assert not should_cache_chatgpt_candidate(ChatGPTImageCandidate(**base, message_role="user"))
+    assert not should_cache_chatgpt_candidate(ChatGPTImageCandidate(**base, message_role=" User "))
     assert should_cache_chatgpt_candidate(ChatGPTImageCandidate(**base, message_role="assistant"))
     assert should_cache_chatgpt_candidate(ChatGPTImageCandidate(**base))
 
     known_upload = dict(base, file_id="file_000000000e6471fd89cf0af9b5bd16e5")
-    assert should_cache_chatgpt_candidate(ChatGPTImageCandidate(**known_upload, message_role="user"))
+    assert not should_cache_chatgpt_candidate(ChatGPTImageCandidate(**known_upload, message_role="user"))
     assert not should_cache_chatgpt_candidate(ChatGPTImageCandidate(**dict(base, source_url="")))
     assert not should_cache_chatgpt_candidate(
         ChatGPTImageCandidate(
@@ -1336,6 +1338,62 @@ def test_chatgpt_prefers_a_rendered_original_url_over_an_unresolved_api_asset() 
         candidates_by_file_id[file_id].prompt_markdown
         == "Authoritative conversation-mapping prompt"
     )
+
+
+@pytest.mark.parametrize("roles", [("user", "assistant"), ("assistant", "user")])
+def test_upload_provenance_survives_api_and_rendered_image_merging(roles) -> None:
+    url = "https://chatgpt.com/c/upload-test"
+    mapping = {
+        str(index): {"message": {"author": {"role": role}, "content": {
+            "parts": [{"content_type": "image_asset_pointer", "asset_pointer": "sediment://file_upload"}],
+        }}}
+        for index, role in enumerate(roles)
+    }
+    candidates = {}
+    _merge_chatgpt_conversation_payload_images({"mapping": mapping}, {}, url, candidates, "")
+    with patch("app.core.chatgpt_downloader._extract_original_image_payloads", return_value=[{
+        "sourceUrl": "https://chatgpt.com/backend-api/estuary/content?id=file_upload",
+        "fileId": "file_upload", "width": 4096, "height": 4096,
+    }]):
+        _merge_current_conversation_images(object(), url, candidates, "")
+    assert candidates["file_upload"].message_role == "user"
+    assert not should_cache_chatgpt_candidate(candidates["file_upload"])
+
+
+def test_upload_download_guard_never_requests_or_registers_a_file(tmp_path: Path) -> None:
+    target_dir = tmp_path / "media" / "chatgpt" / "project"
+    catalog = ChatGPTImageCatalog.build(target_dir)
+    context = _FakeContext()
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_upload",
+        file_id="file_upload", conversation_url="https://chatgpt.com/c/upload-test",
+        message_role="user",
+    )
+    assert not download_chatgpt_image(context, catalog, target_dir, candidate)
+    assert not context.request.urls
+    assert catalog.summarize() == 0
+    assert not target_dir.exists()
+
+
+def test_chatgpt_honors_local_resources_exclusions_in_the_canonical_store(tmp_path: Path) -> None:
+    from app.core.local_media_browser import LocalMediaCatalog
+
+    root = tmp_path / "local-store"
+    target_dir = root / "media" / "chatgpt" / "project"
+    catalog = ChatGPTImageCatalog.build(target_dir)
+    context = _FakeContext()
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_excluded",
+        file_id="file_excluded", conversation_url="https://chatgpt.com/c/upload-test",
+        message_role="assistant",
+    )
+    assert download_chatgpt_image(context, catalog, target_dir, candidate)
+    media_catalog = LocalMediaCatalog(root)
+    item = media_catalog.snapshot(force_refresh=True)[0]
+    media_catalog.delete(item.stable_id)
+    assert not (root / item.relative_path).exists()
+    assert not download_chatgpt_image(context, catalog, target_dir, candidate)
+    assert len(context.request.urls) == 1
 
 
 def test_chatgpt_catalog_registers_downloads_and_skips_complete_files(tmp_path: Path) -> None:
@@ -2353,7 +2411,7 @@ def test_chatgpt_scans_the_nested_message_view_in_both_directions() -> None:
             scan_wait_seconds=0.2,
         )
 
-    assert [candidate.file_id for candidate in candidates] == ["file_user_image"]
+    assert candidates == []
     assert set(directions) == {"top", "bottom"}
     assert page.waits
     assert set(page.waits) == {200}

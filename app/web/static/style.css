@@ -1,4 +1,4 @@
-/* Code version: v2.100.1-codex.1 */
+/* Code version: v2.102.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -1272,13 +1272,13 @@ h2 {
 }
 
 /* Reuse pagination's gel physics without its horizontal centering offset. */
-.trade-strategy-dropdown:not([hidden]):not(.agent-session-list-menu-direct) {
+.trade-strategy-dropdown:not([hidden]) {
     --shared-popover-translate-x: 0px;
     transform-origin: top center;
     animation: browser-pagination-range-gel-in-below 300ms var(--motion-bouncy) both;
 }
 
-.agent-session-list-combobox .trade-strategy-dropdown:not([hidden]):not(.agent-session-list-menu-direct),
+.agent-session-list-combobox .trade-strategy-dropdown:not([hidden]),
 .trade-strategy-dropdown:is(.agent-model-dropdown, .agent-effort-dropdown):not([hidden]),
 .agent-session-source:has(> .agent-session-detail-field:not([hidden]))
     .agent-session-mode-combobox .trade-strategy-dropdown:not([hidden]) {
@@ -1287,7 +1287,7 @@ h2 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .trade-strategy-dropdown:not([hidden]):not(.agent-session-list-menu-direct) {
+    .trade-strategy-dropdown:not([hidden]) {
         animation: none !important;
     }
 }
@@ -3734,23 +3734,8 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     min-height: var(--control-form-height);
 }
 
-.agent-session-list-combobox-direct {
-    display: grid;
-    gap: 8px;
-}
 
-.agent-session-list-state {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 24px;
-    color: var(--muted);
-    font-size: var(--font-table-body);
-}
 
-.agent-session-list-state[hidden] {
-    display: none;
-}
 
 .agent-session-list-menu {
     max-height: min(340px, 42vh);
@@ -3758,42 +3743,8 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     scrollbar-gutter: stable;
 }
 
-.agent-session-list-menu-direct {
-    position: static;
-    display: grid !important;
-    gap: 4px;
-    width: 100%;
-    --agent-session-list-dock-gap: var(--sidebar-dock-bottom-gap);
-    --agent-session-list-menu-min-height: var(--control-compact-height);
-    --agent-session-list-menu-available-height: var(--agent-session-list-menu-min-height);
-    max-height: min(
-        var(--shared-select-dropdown-max-height),
-        max(
-            var(--agent-session-list-menu-min-height),
-            var(--agent-session-list-menu-available-height)
-        )
-    );
-    padding: 4px;
-    border-radius: var(--radius-soft);
-    box-sizing: border-box;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    scrollbar-width: none;
-    scrollbar-gutter: auto;
-    -ms-overflow-style: none;
-}
 
-.agent-session-list-menu-direct::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-    background: transparent;
-}
 
-.agent-session-list-menu-direct::-webkit-scrollbar-track,
-.agent-session-list-menu-direct::-webkit-scrollbar-thumb,
-.agent-session-list-menu-direct::-webkit-scrollbar-corner {
-    background: transparent;
-}
 
 .agent-session-list-combobox .agent-session-list-menu {
     top: auto;
@@ -8786,6 +8737,10 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     transform: translateY(0) scale(1);
 }
 
+dialog.browser-dialog:not([open]) {
+    display: none;
+}
+
 .browser-dialog::backdrop {
     background: color-mix(in srgb, var(--theme-background) 58%, transparent);
     backdrop-filter: var(--frosted-glass-blur);
@@ -8870,7 +8825,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-dialog.is-media-viewer .browser-dialog-close {
     top: calc(var(--browser-media-frame-radius) - (var(--browser-media-viewer-control-size) / 2));
-    right: calc(-1 * (var(--browser-media-viewer-control-gap) + var(--browser-media-viewer-control-size)));
+    left: calc(-1 * (var(--browser-media-viewer-control-gap) + var(--browser-media-viewer-control-size)));
+    right: auto;
     width: var(--browser-media-viewer-control-size);
     min-width: var(--browser-media-viewer-control-size);
     height: var(--browser-media-viewer-control-size);
@@ -8956,6 +8912,11 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     object-position: center;
     border-radius: inherit;
     background: #000000;
+}
+
+.browser-image-player {
+    --browser-media-frame-padding: 16px;
+    border: 0;
 }
 
 .browser-image-player .browser-dialog-media-element {

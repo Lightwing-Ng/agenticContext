@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.97.13-codex.1
+# Code version: v1.98.3-codex.1
 
 from __future__ import annotations
 
@@ -1038,7 +1038,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', local_body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.36.8-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.40.0-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1919,28 +1919,20 @@ class WebAppTests(unittest.TestCase):
 
         for fragment in (
             'data-agent-session-mode',
-            'data-agent-session-list="recent"',
             'data-agent-session-list="projects"',
-            'data-agent-session-list="project-sessions"',
-            'data-agent-new-session-icon="/static/images/plus.circle.svg"',
-            'Choose a project first',
             'name="session_mode" value="new"',
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.36.8-codex.1',
+            'computer-use-agent-v3.40.0-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
-            'data-agent-direct-list="true"',
-            'data-agent-session-list-state',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
             'src="/static/images/plus.circle.svg" alt="" data-agent-combobox-selected-icon',
             'data-agent-project-icon="/static/images/chatgpt-project-terminal.svg"',
             'src="/static/images/chatgpt-project-terminal.svg" alt="" data-agent-combobox-selected-icon',
-            'data-agent-combobox-icon="/static/images/clock.fill.svg"',
-            'src="/static/images/clock.fill.svg" alt="" aria-hidden="true">\n                                    <span class="trade-strategy-dropdown-text">Recent sessions</span>',
             'data-agent-combobox-icon="/static/images/folder.fill.svg"',
-            'src="/static/images/folder.fill.svg" alt="" aria-hidden="true">\n                                    <span class="trade-strategy-dropdown-text">Recent projects</span>',
+            'src="/static/images/folder.fill.svg" alt="" aria-hidden="true">\n                                    <span class="trade-strategy-dropdown-text">Projects</span>',
             'id="agent_response_status" role="status" aria-live="polite"',
             'data-agent-response-status-dot',
             'suggestion-loading-spinner agent-response-status-spinner',
@@ -1953,7 +1945,6 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('window.localStorage.getItem(sessionSelectionCacheKey())', script)
         self.assertIn('function restoreRememberedSessionSelection()', script)
         self.assertIn('void restoreRememberedProjectSession(remembered, remembered.project_url)', script)
-        self.assertIn('const isDirectList = combobox.dataset.agentDirectList === "true"', script)
         self.assertIn("selectedOption?.dataset.agentComboboxLabel", script)
         self.assertIn('function verifiedChatgptEffortCatalog()', script)
         self.assertIn('const allowedCacheStatuses = CHATGPT_EFFORT_CATALOG_FRESHNESS.get(freshnessKind);', script)
@@ -2794,14 +2785,8 @@ class WebAppTests(unittest.TestCase):
             "function renderResponseStatus(agent, readiness)",
             "elements.statusSpinner.hidden = !presentation.loading",
             "setResponseStatusFallback(error.message)",
-            "function syncAgentSessionListViewport()",
-            "function resyncAgentSessionListViewportAfterDockTransition(event)",
-            "function bindAgentSessionListViewportDock(dock)",
             '"transitionend"',
             '"transitioncancel"',
-            "const availableHeight = dockBox.top - menuBox.top - gap;",
-            '"--agent-session-list-menu-available-height"',
-            "syncAgentSessionListViewport();",
             "remoteHistoryMatchesSelection()",
             "sessionTitleOverride = option.dataset.agentComboboxLabel || \"\"",
             "elements.activityList.scrollTop = elements.activityList.scrollHeight",
@@ -2916,7 +2901,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("<h2>Configuration center</h2>", body)
         self.assertEqual(body.count('class="workspace-kicker"'), 0)
         self.assertIn(
-            'settings-navigation.js?v=settings-navigation-v1.1.2-codex.1',
+            'settings-navigation.js?v=settings-navigation-v1.2.0-codex.1',
             body,
         )
         self.assertIn('id="settings_form"', body)
@@ -3432,10 +3417,10 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.96.2-codex.1", body)
+            self.assertIn("style-v2.102.0-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.31.2-codex.1', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.32.0-codex.1', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)

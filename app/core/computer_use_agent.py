@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.57.5-codex.1
+Code version: v3.57.6-codex.1
 """
 
 from __future__ import annotations
@@ -136,7 +136,6 @@ _ANCHORED_DELETE_SUPPORTED = bool(
 )
 MAX_ACTION_JSON_CHARS = 800_000
 MAX_INVALID_ACTION_RETRIES = 3
-INVALID_ACTION_CORRECTION_TIMEOUT_SECONDS = 120
 CHATGPT_MODEL_VERIFICATION_ATTEMPTS = 3
 CHATGPT_MODEL_CONTROL_RETRY_ATTEMPTS = CHATGPT_MODEL_VERIFICATION_ATTEMPTS
 CHATGPT_MODEL_LOCATOR_TIMEOUT_MILLISECONDS = 1_000
@@ -8447,7 +8446,9 @@ def _run_web_action_loop(
                 submission_target_url=selected_target_url,
                 session_mode=session_binding.session_mode,
                 availability_check=provider_availability_check,
-                timeout_seconds=INVALID_ACTION_CORRECTION_TIMEOUT_SECONDS,
+                # A format correction still uses the selected reasoning model;
+                # give it the same bounded response budget as any other turn.
+                on_response_state=update,
                 on_submitted=lambda: update(
                     phase="running",
                     message=f"Correction sent to {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; waiting for a valid controller action.",

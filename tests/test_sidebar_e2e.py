@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.32.14-codex.1
+Code version: v1.33.2-codex.1
 """
 
 from __future__ import annotations
@@ -3510,15 +3510,11 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
             f"Open {platform_label} settings"
         )
 
-        page.locator(".agent-session-mode-combobox [data-agent-combobox-trigger]").click()
-        page.locator(
-            '.agent-session-mode-combobox [data-agent-combobox-option="recent"]'
-        ).click()
         recent_option = page.locator(
-            f'[data-agent-session-list="recent"] [data-agent-combobox-option="{session_url}"]'
+            f'[data-recent-conversation-url="{session_url}"]'
         )
         expect(recent_option).to_have_count(1)
-        disclosure = page.locator("details[data-agent-recent-session-field]")
+        disclosure = page.locator("details[data-agent-execution-sessions]")
         summary = disclosure.locator("summary")
         expect(disclosure).to_have_attribute("open", "")
         summary.click()
@@ -3528,63 +3524,14 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
         # Browsing recent sessions without selecting one starts a new conversation.
         expect(page.locator("#agent_ask_button")).to_be_enabled()
         page.locator("#agent_prompt_input").fill("Start a fresh conversation")
-        with page.expect_request(re.compile(r"/api/agent/ask$")):
+        with page.expect_response(re.compile(r"/api/agent/ask$")):
             page.locator("#agent_ask_button").click()
         expect(page.locator("#agent_ask_button")).to_be_enabled()
         assert captured_ask_payloads[-1]["session_mode"] == "new"
         assert captured_ask_payloads[-1]["conversation_url"] == ""
         captured_ask_payloads.clear()
-        recent_menu = page.locator(
-            '[data-agent-session-list="recent"] [data-agent-combobox-menu]'
-        )
-        menu_box = recent_menu.bounding_box()
-        dock_box = page.locator(".sidebar-dock").bounding_box()
-        assert menu_box is not None
-        assert dock_box is not None
-        assert menu_box["y"] >= 0
-        assert menu_box["y"] + menu_box["height"] <= 720
-        assert menu_box["y"] + menu_box["height"] <= dock_box["y"]
-        scroll_metrics = recent_menu.evaluate(
-            """element => {
-                const style = getComputedStyle(element);
-                const dock = document.querySelector('.sidebar-dock');
-                const elementBox = element.getBoundingClientRect();
-                const dockBox = dock?.getBoundingClientRect();
-                const dockGap = Number.parseFloat(
-                    style.getPropertyValue('--agent-session-list-dock-gap')
-                ) || 0;
-                return {
-                    clientHeight: element.clientHeight,
-                    scrollHeight: element.scrollHeight,
-                    overflowY: style.overflowY,
-                    scrollbarWidth: style.scrollbarWidth,
-                    scrollbarGutter: style.scrollbarGutter,
-                    dockGap,
-                    renderedDockGap: dockBox ? dockBox.top - elementBox.bottom : null,
-                };
-            }"""
-        )
-        assert scroll_metrics["scrollHeight"] > scroll_metrics["clientHeight"]
-        assert scroll_metrics["overflowY"] == "auto"
-        assert scroll_metrics["scrollbarWidth"] == "none"
-        assert scroll_metrics["scrollbarGutter"] == "auto"
-        assert scroll_metrics["renderedDockGap"] is not None
-        # Short catalogs may shrink-wrap, so require the Dock clearance as a minimum.
-        assert scroll_metrics["renderedDockGap"] >= scroll_metrics["dockGap"] - 1
-        expect(recent_option).to_be_visible()
         if platform == "grok":
-            immediate = recent_option.evaluate(
-                """option => {
-                    option.click();
-                    const status = document.querySelector('#agent_response_status');
-                    return {
-                        state: status?.dataset.status || '',
-                        copy: status?.textContent?.trim() || '',
-                    };
-                }"""
-            )
-            assert immediate["state"] == "loading"
-            assert "Loading the selected Grok session history" in immediate["copy"]
+            recent_option.click()
             expect(page.locator("#agent_response_status")).to_have_attribute("data-status", "ready")
             expect(page.locator("#agent_response_question")).to_have_text("What changed?")
             expect(page.locator("[data-agent-response-answer-content]")).to_contain_text(
@@ -3609,7 +3556,7 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
         expect(page.locator("[data-agent-model-input]")).to_have_value(selected_model)
 
         page.locator('[data-agent-prompt-input]').fill(f"Inspect the {platform_label} task workspace.")
-        with page.expect_request(re.compile(r"/api/agent/ask$")):
+        with page.expect_response(re.compile(r"/api/agent/ask$")):
             page.locator("#agent_ask_button").click()
         assert len(captured_ask_payloads) == 1
         assert captured_ask_payloads[0]["model"] == selected_model
@@ -3634,229 +3581,6 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
         context.close()
 
 
-@pytest.mark.integration
-@pytest.mark.slow
-def test_chatgpt_edge_recent_sessions_are_a_direct_scrollable_keyboard_list(
-    disposable_browser: Browser,
-    sidebar_server_url: str,
-) -> None:
-    """Keep ChatGPT/Edge recent sessions direct, scrollable, and keyboard-selectable."""
-    session_count = 36
-    first_session_url = "https://chatgpt.com/c/recent-session-keyboard-0"
-    catalog_payload = _chatgpt_catalog_sessions(
-        *[
-            {
-                "id": f"recent-session-{index}",
-                "title": f"ChatGPT recent session {index:02d}",
-                "url": f"https://chatgpt.com/c/recent-session-keyboard-{index}",
-                "updated_at": "2026-08-31T00:00:00Z",
-            }
-            for index in range(session_count)
-        ]
-    )
-    source_requests: list[str] = []
-    browser_status_requests: list[str] = []
-
-    def fulfill_agent_status(route) -> None:
-        route.fulfill(json=_finished_chatgpt_agent_payload())
-
-    def fulfill_browser_status(route) -> None:
-        browser_status_requests.append(route.request.url)
-        route.fulfill(
-            json={
-                "platform": "chatgpt",
-                "browser": "edge",
-                "browser_label": "Edge",
-                "logged_in": True,
-                "can_download": True,
-                "account_name": "ChatGPT account",
-                "message": "Edge is ready for ChatGPT Web.",
-                "agent_sources": catalog_payload,
-            }
-        )
-
-    def fulfill_preferences(route) -> None:
-        route.fulfill(json=_finished_chatgpt_agent_payload())
-
-    def fulfill_sources(route) -> None:
-        source_requests.append(route.request.url)
-        route.fulfill(json=catalog_payload)
-
-    def fulfill_history(route) -> None:
-        route.fulfill(json={"title": "", "history": []})
-
-    def assert_direct_list_geometry(width: int, height: int) -> None:
-        page.wait_for_function(
-            """() => {
-                const menu = document.querySelector(
-                    '[data-agent-session-list="recent"] [data-agent-combobox-menu]'
-                );
-                const dock = document.querySelector('.sidebar-dock');
-                if (!(menu instanceof HTMLElement) || !(dock instanceof HTMLElement)) return false;
-                const menuBox = menu.getBoundingClientRect();
-                const dockBox = dock.getBoundingClientRect();
-                const style = getComputedStyle(menu);
-                const dockGap = Number.parseFloat(
-                    style.getPropertyValue('--agent-session-list-dock-gap'),
-                ) || 0;
-                return menuBox.width > 0
-                    && menuBox.height > 0
-                    && dockBox.width > 0
-                    && dockBox.height > 0
-                    && menuBox.bottom <= dockBox.top + 1
-                    && dockBox.top - menuBox.bottom >= dockGap - 1
-                    && Number.parseFloat(
-                        menu.style.getPropertyValue('--agent-session-list-menu-available-height'),
-                    ) > 0;
-            }"""
-        )
-        geometry = page.evaluate(
-            """() => {
-                const menu = document.querySelector(
-                    '[data-agent-session-list="recent"] [data-agent-combobox-menu]'
-                );
-                const dock = document.querySelector('.sidebar-dock');
-                if (!(menu instanceof HTMLElement) || !(dock instanceof HTMLElement)) return null;
-                const menuBox = menu.getBoundingClientRect();
-                const dockBox = dock.getBoundingClientRect();
-                const style = getComputedStyle(menu);
-                menu.scrollTop = menu.scrollHeight;
-                return {
-                    menu: {
-                        bottom: menuBox.bottom,
-                        left: menuBox.left,
-                        right: menuBox.right,
-                        top: menuBox.top,
-                    },
-                    dock: {top: dockBox.top},
-                    clientHeight: menu.clientHeight,
-                    scrollHeight: menu.scrollHeight,
-                    scrollTop: menu.scrollTop,
-                    overflowY: style.overflowY,
-                    dockGap: Number.parseFloat(
-                        style.getPropertyValue('--agent-session-list-dock-gap'),
-                    ) || 0,
-                    renderedDockGap: dockBox.top - menuBox.bottom,
-                    horizontalOverflow: Math.max(
-                        document.documentElement.scrollWidth,
-                        document.body.scrollWidth,
-                    ) - document.documentElement.clientWidth,
-                    viewportWidth: window.innerWidth,
-                };
-            }"""
-        )
-        assert geometry is not None
-        assert geometry["scrollHeight"] > geometry["clientHeight"], (width, height, geometry)
-        assert geometry["scrollTop"] > 0, (width, height, geometry)
-        assert geometry["overflowY"] == "auto", (width, height, geometry)
-        assert geometry["menu"]["left"] >= -1, (width, height, geometry)
-        assert geometry["menu"]["right"] <= geometry["viewportWidth"] + 1, (width, height, geometry)
-        assert geometry["menu"]["bottom"] <= geometry["dock"]["top"] + 1, (width, height, geometry)
-        assert geometry["renderedDockGap"] >= geometry["dockGap"] - 1, (width, height, geometry)
-        assert geometry["horizontalOverflow"] <= 1, (width, height, geometry)
-
-    context = disposable_browser.new_context(
-        viewport={"width": 1_280, "height": 900},
-        has_touch=False,
-        is_mobile=False,
-        reduced_motion="reduce",
-    )
-    page = context.new_page()
-    page.route("**/api/agent/status", fulfill_agent_status)
-    page.route("**/api/browser-session**", fulfill_browser_status)
-    page.route("**/api/agent/preferences", fulfill_preferences)
-    page.route("**/api/agent/sources**", fulfill_sources)
-    page.route("**/api/agent/chatgpt-session-history**", fulfill_history)
-    try:
-        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
-        expect(
-            page.locator(".agent-platform-combobox [data-agent-combobox-input]")
-        ).to_have_value("chatgpt")
-        expect(
-            page.locator(".agent-browser-combobox [data-agent-combobox-input]")
-        ).to_have_value("edge")
-
-        session_mode_trigger = page.locator(
-            ".agent-session-mode-combobox [data-agent-combobox-trigger]"
-        )
-        session_mode_trigger.click()
-        page.locator(
-            '.agent-session-mode-combobox [data-agent-combobox-option="recent"]'
-        ).click()
-
-        recent_field = page.locator("[data-agent-recent-session-field]")
-        recent_list = page.locator('[data-agent-session-list="recent"]')
-        recent_menu = recent_list.locator("[data-agent-combobox-menu]")
-        first_option = recent_menu.locator(
-            f'[data-agent-combobox-option="{first_session_url}"]'
-        )
-        expect(recent_field).to_be_visible()
-        expect(recent_list).to_have_attribute("data-agent-direct-list", "true")
-        expect(recent_list.locator("[data-agent-combobox-trigger]")).to_have_count(0)
-        expect(recent_menu).to_be_visible()
-        expect(recent_menu).to_have_attribute("role", "listbox")
-        expect(recent_menu.locator("[data-agent-combobox-option]")).to_have_count(session_count)
-        expect(first_option).to_have_attribute("role", "option")
-        expect(first_option).to_have_attribute("tabindex", "0")
-        assert first_option.evaluate("element => element.tagName") == "BUTTON"
-        assert len(browser_status_requests) >= 2, (
-            "Selecting Recent sessions must refresh the bootstrapped browser catalog."
-        )
-        assert any("refresh=1" in request_url for request_url in browser_status_requests)
-        assert source_requests == []
-
-        assert_direct_list_geometry(1_280, 900)
-
-        session_mode_trigger.focus()
-        page.keyboard.press("Tab")
-        expect(first_option).to_be_focused()
-        page.keyboard.press("Enter")
-
-        expect(first_option).to_have_attribute("aria-selected", "true")
-        expect(
-            recent_menu.locator('[data-agent-combobox-option]:not([aria-selected="true"])')
-        ).to_have_count(session_count - 1)
-        expect(page.locator("[data-agent-prompt-session-mode]")).to_have_value("recent")
-        expect(page.locator("[data-agent-recent-session-url]")).to_have_value(first_session_url)
-        expect(page.locator("[data-agent-prompt-conversation-url]")).to_have_value(first_session_url)
-        expect(page.locator("[data-agent-prompt-session-title]")).to_have_value(
-            "ChatGPT recent session 00"
-        )
-        expect(page.locator("[data-agent-session-source]")).to_have_attribute(
-            "data-agent-session-mode", "recent"
-        )
-        _assert_agent_session_source_menu_is_hit_testable(page)
-
-        page.reload(wait_until="domcontentloaded")
-        expect(page.locator("input[data-agent-session-mode]")).to_have_value("recent")
-        expect(page.locator("[data-agent-recent-session-url]")).to_have_value(first_session_url)
-        expect(
-            page.locator(
-                f'[data-agent-session-list="recent"] [data-agent-combobox-option="{first_session_url}"]'
-            )
-        ).to_have_attribute("aria-selected", "true")
-
-        page.set_viewport_size({"width": 390, "height": 844})
-        toggle = page.locator("#sidebar_toggle")
-        if toggle.get_attribute("aria-expanded") != "true":
-            _tap_toggle_center(page, toggle)
-        expect(toggle).to_have_attribute("aria-expanded", "true")
-        expect(recent_field).to_be_visible()
-        page.wait_for_function(
-            """() => {
-                const dock = document.querySelector('.sidebar-dock');
-                if (!(dock instanceof HTMLElement)) return false;
-                const matrix = new DOMMatrix(getComputedStyle(dock).transform);
-                return matrix.a > 0.999
-                    && matrix.d > 0.999
-                    && Math.abs(matrix.m42) <= 0.5
-                    && Number.parseFloat(getComputedStyle(dock).opacity) > 0.999;
-            }"""
-        )
-        assert_direct_list_geometry(390, 844)
-        _assert_agent_session_source_menu_is_hit_testable(page)
-    finally:
-        context.close()
 
 
 @pytest.mark.integration
@@ -4009,6 +3733,9 @@ def test_agent_provider_projects_submit_agentic_task_target(
                 ".agent-session-mode-combobox [data-agent-combobox-selected-icon]"
             )
         ).to_have_attribute("src", re.compile(r"/static/images/folder\.fill\.svg$"))
+        collection_label = "Notebooks" if platform == "gemini" else "Projects"
+        expect(page.locator('.agent-session-mode-combobox [data-agent-combobox-selected-label]')).to_have_text(collection_label)
+        expect(page.locator('[data-agent-project-field] > .field-label')).to_have_text(collection_label)
         project_option = page.locator(
             f'[data-agent-session-list="projects"] [data-agent-combobox-option="{project_url}"]'
         )
@@ -4020,12 +3747,11 @@ def test_agent_provider_projects_submit_agentic_task_target(
         if platform == "chatgpt":
             project_icon_shells = page.locator(
                 ".agent-session-mode-combobox .browser-picker-selected-icon-shell, "
-                '[data-agent-session-list="projects"] .browser-picker-selected-icon-shell, '
-                '[data-agent-session-list="project-sessions"] .browser-picker-selected-icon-shell'
+                '[data-agent-session-list="projects"] .browser-picker-selected-icon-shell'
             )
             for width, height in ((1_280, 900), (390, 844)):
                 page.set_viewport_size({"width": width, "height": height})
-                expect(project_icon_shells).to_have_count(3)
+                expect(project_icon_shells).to_have_count(2)
                 expect(project_icon_shells.first).to_be_visible()
                 expect(
                     page.locator(
@@ -4056,7 +3782,7 @@ def test_agent_provider_projects_submit_agentic_task_target(
         expect(page.locator("#agent_ask_button")).to_be_enabled()
 
         page.locator('[data-agent-prompt-input]').fill(f"Inspect the {platform_label} project workspace.")
-        with page.expect_request(re.compile(r"/api/agent/ask$")):
+        with page.expect_response(re.compile(r"/api/agent/ask$")):
             page.locator("#agent_ask_button").click()
         assert len(captured_ask_payloads) == 1
         assert captured_ask_payloads[0]["platform"] == platform
@@ -4208,35 +3934,11 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
         page.locator('[data-agent-session-list="projects"] [data-agent-combobox-trigger]').click()
         project_option.click()
         session_option = page.locator(
-            f'[data-agent-session-list="project-sessions"] [data-agent-combobox-option="{session_url}"]'
+            f'[data-agent-execution-session-list] [data-recent-conversation-url="{session_url}"]'
         )
         expect(session_option).to_have_count(1)
-        new_session_icon = page.locator(
-            '[data-agent-session-list="project-sessions"] '
-            '[data-agent-combobox-option="new"] .browser-picker-option-icon'
-        )
-        expect(new_session_icon).to_have_count(1)
-        expect(new_session_icon).to_have_attribute("src", re.compile(r"/static/images/plus\.circle\.svg$"))
-        selected_project_session_icon = page.locator(
-            '[data-agent-session-list="project-sessions"] [data-agent-combobox-selected-icon]'
-        )
-        expect(selected_project_session_icon).to_be_visible()
-        expect(selected_project_session_icon).to_have_attribute(
-            "src", re.compile(r"/static/images/plus\.circle\.svg$")
-        )
-
-        immediate = session_option.evaluate(
-            """option => {
-                option.click();
-                const status = document.querySelector('#agent_response_status');
-                return {
-                    state: status?.dataset.status || '',
-                    copy: status?.textContent?.trim() || '',
-                };
-            }"""
-        )
-        assert immediate["state"] == "loading"
-        assert "Loading the selected Grok session history" in immediate["copy"]
+        expect(page.locator('[data-agent-project-session-field]')).to_have_count(0)
+        session_option.click()
         expect(page.locator("#agent_response_status")).to_have_attribute("data-status", "ready")
         expect(page.locator("#agent_response_question")).to_have_text("What changed?")
         expect(page.locator("[data-agent-response-answer-content]")).to_contain_text(
@@ -4248,13 +3950,11 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
         page.reload(wait_until="domcontentloaded")
         expect(page.locator("input[data-agent-session-mode]")).to_have_value("project")
         expect(page.locator("[data-agent-project-url]")).to_have_value(project_url)
-        expect(page.locator("[data-agent-project-session-url]")).to_have_value(session_url)
+        expect(page.locator('input[name="conversation_url"]')).to_have_value(session_url)
         expect(page.locator("[data-agent-session-list=\"projects\"] [data-agent-combobox-selected-label]")).to_have_text(
             "Grok project"
         )
-        expect(page.locator("[data-agent-session-list=\"project-sessions\"] [data-agent-combobox-selected-label]")).to_have_text(
-            "Renamed project session"
-        )
+        expect(session_option).to_have_attribute("aria-pressed", "true")
         expect(page.locator("#agent_response_question")).to_have_text("What changed?")
         assert len(project_session_requests) == 2
         assert all("refresh=1" not in url for url in project_session_requests)
@@ -6764,7 +6464,7 @@ def test_finished_snapshot_does_not_auto_select_recent_chatgpt_session(
         expect(page.locator("#agent_conversation_link")).to_have_attribute("href", FINISHED_SNAPSHOT_URL)
         expect(
             page.locator(
-                f'[data-agent-session-list="recent"] [data-agent-combobox-option="{FINISHED_SNAPSHOT_URL}"]'
+                f'[data-recent-conversation-url="{FINISHED_SNAPSHOT_URL}"]'
             )
         ).to_have_count(1)
         page.wait_for_timeout(500)
@@ -6784,15 +6484,6 @@ def test_finished_snapshot_does_not_auto_select_recent_chatgpt_session(
         assert payload.get("session_title", "") == ""
         assert payload["prompt"] == "Inspect the workspace without changing files."
 
-        page.locator(".agent-session-mode-combobox [data-agent-combobox-trigger]").click()
-        page.locator('.agent-session-mode-combobox [data-agent-combobox-option="recent"]').click()
-        snapshot_option = page.locator(
-            f'[data-agent-session-list="recent"] [data-agent-combobox-option="{FINISHED_SNAPSHOT_URL}"]'
-        )
-        expect(snapshot_option).to_have_count(1)
-        expect(page.locator("[data-agent-prompt-session-mode]")).to_have_value("recent")
-        expect(page.locator("[data-agent-prompt-conversation-url]")).to_have_value("")
-        expect(page.locator("[data-agent-recent-session-url]")).to_have_value("")
     finally:
         context.close()
 

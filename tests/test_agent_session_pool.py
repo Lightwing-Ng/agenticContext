@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Code version: v1.0.1-codex.1."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.0.2-codex.1."""
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock
@@ -210,3 +210,13 @@ def test_catalog_capacity_matches_atomic_admission(sessions, browser, platform):
         pool.start(first, "wrong route", str(workspace), CrawlConfig(), browser="edge",
                    platform=other_platform, model=default_model_for_platform(other_platform))
     assert pool.get(first).snapshot() == before
+
+
+def test_session_catalog_preserves_project_filter_metadata(sessions):
+    pool, workspace, entered = sessions
+    project = 'https://chatgpt.com/g/g-p-demo/project'
+    session_id = start(pool, workspace, 'project-scope', session_mode='project_new', project_url=project)
+    wait_until(lambda: 'project-scope' in entered)
+    catalog = pool.catalog('edge', 'chatgpt', str(workspace))
+    item = next(item for item in catalog['sessions'] if item['session_id'] == session_id)
+    assert item['project_url'] == project

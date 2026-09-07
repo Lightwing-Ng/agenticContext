@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.0.7-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.2.1-codex.1."""
 
 from copy import deepcopy
 
@@ -48,21 +48,33 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
-        rail = page.locator("[data-agent-execution-sessions]")
         if width < 900:
             page.locator("#sidebar_toggle").click()
+        rail = page.locator("[data-agent-execution-sessions]")
+        expect(page.locator('[data-agent-new-task]')).to_have_count(0)
+        expect(rail).to_have_js_property('open', True)
+        summary = rail.locator('summary')
+        summary.focus()
+        summary.press('Enter')
+        expect(rail).to_have_js_property('open', False)
+        expect(page.locator('[data-agent-execution-session-list]')).to_be_hidden()
+        summary.press('Space')
+        expect(rail).to_have_js_property('open', True)
+        expect(page.locator('[data-agent-execution-session-list]')).to_be_visible()
+
         expect(rail).to_be_visible()
-        expect(rail).to_contain_text("2 of 2 active")
+        expect(rail.locator("[data-agent-session-capacity]")).to_have_text("2")
         row = rail.locator("[data-execution-session-id=primary]")
         expect(row).to_have_css("border-radius", "999px")
         assert abs(row.bounding_box()["height"] - 36) < 0.1
-        assert rail.evaluate("e => Boolean(document.querySelector('[data-agent-project-session-field]').compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING)")
+        assert rail.evaluate("e => Boolean(document.querySelector('#agent_runtime_form').compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING)")
         spinner = rail.locator(".suggestion-loading-spinner").first
         expect(spinner).to_have_attribute("aria-label", "Running")
         expect(spinner).to_have_text("")
         assert spinner.evaluate("e => getComputedStyle(e).maskImage.includes('loading.spinner.svg')")
         assert spinner.evaluate("e => getComputedStyle(e).animationName") == "ticker-suggestion-loading"
 
+        page.locator("[data-execution-session-id=primary]").click()
         expect(page.locator("#agent_response_question")).to_have_text("Prompt primary")
         page.locator("[data-execution-session-id=second]").click()
         expect(page.locator("#agent_response_question")).to_have_text("Prompt second")
@@ -73,8 +85,9 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
             page.locator("#sidebar_toggle").click()
         expect(page.locator("#agent_activity_list")).to_contain_text("second")
         expect(page.locator("[data-execution-session-id=second]")).to_have_attribute("aria-pressed", "true")
-        page.locator("[data-agent-new-task]").click()
-        expect(page.locator("[data-agent-session-capacity]")).to_have_text("· 2 of 2 active")
+        page.locator('.agent-session-mode-combobox [data-agent-combobox-trigger]').click()
+        page.locator('.agent-session-mode-combobox [data-agent-combobox-option="new"]').click()
+        expect(page.locator("[data-agent-session-capacity]")).to_have_text("2")
         expect(page.locator("#agent_response_output")).to_be_hidden()
         ask = page.get_by_role("button", name="Ask ChatGPT Web", exact=True)
         expect(ask).to_be_disabled()
@@ -82,20 +95,22 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
         prompt.fill("A separate draft")
         page.locator("[data-execution-session-id=second]").click()
         expect(page.locator("#agent_response_question")).to_have_text("Prompt second")
-        page.locator("[data-agent-new-task]").click()
+        page.locator('.agent-session-mode-combobox [data-agent-combobox-trigger]').click()
+        page.locator('.agent-session-mode-combobox [data-agent-combobox-option="new"]').click()
         expect(prompt).to_have_value("A separate draft")
         page.locator("[data-execution-session-id=second]").click()
         if width < 900:
             page.locator("#sidebar_toggle").click()
         page.get_by_role("button", name="Stop Agent task", exact=True).click()
-        expect(page.locator("[data-agent-session-capacity]")).to_have_text("· 1 of 2 active")
+        expect(page.locator("[data-agent-session-capacity]")).to_have_text("1")
         assert stopped == ["second"]
         assert agents["primary"]["running"]
         if width < 900:
             page.locator("#sidebar_toggle").click()
         geometry = rail.evaluate("e => ({width: e.clientWidth, scroll: e.scrollWidth})")
         assert geometry["scroll"] <= geometry["width"] + 1
-        page.locator("[data-agent-new-task]").click()
+        page.locator('.agent-session-mode-combobox [data-agent-combobox-trigger]').click()
+        page.locator('.agent-session-mode-combobox [data-agent-combobox-option="new"]').click()
         expect(ask).to_be_enabled()
         assert not errors
     finally:
@@ -204,7 +219,7 @@ def test_session_catalog_titles_and_global_capacity(disposable_browser, sidebar_
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
-        expect(page.locator("[data-agent-session-capacity]")).to_have_text("· 0 here · 1 of 2 overall")
+        expect(page.locator("[data-agent-session-capacity]")).to_be_hidden()
         expect(page.locator(".agent-execution-session-title")).to_have_text("Official conversation title")
     finally:
         context.close()
@@ -535,11 +550,16 @@ def test_execution_session_restores_workspace_and_project(disposable_browser, si
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
         "can_download": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": {"recent_sessions": [], "projects": []}}))
+    page.route("**/api/agent/project-sessions**", lambda route: route.fulfill(json={"sessions": []}))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
         if width < 900:
             page.locator("#sidebar_toggle").click()
-        for key in ("second", "primary", "second"):
+        for index, key in enumerate(("second", "primary", "second")):
+            if index:
+                source = page.locator(".agent-session-mode-combobox")
+                source.locator("[data-agent-combobox-trigger]").click()
+                source.locator('[data-agent-combobox-option="new"]').click()
             page.locator(f"[data-execution-session-id={key}]").click()
             expect(page.locator('input[name="workspace_path"]')).to_have_value(f"/tmp/{key}")
             expect(page.locator('input[name="project_url"]')).to_have_value(agents[key]["project_url"])
@@ -599,5 +619,59 @@ def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_
         }''')
         assert bounds["bottom"] <= bounds["top"]
         assert bounds["top"] - bounds["bottom"] < 100
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize('width', [1024, 390])
+@pytest.mark.parametrize('project', [False, True])
+@pytest.mark.parametrize('start_new', [False, True])
+def test_completed_session_accepts_followup_in_composer(disposable_browser, sidebar_server_url, width, project, start_new):
+    context = disposable_browser.new_context(viewport={'width': width, 'height': 1100})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    agent = base['agent']
+    agent.update(session_id='primary', run_id='completed-run', phase='finished', running=False,
+        workspace_path='/tmp/followup', browser='edge', platform='chatgpt',
+        conversation_bound=True, conversation_url='https://chatgpt.com/c/existing',
+        project_url='https://chatgpt.com/g/g-p-existing/project' if project else '',
+        session_title='Completed task')
+    other = {**agent, 'session_id': 'second', 'run_id': 'other-run', 'session_title': 'Other completed task'}
+    base.update(sessions=[dict(agent), other], active_count=0, can_start=True)
+    submitted = []
+    page.route('**/api/agent/status', lambda route: route.fulfill(json={**base, 'agent':
+        {'session_id': 'new'} if route.request.headers.get('x-cachelikes-agent-session') == 'new'
+        else other if route.request.headers.get('x-cachelikes-agent-session') == 'second' else agent}))
+    page.route('**/api/browser-session**', lambda route: route.fulfill(json={
+        'can_download': True, 'browser': 'edge', 'platform': 'chatgpt',
+        'agent_sources': {'recent_sessions': [], 'projects': []}}))
+
+    def ask(route):
+        submitted.append((route.request.headers['x-cachelikes-agent-session'], route.request.post_data_json))
+        route.fulfill(json={**base, 'agent': {**other, 'running': True, 'phase': 'running', 'run_id': 'followup'}})
+
+    page.route('**/api/agent/ask', ask)
+    try:
+        page.goto(f'{sidebar_server_url}/agent/edge/chatgpt')
+        if width < 900:
+            page.locator('#sidebar_toggle').click()
+        page.locator('[data-execution-session-id=second]').click()
+        expect(page.locator('[data-execution-session-id=second]')).to_have_attribute('aria-pressed', 'true')
+        if start_new:
+            page.locator('.agent-session-mode-combobox [data-agent-combobox-trigger]').click()
+            page.locator('.agent-session-mode-combobox [data-agent-combobox-option="new"]').click()
+        if width < 900:
+            page.locator('#sidebar_toggle').click()
+        page.get_by_placeholder('Do anything', exact=True).fill('Continue with the next step.')
+        page.get_by_role('button', name='Ask ChatGPT Web', exact=True).click()
+        expect(page.get_by_role('button', name='Stop Agent task', exact=True)).to_be_visible()
+        assert len(submitted) == 1
+        session, payload = submitted[0]
+        assert session == ('new' if start_new else 'second')
+        assert payload['prompt'] == 'Continue with the next step.'
+        assert payload['conversation_url'] == ('' if start_new else agent['conversation_url'])
+        assert payload['project_url'] == ('' if start_new else agent['project_url'])
+        assert payload['workspace_path'] == '/tmp/followup'
+        assert payload['session_mode'] == ('new' if start_new else 'project_session' if project else 'recent')
     finally:
         context.close()

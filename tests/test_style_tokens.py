@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.54.4-codex.1
+Code version: v1.55.0-codex.1
 """
 
 import hashlib
@@ -2357,37 +2357,6 @@ def test_agent_session_lists_open_above_the_sidebar_trigger() -> None:
     assert "top: auto;" in selector_rule
     assert "bottom: calc(100% + 4px);" in selector_rule
 
-
-def test_agent_recent_session_list_is_inline_and_scrollable() -> None:
-    """Render Recent sessions directly while keeping a bounded sidebar scrollport."""
-    stylesheet = _stylesheet()
-    selector = ".agent-session-list-menu-direct {"
-    selector_start = stylesheet.index(selector)
-    selector_rule = stylesheet[selector_start:stylesheet.index("\n}", selector_start)]
-
-    assert "position: static;" in selector_rule
-    assert "display: grid !important;" in selector_rule
-    assert "--agent-session-list-dock-gap: var(--sidebar-dock-bottom-gap);" in selector_rule
-    assert "--agent-session-list-menu-min-height: var(--control-compact-height);" in selector_rule
-    assert "--agent-session-list-menu-available-height: var(--agent-session-list-menu-min-height);" in selector_rule
-    assert "max-height: min(" in selector_rule
-    assert "overflow-y: auto;" in selector_rule
-    assert "scrollbar-width: none;" in selector_rule
-    assert "scrollbar-gutter: auto;" in selector_rule
-    assert "-ms-overflow-style: none;" in selector_rule
-
-    scrollbar_start = stylesheet.index(
-        ".agent-session-list-menu-direct::-webkit-scrollbar {",
-    )
-    scrollbar_rule = stylesheet[scrollbar_start:stylesheet.index("\n}", scrollbar_start)]
-    assert "width: 0;" in scrollbar_rule
-    assert "height: 0;" in scrollbar_rule
-
-    track_start = stylesheet.index(
-        ".agent-session-list-menu-direct::-webkit-scrollbar-track,",
-    )
-    track_rule = stylesheet[track_start:stylesheet.index("\n}", track_start)]
-    assert "background: transparent;" in track_rule
 
 
 def test_agent_session_source_raises_above_the_inline_recent_session_list_when_open() -> None:

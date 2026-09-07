@@ -1,17 +1,9 @@
-/* Code version: v1.2.0-codex.1 */
+/* Code version: v1.5.0-codex.1 */
 .agent-execution-sessions {
-    display: grid;
-    gap: 8px;
     margin-top: 18px;
     min-width: 0;
 }
 .agent-execution-sessions[hidden] { display: none; }
-.agent-execution-sessions-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-}
 .agent-execution-session-list {
     display: grid;
     gap: 4px;
@@ -47,9 +39,9 @@
     --collapse-icon-closed: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.41 1.59 6 6.17l4.59-4.58L12 3l-6 5-6-5z' fill='currentColor'/%3E%3C/svg%3E");
     --collapse-icon-open: var(--collapse-icon-closed);
     --collapse-summary-padding: 10px 0;
-    --collapse-body-padding: 0 10px 10px;
-    --collapse-font-size: var(--font-size-5);
-    --collapse-font-weight: var(--font-weight-medium);
+    --collapse-body-padding: 0 0 10px;
+    --collapse-font-size: var(--font-ui-lg);
+    --collapse-font-weight: var(--font-weight-regular);
 }
 details.agent-session-collapse > summary {
     display: grid;
@@ -111,3 +103,56 @@ details.agent-session-collapse[open] > summary::after {
 @media (prefers-reduced-motion: reduce) {
     details.agent-session-collapse > summary::after { transition: none; }
 }
+
+.agent-recent-sessions-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.agent-session-count {
+    display: inline-grid;
+    place-items: center;
+    min-width: 20px;
+    height: 20px;
+    padding-inline: 3px;
+    box-sizing: border-box;
+    border-radius: var(--radius-pill);
+    color: var(--accent-text);
+    background: var(--accent-surface-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.agent-session-count[hidden] { display: none; }
+.agent-recent-sessions-empty { color: var(--muted); margin: 0; }
+/* These two source options retain the same compact height at every sidebar width. */
+.agent-session-mode-combobox .agent-combobox-option {
+    height: 36px;
+    min-height: 36px;
+    padding-block: 0;
+}
+/* Mask monochrome source icons with the same muted tone as the folder control. */
+.agent-session-mode-combobox .browser-picker-option-icon { visibility: hidden; }
+.agent-session-mode-combobox .browser-picker-selected-icon-shell,
+.agent-session-mode-combobox [data-agent-combobox-option] {
+    --agent-source-icon: url("/static/images/plus.circle.svg");
+}
+.agent-session-mode-combobox[data-source-mode="project"] .browser-picker-selected-icon-shell,
+.agent-session-mode-combobox [data-agent-combobox-option="project"] {
+    --agent-source-icon: url("/static/images/folder.fill.svg");
+}
+.agent-session-mode-combobox .browser-picker-selected-icon-shell::after,
+.agent-session-mode-combobox [data-agent-combobox-option]::after {
+    content: "";
+    width: 20px;
+    height: 20px;
+    background-color: var(--muted);
+    mask: var(--agent-source-icon) center / contain no-repeat;
+    -webkit-mask: var(--agent-source-icon) center / contain no-repeat;
+}
+.agent-session-mode-combobox .browser-picker-selected-icon-shell { position: relative; }
+.agent-session-mode-combobox .browser-picker-selected-icon-shell::after { position: absolute; inset: 0; margin: auto; }
+.agent-session-mode-combobox [data-agent-combobox-option]::after { grid-column: 2; grid-row: 1; }
+
+.agent-session-mode-combobox [data-agent-combobox-option] > .trade-strategy-dropdown-check { grid-column: 1; grid-row: 1; }
+.agent-session-mode-combobox [data-agent-combobox-option] > .browser-picker-option-icon { display: none; }
+.agent-session-mode-combobox [data-agent-combobox-option] > .trade-strategy-dropdown-text { grid-column: 3; grid-row: 1; }

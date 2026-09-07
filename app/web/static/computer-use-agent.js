@@ -1,14 +1,17 @@
-/* Code version: v3.36.8-codex.1 */
+/* Code version: v3.40.0-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
     const AGENT_SESSION_SELECTION_CACHE_VERSION = 1;
     const AGENT_SESSION_SELECTION_CACHE_PREFIX = "cachelikes:agent-session-selection";
     const MAX_AGENT_SESSION_CACHE_VALUE_LENGTH = 2048;
-    const AGENT_SESSION_MODES = new Set(["new", "recent", "project"]);
+    const AGENT_SESSION_MODES = new Set(["new", "project"]);
     const runtimeForm = document.getElementById("agent_runtime_form");
     const promptForm = document.getElementById("agent_prompt_form");
     if (!runtimeForm || !promptForm) return;
+
+    // Retire the duplicate selector in already-cached server templates too.
+    runtimeForm.querySelector("[data-agent-project-session-field]")?.remove();
 
     // Reserve the measured composer height while answers scroll behind its glass.
     const composerSizeObserver = new ResizeObserver(() => {
@@ -80,15 +83,9 @@
         sessionSource: document.querySelector("[data-agent-session-source]"),
         sessionMode: document.querySelector("[data-agent-session-mode]"),
         sessionModeCombobox: document.querySelector(".agent-session-mode-combobox"),
-        recentSessionField: document.querySelector("[data-agent-recent-session-field]"),
-        recentSessionCombobox: document.querySelector('[data-agent-session-list="recent"]'),
-        recentSessionUrl: document.querySelector("[data-agent-recent-session-url]"),
         projectField: document.querySelector("[data-agent-project-field]"),
         projectCombobox: document.querySelector('[data-agent-session-list="projects"]'),
         projectUrl: document.querySelector("[data-agent-project-url]"),
-        projectSessionField: document.querySelector("[data-agent-project-session-field]"),
-        projectSessionCombobox: document.querySelector('[data-agent-session-list="project-sessions"]'),
-        projectSessionUrl: document.querySelector("[data-agent-project-session-url]"),
         comboboxTriggers: Array.from(document.querySelectorAll("[data-agent-combobox-trigger]")),
     };
 
@@ -185,6 +182,10 @@
     let projectSessionRequestId = 0;
     let agentSources = {recent_sessions: [], projects: []};
     let projectSessions = [];
+    let projectSessionsLoading = false;
+    let selectedRemoteConversationUrl = "";
+    let selectedProjectConversationUrl = "new";
+    let recentSelectionRequestId = 0;
     let sessionTitleOverride = "";
     let sessionSelectionRestoredKey = "";
     let boundAgentSessionSignature = "";
@@ -222,8 +223,6 @@
     let agentPaginationRangeEventsBound = false;
     let agentPaginationRangePinnedPicker = null;
     let agentPaginationRangeFocusRestore = null;
-    let agentSessionListViewportFrame = 0;
-    let agentSessionListViewportDock = null;
     const paginationMotion = window.CACHELIKES_PAGINATION_MOTION;
 
     function executionStorageKey() {
@@ -278,18 +277,22 @@
             }
             selectSessionListValue(combobox, value, label);
         };
+        const previousProject = selectedProjectUrl();
         sessionTitleOverride = agent.session_title || "";
-        elements.sessionMode.value = project ? "project" : conversation ? "recent" : "new";
+        elements.sessionMode.value = project ? "project" : "new";
+        selectedRemoteConversationUrl = project ? "" : conversation;
         if (elements.projectUrl) elements.projectUrl.value = "";
-        if (elements.recentSessionUrl) elements.recentSessionUrl.value = "";
-        if (elements.projectSessionUrl) elements.projectSessionUrl.value = "new";
+
+        selectedProjectConversationUrl = "new";
         if (project) {
             const known = agentSources.projects?.find((item) => item.url === project);
             restoreChoice(elements.projectCombobox, project, known?.title || agent.project_title || project);
-            restoreChoice(elements.projectSessionCombobox, conversation || "new",
-                conversation ? (agent.session_title || conversation) : "New session in project");
-        } else if (conversation) {
-            restoreChoice(elements.recentSessionCombobox, conversation, agent.session_title || conversation);
+            selectedProjectConversationUrl = conversation || "new";
+        }
+        if (project && project !== previousProject) {
+            projectSessions = [];
+            projectSessionsLoading = true;
+            void loadProjectSessions(project);
         }
         updateSessionChoiceInputs();
     }
@@ -297,7 +300,6 @@
     // Keep warm server templates aligned without interrupting active sessions.
     document.querySelector("#agent_runtime_form")?.after(...(executionRail ? [executionRail] : []));
     const executionList = document.querySelector("[data-agent-execution-session-list]");
-    const newTaskButton = document.querySelector("[data-agent-new-task]");
 
     function syncExecutionWorkspace(sessionId) {
         const session = executionSessions.find((item) => item.session_id === sessionId);
@@ -309,7 +311,7 @@
 
     function renderExecutionSessions(payload) {
         const enabled = selectedPlatform() === "chatgpt" && selectedBrowser() === "edge";
-        if (executionRail) executionRail.hidden = !enabled;
+        if (executionRail) executionRail.hidden = false;
         if (payload.agent?.session_id && payload.agent?.conversation_url) {
             executionConversationUrls.set(payload.agent.session_id, payload.agent.conversation_url);
         }
@@ -320,7 +322,7 @@
                 executionSelectionRestored = true;
                 const remembered = rememberedExecutionSession();
                 const restored = remembered === "new" || executionSessions.some((item) => item.session_id === remembered)
-                    ? remembered : executionSessions.find((item) => item.running)?.session_id || executionSessions[0]?.session_id || "new";
+                    ? remembered : "new";
                 if (restored && restored !== executionSessionId) {
                     const epoch = executionSessionEpoch;
                     window.queueMicrotask(() => {
@@ -337,26 +339,48 @@
                 && executionSessions.filter((item) => item.running).length === executionActiveCount
             );
         }
+        renderRecentSessionList();
+    }
+
+    function renderRecentSessionList() {
+        if (!executionList) return;
+        const project = selectedSessionMode() === "project" ? selectedProjectUrl() : "";
+        const inProjectMode = selectedSessionMode() === "project";
+        const remote = inProjectMode ? projectSessions : (agentSources.recent_sessions || []);
+        const remoteUrls = new Set(remote.map((item) => historyUrlKey(item.url)));
+        const local = executionSessions.filter((item) => !inProjectMode || (project && (
+            historyUrlKey(item.project_url) === historyUrlKey(project)
+            || remoteUrls.has(historyUrlKey(item.conversation_url))
+        )));
+        const seen = new Set(local.map((item) => historyUrlKey(item.conversation_url)).filter(Boolean));
+        const items = [...local];
+        for (const item of remote) {
+            if (!isAgentConversationUrl(selectedPlatform(), item.url) || seen.has(historyUrlKey(item.url))) continue;
+            seen.add(historyUrlKey(item.url));
+            items.push({conversation_url: item.url, session_title: item.title || item.name,
+                project_url: project, updated_at: item.updated_at});
+        }
         const capacity = document.querySelector("[data-agent-session-capacity]");
         if (capacity) {
-            const visibleActive = executionSessions.filter((item) => item.running).length;
-            capacity.textContent = visibleActive === executionActiveCount
-                ? `· ${executionActiveCount} of 2 active`
-                : `· ${visibleActive} here · ${executionActiveCount} of 2 overall`;
+            const count = local.filter((item) => item.running).length;
+            capacity.hidden = count === 0;
+            capacity.textContent = count ? count.toLocaleString("en-US") : "";
+            capacity.setAttribute("aria-label", `${count.toLocaleString("en-US")} active sessions`);
         }
-        if (newTaskButton) newTaskButton.disabled = promptSubmissionPending;
-        if (!executionList) return;
-        const signature = JSON.stringify([executionSessions, executionSessionId, [...executionConversationTitles], [...executionConversationUrls]]);
+        const signature = JSON.stringify([items, executionSessionId, selectedConversationUrl(),
+            project, projectSessionsLoading, catalogState, catalogError,
+            [...executionConversationTitles], [...executionConversationUrls]]);
         if (executionList.dataset.signature === signature) return;
         executionList.dataset.signature = signature;
         const focusedId = document.activeElement?.dataset?.executionSessionId;
-        executionList.replaceChildren(...executionSessions.map((session) => {
+        executionList.replaceChildren(...items.map((session) => {
             const button = document.createElement("button");
             button.type = "button";
             button.className = "trade-strategy-dropdown-option agent-execution-session";
-            button.dataset.executionSessionId = session.session_id;
-            button.setAttribute("aria-pressed", String(session.session_id === executionSessionId));
-            button.classList.toggle("is-selected", session.session_id === executionSessionId);
+            if (session.session_id) button.dataset.executionSessionId = session.session_id;
+            else button.dataset.recentConversationUrl = session.conversation_url;
+            button.setAttribute("aria-pressed", String(session.session_id ? session.session_id === executionSessionId : historyUrlKey(selectedConversationUrl()) === historyUrlKey(session.conversation_url)));
+            button.classList.toggle("is-selected", button.getAttribute("aria-pressed") === "true");
             const title = document.createElement("span");
             title.className = "agent-execution-session-title";
             const conversationUrl = session.conversation_url || executionConversationUrls.get(session.session_id);
@@ -365,7 +389,7 @@
             const state = document.createElement("span");
             state.className = "agent-execution-session-state";
             const stateLabel = session.paused ? "Paused" : session.running ? "Running"
-                : session.phase === "finished" ? "Completed" : session.phase || "Ready";
+                : session.phase === "finished" ? "Completed" : session.phase || "";
             if (session.running && !session.paused) {
                 state.classList.add("suggestion-loading-spinner");
                 state.setAttribute("role", "img");
@@ -375,13 +399,42 @@
             }
             button.title = [title.textContent, session.workspace_path, stateLabel].filter(Boolean).join(" · ");
             button.append(title, state);
-            button.addEventListener("click", () => selectExecutionSession(session.session_id));
+            button.addEventListener("click", () => {
+                if (session.session_id) void selectExecutionSession(session.session_id);
+                else void selectRecentConversation(session);
+            });
             return button;
         }));
+        if (!items.length) {
+            const empty = document.createElement("p");
+            empty.className = "agent-recent-sessions-empty";
+            empty.textContent = inProjectMode && !project ? `${projectChoicePlaceholder()} to view recent sessions.`
+                : (inProjectMode ? projectSessionsLoading : sourcesLoading) ? "Loading recent sessions…"
+                : catalogState === "error" ? catalogError : "No recent sessions.";
+            executionList.append(empty);
+        }
         if (focusedId) Array.from(executionList.children).find((node) => node.dataset.executionSessionId === focusedId)?.focus();
     }
 
-    async function selectExecutionSession(sessionId, {routeChanged = false, previousScope = executionScope} = {}) {
+    async function selectRecentConversation(session) {
+        const requestId = ++recentSelectionRequestId;
+        const scope = executionScope;
+        const project = selectedProjectUrl();
+        await selectExecutionSession("new", {preserveSourceSelection: true});
+        if (requestId !== recentSelectionRequestId || scope !== executionScope
+            || project !== selectedProjectUrl() || executionSessionId !== "new") return;
+        selectedRemoteConversationUrl = session.conversation_url;
+        sessionTitleOverride = session.session_title || "";
+        if (selectedSessionMode() === "project") {
+            selectedProjectConversationUrl = session.conversation_url;
+        }
+        updateSessionChoiceInputs();
+        rememberSessionSelection();
+        render(lastPayload);
+        void loadSelectedSessionHistory(session.conversation_url);
+    }
+
+    async function selectExecutionSession(sessionId, {routeChanged = false, previousScope = executionScope, preserveSourceSelection = false} = {}) {
         if (!routeChanged && (promptSubmissionPending || sessionId === executionSessionId)) return;
         executionDrafts.set(JSON.stringify([previousScope, executionSessionId]), elements.promptInput?.value || "");
         executionSessionId = sessionId;
@@ -396,11 +449,12 @@
         lastRenderedAgentRunning = false;
         boundAgentSessionSignature = "";
         resetRemoteSessionHistory();
+        selectedRemoteConversationUrl = "";
         doctorRequestId += 1;
         doctorPayload = null;
         if (elements.doctorPanel) elements.doctorPanel.open = false;
         sessionTitleOverride = "";
-        if (elements.sessionMode) elements.sessionMode.value = "new";
+        if (elements.sessionMode && !preserveSourceSelection) elements.sessionMode.value = "new";
         if (elements.promptInput) elements.promptInput.value = executionDrafts.get(JSON.stringify([executionScope, sessionId])) || "";
         promptHasLocalDraft = Boolean(elements.promptInput?.value);
         // Clear the old stop target immediately; stale network responses cannot restore it.
@@ -422,7 +476,6 @@
             "X-CacheLikes-Agent-Workspace": String(elements.workspacePath?.value || ""),
         };
     }
-    newTaskButton?.addEventListener("click", () => selectExecutionSession("new"));
 
     async function requestJson(url, options = {}) {
         const requestEpoch = executionSessionEpoch;
@@ -610,8 +663,8 @@
     }
 
     function selectedConversationUrl() {
-        if (selectedSessionMode() === "recent") return elements.recentSessionUrl?.value || "";
-        if (selectedSessionMode() === "project") return elements.projectSessionUrl?.value === "new" ? "" : elements.projectSessionUrl?.value || "";
+        if (selectedSessionMode() === "new") return selectedRemoteConversationUrl;
+        if (selectedSessionMode() === "project") return selectedProjectConversationUrl === "new" ? "" : selectedProjectConversationUrl || "";
         return "";
     }
 
@@ -668,15 +721,11 @@
             if (!payload || payload.version !== AGENT_SESSION_SELECTION_CACHE_VERSION) return null;
             const platform = selectedPlatform();
             const mode = AGENT_SESSION_MODES.has(payload.mode) ? payload.mode : "new";
-            const recentSessionUrl = normalizedSessionCacheUrl(payload.recent_session_url);
             const projectUrl = normalizedSessionCacheUrl(payload.project_url);
             const projectSessionUrl = normalizedSessionCacheUrl(payload.project_session_url);
             return {
                 version: AGENT_SESSION_SELECTION_CACHE_VERSION,
                 mode,
-                recent_session_url: isAgentConversationUrl(platform, recentSessionUrl)
-                    ? recentSessionUrl
-                    : "",
                 project_url: isAgentProjectUrl(platform, projectUrl) ? projectUrl : "",
                 project_session_url: projectSessionUrl === "new"
                     ? "new"
@@ -693,23 +742,16 @@
         const remembered = readRememberedSessionSelection() || {
             version: AGENT_SESSION_SELECTION_CACHE_VERSION,
             mode: "new",
-            recent_session_url: "",
             project_url: "",
             project_session_url: "new",
         };
         remembered.mode = mode;
         const platform = selectedPlatform();
-        if (mode === "recent") {
-            const recentSessionUrl = normalizedSessionCacheUrl(elements.recentSessionUrl?.value);
-            if (isAgentConversationUrl(platform, recentSessionUrl)) {
-                remembered.recent_session_url = recentSessionUrl;
-            }
-        }
         if (mode === "project") {
             const projectUrl = normalizedSessionCacheUrl(elements.projectUrl?.value);
             if (isAgentProjectUrl(platform, projectUrl)) {
                 remembered.project_url = projectUrl;
-                const projectSessionUrl = normalizedSessionCacheUrl(elements.projectSessionUrl?.value || "new");
+                const projectSessionUrl = normalizedSessionCacheUrl(selectedProjectConversationUrl || "new");
                 remembered.project_session_url = projectSessionUrl === "new"
                     ? "new"
                     : (isAgentConversationUrl(platform, projectSessionUrl) ? projectSessionUrl : "new");
@@ -772,18 +814,15 @@
 
     function selectedSessionTitle() {
         if (sessionTitleOverride) return sessionTitleOverride;
-        const mode = selectedSessionMode();
-        if (mode === "recent" && elements.recentSessionUrl?.value) {
-            return selectedComboboxLabel(elements.recentSessionCombobox);
-        }
-        if (
-            mode === "project"
-            && elements.projectSessionUrl?.value
-            && elements.projectSessionUrl.value !== "new"
-        ) {
-            return selectedComboboxLabel(elements.projectSessionCombobox);
-        }
         return "";
+    }
+
+    function projectCollectionLabel() {
+        return selectedPlatform() === "gemini" ? "Notebooks" : "Projects";
+    }
+
+    function projectChoicePlaceholder() {
+        return selectedPlatform() === "gemini" ? "Choose a notebook" : "Choose a project";
     }
 
     function syncModelOptionsForPlatform() {
@@ -982,12 +1021,18 @@
                 .filter(Boolean);
             option.hidden = !supportedPlatforms.includes(platform);
         });
-        const recentMenu = elements.recentSessionCombobox?.querySelector("[data-agent-combobox-menu]");
-        recentMenu?.setAttribute("aria-label", "Choose a recent session");
+        const collectionLabel = projectCollectionLabel();
+        const projectOption = sessionModeMenu?.querySelector('[data-agent-combobox-option="project"]');
+        if (projectOption) {
+            projectOption.dataset.agentComboboxLabel = collectionLabel;
+            const text = projectOption.querySelector(".trade-strategy-dropdown-text");
+            if (text) text.textContent = collectionLabel;
+        }
+        const projectLabel = elements.projectField?.querySelector(".field-label");
+        if (projectLabel) projectLabel.textContent = collectionLabel;
+        syncSessionModeTrigger();
         const projectMenu = elements.projectCombobox?.querySelector("[data-agent-combobox-menu]");
-        projectMenu?.setAttribute("aria-label", "Choose a recent project");
-        const projectSessionMenu = elements.projectSessionCombobox?.querySelector("[data-agent-combobox-menu]");
-        projectSessionMenu?.setAttribute("aria-label", "Choose a session in this project");
+        projectMenu?.setAttribute("aria-label", projectChoicePlaceholder());
         const sessionSourceMenu = elements.sessionModeCombobox?.querySelector("[data-agent-combobox-menu]");
         sessionSourceMenu?.setAttribute("aria-label", "Choose a session source");
         if (elements.sessionSource) elements.sessionSource.hidden = false;
@@ -1041,9 +1086,9 @@
     function sessionChoiceReady() {
         const mode = selectedSessionMode();
         if (mode === "new") return true;
-        if (mode === "recent") return true;
+
         if (mode === "project") {
-            const projectSession = elements.projectSessionUrl?.value || "new";
+            const projectSession = selectedProjectConversationUrl || "new";
             return Boolean(selectedProjectUrl()) && (projectSession === "new" || Boolean(projectSession));
         }
         return false;
@@ -1101,85 +1146,12 @@
         const combobox = elements.sessionModeCombobox;
         if (!combobox) return;
         const selectedValue = elements.sessionMode?.value || "new";
+        combobox.dataset.sourceMode = selectedValue;
         const option = Array.from(combobox.querySelectorAll("[data-agent-combobox-option]")).find(
             (candidate) => candidate.dataset.agentComboboxOption === selectedValue,
         );
         if (!option) return;
         syncComboboxTriggerFromOption(combobox, option);
-        if (sessionTitleOverride) {
-            syncComboboxTrigger(
-                combobox,
-                sessionTitleOverride,
-                option.dataset.agentComboboxIcon || "",
-            );
-        }
-    }
-
-    function resyncAgentSessionListViewportAfterDockTransition(event) {
-        if (event.target !== agentSessionListViewportDock) return;
-        const propertyName = String(event.propertyName || "");
-        if (propertyName !== "opacity" && !propertyName.endsWith("transform")) return;
-        syncAgentSessionListViewport();
-    }
-
-    function bindAgentSessionListViewportDock(dock) {
-        if (agentSessionListViewportDock === dock) return;
-        if (agentSessionListViewportDock) {
-            agentSessionListViewportDock.removeEventListener(
-                "transitionend",
-                resyncAgentSessionListViewportAfterDockTransition,
-            );
-            agentSessionListViewportDock.removeEventListener(
-                "transitioncancel",
-                resyncAgentSessionListViewportAfterDockTransition,
-            );
-        }
-        agentSessionListViewportDock = dock;
-        dock.addEventListener(
-            "transitionend",
-            resyncAgentSessionListViewportAfterDockTransition,
-        );
-        dock.addEventListener(
-            "transitioncancel",
-            resyncAgentSessionListViewportAfterDockTransition,
-        );
-    }
-
-    function applyAgentSessionListViewport(menu, dock) {
-        if (elements.recentSessionField?.hidden) {
-            menu.style.removeProperty("--agent-session-list-menu-available-height");
-            return;
-        }
-        const menuBox = menu.getBoundingClientRect();
-        const dockBox = dock.getBoundingClientRect();
-        if (menuBox.width <= 0 || dockBox.width <= 0) return;
-        const gap = Number.parseFloat(
-            getComputedStyle(menu).getPropertyValue("--agent-session-list-dock-gap"),
-        ) || 0;
-        const availableHeight = dockBox.top - menuBox.top - gap;
-        menu.style.setProperty(
-            "--agent-session-list-menu-available-height",
-            `${availableHeight}px`,
-        );
-    }
-
-    function syncAgentSessionListViewport() {
-        const menu = elements.recentSessionCombobox?.querySelector(
-            ".agent-session-list-menu-direct",
-        );
-        const dock = document.querySelector(".sidebar-dock");
-        if (!menu || !dock) return;
-        bindAgentSessionListViewportDock(dock);
-
-        // Apply current geometry before the next frame so viewport changes cannot reuse stale height.
-        applyAgentSessionListViewport(menu, dock);
-        if (agentSessionListViewportFrame) {
-            window.cancelAnimationFrame(agentSessionListViewportFrame);
-        }
-        agentSessionListViewportFrame = window.requestAnimationFrame(() => {
-            agentSessionListViewportFrame = 0;
-            applyAgentSessionListViewport(menu, dock);
-        });
     }
 
     function closeAllComboboxes() {
@@ -1201,36 +1173,32 @@
 
     function updateSessionChoiceInputs() {
         const mode = selectedSessionMode();
-        const projectSessionValue = elements.projectSessionUrl?.value || "new";
+        const projectSessionValue = selectedProjectConversationUrl || "new";
         const executionMode = mode === "project"
             ? (projectSessionValue === "new" ? "project_new" : "project_session")
-            : (mode === "recent" && !selectedConversationUrl() ? "new" : mode);
+            : (selectedRemoteConversationUrl ? "recent" : "new");
         if (elements.promptSessionMode instanceof HTMLInputElement) elements.promptSessionMode.value = executionMode;
         if (elements.promptConversationUrl instanceof HTMLInputElement) elements.promptConversationUrl.value = selectedConversationUrl();
         if (elements.promptProjectUrl instanceof HTMLInputElement) elements.promptProjectUrl.value = selectedProjectUrl();
         if (elements.promptSessionTitle instanceof HTMLInputElement) elements.promptSessionTitle.value = selectedSessionTitle();
-        if (elements.recentSessionField) elements.recentSessionField.hidden = mode !== "recent";
+
         if (elements.projectField) elements.projectField.hidden = mode !== "project";
-        if (elements.projectSessionField) elements.projectSessionField.hidden = mode !== "project";
-        if (elements.projectSessionCombobox) {
-            const projectSelected = Boolean(selectedProjectUrl());
-            const trigger = elements.projectSessionCombobox.querySelector("[data-agent-combobox-trigger]");
-            if (trigger) trigger.disabled = !projectSelected;
-        }
         if (elements.sessionSource) {
             elements.sessionSource.dataset.agentSessionMode = executionMode;
         }
         const managed = executionSessions.some((item) => item.session_id === executionSessionId);
         const active = lastPayload.agent || {};
-        if (managed && active.session_id === executionSessionId && selectedSessionMode() === "new"
-            && active.conversation_bound && active.conversation_url) {
+        // A selected execution session continues its bound conversation in every source mode.
+        if (managed && active.session_id === executionSessionId
+            && active.platform === selectedPlatform() && active.browser === selectedBrowser()
+            && active.conversation_bound && isAgentConversationUrl(selectedPlatform(), active.conversation_url)) {
             if (elements.promptSessionMode) elements.promptSessionMode.value = active.project_url ? "project_session" : "recent";
             if (elements.promptConversationUrl) elements.promptConversationUrl.value = active.conversation_url;
             if (elements.promptProjectUrl) elements.promptProjectUrl.value = active.project_url || "";
             if (elements.promptSessionTitle) elements.promptSessionTitle.value = active.session_title || "";
         }
         syncSessionModeTrigger();
-        syncAgentSessionListViewport();
+        renderRecentSessionList();
     }
 
     function sourceOptionButton(
@@ -1272,10 +1240,6 @@
         return option;
     }
 
-    function projectNewSessionIcon() {
-        return elements.projectSessionCombobox?.dataset.agentNewSessionIcon || "";
-    }
-
     function setProjectComboboxValue(value, label) {
         setComboboxValue(elements.projectCombobox, value, label, chatgptProjectIcon());
     }
@@ -1284,14 +1248,7 @@
         if (!combobox) return;
         const spinner = combobox.querySelector("[data-agent-combobox-spinner]");
         const trigger = combobox.querySelector("[data-agent-combobox-trigger]");
-        const state = combobox.querySelector("[data-agent-session-list-state]");
-        const stateCopy = combobox.querySelector("[data-agent-session-list-state-copy]");
         if (spinner) spinner.hidden = !loading;
-        if (state) {
-            state.hidden = !loading;
-            state.setAttribute("aria-busy", String(loading));
-        }
-        if (stateCopy && loading) stateCopy.textContent = "Loading recent sessions…";
         if (!trigger) return;
         if (loading) {
             const fieldLabel = combobox.closest(".field")?.querySelector(".field-label")?.textContent?.trim() || "Option";
@@ -1307,11 +1264,8 @@
         const input = combobox.querySelector("[data-agent-combobox-input]");
         const menu = combobox.querySelector("[data-agent-combobox-menu]");
         const trigger = combobox.querySelector("[data-agent-combobox-trigger]");
-        const state = combobox.querySelector("[data-agent-session-list-state]");
-        const stateCopy = combobox.querySelector("[data-agent-session-list-state-copy]");
-        const isDirectList = combobox.dataset.agentDirectList === "true";
         const listIcon = combobox === elements.projectCombobox ? chatgptProjectIcon() : icon;
-        if (!menu || (!trigger && !isDirectList)) return;
+        if (!menu || !trigger) return;
         const selectedValue = input instanceof HTMLInputElement ? input.value : "";
         let selectedOption = null;
         menu.replaceChildren();
@@ -1329,14 +1283,13 @@
                 combobox === elements.projectCombobox ? String(item.icon || "").trim() : "",
                 combobox === elements.projectCombobox ? String(item.icon_color || "").trim() : "",
             );
-            if (isDirectList) option.tabIndex = 0;
             option.dataset.agentSourceId = item.id || "";
             option.dataset.agentSourceUpdatedAt = item.updated_at || "";
             if (selectedValue && itemValue === selectedValue) selectedOption = option;
             menu.append(option);
         });
         const readyLabel = combobox.dataset.agentSessionList === "projects"
-            ? "Choose a recent project"
+            ? projectChoicePlaceholder()
             : "Choose a recent session";
         const hasOptions = Boolean(menu.querySelector("[data-agent-combobox-option]"));
         if (hasOptions) {
@@ -1344,120 +1297,45 @@
             if (selectedOption) {
                 if (input instanceof HTMLInputElement) input.value = selectedValue;
                 syncComboboxTriggerFromOption(combobox, selectedOption);
-                if (combobox === elements.recentSessionCombobox && selectedSessionMode() === "recent") {
-                    sessionTitleOverride = selectedOption.dataset.agentComboboxLabel || "";
-                }
             } else {
-                if (selectedValue && combobox === elements.recentSessionCombobox) {
-                    sessionTitleOverride = selectedSessionMode() === "recent" ? "" : sessionTitleOverride;
-                }
                 setComboboxValue(combobox, "", readyLabel, listIcon);
             }
         } else {
             if (trigger) trigger.disabled = true;
             setComboboxValue(combobox, "", emptyLabel, listIcon);
         }
-        if (state) {
-            state.hidden = true;
-            state.setAttribute("aria-busy", "false");
-            if (stateCopy) stateCopy.textContent = hasOptions ? "" : emptyLabel;
-        }
-        if (isDirectList) menu.hidden = false;
         setComboboxLoading(combobox, false);
         updateSessionChoiceInputs();
     }
 
-    function clearProjectSessionChoice(label = "Choose a project first", allowNew = false, loading = false) {
+    function resetProjectSessions(loading = false) {
         projectSessions = [];
-        if (!elements.projectSessionCombobox) return;
-        const menu = elements.projectSessionCombobox.querySelector("[data-agent-combobox-menu]");
-        if (menu) {
-            menu.replaceChildren();
-            if (allowNew) {
-                menu.append(sourceOptionButton("new", "New session in project", projectNewSessionIcon(), true));
-            }
-        }
-        setComboboxValue(elements.projectSessionCombobox, "new", label, allowNew ? projectNewSessionIcon() : "");
-        setComboboxLoading(elements.projectSessionCombobox, loading);
-        const trigger = elements.projectSessionCombobox.querySelector("[data-agent-combobox-trigger]");
-        if (trigger) trigger.disabled = !allowNew;
+        projectSessionsLoading = loading;
+        selectedProjectConversationUrl = "new";
         updateSessionChoiceInputs();
     }
 
     function applySessionModeSelection(mode, {refreshSources = false} = {}) {
+        selectedRemoteConversationUrl = "";
         sessionTitleOverride = "";
         resetRemoteSessionHistory();
         if (mode === "new") {
-            if (elements.recentSessionUrl instanceof HTMLInputElement) elements.recentSessionUrl.value = "";
             if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = "";
-            if (elements.projectSessionUrl instanceof HTMLInputElement) elements.projectSessionUrl.value = "new";
-            setComboboxValue(elements.recentSessionCombobox, "", "Choose a recent session");
-            setProjectComboboxValue("", "Choose a recent project");
-            clearProjectSessionChoice();
-        } else if (mode === "recent") {
-            if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = "";
-            if (elements.projectSessionUrl instanceof HTMLInputElement) elements.projectSessionUrl.value = "new";
-            setProjectComboboxValue("", "Choose a recent project");
-            clearProjectSessionChoice();
-            if (refreshSources) refreshAgentSessionSources();
+            selectedProjectConversationUrl = "new";
+            setProjectComboboxValue("", projectChoicePlaceholder());
+            resetProjectSessions();
         } else if (mode === "project") {
-            if (elements.recentSessionUrl instanceof HTMLInputElement) elements.recentSessionUrl.value = "";
-            if (elements.projectSessionUrl instanceof HTMLInputElement) elements.projectSessionUrl.value = "new";
-            setComboboxValue(elements.recentSessionCombobox, "", "Choose a recent session");
-            clearProjectSessionChoice();
+            selectedProjectConversationUrl = "new";
+            resetProjectSessions();
             if (refreshSources) refreshAgentSessionSources();
         }
         updateSessionChoiceInputs();
     }
 
-    function populateProjectSessionChoices(items) {
-        rememberExecutionTitles(items);
-        if (!elements.projectSessionCombobox) return;
-        const input = elements.projectSessionCombobox.querySelector("[data-agent-combobox-input]");
-        const menu = elements.projectSessionCombobox.querySelector("[data-agent-combobox-menu]");
-        const trigger = elements.projectSessionCombobox.querySelector("[data-agent-combobox-trigger]");
-        if (!menu || !trigger) return;
-        const selectedValue = input instanceof HTMLInputElement ? input.value : "new";
-        let selectedOption = null;
-        menu.replaceChildren();
-        const newOption = sourceOptionButton(
-            "new",
-            "New session in project",
-            projectNewSessionIcon(),
-            selectedValue === "new",
-        );
-        if (selectedValue === "new") selectedOption = newOption;
-        menu.append(newOption);
+    function populateProjectSessions(items) {
+        projectSessionsLoading = false;
         projectSessions = Array.isArray(items) ? items : [];
-        projectSessions.forEach((item) => {
-            const itemValue = item.url || "";
-            const option = sourceOptionButton(
-                itemValue,
-                item.title || "Untitled session",
-                "",
-                Boolean(selectedValue && itemValue === selectedValue),
-            );
-            option.dataset.agentSourceId = item.id || "";
-            option.dataset.agentSourceUpdatedAt = item.updated_at || "";
-            if (selectedValue && itemValue === selectedValue) selectedOption = option;
-            menu.append(option);
-        });
-        if (selectedOption) {
-            if (input instanceof HTMLInputElement) input.value = selectedValue;
-            syncComboboxTriggerFromOption(elements.projectSessionCombobox, selectedOption);
-            sessionTitleOverride = selectedValue === "new" || selectedSessionMode() !== "project"
-                ? (selectedSessionMode() === "project" ? "" : sessionTitleOverride)
-                : selectedOption.dataset.agentComboboxLabel || "";
-        } else {
-            setComboboxValue(
-                elements.projectSessionCombobox,
-                "new",
-                "New session in project",
-                projectNewSessionIcon(),
-            );
-        }
-        setComboboxLoading(elements.projectSessionCombobox, false);
-        trigger.disabled = false;
+        rememberExecutionTitles(projectSessions);
         updateSessionChoiceInputs();
     }
 
@@ -1466,8 +1344,7 @@
         const input = combobox.querySelector("[data-agent-combobox-input]");
         const menu = combobox.querySelector("[data-agent-combobox-menu]");
         const trigger = combobox.querySelector("[data-agent-combobox-trigger]");
-        const isDirectList = combobox.dataset.agentDirectList === "true";
-        if (!(input instanceof HTMLInputElement) || !menu || (!trigger && !isDirectList)) return;
+        if (!(input instanceof HTMLInputElement) || !menu || !trigger) return;
         const option = Array.from(menu.querySelectorAll("[data-agent-combobox-option]")).find(
             (candidate) => candidate.dataset.agentComboboxOption === value,
         );
@@ -1505,26 +1382,6 @@
         syncComboboxTriggerFromOption(elements.sessionModeCombobox, modeOption);
         applySessionModeSelection(remembered.mode);
 
-        if (remembered.mode === "recent") {
-            if (!remembered.recent_session_url) return;
-            const recentOption = elements.recentSessionCombobox?.querySelector(
-                `[data-agent-combobox-option="${CSS.escape(remembered.recent_session_url)}"]`,
-            );
-            if (!recentOption) return;
-            selectSessionListValue(
-                elements.recentSessionCombobox,
-                remembered.recent_session_url,
-                recentOption.dataset.agentComboboxLabel || "",
-            );
-            sessionTitleOverride = recentOption.dataset.agentComboboxLabel || "";
-            if (elements.recentSessionUrl instanceof HTMLInputElement) {
-                elements.recentSessionUrl.value = remembered.recent_session_url;
-            }
-            updateSessionChoiceInputs();
-            void loadSelectedSessionHistory(remembered.recent_session_url);
-            return;
-        }
-
         if (!remembered.project_url) return;
         const projectOption = elements.projectCombobox?.querySelector(
             `[data-agent-combobox-option="${CSS.escape(remembered.project_url)}"]`,
@@ -1536,7 +1393,7 @@
             projectOption.dataset.agentComboboxLabel || "",
         );
         if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = remembered.project_url;
-        clearProjectSessionChoice("Project session", true, true);
+        resetProjectSessions(true);
         updateSessionChoiceInputs();
         void restoreRememberedProjectSession(remembered, remembered.project_url);
     }
@@ -1546,19 +1403,10 @@
         if (loaded !== true || selectedProjectUrl() !== projectUrl) return;
         const sessionUrl = remembered.project_session_url;
         if (sessionUrl && sessionUrl !== "new") {
-            const sessionOption = elements.projectSessionCombobox?.querySelector(
-                `[data-agent-combobox-option="${CSS.escape(sessionUrl)}"]`,
-            );
-            if (sessionOption) {
-                selectSessionListValue(
-                    elements.projectSessionCombobox,
-                    sessionUrl,
-                    sessionOption.dataset.agentComboboxLabel || "",
-                );
-                sessionTitleOverride = sessionOption.dataset.agentComboboxLabel || "";
-                if (elements.projectSessionUrl instanceof HTMLInputElement) {
-                    elements.projectSessionUrl.value = sessionUrl;
-                }
+            const session = projectSessions.find((item) => historyUrlKey(item.url) === historyUrlKey(sessionUrl));
+            if (session) {
+                selectedProjectConversationUrl = sessionUrl;
+                sessionTitleOverride = session.title || "";
                 updateSessionChoiceInputs();
                 void loadSelectedSessionHistory(sessionUrl);
             }
@@ -1620,7 +1468,7 @@
             const menu = combobox.querySelector("[data-agent-combobox-menu]");
             combobox.classList.remove("is-agent-combobox-open");
             trigger?.setAttribute("aria-expanded", "false");
-            if (menu && combobox.dataset.agentDirectList !== "true") menu.hidden = true;
+            if (menu) menu.hidden = true;
         };
         const toggleCombobox = (combobox) => {
             comboboxes.forEach((other) => {
@@ -1638,18 +1486,23 @@
             const input = combobox.querySelector("[data-agent-combobox-input]");
             const trigger = combobox.querySelector("[data-agent-combobox-trigger]");
             const menu = combobox.querySelector("[data-agent-combobox-menu]");
-            const isDirectList = combobox.dataset.agentDirectList === "true";
-            if (!(input instanceof HTMLInputElement) || (!trigger && !isDirectList) || !menu) return;
+                if (!(input instanceof HTMLInputElement) || !trigger || !menu) return;
             const closeComboboxForSelection = () => {
-                if (!isDirectList) closeCombobox(combobox);
+                closeCombobox(combobox);
             };
             trigger?.addEventListener("click", () => {
-                if (combobox === elements.recentSessionCombobox || combobox === elements.projectCombobox) {
+                if (combobox === elements.projectCombobox) {
                     refreshAgentSessionSources();
                 }
                 toggleCombobox(combobox);
             });
             const selectOption = (option) => {
+                const isSessionSource = combobox === elements.sessionModeCombobox
+                    || combobox === elements.projectCombobox;
+                if (isSessionSource && executionSessionId !== "new") {
+                    // Explicit source selection starts a separate task; typing alone continues the selected one.
+                    void selectExecutionSession("new", {preserveSourceSelection: true});
+                }
                 input.value = option.dataset.agentComboboxOption || "";
                 if (combobox === elements.effortCombobox) effortSelectionTouched = true;
                 if (combobox === elements.modelCombobox) preferredModel = input.value;
@@ -1668,13 +1521,10 @@
                     appliedBootstrapSignature = "";
                     projectSessionRequestId += 1;
                     agentSources = {recent_sessions: [], projects: []};
-                    if (elements.recentSessionUrl instanceof HTMLInputElement) elements.recentSessionUrl.value = "";
                     if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = "";
-                    if (elements.projectSessionUrl instanceof HTMLInputElement) elements.projectSessionUrl.value = "new";
-                    clearProjectSessionChoice();
-                    setComboboxValue(elements.recentSessionCombobox, "", "Recent sessions");
-                    setComboboxLoading(elements.recentSessionCombobox, true);
-                    setProjectComboboxValue("", "Recent projects");
+                    selectedProjectConversationUrl = "new";
+                    resetProjectSessions();
+                    setProjectComboboxValue("", projectCollectionLabel());
                     setComboboxLoading(elements.projectCombobox, true);
                     syncPlatformState();
                 }
@@ -1686,13 +1536,10 @@
                     appliedBootstrapSignature = "";
                     projectSessionRequestId += 1;
                     agentSources = {recent_sessions: [], projects: []};
-                    if (elements.recentSessionUrl instanceof HTMLInputElement) elements.recentSessionUrl.value = "";
                     if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = "";
-                    if (elements.projectSessionUrl instanceof HTMLInputElement) elements.projectSessionUrl.value = "new";
-                    clearProjectSessionChoice();
-                    setComboboxValue(elements.recentSessionCombobox, "", "Recent sessions");
-                    setComboboxLoading(elements.recentSessionCombobox, true);
-                    setProjectComboboxValue("", "Recent projects");
+                    selectedProjectConversationUrl = "new";
+                    resetProjectSessions();
+                    setProjectComboboxValue("", projectCollectionLabel());
                     setComboboxLoading(elements.projectCombobox, true);
                     browserStatusController?.setBrowser(selectedBrowser());
                 }
@@ -1700,34 +1547,17 @@
                 if (combobox.classList.contains("agent-session-mode-combobox")) {
                     applySessionModeSelection(input.value, {refreshSources: true});
                 }
-                if (combobox === elements.recentSessionCombobox) {
-                    sessionTitleOverride = option.dataset.agentComboboxLabel || "";
-                    if (elements.recentSessionUrl instanceof HTMLInputElement) elements.recentSessionUrl.value = input.value;
-                    updateSessionChoiceInputs();
-                    loadSelectedSessionHistory(input.value);
-                }
                 if (combobox === elements.projectCombobox) {
                     sessionTitleOverride = "";
                     resetRemoteSessionHistory();
                     if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = input.value;
-                    clearProjectSessionChoice("Project session", true, true);
+                    resetProjectSessions(true);
                     loadProjectSessions(input.value);
                     updateSessionChoiceInputs();
                 }
-                if (combobox === elements.projectSessionCombobox) {
-                    sessionTitleOverride = input.value === "new"
-                        ? ""
-                        : option.dataset.agentComboboxLabel || "";
-                    if (elements.projectSessionUrl instanceof HTMLInputElement) elements.projectSessionUrl.value = input.value || "new";
-                    updateSessionChoiceInputs();
-                    if (input.value === "new") resetRemoteSessionHistory();
-                    else loadSelectedSessionHistory(input.value);
-                }
                 if (
                     combobox.classList.contains("agent-session-mode-combobox")
-                    || combobox === elements.recentSessionCombobox
                     || combobox === elements.projectCombobox
-                    || combobox === elements.projectSessionCombobox
                 ) {
                     rememberSessionSelection();
                 }
@@ -1764,7 +1594,7 @@
             if (options.forceRefresh) query.set("refresh", "1");
             const payload = await requestJson(`/api/agent/project-sessions?${query.toString()}`);
             if (requestId !== projectSessionRequestId || projectUrl !== selectedProjectUrl()) return false;
-            populateProjectSessionChoices(payload.sessions || []);
+            populateProjectSessions(payload.sessions || []);
             // Show durable cached choices immediately, then revalidate only an expired catalog.
             if (payload.cache?.status === "stale" && !options.forceRefresh) {
                 loadProjectSessions(projectUrl, {forceRefresh: true});
@@ -1772,7 +1602,7 @@
             return true;
         } catch (_error) {
             if (requestId !== projectSessionRequestId) return false;
-            clearProjectSessionChoice("Project sessions unavailable", true);
+            resetProjectSessions();
             return false;
         }
     }
@@ -1843,17 +1673,13 @@
         catalogState = "ready";
         catalogError = "";
         populateListCombobox(
-            elements.recentSessionCombobox,
-            sourcePayload.recent_sessions,
-            "No recent sessions found",
-        );
-        populateListCombobox(
             elements.projectCombobox,
             sourcePayload.projects,
-            "No recent projects found",
+            `No ${projectCollectionLabel().toLowerCase()} found`,
         );
         sourcesLoaded = true;
         clearCatalogLoadingState();
+        renderRecentSessionList();
         restoreRememberedSessionSelection();
     }
 
@@ -1861,27 +1687,14 @@
         agentSources = {recent_sessions: [], projects: []};
         catalogState = "error";
         catalogError = message || "Could not load Recent sessions";
-        setComboboxValue(
-            elements.recentSessionCombobox,
-            "",
-            catalogError,
-        );
-        setProjectComboboxValue("", "Recent projects are unavailable");
+        setProjectComboboxValue("", `${projectCollectionLabel()} are unavailable`);
         sourcesLoaded = true;
         clearCatalogLoadingState();
-        if (elements.recentSessionCombobox?.dataset.agentDirectList === "true") {
-            const state = elements.recentSessionCombobox.querySelector("[data-agent-session-list-state]");
-            const stateCopy = elements.recentSessionCombobox.querySelector("[data-agent-session-list-state-copy]");
-            const spinner = elements.recentSessionCombobox.querySelector("[data-agent-combobox-spinner]");
-            if (state) state.hidden = false;
-            if (stateCopy) stateCopy.textContent = catalogError;
-            if (spinner) spinner.hidden = true;
-        }
         restoreExecutionConfiguration(lastPayload.agent, {force: true});
     }
 
     function setCatalogControlsLoading(loading) {
-        [elements.recentSessionCombobox, elements.projectCombobox].forEach((combobox) => {
+        [elements.projectCombobox].forEach((combobox) => {
             if (!combobox) return;
             const trigger = combobox.querySelector("[data-agent-combobox-trigger]");
             if (trigger && loading) trigger.disabled = true;
@@ -1890,7 +1703,7 @@
     }
 
     function syncSessionListControls(running = Boolean(lastPayload.agent?.running)) {
-        [elements.recentSessionCombobox, elements.projectCombobox].forEach((combobox) => {
+        [elements.projectCombobox].forEach((combobox) => {
             const trigger = combobox?.querySelector("[data-agent-combobox-trigger]");
             if (!trigger) return;
             const hasOptions = Boolean(combobox.querySelector("[data-agent-combobox-option]"));
@@ -1905,7 +1718,6 @@
         sourcesLoading = false;
         setCatalogControlsLoading(false);
         syncSessionListControls();
-        syncAgentSessionListViewport();
     }
 
     async function loadAgentSources(options = {}) {
@@ -1956,21 +1768,13 @@
         catalogState = "loading";
         catalogError = "";
         sourcesLoading = true;
-        if (elements.recentSessionCombobox) {
-            const trigger = elements.recentSessionCombobox.querySelector("[data-agent-combobox-trigger]");
-            const input = elements.recentSessionCombobox.querySelector("[data-agent-combobox-input]");
-            if (trigger) trigger.disabled = true;
-            if (!(input instanceof HTMLInputElement) || !input.value) {
-                setComboboxValue(elements.recentSessionCombobox, "", "Recent sessions");
-            }
-            setComboboxLoading(elements.recentSessionCombobox, true);
-        }
+        renderRecentSessionList();
         if (elements.projectCombobox) {
             const trigger = elements.projectCombobox.querySelector("[data-agent-combobox-trigger]");
             const input = elements.projectCombobox.querySelector("[data-agent-combobox-input]");
             if (trigger) trigger.disabled = true;
             if (!(input instanceof HTMLInputElement) || !input.value) {
-                setProjectComboboxValue("", "Recent projects");
+                setProjectComboboxValue("", projectCollectionLabel());
             }
             setComboboxLoading(elements.projectCombobox, true);
         }
@@ -3348,13 +3152,11 @@
         if (revision !== responseCopyRevision) return;
         setResponseCopyFeedback(didCopy);
     });
-    elements.recentSessionField?.addEventListener("toggle", syncAgentSessionListViewport);
     window.addEventListener(
         "resize",
         () => {
             resizePrompt();
             positionAgentPaginationIndicator({immediate: true});
-            syncAgentSessionListViewport();
         },
         {passive: true},
     );
