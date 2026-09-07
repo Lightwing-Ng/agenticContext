@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.10.0-codex.1`
+Documentation version: `v1.10.1-codex.1`
 
 ## Launch
 
@@ -317,3 +317,10 @@ Ask carries the profile identity used by its readiness evidence. The server comp
 same captured configuration passed to the worker and rejects missing or changed identities before
 starting a task. Following up a recorded conversation also requires its original profile binding;
 changing settings cannot silently continue that conversation through another profile.
+
+New and appended event chains establish native owner-only permissions before writing their records.
+On Windows, an append stream retains its file and parent handles until close; another writer or
+rename fails while that stream is open. Permission or persistence errors leave the event chain
+degraded and retain bounded cleanup diagnostics. Read-only recovery does not migrate other,
+historical event files that are never appended again. Structured logging hardens its configured
+directory, active file, and numeric rotations without rewriting existing log contents.

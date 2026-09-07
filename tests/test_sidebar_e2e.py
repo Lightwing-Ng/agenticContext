@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.34.2-codex.1
+Code version: v1.34.4-codex.1
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from threading import Thread
 import pytest
 
 from tests.agent_browser_fixtures import browser_profile_identity
+from tests.browser_failure_diagnostics import ResourceScriptDiagnostics
 from PIL import Image, ImageChops
 from playwright.sync_api import (
     Browser,
@@ -34,6 +35,7 @@ from app.core.computer_use_agent import (
     _provider_turn_snapshot,
     _select_web_model,
     _submit_chromium_web_prompt,
+    detect_host_operating_system,
     load_computer_use_settings,
     parse_agent_action,
 )
@@ -3395,8 +3397,8 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
             "can_start": True,
             "runtime": {
                 "ready": True,
-                "host_operating_system": "macos",
-                "message": "Computer Use is ready on this Mac.",
+                "host_operating_system": detect_host_operating_system(),
+                "message": "Computer Use is ready on this host.",
                 "terminal_execution": {
                     "ready": True,
                     "status_label": "Granted",
@@ -3617,8 +3619,8 @@ def test_agent_provider_projects_submit_agentic_task_target(
             "can_start": True,
             "runtime": {
                 "ready": True,
-                "host_operating_system": "macos",
-                "message": "Computer Use is ready on this Mac.",
+                "host_operating_system": detect_host_operating_system(),
+                "message": "Computer Use is ready on this host.",
                 "terminal_execution": {
                     "ready": True,
                     "status_label": "Granted",
@@ -3822,8 +3824,8 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
             "can_start": True,
             "runtime": {
                 "ready": True,
-                "host_operating_system": "macos",
-                "message": "Computer Use is ready on this Mac.",
+                "host_operating_system": detect_host_operating_system(),
+                "message": "Computer Use is ready on this host.",
                 "terminal_execution": {
                     "ready": True,
                     "status_label": "Granted",
@@ -4283,8 +4285,8 @@ def _finished_chatgpt_agent_payload() -> dict[str, object]:
         "can_start": True,
         "runtime": {
             "ready": True,
-            "host_operating_system": "macos",
-            "message": "Computer Use is ready on this Mac.",
+            "host_operating_system": detect_host_operating_system(),
+            "message": "Computer Use is ready on this host.",
             "terminal_execution": {
                 "ready": True,
                 "status_label": "Granted",
@@ -9341,6 +9343,7 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
 ) -> None:
     context = disposable_browser.new_context(viewport={"width": width, "height": 959})
     page = context.new_page()
+    diagnostics = ResourceScriptDiagnostics(page)
     try:
         page.goto(annotated_resources_server_url + "/browser?view=text&source=chatgpt&session=chatgpt:long-session&page=2")
         expect(page.locator('[data-browser-session-tag]')).to_have_text("This session ×")
@@ -9400,6 +9403,9 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
             return input.getBoundingClientRect().bottom <= tags.getBoundingClientRect().top
                 && getComputedStyle(input).fontFamily === getComputedStyle(document.body).fontFamily;
         }""")
+    except Exception as error:
+        diagnostics.annotate(error)
+        raise
     finally:
         context.close()
 
@@ -9663,6 +9669,7 @@ def test_text_source_selection_survives_global_search_form_submission(
         seeded_chatgpt_browser_server_url + "/browser?view=text&session_view=0&source=all&sort=newest&q=",
         width, 959, touch=False,
     )
+    diagnostics = ResourceScriptDiagnostics(page)
     try:
         if width < 901:
             page.locator("#sidebar_toggle").click()
@@ -9676,6 +9683,9 @@ def test_text_source_selection_survives_global_search_form_submission(
         page.locator("#browser_search_input").press("Enter")
         expect(page).to_have_url(re.compile(r"[?&]source=all(?:&|$)"))
         expect(page.get_by_role("table", name="Cached messages", exact=True)).to_contain_text("timestamp layout")
+    except Exception as error:
+        diagnostics.annotate(error)
+        raise
     finally:
         context.close()
 
@@ -9707,6 +9717,7 @@ def test_session_header_source_sort_and_two_line_time(
 ) -> None:
     context = disposable_browser.new_context(viewport={"width": width, "height": 1332})
     page = context.new_page()
+    diagnostics = ResourceScriptDiagnostics(page)
     try:
         page.goto(annotated_resources_server_url + "/browser?view=text&source=all&session_view=1&sort=newest&q=crosspage%20needle")
         table = page.locator('.browser-session-index-table')
@@ -9724,6 +9735,7 @@ def test_session_header_source_sort_and_two_line_time(
         table.locator('.browser-session-sort-link').click()
         expect(page.locator('th[aria-sort="ascending"]')).to_be_visible()
         assert 'sort=oldest' in page.url
+        page.wait_for_load_state("domcontentloaded")
         trigger = page.locator('[data-browser-header-filter] [data-browser-source-filter-trigger]')
         expect(trigger).to_have_css("height", "22px")
         trigger.click()
@@ -9737,6 +9749,9 @@ def test_session_header_source_sort_and_two_line_time(
         page.locator('.browser-session-sort-link').click()
         expect(page.locator('th[aria-sort="descending"]')).to_be_visible()
         assert 'source=chatgpt' in page.url
+    except Exception as error:
+        diagnostics.annotate(error)
+        raise
     finally:
         context.close()
 

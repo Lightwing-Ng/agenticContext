@@ -1,11 +1,13 @@
 """Tests for durable settings and thread-safe task state.
 
-Code version: v1.5.0-codex.1
+Code version: v1.5.1-codex.1
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 from app.core.config import MAX_DOWNLOAD_WORKERS, CrawlConfig, load_saved_config, save_config
 from app.core.state import TaskSnapshot, TaskState
@@ -47,6 +49,7 @@ def test_default_settings_read_legacy_application_data_without_writing_to_it(
     monkeypatch.setattr(config, "is_macos_host", lambda: True)
     monkeypatch.setattr(config, "is_windows_host", lambda: False)
     monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("USERPROFILE", str(home_dir))
     monkeypatch.delenv(config.SETTINGS_PATH_ENV, raising=False)
     monkeypatch.delenv(config.LEGACY_SETTINGS_PATH_ENV, raising=False)
 
@@ -58,7 +61,9 @@ def test_default_settings_read_legacy_application_data_without_writing_to_it(
     assert load_saved_config().account_name_override == "legacy"
 
 
-def test_settings_round_trip_and_invalid_payload_fall_back_to_defaults(tmp_path: Path) -> None:
+def test_settings_round_trip_and_invalid_payload_fall_back_to_defaults(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("app.core.config.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.config.is_windows_host", lambda: False)
     settings_path = tmp_path / "settings.json"
     expected = CrawlConfig(
         headless=True,
@@ -83,6 +88,21 @@ def test_settings_round_trip_and_invalid_payload_fall_back_to_defaults(tmp_path:
     assert loaded == expected
     settings_path.write_text("not json", encoding="utf-8")
     assert load_saved_config(settings_path) == CrawlConfig()
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_saved_safari_choices_follow_the_current_host(monkeypatch, tmp_path: Path, windows: bool) -> None:
+    monkeypatch.setattr("app.core.config.is_windows_host", lambda: windows)
+    monkeypatch.setattr("app.core.config.is_macos_host", lambda: not windows)
+    browser_fields = ("x_browser", "grok_browser", "chatgpt_browser", "gemini_browser", "claude_browser")
+    settings_path = tmp_path / "settings.json"
+    save_config(CrawlConfig(**dict.fromkeys(browser_fields, "safari")), settings_path)
+
+    loaded = load_saved_config(settings_path)
+    defaults = CrawlConfig()
+
+    for field in browser_fields:
+        assert getattr(loaded, field) == (getattr(defaults, field) if windows else "safari")
 
 
 def test_settings_clamp_workers_and_normalize_browser_names(tmp_path: Path) -> None:

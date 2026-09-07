@@ -1,6 +1,6 @@
 """Private Agent artifacts with POSIX modes or verified Windows owner DACLs.
 
-Code version: v1.0.1-codex.1
+Code version: v1.1.0-codex.1
 
 Native contracts:
 https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
@@ -15,17 +15,22 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 import ctypes
+import io
 import logging
 import ntpath
 import os
 from pathlib import Path
 import stat
 import tempfile
+from typing import TextIO
 from uuid import uuid4
 
 
 LOGGER = logging.getLogger(__name__)
 _READ_CONTROL = 0x00020000
+_WRITE_DAC = 0x00040000
+_WRITE_OWNER = 0x00080000
+_GENERIC_WRITE = 0x40000000
 _MAXIMUM_ALLOWED = 0x02000000
 _FILE_LIST_DIRECTORY = 1
 _FILE_READ_ATTRIBUTES = 0x80
@@ -460,45 +465,97 @@ class _WindowsPermissions:
         # SetSecurityInfo documents no child propagation for MAXIMUM_ALLOWED
         # handles. Existing linked children must retain their original ACLs.
         with self._existing(path, directory=directory, change=True) as handle:
-            current = self._read_acl(handle)
-            if current["owner"] not in {self.user_sid, self.owner_sid}:
-                raise OSError(
-                    "Refusing to take ownership of another user's Agent artifact."
+            self._protect_handle(handle, directory=directory)
+
+    def _protect_handle(self, handle, *, directory: bool) -> None:
+        current = self._read_acl(handle)
+        if current["owner"] not in {self.user_sid, self.owner_sid}:
+            raise OSError(
+                "Refusing to take ownership of another user's Agent artifact."
+            )
+        try:
+            _assert_acl(current, directory=directory)
+        except OSError:
+            pass
+        else:
+            return
+        with self._descriptor(directory) as descriptor:
+            owner, dacl = ctypes.c_void_p(), ctypes.c_void_p()
+            defaulted, present = ctypes.c_int32(), ctypes.c_int32()
+            if not self.security.GetSecurityDescriptorOwner(
+                descriptor, ctypes.byref(owner), ctypes.byref(defaulted)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if (
+                not self.security.GetSecurityDescriptorDacl(
+                    descriptor,
+                    ctypes.byref(present),
+                    ctypes.byref(dacl),
+                    ctypes.byref(defaulted),
                 )
-            with self._descriptor(directory) as descriptor:
-                owner, dacl = ctypes.c_void_p(), ctypes.c_void_p()
-                defaulted, present = ctypes.c_int32(), ctypes.c_int32()
-                if not self.security.GetSecurityDescriptorOwner(
-                    descriptor, ctypes.byref(owner), ctypes.byref(defaulted)
-                ):
-                    raise ctypes.WinError(ctypes.get_last_error())
-                if (
-                    not self.security.GetSecurityDescriptorDacl(
-                        descriptor,
-                        ctypes.byref(present),
-                        ctypes.byref(dacl),
-                        ctypes.byref(defaulted),
-                    )
-                    or not present.value
-                    or not dacl.value
-                ):
-                    raise OSError(
-                        "The private Agent descriptor has no restrictive DACL."
-                    )
-                status = self.security.SetSecurityInfo(
-                    handle,
-                    _SE_FILE_OBJECT,
-                    _OWNER_SECURITY_INFORMATION
-                    | _DACL_SECURITY_INFORMATION
-                    | _PROTECTED_DACL_SECURITY_INFORMATION,
-                    owner,
-                    None,
-                    dacl,
-                    None,
-                )
-                if status:
-                    raise ctypes.WinError(status)
-            _assert_acl(self._read_acl(handle), directory=directory)
+                or not present.value
+                or not dacl.value
+            ):
+                raise OSError("The private Agent descriptor has no restrictive DACL.")
+            status = self.security.SetSecurityInfo(
+                handle,
+                _SE_FILE_OBJECT,
+                _OWNER_SECURITY_INFORMATION
+                | _DACL_SECURITY_INFORMATION
+                | _PROTECTED_DACL_SECURITY_INFORMATION,
+                owner,
+                None,
+                dacl,
+                None,
+            )
+            if status:
+                raise ctypes.WinError(status)
+        _assert_acl(self._read_acl(handle), directory=directory)
+
+    def open_append_file(self, path: Path) -> int:
+        """Protect and append through one handle, without following a replaced leaf."""
+        import msvcrt
+
+        with self._descriptor(False) as descriptor:
+            attributes = _SecurityAttributes(
+                ctypes.sizeof(_SecurityAttributes), descriptor, 0
+            )
+            handle = self.kernel.CreateFileW(
+                self._native_name(path),
+                _GENERIC_WRITE
+                | _FILE_READ_ATTRIBUTES
+                | _READ_CONTROL
+                | _WRITE_DAC
+                | _WRITE_OWNER,
+                1,
+                ctypes.byref(attributes),
+                4,
+                _FILE_FLAG_OPEN_REPARSE_POINT,
+                None,
+            )
+            opening_error = ctypes.get_last_error()
+        if handle in (None, _INVALID_HANDLE):
+            raise ctypes.WinError(opening_error)
+        try:
+            metadata = _FileInformation()
+            if not self.kernel.GetFileInformationByHandle(
+                handle, ctypes.byref(metadata)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if metadata.attributes & (
+                _FILE_ATTRIBUTE_REPARSE_POINT | _FILE_ATTRIBUTE_DIRECTORY
+            ) or metadata.links != 1:
+                raise OSError("Refusing to append to a linked or non-regular artifact.")
+            self._protect_handle(handle, directory=False)
+            # GENERIC_WRITE permits fsync; CRT O_APPEND seeks before every write.
+            return msvcrt.open_osfhandle(
+                handle,
+                os.O_WRONLY | os.O_APPEND | os.O_BINARY | os.O_NOINHERIT,
+            )
+        except BaseException as exc:
+            if not self.kernel.CloseHandle(handle):
+                exc.add_note("Closing the private append handle also failed.")
+            raise
 
     def create_directory(self, path: Path) -> None:
         with self._descriptor(True) as descriptor:
@@ -702,6 +759,111 @@ def assert_owner_only_path(path: Path, *, directory: bool) -> None:
             raise OSError(
                 "The Agent artifact does not have owner-only POSIX permissions."
             )
+
+
+def _append_cleanup_note(primary_error, message: str, cleanup_error) -> None:
+    primary_error.add_note(f"{message}: {cleanup_error}")
+    for note in getattr(cleanup_error, "__notes__", ()):
+        primary_error.add_note(note)
+
+
+class _PinnedAppendTextIO(io.TextIOWrapper):
+    """Release native ancestor handles only after the data stream has closed."""
+
+    def __init__(self, buffer, pins: ExitStack, *, encoding, errors):
+        super().__init__(buffer, encoding=encoding, errors=errors, newline="")
+        self._parent_pins = pins
+
+    def close(self) -> None:
+        primary_error = None
+        try:
+            super().close()
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            pins = getattr(self, "_parent_pins", None)
+            self._parent_pins = None
+            if pins is not None:
+                try:
+                    pins.close()
+                except BaseException as cleanup_error:
+                    if primary_error is not None:
+                        _append_cleanup_note(
+                            primary_error,
+                            "Releasing private append parent handles also failed",
+                            cleanup_error,
+                        )
+                    else:
+                        raise
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            if exc_value is None:
+                raise
+            _append_cleanup_note(
+                exc_value, "Closing the private append stream also failed", cleanup_error
+            )
+        return False
+
+    def detach(self):
+        raise io.UnsupportedOperation("Private append streams retain their parent handles.")
+
+
+def open_owner_only_append(
+    path: Path, *, encoding: str = "utf-8", errors: str | None = None
+) -> TextIO:
+    """Open an app-owned private append stream; close it before rotating its file.
+
+    Existing parent permissions are preserved. Callers explicitly protect their own
+    runtime or logging directories with ensure_owner_only_directory. Windows pins
+    the parent chain and rejects renaming the leaf until the returned stream closes.
+    """
+    target = _checked_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pins = ExitStack()
+    descriptor = -1
+    stream = None
+    try:
+        if os.name == "nt":
+            api = _WindowsPermissions()
+            pins.enter_context(api.pin_parent_chain(target))
+            descriptor = api.open_append_file(target)
+        else:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            descriptor = os.open(target, flags, 0o600)
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_uid != os.getuid()
+            ):
+                raise OSError("Refusing to append to a linked or foreign-owned artifact.")
+            os.fchmod(descriptor, 0o600)
+        stream = io.FileIO(descriptor, "a", closefd=True)
+        descriptor = -1
+        stream = io.BufferedWriter(stream)
+        return _PinnedAppendTextIO(stream, pins, encoding=encoding, errors=errors)
+    except BaseException as exc:
+        try:
+            if stream is not None:
+                stream.close()
+            elif descriptor >= 0:
+                os.close(descriptor)
+        except BaseException as cleanup_error:
+            _append_cleanup_note(
+                exc, "Closing the private append file also failed", cleanup_error
+            )
+        try:
+            pins.close()
+        except BaseException as cleanup_error:
+            _append_cleanup_note(
+                exc, "Releasing private append parent handles also failed", cleanup_error
+            )
+        raise
 
 
 def atomic_write_owner_only_bytes(path: Path, content: bytes) -> None:

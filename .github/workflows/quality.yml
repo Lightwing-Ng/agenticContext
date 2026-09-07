@@ -1,4 +1,4 @@
-# Code version: v1.2.4-codex.1
+# Code version: v1.2.5-codex.1
 name: Quality gate
 
 on:
@@ -139,6 +139,16 @@ jobs:
             tests/test_compute_jobs.py `
             tests/test_windows_anchored_delete.py `
             tests/test_owner_only_permissions.py `
+            tests/test_logging_setup.py `
+            tests/test_static_asset_delivery.py `
+            tests/test_agent_event_chain.py `
+            tests/test_config.py `
+            tests/test_config_and_state.py `
+            tests/test_documentation.py `
+            tests/test_downloader.py `
+            tests/test_failure_reporter.py `
+            tests/test_grok_storage.py `
+            tests/test_local_media_browser.py `
             tests/test_windows_workspace_fingerprint.py `
             tests/test_windows_entrypoints.py `
             tests/test_chromium_profile_boundaries.py `

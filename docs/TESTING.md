@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.3-codex.1`
+Documentation version: `v1.8.4-codex.1`
 
 ## Supported commands
 
@@ -410,6 +410,20 @@ and observe content changes. `test_owner_only_permissions.py` verifies private a
 ACL failure handling; Windows cases inspect the actual owner and protected DACL instead of POSIX
 mode bits. Native Stop checks wait for the identified worker handle to signal as well as checking
 the Job Object's active process count.
+
+Event-chain and rotating-log tests verify native privacy before content is appended, preservation
+of existing records, and failures without a successful write. Windows assertions inspect the owner
+and protected DACL; POSIX assertions retain the `0600` file and `0700` directory contract. A FIFO
+fixture exercises nonregular rejection on POSIX; Windows uses an actual directory at the same
+JSONL leaf and asserts that no read is attempted.
+
+Host-neutral Agent browser fixtures must report the same operating system as their saved settings.
+Explicit mismatch cases must still disable Ask and refuse the source catalog. Filesystem assertions
+compare native paths, URL/catalog fields compare POSIX paths, and disposable Markdown fixtures use
+UTF-8. Child pytest runs pin their own root and configuration so Windows temporary files on another
+drive retain diagnostic node IDs and do not inherit the parent's coverage arguments.
+`test_static_asset_delivery.py` checks the actual Flask responses for the search module and its
+Fuse dependency, including exact bytes and executable JavaScript MIME types on the running host.
 
 CI installs managed Chromium in a job-owned directory under `RUNNER_TEMP` and preserves its
 absolute `PLAYWRIGHT_BROWSERS_PATH` through test isolation. A discovery check imports the isolation

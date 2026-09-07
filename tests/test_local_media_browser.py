@@ -1,6 +1,6 @@
 """Read-only local media browser tests.
 
-Code version: v1.11.1-codex.1
+Code version: v1.11.2-codex.1
 """
 
 from __future__ import annotations
@@ -993,8 +993,8 @@ def test_x_gallery_hides_only_same_directory_video_covers(tmp_path: Path) -> Non
     assert page.video_count == 1
     assert page.image_count == 2
     assert {item.relative_path for item in page.items} == {
-        str(path.relative_to(tmp_path)) for path in (video, standalone, other_directory)
+        path.relative_to(tmp_path).as_posix() for path in (video, standalone, other_directory)
     }
-    cover_item = next(item for item in catalog.snapshot() if item.relative_path == str(cover.relative_to(tmp_path)))
+    cover_item = next(item for item in catalog.snapshot() if item.relative_path == cover.relative_to(tmp_path).as_posix())
     assert catalog.query(media_id=cover_item.stable_id).items == (cover_item,)
     assert cover.read_bytes() == b"media"

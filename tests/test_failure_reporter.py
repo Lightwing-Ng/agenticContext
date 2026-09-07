@@ -1,6 +1,6 @@
 """Verify immediate failure output and unchanged pytest exit codes.
 
-Code version: v1.0.0-codex.1
+Code version: v1.0.1-codex.1
 """
 
 from __future__ import annotations
@@ -54,6 +54,8 @@ def run_disposable_suite(tmp_path: Path, source: str, enabled: bool) -> tuple[in
     suite = tmp_path / "test_cases.py"
     output = tmp_path / "pytest-output.log"
     suite.write_text(source, encoding="utf-8")
+    configuration = tmp_path / "pytest.ini"
+    configuration.write_text("[pytest]\naddopts =\n", encoding="utf-8")
     environment = {
         **os.environ,
         "AGENTIC_CONTEXT_TEST_REPORT_FAILURES": "1" if enabled else "0",
@@ -62,9 +64,11 @@ def run_disposable_suite(tmp_path: Path, source: str, enabled: bool) -> tuple[in
         "REPORT_OUTPUT_FILE": str(output),
         "REPORT_PROOF_FILE": str(tmp_path / "flush-proof.txt"),
     }
+    environment.pop("PYTEST_ADDOPTS", None)
     with output.open("w", encoding="utf-8") as stream:
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "--tb=short", "--color=no",
+             "-c", str(configuration), "--rootdir", str(tmp_path),
              "-p", "no:cacheprovider", "-p", "tests.conftest", str(suite)],
             cwd=PROJECT_ROOT, env=environment,
             stdout=stream, stderr=subprocess.STDOUT, check=False, timeout=30,

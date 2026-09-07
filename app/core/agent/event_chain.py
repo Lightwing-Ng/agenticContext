@@ -1,6 +1,6 @@
 """Durable, bounded event chains for one Web Agent run.
 
-Code version: v1.2.1-codex.1
+Code version: v1.2.2-codex.1
 """
 
 from __future__ import annotations
@@ -16,6 +16,10 @@ from typing import Any, Callable
 import uuid
 
 from ..state import utc_now
+from ..owner_only_permissions import (
+    ensure_owner_only_directory,
+    open_owner_only_append,
+)
 
 
 EVENT_CHAIN_VERSION = "1.0.0"
@@ -392,25 +396,22 @@ class AgentEventChain:
                         directory_stat.st_mode
                     ):
                         raise OSError("event directory is not a regular directory")
-            event_directory.mkdir(parents=True, exist_ok=True)
-            self.runtime_root.chmod(0o700)
-            event_directory.chmod(0o700)
-            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-            flags |= getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(self._path, flags, 0o600)
-            try:
-                with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
-                    descriptor = -1
-                    handle.write(json.dumps(event.as_dict(), ensure_ascii=False) + "\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            finally:
-                if descriptor >= 0:
-                    os.close(descriptor)
-            os.chmod(self._path, 0o600)
+            ensure_owner_only_directory(self.runtime_root)
+            ensure_owner_only_directory(event_directory)
+            with open_owner_only_append(self._path) as handle:
+                handle.write(json.dumps(event.as_dict(), ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
         except OSError as exc:
             self._state = "degraded"
-            self._error = _bounded_text(exc)
+            notes = getattr(exc, "__notes__", ())
+            if notes:
+                self._error = (
+                    f"{_bounded_text(exc, 200)}; "
+                    f"{_bounded_text('; '.join(notes), 118)}"
+                )
+            else:
+                self._error = _bounded_text(exc)
 
     def append(
         self,

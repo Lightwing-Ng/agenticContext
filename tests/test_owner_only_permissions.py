@@ -1,6 +1,6 @@
 """Native privacy checks for Agent settings, context, and runtime artifacts.
 
-Code version: v1.0.1-codex.1
+Code version: v1.1.0-codex.1
 """
 
 from __future__ import annotations
@@ -8,10 +8,13 @@ from __future__ import annotations
 from copy import deepcopy
 import ctypes
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+import io
 import os
 from pathlib import Path
+import sys
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
@@ -474,3 +477,219 @@ def test_two_runs_can_share_private_root_while_one_retains_parent_handles(tmp_pa
         root / "last-run.json",
     ):
         privacy.assert_owner_only_path(path, directory=False)
+
+
+def test_private_append_precedes_content_preserves_parent_and_appends_after_seek(tmp_path):
+    parent = tmp_path / "ordinary user directory"
+    parent.mkdir()
+    before = (
+        privacy.read_owner_only_acl(parent)
+        if os.name == "nt"
+        else parent.stat().st_mode
+    )
+    target = parent / "events 用户.jsonl"
+    with privacy.open_owner_only_append(target) as stream:
+        assert target.stat().st_size == 0
+        privacy.assert_owner_only_path(target, directory=False)
+        stream.write("first 用户\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+        stream.seek(0)
+        stream.write("second\n")
+        stream.flush()
+        stream.seek(0, os.SEEK_END)
+        assert stream.tell() == len("first 用户\nsecond\n".encode())
+        assert target.read_text(encoding="utf-8") == "first 用户\nsecond\n"
+        privacy.ensure_owner_only_file(target)
+    assert stream.closed
+    after = (
+        privacy.read_owner_only_acl(parent)
+        if os.name == "nt"
+        else parent.stat().st_mode
+    )
+    assert before == after
+    privacy.assert_owner_only_path(target, directory=False)
+
+
+def test_private_append_hardens_existing_leaf_before_adding_data(tmp_path):
+    target = tmp_path / "old.log"
+    target.write_bytes(b"old bytes\n")
+    with privacy.open_owner_only_append(target, encoding="ascii", errors="backslashreplace") as stream:
+        privacy.assert_owner_only_path(target, directory=False)
+        assert target.read_bytes() == b"old bytes\n"
+        stream.write("new \u7528\n")
+    assert target.read_bytes() == b"old bytes\nnew \\u7528\n"
+
+
+def test_private_append_rejects_links_without_hardening_external_file(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"Preserve external bytes.")
+    before = outside.stat().st_mode
+    linked = tmp_path / "events.jsonl"
+    os.link(outside, linked)
+    if os.name == "nt":
+        api = privacy._WindowsPermissions()
+
+        def external_acl():
+            handle = api.kernel.CreateFileW(
+                str(outside), privacy._READ_CONTROL, 3, None, 3, 0, None
+            )
+            assert handle not in (None, privacy._INVALID_HANDLE)
+            try:
+                return api._read_acl(handle)
+            finally:
+                assert api.kernel.CloseHandle(handle)
+
+        before = external_acl()
+    with pytest.raises(OSError, match="linked"):
+        privacy.open_owner_only_append(linked)
+    assert outside.read_bytes() == b"Preserve external bytes."
+    assert (external_acl() if os.name == "nt" else outside.stat().st_mode) == before
+    linked.unlink()
+    linked.symlink_to(outside)
+    with pytest.raises(OSError, match="linked"):
+        privacy.open_owner_only_append(linked)
+    linked.unlink()
+    parent_link = tmp_path / "linked-parent"
+    parent_link.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(OSError, match="linked"):
+        privacy.open_owner_only_append(parent_link / "unexpected.log")
+    assert not (tmp_path / "unexpected.log").exists()
+
+
+def test_private_append_keeps_native_names_pinned_until_stream_close(tmp_path):
+    parent = tmp_path / "runtime"
+    parent.mkdir()
+    target = parent / "events.jsonl"
+    stream = privacy.open_owner_only_append(target)
+    try:
+        stream.write("one\n")
+        stream.flush()
+        if os.name == "nt":
+            with pytest.raises(PermissionError):
+                parent.rename(tmp_path / "moved-runtime")
+            with pytest.raises(PermissionError):
+                target.rename(parent / "moved.jsonl")
+            with pytest.raises(PermissionError):
+                privacy.open_owner_only_append(target)
+        assert target.read_text() == "one\n"
+    finally:
+        stream.close()
+    target.rename(parent / "moved.jsonl")
+    parent.rename(tmp_path / "moved-runtime")
+    assert (tmp_path / "moved-runtime" / "moved.jsonl").read_text() == "one\n"
+
+
+@pytest.mark.parametrize("rejection", ("none", "reparse", "directory", "hardlink", "owner"))
+def test_native_append_checks_same_handle_before_crt_transfer(tmp_path, monkeypatch, rejection):
+    calls = []
+
+    class Kernel:
+        def CreateFileW(self, _path, access, sharing, attributes, disposition, flags, _template):
+            assert access & privacy._GENERIC_WRITE
+            assert access & privacy._READ_CONTROL
+            assert access & privacy._WRITE_DAC
+            assert access & privacy._WRITE_OWNER
+            assert sharing == 1
+            assert disposition == 4
+            assert flags & privacy._FILE_FLAG_OPEN_REPARSE_POINT
+            assert attributes._obj.lpSecurityDescriptor == 456
+            assert attributes._obj.bInheritHandle == 0
+            calls.append("create")
+            return 123
+
+        def GetFileInformationByHandle(self, handle, information):
+            assert handle == 123
+            information._obj.links = 2 if rejection == "hardlink" else 1
+            if rejection == "reparse":
+                information._obj.attributes = privacy._FILE_ATTRIBUTE_REPARSE_POINT
+            elif rejection == "directory":
+                information._obj.attributes = privacy._FILE_ATTRIBUTE_DIRECTORY
+            calls.append("metadata")
+            return True
+
+        def CloseHandle(self, handle):
+            assert handle == 123
+            calls.append("close")
+            return True
+
+    @contextmanager
+    def descriptor(directory):
+        assert not directory
+        yield ctypes.c_void_p(456)
+
+    def protect_handle(handle, *, directory):
+        assert handle == 123
+        assert not directory
+        calls.append("protect")
+        if rejection == "owner":
+            raise OSError("Synthetic foreign owner.")
+
+    def transfer(handle, flags):
+        assert calls == ["create", "metadata", "protect"]
+        assert handle == 123
+        assert flags & os.O_APPEND
+        calls.append("transfer")
+        return 789
+
+    api = privacy._WindowsPermissions.__new__(privacy._WindowsPermissions)
+    api.kernel = Kernel()
+    api._descriptor = descriptor
+    api._protect_handle = protect_handle
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
+    monkeypatch.setattr(os, "O_BINARY", getattr(os, "O_BINARY", 0), raising=False)
+    monkeypatch.setattr(os, "O_NOINHERIT", getattr(os, "O_NOINHERIT", 0), raising=False)
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(open_osfhandle=transfer))
+    if rejection == "none":
+        assert api.open_append_file(tmp_path / "event.jsonl") == 789
+        assert calls == ["create", "metadata", "protect", "transfer"]
+    else:
+        with pytest.raises(OSError, match="linked|owner"):
+            api.open_append_file(tmp_path / "event.jsonl")
+        assert calls[-1] == "close"
+        assert "transfer" not in calls
+
+
+def test_native_append_refuses_foreign_owner_before_security_mutation():
+    api = privacy._WindowsPermissions.__new__(privacy._WindowsPermissions)
+    api.user_sid = "S-1-5-21-100"
+    api.owner_sid = "S-1-5-21-100"
+    api._read_acl = lambda _handle: {"owner": "S-1-5-21-200"}
+    with pytest.raises(OSError, match="another user's"):
+        api._protect_handle(123, directory=False)
+
+
+@pytest.mark.parametrize("context_error", (False, True))
+def test_private_append_stream_preserves_primary_errors_and_releases_pins(context_error):
+    primary = OSError("Synthetic original event failure.")
+    write_error = OSError("Synthetic stream close failure.")
+    releases = []
+
+    class FailedCloseBuffer(io.BytesIO):
+        def close(self):
+            super().close()
+            raise write_error
+
+    def release():
+        releases.append(True)
+        raise OSError("Synthetic parent close failure.")
+
+    pins = ExitStack()
+    pins.callback(release)
+    stream = privacy._PinnedAppendTextIO(
+        FailedCloseBuffer(), pins, encoding="utf-8", errors=None
+    )
+    with pytest.raises(OSError) as caught:
+        if context_error:
+            with stream:
+                raise primary
+        else:
+            stream.close()
+    assert caught.value is (primary if context_error else write_error)
+    assert releases == [True]
+    assert "parent close failure" in write_error.__notes__[0]
+    if context_error:
+        assert "stream close failure" in primary.__notes__[0]
+        assert "parent close failure" in primary.__notes__[1]
+    stream.close()
+    assert releases == [True]

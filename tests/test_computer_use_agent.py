@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.58.4-codex.1
+Code version: v3.58.5-codex.1
 """
 
 from __future__ import annotations
@@ -12155,6 +12155,39 @@ def test_allowed_run_that_changes_project_files_makes_bodycheck_stale(
     assert not controller.state.bodycheck_current
 
 
+def _agent_service_failure_diagnostics(
+    service: ComputerUseAgentService,
+    snapshot: dict[str, object],
+) -> str:
+    """Capture failed lifecycle state without prompts, URLs, paths, or frame locals."""
+    state_fields = (
+        "running", "phase", "paused", "turn_count", "context_bytes", "context_attached",
+        "bodycheck_passed", "traditional_handoff_available", "started_at", "finished_at",
+    )
+    diagnostics: dict[str, object] = {
+        "snapshot": {key: snapshot.get(key) for key in state_fields},
+        "has_error": bool(snapshot.get("last_error")),
+        "has_context_file": bool(snapshot.get("context_file")),
+    }
+    try:
+        worker = service._worker
+        diagnostics["worker_alive"] = bool(worker and worker.is_alive())
+        frames: list[dict[str, object]] = []
+        frame = sys._current_frames().get(worker.ident) if worker and worker.ident else None
+        while frame is not None:
+            frames.append({
+                "file": Path(frame.f_code.co_filename).name,
+                "function": frame.f_code.co_name,
+                "line": frame.f_lineno,
+            })
+            frame = frame.f_back
+        diagnostics["worker_stack"] = list(reversed(frames))
+    except Exception as exc:
+        diagnostics["diagnostic_error_type"] = type(exc).__name__
+    # A string assertion message avoids pytest truncating the worker stack as a dict repr.
+    return json.dumps(diagnostics, sort_keys=True)
+
+
 def test_agent_service_reports_browser_result_without_api_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -12205,7 +12238,7 @@ def test_agent_service_reports_browser_result_without_api_credentials(
             time.sleep(0.01)
 
         snapshot = service.snapshot()
-        assert snapshot["phase"] == "finished"
+        assert snapshot["phase"] == "finished", _agent_service_failure_diagnostics(service, snapshot)
         assert snapshot["engine"] == "computer_use"
         assert snapshot["response"] == "Verified result"
         assert snapshot["conversation_url"] == "https://chatgpt.com/c/example"
@@ -12264,7 +12297,7 @@ def test_agent_service_leaves_a_failed_chatgpt_session_for_explicit_edge_handoff
         time.sleep(0.01)
 
     snapshot = service.snapshot()
-    assert snapshot["phase"] == "failed"
+    assert snapshot["phase"] == "failed", _agent_service_failure_diagnostics(service, snapshot)
     assert snapshot["conversation_url"] == "https://chatgpt.com/c/failed-session"
     assert snapshot["traditional_handoff_available"]
     assert not snapshot["traditional_handoff_opened"]

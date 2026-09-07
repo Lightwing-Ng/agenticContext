@@ -1,13 +1,12 @@
 """Structured logging configuration for the application.
 
-Code version: v1.1.0-codex.1
+Code version: v1.2.0-codex.1
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -17,6 +16,11 @@ from typing import Any
 from uuid import uuid4
 
 from .config import LOGS_ROOT
+from .owner_only_permissions import (
+    ensure_owner_only_directory,
+    ensure_owner_only_file,
+    open_owner_only_append,
+)
 
 
 _CONFIGURED = False
@@ -171,30 +175,26 @@ def _redact_log_value(value: Any) -> Any:
     return _redact_log_text(value)
 
 
-def _ensure_owner_only_file(path: Path) -> None:
-    """Create a log file without a public-readable window and enforce mode 0600."""
-    descriptor = os.open(path, os.O_APPEND | os.O_CREAT, 0o600)
-    os.close(descriptor)
-    path.chmod(0o600)
-
-
 def _secure_rotating_log_files(path: Path) -> None:
     """Tighten the active log and its numeric rotation files without changing content."""
     if path.exists():
-        path.chmod(0o600)
+        ensure_owner_only_file(path)
     rotation_prefix = f"{path.name}."
     for candidate in path.parent.glob(f"{rotation_prefix}*"):
         rotation_index = candidate.name.removeprefix(rotation_prefix)
         if rotation_index.isdigit() and candidate.is_file():
-            candidate.chmod(0o600)
+            ensure_owner_only_file(candidate)
 
 
 class OwnerOnlyRotatingFileHandler(RotatingFileHandler):
     """Keep the active structured log and every generated rotation owner-only."""
 
     def _open(self) -> Any:
-        _ensure_owner_only_file(Path(self.baseFilename))
-        return super()._open()
+        if self.mode != "a":
+            raise ValueError("Private rotating logs require append mode.")
+        return open_owner_only_append(
+            Path(self.baseFilename), encoding=self.encoding, errors=self.errors
+        )
 
     def doRollover(self) -> None:
         super().doRollover()
@@ -258,7 +258,7 @@ def configure_logging(app_version: str) -> Path:
     """Configure process-wide logging once and return the log file path."""
     global _CONFIGURED
     log_file = LOGS_ROOT / "cachelikes.log.jsonl"
-    LOGS_ROOT.mkdir(parents=True, exist_ok=True)
+    ensure_owner_only_directory(LOGS_ROOT)
 
     if _CONFIGURED:
         _secure_rotating_log_files(log_file)

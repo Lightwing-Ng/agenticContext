@@ -1,13 +1,13 @@
 """Focused regression tests for structured logging setup.
 
-Code version: v1.1.0-codex.1
+Code version: v1.2.0-codex.1
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import stat
+import os
 import sys
 import tempfile
 import unittest
@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.core import logging_setup
+from app.core.owner_only_permissions import assert_owner_only_path
 
 
 class LoggingSetupTests(unittest.TestCase):
@@ -41,7 +42,8 @@ class LoggingSetupTests(unittest.TestCase):
                             handler.flush()
 
                     self.assertTrue(log_file.exists())
-                    self.assertEqual(stat.S_IMODE(log_file.stat().st_mode), 0o600)
+                    assert_owner_only_path(logs_root, directory=True)
+                    assert_owner_only_path(log_file, directory=False)
                     payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
                     self.assertEqual(payload["message"], "Structured log smoke test.")
                     self.assertEqual(payload["probe"], "ok")
@@ -168,8 +170,13 @@ class LoggingSetupTests(unittest.TestCase):
                         handler.flush()
 
                     self.assertEqual(configured_log, active_log)
-                    self.assertEqual(stat.S_IMODE(active_log.stat().st_mode), 0o600)
-                    self.assertEqual(stat.S_IMODE(rotated_log.stat().st_mode), 0o600)
+                    assert_owner_only_path(logs_root, directory=True)
+                    assert_owner_only_path(active_log, directory=False)
+                    assert_owner_only_path(rotated_log, directory=False)
+                    # Reconfiguration must work while the append handle is open.
+                    self.assertEqual(
+                        logging_setup.configure_logging("test-version"), active_log
+                    )
                     self.assertTrue(
                         active_log.read_text(encoding="utf-8").startswith(
                             active_content
@@ -187,7 +194,7 @@ class LoggingSetupTests(unittest.TestCase):
                         root_logger.addHandler(handler)
                     logging_setup._CONFIGURED = False
 
-    def test_owner_only_handler_keeps_new_rollovers_at_mode_0600(self) -> None:
+    def test_owner_only_handler_keeps_new_rollovers_private(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             log_file = Path(temp_dir) / "rollover.log.jsonl"
             handler = logging_setup.OwnerOnlyRotatingFileHandler(
@@ -214,7 +221,55 @@ class LoggingSetupTests(unittest.TestCase):
             self.assertTrue(rotated_files)
             for candidate in [log_file, *rotated_files]:
                 with self.subTest(path=candidate.name):
-                    self.assertEqual(stat.S_IMODE(candidate.stat().st_mode), 0o600)
+                    assert_owner_only_path(candidate, directory=False)
+
+    def test_handler_is_private_before_first_record_and_preserves_append(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "日志 with spaces.jsonl"
+            handler = logging_setup.OwnerOnlyRotatingFileHandler(
+                path, maxBytes=1_000, backupCount=1, encoding="utf-8"
+            )
+            try:
+                assert_owner_only_path(path, directory=False)
+                self.assertEqual(path.read_bytes(), b"")
+                handler.stream.write("first\n")
+                handler.stream.flush()
+                handler.stream.seek(0)
+                handler.stream.write("second\n")
+                handler.stream.flush()
+                self.assertEqual(path.read_bytes(), b"first\nsecond\n")
+            finally:
+                handler.close()
+
+    def test_handler_rejects_hardlink_without_changing_external_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            outside = root / "unrelated.txt"
+            outside.write_bytes(b"Retain synthetic outside content.\n")
+            path = root / "log.jsonl"
+            os.link(outside, path)
+            with self.assertRaises(OSError):
+                logging_setup.OwnerOnlyRotatingFileHandler(
+                    path, maxBytes=1_000, backupCount=1, encoding="utf-8"
+                )
+            self.assertEqual(
+                outside.read_bytes(), b"Retain synthetic outside content.\n"
+            )
+
+    def test_permission_failure_does_not_append_or_report_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "log.jsonl"
+            path.write_bytes(b"Existing record.\n")
+            failure = PermissionError("Synthetic private append denial.")
+            with patch.object(
+                logging_setup, "open_owner_only_append", side_effect=failure
+            ):
+                with self.assertRaises(PermissionError) as caught:
+                    logging_setup.OwnerOnlyRotatingFileHandler(
+                        path, maxBytes=1_000, backupCount=1, encoding="utf-8"
+                    )
+            self.assertIs(caught.exception, failure)
+            self.assertEqual(path.read_bytes(), b"Existing record.\n")
 
 
 if __name__ == "__main__":
