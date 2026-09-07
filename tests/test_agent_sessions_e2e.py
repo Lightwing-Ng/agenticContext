@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.0.6-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.0.7-codex.1."""
 
 from copy import deepcopy
 
@@ -548,5 +548,56 @@ def test_execution_session_restores_workspace_and_project(disposable_browser, si
         page.reload()
         expect(page.locator('input[name="workspace_path"]')).to_have_value("/tmp/second")
         expect(page.locator('input[name="project_url"]')).to_have_value(agents["second"]["project_url"])
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1024, 390])
+@pytest.mark.parametrize("phase", ["finished", "failed"])
+def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_browser, sidebar_server_url, width, phase):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 1164})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    agent = base["agent"]
+    agent.update(session_id="primary", run_id="selected-run", phase=phase, running=False,
+        context_file="/tmp/already-cleaned-context.md", event_chain_state="valid",
+        last_error="", error_traceback="", response="Final answer", response_html="<p>Final answer</p>",
+        history=[{"prompt": f"Question {i}", "response": f"Answer {i}",
+                  "response_html": f"<p>Answer {i}</p>"} for i in range(1, 57)])
+    base.update(sessions=[dict(agent)], active_count=0, can_start=True)
+    requests = []
+
+    def doctor(route):
+        requests.append(route.request.url)
+        route.fulfill(json={"run_id": "selected-run", "status": "attention", "checks": [],
+            "events": [{"kind": "page.observation", "detail": "Internal diagnostic"}] * 80})
+
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
+    page.route("**/api/agent/doctor", doctor)
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True, "browser": "edge", "platform": "chatgpt",
+        "agent_sources": {"recent_sessions": [], "projects": []}}))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        pager = page.locator("#agent_response_pagination")
+        expect(pager).to_be_visible()
+        panel = page.locator("#agent_doctor_panel")
+        if phase == "finished":
+            expect(panel).to_be_hidden()
+            assert requests == []
+        else:
+            expect(panel).to_be_visible()
+            expect(panel).to_have_js_property("open", False)
+            panel.locator("summary").click()
+            expect(panel).to_have_js_property("open", True)
+            panel.locator("summary").click()
+            expect(panel).to_have_js_property("open", False)
+        bounds = page.evaluate('''() => {
+            const pager = document.querySelector('#agent_response_pagination').getBoundingClientRect();
+            const composer = document.querySelector('.agent-composer-shell').getBoundingClientRect();
+            return {bottom:pager.bottom, top:composer.top};
+        }''')
+        assert bounds["bottom"] <= bounds["top"]
+        assert bounds["top"] - bounds["bottom"] < 100
     finally:
         context.close()

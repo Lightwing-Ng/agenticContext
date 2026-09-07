@@ -1,4 +1,4 @@
-<!-- Code version: v3.36.5-codex.1 -->
+<!-- Code version: v3.36.6-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -353,6 +353,18 @@
                         </section>
                         {% set initial_history_item = agent_snapshot.history[-1] if agent_snapshot.history else none %}
                         {% set initial_finished_answer = not agent_snapshot.running and agent_snapshot.phase == 'finished' and (initial_history_item or agent_snapshot.response) %}
+                        <details class="agent-doctor-panel" id="agent_doctor_panel" hidden>
+                            <summary>
+                                <span>Doctor</span>
+                                <span class="agent-doctor-status" id="agent_doctor_status">Checking</span>
+                            </summary>
+                            <div class="agent-doctor-content">
+                                <p class="agent-doctor-summary" id="agent_doctor_summary"></p>
+                                <ol class="agent-doctor-checks" id="agent_doctor_checks"></ol>
+                                <ol class="agent-doctor-events" id="agent_doctor_events"></ol>
+                                <div class="agent-doctor-actions" id="agent_doctor_actions"></div>
+                            </div>
+                        </details>
                         <div class="agent-response-output" id="agent_response_output" lang="zh-CN"{% if not initial_history_item and not agent_snapshot.response %} hidden{% endif %}>
                             <header class="agent-response-question-header browser-session-table-message-shell" id="agent_response_question_header">
                                 <div class="agent-response-question-scroll" id="agent_response_question_scroll">
@@ -397,18 +409,7 @@
                                 <pre class="agent-error-record-content" id="agent_error_record_content" data-agent-error-record-content>{{ agent_snapshot.error_traceback or agent_snapshot.last_error }}</pre>
                             </div>
                         </details>
-                        <details class="agent-doctor-panel" id="agent_doctor_panel" hidden>
-                            <summary>
-                                <span>Doctor</span>
-                                <span class="agent-doctor-status" id="agent_doctor_status">Checking</span>
-                            </summary>
-                            <div class="agent-doctor-content">
-                                <p class="agent-doctor-summary" id="agent_doctor_summary"></p>
-                                <ol class="agent-doctor-checks" id="agent_doctor_checks"></ol>
-                                <ol class="agent-doctor-events" id="agent_doctor_events"></ol>
-                                <div class="agent-doctor-actions" id="agent_doctor_actions"></div>
-                            </div>
-                        </details>
+
                     </article>
 
                     <form id="agent_prompt_form" class="agent-prompt-form">
@@ -521,6 +522,6 @@
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.0.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.36.5-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.36.6-codex.1') }}"></script>
 </body>
 </html>

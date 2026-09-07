@@ -1,4 +1,4 @@
-/* Code version: v3.36.5-codex.1 */
+/* Code version: v3.36.6-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -398,6 +398,7 @@
         resetRemoteSessionHistory();
         doctorRequestId += 1;
         doctorPayload = null;
+        if (elements.doctorPanel) elements.doctorPanel.open = false;
         sessionTitleOverride = "";
         if (elements.sessionMode) elements.sessionMode.value = "new";
         if (elements.promptInput) elements.promptInput.value = executionDrafts.get(JSON.stringify([executionScope, sessionId])) || "";
@@ -2416,20 +2417,24 @@
                 return button;
             }));
         }
-        if (status !== "healthy") elements.doctorPanel.open = true;
     }
 
     async function loadDoctor() {
         if (doctorLoading) return;
         doctorLoading = true;
         const requestId = ++doctorRequestId;
+        const runId = lastPayload.agent?.run_id || "";
         try {
             const payload = await requestJson("/api/agent/doctor");
             if (requestId !== doctorRequestId) return;
+            if (runId !== (lastPayload.agent?.run_id || "")
+                || (payload.run_id && payload.run_id !== runId)
+                || !agentNeedsDoctor(lastPayload.agent)) return;
             doctorPayload = payload;
             renderDoctor(payload);
         } catch (error) {
             if (requestId !== doctorRequestId) return;
+            if (runId !== (lastPayload.agent?.run_id || "") || !agentNeedsDoctor(lastPayload.agent)) return;
             doctorPayload = {
                 status: "attention",
                 summary: error.message || "Agent diagnostics could not be loaded.",
@@ -2446,7 +2451,7 @@
         return ["failed", "interrupted"].includes(String(agent?.phase || ""))
             || Boolean(agent?.paused)
             || ["invalid", "degraded"].includes(String(agent?.event_chain_state || ""))
-            || (Boolean(agent?.context_file) && !agent?.running);
+            || (Boolean(agent?.context_file) && !agent?.running && agent?.phase !== "finished");
     }
 
     function normalizePaginationPage(value, fallback = 1) {
@@ -3104,6 +3109,11 @@
         renderAgentResponse(agent);
         clearCompletedPromptIfUnchanged(agent, shouldCollapseActivity);
         renderErrorRecord(agent);
+        if (doctorPayload?.run_id && doctorPayload.run_id !== agent.run_id) {
+            doctorPayload = null;
+            doctorRequestId += 1;
+            if (elements.doctorPanel) elements.doctorPanel.open = false;
+        }
         if (agentNeedsDoctor(agent)) {
             if (!doctorPayload) loadDoctor();
             else renderDoctor();
