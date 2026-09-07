@@ -1,6 +1,6 @@
 """Disposable-browser verification for OpenAI Site tools registration.
 
-Code version: v1.0.2-codex.1
+Code version: v1.0.3-codex.1
 """
 
 from __future__ import annotations
@@ -61,16 +61,16 @@ def agent_optimization_server_url(tmp_path_factory: pytest.TempPathFactory) -> I
 
 
 @pytest.fixture(scope="module")
-def agent_optimization_browser() -> Iterator[Browser]:
+def agent_optimization_browser(disposable_browser_launch) -> Iterator[Browser]:
     with sync_playwright() as playwright:
         browser_type = playwright.chromium
         if Path(browser_type.executable_path).is_file():
-            browser = browser_type.launch(headless=True)
+            browser = disposable_browser_launch(browser_type, headless=True)
         else:
             errors = []
             for channel in ("chrome", "msedge"):
                 try:
-                    browser = browser_type.launch(channel=channel, headless=True)
+                    browser = disposable_browser_launch(browser_type, channel=channel, headless=True)
                     break
                 except PlaywrightError as error:  # pragma: no cover - host inventory
                     errors.append(f"{channel}: {error}")

@@ -1,6 +1,6 @@
 """Route and service tests for Agent doctor recovery UX.
 
-Code version: v1.4.3-codex.1
+Code version: v1.4.4-codex.1
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ import pytest
 
 from app.core.computer_use_agent import (
     CONTINUE_INTERRUPTED_AGENT_PROMPT,
+    _browser_profile_binding,
+    _bound_browser_descriptor,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
     detect_host_operating_system,
@@ -234,6 +236,7 @@ def test_doctor_continues_an_interrupted_edge_chatgpt_task_without_context_uploa
                 "operating_system": detect_host_operating_system(),
                 "platform": "chatgpt",
                 "browser": "edge",
+                "browser_profile_binding": _browser_profile_binding(_bound_browser_descriptor("edge", CrawlConfig())),
                 "model": "gpt-5.6-sol",
                 "chatgpt_effort": "Cruise review",
                 "read_only": True,

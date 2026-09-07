@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.57.5-codex.1
+Code version: v3.58.0-codex.2
 """
 
 from __future__ import annotations
@@ -1442,19 +1442,19 @@ def test_chatgpt_effort_slider_finder_rejects_an_unrelated_generic_slider() -> N
 
 
 @pytest.mark.integration
-def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner() -> None:
+def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(disposable_browser_launch) -> None:
     """Exercise the browser DOM binding without accessing a provider page."""
     playwright_sync = pytest.importorskip("playwright.sync_api")
     with playwright_sync.sync_playwright() as playwright:
         browser_type = playwright.chromium
         if Path(browser_type.executable_path).is_file():
-            browser = browser_type.launch(headless=True)
+            browser = disposable_browser_launch(browser_type, headless=True)
         else:
             launch_errors: list[str] = []
             browser = None
             for channel in ("chrome", "msedge"):
                 try:
-                    browser = browser_type.launch(channel=channel, headless=True)
+                    browser = disposable_browser_launch(browser_type, channel=channel, headless=True)
                     break
                 except Exception as exc:  # pragma: no cover - host browser inventory
                     launch_errors.append(f"{channel}: {exc}")
@@ -4456,6 +4456,8 @@ def test_stop_during_browser_startup_never_enters_the_action_loop(
     import app.core.computer_use_agent as computer_use_agent
 
     monkeypatch.setattr(computer_use_agent.sys, "platform", host_platform)
+    monkeypatch.setattr(computer_use_agent, "_capture_macos_frontmost_application", lambda: "Synthetic Editor")
+    monkeypatch.setattr(computer_use_agent, "_restore_macos_frontmost_application_after_task_stage", lambda *_args: None)
     monkeypatch.setattr(computer_use_agent, "_keep_task_stage_window_available", lambda _page: None)
 
     class _Descriptor:
@@ -9039,14 +9041,25 @@ def test_workspace_controller_delete_anchors_the_parent_directory(
         if path == "target.txt" and dir_fd is not None and not raced:
             raced = True
             nested.rename(swapped_parent)
-            try:
-                nested.symlink_to(outside, target_is_directory=True)
-            except OSError:
-                swapped_parent.rename(nested)
-                pytest.skip("Directory symlinks are unavailable on this host.")
+            nested.symlink_to(outside, target_is_directory=True)
         original_unlink(path, dir_fd=dir_fd)
 
-    monkeypatch.setattr(os, "unlink", swap_parent_before_unlink)
+    if os.name == "nt":
+        from app.core.windows_anchored_delete import _WindowsFileApi
+
+        original_disposition = _WindowsFileApi.mark_delete
+
+        def attempt_parent_swap_before_disposition(api, pinned):
+            nonlocal raced
+            raced = True
+            # Native handles must deny the rename while the parent is pinned.
+            with pytest.raises(OSError):
+                nested.rename(swapped_parent)
+            original_disposition(api, pinned)
+
+        monkeypatch.setattr(_WindowsFileApi, "mark_delete", attempt_parent_swap_before_disposition)
+    else:
+        monkeypatch.setattr(os, "unlink", swap_parent_before_unlink)
     deleted = controller.execute(
         {
             "action": "delete",
@@ -9059,6 +9072,10 @@ def test_workspace_controller_delete_anchors_the_parent_directory(
     assert raced is True
     assert outside_target.read_text(encoding="utf-8") == "outside target\n"
     assert not (swapped_parent / "target.txt").exists()
+    if os.name == "nt":
+        assert nested.is_dir()
+        assert not swapped_parent.exists()
+        assert not local_target.exists()
 
 
 def test_workspace_controller_delete_rejects_leaf_replacement(
@@ -9081,6 +9098,7 @@ def test_workspace_controller_delete_rejects_leaf_replacement(
     assert receipt["ok"]
 
     original_hash = controller._hash_anchored_file
+    attempted_replacement = False
 
     def replace_leaf_after_hash(
         directory_fd: int,
@@ -9091,7 +9109,21 @@ def test_workspace_controller_delete_rejects_leaf_replacement(
         target.write_text(replacement, encoding="utf-8")
         return hashed
 
-    monkeypatch.setattr(controller, "_hash_anchored_file", replace_leaf_after_hash)
+    if os.name == "nt":
+        from app.core.windows_anchored_delete import _WindowsFileApi
+
+        original_disposition = _WindowsFileApi.mark_delete
+
+        def attempt_leaf_replacement_before_disposition(api, pinned):
+            nonlocal attempted_replacement
+            attempted_replacement = True
+            with pytest.raises(OSError):
+                target.rename(original_target)
+            original_disposition(api, pinned)
+
+        monkeypatch.setattr(_WindowsFileApi, "mark_delete", attempt_leaf_replacement_before_disposition)
+    else:
+        monkeypatch.setattr(controller, "_hash_anchored_file", replace_leaf_after_hash)
     deleted = controller.execute(
         {
             "action": "delete",
@@ -9100,10 +9132,16 @@ def test_workspace_controller_delete_rejects_leaf_replacement(
         }
     )
 
-    assert not deleted["ok"]
-    assert "identity changed before deletion" in deleted["error"]
-    assert original_target.read_text(encoding="utf-8") == "original target\n"
-    assert target.read_text(encoding="utf-8") == replacement
+    if os.name == "nt":
+        assert attempted_replacement
+        assert deleted["ok"], deleted
+        assert not target.exists()
+        assert not original_target.exists()
+    else:
+        assert not deleted["ok"]
+        assert "identity changed before deletion" in deleted["error"]
+        assert original_target.read_text(encoding="utf-8") == "original target\n"
+        assert target.read_text(encoding="utf-8") == replacement
 
 
 def test_workspace_search_uses_python_fallback_when_rg_is_unavailable(
@@ -11942,7 +11980,9 @@ def test_agent_service_migrates_legacy_turn_limit_snapshot_to_interrupted(
     continue_action = next(
         action for action in doctor["actions"] if action["id"] == "continue"
     )
-    assert continue_action["enabled"]
+    assert continue_action["enabled"] is False
+    continuation_check = next(check for check in doctor["checks"] if check["id"] == "interrupted_continuation")
+    assert "profile binding" in continuation_check["detail"]
     persisted = json.loads((runtime_root / "last-run.json").read_text(encoding="utf-8"))
     assert persisted["phase"] == "interrupted"
     assert service._event_chain is not None
@@ -12211,6 +12251,8 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
         "actual_model",
         "bodycheck_passed",
         "browser",
+        "browser_profile_binding",
+        "cleanup_error",
         "conversation_bound",
         "conversation_url",
         "context_attached",
@@ -12370,7 +12412,12 @@ def test_macos_idle_sleep_assertion_cleanup_is_non_throwing_after_double_timeout
     assert process.wait_calls == 2
 
 
-def test_agent_service_rejects_windows_execution_on_macos_host() -> None:
+def test_agent_service_rejects_windows_execution_on_macos_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.core.computer_use_agent.detect_host_operating_system", lambda: "macos",
+    )
     with TemporaryDirectory() as raw_root:
         workspace = Path(raw_root) / "project"
         workspace.mkdir()

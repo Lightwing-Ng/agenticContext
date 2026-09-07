@@ -1,6 +1,6 @@
 """Responsive sidebar contract tests.
 
-Code version: v1.1.0-codex.2
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
@@ -93,12 +93,18 @@ def test_sidebar_overlay_and_compact_content_are_independent() -> None:
 
     for mobile_content_fragment in (
         ".workspace-grid {",
-        ".log-card {",
         ".metric-grid {",
         ".progress-metric-grid {",
     ):
         assert mobile_content_fragment not in overlay_block
         assert mobile_content_fragment in compact_block
+
+    workspace_grid = _extract_block(compact_block, ".workspace-grid {")
+    assert "grid-template-columns: 1fr;" in workspace_grid
+    assert "grid-template-rows: auto auto minmax(0, 1fr);" in workspace_grid
+    for selector in (".metric-grid {", ".progress-metric-grid {"):
+        metric_grid = _extract_block(compact_block, selector)
+        assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in metric_grid
 
     assert "@media (max-width: 720px)" not in stylesheet
 

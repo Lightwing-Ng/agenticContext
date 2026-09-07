@@ -1,8 +1,9 @@
-"""Unified recent-session source and filtering. Code version: v1.2.0-codex.1."""
+"""Unified recent-session source and filtering. Code version: v1.2.1-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
 from tests import test_sidebar_e2e as fixtures
+from tests.agent_browser_fixtures import browser_profile_identity
 
 disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
@@ -19,7 +20,7 @@ def test_unified_recent_sessions_filter_count_and_continue(disposable_browser, s
                      phase='finished', workspace_path='/tmp/demo', browser='edge', platform='chatgpt',
                      session_title=f'Local {i}', conversation_url=f'https://chatgpt.com/c/local-{i}',
                      project_url=project if i == 0 else other_project) for i in range(3)]
-    catalog = {'recent_sessions': [
+    catalog = {'profile_identity': browser_profile_identity(), 'recent_sessions': [
         {'url': sessions[0]['conversation_url'], 'title': 'Local zero'},
         {'url': 'https://chatgpt.com/c/remote-all', 'title': 'Remote all'}],
         'projects': [{'url': project, 'title': 'Demo project'}]}
@@ -29,11 +30,14 @@ def test_unified_recent_sessions_filter_count_and_continue(disposable_browser, s
         'agent': {'session_id': 'new'}, 'sessions': sessions,
         'active_count': sum(item['running'] for item in sessions), 'can_start': True}))
     page.route('**/api/browser-session**', lambda route: route.fulfill(json={
+        'profile_identity': browser_profile_identity(),
         'can_download': True, 'browser': 'edge', 'platform': 'chatgpt', 'agent_sources': catalog}))
     page.route('**/api/agent/sources**', lambda route: route.fulfill(json=catalog))
     page.route('**/api/agent/project-sessions**', lambda route: route.fulfill(json={
+        'profile_identity': browser_profile_identity(),
         'sessions': [{'url': 'https://chatgpt.com/c/remote-project', 'title': 'Remote project'}]}))
-    page.route('**/api/agent/chatgpt-session-history**', lambda route: route.fulfill(json={'history': []}))
+    page.route('**/api/agent/chatgpt-session-history**', lambda route: route.fulfill(json={
+        'profile_identity': browser_profile_identity(), 'history': []}))
     submitted = []
 
     def ask(route):

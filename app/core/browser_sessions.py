@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.20.1-codex.1
+# Code version: v1.20.2-codex.1
 
 from __future__ import annotations
 
@@ -18,7 +18,13 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .browser.x_session import X_READY_SELECTORS, detect_account_handle
-from .config import CrawlConfig, default_edge_user_data_dir, is_macos_host, is_windows_host
+from .config import (
+    CrawlConfig,
+    default_edge_user_data_dir,
+    is_macos_host,
+    is_windows_host,
+    validate_chromium_profile_directory,
+)
 from .safari_automation import SafariContext
 
 
@@ -113,6 +119,12 @@ _ACTIVE_CHROMIUM_PROFILE_ROOTS: set[Path] = set()
 _PLAYWRIGHT_LAUNCH_LOCK = threading.Lock()
 
 
+class BrowserCleanupError(RuntimeError):
+    """Identify retained browser resources separately from normal cancellation."""
+
+    browser_cleanup_failed = True
+
+
 @dataclass(frozen=True, slots=True)
 class BrowserDescriptor:
     """Describe one browser option exposed in the UI."""
@@ -156,7 +168,7 @@ def browser_descriptors(config: CrawlConfig) -> dict[str, BrowserDescriptor]:
             icon_filename="images/browser.chrome.png",
             engine="chromium",
             user_data_dir=Path(config.chrome_user_data_dir).expanduser(),
-            profile_directory=config.chrome_profile_directory,
+            profile_directory=validate_chromium_profile_directory(config.chrome_profile_directory),
             channel="chrome",
         ),
     }
@@ -688,7 +700,12 @@ def goto_with_retry(
 
 
 def _housekeep_stale_chromium_profiles(descriptor: BrowserDescriptor) -> int:
-    """Remove only abandoned temporary profiles owned by this application."""
+    """Report old profiles without guessing ownership from their name or age.
+
+    Only the task holding its TemporaryDirectory may remove a clone. A missing
+    owner, including a dead service PID, does not prove its browser children
+    have exited. Cross-process and legacy roots therefore require review.
+    """
     temp_root = Path(tempfile.gettempdir())
     profile_prefix = f"cachelikes-{descriptor.browser_id}-"
     try:
@@ -698,7 +715,6 @@ def _housekeep_stale_chromium_profiles(descriptor: BrowserDescriptor) -> int:
         return 0
 
     now = time.time()
-    removed = 0
     for candidate in candidates:
         if (
             not candidate.name.startswith(profile_prefix)
@@ -713,20 +729,12 @@ def _housekeep_stale_chromium_profiles(descriptor: BrowserDescriptor) -> int:
             continue
         if age < CHROMIUM_TEMP_PROFILE_STALE_AFTER_SECONDS:
             continue
-        try:
-            shutil.rmtree(candidate)
-        except OSError as exc:
-            LOGGER.warning("Could not remove stale Chromium temporary profile %s: %s", candidate, exc)
-        else:
-            removed += 1
-
-    if removed:
-        LOGGER.info(
-            "Removed %d stale %s Chromium temporary profile(s).",
-            removed,
-            descriptor.label,
+        LOGGER.warning(
+            "Retaining old Chromium temporary profile %s: browser-process ownership "
+            "is unverified. Inspect its owners before manual removal.",
+            candidate,
         )
-    return removed
+    return 0
 
 
 def _cleanup_cloned_browser_profile(
@@ -746,9 +754,10 @@ def _cleanup_cloned_browser_profile(
         )
         LOGGER.warning("%s %s", message, exc)
         if original_error is not None:
+            setattr(original_error, "browser_cleanup_failed", True)
             original_error.add_note(message)
             return
-        raise RuntimeError(message) from exc
+        raise BrowserCleanupError(message) from exc
     _ACTIVE_CHROMIUM_PROFILE_ROOTS.discard(profile_root)
 
 
@@ -833,6 +842,16 @@ def launch_chromium_context(
         raise RuntimeError(f"{descriptor.label} does not expose a Chromium profile directory.")
     if not user_data_dir.exists():
         raise RuntimeError(f"{descriptor.label} user data directory was not found: {user_data_dir}")
+    validate_chromium_profile_directory(descriptor.profile_directory)
+
+    executable_options: dict[str, str] = {}
+    if is_windows_host():
+        from .computer_use_agent import resolve_windows_browser_executable
+
+        executable = resolve_windows_browser_executable(descriptor.browser_id)
+        if executable is None:
+            raise RuntimeError(f"{descriptor.label} could not be found on this host.")
+        executable_options["executable_path"] = executable
 
     temp_profile_dir: tempfile.TemporaryDirectory[str] | None = None
     if window_mode is None:
@@ -868,6 +887,7 @@ def launch_chromium_context(
                 ),
                 ignore_default_args=["--use-mock-keychain", "--password-store=basic"],
                 viewport={"width": 1440, "height": 1200},
+                **executable_options,
             )
         finally:
             if task_stage:
@@ -922,9 +942,11 @@ def launch_chromium_context(
                     context.close()
                 except Exception as close_error:
                     if not _is_idempotent_chromium_context_close_error(close_error):
+                        setattr(close_error, "browser_cleanup_failed", True)
                         if primary_error is None:
                             primary_error = close_error
                             raise
+                        setattr(primary_error, "browser_cleanup_failed", True)
                         primary_error.add_note(f"Browser context cleanup also failed: {close_error}")
                         LOGGER.warning("Browser context cleanup also failed: %s", close_error)
                     else:
@@ -942,7 +964,8 @@ def build_chromium_launch_args(
     window_mode: str = CHROMIUM_WINDOW_MODE_OFFSCREEN,
 ) -> list[str]:
     """Build Chromium launch arguments for an isolated background or task-stage window."""
-    args = [f"--profile-directory={descriptor.profile_directory}"]
+    profile_directory = validate_chromium_profile_directory(descriptor.profile_directory)
+    args = [f"--profile-directory={profile_directory}"]
     window_args_by_mode = {
         CHROMIUM_WINDOW_MODE_OFFSCREEN: BACKGROUND_CHROMIUM_WINDOW_ARGS,
         CHROMIUM_WINDOW_MODE_TASK_STAGE: TASK_STAGE_CHROMIUM_WINDOW_ARGS,
@@ -958,11 +981,19 @@ def build_chromium_launch_args(
 
 def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile.TemporaryDirectory[str]]:
     """Clone one Chromium browser profile to avoid singleton locks."""
+    profile_directory = validate_chromium_profile_directory(descriptor.profile_directory)
     source_user_data_dir = descriptor.user_data_dir
     if source_user_data_dir is None:
         raise RuntimeError(f"{descriptor.label} does not expose a clonable profile.")
 
-    source_profile_dir = source_user_data_dir / descriptor.profile_directory
+    source_user_data_dir = source_user_data_dir.resolve()
+    source_profile_dir = source_user_data_dir / profile_directory
+    if (
+        source_profile_dir.is_symlink()
+        or source_profile_dir.is_junction()
+        or source_profile_dir.resolve().parent != source_user_data_dir
+    ):
+        raise ValueError("The browser profile must remain inside its user data directory without a link or junction.")
     if not source_profile_dir.exists():
         raise RuntimeError(f"{descriptor.label} profile directory was not found: {source_profile_dir}")
 
@@ -971,7 +1002,7 @@ def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile
     temp_root = Path(temp_dir.name)
     _ACTIVE_CHROMIUM_PROFILE_ROOTS.add(temp_root)
     target_user_data_dir = temp_root / f"{descriptor.label.replace(' ', '')}UserData"
-    target_profile_dir = target_user_data_dir / descriptor.profile_directory
+    target_profile_dir = target_user_data_dir / profile_directory
 
     def ignore_transient_files(_directory: str, names: list[str]) -> set[str]:
         ignored = {
@@ -984,6 +1015,13 @@ def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile
         return ignored
 
     try:
+        resolved_temp_root = temp_root.resolve()
+        if (
+            not target_user_data_dir.resolve().is_relative_to(resolved_temp_root)
+            or target_user_data_dir.resolve() == resolved_temp_root
+            or target_profile_dir.resolve().parent != target_user_data_dir.resolve()
+        ):
+            raise ValueError("The temporary browser profile must remain inside its task-owned directory.")
         target_user_data_dir.mkdir(parents=True, exist_ok=True)
         local_state = source_user_data_dir / "Local State"
         if local_state.exists():
@@ -1015,7 +1053,7 @@ def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile
                 "Close any running Edge or Chrome windows, then retry the browser session check."
             ) from exc
         raise
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         _cleanup_cloned_browser_profile(temp_dir, original_error=exc)
         raise
     return target_user_data_dir, temp_dir

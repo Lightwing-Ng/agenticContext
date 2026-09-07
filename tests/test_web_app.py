@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.98.3-codex.1
+# Code version: v1.98.4-codex.1
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from unittest.mock import ANY, patch
 
 from app.core.state import TaskSnapshot
 from app.core.config import CrawlConfig
+from app.core.agent import browser_profile_cache_identity
 from app.core.chat_history_browser import query_chat_history
 from app.core.computer_use_agent import ComputerUseSettings
 from app.core.local_media_browser import LocalMediaCatalog, LocalMediaPage, local_file_manager_label, stable_media_id
@@ -509,7 +510,8 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', chatgpt_body)
+        self.assertNotIn('pagination-motion.js', chatgpt_body)
+        self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', agent_body)
         self.assertIn('cache-page.js?v=cache-page-v1.14.0-codex.1', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.2-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
@@ -543,7 +545,7 @@ class WebAppTests(unittest.TestCase):
                 stop_form_end = body.index(">", stop_form_start)
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', chatgpt_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.10.1-codex.1', chatgpt_body)
         self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.8.0-codex.1', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
@@ -640,10 +642,10 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.21.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = (
-                    "style-v2.100.0-codex.1" if page_source in {"grok", "chatgpt", "gemini", "x"}
-                    else "style-v2.96.2-codex.1"
-                )
+                expected_style_version = {
+                    "agent": "style-v2.101.0-codex.1",
+                    "local-resources": "style-v2.102.0-codex.1",
+                }.get(page_source, "style-v2.100.1-codex.1")
                 self.assertIn(expected_style_version, body)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
                 self.assertIn('id="global_theme_toggle"', body)
@@ -1036,9 +1038,9 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', local_body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.10.1-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.40.0-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.41.1-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1388,6 +1390,8 @@ class WebAppTests(unittest.TestCase):
                 "prompt": "FOREIGN_STATUS_PROMPT_SENTINEL",
                 "response": "FOREIGN_STATUS_RESPONSE_SENTINEL",
                 "last_error": "FOREIGN_STATUS_ERROR_SENTINEL",
+                "cleanup_error": "FOREIGN_STATUS_CLEANUP_SENTINEL",
+                "browser_profile_binding": {"user_data_dir": "FOREIGN_STATUS_PROFILE_SENTINEL"},
                 "activity": [{"label": "FOREIGN_STATUS_ACTIVITY_SENTINEL"}],
                 "history": [{"prompt": "FOREIGN_STATUS_HISTORY_SENTINEL"}],
                 "run_id": "FOREIGN_STATUS_RUN_SENTINEL",
@@ -1407,11 +1411,13 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        rendered = json.dumps(payload, sort_keys=True)
+        rendered = json.dumps(payload["agent"], sort_keys=True)
         for sentinel in (
             "FOREIGN_STATUS_PROMPT_SENTINEL",
             "FOREIGN_STATUS_RESPONSE_SENTINEL",
             "FOREIGN_STATUS_ERROR_SENTINEL",
+            "FOREIGN_STATUS_CLEANUP_SENTINEL",
+            "FOREIGN_STATUS_PROFILE_SENTINEL",
             "FOREIGN_STATUS_ACTIVITY_SENTINEL",
             "FOREIGN_STATUS_HISTORY_SENTINEL",
             "FOREIGN_STATUS_RUN_SENTINEL",
@@ -1421,6 +1427,13 @@ class WebAppTests(unittest.TestCase):
         self.assertTrue(payload["agent"]["running"])
         self.assertEqual(payload["agent"]["phase"], "running")
         self.assertIn("another project", payload["agent"]["message"])
+
+        # Cross-project routing metadata is public; task contents remain private.
+        sessions = payload["sessions"]
+        self.assertTrue(any(item.get("run_id") == "FOREIGN_STATUS_RUN_SENTINEL" for item in sessions))
+        all_payload = json.dumps(payload, sort_keys=True)
+        for key in ("prompt", "response", "last_error", "activity", "history"):
+            self.assertNotIn(f"FOREIGN_STATUS_{key.upper()}_SENTINEL", all_payload)
 
     def test_agent_page_renders_error_traceback_in_a_collapsible_record(self) -> None:
         app = create_app()
@@ -1588,7 +1601,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-prompt-input required></textarea>', body)
         self.assertRegex(
             body,
-            r'<details class="agent-activity-panel" id="agent_activity_panel"[^>]*\bhidden\b',
+            r'<details class="agent-activity-panel" id="agent_activity_panel"[^>]*>',
         )
         self.assertIn('<details class="agent-error-record" id="agent_error_record" hidden>', body)
         for sentinel in (
@@ -1601,12 +1614,16 @@ class WebAppTests(unittest.TestCase):
             "FOREIGN_MESSAGE_SENTINEL",
             "FOREIGN_PROMPT_SENTINEL",
             "FOREIGN_RESPONSE_SENTINEL",
-            "FOREIGN_RUN_ID_SENTINEL",
             "FOREIGN_TRACEBACK_SENTINEL",
-            "FOREIGN_WORKSPACE_PATH_SENTINEL",
         ):
             with self.subTest(sentinel=sentinel):
                 self.assertNotIn(sentinel, body)
+
+        # The main response is empty; the sidebar retains only execution routing.
+        self.assertIn('data-agent-run-id=""', body)
+        self.assertIn('id="agent_response_output" lang="zh-CN" hidden', body)
+        self.assertNotIn('FOREIGN_RUN_ID_SENTINEL', body)
+        self.assertNotIn('FOREIGN_WORKSPACE_PATH_SENTINEL', body)
 
     def test_agent_project_picker_uses_the_shared_directory_route(self) -> None:
         selected_path = Path("/tmp/Selected Agent Project")
@@ -1881,6 +1898,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('["failed", "interrupted"].includes(String(agent?.phase || ""))', script)
         self.assertNotIn('document.getElementById("agent_stop_button")', script)
 
+    @patch("app.core.browser_sessions.is_macos_host", new=lambda: True)
     def test_agent_session_source_contract_is_explicit_and_not_persisted(self) -> None:
         app = create_app()
         agent_service = app.extensions["computer_use_agent_service"]
@@ -1893,6 +1911,7 @@ class WebAppTests(unittest.TestCase):
                         "workspace_path": str(Path(__file__).resolve().parents[1]),
                         "operating_system": "macos",
                         "browser": "safari",
+                        "profile_identity": browser_profile_cache_identity("safari", CrawlConfig()),
                         "model": "gpt-5.6-sol",
                         "session_mode": "recent",
                         "conversation_url": "https://chatgpt.com/c/recent-session",
@@ -1924,7 +1943,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.40.0-codex.1',
+            'computer-use-agent-v3.41.1-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -2376,6 +2395,7 @@ class WebAppTests(unittest.TestCase):
             app.extensions["agent_source_cache"].store(
                 platform="chatgpt",
                 browser="edge",
+                profile_identity=browser_profile_cache_identity("edge", CrawlConfig()),
                 source_kind="browser-session",
                 project_url="capabilities-v3",
                 payload=status_payload,
@@ -2460,6 +2480,7 @@ class WebAppTests(unittest.TestCase):
             app.extensions["agent_source_cache"].store(
                 platform="gemini",
                 browser="edge",
+                profile_identity=browser_profile_cache_identity("edge", CrawlConfig()),
                 source_kind="sources",
                 payload=first_payload,
                 now=datetime(2000, 1, 1, tzinfo=timezone.utc),
@@ -2509,6 +2530,7 @@ class WebAppTests(unittest.TestCase):
             app.extensions["agent_source_cache"].store(
                 platform="gemini",
                 browser="edge",
+                profile_identity=browser_profile_cache_identity("edge", CrawlConfig()),
                 source_kind="sources",
                 payload=cached_payload,
             )
@@ -2594,6 +2616,7 @@ class WebAppTests(unittest.TestCase):
             app.extensions["agent_source_cache"].store(
                 platform="grok",
                 browser="edge",
+                profile_identity=browser_profile_cache_identity("edge", CrawlConfig()),
                 source_kind="project-sessions",
                 project_url=project_url,
                 payload=cached_payload,
@@ -2759,7 +2782,7 @@ class WebAppTests(unittest.TestCase):
             "bootstrapSignature !== appliedBootstrapSignature",
             "sourceRequestId += 1",
             'const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"])',
-            "loadSelectedSessionHistory(input.value)",
+            "void loadSelectedSessionHistory(sessionUrl)",
             '"/api/agent/chatgpt-session-history"',
             "Loading the selected ${selectedPlatformLabel()} session history…",
             'statusMessageCopy: document.querySelector("[data-agent-response-status-copy]")',
@@ -2785,10 +2808,10 @@ class WebAppTests(unittest.TestCase):
             "function renderResponseStatus(agent, readiness)",
             "elements.statusSpinner.hidden = !presentation.loading",
             "setResponseStatusFallback(error.message)",
-            '"transitionend"',
-            '"transitioncancel"',
+            "activityCloseAnimation.onfinish = finish;",
+            "activityCloseAnimation?.cancel();",
             "remoteHistoryMatchesSelection()",
-            "sessionTitleOverride = option.dataset.agentComboboxLabel || \"\"",
+            "sessionTitleOverride = session.title || \"\"",
             "elements.activityList.scrollTop = elements.activityList.scrollHeight",
             "elements.responseOutput.hidden = !entry",
         ):
@@ -3106,13 +3129,13 @@ class WebAppTests(unittest.TestCase):
             'const statusRequests = new Map();',
             'function requestBrowserStatus(platform, browserId, scope, options = {})',
             'const refresh = options.refresh === true;',
-            'const requestKey = `${requestScope}:${platform}:${browserId}`;',
+            'const requestKey = `${requestScope}:${platform}:${browserId}:${options.profileIdentity || ""}`;',
             'if (refresh) query.set("refresh", "1");',
             'async function load(browserId, options = {})',
-            'const forceRefresh = options.force === true;',
+            'const forceRefresh = options.force === true || requiresChatgptCapabilities;',
             'void load(String(browserId || "").trim().toLowerCase());',
             'void load(activeBrowser);',
-            'requestBrowserStatus(requestPlatform, activeBrowser, scope, {refresh: forceRefresh})',
+            'refresh: forceRefresh, profileIdentity: requestProfile,',
             'let statusRequestRevision = 0;',
             'requestRevision !== statusRequestRevision',
             'function clientCachedPayload(payload, ageMs)',

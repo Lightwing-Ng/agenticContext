@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.3-codex.1
+Code version: v1.8.4-codex.1
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from app.core.config import MAX_DOWNLOAD_WORKERS, CrawlConfig
+from app.core.agent import browser_profile_cache_identity
 from app.core.downloader import DownloadResult
 from app.core.grok_downloader import GrokResetResult
 from app.core.grok_service import summarize_error_for_status
@@ -134,7 +135,10 @@ def test_browser_session_api_validates_inputs_and_returns_probe_payload(client) 
         valid = client.get("/api/browser-session?platform=x&browser=chrome")
 
     assert valid.status_code == 200
-    assert valid.get_json() == {"ready": True, "account_name": "demo"}
+    assert valid.get_json() == {
+        "ready": True, "account_name": "demo",
+        "profile_identity": browser_profile_cache_identity("chrome", probe.call_args.args[2]),
+    }
     probe.assert_called_once()
 
 

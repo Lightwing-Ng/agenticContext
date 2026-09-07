@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.6.2-codex.1
+# Code version: v1.7.0-codex.1
 
 from typing import TYPE_CHECKING
 
@@ -19,7 +19,7 @@ from ..agent_session_sources import (
     probe_and_collect_claude_sources,
     probe_and_collect_grok_sources,
 )
-from ..agent_source_cache import AgentSourceCache
+from ..agent_source_cache import AgentSourceCache, browser_profile_cache_identity
 from .capability_registry import (
     AGENT_ACTIONS,
     CAPABILITY_REGISTRY,
@@ -41,6 +41,7 @@ _COMPUTER_USE_EXPORTS = frozenset(
         "OPERATING_SYSTEM_OPTIONS",
         "ComputerUseAgentService",
         "ComputerUseSettingsStore",
+        "AgentSessionPool",
         "browser_options_for_host",
         "default_model_for_platform",
         "is_loopback_address",
@@ -70,6 +71,10 @@ if TYPE_CHECKING:
 
 def __getattr__(name: str):
     """Load the execution service lazily so core modules can use the registry safely."""
+    if name == "AgentSessionPool":
+        from .session_pool import AgentSessionPool
+
+        return AgentSessionPool
     if name not in _COMPUTER_USE_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     from .. import computer_use_agent
@@ -84,6 +89,8 @@ __all__ = [
     "AGENT_MODEL_OPTIONS_BY_PLATFORM",
     "AGENT_PLATFORM_OPTIONS",
     "AgentSourceCache",
+    "AgentSessionPool",
+    "browser_profile_cache_identity",
     "CAPABILITY_REGISTRY",
     "CAPABILITY_REGISTRY_VERSION",
     "ComputerUseAgentService",

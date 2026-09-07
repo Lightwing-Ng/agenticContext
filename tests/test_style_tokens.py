@@ -1,10 +1,11 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.55.0-codex.1
+Code version: v1.55.1-codex.1
 """
 
 import hashlib
 from pathlib import Path
+import re
 import struct
 
 from scripts.build_web_fonts import FACE_NAMES, checksum, extract_face
@@ -16,6 +17,33 @@ STYLE_PATH = Path(__file__).resolve().parents[1] / "app/web/static/style.css"
 
 def _stylesheet() -> str:
     return STYLE_PATH.read_text(encoding="utf-8")
+
+
+def _root_selector_declarations(stylesheet: str, selector: str) -> dict[str, str]:
+    """Merge an exact root selector's rules; nested media contracts stay separate."""
+    source = re.sub(r"/\*.*?\*/", "", stylesheet, flags=re.DOTALL)
+    declarations: dict[str, str] = {}
+    depth = 0
+    rule_start = 0
+    body_start = 0
+    selectors: list[str] = []
+    for index, character in enumerate(source):
+        if character == "{":
+            if depth == 0:
+                selectors = [item.strip() for item in source[rule_start:index].split(",")]
+                body_start = index + 1
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                if selector in selectors:
+                    for name, value in re.findall(r"([\w-]+)\s*:\s*([^;]+);", source[body_start:index]):
+                        value = value.strip()
+                        if "!important" not in declarations.get(name, "") or "!important" in value:
+                            declarations[name] = value
+                rule_start = index + 1
+    assert declarations, selector
+    return declarations
 
 
 def test_cache_metrics_reuse_the_foundation_surface_and_type_contract() -> None:
@@ -530,7 +558,15 @@ def test_non_pill_corner_radii_use_the_shared_ten_pixel_value() -> None:
     assert "border-radius: 10px;" not in stylesheet
     assert "--radius-soft: 10px;" not in stylesheet
 
-    for non_shared_radius in ("6px", "8px", "9px", "12px", "18px", "20px", "24px", "30px"):
+    table_filter_start = stylesheet.index(".scrollable-data-table-filter-trigger {")
+    table_filter_end = stylesheet.index("\n}", table_filter_start)
+    table_filter_rule = stylesheet[table_filter_start:table_filter_end]
+    for declaration in ("min-height: 22px;", "height: 22px;", "border-radius: 6px;"):
+        assert declaration in table_filter_rule
+    # Worthward's compact table header is the one scoped exception to the soft-panel radius.
+    other_surfaces = stylesheet[:table_filter_start] + stylesheet[table_filter_end:]
+    assert "border-radius: 6px;" not in other_surfaces
+    for non_shared_radius in ("8px", "9px", "12px", "18px", "20px", "24px", "30px"):
         assert f"border-radius: {non_shared_radius};" not in stylesheet
 
 
@@ -1510,18 +1546,19 @@ def test_segmented_control_uses_the_sibling_generic_pill_contract() -> None:
         assert token in style_token_rule
 
 
-def test_browser_session_safari_drawer_icon_uses_two_theme_accents() -> None:
-    """Keep the session drawer's Safari mark in the shared two-tone icon system."""
+def test_browser_session_safari_drawer_icon_inherits_the_toolbar_color() -> None:
+    """Keep the monochrome Safari mask on the approved session toolbar surface."""
     stylesheet = _stylesheet()
     icon_start = stylesheet.index(".browser-session-action-button .browser-session-safari-icon {")
     icon_rule = stylesheet[icon_start:stylesheet.index("\n}", icon_start)]
 
     for token in (
-        "background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);",
+        "background: currentColor;",
         'mask: url("/static/images/safari.svg") center/contain no-repeat;',
         '-webkit-mask: url("/static/images/safari.svg") center/contain no-repeat;',
     ):
         assert token in icon_rule
+    assert "linear-gradient(" not in icon_rule
 
 
 def test_style_tokens_sidebar_icon_preserves_colorful_mark() -> None:
@@ -1948,7 +1985,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.96.2-codex.1 */",
+        "/* Code version: v2.102.0-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2558,15 +2595,16 @@ def test_agent_response_actions_align_to_the_global_action_rail() -> None:
     """Keep the response action rows on the same horizontal rail as the theme control."""
     stylesheet = _stylesheet()
 
-    toolbar_start = stylesheet.rindex(".agent-response-toolbar {")
-    toolbar_rule = stylesheet[toolbar_start:stylesheet.index("\n}", toolbar_start)]
+    toolbar = _root_selector_declarations(stylesheet, ".agent-response-toolbar")
     question_header_start = stylesheet.index(".agent-response-question-header.browser-session-table-message-shell {")
     question_header_rule = stylesheet[
         question_header_start:stylesheet.index("\n}", question_header_start)
     ]
     rail_bleed = "margin-inline-end: calc(-1 * var(--agent-action-rail-bleed));"
 
-    assert rail_bleed in toolbar_rule
+    assert toolbar["margin-inline-end"] == "calc(-1 * var(--agent-action-rail-bleed))"
+    assert toolbar["display"] == "grid"
+    assert toolbar["grid-template-columns"] == "minmax(0, 1fr) auto"
     assert rail_bleed in question_header_rule
 
 
@@ -2637,8 +2675,7 @@ def test_agent_response_header_and_answer_pin_the_composer() -> None:
     """Keep both response regions independently scrollable without moving the composer."""
     stylesheet = _stylesheet()
 
-    toolbar_start = stylesheet.rfind(".agent-response-toolbar {")
-    toolbar_rule = stylesheet[toolbar_start:stylesheet.index("\n}", toolbar_start)]
+    toolbar = _root_selector_declarations(stylesheet, ".agent-response-toolbar")
     header_start = stylesheet.index(".agent-response-question-header.browser-session-table-message-shell {")
     header_rule = stylesheet[header_start:stylesheet.index("\n}", header_start)]
     answer_start = stylesheet.index(".agent-response-answer {")
@@ -2652,14 +2689,11 @@ def test_agent_response_header_and_answer_pin_the_composer() -> None:
         assert "overflow-y: auto;" in rule or "overflow: auto;" in rule
         assert "scrollbar-gutter: stable;" in rule
         assert "overscroll-behavior: contain;" in rule
-    for declaration in (
-        "box-sizing: border-box;",
-        "flex: 0 0 auto;",
-    ):
-        assert declaration in toolbar_rule
+    assert toolbar["box-sizing"] == "border-box"
+    assert toolbar["flex"] == "0 0 auto"
     assert "box-sizing: border-box;" in header_rule
     assert "flex: 0 1 auto;" in header_rule
-    assert "min-height: var(--settings-round-icon-button-size);" in toolbar_rule
+    assert toolbar["min-height"] == "var(--settings-round-icon-button-size)"
     assert "min-height: calc(var(--settings-round-icon-button-size) + 12px);" in header_rule
     assert "overflow-anchor: none;" in answer_rule
     assert "position: relative;" in composer_rule

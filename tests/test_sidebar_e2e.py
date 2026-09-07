@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.33.2-codex.1
+Code version: v1.34.0-codex.1
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ import re
 from threading import Thread
 
 import pytest
+
+from tests.agent_browser_fixtures import browser_profile_identity
 from PIL import Image, ImageChops
 from playwright.sync_api import (
     Browser,
@@ -130,16 +132,16 @@ def seeded_chatgpt_browser_server_url(tmp_path: Path) -> Iterator[str]:
         server_thread.join(timeout=5)
 
 
-def _launch_disposable_browser(playwright: Playwright) -> Browser:
+def _launch_disposable_browser(playwright: Playwright, launch) -> Browser:
     browser_type: BrowserType = playwright.chromium
     managed_executable = Path(browser_type.executable_path)
     if managed_executable.is_file():
-        return browser_type.launch(headless=True)
+        return launch(browser_type, headless=True)
 
     launch_errors: list[str] = []
     for channel in ("chrome", "msedge"):
         try:
-            return browser_type.launch(channel=channel, headless=True)
+            return launch(browser_type, channel=channel, headless=True)
         except PlaywrightError as error:  # pragma: no cover - depends on host browser inventory
             launch_errors.append(f"{channel}: {error}")
     raise AssertionError(
@@ -149,9 +151,9 @@ def _launch_disposable_browser(playwright: Playwright) -> Browser:
 
 
 @pytest.fixture(scope="module")
-def disposable_browser() -> Iterator[Browser]:
+def disposable_browser(disposable_browser_launch) -> Iterator[Browser]:
     with sync_playwright() as playwright:
-        browser = _launch_disposable_browser(playwright)
+        browser = _launch_disposable_browser(playwright, disposable_browser_launch)
         try:
             yield browser
         finally:
@@ -849,7 +851,7 @@ def test_browser_message_timestamps_keep_two_rows_across_viewports(
         touch=False,
     )
     try:
-        session = page.locator(".browser-session-index-table a").first
+        session = page.locator(".browser-session-index-table tbody a").first
         expect(session).to_be_visible()
         detail_url = session.get_attribute("href")
         assert detail_url
@@ -1953,6 +1955,7 @@ def test_chatgpt_effort_footer_keeps_the_fifteen_pixel_label_on_one_line(
     """Keep the ChatGPT effort controls compact, styled, and readable."""
     catalog_payload = _chatgpt_catalog_sessions()
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -2297,6 +2300,7 @@ def test_cache_browser_session_failure_message_matches_account_typography_and_ha
 ) -> None:
     """Align every failure-copy line with the account text, never under the status icon."""
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": False,
         "account_name": "Security verification required",
         "message": "Edge could not verify an available Claude message composer." if source == "claude" else (
@@ -2395,7 +2399,7 @@ def test_cache_notice_flows_without_overlap_and_keeps_polling(
         route.fulfill(json={"phase": "idle", "running": False, "message": f"Status refresh {len(polls)}"})
 
     page.route(f"**/api/cache/{source}/status*", status_response)
-    page.route("**/api/browser-session**", lambda route: route.fulfill(json={"can_download": False}))
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={"profile_identity": browser_profile_identity("edge"), "can_download": False}))
     try:
         page.goto(f"{sidebar_server_url}/cache/{source}", wait_until="domcontentloaded")
         expect(page.locator("#message")).to_have_text("Status refresh 2", timeout=10_000)
@@ -2479,7 +2483,7 @@ def test_shared_dropdown_gel_tracks_and_reduced_motion(
         assert motion["track"] == "rgba(0, 0, 0, 0)"
         assert motion["thumb"] != "rgba(0, 0, 0, 0)"
 
-        menu.get_by_role("option", name="Recent sessions", exact=True).click()
+        menu.get_by_role("option", name="Projects", exact=True).click()
         trigger.click()
         expect(menu).to_be_visible()
         assert menu.evaluate("e => getComputedStyle(e).animationName") == "browser-pagination-range-gel-in"
@@ -3425,6 +3429,7 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
         browser_id = "chrome" if "browser=chrome" in route.request.url else "edge"
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity(browser_id),
                 "platform": platform,
                 "browser": browser_id,
                 "browser_label": browser_id.title(),
@@ -3443,6 +3448,7 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
         source_requests.append(route.request.url)
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": platform,
                 "browser_label": "Edge",
                 "recent_sessions": [
@@ -3474,6 +3480,7 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
         history_requests.append(route.request.url)
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "conversation_url": session_url,
                 "title": f"{platform_label} selected session",
                 "history": [{
@@ -3650,6 +3657,7 @@ def test_agent_provider_projects_submit_agentic_task_target(
         browser_id = "chrome" if "browser=chrome" in route.request.url else "edge"
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity(browser_id),
                 "platform": platform,
                 "browser": browser_id,
                 "browser_label": browser_id.title(),
@@ -3668,6 +3676,7 @@ def test_agent_provider_projects_submit_agentic_task_target(
         source_requests.append(route.request.url)
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": platform,
                 "browser_label": "Edge",
                 "recent_sessions": [],
@@ -3692,6 +3701,7 @@ def test_agent_provider_projects_submit_agentic_task_target(
         project_session_requests.append(route.request.url)
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": platform,
                 "project_url": project_url,
                 "sessions": [],
@@ -3845,6 +3855,7 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
     def fulfill_browser_status(route) -> None:
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "grok",
                 "browser": "edge",
                 "browser_label": "Edge",
@@ -3861,6 +3872,7 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
     def fulfill_sources(route) -> None:
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "grok",
                 "browser_label": "Edge",
                 "recent_sessions": [],
@@ -3878,6 +3890,7 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
         project_session_requests.append(route.request.url)
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "grok",
                 "project_url": project_url,
                 "sessions": [{
@@ -3894,6 +3907,7 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
         history_requests.append(route.request.url)
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "conversation_url": session_url,
                 "title": "Renamed project session",
                 "history": [{
@@ -4125,6 +4139,7 @@ def test_chatgpt_media_uses_agent_recent_project_picker(
     """Choose a ChatGPT project from the live Agent source catalog contract."""
     project_url = "https://chatgpt.com/g/g-p-demo-project/project"
     catalog_payload = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser_label": "Edge",
         "recent_sessions": [],
@@ -4305,6 +4320,7 @@ def _finished_chatgpt_agent_payload() -> dict[str, object]:
 
 def _chatgpt_catalog_sessions(*sessions: dict[str, str]) -> dict[str, object]:
     return {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser_label": "Edge",
         "recent_sessions": list(sessions),
@@ -4434,9 +4450,11 @@ def test_gemini_model_picker_keeps_both_versions_selectable(
     page = context.new_page()
     page.route("**/api/agent/status", lambda route: route.fulfill(json=payload))
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "gemini",
     }))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "gemini", "recent_sessions": [], "projects": [],
     }))
     page.route("**/api/agent/preferences", lambda route: route.fulfill(json=payload))
@@ -6415,6 +6433,7 @@ def test_finished_snapshot_does_not_auto_select_recent_chatgpt_session(
     def fulfill_browser_status(route) -> None:
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "chatgpt",
                 "browser": "edge",
                 "browser_label": "Edge",
@@ -6438,7 +6457,7 @@ def test_finished_snapshot_does_not_auto_select_recent_chatgpt_session(
         route.fulfill(json=_finished_chatgpt_agent_payload())
 
     def fulfill_history(route) -> None:
-        route.fulfill(json={"title": "", "history": []})
+        route.fulfill(json={"profile_identity": browser_profile_identity("edge"), "title": "", "history": []})
 
     context = disposable_browser.new_context(
         viewport={"width": 1_280, "height": 720},
@@ -6503,6 +6522,7 @@ def test_incomplete_chatgpt_effort_catalog_hides_stale_snapshot_options(
         }
     )
     incomplete_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -6586,6 +6606,7 @@ def test_complete_chatgpt_effort_catalog_accepts_verified_browser_session_proven
         }
     )
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -6662,6 +6683,7 @@ def test_client_cached_chatgpt_effort_catalog_reuses_options_without_a_refresh_b
     """A verified client cache survives reload without another browser probe."""
     browser_status_requests: list[str] = []
     cached_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -6690,7 +6712,7 @@ def test_client_cached_chatgpt_effort_catalog_reuses_options_without_a_refresh_b
         reduced_motion="no-preference",
     )
     page = context.new_page()
-    cache_key = "cachelikes:browser-session:v8:agent:chatgpt:edge"
+    cache_key = f"cachelikes:browser-session:v8:agent:chatgpt:edge:{browser_profile_identity()}"
     page.add_init_script(
         f"sessionStorage.setItem({json.dumps(cache_key)}, JSON.stringify({{"
         f"cached_at: Date.now(), payload: {json.dumps(cached_status)}}}));"
@@ -6744,6 +6766,7 @@ def test_running_chatgpt_agent_locks_model_and_effort_controls(
         }
     )
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -6833,6 +6856,7 @@ def test_agent_reenables_loaded_project_selector_after_run_finishes(
     def fulfill_browser_status(route) -> None:
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "chatgpt",
                 "browser": "edge",
                 "browser_label": "Edge",
@@ -6845,7 +6869,7 @@ def test_agent_reenables_loaded_project_selector_after_run_finishes(
         )
 
     def fulfill_project_sessions(route) -> None:
-        route.fulfill(json={"platform": "chatgpt", "project_url": project_url, "sessions": []})
+        route.fulfill(json={"profile_identity": browser_profile_identity("edge"), "platform": "chatgpt", "project_url": project_url, "sessions": []})
 
     def fulfill_ask(route) -> None:
         route.fulfill(json=running_payload)
@@ -6942,6 +6966,7 @@ def test_foreign_running_agent_poll_keeps_only_neutral_stop_state(
     def fulfill_browser_status(route) -> None:
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "chatgpt",
                 "browser": "edge",
                 "browser_label": "Edge",
@@ -6982,7 +7007,8 @@ def test_foreign_running_agent_poll_keeps_only_neutral_stop_state(
             "An Agent task is running in another project."
         )
         expect(page.locator("#agent_response_output")).to_be_hidden()
-        expect(page.locator("#agent_activity_panel")).to_be_hidden()
+        expect(page.locator("#agent_activity_panel")).to_be_visible()
+        expect(page.locator("#agent_activity_list > li")).to_have_count(0)
         expect(page.locator("#agent_error_record")).to_be_hidden()
         expect(page.locator("[data-agent-workspace-input]")).not_to_have_value(
             foreign_workspace
@@ -7009,6 +7035,7 @@ def test_agent_response_scrollports_keep_actions_and_last_line_inside(
     payload = _finished_chatgpt_agent_payload()
     response_html = "<pre><code>" + "Long code line\n" * 180 + "Last line</code></pre>"
     payload["agent"].update({
+        "profile_identity": browser_profile_identity("edge"),
         "prompt": "Long question text. " * 200,
         "response": "Long code line\n" * 180 + "Last line",
         "response_html": response_html,
@@ -7023,6 +7050,7 @@ def test_agent_response_scrollports_keep_actions_and_last_line_inside(
     page = context.new_page()
     page.route("**/api/agent/status", lambda route: route.fulfill(json=payload))
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt", "browser": "edge", "logged_in": True,
         "can_download": True, "agent_sources": _chatgpt_catalog_sessions(),
     }))
@@ -7108,6 +7136,7 @@ def test_agent_response_copy_uses_raw_history_text_and_the_global_action_rail(
     agent_payload = _finished_chatgpt_agent_payload()
     agent_payload["agent"].update(
         {
+            "profile_identity": browser_profile_identity("edge"),
             "prompt": "Latest prompt",
             "response": latest_raw_response,
             "response_html": "<p>Rendered latest answer only.</p>",
@@ -7130,6 +7159,7 @@ def test_agent_response_copy_uses_raw_history_text_and_the_global_action_rail(
         }
     )
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -7252,6 +7282,7 @@ def test_agent_response_action_rail_survives_a_short_crowded_viewport(
         }
     )
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -7404,6 +7435,7 @@ def test_agent_response_scroll_stays_at_the_bottom_during_status_refresh(
         }
     )
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -7479,6 +7511,7 @@ def test_agent_browser_status_retries_a_fresh_negative_cache_and_force_refreshes
 ) -> None:
     browser_status_requests: list[str] = []
     negative_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "gemini",
         "browser": "edge",
         "browser_label": "Edge",
@@ -7488,6 +7521,7 @@ def test_agent_browser_status_retries_a_fresh_negative_cache_and_force_refreshes
         "message": "Edge is not signed in to Gemini.",
     }
     ready_status = {
+        "profile_identity": browser_profile_identity("edge"),
         **negative_status,
         "logged_in": True,
         "can_download": True,
@@ -7506,7 +7540,7 @@ def test_agent_browser_status_retries_a_fresh_negative_cache_and_force_refreshes
         reduced_motion="reduce",
     )
     page = context.new_page()
-    cache_key = "cachelikes:browser-session:v8:agent:gemini:edge"
+    cache_key = f"cachelikes:browser-session:v8:agent:gemini:edge:{browser_profile_identity()}"
     page.add_init_script(
         f"sessionStorage.setItem({json.dumps(cache_key)}, JSON.stringify({{"
         f"cached_at: Date.now(), payload: {json.dumps(negative_status)}}}));"
@@ -7520,6 +7554,7 @@ def test_agent_browser_status_retries_a_fresh_negative_cache_and_force_refreshes
         "**/api/agent/sources**",
         lambda route: route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "gemini",
                 "browser_label": "Edge",
                 "recent_sessions": [],
@@ -7559,6 +7594,7 @@ def test_agent_browser_status_login_action_matches_probe_state(
     logged_in: bool,
 ) -> None:
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -7675,6 +7711,7 @@ def test_agent_project_path_prefers_trailing_directories_without_overflow(
 ) -> None:
     """Keep the useful end of a long project path visible in the current-project input."""
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -7700,6 +7737,7 @@ def test_agent_project_path_prefers_trailing_directories_without_overflow(
         "**/api/agent/sources**",
         lambda route: route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "chatgpt",
                 "browser_label": "Edge",
                 "recent_sessions": [],
@@ -7747,6 +7785,7 @@ def test_agent_bootstrap_replaces_ready_cache_without_catalog(
     source_requests: list[str] = []
     session_url = "https://chatgpt.com/c/bootstrap-cache-session"
     catalog_payload = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser_label": "Edge",
         "recent_sessions": [
@@ -7761,6 +7800,7 @@ def test_agent_bootstrap_replaces_ready_cache_without_catalog(
         "limit": 20,
     }
     fresh_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -7786,8 +7826,9 @@ def test_agent_bootstrap_replaces_ready_cache_without_catalog(
         reduced_motion="reduce",
     )
     page = context.new_page()
-    cache_key = "cachelikes:browser-session:v8:agent:chatgpt:edge"
+    cache_key = f"cachelikes:browser-session:v8:agent:chatgpt:edge:{browser_profile_identity()}"
     cached_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -7811,7 +7852,7 @@ def test_agent_bootstrap_replaces_ready_cache_without_catalog(
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
         expect(
             page.locator(
-                f'[data-agent-session-list="recent"] [data-agent-combobox-option="{session_url}"]'
+                f'[data-recent-conversation-url="{session_url}"]'
             )
         ).to_have_count(1)
         assert len(browser_status_requests) == 1
@@ -7829,6 +7870,7 @@ def test_fresh_grok_bootstrap_supersedes_a_stale_cached_catalog_error(
     source_requests: list[str] = []
     session_url = "https://grok.com/c/fresh-bootstrap-session"
     catalog_payload = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "grok",
         "browser_label": "Edge",
         "recent_sessions": [
@@ -7843,6 +7885,7 @@ def test_fresh_grok_bootstrap_supersedes_a_stale_cached_catalog_error(
         "limit": 20,
     }
     stale_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "grok",
         "browser": "edge",
         "browser_label": "Edge",
@@ -7874,7 +7917,7 @@ def test_fresh_grok_bootstrap_supersedes_a_stale_cached_catalog_error(
         reduced_motion="reduce",
     )
     page = context.new_page()
-    cache_key = "cachelikes:browser-session:v8:agent:grok:edge"
+    cache_key = f"cachelikes:browser-session:v8:agent:grok:edge:{browser_profile_identity()}"
     cache_entry = json.dumps(
         {"cached_at": 0, "payload": stale_status},
         ensure_ascii=False,
@@ -7896,7 +7939,7 @@ def test_fresh_grok_bootstrap_supersedes_a_stale_cached_catalog_error(
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/grok", wait_until="domcontentloaded")
         fresh_option = page.locator(
-            f'[data-agent-session-list="recent"] [data-agent-combobox-option="{session_url}"]'
+            f'[data-recent-conversation-url="{session_url}"]'
         )
         expect(fresh_option).to_have_count(1)
         expect(fresh_option).to_contain_text("Fresh Grok session")
@@ -7917,6 +7960,7 @@ def test_stale_chatgpt_probe_failure_cannot_overwrite_grok_ready_state(
     grok_ready_message = "Edge verified Grok after the provider switch."
     stale_chatgpt_error = "The superseded ChatGPT probe failed."
     grok_catalog = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "grok",
         "browser_label": "Edge",
         "recent_sessions": [],
@@ -7935,6 +7979,7 @@ def test_stale_chatgpt_probe_failure_cannot_overwrite_grok_ready_state(
         assert "platform=grok" in request_url
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "grok",
                 "browser": "edge",
                 "browser_label": "Edge",
@@ -7979,7 +8024,8 @@ def test_stale_chatgpt_probe_failure_cannot_overwrite_grok_ready_state(
         expect(page.locator("[data-agent-response-question]")).to_be_empty()
         expect(page.locator("[data-agent-response-answer-content]")).to_be_empty()
         expect(page.locator("[data-agent-prompt-input]")).to_have_value("")
-        expect(page.locator("#agent_activity_panel")).to_be_hidden()
+        expect(page.locator("#agent_activity_panel")).to_be_visible()
+        expect(page.locator("#agent_activity_list > li")).to_have_count(0)
         assert len(browser_session_requests) == 2
         assert "platform=grok" in browser_session_requests[-1]
 
@@ -8027,6 +8073,7 @@ def test_running_agent_status_shows_elapsed_turn_count_and_activity_time(
         "message": "Controller observation sent; waiting for the next ChatGPT action.",
     }
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -8125,6 +8172,7 @@ def test_observed_agent_completion_does_not_refresh_sources(
     def fulfill_browser_status(route) -> None:
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "chatgpt",
                 "browser": "edge",
                 "browser_label": "Edge",
@@ -8219,6 +8267,7 @@ def test_successful_agent_completion_collapses_activity_without_erasing_a_new_dr
     }
     catalog_payload = _chatgpt_catalog_sessions()
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -8374,6 +8423,7 @@ def test_hydrated_running_agent_handles_the_first_finished_status_without_losing
     run_identity = str(finished_agent["run_id"])
     catalog_payload = _chatgpt_catalog_sessions()
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -8408,7 +8458,7 @@ def test_hydrated_running_agent_handles_the_first_finished_status_without_losing
             1,
         )
         body = body.replace(
-            '<details class="agent-activity-panel" id="agent_activity_panel" hidden>',
+            '<details class="agent-activity-panel" id="agent_activity_panel">',
             '<details class="agent-activity-panel" id="agent_activity_panel" open>',
             1,
         )
@@ -8512,6 +8562,7 @@ def test_late_prior_run_status_cannot_overwrite_the_new_running_agent_draft(
     current_payload = {**base_payload, "agent": current_agent}
     catalog_payload = _chatgpt_catalog_sessions()
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -8626,6 +8677,7 @@ def test_superseding_finished_run_never_clears_an_idle_local_draft(
     later_payload = {**base_payload, "agent": later_agent}
     catalog_payload = _chatgpt_catalog_sessions()
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -8698,6 +8750,7 @@ def test_rejected_ask_keeps_the_draft_when_an_old_finished_status_arrives(
     }
     catalog_payload = _chatgpt_catalog_sessions()
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -8780,6 +8833,7 @@ def test_successful_ask_acknowledges_a_distinct_same_second_run_id(
     acknowledged_payload = {**base_payload, "agent": acknowledged_agent}
     catalog_payload = _chatgpt_catalog_sessions()
     browser_status = {
+        "profile_identity": browser_profile_identity("edge"),
         "platform": "chatgpt",
         "browser": "edge",
         "browser_label": "Edge",
@@ -8844,6 +8898,7 @@ def test_missing_snapshot_url_is_not_synthesized_into_session_catalog(
     def fulfill_browser_status(route) -> None:
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "chatgpt",
                 "browser": "edge",
                 "browser_label": "Edge",
@@ -8884,16 +8939,14 @@ def test_missing_snapshot_url_is_not_synthesized_into_session_catalog(
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
         expect(page.locator("[data-agent-prompt-session-mode]")).to_have_value("new")
         expect(page.locator("[data-agent-prompt-conversation-url]")).to_have_value("")
-        page.locator(".agent-session-mode-combobox [data-agent-combobox-trigger]").click()
-        page.locator('.agent-session-mode-combobox [data-agent-combobox-option="recent"]').click()
         expect(
             page.locator(
-                f'[data-agent-session-list="recent"] [data-agent-combobox-option="{FINISHED_SNAPSHOT_URL}"]'
+                f'[data-recent-conversation-url="{FINISHED_SNAPSHOT_URL}"]'
             )
         ).to_have_count(0)
         expect(
             page.locator(
-                f'[data-agent-session-list="recent"] [data-agent-combobox-option="{AGENTIC_TROUBLESHOOTING_URL}"]'
+                f'[data-recent-conversation-url="{AGENTIC_TROUBLESHOOTING_URL}"]'
             )
         ).to_have_count(1)
         expect(page.locator("[data-agent-prompt-conversation-url]")).to_have_value("")
@@ -8916,6 +8969,7 @@ def test_explicit_agentic_troubleshooting_session_is_the_only_reused_target(
     def fulfill_browser_status(route) -> None:
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "platform": "chatgpt",
                 "browser": "edge",
                 "browser_label": "Edge",
@@ -8950,6 +9004,7 @@ def test_explicit_agentic_troubleshooting_session_is_the_only_reused_target(
     def fulfill_history(route) -> None:
         route.fulfill(
             json={
+                "profile_identity": browser_profile_identity("edge"),
                 "title": "Agentic Troubleshooting",
                 "history": [],
             }
@@ -8975,10 +9030,8 @@ def test_explicit_agentic_troubleshooting_session_is_the_only_reused_target(
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
         expect(page.locator("[data-agent-prompt-session-mode]")).to_have_value("new")
-        page.locator(".agent-session-mode-combobox [data-agent-combobox-trigger]").click()
-        page.locator('.agent-session-mode-combobox [data-agent-combobox-option="recent"]').click()
         page.locator(
-            f'[data-agent-session-list="recent"] [data-agent-combobox-option="{AGENTIC_TROUBLESHOOTING_URL}"]'
+            f'[data-recent-conversation-url="{AGENTIC_TROUBLESHOOTING_URL}"]'
         ).click()
         expect(page.locator("[data-agent-prompt-session-mode]")).to_have_value("recent")
         expect(page.locator("[data-agent-prompt-conversation-url]")).to_have_value(
@@ -9014,6 +9067,7 @@ def test_agent_bootstrap_discovers_models_efforts_and_restores_markdown_once(
     payload = _finished_chatgpt_agent_payload()
     payload['agent'].update(response=raw, response_html=str(render_agent_response(raw)), history=[])
     status = {
+        "profile_identity": browser_profile_identity('edge'),
         'platform': 'chatgpt', 'browser': 'edge', 'can_download': True,
         'account_name': 'ChatGPT account', 'browser_label': 'Edge',
         'agent_sources': _chatgpt_catalog_sessions(),
@@ -9210,9 +9264,12 @@ def test_cache_annotations_keep_motion_icons_and_remaining_space(
         page.locator('.agent-session-mode-combobox [data-agent-combobox-trigger]').click()
         option = page.locator('.agent-session-mode-combobox [data-agent-combobox-option="new"]')
         expect(option).to_be_visible()
+        expect(option.locator('img')).to_be_hidden()
+        assert option.evaluate("el => getComputedStyle(el, '::after').maskImage").endswith('plus.circle.svg")')
+        assert option.evaluate("el => getComputedStyle(el, '::after').height") == "20px"
         delta = option.evaluate("""el => {
-            const a = el.querySelector('img').getBoundingClientRect();
-            const b = el.querySelector('.trade-strategy-dropdown-check').getBoundingClientRect();
+            const a = el.querySelector('.trade-strategy-dropdown-check').getBoundingClientRect();
+            const b = el.querySelector('.trade-strategy-dropdown-text').getBoundingClientRect();
             return Math.abs(a.y + a.height / 2 - b.y - b.height / 2);
         }""")
         assert delta <= 1
@@ -9349,6 +9406,7 @@ def test_agent_bootstrap_replaces_incomplete_cache_before_picker_clicks(
     from app.core.agent_model_catalog import chatgpt_live_catalog
 
     status = {
+        "profile_identity": browser_profile_identity('edge'),
         'platform': 'chatgpt', 'browser': 'edge', 'can_download': True,
         'account_name': 'ChatGPT account', 'browser_label': 'Edge',
         'model_catalog_complete': True, 'actual_model': 'Latest',
@@ -9364,7 +9422,7 @@ def test_agent_bootstrap_replaces_incomplete_cache_before_picker_clicks(
     context = disposable_browser.new_context(viewport={'width': width, 'height': 863})
     page = context.new_page()
     page.add_init_script(
-        'sessionStorage.setItem("cachelikes:browser-session:v8:agent:chatgpt:edge",'
+        f'sessionStorage.setItem("cachelikes:browser-session:v8:agent:chatgpt:edge:{browser_profile_identity()}",'
         f'JSON.stringify({{cached_at: Date.now(), payload: {json.dumps(status)}}}));'
     )
     page.route('**/api/agent/status', lambda route: route.fulfill(json=_finished_chatgpt_agent_payload()))
@@ -9415,6 +9473,7 @@ def test_agent_activity_completion_icon_contract(disposable_browser, sidebar_ser
     page = context.new_page()
     page.route('**/api/agent/status', lambda route: route.fulfill(json=payload))
     page.route('**/api/browser-session**', lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity('edge'),
         'platform': 'chatgpt', 'browser': 'edge', 'can_download': True,
         'account_name': 'ChatGPT account',
     }))

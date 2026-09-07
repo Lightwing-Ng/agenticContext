@@ -1,6 +1,6 @@
 """Stable foundation boundary for runtime configuration, identity, and task state."""
 
-# Code version: v1.1.1-codex.1
+# Code version: v1.1.2-codex.1
 
 from ..brand import PRODUCT_NAME
 from ..config import (
@@ -19,6 +19,7 @@ from ..config import (
     is_macos_host,
     is_windows_host,
     load_saved_config,
+    validate_chromium_profile_directory,
     normalize_download_workers,
     save_config,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "is_macos_host",
     "is_windows_host",
     "load_saved_config",
+    "validate_chromium_profile_directory",
     "normalize_download_workers",
     "save_config",
     "utc_now",

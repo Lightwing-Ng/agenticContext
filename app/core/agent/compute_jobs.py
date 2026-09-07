@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.2.0-codex.1
+Code version: v1.3.0-codex.1
 """
 
 from __future__ import annotations
@@ -10,14 +10,18 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import secrets
 import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
+
+from . import _windows_processes
 
 
 APPROVAL_FILENAME = ".agenticContext-compute.json"
@@ -126,16 +130,18 @@ def _process_identity(pid: int) -> str:
     """Return a stable-enough birth identity used to reject PID reuse."""
     if pid <= 0:
         return ""
+    if os.name == "nt":
+        return _windows_processes.process_identity(pid)
     proc_stat = Path(f"/proc/{pid}/stat")
     try:
-        fields = proc_stat.read_text(encoding="utf-8").split()
-        if len(fields) > 21:
-            return f"proc:{fields[21]}"
+        fields = proc_stat.read_text(encoding="utf-8").rpartition(")")[2].split()
+        if len(fields) > 19:
+            return "" if fields[0] == "Z" else f"proc:{fields[19]}"
     except (OSError, UnicodeError):
         pass
     try:
         result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "lstart=", "-o", "command="],
+            ["ps", "-p", str(pid), "-o", "stat=", "-o", "lstart=", "-o", "command="],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -147,10 +153,10 @@ def _process_identity(pid: int) -> str:
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    value = result.stdout.strip()
-    if result.returncode != 0 or not value:
+    fields = result.stdout.strip().split(maxsplit=1)
+    if result.returncode != 0 or len(fields) != 2 or fields[0].startswith("Z"):
         return ""
-    return "ps:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return "ps:" + hashlib.sha256(fields[1].encode("utf-8")).hexdigest()
 
 
 def _identity_matches(pid: Any, expected: Any) -> bool:
@@ -178,18 +184,53 @@ def _terminate_process_group(pid: int, *, timeout: float = 5.0) -> None:
             os.killpg(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        deadline = time.monotonic() + timeout
+        while _process_identity(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if _process_identity(pid):
+            raise ComputeJobError("Compute worker termination could not be confirmed.")
         return
+    system_root = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR")
+    if not system_root:
+        raise ComputeJobError("Windows system directory is unavailable for process termination.")
     try:
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
+        result = subprocess.run(
+            [str(Path(system_root) / "System32" / "taskkill.exe"), "/PID", str(pid), "/T", "/F"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ComputeJobError("Windows process termination failed.") from exc
+    if result.returncode != 0:
+        raise ComputeJobError(f"Windows process termination failed with status {result.returncode}.")
+    deadline = time.monotonic() + timeout
+    while _process_identity(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if _process_identity(pid):
+        raise ComputeJobError("Windows process termination could not be confirmed.")
+
+
+def _start_sleep_assertion(metadata: dict[str, Any], executable: Path) -> None:
+    if sys.platform != "darwin" or not executable.is_file():
+        return
+    try:
+        process = subprocess.Popen(
+            [str(executable), "-i", "-w", str(metadata["pid"])],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError:
+        return
+    identity = _process_identity(process.pid)
+    if identity:
+        metadata["sleep_assertion_pid"] = process.pid
+        metadata["sleep_assertion_identity"] = identity
 
 
 def validate_optimizer_checkpoint(payload: Any) -> dict[str, Any]:
@@ -470,12 +511,23 @@ class ComputeJobManager:
         environment = {
             key: value
             for key, value in os.environ.items()
-            if key in {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SYSTEMROOT", "WINDIR"}
+            if key.upper() in {
+                "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP",
+                "SYSTEMROOT", "WINDIR", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
+                "HOMEDRIVE", "HOMEPATH", "AGENTIC_CONTEXT_RUNTIME_ROOT",
+                "AGENTIC_CONTEXT_SETTINGS_PATH",
+            }
         }
         package_root = Path(__file__).resolve().parents[3]
         environment["PYTHONPATH"] = str(package_root)
         environment["PYTHONUNBUFFERED"] = "1"
         environment["AGENTIC_CONTEXT_COMPUTE_JOB"] = job_id
+        environment["AGENTIC_CONTEXT_COMPUTE_CAFFEINATE"] = str(self._caffeinate_executable)
+        launch_options: dict[str, Any] = {"start_new_session": True}
+        if os.name == "nt":
+            launch_options = {
+                "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+            }
         try:
             process = subprocess.Popen(
                 command,
@@ -485,7 +537,7 @@ class ComputeJobManager:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
-                start_new_session=True,
+                **launch_options,
             )
         except OSError as exc:
             metadata["state"] = "failed"
@@ -494,54 +546,43 @@ class ComputeJobManager:
             metadata["message"] = "Approved compute worker could not start."
             self._save_metadata(metadata)
             raise ComputeJobError("Approved compute worker could not start.") from exc
-        identity = ""
-        previous_identity = ""
-        for _ in range(50):
-            current_identity = _process_identity(process.pid)
-            if current_identity and current_identity == previous_identity:
-                identity = current_identity
+        for _ in range(100):
+            current_metadata = self._load_metadata(job_id)
+            if current_metadata.get("state") in TERMINAL_STATES:
+                return self.status(job_id)
+            if (
+                current_metadata.get("pid") == process.pid
+                and current_metadata.get("state") == "running"
+                and _identity_matches(process.pid, current_metadata.get("process_identity"))
+            ):
+                return self.status(job_id)
+            if process.poll() is not None:
                 break
-            previous_identity = current_identity
             time.sleep(0.02)
-        current_metadata = self._load_metadata(job_id)
-        if current_metadata.get("state") in TERMINAL_STATES:
-            return self.status(job_id)
-        if not identity:
-            _terminate_process_group(process.pid, timeout=1)
-            metadata["state"] = "failed"
-            metadata["updated_at"] = _utc_now()
-            metadata["ended_at"] = metadata["updated_at"]
-            metadata["message"] = "Compute worker identity could not be verified."
-            self._save_metadata(metadata)
-            raise ComputeJobError("Compute worker identity could not be verified.")
-        metadata = current_metadata
-        metadata["pid"] = process.pid
-        metadata["process_identity"] = identity
-        metadata["state"] = "running"
+        cleanup_failure: Exception | None = None
+        if process.poll() is None:
+            try:
+                if os.name == "posix":
+                    _terminate_process_group(process.pid, timeout=1)
+                else:
+                    process.terminate()
+                    process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired, ComputeJobError) as exc:
+                cleanup_failure = exc
+        metadata = self._load_metadata(job_id)
+        metadata["state"] = "stopping" if cleanup_failure is not None else "failed"
         metadata["updated_at"] = _utc_now()
-        metadata["message"] = "Approved compute worker is running independently of the provider turn."
-        self._start_sleep_assertion(metadata)
+        metadata["ended_at"] = "" if cleanup_failure is not None else metadata["updated_at"]
+        metadata["message"] = "Compute worker readiness and identity could not be verified."
+        if cleanup_failure is not None:
+            metadata["pid"] = process.pid
+            metadata["process_identity"] = _process_identity(process.pid)
+            metadata["message"] += f" Startup cleanup is not confirmed: {cleanup_failure}"
         self._save_metadata(metadata)
-        return self.status(job_id)
+        raise ComputeJobError(metadata["message"]) from cleanup_failure
 
     def _start_sleep_assertion(self, metadata: dict[str, Any]) -> None:
-        if sys.platform != "darwin" or not self._caffeinate_executable.is_file():
-            return
-        try:
-            process = subprocess.Popen(
-                [str(self._caffeinate_executable), "-i", "-w", str(metadata["pid"])],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-                start_new_session=True,
-            )
-        except OSError:
-            return
-        identity = _process_identity(process.pid)
-        if identity:
-            metadata["sleep_assertion_pid"] = process.pid
-            metadata["sleep_assertion_identity"] = identity
+        _start_sleep_assertion(metadata, self._caffeinate_executable)
 
     def status(self, job_id: str = "") -> dict[str, Any]:
         """Return bounded metadata, progress, and a small log tail."""
@@ -635,7 +676,18 @@ class ComputeJobManager:
         metadata["state"] = "stopping"
         metadata["updated_at"] = _utc_now()
         self._save_metadata(metadata)
-        _terminate_process_group(int(metadata["pid"]))
+        try:
+            if os.name == "nt" and metadata.get("windows_job_name"):
+                _windows_processes.terminate_job(str(metadata["windows_job_name"]))
+            else:
+                _terminate_process_group(int(metadata["pid"]))
+            if _identity_matches(metadata["pid"], metadata["process_identity"]):
+                raise ComputeJobError("Compute worker is still running after the stop request.")
+        except (OSError, ComputeJobError) as exc:
+            metadata["message"] = f"Compute job stop is not confirmed: {exc}"
+            metadata["updated_at"] = _utc_now()
+            self._save_metadata(metadata)
+            raise ComputeJobError(metadata["message"]) from exc
         metadata["state"] = "stopped"
         metadata["updated_at"] = _utc_now()
         metadata["ended_at"] = metadata["updated_at"]
@@ -658,8 +710,12 @@ def _bounded_log_append(log_path: Path, data: bytes) -> None:
         handle.write(retained)
 
 
-def _worker_main(arguments: list[str]) -> int:
-    """Run the approved child and own terminal metadata publication."""
+def _worker_main(
+    arguments: list[str],
+    *,
+    windows_job: _windows_processes.WorkerJob | None = None,
+) -> int:
+    """Supervise a child with bounded, portable pipe reading and failure cleanup."""
     if len(arguments) not in {4, 5}:
         return 64
     metadata_path = Path(arguments[0]).resolve(strict=True)
@@ -669,82 +725,175 @@ def _worker_main(arguments: list[str]) -> int:
     checkpoint = Path(arguments[4]).resolve(strict=True) if len(arguments) == 5 else None
     job_root = metadata_path.parent
     command = [
-        sys.executable,
-        str(entrypoint),
-        "--config",
-        str(config),
-        "--job-runtime",
-        str(job_root),
+        sys.executable, str(entrypoint), "--config", str(config),
+        "--job-runtime", str(job_root),
     ]
     if checkpoint is not None:
         command.extend(["--resume", str(checkpoint)])
     if sys.platform == "darwin" and MACOS_SANDBOX_EXECUTABLE.is_file():
-        command = [
-            str(MACOS_SANDBOX_EXECUTABLE),
-            "-p",
-            MACOS_NETWORK_DENY_PROFILE,
-            *command,
-        ]
+        command = [str(MACOS_SANDBOX_EXECUTABLE), "-p", MACOS_NETWORK_DENY_PROFILE, *command]
     environment = dict(os.environ)
     environment["AGENTIC_CONTEXT_COMPUTE_JOB_RUNTIME"] = str(job_root)
     log_path = job_root / "worker.log"
-    started = time.monotonic()
-    child = subprocess.Popen(
-        command,
-        cwd=entrypoint.parent,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        close_fds=True,
-    )
-    if child.stdout is None:
-        return 70
-    import selectors
-
-    selector = selectors.DefaultSelector()
-    selector.register(child.stdout, selectors.EVENT_READ)
+    chunks: queue.Queue[bytes | Exception | None] = queue.Queue(maxsize=16)
+    reader_stop = threading.Event()
+    child: subprocess.Popen | None = None
+    reader: threading.Thread | None = None
+    failure: Exception | None = None
+    exit_status = 70
     timed_out = False
-    while child.poll() is None:
-        if time.monotonic() - started >= max_runtime:
-            timed_out = True
-            child.terminate()
+
+    def publish_chunk(chunk: bytes | Exception | None) -> None:
+        while not reader_stop.is_set():
             try:
-                child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                child.kill()
-            break
-        for key, _mask in selector.select(timeout=0.25):
-            chunk = os.read(key.fileobj.fileno(), 64 * 1024)
-            if chunk:
+                chunks.put(chunk, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
+    def read_output() -> None:
+        try:
+            while not reader_stop.is_set():
+                chunk = child.stdout.read1(64 * 1024)
+                if not chunk:
+                    break
+                publish_chunk(chunk)
+        except Exception as exc:
+            publish_chunk(exc)
+        finally:
+            publish_chunk(None)
+
+    try:
+        metadata = _read_json_object(metadata_path, maximum_bytes=128 * 1024)
+        identity = _process_identity(os.getpid())
+        if not identity:
+            raise ComputeJobError("Compute worker identity could not be verified.")
+        metadata.update({
+            "pid": os.getpid(), "process_identity": identity, "state": "running",
+            "updated_at": _utc_now(),
+            "message": "Approved compute worker is running independently of the provider turn.",
+        })
+        if windows_job is not None:
+            metadata["windows_job_name"] = _windows_processes.job_name(str(metadata["job_id"]))
+        # The worker is the sole startup publisher; the parent cannot overwrite a fast result.
+        _start_sleep_assertion(metadata, Path(
+            os.environ.get("AGENTIC_CONTEXT_COMPUTE_CAFFEINATE", "/usr/bin/caffeinate")
+        ))
+        _atomic_write_json(metadata_path, metadata)
+        started = time.monotonic()
+        child = subprocess.Popen(
+            command, cwd=entrypoint.parent, env=environment,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, close_fds=True,
+        )
+        if child.stdout is None:
+            raise ComputeJobError("Compute worker output pipe is unavailable.")
+        reader = threading.Thread(target=read_output, name="compute-output", daemon=True)
+        reader.start()
+        output_done = False
+        child_finished_at: float | None = None
+        while not output_done or child.poll() is None:
+            now = time.monotonic()
+            if child.poll() is None and now - started >= max_runtime:
+                timed_out = True
+                raise ComputeJobError("Compute job exceeded its approved runtime limit.")
+            if child.poll() is not None and child_finished_at is None:
+                child_finished_at = now
+                if windows_job is not None:
+                    windows_job.terminate_descendants()
+            if child_finished_at is not None and now - child_finished_at >= 5:
+                raise ComputeJobError("Compute output pipe remained open after the child exited.")
+            try:
+                chunk = chunks.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if chunk is None:
+                output_done = True
+            elif isinstance(chunk, Exception):
+                raise chunk
+            else:
                 _bounded_log_append(log_path, chunk)
-    remainder = child.stdout.read()
-    if remainder:
-        _bounded_log_append(log_path, remainder)
-    exit_status = child.wait()
+        exit_status = child.wait(timeout=5)
+    except Exception as exc:
+        failure = exc
+    finally:
+        reader_stop.set()
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    child.terminate()
+                    try:
+                        child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait(timeout=5)
+                else:
+                    child.wait(timeout=5)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(f"Child cleanup also failed: {exc}")
+        if windows_job is not None:
+            try:
+                windows_job.close_after_cleanup()
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(f"Job cleanup also failed: {exc}")
+        if reader is not None and reader.ident is not None:
+            reader.join(timeout=2)
+            if reader.is_alive() and failure is None:
+                failure = ComputeJobError("Compute output reader did not finish after child cleanup.")
+        if child is not None and child.stdout is not None and (reader is None or not reader.is_alive()):
+            try:
+                child.stdout.close()
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(f"Output pipe cleanup also failed: {exc}")
     try:
         metadata = _read_json_object(metadata_path, maximum_bytes=128 * 1024)
     except ComputeJobError:
         return exit_status or 70
-    if metadata.get("state") == "stopping":
-        return exit_status
     metadata["exit_status"] = exit_status
-    metadata["state"] = "succeeded" if exit_status == 0 and not timed_out else "failed"
+    metadata["state"] = "succeeded" if exit_status == 0 and failure is None else "failed"
     metadata["updated_at"] = _utc_now()
     metadata["ended_at"] = metadata["updated_at"]
-    metadata["message"] = (
-        "Compute job exceeded its approved runtime limit."
-        if timed_out
-        else ("Compute job completed." if exit_status == 0 else "Compute job exited with a failure status.")
-    )
+    if failure is not None:
+        details = "; ".join([str(failure), *getattr(failure, "__notes__", [])])
+        metadata["message"] = (
+            "Compute job exceeded its approved runtime limit."
+            if timed_out else f"Compute worker failed: {details}"
+        )[:MAX_STATUS_TEXT_CHARS]
+    else:
+        metadata["message"] = "Compute job completed." if exit_status == 0 else "Compute job exited with a failure status."
     _atomic_write_json(metadata_path, metadata)
-    return exit_status
+    return exit_status if failure is None else (exit_status or 70)
 
 
 def _main(argv: list[str]) -> int:
     if not argv or argv[0] != "--worker":
         return 64
-    return _worker_main(argv[1:])
+    if os.name != "nt":
+        return _worker_main(argv[1:])
+    arguments = argv[1:]
+    if len(arguments) not in {4, 5}:
+        return 64
+    metadata_path = Path(arguments[0]).resolve(strict=True)
+    metadata = _read_json_object(metadata_path, maximum_bytes=128 * 1024)
+    try:
+        job = _windows_processes.WorkerJob(_windows_processes.job_name(str(metadata["job_id"])))
+    except OSError as exc:
+        metadata.update({
+            "state": "failed", "updated_at": _utc_now(), "ended_at": _utc_now(),
+            "exit_status": 70, "message": f"Compute process containment could not start: {exc}",
+        })
+        _atomic_write_json(metadata_path, metadata)
+        return 70
+    return _worker_main(arguments, windows_job=job)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through detached workers.

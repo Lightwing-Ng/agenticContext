@@ -1,4 +1,4 @@
-/* Code version: v3.40.0-codex.1 */
+/* Code version: v3.41.1-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -94,6 +94,61 @@
     let preferredModel = elements.modelInput?.value || "";
     let browserStatusState = "cleared";
     let browserStatusController = null;
+    let browserProfileIdentities = {};
+    try {
+        browserProfileIdentities = JSON.parse(elements.browserSession?.dataset.browserProfileIdentities || "{}");
+    } catch (_error) {}
+
+    function selectedProfileIdentity() {
+        return String(browserProfileIdentities?.[selectedBrowser()] || "");
+    }
+
+    function requireSelectedProfile(payload, requestProfile) {
+        if (!requestProfile || payload?.profile_identity !== requestProfile) {
+            throw new Error("Browser profile settings changed. Recheck the selected profile.");
+        }
+    }
+
+    function invalidateBrowserProfileEvidence() {
+        // Keep the selected worker and its Stop control, but discard provider proof and choices.
+        sourceRequestId += 1;
+        projectSessionRequestId += 1;
+        recentSelectionRequestId += 1;
+        catalogAbort?.abort();
+        catalogAbort = null;
+        appliedBootstrapSignature = "";
+        sourceBrowser = "";
+        sourcePlatform = "";
+        sourcesLoaded = false;
+        sourcesLoading = false;
+        catalogState = "idle";
+        catalogError = "";
+        lastBrowserStatus = null;
+        browserStatusState = "cleared";
+        agentSources = {recent_sessions: [], projects: []};
+        executionConversationTitles.clear();
+        sessionSelectionRestoredKey = "";
+        sessionTitleOverride = "";
+        selectedRemoteConversationUrl = "";
+        selectedProjectConversationUrl = "new";
+        resetRemoteSessionHistory();
+        resetProjectSessions();
+        if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = "";
+        setProjectComboboxValue("", projectCollectionLabel());
+        renderRecentSessionList();
+    }
+
+    function syncBrowserProfileIdentities(runtime) {
+        const nextIdentities = runtime?.browser_profile_identities;
+        if (!nextIdentities || typeof nextIdentities !== "object") return;
+        const previousProfile = selectedProfileIdentity();
+        browserProfileIdentities = nextIdentities;
+        if (previousProfile !== selectedProfileIdentity()) invalidateBrowserProfileEvidence();
+        lastPayload = {...lastPayload, runtime: {
+            ...(lastPayload.runtime || {}), browser_profile_identities: nextIdentities,
+        }};
+        browserStatusController?.setProfileIdentities(nextIdentities);
+    }
     let preferenceTimer = null;
     let responseStatusTimer = null;
     let activitySignature = "";
@@ -495,7 +550,9 @@
                     && executionSessionId !== "new") {
                     await selectExecutionSession("new");
                 }
-                throw new Error(payload.error || `Request failed with ${response.status}.`);
+                const error = new Error(payload.error || `Request failed with ${response.status}.`);
+                error.code = String(payload.code || "");
+                throw error;
             }
             return payload;
         } finally {
@@ -705,7 +762,7 @@
 
     function sessionSelectionCacheKey() {
         return `${AGENT_SESSION_SELECTION_CACHE_PREFIX}:v${AGENT_SESSION_SELECTION_CACHE_VERSION}`
-            + `:${selectedPlatform()}:${selectedBrowser()}`;
+            + `:${selectedPlatform()}:${selectedBrowser()}:${selectedProfileIdentity()}`;
     }
 
     function normalizedSessionCacheUrl(value) {
@@ -1585,6 +1642,7 @@
     async function loadProjectSessions(projectUrl, options = {}) {
         if (!projectUrl) return false;
         const requestId = ++projectSessionRequestId;
+        const requestProfile = selectedProfileIdentity();
         try {
             const query = new URLSearchParams({
                 platform: selectedPlatform(),
@@ -1593,7 +1651,9 @@
             });
             if (options.forceRefresh) query.set("refresh", "1");
             const payload = await requestJson(`/api/agent/project-sessions?${query.toString()}`);
-            if (requestId !== projectSessionRequestId || projectUrl !== selectedProjectUrl()) return false;
+            if (requestId !== projectSessionRequestId || projectUrl !== selectedProjectUrl()
+                || requestProfile !== selectedProfileIdentity()) return false;
+            requireSelectedProfile(payload, requestProfile);
             populateProjectSessions(payload.sessions || []);
             // Show durable cached choices immediately, then revalidate only an expired catalog.
             if (payload.cache?.status === "stale" && !options.forceRefresh) {
@@ -1617,6 +1677,7 @@
             return;
         }
         const browserName = selectedBrowser();
+        const requestProfile = selectedProfileIdentity();
         if (
             remoteHistoryMatchesSelection()
             && (remoteSessionHistoryLoading || !remoteSessionHistoryError)
@@ -1641,7 +1702,9 @@
                 ? "/api/agent/grok-session-history"
                 : "/api/agent/chatgpt-session-history";
             const payload = await requestJson(`${historyEndpoint}?${query.toString()}`);
-            if (requestId !== remoteSessionHistoryRequestId || !remoteHistoryMatchesSelection()) return;
+            if (requestId !== remoteSessionHistoryRequestId || !remoteHistoryMatchesSelection()
+                || requestProfile !== selectedProfileIdentity()) return;
+            requireSelectedProfile(payload, requestProfile);
             remoteSessionHistory = Array.isArray(payload.history)
                 ? payload.history.filter((item) => item && item.prompt && item.response)
                 : [];
@@ -1725,6 +1788,8 @@
         if (!lastBrowserStatus?.can_download || !selectedBrowser()) return;
         const browserName = selectedBrowser();
         const platform = selectedPlatform();
+        const requestProfile = selectedProfileIdentity();
+        if (!requestProfile || lastBrowserStatus.profile_identity !== requestProfile) return;
         const platformLabel = selectedPlatformLabel();
         const bootstrappedSources = lastBrowserStatus?.agent_sources;
         const bootstrappedError = lastBrowserStatus?.agent_sources_error;
@@ -1732,7 +1797,7 @@
         if (!forceRefresh && supportsBootstrap && (bootstrappedSources || bootstrappedError)) {
             const bootstrapKind = bootstrappedSources ? "sources" : "error";
             const bootstrapValue = bootstrappedSources || String(bootstrappedError || "");
-            const bootstrapSignature = `${browserName}|${platform}|${bootstrapKind}|${JSON.stringify(bootstrapValue)}`;
+            const bootstrapSignature = `${browserName}|${platform}|${requestProfile}|${bootstrapKind}|${JSON.stringify(bootstrapValue)}`;
             if (bootstrapSignature !== appliedBootstrapSignature) {
                 if (catalogAbort) {
                     catalogAbort.abort();
@@ -1791,6 +1856,7 @@
                 requestId !== sourceRequestId
                 || browserName !== selectedBrowser()
                 || platform !== selectedPlatform()
+                || requestProfile !== selectedProfileIdentity()
             ) {
                 return;
             }
@@ -1803,6 +1869,8 @@
             if (!response.ok) {
                 throw new Error(payload.error || `Could not load ${platformLabel} sessions`);
             }
+            if (requestId !== sourceRequestId || requestProfile !== selectedProfileIdentity()) return;
+            requireSelectedProfile(payload, requestProfile);
             applyAgentSources(payload);
         } catch (error) {
             if (requestId !== sourceRequestId) {
@@ -2820,6 +2888,7 @@
         const nextPayload = payload || {};
         const hasPersistedAgent = Object.prototype.hasOwnProperty.call(nextPayload, "agent");
         if (!hasPersistedAgent) return;
+        syncBrowserProfileIdentities(nextPayload.runtime);
         renderExecutionSessions(nextPayload);
         const persistedAgent = nextPayload.agent || {};
         restoreExecutionConfiguration(persistedAgent);
@@ -3007,6 +3076,12 @@
                 pendingSubmissionPreviousRunIdentity = "";
                 pendingSubmissionPreviousRunRevision = 0;
                 pendingSubmissionPreviousRunStartedAt = "";
+                if (error.code === "browser_profile_changed") {
+                    promptHasLocalDraft = true;
+                    invalidateBrowserProfileEvidence();
+                    browserStatusController?.invalidate(error.message);
+                    if (elements.ask) elements.ask.disabled = true;
+                }
             }
             setResponseStatusFallback(error.message);
             if (elements.errorRecord && elements.errorRecordContent) {
@@ -3094,6 +3169,12 @@
         event.preventDefault();
         if (promptSubmissionPending || elements.ask?.disabled || lastPayload.agent?.running || elements.ask?.classList.contains("is-stop")) return;
         updateSessionChoiceInputs();
+        const profileIdentity = String(lastBrowserStatus?.profile_identity || "");
+        if (!profileIdentity || profileIdentity !== selectedProfileIdentity() || !readinessState(lastPayload).ready) {
+            setResponseStatusFallback("Recheck the selected browser profile before starting a task.");
+            return;
+        }
+        const submission = {...formPayload(promptForm), profile_identity: profileIdentity};
         schedulePreferenceSave();
         promptHasLocalDraft = false;
         promptSubmissionPending = true;
@@ -3105,7 +3186,7 @@
         pendingSubmissionPreviousRunStartedAt = agentRunStartedAt(lastPayload.agent)
             || elements.agentPage?.dataset.agentStartedAt
             || "";
-        mutate("/api/agent/ask", formPayload(promptForm));
+        mutate("/api/agent/ask", submission);
     });
     elements.resume?.addEventListener("click", () => {
         mutate("/api/agent/resume");

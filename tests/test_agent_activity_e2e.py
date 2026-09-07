@@ -1,6 +1,8 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.0.5-codex.1."""
+"""Activity disclosure and status glyph regressions. Code version: v1.0.6-codex.1."""
 
 import pytest
+
+from tests.agent_browser_fixtures import browser_profile_identity
 from playwright.sync_api import expect
 
 from tests import test_sidebar_e2e as fixtures
@@ -21,7 +23,7 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
         {"status": "running", "label": "Search", "detail": "tests", "meta": "Turn 2"},
     ]
     page.route("**/api/agent/status", lambda route: route.fulfill(json=payload))
-    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={"profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": fixtures._chatgpt_catalog_sessions(),
     }))
@@ -31,16 +33,17 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
         panel = page.locator("#agent_activity_panel")
         summary = panel.locator("summary")
         expect(panel).to_have_js_property("open", True)
-        done = panel.locator('[data-status="completed"] .agent-activity-status')
+        expect(summary.locator("#agent_response_status")).to_have_count(1)
+        expect(page.locator(".agent-activity-heading")).to_have_count(0)
+        done = panel.locator('#agent_activity_list > li[data-status="completed"] .agent-activity-status')
         expect(done).to_have_css("mask-image", f'url("{sidebar_server_url}/static/images/checkmark.circle.svg")')
         panel.locator("#agent_activity_list").evaluate("async e => { await Promise.all(e.getAnimations().map(a => a.finished)); }")
         geometry = done.evaluate("""e => {
             const label = e.parentElement.querySelector('.agent-activity-label').getBoundingClientRect();
             const icon = e.getBoundingClientRect();
-            const heading = document.querySelector('.agent-activity-heading').getBoundingClientRect();
             const working = document.querySelector('[data-agent-response-status-leading]').getBoundingClientRect();
             return {center: Math.abs((label.top + label.bottom - icon.top - icon.bottom) / 2),
-                left: Math.abs(heading.left - working.left),
+                left: Math.abs(label.left - working.left),
                 axis: Math.abs((icon.left + icon.right) / 2 - (() => {
                     const r = document.querySelector('.agent-response-status-indicator').getBoundingClientRect();
                     return (r.left + r.right) / 2;
@@ -52,7 +55,7 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
         assert geometry["axis"] <= 0.1
         assert geometry["hanging"] <= 0.1
         expect(done).to_have_css("background-color", "rgb(22, 163, 74)")
-        running = panel.locator('[data-status="running"] .cache-phase-live-marker')
+        running = panel.locator('#agent_activity_list > li[data-status="running"] .cache-phase-live-marker')
         expect(running).to_be_visible()
         assert running.evaluate("e => getComputedStyle(e, '::before').animationName") == "cachePhaseLiveBreath"
         if motion == "no-preference":
@@ -74,10 +77,10 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
         current = page.locator("#agent_activity_current")
         expect(current).to_be_visible()
         expect(current.locator('li')).to_have_count(1)
-        expect(summary.locator('.agent-activity-live')).to_be_visible()
+        expect(summary.locator("[data-agent-response-status-spinner]")).to_be_visible()
         rails = current.evaluate("""e => {
             const anchor = document.querySelector('.agent-response-status-indicator').getBoundingClientRect();
-            return [document.querySelector('.agent-activity-live'), e.querySelector('.agent-activity-status')].map(icon => {
+            return [document.querySelector('[data-agent-response-status-spinner]'), e.querySelector('.agent-activity-status')].map(icon => {
                 const r = icon.getBoundingClientRect();
                 return Math.abs((r.left + r.right - anchor.left - anchor.right) / 2);
             });
@@ -94,7 +97,10 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
         summary.press("Space")
         expect(panel).to_have_js_property("open", False)
         payload["agent"].update(running=False, phase="finished")
-        expect(current).to_be_hidden()
+        expect(current).to_be_visible()
+        expect(current.locator("li")).to_have_count(1)
+        expect(current).to_contain_text("Run")
+        expect(panel).to_have_js_property("open", False)
         expect(page.locator('[data-agent-response-status-dot]')).to_have_css(
             'mask-image', f'url("{sidebar_server_url}/static/images/checkmark.circle.fill.svg")'
         )
@@ -103,9 +109,10 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
             const text = getComputedStyle(e), placeholder = getComputedStyle(e, '::placeholder');
             return ['fontSize','fontFamily','fontWeight','fontStyle','lineHeight'].every(k => text[k] === placeholder[k]);
         }""")
-        expect(summary.locator('.agent-activity-live')).to_be_visible()
-        expect(summary.locator('.agent-activity-live')).to_have_css(
-            'mask-image', f'url("{sidebar_server_url}/static/images/checkmark.circle.fill.green.svg")'
+        expect(summary.locator("[data-agent-response-status-spinner]")).to_be_hidden()
+        expect(summary.locator("[data-agent-response-status-dot]")).to_be_visible()
+        expect(summary.locator("[data-agent-response-status-dot]")).to_have_css(
+            "background-color", "rgb(22, 163, 74)"
         )
         summary.click()
         if motion == "no-preference":
@@ -138,11 +145,11 @@ def test_sidebar_icons_share_provider_axis_without_moving_dock(disposable_browse
         "id": "axis", "title": "Axis", "url": project_url, "icon": "terminal", "icon_color": "#3A83F7",
     }]}
     page.route("**/api/agent/status", lambda route: route.fulfill(json=fixtures._finished_chatgpt_agent_payload()))
-    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={"profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt", "agent_sources": catalog,
     }))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
-    page.route("**/api/agent/project-sessions**", lambda route: route.fulfill(json={"sessions": [], "project_url": project_url}))
+    page.route("**/api/agent/project-sessions**", lambda route: route.fulfill(json={"profile_identity": browser_profile_identity("edge"), "sessions": [], "project_url": project_url}))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
         if width < 900:

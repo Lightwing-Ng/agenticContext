@@ -1,8 +1,10 @@
-"""Session switching, capacity, and selected controls. Code version: v1.2.1-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.3.0-codex.1."""
 
 from copy import deepcopy
 
 import pytest
+
+from tests.agent_browser_fixtures import browser_profile_identity
 from playwright.sync_api import expect
 
 from tests import test_sidebar_e2e as fixtures
@@ -42,6 +44,7 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
     page.route("**/api/agent/status", status)
     page.route("**/api/agent/stop", stop)
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": fixtures._chatgpt_catalog_sessions(),
     }))
@@ -141,12 +144,15 @@ def test_late_response_cannot_replace_new_selection(disposable_browser, sidebar_
 
     page.route("**/api/agent/status", status)
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": fixtures._chatgpt_catalog_sessions(),
     }))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        expect(page.locator("[data-execution-session-id=primary]")).to_have_attribute("aria-pressed", "false")
+        page.locator("[data-execution-session-id=primary]").click()
         expect(page.locator("#agent_response_question")).to_have_text("primary")
         delay_second[0] = True
         page.locator("[data-execution-session-id=second]").click()
@@ -214,6 +220,7 @@ def test_session_catalog_titles_and_global_capacity(disposable_browser, sidebar_
             "conversation_url": url, "running": False, "phase": "finished"}],
         "active_count": 1, "concurrency_limit": 2}))
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": catalog}))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
@@ -254,6 +261,7 @@ def test_status_disconnect_recovers_selected_run_without_mutation(disposable_bro
     page.route("**/api/agent/stop", mutation)
     page.route("**/api/agent/ask", mutation)
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": fixtures._chatgpt_catalog_sessions()}))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
@@ -300,6 +308,7 @@ def test_cross_project_sessions_switch_workspace_and_restore_on_reload(disposabl
 
     page.route("**/api/agent/status", status)
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": fixtures._chatgpt_catalog_sessions()}))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
@@ -345,6 +354,7 @@ def test_expired_execution_session_recovers_without_mutation(disposable_browser,
     page.route("**/api/agent/status", status)
     page.route("**/api/agent/ask", lambda route: (mutations.append(route.request.url), route.abort()))
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": fixtures._chatgpt_catalog_sessions()}))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
@@ -383,6 +393,7 @@ def test_route_switch_isolates_worker_and_obeys_global_admission(disposable_brow
 
     page.route("**/api/agent/status", status)
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": fixtures._chatgpt_catalog_sessions()}))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
@@ -437,7 +448,7 @@ def test_restored_session_loads_bound_history_and_ignores_late_reply(
         elif key == "unavailable":
             route.fulfill(status=503, json={"error": "History service unavailable"})
         else:
-            route.fulfill(json={"history": [{"prompt": f"Question {key}", "response": f"Answer {key}",
+            route.fulfill(json={"profile_identity": browser_profile_identity("edge"), "history": [{"prompt": f"Question {key}", "response": f"Answer {key}",
                                             "response_html": f"<p>Answer {key}</p>"}]})
 
     page.route("**/api/agent/status", status)
@@ -455,14 +466,17 @@ def test_restored_session_loads_bound_history_and_ignores_late_reply(
     catalog = fixtures._chatgpt_catalog_sessions()
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": catalog,
     }))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
-        expect(page.locator("#agent_response_question")).to_have_text("Question primary")
         if width < 900:
             page.locator("#sidebar_toggle").click()
+        expect(page.locator("[data-execution-session-id=primary]")).to_have_attribute("aria-pressed", "false")
+        page.locator("[data-execution-session-id=primary]").click()
+        expect(page.locator("#agent_response_question")).to_have_text("Question primary")
         page.locator("[data-execution-session-id=restored]").click()
         expect(page.locator("#agent_response_question")).to_have_text("Question restored")
         expect(page.locator("#agent_response_answer")).to_contain_text("Answer restored")
@@ -473,7 +487,7 @@ def test_restored_session_loads_bound_history_and_ignores_late_reply(
         page.locator("[data-execution-session-id=restored]").click()
         expect(page.locator("#agent_response_question")).to_have_text("Question restored")
         assert held
-        held.pop().fulfill(json={"history": [{"prompt": "Wrong question", "response": "Wrong answer",
+        held.pop().fulfill(json={"profile_identity": browser_profile_identity("edge"), "history": [{"prompt": "Wrong question", "response": "Wrong answer",
                                             "response_html": "<p>Wrong answer</p>"}]})
         expect(page.locator("#agent_response_question")).to_have_text("Question restored")
         page.reload()
@@ -498,6 +512,7 @@ def test_new_session_drafts_are_isolated_by_route(
         **base, "agent": {"session_id": "new"}, "sessions": [], "active_count": 0, "can_start": True,
     }))
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
         "agent_sources": catalog,
     }))
@@ -548,8 +563,9 @@ def test_execution_session_restores_workspace_and_project(disposable_browser, si
 
     page.route("**/api/agent/status", status)
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "browser": "edge", "platform": "chatgpt",
-        "agent_sources": {"recent_sessions": [], "projects": []}}))
+        "agent_sources": {"profile_identity": browser_profile_identity("edge"), "recent_sessions": [], "projects": []}}))
     page.route("**/api/agent/project-sessions**", lambda route: route.fulfill(json={"sessions": []}))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
@@ -595,8 +611,9 @@ def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_
     page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
     page.route("**/api/agent/doctor", doctor)
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity("edge"),
         "can_download": True, "browser": "edge", "platform": "chatgpt",
-        "agent_sources": {"recent_sessions": [], "projects": []}}))
+        "agent_sources": {"profile_identity": browser_profile_identity("edge"), "recent_sessions": [], "projects": []}}))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
         pager = page.locator("#agent_response_pagination")
@@ -643,8 +660,9 @@ def test_completed_session_accepts_followup_in_composer(disposable_browser, side
         {'session_id': 'new'} if route.request.headers.get('x-cachelikes-agent-session') == 'new'
         else other if route.request.headers.get('x-cachelikes-agent-session') == 'second' else agent}))
     page.route('**/api/browser-session**', lambda route: route.fulfill(json={
+        "profile_identity": browser_profile_identity('edge'),
         'can_download': True, 'browser': 'edge', 'platform': 'chatgpt',
-        'agent_sources': {'recent_sessions': [], 'projects': []}}))
+        'agent_sources': {"profile_identity": browser_profile_identity("edge"), 'recent_sessions': [], 'projects': []}}))
 
     def ask(route):
         submitted.append((route.request.headers['x-cachelikes-agent-session'], route.request.post_data_json))

@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.9.7-codex.1`
+Documentation version: `v1.10.0-codex.1`
 
 ## Launch
 
@@ -72,14 +72,16 @@ to override it. A successful unlock is stored in the signed Flask session for th
 - Copying profile files and launching the clone do not prove provider authentication. The copy
   is not an atomic snapshot of a running browser. Check readiness in the clone; report copy or
   access errors without closing the user's browser or retrying against its writable profile.
-- Normal task exit closes the isolated context and removes its temporary profile. Each subsequent
-  Chromium launch also removes only abandoned `cachelikes-edge-*` or `cachelikes-chrome-*`
-  directories older than 24 hours; unrelated temporary paths are not touched.
+- Normal task exit attempts to close its isolated context and remove its temporary profile.
+  Subsequent launches retain stale `cachelikes-edge-*` and `cachelikes-chrome-*` directories; age
+  and naming are insufficient evidence that another process or browser child no longer owns them.
+  Inspect retained paths and process ownership before manual cleanup; do not bulk-delete by prefix.
 - A failed temporary-profile removal reports its retained directory and remains protected from
   stale-profile cleanup in the current process. Cleanup errors become exception notes and log
   warnings when an earlier task, launch, copy, or close error already exists; otherwise they fail
   the operation. Inspect task-owned browser processes before manual cleanup. This protection is
-  process-local, not a durable orphan-process tracker across service restarts.
+  process-local, not a durable orphan-process tracker across service restarts. Stop and restored
+  tasks retain a separate cleanup error and Doctor failure instead of reporting clean completion.
 - Do not add or repeatedly troubleshoot login flows as part of normal runtime operation. The
   application assumes an existing signed-in session.
 
@@ -290,3 +292,28 @@ Run `./scripts/test.sh` or `./scripts/check.sh` (macOS/Linux) or `.\scripts\test
 `.\scripts\check.ps1` (Windows) for offline validation. Pytest redirects all
 default runtime paths into temporary directories; tests must never be pointed at the production
 cache, log, settings, or browser-profile locations.
+
+## Profile changes and Windows process ownership
+
+Login and Recheck use the saved configuration captured at request start. A running task keeps
+its original browser/data-root/profile binding for later handoff or interrupted continuation.
+Changing settings invalidates profile-specific readiness and source catalogs; recheck the new
+profile before Ask. Old runs without a persisted profile binding require a new task rather than
+guessing which account to use. Profile names may contain spaces and Unicode but cannot contain
+path separators, parent traversal, a drive, or an absolute root.
+
+Detached Windows compute jobs use a named Job Object and native PID birth identity. A failed stop
+retains an active/stopping state and diagnostic until termination is verified. The job is process
+containment and does not deny network access or grant administrator permissions. Ordinary Agent
+inspection subprocesses still have a separate best-effort process-tree fallback, particularly
+when their parent exits first. Windows idle-sleep inhibition remains unimplemented.
+
+Windows controller deletion requires a current bounded read receipt and opens the root, each
+parent, and target through pinned handles. Reparse points, multiple hard links, sharing conflicts,
+and changed identities fail closed. Windows delete-pending semantics may delay physical storage
+reclamation while another reader remains open; no path-based deletion fallback is used.
+
+Ask carries the profile identity used by its readiness evidence. The server compares it with the
+same captured configuration passed to the worker and rejects missing or changed identities before
+starting a task. Following up a recorded conversation also requires its original profile binding;
+changing settings cannot silently continue that conversation through another profile.

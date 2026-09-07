@@ -1,6 +1,6 @@
 """Focused tests for the persistent Agent source cache."""
 
-# Code version: v2.1.1-codex.1
+# Code version: v2.2.0-codex.1
 
 from __future__ import annotations
 
@@ -176,7 +176,7 @@ class AgentSourceCacheTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(
             first.serialized,
-            '["grok","edge","project-sessions","https://grok.com/project/project-1?tab=conversations&view=all"]',
+            '["grok","edge","project-sessions","https://grok.com/project/project-1?tab=conversations&view=all",""]',
         )
 
     def test_cold_miss_is_coalesced_across_concurrent_requests(self) -> None:

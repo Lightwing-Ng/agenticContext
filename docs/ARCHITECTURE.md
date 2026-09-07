@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.13.5-codex.1`
+Documentation version: `v1.14.0-codex.1`
 
 ## Runtime flow
 
@@ -75,8 +75,8 @@ export only the symbols needed by its caller and should not become a second impl
   source contract. Claude source discovery reads rendered links only and shares the Chromium launch
   and Parquet cache boundary.
 - `app/core/agent_source_cache.py`: the shared typed Parquet catalog for Agent recent sessions,
-  Projects, and Project sessions. Its cache key isolates provider, browser, source kind, and
-  Project URL, while atomic replacement preserves the other providers' entries.
+  Projects, and Project sessions. Its cache key isolates provider, browser, profile identity,
+  source kind, and Project URL, while atomic replacement preserves the other providers' entries.
 - `app/core/agent_access_security.py`: the Agent password resolver, constant-time password
   comparison, and loopback/private-network request boundary.
 - `app/core/computer_use_agent.py`: selected ChatGPT, Gemini, Grok, or Claude Web session targets,
@@ -172,9 +172,12 @@ The detached worker owns the approved maximum runtime, capped at 24 hours, and r
 the provider turn or browser session ends. On macOS, a job-scoped `caffeinate -i -w <worker-pid>`
 assertion follows the worker rather than the Web Agent turn. It exits with the worker and is also
 identity-checked during terminal-state reconciliation. The project does not currently inhibit
-Windows idle sleep for the equivalent task. On Windows, process-tree cleanup uses
-`taskkill /T /F` where applicable; this is a termination mechanism, not an OS-level sandbox
-boundary. Service exit deliberately does not stop an active compute job.
+Windows idle sleep for the equivalent task. The detached Windows compute worker joins a named
+Job Object before starting its optimizer. The job owns descendant termination, including abrupt
+worker exit; native process birth identity protects against PID reuse. Stop is terminal only after
+termination is verified. This is process containment, not an OS-level network sandbox. Ordinary
+Agent inspection commands retain their separate best-effort `taskkill /T /F` fallback. Service
+exit deliberately does not stop an active compute job.
 
 ## Responsive application-shell contract
 
@@ -372,9 +375,10 @@ On macOS, silent probes and executing
 Edge or Chrome task clones the selected profile into one normal, non-offscreen task-owned window so the user can
 choose to inspect it through macOS window management without an automatic full-display takeover.
 The launcher restores the prior foreground app if the browser took focus; macOS controls any Stage Manager
-grouping. Chromium suppresses browser prompts and cleans the task-owned profile on exit. Stale
-cleanup is restricted to abandoned application-prefixed temporary directories older than 24 hours;
-the user's normal browser profile and unrelated temporary paths are not modified.
+grouping. Chromium suppresses browser prompts and attempts to clean the task-owned profile on exit.
+Stale profile names, age, and a missing owner process do not establish that browser children have
+exited. Automatic stale-profile deletion therefore retains unknown directories for manual review;
+normal lifecycle cleanup acts only on the clone owned by that launch.
 On Windows, the controller uses PowerShell-compatible paths and trusted PowerShell execution for
 approved `.ps1` scripts. The Windows path has no OS-level sandbox equivalent to macOS
 `sandbox-exec`, and `taskkill /T /F` remains process-tree cleanup rather than sandbox isolation.
@@ -439,3 +443,29 @@ Existing workers reject starts for another browser/provider so their snapshots r
 The status catalog exposes `can_start` and `start_blocked_reason` from the pool's shared capacity
 rule, including active workers outside the current route. This is advisory capacity, not a slot
 reservation: atomic admission still validates capacity and conversation ownership at submission.
+
+## Browser profile evidence and task identity
+
+Chromium profile names must be one directory component; traversal, drives, absolute paths, and
+links that escape the selected root are rejected before copying. On Windows the same executable
+resolver supplies explicit handoff and Playwright launch. Each request captures its configuration;
+each task also persists its selected browser, absolute data root, and profile. Conversation handoff
+and interrupted continuation use that binding even after settings change. Legacy tasks without
+profile proof cannot silently continue or hand off through the current profile.
+
+Agent source-cache schema 2 partitions memory and Parquet entries by a hash of the resolved browser
+profile identity. The browser receives the hash, not the data root. Readiness, provider catalogs,
+and session history must match the current identity; profile changes invalidate pending responses
+and cached provider choices. Browser execution-session identity remains separate so changing
+configuration does not lose Stop for an already running task. Copying a running browser profile is
+not an atomic snapshot or evidence that the clone is authenticated.
+
+Browser cleanup failures keep the original task exception primary and preserve a structured
+`cleanup_error` through Stop and restart. A standalone cleanup error fails the task. Retained
+paths remain diagnostic evidence; neither context close nor task cancellation guarantees that
+every native browser child or temporary directory has already been released.
+
+Ask carries the profile identity used by its readiness evidence. The server compares it with the
+same captured configuration passed to the worker and rejects missing or changed identities before
+starting a task. Following up a recorded conversation also requires its original profile binding;
+changing settings cannot silently continue that conversation through another profile.

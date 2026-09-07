@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.19.3-codex.1`
+Documentation version: `v1.19.4-codex.1`
 
 ## Windows host operating constraints
 
@@ -9,7 +9,8 @@ Documentation version: `v1.19.3-codex.1`
   system sleep.
 - The Windows path does not currently apply an OS-level network-denying sandbox equivalent to the
   macOS `sandbox-exec` profile. Compute workers run with the current user's permissions.
-  Process-tree cleanup uses `taskkill /T /F` where applicable, while the verified allowlist remains
+  Detached compute jobs use native Job Object lifetime containment; ordinary Agent inspection
+  processes retain the best-effort `taskkill /T /F` fallback. The verified allowlist remains
   an application-level control rather than an OS sandbox boundary.
 - Safari is macOS-only and is normalized away on Windows (`normalize_host_browser` in
   `app/core/config.py`); Agent sessions on Windows require Edge or Chrome.

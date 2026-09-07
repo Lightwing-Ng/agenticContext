@@ -1,11 +1,12 @@
 """Configuration helpers."""
 
-# Code version: v1.17.0-codex.1
+# Code version: v1.17.1-codex.1
 
 from __future__ import annotations
 
 import json
 import math
+import ntpath
 import os
 import sys
 from dataclasses import asdict, dataclass, field
@@ -71,6 +72,24 @@ def normalize_host_browser(value: object, fallback: str) -> str:
     if is_windows_host() and selected == "safari":
         return fallback
     return selected
+
+
+def validate_chromium_profile_directory(value: object) -> str:
+    """Accept one portable Chromium profile name, never a filesystem path."""
+    profile = str(value or "").strip()
+    if (
+        not profile
+        or profile in {".", ".."}
+        or "/" in profile
+        or "\\" in profile
+        or ntpath.splitdrive(profile)[0]
+        or ntpath.isreserved(profile)
+    ):
+        raise ValueError(
+            "The Chrome profile directory must be one directory name, such as "
+            "Default or Profile 2, without a drive, path separator, or parent traversal."
+        )
+    return profile
 
 
 def resolve_runtime_root() -> Path:
@@ -208,8 +227,9 @@ class CrawlConfig:
     max_media_file_size_mib: int = DEFAULT_MAX_MEDIA_FILE_SIZE_MIB
 
     def __post_init__(self) -> None:
-        """Normalize concurrency even when a caller constructs config directly."""
+        """Validate profile identity and concurrency for every construction path."""
         self.download_workers = normalize_download_workers(self.download_workers)
+        self.chrome_profile_directory = validate_chromium_profile_directory(self.chrome_profile_directory)
 
     def cache_scan_wait(self, provider: str, mode: str) -> float:
         """Read an independent scan interval without changing legacy defaults."""
@@ -365,6 +385,7 @@ def save_config(config: CrawlConfig, settings_path: Path | None = None) -> None:
     """Persist crawler settings for future app restarts."""
     resolved_settings_path = settings_path if settings_path is not None else default_settings_path()
     payload = asdict(config)
+    payload["chrome_profile_directory"] = validate_chromium_profile_directory(config.chrome_profile_directory)
     payload["download_workers"] = normalize_download_workers(payload.get("download_workers"))
     payload["x_browser"] = config.x_browser
     payload["grok_browser"] = config.grok_browser

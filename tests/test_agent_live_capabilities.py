@@ -1,6 +1,6 @@
 """Regression coverage for history rendering and provider-owned capabilities.
 
-Code version: v1.0.5-codex.1
+Code version: v1.0.6-codex.1
 """
 
 import json
@@ -223,10 +223,11 @@ def test_latest_selection_restores_inert_effort_view_in_browser(
 
 
 @pytest.fixture
-def capability_page():
+def capability_page(disposable_browser_launch):
     playwright_sync = pytest.importorskip("playwright.sync_api")
     with playwright_sync.sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
+        browser = disposable_browser_launch(
+            playwright.chromium,
             headless=True,
             **({} if Path(playwright.chromium.executable_path).is_file() else {"channel": "chrome"}),
         )

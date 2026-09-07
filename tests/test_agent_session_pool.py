@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Code version: v1.0.2-codex.1."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.0.3-codex.1."""
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock
@@ -164,11 +164,14 @@ def test_api_targets_only_selected_session_and_rejects_unknown(tmp_path, monkeyp
     headers = {"X-CacheLikes-Agent-Session": "new", "X-CacheLikes-Agent-Browser": "edge", "X-CacheLikes-Agent-Platform": "chatgpt", "X-CacheLikes-Agent-Workspace": str(tmp_path)}
     try:
         ids = []
+        profile_identity = client.get("/api/agent/status", headers=headers).json["runtime"]["browser_profile_identities"]["edge"]
         for prompt in ("first", "second"):
-            response = client.post("/api/agent/ask", headers=headers, json={"prompt": prompt, "workspace_path": str(tmp_path), "browser": "edge", "platform": "chatgpt"})
+            response = client.post("/api/agent/ask", headers=headers, json={"prompt": prompt, "workspace_path": str(tmp_path), "browser": "edge", "platform": "chatgpt", "profile_identity": profile_identity})
             assert response.status_code == 202
             ids.append(response.json["agent"]["session_id"])
-        assert client.post("/api/agent/ask", headers=headers, json={"prompt": "third", "workspace_path": str(tmp_path)}).status_code == 409
+        third = client.post("/api/agent/ask", headers=headers, json={"prompt": "third", "workspace_path": str(tmp_path), "profile_identity": profile_identity})
+        assert third.status_code == 409
+        assert "2 of 2" in third.json["error"]
         for key, prompt in zip(ids, ("first", "second")):
             payload = client.get("/api/agent/status", headers={**headers, "X-CacheLikes-Agent-Session": key}).json
             assert payload["agent"]["prompt"] == prompt

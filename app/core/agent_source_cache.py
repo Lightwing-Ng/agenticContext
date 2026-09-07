@@ -1,6 +1,6 @@
 """Read-through Parquet cache for Web Agent source discovery.
 
-Code version: v2.1.1-codex.1
+Code version: v2.2.0-codex.1
 """
 
 from __future__ import annotations
@@ -8,8 +8,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from threading import Condition, RLock, Thread
 from typing import Any
@@ -21,7 +23,7 @@ from .resource_persistence import read_parquet_rows, write_parquet_rows_atomic
 
 
 AGENT_SOURCE_CACHE_FILENAME = "agent_source_catalog.parquet"
-AGENT_SOURCE_CACHE_SCHEMA_VERSION = 1
+AGENT_SOURCE_CACHE_SCHEMA_VERSION = 2
 AGENT_SOURCE_CACHE_TTL_SECONDS = 15 * 60
 AGENT_SOURCE_CACHE_RETRY_COOLDOWN_SECONDS = 60
 
@@ -33,12 +35,30 @@ AGENT_SOURCE_CACHE_SCHEMA = pa.schema(
         pa.field("browser", pa.string(), nullable=False),
         pa.field("source_kind", pa.string(), nullable=False),
         pa.field("project_url", pa.string(), nullable=False),
+        pa.field("profile_identity", pa.string(), nullable=False),
         pa.field("cached_at", pa.string(), nullable=False),
         pa.field("payload_json", pa.string(), nullable=False),
     ]
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+def browser_profile_cache_identity(browser: str, config: Any) -> str:
+    """Bind catalogs to the canonical browser profile without publishing its path."""
+    from .browser_sessions import browser_descriptors
+
+    selected = str(browser or "").strip().lower()
+    descriptor = browser_descriptors(config).get(selected)
+    if descriptor is None:
+        raise ValueError("Choose a supported browser before reading its source catalog.")
+    root = descriptor.user_data_dir
+    identity = [
+        selected,
+        os.path.normcase(str(root.expanduser().resolve())) if root is not None else "system-profile",
+        os.path.normcase(descriptor.profile_directory),
+    ]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +69,7 @@ class AgentSourceCacheKey:
     browser: str
     source_kind: str
     project_url: str = ""
+    profile_identity: str = ""
 
     @classmethod
     def from_values(
@@ -57,6 +78,7 @@ class AgentSourceCacheKey:
         browser: str,
         source_kind: str,
         project_url: str = "",
+        profile_identity: str = "",
     ) -> "AgentSourceCacheKey":
         """Normalize every cache dimension before it reaches memory or disk."""
         return cls(
@@ -64,13 +86,14 @@ class AgentSourceCacheKey:
             browser=str(browser or "").strip().lower(),
             source_kind=str(source_kind or "").strip().lower(),
             project_url=_canonical_project_url(project_url),
+            profile_identity=str(profile_identity or ""),
         )
 
     @property
     def serialized(self) -> str:
         """Return a stable opaque key for the Parquet row."""
         return json.dumps(
-            [self.platform, self.browser, self.source_kind, self.project_url],
+            [self.platform, self.browser, self.source_kind, self.project_url, self.profile_identity],
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -120,10 +143,11 @@ class AgentSourceCache:
         source_kind: str,
         payload: dict[str, Any],
         project_url: str = "",
+        profile_identity: str = "",
         now: datetime | None = None,
     ) -> None:
         """Publish an already collected catalog into L1 and the Parquet L2 cache."""
-        key = AgentSourceCacheKey.from_values(platform, browser, source_kind, project_url)
+        key = AgentSourceCacheKey.from_values(platform, browser, source_kind, project_url, profile_identity)
         cached_at = _as_utc(now) if now is not None else _utc_now()
         with self._condition:
             self._load_catalog_locked()
@@ -145,6 +169,7 @@ class AgentSourceCache:
         browser: str,
         source_kind: str,
         project_url: str = "",
+        profile_identity: str = "",
         collector: Callable[[], dict[str, Any]],
         force_refresh: bool = False,
         now: datetime | None = None,
@@ -152,7 +177,7 @@ class AgentSourceCache:
         collect_on_miss: bool = True,
     ) -> dict[str, Any]:
         """Return a cached catalog or collect it through one coalesced flight."""
-        key = AgentSourceCacheKey.from_values(platform, browser, source_kind, project_url)
+        key = AgentSourceCacheKey.from_values(platform, browser, source_kind, project_url, profile_identity)
         requested_now = _as_utc(now) if now is not None else None
 
         with self._condition:
@@ -337,6 +362,7 @@ class AgentSourceCache:
                     row["browser"],
                     row["source_kind"],
                     row.get("project_url", ""),
+                    row.get("profile_identity", ""),
                 )
                 payload = json.loads(str(row["payload_json"]))
                 cached_at = _as_utc(datetime.fromisoformat(str(row["cached_at"])))
@@ -369,6 +395,7 @@ class AgentSourceCache:
                 "browser": key.browser,
                 "source_kind": key.source_kind,
                 "project_url": key.project_url,
+                "profile_identity": key.profile_identity,
                 "cached_at": _as_utc(entry.cached_at).isoformat(),
                 "payload_json": json.dumps(
                     entry.payload,
@@ -397,6 +424,7 @@ def get_or_collect_agent_source(
     browser: str,
     source_kind: str,
     project_url: str = "",
+    profile_identity: str = "",
     collector: Callable[[], dict[str, Any]],
     force_refresh: bool = False,
     now: datetime | None = None,
@@ -416,6 +444,7 @@ def get_or_collect_agent_source(
         browser=browser,
         source_kind=source_kind,
         project_url=project_url,
+        profile_identity=profile_identity,
         collector=collector,
         force_refresh=force_refresh,
         now=now,

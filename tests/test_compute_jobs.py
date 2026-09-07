@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.2.0-codex.1
+Code version: v1.3.0-codex.1
 """
 
 from __future__ import annotations
@@ -519,3 +519,311 @@ def test_compute_job_stop_route_uses_the_dedicated_job_boundary(tmp_path: Path) 
     assert response.status_code == 200
     assert response.get_json() == {"compute_job": expected}
     stop.assert_called_once_with(str(workspace), "c" * 32)
+
+
+def test_native_process_identity_is_live_stable_and_not_reused() -> None:
+    import subprocess
+
+    process = subprocess.Popen([sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+    try:
+        assert process.stdout.readline() == b"ready\n"
+        first = compute_jobs._process_identity(process.pid)
+        assert first
+        assert compute_jobs._process_identity(process.pid) == first
+        if sys.platform == "win32":
+            assert first.startswith("windows:")
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+        process.stdout.close()
+    assert compute_jobs._process_identity(process.pid) == ""
+
+
+def test_windows_birth_identity_uses_native_handle_and_closes_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from app.core.agent import _windows_processes
+
+    closed: list[int] = []
+    handle = 0x1234_5678_9ABC
+
+    def process_times(actual_handle, created, *_other):
+        assert actual_handle == handle
+        created._obj.high = 0x12345678
+        created._obj.low = 0x9ABCDEF0
+        return 1
+
+    kernel = SimpleNamespace(
+        OpenProcess=lambda rights, inherit, pid: handle if pid == 4321 and not inherit else None,
+        WaitForSingleObject=lambda actual_handle, timeout: 258,
+        GetProcessTimes=process_times,
+        CloseHandle=lambda actual_handle: closed.append(actual_handle),
+    )
+    monkeypatch.setattr(_windows_processes, "_kernel", lambda: kernel)
+    assert _windows_processes.process_identity(4321) == "windows:123456789abcdef0"
+    assert closed == [handle]
+    kernel.WaitForSingleObject = lambda *_arguments: 0
+    assert _windows_processes.process_identity(4321) == ""
+    assert closed == [handle, handle]
+
+
+def _running_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[ComputeJobManager, str]:
+    workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
+    manager = ComputeJobManager(workspace, tmp_path / "runtime")
+    job_id = "e" * 32
+    manager._save_metadata({
+        "schema_version": 1, "job_id": job_id, "workspace": str(workspace),
+        "state": "running", "pid": 424242, "process_identity": "test-birth",
+        "started_at": compute_jobs._utc_now(), "updated_at": compute_jobs._utc_now(),
+        "ended_at": "",
+    })
+    monkeypatch.setattr(compute_jobs, "_process_identity", lambda pid: "test-birth" if pid == 424242 else "")
+    return manager, job_id
+
+
+@pytest.mark.parametrize("failure", [PermissionError("access denied"), ComputeJobError("taskkill failed")])
+def test_stop_failure_remains_active_and_diagnostic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception) -> None:
+    manager, job_id = _running_record(tmp_path, monkeypatch)
+
+    def fail_termination(*_arguments, **_options):
+        raise failure
+
+    monkeypatch.setattr(compute_jobs, "_terminate_process_group", fail_termination)
+    with pytest.raises(ComputeJobError, match="not confirmed"):
+        manager.stop(job_id)
+    status = manager.status(job_id)
+    assert status["state"] == "stopping"
+    assert status["active"] is True
+    assert status["ended_at"] == ""
+    assert str(failure) in status["message"]
+
+
+def test_successful_termination_command_cannot_hide_a_live_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, job_id = _running_record(tmp_path, monkeypatch)
+    monkeypatch.setattr(compute_jobs, "_terminate_process_group", lambda *_args, **_kwargs: None)
+    with pytest.raises(ComputeJobError, match="still running"):
+        manager.stop(job_id)
+    assert manager.status(job_id)["active"] is True
+
+
+def test_windows_taskkill_failure_is_checked_and_uses_system_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import os
+    import subprocess
+    from types import SimpleNamespace
+
+    windows = SimpleNamespace(**{**vars(os), "name": "nt"})
+    monkeypatch.setattr(compute_jobs, "os", windows)
+    monkeypatch.setenv("SYSTEMROOT", str(tmp_path / "Windows root"))
+    commands: list[list[str]] = []
+    monkeypatch.setattr(compute_jobs.subprocess, "run", lambda command, **_kwargs: commands.append(command) or subprocess.CompletedProcess(command, 1))
+    with pytest.raises(ComputeJobError, match="status 1"):
+        compute_jobs._terminate_process_group(424242)
+    assert commands == [[str(tmp_path / "Windows root" / "System32" / "taskkill.exe"), "/PID", "424242", "/T", "/F"]]
+
+
+def _worker_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], Path]:
+    metadata_path = tmp_path / "metadata.json"
+    compute_jobs._atomic_write_json(metadata_path, {"state": "starting", "job_id": "f" * 32})
+    entrypoint = tmp_path / "optimizer.py"
+    entrypoint.write_text("# Not executed by fake-process tests.\n", encoding="utf-8")
+    config = tmp_path / "config.json"
+    config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(compute_jobs, "_process_identity", lambda _pid: "test-worker-birth")
+    monkeypatch.setattr(compute_jobs, "_start_sleep_assertion", lambda *_arguments: None)
+    return [str(metadata_path), str(entrypoint), str(config), "43200"], metadata_path
+
+
+def test_worker_pipe_failure_cleans_child_and_publishes_original_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    arguments, metadata_path = _worker_fixture(tmp_path, monkeypatch)
+    output = SimpleNamespace(read1=Mock(side_effect=OSError("pipe read failed")), close=Mock())
+    child = SimpleNamespace(stdout=output, poll=Mock(return_value=None), terminate=Mock(), kill=Mock(), wait=Mock(return_value=-1))
+    monkeypatch.setattr(compute_jobs.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    assert compute_jobs._worker_main(arguments) == 70
+    child.terminate.assert_called_once()
+    child.wait.assert_called_once_with(timeout=5)
+    output.close.assert_called_once()
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["state"] == "failed"
+    assert "pipe read failed" in metadata["message"]
+    assert metadata["ended_at"]
+
+
+def test_worker_cleanup_failure_never_publishes_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    arguments, metadata_path = _worker_fixture(tmp_path, monkeypatch)
+    child = SimpleNamespace(stdout=io.BytesIO(b"completed\n"), poll=Mock(return_value=0), wait=Mock(return_value=0))
+    job = SimpleNamespace(terminate_descendants=Mock(), close_after_cleanup=Mock(side_effect=OSError("job cleanup denied")))
+    monkeypatch.setattr(compute_jobs.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    assert compute_jobs._worker_main(arguments, windows_job=job) == 70
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["state"] == "failed"
+    assert metadata["exit_status"] == 0
+    assert "job cleanup denied" in metadata["message"]
+
+
+def test_worker_spawn_failure_has_terminal_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+
+    arguments, metadata_path = _worker_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(compute_jobs.subprocess, "Popen", Mock(side_effect=OSError("spawn denied")))
+    assert compute_jobs._worker_main(arguments) == 70
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["state"] == "failed"
+    assert "spawn denied" in metadata["message"]
+
+
+def test_worker_preserves_primary_and_cleanup_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    arguments, metadata_path = _worker_fixture(tmp_path, monkeypatch)
+    output = SimpleNamespace(read1=Mock(side_effect=OSError("primary read failure")), close=Mock())
+    child = SimpleNamespace(stdout=output, poll=Mock(return_value=None), terminate=Mock(side_effect=PermissionError("cleanup denied")))
+    monkeypatch.setattr(compute_jobs.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    assert compute_jobs._worker_main(arguments) == 70
+    message = json.loads(metadata_path.read_text(encoding="utf-8"))["message"]
+    assert "primary read failure" in message
+    assert "cleanup denied" in message
+
+
+def test_windows_job_setup_failure_prevents_optimizer_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    arguments, metadata_path = _worker_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(compute_jobs, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    monkeypatch.setattr(compute_jobs._windows_processes, "WorkerJob", Mock(side_effect=PermissionError("job assignment denied")))
+    run_worker = Mock()
+    monkeypatch.setattr(compute_jobs, "_worker_main", run_worker)
+    assert compute_jobs._main(["--worker", *arguments]) == 70
+    run_worker.assert_not_called()
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["state"] == "failed"
+    assert "job assignment denied" in metadata["message"]
+
+
+def test_windows_stop_waits_for_every_job_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from app.core.agent import _windows_processes
+
+    counts = iter([3, 1, 0])
+    observed: list[int] = []
+    closed: list[int] = []
+
+    def query_job(handle, information_class, accounting, _size, _returned):
+        assert handle == 999
+        assert information_class == 1
+        active = next(counts)
+        observed.append(active)
+        accounting._obj.active_processes = active
+        return 1
+
+    kernel = SimpleNamespace(
+        OpenJobObjectW=lambda rights, inherit, name: 999,
+        TerminateJobObject=lambda handle, status: 1,
+        QueryInformationJobObject=query_job,
+        CloseHandle=lambda handle: closed.append(handle),
+    )
+    monkeypatch.setattr(_windows_processes, "_kernel", lambda: kernel)
+    _windows_processes.terminate_job("Local\\test-job")
+    assert observed == [3, 1, 0]
+    assert closed == [999]
+
+
+def test_windows_job_descendant_pid_reuse_does_not_kill_foreign_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from app.core.agent import _windows_processes
+
+    job = object.__new__(_windows_processes.WorkerJob)
+    job.handle = 999
+    inventories = iter([[12345], []])
+    job._process_ids = lambda: next(inventories)
+    terminate = Mock()
+
+    def membership(_process, _job, result):
+        result._obj.value = 0
+        return 1
+
+    job.kernel = SimpleNamespace(
+        OpenProcess=lambda *_arguments: 777,
+        IsProcessInJob=membership,
+        TerminateProcess=terminate,
+        CloseHandle=lambda _handle: None,
+    )
+    job.terminate_descendants()
+    terminate.assert_not_called()
+
+
+def test_output_thread_start_failure_cleans_started_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    arguments, metadata_path = _worker_fixture(tmp_path, monkeypatch)
+    child = SimpleNamespace(stdout=io.BytesIO(), poll=Mock(return_value=None), terminate=Mock(), wait=Mock(return_value=-1))
+    monkeypatch.setattr(compute_jobs.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    monkeypatch.setattr(compute_jobs.threading.Thread, "start", Mock(side_effect=RuntimeError("reader start denied")))
+    assert compute_jobs._worker_main(arguments) == 70
+    child.terminate.assert_called_once()
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["state"] == "failed"
+    assert "reader start denied" in metadata["message"]
+
+
+def test_startup_cleanup_failure_stays_active_with_diagnostic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
+    manager = ComputeJobManager(workspace, tmp_path / "runtime")
+    child = SimpleNamespace(pid=424242, poll=Mock(return_value=None), terminate=Mock(side_effect=PermissionError("startup cleanup denied")))
+    monkeypatch.setattr(compute_jobs.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    monkeypatch.setattr(compute_jobs, "_terminate_process_group", Mock(side_effect=PermissionError("startup cleanup denied")))
+    monkeypatch.setattr(compute_jobs, "_process_identity", lambda pid: "test-birth" if pid == 424242 else "")
+    monkeypatch.setattr(compute_jobs.time, "sleep", lambda _seconds: None)
+    with pytest.raises(ComputeJobError, match="Startup cleanup is not confirmed"):
+        manager.start(entrypoint_id="optimizer", config_path="optimizer.json", idempotency_key="startup-cleanup-001")
+    status = manager.status()
+    assert status["state"] == "stopping"
+    assert status["active"] is True
+    assert status["ended_at"] == ""
+    assert "startup cleanup denied" in status["message"]
+
+
+def test_worker_environment_preserves_path_authority_without_credentials(tmp_path: Path) -> None:
+    script = '''
+import argparse
+import json
+import os
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", required=True)
+parser.add_argument("--job-runtime", required=True)
+args = parser.parse_args()
+(Path(args.job_runtime) / "result.json").write_text(json.dumps(dict(os.environ)))
+'''
+    workspace, _config = _prepare_workspace(tmp_path, script_body=script)
+    manager = ComputeJobManager(workspace, tmp_path / "runtime")
+    import os
+
+    location_keys = {
+        "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "HOMEDRIVE", "HOMEPATH",
+        "AGENTIC_CONTEXT_RUNTIME_ROOT", "AGENTIC_CONTEXT_SETTINGS_PATH", "TMPDIR", "TEMP", "TMP",
+    }
+    expected = {key: os.environ[key] for key in location_keys if key in os.environ}
+    with patch.dict(os.environ, {"AGENTIC_TEST_PRIVATE_TOKEN": "synthetic-secret"}):
+        started = manager.start(entrypoint_id="optimizer", config_path="optimizer.json", idempotency_key="isolated-environment-001")
+        finished = _wait_for_terminal(manager, str(started["job_id"]))
+    assert finished["state"] == "succeeded"
+    environment = json.loads((manager.jobs_root / str(started["job_id"]) / "result.json").read_text(encoding="utf-8"))
+    assert {key: environment[key] for key in expected} == expected
+    assert "AGENTIC_TEST_PRIVATE_TOKEN" not in environment

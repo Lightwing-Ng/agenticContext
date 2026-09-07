@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.55.8-codex.1`
+Documentation version: `v3.58.0-codex.1`
 
 ## Purpose
 
@@ -472,7 +472,11 @@ actions.
   `O_NOFOLLOW`, takes an advisory directory lock, rechecks the leaf identity, and unlinks the leaf
   through the anchored directory descriptor. The POSIX unlink primitive is name-based rather than
   inode-addressed; uncooperative external renames remain a non-atomic limitation and are detected
-  where possible, while hosts without the anchored primitives fail closed. Directories, symlinks,
+  where possible. Windows pins the workspace identity, opens each child relative to its parent
+  handle, denies write/delete sharing, verifies the read receipt on the same file handle, and sets
+  delete disposition on that handle. Reparse points and sharing conflicts fail closed; another
+  reader can delay physical reclamation. Hosts without supported anchored primitives fail closed.
+  Directories, symlinks,
   hard links, recursive targets, and files larger than 20 MiB are rejected.
 - Shell commands are restricted to bounded inspection, build, lint, and test work. Approved PATH
   tools are resolved once to an absolute executable outside the workspace before launch; Python
@@ -628,8 +632,8 @@ foreground app is restored if the browser took focus, leaving the task window av
 inspect through macOS window management. macOS ultimately determines Stage Manager grouping.
 Automated execution never opens the user's original profile for writing. Chromium still suppresses first-run,
 crash, notification, and repost prompts; a normal task exit closes the isolated context and removes
-its temporary profile. The next Chromium launch removes only abandoned `cachelikes-edge-*` or
-`cachelikes-chrome-*` directories older than 24 hours. Safari uses one shared Apple Events context,
+its temporary profile when cleanup succeeds. Subsequent launches retain unknown stale profiles:
+age, name prefix, and absence of a parent process do not prove that browser children have exited. Safari uses one shared Apple Events context,
 restores the previous frontmost application after window operations, and closes every task-owned
 window on success, stop, failure, or exception. Safari remains available only for ChatGPT's existing
 session flows. Claude requires Edge or Chrome. If Claude renders an
@@ -654,6 +658,8 @@ exists, subsequent close and profile-removal failures are logged and attached as
 without replacing it. A profile-removal failure with no earlier error fails the operation and
 identifies the retained temporary directory. Failed removals remain excluded from this process's
 stale-profile cleanup; this is not durable process-ownership tracking across service restarts.
+A structured cleanup error survives Stop and persisted-state restoration and makes Doctor report
+the retained failure. Cancellation cannot replace that error with an unconditional success state.
 
 The traditional Edge handoff is intentionally separate from the isolated Agent context. On a failed
 Edge and ChatGPT run with a verified conversation URL, the service records an available handoff but
@@ -828,3 +834,26 @@ cases and two sidebar/project-icon cases passed at desktop and narrow widths.
 Motion tests sample transforms over time, and sidebar tests wait for sidebar
 animation to settle before comparing Dock geometry. No live prompts were sent;
 original tabs and their drafts were preserved.
+
+## Bound profile evidence
+
+Tasks capture configuration and persist their browser/data-root/profile binding before the worker
+starts. Windows handoff and interrupted continuation use the original binding after settings
+changes. A legacy run missing that evidence cannot continue or hand off through a guessed profile.
+Profile names are single path components and cloned source/destination paths must stay contained.
+Windows handoff and Playwright use the same resolved installed executable.
+
+Provider readiness, source catalogs, and selected history carry a profile-identity hash. Schema 2
+cache entries and browser selection caches include that identity. Changing the configured profile
+clears provider proof and invalidates pending responses before Ask becomes available again. This
+does not terminate an existing execution session or remove its Stop control.
+
+Detached compute jobs have a stronger Windows lifecycle than ordinary inspection commands: a
+named Job Object contains the worker and descendants before optimizer launch, uses native birth
+identity, and verifies termination before publishing a stopped state. Failed cleanup remains
+visible and active. Job Objects are not a network sandbox or an elevation mechanism.
+
+Ask carries the profile identity used by its readiness evidence. The server compares it with the
+same captured configuration passed to the worker and rejects missing or changed identities before
+starting a task. Following up a recorded conversation also requires its original profile binding;
+changing settings cannot silently continue that conversation through another profile.

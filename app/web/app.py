@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.65.2-codex.1
+# Code version: v1.66.0-codex.1
 
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ from app.core.agent import (
     CAPABILITY_REGISTRY_VERSION,
     OPERATING_SYSTEM_OPTIONS as AGENT_OPERATING_SYSTEM_OPTIONS,
     AgentSourceCache,
+    AgentSessionPool,
+    browser_profile_cache_identity,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
     browser_options_for_host,
@@ -51,7 +53,6 @@ from app.core.agent import (
     validate_computer_use_settings,
     validate_agent_access_password,
 )
-from app.core.agent.session_pool import AgentSessionPool
 from app.core.browser import browser_descriptors, build_browser_options, probe_browser_session
 from app.core.foundation import (
     APP_VERSION,
@@ -72,6 +73,7 @@ from app.core.foundation import (
     configure_logging,
     get_log_file_path,
     load_saved_config,
+    validate_chromium_profile_directory,
     save_config,
     utc_now,
 )
@@ -865,6 +867,13 @@ def create_app(
         preserve_missing_booleans: bool = False,
     ) -> CrawlConfig:
         source = base or CrawlConfig()
+        try:
+            profile_directory = validate_chromium_profile_directory(
+                request.form.get("chrome_profile_directory", source.chrome_profile_directory).strip()
+                or source.chrome_profile_directory
+            )
+        except ValueError as exc:
+            abort(400, description=str(exc))
         return CrawlConfig(
             headless=parse_checkbox_field("headless", source.headless, preserve_missing_booleans),
             download_workers=parse_int_field(
@@ -942,10 +951,7 @@ def create_app(
             chrome_user_data_dir=Path(
                 request.form.get("chrome_user_data_dir", str(source.chrome_user_data_dir)).strip()
             ).expanduser(),
-            chrome_profile_directory=request.form.get(
-                "chrome_profile_directory", source.chrome_profile_directory
-            ).strip()
-            or source.chrome_profile_directory,
+            chrome_profile_directory=profile_directory,
             account_name_override=request.form.get("account_name_override", source.account_name_override).strip(),
             shadow_backup_enabled=parse_checkbox_field(
                 "shadow_backup_enabled",
@@ -1063,7 +1069,7 @@ def create_app(
             local_store_root=str(media_catalog.local_store_root),
             shadow_backup_snapshot=shadow_backup_service.snapshot(),
             agent_settings=computer_use_settings.settings,
-            agent_runtime_snapshot=computer_use_settings.snapshot(),
+            agent_runtime_snapshot=agent_runtime_snapshot(),
         )
 
     @app.get("/settings/style-tokens")
@@ -1117,6 +1123,18 @@ def create_app(
         if not allow_locked and not is_agent_access_unlocked():
             abort(401)
 
+    def browser_profile_identities(config: CrawlConfig) -> dict[str, str]:
+        """Publish opaque profile keys so open pages can reject stale account evidence."""
+        return {
+            browser: browser_profile_cache_identity(browser, config)
+            for browser in browser_descriptors(config)
+        }
+
+    def agent_runtime_snapshot() -> dict[str, Any]:
+        runtime = computer_use_settings.snapshot()
+        runtime["browser_profile_identities"] = browser_profile_identities(replace(saved_config))
+        return runtime
+
     def external_agent_operations_enabled() -> bool:
         """Return whether this app instance may contact a browser or start an Agent worker."""
         return bool(app.config["AGENT_EXTERNAL_OPERATIONS_ENABLED"])
@@ -1157,6 +1175,7 @@ def create_app(
         platform: str,
         browser: str,
         source_kind: str,
+        config: CrawlConfig,
         project_url: str = "",
         collector: Callable[[], dict[str, Any]],
     ) -> dict[str, Any]:
@@ -1173,6 +1192,7 @@ def create_app(
             browser=browser,
             source_kind=source_kind,
             project_url=project_url,
+            profile_identity=browser_profile_cache_identity(browser, config),
             collector=collector,
             force_refresh=force_refresh,
             stale_while_revalidate=not (
@@ -1184,6 +1204,7 @@ def create_app(
             ),
             collect_on_miss=not is_passive_source_catalog or requested_refresh,
         )
+        payload["profile_identity"] = browser_profile_cache_identity(browser, config)
         if source_kind == "sources":
             normalized = normalize_agent_source_catalog_payload(platform, payload)
             normalized.setdefault("recent_sessions", [])
@@ -1201,6 +1222,7 @@ def create_app(
         platform: str,
         browser: str,
         collector: Callable[[], tuple[dict[str, Any], dict[str, Any] | None]],
+        config: CrawlConfig,
     ) -> dict[str, Any]:
         """Reuse one provider readiness-and-sources browser flight across Agent polls."""
         platform_label = {
@@ -1218,6 +1240,7 @@ def create_app(
                     platform=platform,
                     browser=browser,
                     source_kind="sources",
+                    profile_identity=browser_profile_cache_identity(browser, config),
                     payload=sources,
                 )
                 payload["agent_sources"] = sources
@@ -1231,6 +1254,7 @@ def create_app(
             platform=platform,
             browser=browser,
             source_kind="browser-session",
+            config=config,
             collector=collect_bootstrap,
         )
 
@@ -1270,7 +1294,7 @@ def create_app(
     def build_agent_doctor() -> dict[str, Any]:
         """Combine run diagnostics with host readiness without exposing private content."""
         doctor = selected_agent_service().doctor()
-        doctor["runtime"] = computer_use_settings.snapshot()
+        doctor["runtime"] = agent_runtime_snapshot()
         doctor["capability_registry_version"] = CAPABILITY_REGISTRY_VERSION
         return doctor
 
@@ -1296,6 +1320,8 @@ def create_app(
         isolated.update(
             {
                 "activity": [],
+                "browser_profile_binding": {},
+                "cleanup_error": "",
                 "actual_model": "",
                 "bodycheck_passed": False,
                 "browser": "",
@@ -1364,7 +1390,7 @@ def create_app(
     def render_agent_page(browser: str, platform: str):
         """Render one Agent page using the browser/provider encoded by its URL."""
         agent_settings = agent_settings_for_route(browser, platform)
-        runtime_snapshot = computer_use_settings.snapshot()
+        runtime_snapshot = agent_runtime_snapshot()
         agent_snapshot = agent_snapshot_for_route(
             build_agent_snapshot(),
             browser,
@@ -1378,6 +1404,7 @@ def create_app(
             "agent.html",
             version=APP_VERSION,
             runtime_snapshot=runtime_snapshot,
+            browser_profile_identities=runtime_snapshot["browser_profile_identities"],
             agent_snapshot=agent_snapshot,
             compute_job_snapshot=compute_job_snapshot,
             settings=agent_settings,
@@ -1453,7 +1480,7 @@ def create_app(
     @app.get("/api/agent/status")
     def agent_status():
         require_local_agent_request()
-        runtime_snapshot = computer_use_settings.snapshot()
+        runtime_snapshot = agent_runtime_snapshot()
         selected_browser = str(
             request.headers.get("X-CacheLikes-Agent-Browser")
             or runtime_snapshot.get("browser")
@@ -1547,7 +1574,7 @@ def create_app(
             {
                 "recovery": recovery,
                 "doctor": build_agent_doctor(),
-                "runtime": computer_use_settings.snapshot(),
+                "runtime": agent_runtime_snapshot(),
                 "agent": build_agent_snapshot(),
             }
         )
@@ -1575,7 +1602,7 @@ def create_app(
         return jsonify(
             {
                 "settings": asdict(settings),
-                "runtime": computer_use_settings.snapshot(),
+                "runtime": agent_runtime_snapshot(),
                 "agent": build_agent_snapshot(),
             }
         )
@@ -1610,12 +1637,19 @@ def create_app(
             target_url = str(snapshot.get("conversation_url", ""))
             payload = request.get_json(silent=True) or {}
             background = bool(payload.get("background", True))
+            handoff_options: dict[str, Any] = {}
+            if snapshot.get("run_id"):
+                binding = snapshot.get("browser_profile_binding")
+                if not binding:
+                    raise ValueError("The recorded task has no verified browser profile binding; start a new task.")
+                handoff_options["profile_binding"] = binding
             result = open_agent_in_browser(
                 platform,
                 browser,
                 target_url,
                 background=background,
                 config=saved_config,
+                **handoff_options,
             )
         except (RuntimeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 409
@@ -1628,14 +1662,45 @@ def create_app(
             return reject_external_agent_operation()
         payload = request.get_json(silent=True) or {}
         try:
+            config = replace(saved_config)
+            browser = str(payload.get("browser") or computer_use_settings.settings.browser).strip().lower()
+            profile_identity = browser_profile_cache_identity(browser, config)
+            if payload.get("profile_identity") != profile_identity:
+                return jsonify({
+                    "error": "Browser profile settings changed. Recheck the selected profile before starting a task.",
+                    "code": "browser_profile_changed",
+                }), 409
+            session_id = selected_agent_session_id()
+            if session_id != "new":
+                previous = agent_session_pool.get(session_id).snapshot()
+                if previous.get("run_id"):
+                    binding = previous.get("browser_profile_binding")
+                    descriptor = browser_descriptors(config)[browser]
+                    current_root = str(descriptor.user_data_dir.expanduser().resolve()) if descriptor.user_data_dir else ""
+                    current_profile = descriptor.profile_directory if descriptor.engine == "chromium" else ""
+                    if (
+                        not isinstance(binding, dict)
+                        or binding.get("browser") != browser
+                        or not isinstance(binding.get("user_data_dir"), str)
+                        or not isinstance(binding.get("profile_directory"), str)
+                        or os.path.normcase(binding["user_data_dir"]) != os.path.normcase(current_root)
+                        or os.path.normcase(binding["profile_directory"]) != os.path.normcase(current_profile)
+                    ):
+                        return jsonify({
+                            "error": (
+                                "This Agent session belongs to another or unverified browser profile. "
+                                "Restore its profile and Recheck, or choose New session."
+                            ),
+                            "code": "browser_profile_changed",
+                        }), 409
             started_session_id = agent_session_pool.start(
-                selected_agent_session_id(),
+                session_id,
                 str(payload.get("prompt", "")),
                 str(payload.get("workspace_path", "")),
-                saved_config,
+                config,
                 operating_system=str(payload.get("operating_system", "")),
                 platform=str(payload.get("platform", "")),
-                browser=str(payload.get("browser", "")),
+                browser=browser,
                 model=str(payload.get("model", "")),
                 chatgpt_effort=(
                     str(payload["chatgpt_effort"])
@@ -1652,7 +1717,7 @@ def create_app(
             return jsonify({"error": str(exc)}), 409
         return jsonify(
             {
-                "runtime": computer_use_settings.snapshot(),
+                "runtime": agent_runtime_snapshot(),
                 "agent": build_agent_snapshot(started_session_id),
             }
         ), 202
@@ -1660,17 +1725,19 @@ def create_app(
     @app.get("/api/agent/chatgpt-sources")
     def agent_chatgpt_sources():
         """Load recent ChatGPT sessions and projects for the selected browser."""
+        config = replace(saved_config)
         require_local_agent_request()
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
         browser_name = request.args.get("browser", "").strip().lower()
         try:
             payload = load_agent_source_catalog(
+                config=config,
                 platform="chatgpt",
                 browser=browser_name,
                 source_kind="sources",
                 collector=lambda: {
-                    **list_chatgpt_agent_sources(browser_name, saved_config, silent=True),
+                    **list_chatgpt_agent_sources(browser_name, config, silent=True),
                     "platform": "chatgpt",
                 },
             )
@@ -1681,6 +1748,7 @@ def create_app(
     @app.get("/api/agent/sources")
     def agent_sources():
         """Load recent sessions for any selected Web Agent provider."""
+        config = replace(saved_config)
         require_local_agent_request()
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
@@ -1688,13 +1756,14 @@ def create_app(
         browser_name = request.args.get("browser", "").strip().lower()
         try:
             payload = load_agent_source_catalog(
+                config=config,
                 platform=platform,
                 browser=browser_name,
                 source_kind="sources",
                 collector=lambda: list_agent_sources(
                     platform,
                     browser_name,
-                    saved_config,
+                    config,
                     silent=True,
                 ),
             )
@@ -1705,6 +1774,7 @@ def create_app(
     @app.get("/api/agent/chatgpt-project-sessions")
     def agent_chatgpt_project_sessions():
         """Load recent sessions for one selected ChatGPT project."""
+        config = replace(saved_config)
         require_local_agent_request()
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
@@ -1713,6 +1783,7 @@ def create_app(
         try:
             normalized_project_url = normalize_agent_project_url("chatgpt", project_url)
             payload = load_agent_source_catalog(
+                config=config,
                 platform="chatgpt",
                 browser=browser_name,
                 source_kind="project-sessions",
@@ -1721,7 +1792,7 @@ def create_app(
                     **list_chatgpt_project_sessions(
                         browser_name,
                         project_url,
-                        saved_config,
+                        config,
                         silent=True,
                     ),
                     "platform": "chatgpt",
@@ -1734,6 +1805,7 @@ def create_app(
     @app.get("/api/agent/project-sessions")
     def agent_project_sessions():
         """Load recent sessions inside one provider-neutral Agent Project."""
+        config = replace(saved_config)
         require_local_agent_request()
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
@@ -1743,6 +1815,7 @@ def create_app(
         try:
             normalized_project_url = normalize_agent_project_url(platform, project_url)
             payload = load_agent_source_catalog(
+                config=config,
                 platform=platform,
                 browser=browser_name,
                 source_kind="project-sessions",
@@ -1751,7 +1824,7 @@ def create_app(
                     platform,
                     browser_name,
                     project_url,
-                    saved_config,
+                    config,
                     silent=True,
                 ),
             )
@@ -1762,6 +1835,7 @@ def create_app(
     @app.get("/api/agent/chatgpt-session-history")
     def agent_chatgpt_session_history():
         """Reuse one selected ChatGPT conversation from the shared memory/Parquet cache."""
+        config = replace(saved_config)
         require_local_agent_request()
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
@@ -1773,6 +1847,7 @@ def create_app(
             return jsonify({"error": "Choose a valid ChatGPT conversation before loading its history."}), 400
         try:
             payload = load_agent_source_catalog(
+                config=config,
                 platform="chatgpt",
                 browser=browser_name,
                 source_kind="session-history",
@@ -1780,7 +1855,7 @@ def create_app(
                 collector=lambda: fetch_chatgpt_conversation_history(
                     browser_name,
                     conversation_url,
-                    saved_config,
+                    config,
                     silent=True,
                 ),
             )
@@ -1806,6 +1881,7 @@ def create_app(
     @app.get("/api/agent/grok-session-history")
     def agent_grok_session_history():
         """Reuse one selected Grok conversation from the shared memory/Parquet cache."""
+        config = replace(saved_config)
         require_local_agent_request()
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
@@ -1818,6 +1894,7 @@ def create_app(
             return jsonify({"error": "Choose a valid Grok conversation before loading its history."}), 400
         try:
             payload = load_agent_source_catalog(
+                config=config,
                 platform="grok",
                 browser=browser_name,
                 source_kind="session-history",
@@ -1825,7 +1902,7 @@ def create_app(
                 collector=lambda: fetch_grok_conversation_history(
                     browser_name,
                     conversation_url,
-                    saved_config,
+                    config,
                     silent=True,
                 ),
             )
@@ -1856,7 +1933,7 @@ def create_app(
         return jsonify(
             {
                 "stop_requested": selected_agent_service().request_stop(),
-                "runtime": computer_use_settings.snapshot(),
+                "runtime": agent_runtime_snapshot(),
                 "agent": build_agent_snapshot(),
             }
         )
@@ -2484,7 +2561,7 @@ def create_app(
         return jsonify(
             {
                 "resume_requested": selected_agent_service().request_resume(),
-                "runtime": computer_use_settings.snapshot(),
+                "runtime": agent_runtime_snapshot(),
                 "agent": build_agent_snapshot(),
             }
         )
@@ -2522,6 +2599,7 @@ def create_app(
 
     @app.get("/api/browser-session")
     def api_browser_session():
+        config = replace(saved_config)
         platform_name = request.args.get("platform", "").strip().lower()
         browser_name = request.args.get("browser", "").strip().lower()
         scope = request.args.get("scope", "").strip().lower()
@@ -2529,6 +2607,8 @@ def create_app(
             require_local_agent_request()
 
         def browser_session_response(payload: dict[str, Any], status_code: int = 200):
+            payload = dict(payload)
+            payload["profile_identity"] = browser_profile_identities(config).get(browser_name, "")
             response = jsonify(payload)
             response.status_code = status_code
             if scope == "agent":
@@ -2552,11 +2632,12 @@ def create_app(
         if scope == "agent" and platform_name in agent_bootstrap_collectors:
             try:
                 payload = load_agent_browser_session_bootstrap(
+                    config=config,
                     platform=platform_name,
                     browser=browser_name,
                     collector=lambda: agent_bootstrap_collectors[platform_name](
                         browser_name,
-                        saved_config,
+                        config,
                         silent=True,
                     ),
                 )
@@ -2586,7 +2667,7 @@ def create_app(
             payload = probe_browser_session(
                 platform_name,
                 browser_name,
-                saved_config,
+                config,
                 silent=scope == "agent",
             )
         except ValueError as exc:

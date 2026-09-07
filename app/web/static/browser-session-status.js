@@ -1,4 +1,4 @@
-/* Code version: v1.9.2-codex.1 */
+/* Code version: v1.10.1-codex.1 */
 
 (() => {
     const SESSION_CACHE_PREFIX = "cachelikes:browser-session:v8:";
@@ -61,7 +61,7 @@
     function requestBrowserStatus(platform, browserId, scope, options = {}) {
         const refresh = options.refresh === true;
         const requestScope = scope || "default";
-        const requestKey = `${requestScope}:${platform}:${browserId}`;
+        const requestKey = `${requestScope}:${platform}:${browserId}:${options.profileIdentity || ""}`;
         if (statusRequests.has(requestKey)) return statusRequests.get(requestKey);
         const query = new URLSearchParams({platform, browser: browserId});
         if (scope) query.set("scope", scope);
@@ -101,6 +101,10 @@
         const startButtonInitiallyDisabled = startButton ? startButton.disabled : false;
         const onStateChange = typeof options.onStateChange === "function" ? options.onStateChange : null;
         const scope = String(options.scope || root.dataset.browserSessionScope || "").trim().toLowerCase();
+        let profileIdentities = {};
+        try { profileIdentities = JSON.parse(root.dataset.browserProfileIdentities || "{}"); } catch (_error) {}
+        const requiresProfileIdentity = scope === "agent";
+        const profileIdentity = (browserId) => String(profileIdentities?.[browserId] || "");
         let activeBrowser = "";
         let lastPayload = null;
         let statusRequestRevision = 0;
@@ -277,6 +281,7 @@
         }
 
         function clearStatus() {
+            lastPayload = null;
             statusCard.hidden = true;
             statusCard.removeAttribute("aria-busy");
             root.classList.remove("is-browser-status-loading", "is-browser-status-refreshing", "is-browser-ready");
@@ -299,9 +304,14 @@
             }
 
             const requestPlatform = platform;
+            const requestProfile = profileIdentity(activeBrowser);
             const requestRevision = ++statusRequestRevision;
-            const cacheKey = `${SESSION_CACHE_PREFIX}${scope || "default"}:${requestPlatform}:${activeBrowser}`;
-            const cachedStatus = readCachedStatus(cacheKey);
+            const cacheKey = `${SESSION_CACHE_PREFIX}${scope || "default"}:${requestPlatform}:${activeBrowser}`
+                + (requiresProfileIdentity ? `:${requestProfile}` : "");
+            const storedStatus = readCachedStatus(cacheKey);
+            const cachedStatus = !requiresProfileIdentity || (
+                requestProfile && storedStatus?.payload.profile_identity === requestProfile
+            ) ? storedStatus : null;
             const cachedPayload = cachedStatus?.payload;
             const requiresChatgptCapabilities = scope === "agent" && requestPlatform === "chatgpt"
                 && !(cachedPayload?.model_catalog_complete
@@ -326,12 +336,21 @@
             else setLoadingState(activeBrowser);
 
             try {
-                const payload = await requestBrowserStatus(requestPlatform, activeBrowser, scope, {refresh: forceRefresh});
+                if (requiresProfileIdentity && !requestProfile) {
+                    throw new Error("Browser profile settings are unavailable. Reload to check readiness.");
+                }
+                const payload = await requestBrowserStatus(requestPlatform, activeBrowser, scope, {
+                    refresh: forceRefresh, profileIdentity: requestProfile,
+                });
                 if (
                     activeBrowser !== browserId
                     || platform !== requestPlatform
                     || requestRevision !== statusRequestRevision
+                    || requestProfile !== profileIdentity(activeBrowser)
                 ) return;
+                if (requiresProfileIdentity && payload.profile_identity !== requestProfile) {
+                    throw new Error("Browser profile settings changed. Recheck the selected profile.");
+                }
                 writeSessionValue(cacheKey, JSON.stringify({cached_at: Date.now(), payload}));
                 setStatus(payload, browserId);
             } catch (error) {
@@ -339,6 +358,7 @@
                     activeBrowser !== browserId
                     || platform !== requestPlatform
                     || requestRevision !== statusRequestRevision
+                    || requestProfile !== profileIdentity(activeBrowser)
                 ) return;
                 setStatus({
                     browser_label: statusAccount.textContent,
@@ -358,6 +378,20 @@
         });
 
         const controller = {
+            invalidate(message = "Browser profile settings changed. Recheck the selected profile.") {
+                statusRequestRevision += 1;
+                setStatus({can_download: false, account_name: "", message}, activeBrowser);
+            },
+            setProfileIdentities(identities) {
+                const previousProfile = profileIdentity(activeBrowser);
+                profileIdentities = identities && typeof identities === "object" ? identities : {};
+                root.dataset.browserProfileIdentities = JSON.stringify(profileIdentities);
+                if (previousProfile === profileIdentity(activeBrowser)) return;
+                statusRequestRevision += 1;
+                loginRequestRevision += 1;
+                clearStatus();
+                void load(activeBrowser);
+            },
             setBrowser(browserId) {
                 void load(String(browserId || "").trim().toLowerCase());
             },

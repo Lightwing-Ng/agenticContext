@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.7.11-codex.1`
+Documentation version: `v1.8.0-codex.1`
 
 ## Supported commands
 
@@ -292,7 +292,9 @@ The current detailed module-to-behavior map is maintained in [TEST_COVERAGE.md](
 `tests/conftest.py` runs before application test modules are imported. It redirects all default
 runtime locations to process-scoped temporary directories:
 
-- `HOME` keeps settings and browser-profile defaults away from the user account.
+- `HOME`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `LOCALAPPDATA`, and `APPDATA` keep both
+  POSIX and Windows settings/browser-profile defaults away from the user account.
+- `TMPDIR`, `TEMP`, `TMP`, and Python's cached temporary directory use a private test root.
 - `AGENTIC_CONTEXT_RUNTIME_ROOT` moves default local caches and logs away from the repository.
 - `AGENTIC_CONTEXT_SETTINGS_PATH` redirects persisted settings.
 
@@ -302,6 +304,12 @@ Default tests must not:
 - make X, Grok, ChatGPT, yt-dlp, or general network requests;
 - read, copy, delete, reset, or restore a user-owned cache, log, setting, or browser profile;
 - submit a real background cache job.
+
+The test audit hook denies non-loopback Python network dispatch, port 8666, native browser
+launches, and native authorization prompts. Playwright profile attachment and persistent contexts
+are denied. Real browser tests must request `disposable_browser_launch`, launch headless with no
+user-data directory, and retain the context route guard that blocks external requests. These are
+test isolation guards, not an OS sandbox for arbitrary subprocess code.
 
 Mock external boundaries at the module that invokes them. Existing patterns mock
 `sync_playwright`, `launch_chromium_context`, `subprocess.run`, `urlopen`, the scraper, and
@@ -374,3 +382,28 @@ does not establish compatibility of every future dependency release.
 
 Dated browser, platform, and CI observations are preserved in [TEST_HISTORY.md](TEST_HISTORY.md).
 Do not reuse those counts or version-specific commands as evidence for a new checkout.
+
+## Windows audit regression coverage
+
+`test_chromium_profile_boundaries.py` covers path containment, shared executable resolution,
+retained stale profiles, and cleanup precedence with synthetic roots. `test_agent_profile_binding.py`
+covers configuration changes, in-flight cache partitioning, persisted task binding, and legacy
+profile-proof refusal. `test_agent_profile_browser.py` uses clean local browser fixtures to reject
+missing or mismatched profile evidence and stale in-flight replies. `test_agent_browser_cleanup.py`
+checks that Stop and restart preserve a retained-profile error.
+
+`test_windows_anchored_delete.py` checks the native ABI/handle algorithm with injected file APIs on
+other hosts and real temporary Windows files on Windows. Native cases include successful receipt
+deletion, changed content/root, sharing conflicts, and replacement attempts. `test_compute_jobs.py`
+exercises portable output collection, native identity, job ownership, and verified stopping
+on the host where it runs. Abrupt worker-exit containment still requires the native acceptance
+check; a normal Stop test does not establish that separate lifecycle. A macOS fake is not native Windows evidence.
+
+Run related suites first and then one complete platform gate at a time; the coverage files are
+shared within each checkout. A Windows CI pass verifies disposable local files/processes/browser
+fixtures, not real account login, profile authentication transfer, native visible window usability,
+scaling, or provider prompt submission. Those still require the explicit manual matrix above.
+
+Ask profile identity checks compare configuration snapshots; the identity is not a server-issued
+provider authentication credential. Route and browser tests must check mismatch rejection before
+worker start and preserve the real-provider authentication boundary.

@@ -1,6 +1,8 @@
-"""Shared component annotation regressions. Code version: v1.0.1-codex.1."""
+"""Shared component annotation regressions. Code version: v1.0.2-codex.1."""
 
 import pytest
+
+from tests.agent_browser_fixtures import browser_profile_identity
 from playwright.sync_api import expect
 
 from tests import test_sidebar_e2e
@@ -63,12 +65,12 @@ def test_account_probe_failure_can_recheck_without_signing_in(disposable_browser
     requests = []
     def probe(route):
         requests.append(route.request.url)
-        ready = "refresh=1" in route.request.url
-        route.fulfill(json={
+        ready = len(requests) == 2
+        route.fulfill(json={"profile_identity": browser_profile_identity("edge"),
             "platform": "chatgpt", "browser": "edge", "browser_label": "Edge",
             "logged_in": True if ready else logged_in, "can_download": ready,
             "message": "Ready" if ready else "Could not verify: net::ERR_CONNECTION_CLOSED",
-            "agent_sources": {"recent_sessions": [], "projects": []},
+            "agent_sources": {"profile_identity": browser_profile_identity("edge"), "recent_sessions": [], "projects": []},
         })
     page.route("**/api/browser-session**", probe)
     try:
@@ -86,11 +88,13 @@ def test_account_probe_failure_can_recheck_without_signing_in(disposable_browser
             assert login.evaluate("e => Math.abs(e.getBoundingClientRect().right - e.parentElement.getBoundingClientRect().right) <= 1")
         expect(retry).to_be_visible()
         assert retry.evaluate("e => Math.abs(e.getBoundingClientRect().right - e.parentElement.getBoundingClientRect().right) <= 1")
+        assert len(requests) == 1
         retry.click()
         expect(retry).to_be_hidden()
         expect(message).to_be_hidden()
         expect(page.locator('[data-role="browser-session-checkmark"]')).to_have_attribute("data-status-state", "ready")
-        assert any("refresh=1" in url for url in requests)
+        assert len(requests) == 2
+        assert "refresh=1" in requests[-1]
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     finally:
         context.close()

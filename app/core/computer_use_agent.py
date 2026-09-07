@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.57.6-codex.1
+Code version: v3.58.0-codex.1
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ from .agent.capability_registry import (
     validate_controller_action_payload,
 )
 from .browser_sessions import (
+    BrowserDescriptor,
     CLAUDE_COMPOSER_SELECTOR,
     CHROMIUM_WINDOW_MODE_OFFSCREEN,
     CHROMIUM_WINDOW_MODE_TASK_STAGE,
@@ -73,6 +74,7 @@ from .config import (
     is_windows_host,
     runtime_root_is_overridden,
     resolve_runtime_root,
+    validate_chromium_profile_directory,
 )
 from .gemini_downloader import inspect_gemini_session
 from .grok_history import _grok_api_json
@@ -886,6 +888,8 @@ class AgentRunSnapshot:
     finished_at: str = ""
     last_error: str = ""
     error_traceback: str = ""
+    cleanup_error: str = ""
+    browser_profile_binding: dict[str, str] = field(default_factory=dict)
     context_file: str = ""
     context_bytes: int = 0
     context_attached: bool = False
@@ -1347,6 +1351,61 @@ def open_agent_in_default_browser(platform: str = DEFAULT_AGENT_PLATFORM, target
     }
 
 
+def _bound_browser_descriptor(
+    browser: str,
+    config: CrawlConfig,
+    binding: dict[str, str] | None = None,
+) -> BrowserDescriptor:
+    """Use a recorded profile for a run, rejecting incomplete or foreign bindings."""
+    descriptor = browser_descriptors(config)[browser]
+    if binding is None:
+        return descriptor
+    if not isinstance(binding, dict) or binding.get("browser") != browser:
+        raise ValueError("The task has no verified browser profile binding; start a new task.")
+    if descriptor.engine != "chromium":
+        if binding.get("user_data_dir") or binding.get("profile_directory"):
+            raise ValueError("The recorded system browser profile binding is invalid.")
+        return descriptor
+    root = binding.get("user_data_dir")
+    profile = binding.get("profile_directory")
+    if not isinstance(root, str) or not root or not Path(root).is_absolute():
+        raise ValueError("The task has no valid recorded browser data directory.")
+    if not isinstance(profile, str):
+        raise ValueError("The task has no valid recorded browser profile directory.")
+    return replace(
+        descriptor,
+        user_data_dir=Path(root),
+        profile_directory=validate_chromium_profile_directory(profile),
+    )
+
+
+def _browser_profile_binding(descriptor: BrowserDescriptor) -> dict[str, str]:
+    """Capture the exact browser data root before asynchronous task work begins."""
+    return {
+        "browser": descriptor.browser_id,
+        "user_data_dir": str(descriptor.user_data_dir.expanduser().resolve()) if descriptor.user_data_dir else "",
+        "profile_directory": descriptor.profile_directory if descriptor.engine == "chromium" else "",
+    }
+
+
+def _browser_cleanup_failure(error: BaseException) -> str:
+    """Read structured cleanup failures through preserved exception chains."""
+    pending = [error]
+    seen: set[int] = set()
+    messages: list[str] = []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if getattr(current, "browser_cleanup_failed", False):
+            messages.extend(str(note) for note in getattr(current, "__notes__", ()))
+            if not messages:
+                messages.append(str(current))
+        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
+    return "\n".join(dict.fromkeys(messages))[:4_000]
+
+
 def open_agent_in_browser(
     platform: str = DEFAULT_AGENT_PLATFORM,
     browser: str = "edge",
@@ -1354,6 +1413,7 @@ def open_agent_in_browser(
     *,
     background: bool = True,
     config: CrawlConfig | None = None,
+    profile_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Open one trusted Web Agent target in the explicitly selected browser."""
     selected_platform = str(platform or DEFAULT_AGENT_PLATFORM).strip().lower()
@@ -1417,7 +1477,9 @@ def open_agent_in_browser(
         resolved_executable = resolve_windows_browser_executable(selected_browser)
         if resolved_executable is None:
             raise RuntimeError(f"{application} could not be found on this host.")
-        descriptor = browser_descriptors(config if config is not None else CrawlConfig())[selected_browser]
+        descriptor = _bound_browser_descriptor(
+            selected_browser, config if config is not None else CrawlConfig(), profile_binding,
+        )
         command = [
             resolved_executable,
             f"--user-data-dir={descriptor.user_data_dir}",
@@ -3212,7 +3274,7 @@ class WorkspaceController:
             int(metadata.st_ino),
             int(metadata.st_size),
             int(metadata.st_mtime_ns),
-            int(metadata.st_mode),
+            int(metadata.st_mode) & ~0o111 if os.name == "nt" else int(metadata.st_mode),
         )
 
     def _open_anchored_delete_parent(self, relative: Path) -> tuple[int, str]:
@@ -3787,6 +3849,32 @@ class WorkspaceController:
             raise ValueError(
                 "The supplied SHA-256 does not match this controller's current read receipt."
             )
+        if os.name == "nt":
+            from .windows_anchored_delete import delete_read_verified_file
+
+            deleted_bytes = delete_read_verified_file(
+                self.workspace, relative, self._workspace_identity,
+                receipt[1], expected_sha256, MAX_CONTROLLER_DELETE_BYTES,
+            )
+        else:
+            deleted_bytes = self._delete_posix_read_verified_file(
+                relative, expected_sha256, receipt[1],
+            )
+        self._mark_edit()
+        return {
+            "ok": True,
+            "action": "delete",
+            "path": relative_key,
+            "deleted_bytes": deleted_bytes,
+        }
+
+    def _delete_posix_read_verified_file(
+        self,
+        relative: Path,
+        expected_sha256: str,
+        expected_identity: tuple[int, int, int, int, int],
+    ) -> int:
+        """Remove the read-verified file through POSIX directory descriptors."""
         directory_fd, leaf_name = self._open_anchored_delete_parent(relative)
         file_fd = -1
         directory_lock_held = False
@@ -3803,7 +3891,7 @@ class WorkspaceController:
                 directory_fd,
                 leaf_name,
             )
-            if current_sha256 != expected_sha256 or identity != receipt[1]:
+            if current_sha256 != expected_sha256 or identity != expected_identity:
                 raise ValueError(
                     "The file no longer matches the current read receipt; read it again "
                     "before deleting."
@@ -3826,13 +3914,7 @@ class WorkspaceController:
             if directory_lock_held:
                 fcntl.flock(directory_fd, fcntl.LOCK_UN)
             os.close(directory_fd)
-        self._mark_edit()
-        return {
-            "ok": True,
-            "action": "delete",
-            "path": relative_key,
-            "deleted_bytes": deleted_bytes,
-        }
+        return deleted_bytes
 
     def _run(self, payload: dict[str, Any]) -> dict[str, Any]:
         command = str(payload.get("command") or "").strip()
@@ -5095,6 +5177,8 @@ class ComputerUseAgentService:
             if key in payload
         }
         snapshot = AgentRunSnapshot(**allowed)
+        if snapshot.cleanup_error:
+            snapshot.last_error = str(snapshot.cleanup_error)
         try:
             snapshot.run_revision = int(snapshot.run_revision)
         except (TypeError, ValueError):
@@ -5140,6 +5224,8 @@ class ComputerUseAgentService:
             "operating_system",
             "platform",
             "browser",
+            "browser_profile_binding",
+            "cleanup_error",
             "model",
             "chatgpt_effort",
             "read_only",
@@ -5338,6 +5424,7 @@ class ComputerUseAgentService:
         session_title: str = "",
         read_only: bool = False,
         continuation: bool = False,
+        profile_binding: dict[str, str] | None = None,
     ) -> None:
         clean_prompt = str(prompt or "").replace("\x00", "").strip()
         if not clean_prompt:
@@ -5377,6 +5464,9 @@ class ComputerUseAgentService:
             settings.platform,
         )
         clean_session_title = _clean_agent_session_title(session_title, "")
+        config = replace(config)
+        descriptor = _bound_browser_descriptor(settings.browser, config, profile_binding)
+        captured_profile = _browser_profile_binding(descriptor)
 
         with self._admission_guard(settings, target_url), self._lock:
             if self._shutdown_started:
@@ -5422,6 +5512,7 @@ class ComputerUseAgentService:
                 operating_system=settings.operating_system,
                 platform=settings.platform,
                 browser=settings.browser,
+                browser_profile_binding=captured_profile,
                 model=settings.model,
                 chatgpt_effort=settings.chatgpt_effort,
                 read_only=bool(read_only),
@@ -5561,6 +5652,12 @@ class ComputerUseAgentService:
             chatgpt_effort = normalize_chatgpt_effort(snapshot.chatgpt_effort)
         except ValueError:
             return None, "The interrupted task has an invalid recorded ChatGPT effort policy."
+        try:
+            _bound_browser_descriptor(
+                snapshot.browser, self._config_provider(), snapshot.browser_profile_binding,
+            )
+        except (ValueError, KeyError, TypeError):
+            return None, "The interrupted task has no verified browser profile binding; start a new task."
         return {
             "workspace_path": str(workspace),
             "operating_system": snapshot.operating_system,
@@ -5571,6 +5668,7 @@ class ComputerUseAgentService:
             "conversation_url": conversation_url,
             "session_title": snapshot.session_title,
             "read_only": snapshot.read_only,
+            "profile_binding": dict(snapshot.browser_profile_binding),
         }, ""
 
     def doctor(self) -> dict[str, Any]:
@@ -5612,6 +5710,14 @@ class ComputerUseAgentService:
                     "detail": run_detail,
                 }
             )
+
+            if snapshot.get("cleanup_error"):
+                checks.append({
+                    "id": "browser_cleanup",
+                    "label": "Browser cleanup",
+                    "status": "fail",
+                    "detail": str(snapshot["cleanup_error"])[:4_000],
+                })
 
             continuation_details, continuation_reason = (
                 self._interrupted_continuation_details_locked()
@@ -5833,6 +5939,7 @@ class ComputerUseAgentService:
                 session_title=str(details["session_title"]),
                 read_only=bool(details["read_only"]),
                 continuation=True,
+                profile_binding=details["profile_binding"],
             )
             return {
                 "action": normalized_action,
@@ -6126,6 +6233,7 @@ class ComputerUseAgentService:
                 }
                 if self._runner is run_chatgpt_web_computer_use:
                     runner_kwargs["compute_job_runtime_root"] = self._runtime_root
+                    runner_kwargs["profile_binding"] = dict(self._snapshot.browser_profile_binding)
                 response, conversation_url, turn_count, bodycheck_passed = self._runner(
                     **runner_kwargs,
                 )
@@ -6181,6 +6289,7 @@ class ComputerUseAgentService:
                 stopped_after_error = self._stop_requested.is_set()
                 recorded_conversation_url = str(self._snapshot.conversation_url or "")
                 recorded_turn_count = int(self._snapshot.turn_count or 0)
+            cleanup_error = _browser_cleanup_failure(exc)
             turn_limit_exhausted = isinstance(exc, AgentTurnLimitExceeded)
             if stopped_after_error:
                 LOGGER.info("Computer Use web-agent request ended after Stop: %s", exc)
@@ -6215,6 +6324,7 @@ class ComputerUseAgentService:
                 ),
                 "last_error": str(exc),
                 "error_traceback": traceback.format_exc(),
+                "cleanup_error": cleanup_error,
                 "traditional_handoff_available": handoff_available,
                 "traditional_handoff_opened": handoff_opened,
                 "traditional_handoff_message": handoff_message,
@@ -6225,13 +6335,14 @@ class ComputerUseAgentService:
                     "phase": "stopped",
                     "paused": False,
                     "pause_reason": "",
-                    "message": "Agent request stopped.",
+                    "message": "Agent request stopped; browser cleanup failed." if cleanup_error else "Agent request stopped.",
                     "response": "",
                     "conversation_url": recorded_conversation_url or target_url,
                     "turn_count": recorded_turn_count,
                     "bodycheck_passed": False,
-                    "last_error": "",
-                    "error_traceback": "",
+                    "last_error": str(exc) if cleanup_error else "",
+                    "error_traceback": traceback.format_exc() if cleanup_error else "",
+                    "cleanup_error": cleanup_error,
                     "traditional_handoff_available": False,
                     "traditional_handoff_opened": False,
                     "traditional_handoff_message": "",
@@ -6363,9 +6474,10 @@ def run_web_computer_use(
     should_resume: Callable[[], bool] | None = None,
     event_chain: AgentEventChain | None = None,
     compute_job_runtime_root: Path | None = None,
+    profile_binding: dict[str, str] | None = None,
 ) -> tuple[str, str, int, bool]:
     """Run one selected Web AI session as a local controller action loop."""
-    descriptor = browser_descriptors(config)[settings.browser]
+    descriptor = _bound_browser_descriptor(settings.browser, config, profile_binding)
     controller = WorkspaceController(
         workspace,
         settings,

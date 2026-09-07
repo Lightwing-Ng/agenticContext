@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.7.2-codex.1
+Code version: v1.7.3-codex.1
 """
 
 from __future__ import annotations
@@ -41,6 +41,18 @@ from app.core.scraper import (
     collect_liked_tweet_urls,
 )
 from app.core.state import TaskState
+
+
+@pytest.fixture(autouse=True)
+def isolated_windows_browser_executable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Fake executable discovery whenever a test uses a fake Chromium launcher."""
+    from app.core import computer_use_agent
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "resolve_windows_browser_executable",
+        lambda browser: str(tmp_path / f"synthetic-{browser}.exe"),
+    )
 
 
 @pytest.mark.parametrize("stop_stage", ("before_navigation", "after_error", "during_retry_wait"))
@@ -646,6 +658,7 @@ def test_managed_chromium_context_propagates_unexpected_close_errors(
             pass
 
     assert exc_info.value is close_error
+    assert close_error.browser_cleanup_failed is True
     context.close.assert_called_once_with()
     assert not temporary_profile_root.exists()
 
@@ -694,6 +707,7 @@ def test_chromium_cleanup_failure_retains_profile_and_preserves_primary_error(
     else:
         assert caught.value is primary_error
         assert any(str(temp_root) in note for note in primary_error.__notes__)
+    assert caught.value.browser_cleanup_failed is True
     assert "Could not remove" in caplog.text
     assert temp_root in browser_sessions._ACTIVE_CHROMIUM_PROFILE_ROOTS
     assert context.close.call_count == (0 if failure_stage == "launch" else 1)
@@ -735,9 +749,10 @@ def test_clone_copy_failure_is_not_replaced_by_cleanup_failure(
     assert (source / "Default").is_dir()
 
 
-def test_stale_chromium_profiles_are_removed_without_touching_other_temp_paths(
+def test_stale_chromium_profiles_retain_unknown_owners_and_other_temp_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     descriptor = BrowserDescriptor(
         browser_id="edge",
@@ -758,10 +773,13 @@ def test_stale_chromium_profiles_are_removed_without_touching_other_temp_paths(
     os.utime(stale_profile, (stale_time, stale_time))
     monkeypatch.setattr("app.core.browser_sessions.tempfile.gettempdir", lambda: str(tmp_path))
 
-    assert _housekeep_stale_chromium_profiles(descriptor) == 1
-    assert not stale_profile.exists()
+    with patch("app.core.browser_sessions.shutil.rmtree") as remove:
+        assert _housekeep_stale_chromium_profiles(descriptor) == 0
+    remove.assert_not_called()
+    assert stale_profile.exists()
     assert fresh_profile.exists()
     assert unrelated_path.exists()
+    assert "browser-process ownership is unverified" in caplog.text
 
 
 def test_clone_browser_profile_continues_when_macos_blocks_local_state(tmp_path: Path) -> None:
