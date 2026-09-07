@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.57.3-codex.1
+Code version: v3.57.4-codex.1
 """
 
 from __future__ import annotations
@@ -4540,11 +4540,13 @@ def test_stop_during_browser_startup_never_enters_the_action_loop(
         ("chrome", "Google Chrome"),
     ),
 )
+@pytest.mark.parametrize("host_platform", ("darwin", "win32", "linux"))
 def test_chromium_agent_selects_the_provider_tab_before_navigation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     browser_name: str,
     expected_app: str,
+    host_platform: str,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
@@ -4589,6 +4591,8 @@ def test_chromium_agent_selects_the_provider_tab_before_navigation(
     navigated_pages: list[_Page] = []
     action_loop_pages: list[_Page] = []
     launch_options: list[dict[str, object]] = []
+    captured_frontmost_apps: list[bool] = []
+    available_pages: list[_Page] = []
     restored_frontmost_apps: list[tuple[str, str]] = []
     expected_result = ("done", "https://gemini.google.com/app", 1, True)
     workspace = tmp_path / "project"
@@ -4618,11 +4622,12 @@ def test_chromium_agent_selects_the_provider_tab_before_navigation(
         "launch_chromium_context",
         lambda *_args, **kwargs: (launch_options.append(kwargs) or browser_context),
     )
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
+    monkeypatch.setattr(computer_use_agent.sys, "platform", host_platform)
+    monkeypatch.setattr(computer_use_agent, "_keep_task_stage_window_available", available_pages.append)
     monkeypatch.setattr(
         computer_use_agent,
         "_capture_macos_frontmost_application",
-        lambda: "WeChat",
+        lambda: captured_frontmost_apps.append(True) or "WeChat",
     )
     monkeypatch.setattr(
         computer_use_agent,
@@ -4655,11 +4660,15 @@ def test_chromium_agent_selects_the_provider_tab_before_navigation(
     assert result == expected_result
     assert navigated_pages == [provider_page]
     assert action_loop_pages == [provider_page]
-    assert launch_options[0]["window_mode"] == "task_stage"
+    assert len(launch_options) == 1
+    assert launch_options[0]["clone_profile_first"] is True
+    assert launch_options[0]["window_mode"] == ("offscreen" if host_platform == "linux" else "task_stage")
+    assert available_pages == ([] if host_platform == "linux" else [blank_page])
     assert launch_options[0]["headless"] is False
     assert launch_options[0]["background_window"] is True
-    assert launch_options[0]["silent"] is True
-    assert restored_frontmost_apps == [("WeChat", expected_app)]
+    assert launch_options[0]["silent"] is (host_platform == "darwin")
+    assert captured_frontmost_apps == ([True] if host_platform == "darwin" else [])
+    assert restored_frontmost_apps == ([("WeChat", expected_app)] if host_platform == "darwin" else [])
 
 
 def test_running_false_is_published_after_context_cleanup_and_sleep_release(
@@ -14567,9 +14576,13 @@ def test_provider_human_verification_uses_a_fixed_safe_reason(
     assert reason in detected
 
 
-def test_task_stage_window_keeps_only_the_owned_clone_normal_without_focus() -> None:
+@pytest.mark.parametrize("host_platform", ("darwin", "win32"))
+def test_task_stage_window_keeps_only_the_owned_clone_normal_without_focus(
+    monkeypatch: pytest.MonkeyPatch, host_platform: str,
+) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
+    monkeypatch.setattr(computer_use_agent.sys, "platform", host_platform)
     calls: list[tuple[str, object]] = []
 
     class _Session:
@@ -14599,8 +14612,15 @@ def test_task_stage_window_keeps_only_the_owned_clone_normal_without_focus() -> 
             "Browser.setWindowBounds",
             {"windowId": 17, "bounds": {"windowState": "normal"}},
         ),
-        ("detach", None),
-    ]
+    ] + ([
+        (
+            "Browser.setWindowBounds",
+            {
+                "windowId": 17,
+                "bounds": {"left": 80, "top": 80, "width": 1_280, "height": 900},
+            },
+        ),
+    ] if host_platform == "win32" else []) + [("detach", None)]
 
 
 def test_macos_task_stage_restores_the_previous_frontmost_application(

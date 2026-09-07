@@ -1,6 +1,6 @@
 """Read ChatGPT Web sessions, projects, and conversation history for the local Agent.
 
-Code version: v1.6.2-codex.1
+Code version: v1.6.3-codex.1
 """
 
 from __future__ import annotations
@@ -76,10 +76,21 @@ def _discover_chatgpt_agent_efforts(page: Any) -> dict[str, Any]:
                 observation,
                 thinking_effort=CHATGPT_EFFORT_POLICY_HIGHEST,
             )
-            if model_verified or observation.get("reason") != "model-catalog-unavailable":
+            if model_verified or observation.get("reason") not in {
+                "model-catalog-unavailable",
+                "power-control-not-found",
+                "power-control-recycled",
+                "model-view-close-failed",
+                "effort-slider-not-found",
+                "effort-slider-unreadable",
+                "effort-range-changed",
+                "effort-position-readback-mismatch",
+                "effort-label-unreadable",
+                "effort-selection-readback-mismatch",
+            }:
                 break
-            # A newly hydrated provider menu can miss its first catalog read.
-            # Reopen that closed menu once in this context, never another browser.
+            # Hydration can replace either picker before its first complete read.
+            # Retry once on this page, discarding partial catalogs from that pass.
     except Exception:  # pragma: no cover - provider DOM failures are runtime-specific
         model_verified = False
         observation = {"reason": "effort-probe-failed"}

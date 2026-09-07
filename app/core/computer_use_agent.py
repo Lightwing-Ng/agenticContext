@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.57.3-codex.1
+Code version: v3.57.4-codex.1
 """
 
 from __future__ import annotations
@@ -6412,9 +6412,10 @@ def run_web_computer_use(
                 event_chain=event_chain,
             )
 
-    task_stage_window = settings.browser in {"edge", "chrome"} and sys.platform == "darwin"
+    task_stage_window = settings.browser in {"edge", "chrome"} and sys.platform in {"darwin", "win32"}
+    restore_macos_focus = task_stage_window and sys.platform == "darwin"
     previous_frontmost_application = (
-        _capture_macos_frontmost_application() if task_stage_window else ""
+        _capture_macos_frontmost_application() if restore_macos_focus else ""
     )
     task_browser_application = (
         "Google Chrome" if settings.browser == "chrome" else "Microsoft Edge"
@@ -6426,7 +6427,7 @@ def run_web_computer_use(
             headless=False,
             clone_profile_first=True,
             background_window=True,
-            silent=task_stage_window,
+            silent=restore_macos_focus,
             window_mode=(
                 CHROMIUM_WINDOW_MODE_TASK_STAGE
                 if task_stage_window
@@ -6439,7 +6440,7 @@ def run_web_computer_use(
                     if pages:
                         _keep_task_stage_window_available(pages[0])
             finally:
-                if task_stage_window:
+                if restore_macos_focus:
                     _restore_macos_frontmost_application_after_task_stage(
                         previous_frontmost_application,
                         task_browser_application,
@@ -7580,8 +7581,16 @@ def _keep_task_stage_window_available(page: Any) -> None:
             "Browser.setWindowBounds",
             {"windowId": window_id, "bounds": {"windowState": "normal"}},
         )
+        if sys.platform == "win32":
+            session.send(
+                "Browser.setWindowBounds",
+                {
+                    "windowId": window_id,
+                    "bounds": {"left": 80, "top": 80, "width": 1_280, "height": 900},
+                },
+            )
     except Exception as exc:
-        LOGGER.debug("Could not keep the task browser window available in Stage Manager: %s", exc)
+        LOGGER.debug("Could not keep the task browser window available: %s", exc)
     finally:
         detach = getattr(session, "detach", None)
         if callable(detach):

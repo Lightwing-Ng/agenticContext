@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.55.6-codex.1`
+Documentation version: `v3.55.7-codex.1`
 
 ## Purpose
 
@@ -615,11 +615,12 @@ macOS-only. The selected operating system must match the host running the local 
 
 Edge and Chrome run through an isolated clone of the selected signed-in profile and operate the
 selected provider's DOM directly. Passive source checks use a quiet, task-independent context.
-ChatGPT source checks use a non-headless, backgrounded/offscreen context because ChatGPT's
-Cloudflare challenge rejects the headless clone with HTTP 403; this remains one bounded probe and
-does not surface a user-facing browser window.
-On macOS, an executing Edge or Chrome task uses one normal, non-offscreen task-owned window, rather than a
-full-display or permanently hidden window. It is restored to the normal macOS window state and the previous
+ChatGPT source checks use a non-headless context because ChatGPT's Cloudflare challenge rejects
+headless clones with HTTP 403. Windows retains the backgrounded/offscreen probe policy; existing
+macOS silent probes retain their task-stage window policy and foreground-app restoration.
+On macOS and Windows, an executing Edge or Chrome task uses one normal, non-offscreen task-owned
+window. Windows normalizes the same clone through CDP and positions it on screen without requesting
+activation; it does not run macOS foreground-app capture or restore. On macOS, the previous
 foreground app is restored if the browser took focus, leaving the task window available for the user to
 inspect through macOS window management. macOS ultimately determines Stage Manager grouping.
 The user's original profile is never opened for writing. Chromium still suppresses first-run,

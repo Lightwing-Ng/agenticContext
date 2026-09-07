@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.32.3-codex.1
+Code version: v1.32.5-codex.1
 """
 
 from __future__ import annotations
@@ -3399,6 +3399,7 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
 
     def agent_payload(selected_platform: str) -> dict[str, object]:
         return {
+            "can_start": True,
             "runtime": {
                 "ready": True,
                 "host_operating_system": "macos",
@@ -3865,6 +3866,7 @@ def test_agent_provider_projects_submit_agentic_task_target(
 
     def agent_payload(selected_platform: str) -> dict[str, object]:
         return {
+            "can_start": True,
             "runtime": {
                 "ready": True,
                 "host_operating_system": "macos",
@@ -4064,6 +4066,7 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
 
     def agent_payload() -> dict[str, object]:
         return {
+            "can_start": True,
             "runtime": {
                 "ready": True,
                 "host_operating_system": "macos",
@@ -4545,6 +4548,7 @@ AGENTIC_TROUBLESHOOTING_URL = "https://chatgpt.com/c/6a8d310f-7af4-83e8-acb4-6e3
 
 def _finished_chatgpt_agent_payload() -> dict[str, object]:
     return {
+        "can_start": True,
         "runtime": {
             "ready": True,
             "host_operating_system": "macos",
@@ -6815,10 +6819,13 @@ def test_incomplete_chatgpt_effort_catalog_hides_stale_snapshot_options(
         "**/api/agent/status",
         lambda route: route.fulfill(json=agent_payload),
     )
-    page.route(
-        "**/api/browser-session**",
-        lambda route: route.fulfill(json=incomplete_status),
-    )
+    browser_requests = []
+
+    def bootstrap(route):
+        browser_requests.append(route.request.url)
+        route.fulfill(json=incomplete_status)
+
+    page.route("**/api/browser-session**", bootstrap)
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
         expect(page.locator(".browser-session-status-account")).to_have_text("ChatGPT account")
@@ -6833,6 +6840,9 @@ def test_incomplete_chatgpt_effort_catalog_hides_stale_snapshot_options(
         expect(page.locator("[data-agent-effort-input]")).to_have_value(
             "highest_available"
         )
+        for _ in range(4):
+            page.get_by_role("button", name="Option: Highest available", exact=True).click()
+        assert len(browser_requests) == 1
         refresh_options = page.locator("[data-agent-effort-refresh]")
         expect(refresh_options).to_have_count(0)
         assert [text.strip() for text in effort_options.all_text_contents()] == [
@@ -6952,6 +6962,9 @@ def test_client_cached_chatgpt_effort_catalog_reuses_options_without_a_refresh_b
         "account_name": "ChatGPT account",
         "message": "Cached but formerly live ChatGPT status.",
         "agent_sources": _chatgpt_catalog_sessions(),
+        "model_catalog_complete": True,
+        "model_options": [{"key": "live:latest", "label": "Latest"}],
+        "actual_model": "Latest",
         "available_efforts": ["Old live maximum"],
         "thinking_effort": "Old live maximum",
         "effort_catalog_complete": True,
@@ -9324,7 +9337,7 @@ def test_agent_bootstrap_discovers_models_efforts_and_restores_markdown_once(
         expect(page.locator('#agent_response_answer strong')).to_have_text('Verified')
         expect(page.locator('[data-agent-effort-input]')).to_have_value('highest_available')
         assert len(requests) == 1
-        assert 'refresh=1' not in requests[0]
+        assert 'refresh=1' in requests[0]
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
         page.reload(wait_until='domcontentloaded')
         expect(page.get_by_role('button', name='Model: GPT-12 Nebula', exact=True)).to_be_visible()
@@ -9610,7 +9623,7 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
 
 @pytest.mark.integration
 @pytest.mark.parametrize('width', [1_021, 375])
-def test_agent_latest_deduplicates_and_effort_click_recovers_failed_catalog(
+def test_agent_bootstrap_replaces_incomplete_cache_before_picker_clicks(
     disposable_browser: Browser, sidebar_server_url: str, width: int,
 ) -> None:
     from app.core.agent_model_catalog import chatgpt_live_catalog
@@ -9630,6 +9643,10 @@ def test_agent_latest_deduplicates_and_effort_click_recovers_failed_catalog(
     requests = []
     context = disposable_browser.new_context(viewport={'width': width, 'height': 863})
     page = context.new_page()
+    page.add_init_script(
+        'sessionStorage.setItem("cachelikes:browser-session:v8:agent:chatgpt:edge",'
+        f'JSON.stringify({{cached_at: Date.now(), payload: {json.dumps(status)}}}));'
+    )
     page.route('**/api/agent/status', lambda route: route.fulfill(json=_finished_chatgpt_agent_payload()))
 
     def bootstrap(route):
@@ -9643,16 +9660,19 @@ def test_agent_latest_deduplicates_and_effort_click_recovers_failed_catalog(
     page.route('**/api/browser-session**', bootstrap)
     try:
         page.goto(f'{sidebar_server_url}/agent/edge/chatgpt', wait_until='domcontentloaded')
+        expect(page.get_by_role('button', name='Option: Extra High', exact=True)).to_be_visible()
+        assert len(requests) == 1
         page.get_by_role('button', name='Model: Latest', exact=True).click()
         expect(page.get_by_role('option', name='Latest', exact=True)).to_have_count(1)
         expect(page.get_by_role('option', name='ChatGPT · Latest', exact=True)).to_have_count(0)
         page.get_by_role('option', name='Latest', exact=True).click()
         expect(page.locator('[data-agent-model-input]')).to_have_value('live:latest')
-        page.get_by_role('button', name='Option: Highest available', exact=True).click()
+        page.get_by_role('button', name='Option: Extra High', exact=True).click()
         page.get_by_role('option', name='Extra High', exact=True).click()
         expect(page.locator('[data-agent-effort-input]')).to_have_value('Extra High')
         expect(page.get_by_role('button', name='Option: Extra High', exact=True)).to_be_visible()
-        assert sum('refresh=1' in url for url in requests) == 1
+        assert len(requests) == 1
+        assert 'refresh=1' in requests[0]
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
     finally:
         context.close()

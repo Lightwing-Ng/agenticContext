@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.7.0-codex.1
+Code version: v1.7.1-codex.1
 """
 
 from __future__ import annotations
@@ -405,7 +405,11 @@ def test_claude_probe_waits_for_hydration_before_requiring_unique_composer(hydra
     assert launch.call_args.kwargs["background_window"] is True
 
 
-def test_chromium_context_defaults_to_an_isolated_background_profile(tmp_path: Path) -> None:
+@pytest.mark.parametrize("host_platform", ("darwin", "win32", "linux"))
+def test_chromium_context_defaults_to_an_isolated_background_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host_platform: str,
+) -> None:
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: host_platform == "darwin")
     source_user_data_dir = tmp_path / "Edge"
     source_profile_dir = source_user_data_dir / "Default"
     source_profile_dir.mkdir(parents=True)
@@ -442,16 +446,20 @@ def test_chromium_context_defaults_to_an_isolated_background_profile(tmp_path: P
     assert Path(str(launch_kwargs["user_data_dir"])) != source_user_data_dir
     assert launch_kwargs["headless"] is False
     assert launch_kwargs["args"] == build_chromium_launch_args(descriptor)
+    assert "--window-position=-32000,-32000" in launch_kwargs["args"]
+    assert "--start-minimized" in launch_kwargs["args"]
     assert not temporary_profile_root.exists()
 
 
+@pytest.mark.parametrize("macos_host", (True, False))
 def test_silent_edge_chromium_context_is_backgrounded_without_stealing_focus(
     tmp_path: Path,
+    macos_host: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core import computer_use_agent
 
-    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: macos_host)
     monkeypatch.setattr(computer_use_agent, "_capture_macos_frontmost_application", lambda: "Editor")
     restored = []
     monkeypatch.setattr(computer_use_agent, "_restore_macos_frontmost_application_after_task_stage", lambda *args: restored.append(args))
@@ -492,9 +500,9 @@ def test_silent_edge_chromium_context_is_backgrounded_without_stealing_focus(
     launch_kwargs = chromium.calls[0]
     assert launch_kwargs["headless"] is False
     assert "--profile-directory=Default" in launch_kwargs["args"]
-    assert "--window-position=-32000,-32000" not in launch_kwargs["args"]
-    assert "--start-minimized" not in launch_kwargs["args"]
-    assert restored == [("Editor", "Microsoft Edge")]
+    assert ("--window-position=-32000,-32000" in launch_kwargs["args"]) is (not macos_host)
+    assert ("--start-minimized" in launch_kwargs["args"]) is (not macos_host)
+    assert restored == ([("Editor", "Microsoft Edge")] if macos_host else [])
 
 
 @pytest.mark.parametrize(
@@ -504,13 +512,18 @@ def test_silent_edge_chromium_context_is_backgrounded_without_stealing_focus(
         ("chrome", "chrome", "Chrome"),
     ),
 )
+@pytest.mark.parametrize("macos_host", (True, False))
+@pytest.mark.parametrize("silent", (True, False))
 def test_task_stage_chromium_context_is_not_forced_back_offscreen_by_silent_mode(
     tmp_path: Path,
+    macos_host: bool,
+    silent: bool,
     browser_id: str,
     channel: str,
     dir_name: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: macos_host)
     monkeypatch.setattr("app.core.computer_use_agent._capture_macos_frontmost_application", lambda: "")
     monkeypatch.setattr("app.core.computer_use_agent._restore_macos_frontmost_application_after_task_stage", lambda *_: None)
     source_user_data_dir = tmp_path / dir_name
@@ -543,11 +556,17 @@ def test_task_stage_chromium_context_is_not_forced_back_offscreen_by_silent_mode
         playwright,
         descriptor,
         headless=False,
-        silent=True,
+        silent=silent,
         window_mode=CHROMIUM_WINDOW_MODE_TASK_STAGE,
     ):
         pass
 
+    assert len(chromium.calls) == 1
+    assert chromium.calls[0]["headless"] is False
+    clone_path = Path(chromium.calls[0]["user_data_dir"])
+    assert clone_path != source_user_data_dir
+    assert not clone_path.exists()
+    assert (source_profile_dir / "Preferences").read_text(encoding="utf-8") == "{}"
     launch_args = chromium.calls[0]["args"]
     assert "--window-position=-32000,-32000" not in launch_args
     assert "--window-size=1280,900" not in launch_args

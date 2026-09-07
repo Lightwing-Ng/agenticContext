@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.13.3-codex.1`
+Documentation version: `v1.13.4-codex.1`
 
 ## Runtime flow
 
@@ -413,3 +413,14 @@ Tests use pure functions, temporary directories, fakes, mocks, and Flask's `test
 They do not launch an authenticated browser, invoke yt-dlp, touch external services, or access
 production cache, logs, settings, or browser profiles. See [TESTING.md](TESTING.md) for the
 enforced quality gate and writing guidance.
+
+### Execution session selection and admission
+
+The Agent tab remembers execution IDs separately for each browser/provider route. Legacy unscoped
+IDs are ignored. A typed `unknown_agent_session` status 404 resets only the current selection to
+`new`; transport failures retain the selected worker and never retry a mutation. Route switches
+invalidate in-flight status responses and restore only that route's remembered selection.
+Existing workers reject starts for another browser/provider so their snapshots remain attributable.
+The status catalog exposes `can_start` and `start_blocked_reason` from the pool's shared capacity
+rule, including active workers outside the current route. This is advisory capacity, not a slot
+reservation: atomic admission still validates capacity and conversation ownership at submission.

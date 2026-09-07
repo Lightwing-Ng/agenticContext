@@ -1,6 +1,6 @@
 """Regression coverage for history rendering and provider-owned capabilities.
 
-Code version: v1.0.4-codex.1
+Code version: v1.0.5-codex.1
 """
 
 import json
@@ -240,8 +240,14 @@ def capability_page():
     ("model-catalog-unavailable", True, 2),
     ("model-catalog-unavailable", False, 2),
     ("requested-effort-control-not-found", False, 1),
+    ("effort-slider-not-found", True, 2),
+    ("effort-slider-unreadable", True, 2),
+    ("power-control-recycled", True, 2),
+    ("effort-range-changed", True, 2),
+    ("effort-slider-not-found", False, 2),
+    ("effort-range-exceeds-safe-bound", False, 1),
 ])
-def test_bootstrap_retries_only_an_unreadable_catalog_on_the_same_page(reason, recover, attempts):
+def test_bootstrap_retries_transient_picker_failures_on_the_same_page(reason, recover, attempts):
     from app.core.chatgpt_agent_sources import _discover_chatgpt_agent_efforts
 
     page = object()

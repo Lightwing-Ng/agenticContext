@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Version: v1.0.2-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.0.3-codex.1."""
 
 from copy import deepcopy
 
@@ -16,6 +16,7 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
     context = disposable_browser.new_context(viewport={"width": width, "height": 959})
     page = context.new_page()
     base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
     agents = {}
     for key, revision in (("primary", 102), ("second", 101)):
         agents[key] = deepcopy(base["agent"])
@@ -105,6 +106,7 @@ def test_late_response_cannot_replace_new_selection(disposable_browser, sidebar_
     context = disposable_browser.new_context(viewport={"width": 1138, "height": 959})
     page = context.new_page()
     base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
     held = []
     delay_second = [False]
 
@@ -187,6 +189,7 @@ def test_session_catalog_titles_and_global_capacity(disposable_browser, sidebar_
     context = disposable_browser.new_context(viewport={"width": 1161, "height": 959})
     page = context.new_page()
     base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
     url = "https://chatgpt.com/c/provider-title"
     catalog = fixtures._chatgpt_catalog_sessions({"id": "provider-title", "url": url,
         "title": "Official conversation title", "updated_at": "2026-09-06T00:00:00Z"})
@@ -211,10 +214,11 @@ def test_status_disconnect_recovers_selected_run_without_mutation(disposable_bro
     context = disposable_browser.new_context(viewport={"width": 1161, "height": 959})
     page = context.new_page()
     base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
     disconnected = [False]
     mutations = []
     requested = []
-    page.add_init_script("sessionStorage.setItem('cachelikes:agent-execution-session', 'second')")
+    page.add_init_script("sessionStorage.setItem('cachelikes:agent-execution-session:edge:chatgpt', 'second')")
 
     def status(route):
         requested.append(route.request.headers.get("x-cachelikes-agent-session"))
@@ -259,6 +263,7 @@ def test_cross_project_sessions_switch_workspace_and_restore_on_reload(disposabl
     context = disposable_browser.new_context(viewport={"width": width, "height": 959})
     page = context.new_page()
     base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
     workspaces = {"primary": "/tmp/project-alpha", "second": "/tmp/project-beta"}
     catalog = [{"session_id": key, "session_title": key, "workspace_path": path,
                 "running": True, "phase": "running"} for key, path in workspaces.items()]
@@ -268,6 +273,10 @@ def test_cross_project_sessions_switch_workspace_and_restore_on_reload(disposabl
         key = route.request.headers.get("x-cachelikes-agent-session", "primary")
         path = route.request.headers.get("x-cachelikes-agent-workspace", "")
         requests.append((key, path))
+        if key == "new":
+            route.fulfill(json={**base, "agent": {"session_id": "new"}, "sessions": catalog,
+                                "active_count": 2, "can_start": False})
+            return
         matched = path == workspaces[key]
         route.fulfill(json={**base, "sessions": catalog, "active_count": 2,
             "agent": {**base["agent"], "session_id": key, "workspace_path": workspaces[key],
@@ -296,5 +305,85 @@ def test_cross_project_sessions_switch_workspace_and_restore_on_reload(disposabl
         page.locator("[data-execution-session-id=primary]").click()
         expect(page.locator("#agent_response_question")).to_have_text("Task primary")
         expect(page.locator("[data-agent-project-name]")).to_have_text("project-alpha")
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1161, 390])
+def test_expired_execution_session_recovers_without_mutation(disposable_browser, sidebar_server_url, width):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 959})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
+    requested, mutations = [], []
+    page.add_init_script("sessionStorage.setItem('cachelikes:agent-execution-session:edge:chatgpt', 'expired')")
+
+    def status(route):
+        key = route.request.headers.get("x-cachelikes-agent-session")
+        requested.append(key)
+        if key == "expired":
+            route.fulfill(status=404, json={"code": "unknown_agent_session", "error": "Session unavailable"})
+        else:
+            route.fulfill(json={**base, "agent": {"session_id": "new"}, "sessions": [],
+                                "active_count": 0, "can_start": True})
+
+    page.route("**/api/agent/status", status)
+    page.route("**/api/agent/ask", lambda route: (mutations.append(route.request.url), route.abort()))
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
+        "agent_sources": fixtures._chatgpt_catalog_sessions()}))
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        expect(page.get_by_role("button", name="Ask ChatGPT Web", exact=True)).to_be_enabled()
+        assert requested[:2] == ["expired", "new"]
+        assert page.evaluate("sessionStorage.getItem('cachelikes:agent-execution-session:edge:chatgpt')") == "new"
+        assert mutations == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("choice,target,label,scope", [
+    ("platform", "grok", "Grok", "edge:grok"),
+    ("browser", "chrome", "ChatGPT", "chrome:chatgpt"),
+])
+def test_route_switch_isolates_worker_and_obeys_global_admission(disposable_browser, sidebar_server_url, choice, target, label, scope):
+    context = disposable_browser.new_context(viewport={"width": 1161, "height": 959})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
+    requested = []
+    page.add_init_script("sessionStorage.setItem('cachelikes:agent-execution-session:edge:chatgpt', 'original')")
+
+    def status(route):
+        headers = route.request.headers
+        platform = headers["x-cachelikes-agent-platform"]
+        key = headers["x-cachelikes-agent-session"]
+        browser = headers["x-cachelikes-agent-browser"]
+        current_scope = f"{browser}:{platform}"
+        requested.append((current_scope, key))
+        route.fulfill(json={**base, "agent": {"session_id": key},
+            "sessions": [{"session_id": "original", "running": True}] if current_scope == "edge:chatgpt" else [],
+            "active_count": 1, "can_start": current_scope == "edge:chatgpt"})
+
+    page.route("**/api/agent/status", status)
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
+        "agent_sources": fixtures._chatgpt_catalog_sessions()}))
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        expect(page.get_by_role("button", name="Ask ChatGPT Web", exact=True)).to_be_enabled()
+        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-trigger]').click()
+        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
+        expect(page.get_by_role("button", name=f"Ask {label} Web", exact=True)).to_be_disabled()
+        page.wait_for_function("scope => sessionStorage.getItem('cachelikes:agent-execution-session:' + scope) === 'new'", arg=scope)
+        assert (scope, "new") in requested
+        assert (scope, "original") not in requested
+        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-trigger]').click()
+        original = "chatgpt" if choice == "platform" else "edge"
+        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{original}"]').click()
+        expect(page.get_by_role("button", name="Ask ChatGPT Web", exact=True)).to_be_enabled()
+        assert requested[-1] == ("edge:chatgpt", "original")
     finally:
         context.close()

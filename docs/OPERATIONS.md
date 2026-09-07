@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.9.2-codex.1`
+Documentation version: `v1.9.3-codex.1`
 
 ## Launch
 
@@ -50,11 +50,17 @@ to override it. A successful unlock is stored in the signed Flask session for th
   in the console before a long sync.
 - Passive Agent checks use a quiet, isolated Chromium context. ChatGPT source checks use a
   non-headless context because the provider's Cloudflare challenge rejects headless clones with
-  HTTP 403. On macOS, the bounded probe and executing Edge or Chrome tasks each use
-  one non-offscreen, task-owned temporary window that is restored to a normal window state; if it
-  takes focus, the previous foreground app is restored. macOS decides whether it appears in
-  Stage Manager. Login handoff also avoids activation and reuses an already open exact URL. It never writes to the user's normal profile. First-run, crash, notification,
-  and repost prompts are disabled for the task-owned context.
+  HTTP 403. Windows probes retain offscreen/minimized launch arguments. Existing macOS silent
+  probes retain their task-stage window policy and foreground-app restoration.
+- Executing Edge or Chrome tasks on macOS and Windows use one visible, isolated profile clone,
+  without offscreen or start-minimized launch arguments. Windows uses CDP to normalize and
+  position that same task window on screen without requesting activation. Only macOS restores
+  the previous foreground app; macOS decides Stage Manager grouping. Human verification reuses
+  the same clone and retains the existing Resume gate. Automated execution never opens the user's
+  original profile for writing. First-run, crash, notification, and repost prompts remain disabled.
+- Explicit login handoff opens the selected real browser visibly. Windows uses its resolved
+  absolute executable path. Opening the page does not establish sign-in; the user must choose
+  Recheck. Native Windows 11 browser execution remains unverified on this macOS host.
 - Normal task exit closes the isolated context and removes its temporary profile. Each subsequent
   Chromium launch also removes only abandoned `cachelikes-edge-*` or `cachelikes-chrome-*`
   directories older than 24 hours; unrelated temporary paths are not touched.

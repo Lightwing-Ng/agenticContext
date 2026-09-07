@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.65.0-codex.1
+# Code version: v1.65.1-codex.1
 
 from __future__ import annotations
 
@@ -1473,6 +1473,11 @@ def create_app(
             selected_browser = str(runtime_snapshot.get("browser") or "edge").strip().lower()
             selected_platform = str(runtime_snapshot.get("platform") or "chatgpt").strip().lower()
             selected_workspace = str(runtime_snapshot.get("workspace_path") or "").strip()
+        if selected_agent_session_id() != "new":
+            try:
+                agent_session_pool.get(selected_agent_session_id())
+            except ValueError as exc:
+                return jsonify({"error": str(exc), "code": "unknown_agent_session"}), 404
         compute_service = (
             computer_use_agent_service
             if selected_agent_session_id() == "new"

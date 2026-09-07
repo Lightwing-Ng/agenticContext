@@ -1,6 +1,6 @@
 """Bounded, independently controlled Web Agent sessions.
 
-Code version: v1.2.0-codex.1
+Code version: v1.2.1-codex.1
 """
 
 from contextlib import contextmanager
@@ -59,13 +59,14 @@ class AgentSessionPool:
                 raise RuntimeError("The Agent service is shutting down.")
             snapshots = [item.snapshot() for item in self._services.values()]
             active = [item for item in snapshots if item.get("running")]
-            if len(active) >= self.limit:
-                raise RuntimeError("Both Agent slots are in use (2 of 2). Wait for a task to finish or stop one session.")
-            if active and (
-                (settings.browser, settings.platform) != ("edge", "chatgpt")
-                or any((item.get("browser"), item.get("platform")) != ("edge", "chatgpt") for item in active)
-            ):
-                raise RuntimeError("Concurrent execution is available only for ChatGPT in Edge. Wait for the active task to finish.")
+            previous = service.snapshot()
+            if previous.get("run_id") and (
+                previous.get("browser"), previous.get("platform")
+            ) != (settings.browser, settings.platform):
+                raise RuntimeError("The selected Agent session belongs to another browser or provider. Start a new session.")
+            reason = self._capacity_reason(active, settings.browser, settings.platform)
+            if reason:
+                raise RuntimeError(reason)
             conversation = normalize_agent_conversation_url(settings.platform, target_url)
             if conversation and any(
                 normalize_agent_conversation_url(item.get("platform", ""), item.get("conversation_url", "")) == conversation
@@ -73,6 +74,18 @@ class AgentSessionPool:
             ):
                 raise RuntimeError("This conversation already has a running Agent task. Select that session to view or stop it.")
             yield
+
+    def _capacity_reason(self, active, browser, platform):
+        if self._closed:
+            return "The Agent service is shutting down."
+        if len(active) >= self.limit:
+            return "Both Agent slots are in use (2 of 2). Wait for a task to finish or stop one session."
+        if active and (
+            (browser, platform) != ("edge", "chatgpt")
+            or any((item.get("browser"), item.get("platform")) != ("edge", "chatgpt") for item in active)
+        ):
+            return "Concurrent execution is available only for ChatGPT in Edge. Wait for the active task to finish."
+        return ""
 
     def start(self, session_id, *args, **kwargs):
         with self._lock:
@@ -94,7 +107,9 @@ class AgentSessionPool:
     def catalog(self, browser, platform, workspace):
         with self._lock:
             snapshots = [(key, service.snapshot()) for key, service in self._services.items()]
-        active_count = sum(bool(item.get("running")) for _, item in snapshots)
+            active = [item for _, item in snapshots if item.get("running")]
+            reason = self._capacity_reason(active, browser, platform)
+        active_count = len(active)
         fields = ("workspace_path", "conversation_url", "session_title", "running", "paused", "phase", "message", "started_at", "finished_at", "run_id")
         sessions = [
             {"session_id": key, **{field: item.get(field) for field in fields}}
@@ -103,7 +118,8 @@ class AgentSessionPool:
             == (browser, platform)
         ]
         sessions.sort(key=lambda item: (not item["running"], str(item["started_at"] or "")))
-        return {"sessions": sessions, "active_count": active_count, "concurrency_limit": self.limit}
+        return {"sessions": sessions, "active_count": active_count, "concurrency_limit": self.limit,
+                "can_start": not reason, "start_blocked_reason": reason}
 
     def stop_at_exit(self):
         with self._lock:

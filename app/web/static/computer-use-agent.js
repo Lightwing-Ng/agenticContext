@@ -1,4 +1,4 @@
-/* Code version: v3.36.0-codex.1 */
+/* Code version: v3.36.2-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -226,8 +226,16 @@
     let agentSessionListViewportDock = null;
     const paginationMotion = window.CACHELIKES_PAGINATION_MOTION;
 
-    let executionSessionId = "primary";
-    try { executionSessionId = window.sessionStorage.getItem("cachelikes:agent-execution-session") || "primary"; } catch (_error) {}
+    function executionStorageKey() {
+        return `cachelikes:agent-execution-session:${selectedBrowser()}:${selectedPlatform()}`;
+    }
+
+    function rememberedExecutionSession() {
+        try { return window.sessionStorage.getItem(executionStorageKey()) || ""; } catch (_error) { return ""; }
+    }
+
+    let executionScope = executionStorageKey();
+    let executionSessionId = rememberedExecutionSession() || "new";
     const executionConversationUrls = new Map();
     const executionConversationTitles = new Map();
 
@@ -242,6 +250,7 @@
     let executionSessionEpoch = 0;
     let executionSessions = [];
     let executionActiveCount = 0;
+    let executionCanStart = false;
     let executionSelectionRestored = false;
     const executionDrafts = new Map();
     const executionRail = document.querySelector("[data-agent-execution-sessions]");
@@ -269,16 +278,25 @@
             if (!executionSelectionRestored) syncExecutionWorkspace(executionSessionId);
             if (!executionSelectionRestored) {
                 executionSelectionRestored = true;
-                let remembered = "";
-                try { remembered = window.sessionStorage.getItem("cachelikes:agent-execution-session") || ""; } catch (_error) {}
+                const remembered = rememberedExecutionSession();
                 const restored = remembered === "new" || executionSessions.some((item) => item.session_id === remembered)
-                    ? remembered : executionSessions.find((item) => item.running)?.session_id || executionSessions[0]?.session_id;
+                    ? remembered : executionSessions.find((item) => item.running)?.session_id || executionSessions[0]?.session_id || "new";
                 if (restored && restored !== executionSessionId) {
-                    window.queueMicrotask(() => { void selectExecutionSession(restored); });
+                    const epoch = executionSessionEpoch;
+                    window.queueMicrotask(() => {
+                        if (epoch === executionSessionEpoch) void selectExecutionSession(restored);
+                    });
                 }
             }
         }
         if (Number.isInteger(payload.active_count)) executionActiveCount = payload.active_count;
+        if (typeof payload.can_start === "boolean") executionCanStart = payload.can_start;
+        else if (Array.isArray(payload.sessions)) {
+            executionCanStart = executionActiveCount === 0 || (
+                enabled && executionActiveCount < 2
+                && executionSessions.filter((item) => item.running).length === executionActiveCount
+            );
+        }
         const capacity = document.querySelector("[data-agent-session-capacity]");
         if (capacity) {
             const visibleActive = executionSessions.filter((item) => item.running).length;
@@ -323,12 +341,12 @@
         if (focusedId) Array.from(executionList.children).find((node) => node.dataset.executionSessionId === focusedId)?.focus();
     }
 
-    async function selectExecutionSession(sessionId) {
-        if (promptSubmissionPending || sessionId === executionSessionId) return;
+    async function selectExecutionSession(sessionId, {routeChanged = false} = {}) {
+        if (!routeChanged && (promptSubmissionPending || sessionId === executionSessionId)) return;
         executionDrafts.set(executionSessionId, elements.promptInput?.value || "");
         executionSessionId = sessionId;
         syncExecutionWorkspace(sessionId);
-        try { window.sessionStorage.setItem("cachelikes:agent-execution-session", sessionId); } catch (_error) {}
+        try { window.sessionStorage.setItem(executionStorageKey(), sessionId); } catch (_error) {}
         const epoch = ++executionSessionEpoch;
         lastRenderedAgentRunIdentity = "";
         lastRenderedAgentRunRevision = 0;
@@ -368,6 +386,7 @@
     newTaskButton?.addEventListener("click", () => selectExecutionSession("new"));
 
     async function requestJson(url, options = {}) {
+        const requestEpoch = executionSessionEpoch;
         const controller = new AbortController();
         const timeout = url === "/api/agent/status"
             ? window.setTimeout(() => controller.abort(), 8_000) : null;
@@ -378,7 +397,14 @@
                 headers: {"Content-Type": "application/json", "X-CacheLikes-Agent-Session": executionSessionId, ...(options.headers || {})},
             });
             const payload = await response.json();
-            if (!response.ok) throw new Error(payload.error || `Request failed with ${response.status}.`);
+            if (!response.ok) {
+                if (url === "/api/agent/status" && response.status === 404
+                    && payload.code === "unknown_agent_session" && requestEpoch === executionSessionEpoch
+                    && executionSessionId !== "new") {
+                    await selectExecutionSession("new");
+                }
+                throw new Error(payload.error || `Request failed with ${response.status}.`);
+            }
             return payload;
         } finally {
             if (timeout !== null) window.clearTimeout(timeout);
@@ -476,6 +502,15 @@
     }
 
     function syncAgentRoute() {
+        if (executionScope !== executionStorageKey()) {
+            executionScope = executionStorageKey();
+            executionSessions = [];
+            executionSelectionRestored = false;
+            executionCanStart = false;
+            lastPayload = {...lastPayload, can_start: false};
+            delete lastPayload.sessions;
+            void selectExecutionSession(rememberedExecutionSession() || "new", {routeChanged: true});
+        }
         const routePrefix = String(elements.agentPage?.dataset.agentRoutePrefix || "/agent").replace(/\/$/, "");
         const nextPath = `${routePrefix}/${encodeURIComponent(selectedBrowser())}/${encodeURIComponent(selectedPlatform())}`;
         const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -1553,9 +1588,6 @@
                 if (!isDirectList) closeCombobox(combobox);
             };
             trigger?.addEventListener("click", () => {
-                if (combobox === elements.effortCombobox && !verifiedChatgptEffortCatalog()) {
-                    void browserStatusController?.refresh?.();
-                }
                 if (combobox === elements.recentSessionCombobox || combobox === elements.projectCombobox) {
                     refreshAgentSessionSources();
                 }
@@ -3038,7 +3070,7 @@
             elements.resume.disabled = !paused;
         }
         if (elements.ask) {
-            elements.ask.disabled = ((!readiness.ready || !sessionChoiceReady() || executionActiveCount >= 2 || promptSubmissionPending) && !running);
+            elements.ask.disabled = ((!readiness.ready || !sessionChoiceReady() || !executionCanStart || promptSubmissionPending) && !running);
             elements.ask.classList.toggle("is-stop", running);
             elements.ask.dataset.agentAction = running ? "stop" : "ask";
             const label = running ? "Stop Agent task" : `Ask ${platformLabel} Web`;
@@ -3081,7 +3113,7 @@
             if (epoch !== executionSessionEpoch) return;
             if (url === "/api/agent/ask" && response.agent?.session_id) {
                 executionSessionId = response.agent.session_id;
-                try { window.sessionStorage.setItem("cachelikes:agent-execution-session", executionSessionId); } catch (_error) {}
+                try { window.sessionStorage.setItem(executionStorageKey(), executionSessionId); } catch (_error) {}
                 executionSessionEpoch += 1;
             }
             if (response.doctor) doctorPayload = response.doctor;

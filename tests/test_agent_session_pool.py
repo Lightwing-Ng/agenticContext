@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Version: v1.0.0-codex.1."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.0.1-codex.1."""
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock
@@ -95,6 +95,7 @@ def test_same_conversation_rejected_and_paused_slot_counted(sessions):
     assert pool.get(first_id).snapshot()["paused"]
     catalog = pool.catalog("edge", "chatgpt", str(workspace))
     assert catalog["active_count"] == 2
+    assert catalog["can_start"] is False
     assert len(catalog["sessions"]) == 2
     assert len(pool.catalog("edge", "chatgpt", "/unrelated")["sessions"]) == 2
     assert all(item["workspace_path"] == str(workspace) for item in catalog["sessions"])
@@ -178,7 +179,34 @@ def test_api_targets_only_selected_session_and_rejects_unknown(tmp_path, monkeyp
         assert pool.get(ids[1]).snapshot()["running"]
         assert client.post("/api/agent/stop", headers={**headers, "X-CacheLikes-Agent-Session": "unknown"}).status_code == 404
         assert pool.get(ids[1]).snapshot()["running"]
+        unknown = client.get("/api/agent/status", headers={**headers, "X-CacheLikes-Agent-Session": "expired"})
+        assert unknown.status_code == 404
+        assert unknown.json["code"] == "unknown_agent_session"
         assert not client.get("/api/agent/status", headers=headers).json["agent"].get("running")
     finally:
         release.set()
         pool.stop_at_exit()
+
+
+@pytest.mark.parametrize("browser,platform", [("edge", "chatgpt"), ("edge", "gemini"), ("chrome", "chatgpt")])
+def test_catalog_capacity_matches_atomic_admission(sessions, browser, platform):
+    pool, workspace, _ = sessions
+    first = pool.start("new", "first", str(workspace), CrawlConfig(), browser=browser,
+                       platform=platform, model=default_model_for_platform(platform))
+    for candidate_browser, candidate_platform in (("edge", "chatgpt"), ("edge", "gemini"), ("chrome", "chatgpt")):
+        catalog = pool.catalog(candidate_browser, candidate_platform, str(workspace))
+        allowed = (browser, platform) == (candidate_browser, candidate_platform) == ("edge", "chatgpt")
+        assert catalog["can_start"] is allowed
+        if not allowed:
+            with pytest.raises(RuntimeError, match="only for ChatGPT in Edge"):
+                pool.start("new", "blocked", str(workspace), CrawlConfig(), browser=candidate_browser,
+                           platform=candidate_platform, model=default_model_for_platform(candidate_platform))
+    pool.get(first).request_stop()
+    wait_until(lambda: not pool.get(first).snapshot()["running"])
+    assert pool.catalog("edge", "gemini", str(workspace))["can_start"]
+    before = pool.get(first).snapshot()
+    other_platform = "gemini" if platform == "chatgpt" else "chatgpt"
+    with pytest.raises(RuntimeError, match="another browser or provider"):
+        pool.start(first, "wrong route", str(workspace), CrawlConfig(), browser="edge",
+                   platform=other_platform, model=default_model_for_platform(other_platform))
+    assert pool.get(first).snapshot() == before

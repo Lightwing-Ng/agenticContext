@@ -1,4 +1,4 @@
-/* Code version: v1.9.1-codex.1 */
+/* Code version: v1.9.2-codex.1 */
 
 (() => {
     const SESSION_CACHE_PREFIX = "cachelikes:browser-session:v8:";
@@ -302,8 +302,15 @@
             const requestRevision = ++statusRequestRevision;
             const cacheKey = `${SESSION_CACHE_PREFIX}${scope || "default"}:${requestPlatform}:${activeBrowser}`;
             const cachedStatus = readCachedStatus(cacheKey);
-            const forceRefresh = options.force === true;
             const cachedPayload = cachedStatus?.payload;
+            const requiresChatgptCapabilities = scope === "agent" && requestPlatform === "chatgpt"
+                && !(cachedPayload?.model_catalog_complete
+                    && cachedPayload?.model_options?.length
+                    && cachedPayload?.effort_catalog_complete
+                    && cachedPayload?.available_efforts?.length);
+            // Account readiness alone must not pin an incomplete capability cache.
+            // One bootstrap refresh obtains both pickers through the same browser.
+            const forceRefresh = options.force === true || requiresChatgptCapabilities;
             const requiresAgentBootstrap = scope === "agent"
                 && BOOTSTRAPPED_AGENT_PLATFORMS.has(requestPlatform)
                 && Boolean(cachedPayload?.can_download)
