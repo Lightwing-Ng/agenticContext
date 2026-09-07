@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.57.2-codex.1
+Code version: v3.57.3-codex.1
 """
 
 from __future__ import annotations
@@ -4592,6 +4592,15 @@ def _split_inspection_command(command: str) -> list[str]:
     return normalized
 
 
+def _normalize_inspection_launcher(parts: list[str]) -> list[str]:
+    """Map the Windows Python 3 launcher to the pinned controller runtime."""
+    if is_windows_host() and len(parts) > 1:
+        _name, executable = _portable_executable_names(parts[0])
+        if executable == "py" and parts[1] == "-3":
+            return [parts[0], *parts[2:]]
+    return parts
+
+
 def validate_inspection_command(command: str) -> None:
     """Reject shell commands that mutate outside the explicit file actions."""
     if not command or len(command) > 4_000 or "\x00" in command or "\n" in command:
@@ -4608,7 +4617,7 @@ def validate_inspection_command(command: str) -> None:
         raise ValueError("Run accepts one direct command without shell operators.")
     if re.search(r"\b(?:env|printenv|set)\b", command, flags=re.IGNORECASE):
         raise ValueError("Commands that enumerate the environment are not allowed.")
-    parts = _split_inspection_command(command)
+    parts = _normalize_inspection_launcher(_split_inspection_command(command))
     _validate_inspection_arguments(parts)
 
 
@@ -4619,7 +4628,7 @@ def inspection_command_parts(
 ) -> list[str]:
     """Parse one direct command and enforce the controller executable allowlist."""
     validate_inspection_command(command)
-    parts = _split_inspection_command(command)
+    parts = _normalize_inspection_launcher(_split_inspection_command(command))
     if not parts:
         raise ValueError("Run requires a command.")
     _validate_inspection_arguments(parts, workspace)

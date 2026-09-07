@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.57.2-codex.1
+Code version: v3.57.3-codex.1
 """
 
 from __future__ import annotations
@@ -198,6 +198,39 @@ def test_windows_agent_rejects_safari_and_accepts_chromium(tmp_path: Path) -> No
     )
     assert settings.operating_system == "windows"
     assert settings.browser == "edge"
+
+
+@pytest.mark.parametrize("launcher", ["py", "py.exe", "PY.EXE"])
+def test_windows_python_launcher_uses_controller_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launcher: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    expected = inspection_command_parts("python -m pytest tests/test_example.py", workspace=tmp_path)
+    assert inspection_command_parts(
+        f"{launcher} -3 -m pytest tests/test_example.py", workspace=tmp_path,
+    ) == expected
+    script = tmp_path / "check.py"
+    script.write_text("print('checked')\n", encoding="utf-8")
+    assert inspection_command_parts("py -3 check.py", workspace=tmp_path) == inspection_command_parts(
+        "python check.py", workspace=tmp_path,
+    )
+
+
+@pytest.mark.parametrize("arguments", [
+    "-m pytest -p external_plugin", "-m pytest -o addopts=unsafe",
+    "-m pytest ../outside.py", "-m pip install example", "-c print(1)",
+    "-2 -m pytest", "-3.12 -m pytest",
+])
+def test_windows_python_launcher_preserves_command_restrictions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    with pytest.raises(ValueError):
+        inspection_command_parts(f"py -3 {arguments}", workspace=tmp_path)
 
 
 def test_windows_inspection_commands_use_powershell_for_safe_scripts(

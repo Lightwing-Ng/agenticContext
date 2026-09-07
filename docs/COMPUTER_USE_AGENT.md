@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.55.5-codex.1`
+Documentation version: `v3.55.6-codex.1`
 
 ## Purpose
 
@@ -597,6 +597,11 @@ file limit and a 2 million-token limit for text and document files; the applicat
 applicable boundary and keeps the local byte ceiling configurable. Gemini, Grok, and Claude may impose
 different limits or attachment behavior, so the controller requires a visible exact-filename
 readback before claiming an attachment and otherwise falls back to bounded controller observations.
+
+Windows verification commands accept `py -3 -m pytest` and approved project scripts such as
+`py -3 check.py`. The controller normalizes the launcher selector before validating module
+arguments and runs its own Python runtime; it does not launch a second Python installation.
+Module restrictions, plugin/configuration checks, and project path confinement still apply.
 
 Windows uses the same complete action schema and file-action boundary with native Windows paths, a new process group, an
 absolute System32 `taskkill /T /F` fallback, and Edge or Chrome Chromium sessions. Explicit Edge and Chrome handoffs
