@@ -1,4 +1,4 @@
-/* Code version: v1.1.0-codex.1 */
+/* Code version: v1.2.0-codex.1 */
 .agent-execution-sessions {
     display: grid;
     gap: 8px;
@@ -37,3 +37,77 @@
 }
 .agent-execution-session-state { font-size: var(--font-size-caption, 12px); }
 .agent-execution-session[aria-pressed="true"] { color: var(--accent-text); }
+
+/* Worthward standard disclosure, scoped to the Agent session picker. */
+.agent-session-collapse {
+    --collapse-section-gap: 8px;
+    --collapse-icon-size: 12px;
+    --collapse-icon-height: 8px;
+    --collapse-icon-gap: 8px;
+    --collapse-icon-closed: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.41 1.59 6 6.17l4.59-4.58L12 3l-6 5-6-5z' fill='currentColor'/%3E%3C/svg%3E");
+    --collapse-icon-open: var(--collapse-icon-closed);
+    --collapse-summary-padding: 10px 0;
+    --collapse-body-padding: 0 10px 10px;
+    --collapse-font-size: var(--font-size-5);
+    --collapse-font-weight: var(--font-weight-medium);
+}
+details.agent-session-collapse > summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--collapse-icon-size);
+    column-gap: var(--collapse-icon-gap);
+    align-items: center;
+    list-style: none;
+    cursor: pointer;
+}
+details.agent-session-collapse > summary::marker,
+details.agent-session-collapse > summary::-webkit-details-marker {
+    display: none;
+    content: "";
+}
+details.agent-session-collapse > summary::after {
+    content: "";
+    grid-column: 2;
+    grid-row: 1;
+    width: var(--collapse-icon-size);
+    height: var(--collapse-icon-height);
+    background-color: currentColor;
+    mask: var(--collapse-icon-closed) center/contain no-repeat;
+    -webkit-mask: var(--collapse-icon-closed) center/contain no-repeat;
+    transform: rotate(0deg);
+    transform-origin: center;
+    transition: transform 180ms var(--motion-standard);
+    pointer-events: none;
+}
+details.agent-session-collapse[open] > summary::after {
+    mask-image: var(--collapse-icon-open);
+    -webkit-mask-image: var(--collapse-icon-open);
+    transform: rotate(180deg);
+}
+
+.agent-session-collapse {
+    min-width: 0;
+    border: none;
+    background: transparent;
+}
+.agent-session-collapse + .agent-session-collapse {
+    margin-top: var(--collapse-section-gap);
+}
+.agent-session-collapse > summary {
+    padding: var(--collapse-summary-padding);
+    font-size: var(--collapse-font-size);
+    font-weight: var(--collapse-font-weight);
+    cursor: pointer;
+}
+.agent-session-collapse > summary:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+    border-radius: var(--radius-soft);
+}
+.agent-session-collapse > .ui-collapse-body {
+    min-width: 0;
+    padding: var(--collapse-body-padding);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    details.agent-session-collapse > summary::after { transition: none; }
+}

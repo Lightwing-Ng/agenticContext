@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.32.5-codex.1
+Code version: v1.32.7-codex.1
 """
 
 from __future__ import annotations
@@ -3529,6 +3529,22 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
             f'[data-agent-session-list="recent"] [data-agent-combobox-option="{session_url}"]'
         )
         expect(recent_option).to_have_count(1)
+        disclosure = page.locator("details[data-agent-recent-session-field]")
+        summary = disclosure.locator("summary")
+        expect(disclosure).to_have_attribute("open", "")
+        summary.click()
+        expect(recent_option).not_to_be_visible()
+        summary.press("Enter")
+        expect(recent_option).to_be_visible()
+        # Browsing recent sessions without selecting one starts a new conversation.
+        expect(page.locator("#agent_ask_button")).to_be_enabled()
+        page.locator("#agent_prompt_input").fill("Start a fresh conversation")
+        with page.expect_request(re.compile(r"/api/agent/ask$")):
+            page.locator("#agent_ask_button").click()
+        expect(page.locator("#agent_ask_button")).to_be_enabled()
+        assert captured_ask_payloads[-1]["session_mode"] == "new"
+        assert captured_ask_payloads[-1]["conversation_url"] == ""
+        captured_ask_payloads.clear()
         recent_menu = page.locator(
             '[data-agent-session-list="recent"] [data-agent-combobox-menu]'
         )
@@ -3613,6 +3629,18 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
         assert captured_ask_payloads[0]["conversation_url"] == session_url
         assert captured_ask_payloads[0]["session_title"] == f"{platform_label} selected session"
         assert any(f"platform={platform}" in url for url in source_requests)
+        for width in (390, 1024):
+            page.set_viewport_size({"width": width, "height": 1164})
+            if page.locator("#sidebar_toggle").get_attribute("aria-expanded") == "false":
+                page.locator("#sidebar_toggle").click()
+            expect(summary).to_be_visible()
+            summary.click()
+            expect(recent_option).not_to_be_visible()
+            expect(page.locator('[data-agent-prompt-conversation-url]')).to_have_value(session_url)
+            summary.press("Space")
+            expect(recent_option).to_be_visible()
+            assert summary.evaluate("el => getComputedStyle(el, '::after').width") == "12px"
+            assert summary.evaluate("el => getComputedStyle(el).fontSize") == "15px"
     finally:
         context.close()
 

@@ -1,4 +1,4 @@
-/* Code version: v3.36.6-codex.1 */
+/* Code version: v3.36.8-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -1041,7 +1041,7 @@
     function sessionChoiceReady() {
         const mode = selectedSessionMode();
         if (mode === "new") return true;
-        if (mode === "recent") return Boolean(elements.recentSessionUrl?.value);
+        if (mode === "recent") return true;
         if (mode === "project") {
             const projectSession = elements.projectSessionUrl?.value || "new";
             return Boolean(selectedProjectUrl()) && (projectSession === "new" || Boolean(projectSession));
@@ -1204,7 +1204,7 @@
         const projectSessionValue = elements.projectSessionUrl?.value || "new";
         const executionMode = mode === "project"
             ? (projectSessionValue === "new" ? "project_new" : "project_session")
-            : mode;
+            : (mode === "recent" && !selectedConversationUrl() ? "new" : mode);
         if (elements.promptSessionMode instanceof HTMLInputElement) elements.promptSessionMode.value = executionMode;
         if (elements.promptConversationUrl instanceof HTMLInputElement) elements.promptConversationUrl.value = selectedConversationUrl();
         if (elements.promptProjectUrl instanceof HTMLInputElement) elements.promptProjectUrl.value = selectedProjectUrl();
@@ -3348,6 +3348,7 @@
         if (revision !== responseCopyRevision) return;
         setResponseCopyFeedback(didCopy);
     });
+    elements.recentSessionField?.addEventListener("toggle", syncAgentSessionListViewport);
     window.addEventListener(
         "resize",
         () => {

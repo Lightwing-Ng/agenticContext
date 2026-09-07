@@ -1,4 +1,4 @@
-<!-- Code version: v3.36.6-codex.1 -->
+<!-- Code version: v3.36.8-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.96.3-codex.1') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.1.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.2.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
 </head>
@@ -208,17 +208,19 @@
                         </div>
                     </label>
 
-                    <div class="field agent-session-detail-field" data-agent-recent-session-field hidden>
-                        <span class="field-label">Recent sessions</span>
-                        <div class="agent-session-list-combobox agent-session-list-combobox-direct" data-agent-combobox data-agent-direct-list="true" data-agent-session-list="recent">
-                            <input type="hidden" value="" data-agent-combobox-input data-agent-recent-session-url>
-                            <div class="agent-session-list-state" data-agent-session-list-state aria-live="polite">
-                                <span class="suggestion-loading-spinner agent-combobox-loading-spinner" data-agent-combobox-spinner aria-hidden="true"></span>
-                                <span data-agent-session-list-state-copy>Loading recent sessions…</span>
+                    <details class="ui-collapse agent-session-collapse agent-session-detail-field" data-agent-recent-session-field data-collapse="agent-recent-sessions" open hidden>
+                        <summary>Recent sessions</summary>
+                        <div class="ui-collapse-body">
+                            <div class="agent-session-list-combobox agent-session-list-combobox-direct" data-agent-combobox data-agent-direct-list="true" data-agent-session-list="recent">
+                                <input type="hidden" value="" data-agent-combobox-input data-agent-recent-session-url>
+                                <div class="agent-session-list-state" data-agent-session-list-state aria-live="polite">
+                                    <span class="suggestion-loading-spinner agent-combobox-loading-spinner" data-agent-combobox-spinner aria-hidden="true"></span>
+                                    <span data-agent-session-list-state-copy>Loading recent sessions…</span>
+                                </div>
+                                <div class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown agent-combobox-dropdown agent-session-list-menu agent-session-list-menu-direct" data-agent-combobox-menu role="listbox" aria-label="Choose a recent {{ selected_platform.label }} session"></div>
                             </div>
-                            <div class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown agent-combobox-dropdown agent-session-list-menu agent-session-list-menu-direct" data-agent-combobox-menu role="listbox" aria-label="Choose a recent {{ selected_platform.label }} session"></div>
                         </div>
-                    </div>
+                    </details>
 
                     <div class="field agent-session-detail-field" data-agent-project-field hidden>
                         <span class="field-label">Recent projects</span>
@@ -522,6 +524,6 @@
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.0.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.36.6-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.36.8-codex.1') }}"></script>
 </body>
 </html>
