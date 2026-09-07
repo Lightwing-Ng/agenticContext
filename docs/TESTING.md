@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.5-codex.1`
+Documentation version: `v1.8.6-codex.1`
 
 ## Supported commands
 
@@ -215,6 +215,13 @@ Tests must follow these rules:
   refusal, owned process-tree stop, rolling logs, path and symlink rejection, and unchanged
   workspace fingerprints. A test must never launch a long optimization or write below the
   production Agent runtime root.
+- Compute JSON concurrency tests hold the actual reader open across a real atomic write, then
+  check the original reader and the replacement path independently. Native Windows also checks
+  that an ordinary reader is an incompatible negative control. File-size, decoding, regular-file,
+  and handle-cleanup checks remain separate from that concurrency evidence. The owned-tree Stop
+  fixture preserves its readiness and termination deadlines; readiness failures report bounded
+  start/current state and log evidence before cleaning only the fixture's job. A macOS pass does
+  not establish the cause of a Windows readiness failure.
 
 ## Local-compute benchmark contract
 

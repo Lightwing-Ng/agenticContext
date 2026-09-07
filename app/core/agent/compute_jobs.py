@@ -1,11 +1,13 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.3.1-codex.1
+Code version: v1.3.2-codex.1
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import ctypes
 import hashlib
 import json
 import os
@@ -19,7 +21,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, BinaryIO, Iterator
 
 from . import _windows_processes
 
@@ -81,15 +83,111 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             pass
 
 
+def _open_windows_json_descriptor(path: Path) -> int:
+    """Let atomic writers replace a JSON file while this reader retains its handle.
+
+    CreateFileW shares READ, WRITE, and DELETE. OPEN_REPARSE_POINT opens the leaf
+    itself; the caller validates that exact handle before reading any JSON bytes.
+    """
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    ]
+    kernel.CreateFileW.restype = ctypes.c_void_p
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel.CloseHandle.restype = ctypes.c_int32
+    name = str(path.absolute())
+    if not name.startswith("\\\\?\\"):
+        name = "\\\\?\\UNC\\" + name[2:] if name.startswith("\\\\") else "\\\\?\\" + name
+    handle = kernel.CreateFileW(
+        name, 0x80000000, 1 | 2 | 4, None, 3, 0x00200000, None
+    )
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(
+            handle, os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT
+        )
+        if descriptor < 0:
+            raise OSError("The compute JSON reader could not adopt its native handle.")
+        return descriptor
+    except BaseException as exc:
+        if not kernel.CloseHandle(handle):
+            exc.add_note("Closing the unadopted compute JSON reader also failed.")
+        raise
+
+
+@contextmanager
+def _open_json_reader(path: Path) -> Iterator[BinaryIO]:
+    """Open a bounded JSON reader without excluding concurrent atomic replacement."""
+    if os.name == "nt":
+        descriptor = _open_windows_json_descriptor(path)
+    else:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(path, flags)
+    reader = None
+    primary_error = None
+    cleanup_error = None
+    try:
+        # This scope owns the descriptor even if stream construction partly fails.
+        reader = os.fdopen(descriptor, "rb", closefd=False)
+        yield reader
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        cleanups = (
+            ("stream", reader.close if reader is not None else None),
+            ("descriptor", lambda: os.close(descriptor)),
+        )
+        for label, close in cleanups:
+            if close is None:
+                continue
+            try:
+                close()
+            except BaseException as exc:
+                if primary_error is None:
+                    primary_error = cleanup_error = exc
+                else:
+                    primary_error.add_note(f"Closing the compute JSON {label} also failed: {exc}")
+                    for note in getattr(exc, "__notes__", ()):
+                        primary_error.add_note(note)
+        if cleanup_error is not None:
+            raise cleanup_error
+
+
 def _read_json_object(path: Path, *, maximum_bytes: int) -> dict[str, Any]:
+    if maximum_bytes < 0:
+        raise ValueError("The compute JSON byte limit cannot be negative.")
     if path.is_symlink() or not path.is_file():
         raise ComputeJobError(f"Required regular JSON file is unavailable: {path.name}")
-    if path.stat().st_size > maximum_bytes:
-        raise ComputeJobError(f"JSON file exceeds the {maximum_bytes:,}-byte limit: {path.name}")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        with _open_json_reader(path) as reader:
+            metadata = os.fstat(reader.fileno())
+            attributes = getattr(metadata, "st_file_attributes", None)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or (attributes is not None and attributes & 0x400)
+                or (os.name == "nt" and attributes is None)
+            ):
+                raise ComputeJobError(f"Required regular JSON file is unavailable: {path.name}")
+            if metadata.st_size > maximum_bytes:
+                raise ComputeJobError(f"JSON file exceeds the {maximum_bytes:,}-byte limit: {path.name}")
+            content = reader.read(maximum_bytes + 1)
+            if len(content) > maximum_bytes:
+                raise ComputeJobError(f"JSON file exceeds the {maximum_bytes:,}-byte limit: {path.name}")
+        payload = json.loads(content.decode("utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
-        raise ComputeJobError(f"Invalid JSON file: {path.name}") from exc
+        failure = ComputeJobError(f"Invalid JSON file: {path.name}")
+        if isinstance(exc, OSError):
+            detail = " ".join(str(exc).split())[:240]
+            failure.add_note(f"JSON file access failure: {type(exc).__name__}: {detail}")
+        for note in getattr(exc, "__notes__", ()):
+            failure.add_note(note)
+        raise failure from exc
     if not isinstance(payload, dict):
         raise ComputeJobError(f"JSON file must contain one object: {path.name}")
     return payload

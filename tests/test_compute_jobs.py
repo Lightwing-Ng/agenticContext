@@ -1,16 +1,17 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.3.4-codex.1
+Code version: v1.3.7-codex.1
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
 import sys
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -131,7 +132,7 @@ def test_job_start_is_durable_idempotent_and_outside_verification_timeout(tmp_pa
     }
     assert started["max_runtime_seconds"] == 43_200, started
     finished = _wait_for_terminal(ComputeJobManager(workspace, runtime), str(started["job_id"]))
-    assert finished["state"] == "succeeded", finished
+    assert finished["state"] == "succeeded", _compute_job_failure_diagnostics(manager, started)
     assert finished["progress"].get("evaluations_completed") == 8, finished
     assert "optimization complete" in finished["log_tail"], finished
     assert _workspace_mutation_fingerprint(workspace) == before_fingerprint, finished
@@ -306,6 +307,113 @@ def test_pid_reuse_refuses_stop_without_signaling(tmp_path: Path, monkeypatch: p
     assert manager._load_metadata("b" * 32)["state"] == "interrupted"
 
 
+def _compute_job_failure_diagnostics(manager, started: dict[str, object]) -> str:
+    """Report bounded fixture lifecycle evidence only after a compute assertion fails."""
+    def bounded_status(status):
+        fields = (
+            "job_id", "state", "active", "pid", "process_identity", "exit_status",
+            "started_at", "updated_at", "ended_at",
+        )
+        result = {
+            key: value[:200] if isinstance(value, str) else value
+            for key in fields
+            if (value := status.get(key)) is None or isinstance(value, (str, bool, int, float))
+        }
+        result["message"] = str(status.get("message", ""))[:compute_jobs.MAX_STATUS_TEXT_CHARS]
+        result["log_tail"] = str(status.get("log_tail", ""))[-compute_jobs.MAX_LOG_TAIL_CHARS:]
+        return result
+
+    diagnostics = {}
+    try:
+        diagnostics["started"] = bounded_status(started)
+        diagnostics["current"] = bounded_status(manager.status(str(started["job_id"])))
+        return json.dumps(diagnostics, sort_keys=True)
+    except Exception as exc:
+        diagnostics["diagnostic_error_type"] = type(exc).__name__
+        return json.dumps(diagnostics, sort_keys=True)
+
+
+@contextmanager
+def _cleanup_owned_compute_test_job(manager, job_id: str):
+    """Always clean this fixture's job, preserving any earlier assertion or error."""
+    primary_error = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            # Cleanup cannot turn a failed readiness or Stop assertion into a pass.
+            manager.stop(job_id)
+        except BaseException as cleanup_error:
+            if primary_error is None:
+                raise
+            primary_error.add_note(f"Owned compute test-job cleanup also failed: {cleanup_error}")
+            for note in getattr(cleanup_error, "__notes__", ()):
+                primary_error.add_note(note)
+
+
+def test_compute_marker_diagnostics_keep_bounded_lifecycle_evidence() -> None:
+    started = {"job_id": "fixture-job", "state": "running", "pid": 123}
+    manager = Mock()
+    manager.status.return_value = {
+        **started,
+        "state": "failed",
+        "message": "M" * (compute_jobs.MAX_STATUS_TEXT_CHARS + 20),
+        "log_tail": "L" * compute_jobs.MAX_LOG_TAIL_CHARS + "last error",
+        "unrelated_payload": "DO_NOT_INCLUDE",
+    }
+
+    diagnostics = json.loads(_compute_job_failure_diagnostics(manager, started))
+
+    manager.status.assert_called_once_with("fixture-job")
+    assert diagnostics["started"]["state"] == "running"
+    assert diagnostics["current"]["state"] == "failed"
+    assert len(diagnostics["current"]["message"]) == compute_jobs.MAX_STATUS_TEXT_CHARS
+    assert len(diagnostics["current"]["log_tail"]) == compute_jobs.MAX_LOG_TAIL_CHARS
+    assert diagnostics["current"]["log_tail"].endswith("last error")
+    assert "DO_NOT_INCLUDE" not in json.dumps(diagnostics)
+
+
+def test_compute_marker_diagnostic_error_cannot_replace_its_assertion() -> None:
+    manager = Mock()
+    manager.status.side_effect = PermissionError("metadata unavailable")
+
+    with pytest.raises(AssertionError) as raised:
+        assert False, _compute_job_failure_diagnostics(
+            manager, {"job_id": "fixture-job", "state": "running"},
+        )
+
+    diagnostics = json.loads(str(raised.value).splitlines()[0])
+    assert diagnostics["started"]["state"] == "running"
+    assert diagnostics["diagnostic_error_type"] == "PermissionError"
+
+
+@pytest.mark.parametrize("body_fails,cleanup_fails", [(False, False), (True, False), (False, True), (True, True)])
+def test_owned_compute_fixture_cleanup_preserves_error_priority(body_fails, cleanup_fails) -> None:
+    primary = AssertionError("child marker missing")
+    cleanup = PermissionError("owned worker cleanup denied")
+    cleanup.add_note("Closing the owned Job handle also failed.")
+    manager = Mock()
+    manager.stop.side_effect = cleanup if cleanup_fails else None
+    expected = primary if body_fails else cleanup if cleanup_fails else None
+
+    if expected is None:
+        with _cleanup_owned_compute_test_job(manager, "fixture-job"):
+            pass
+    else:
+        with pytest.raises(type(expected)) as raised:
+            with _cleanup_owned_compute_test_job(manager, "fixture-job"):
+                if body_fails:
+                    raise primary
+        assert raised.value is expected
+    manager.stop.assert_called_once_with("fixture-job")
+    if body_fails and cleanup_fails:
+        assert any("owned worker cleanup denied" in note for note in primary.__notes__)
+        assert "Closing the owned Job handle also failed." in primary.__notes__
+
+
 def test_stop_terminates_owned_worker_tree(tmp_path: Path) -> None:
     script = """
 import argparse
@@ -329,18 +437,19 @@ time.sleep(60)
         config_path="optimizer.json",
         idempotency_key="stop-tree-001",
     )
-    child_path = manager.jobs_root / str(started["job_id"]) / "child.pid"
-    deadline = time.monotonic() + 5
-    while not child_path.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert child_path.exists()
-    child_pid = int(child_path.read_text(encoding="utf-8"))
-    stopped = manager.stop(str(started["job_id"]))
-    assert stopped["state"] == "stopped"
-    deadline = time.monotonic() + 5
-    while compute_jobs._process_identity(child_pid) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert not compute_jobs._process_identity(child_pid)
+    with _cleanup_owned_compute_test_job(manager, str(started["job_id"])):
+        child_path = manager.jobs_root / str(started["job_id"]) / "child.pid"
+        deadline = time.monotonic() + 5
+        while not child_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert child_path.exists(), _compute_job_failure_diagnostics(manager, started)
+        child_pid = int(child_path.read_text(encoding="utf-8"))
+        stopped = manager.stop(str(started["job_id"]))
+        assert stopped["state"] == "stopped"
+        deadline = time.monotonic() + 5
+        while compute_jobs._process_identity(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not compute_jobs._process_identity(child_pid)
 
 
 def test_active_job_limit_blocks_a_second_request(tmp_path: Path) -> None:
@@ -701,6 +810,21 @@ def test_worker_preserves_primary_and_cleanup_errors(tmp_path: Path, monkeypatch
     assert "cleanup denied" in message
 
 
+@pytest.fixture
+def _host_json_io_for_process_model(monkeypatch: pytest.MonkeyPatch):
+    """Keep real file validation while a synchronous fixture models Windows processes."""
+    import os as host_os
+
+    read_json = compute_jobs._read_json_object
+
+    def read_with_host_io(*arguments, **options):
+        with patch.object(compute_jobs, "os", host_os):
+            return read_json(*arguments, **options)
+
+    monkeypatch.setattr(compute_jobs, "_read_json_object", read_with_host_io)
+
+
+@pytest.mark.usefixtures("_host_json_io_for_process_model")
 def test_windows_job_setup_failure_prevents_optimizer_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import os
     from types import SimpleNamespace
@@ -802,6 +926,7 @@ def test_windows_stop_refuses_reused_pid_or_foreign_job(windows_stop_kernel, cha
 
 
 @pytest.mark.parametrize("wait_result", [258, 0xFFFFFFFF])
+@pytest.mark.usefixtures("_host_json_io_for_process_model")
 def test_windows_stop_unconfirmed_signal_remains_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows_stop_kernel, wait_result: int,
 ) -> None:
