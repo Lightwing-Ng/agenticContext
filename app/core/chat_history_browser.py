@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.13.0-codex.1
+# Code version: v1.14.0-codex.1
 
 from __future__ import annotations
 
@@ -104,6 +104,7 @@ class ChatHistoryPage:
     current_session: ChatHistorySession | None = None
     previous_session: ChatHistorySession | None = None
     next_session: ChatHistorySession | None = None
+    project_count: int = 0
 
     @property
     def session_detail(self) -> bool:
@@ -435,6 +436,49 @@ def _message_matches_query(message: ChatHistoryMessage, query_terms: tuple[str, 
     return all(term in searchable_text for term in query_terms)
 
 
+def count_cached_projects(local_store_root: Path | str, source: str = "all") -> int:
+    """Count distinct project containers in each provider's latest cached catalog.
+
+    Provider adapters normalize projects, Gems, and collections to projects.
+    Source filtering applies; message search and pagination do not filter catalogs.
+    Reading this metric never starts provider discovery or refreshes browser state.
+    """
+    selected_source = normalize_chat_history_source(source)
+    latest: dict[str, tuple[float, list[Any]]] = {}
+    for row in read_parquet_rows(agent_source_cache_path(local_store_root)) or []:
+        platform = str(row.get("platform") or "").lower()
+        if platform not in CHAT_HISTORY_SOURCE_VALUES or platform == "all":
+            continue
+        if selected_source != "all" and platform != selected_source:
+            continue
+        try:
+            payload = json.loads(str(row.get("payload_json") or "{}"))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        catalog = payload.get("agent_sources", payload)
+        if not isinstance(catalog, dict) or not isinstance(catalog.get("projects"), list):
+            continue
+        observed = _timestamp_value(str(row.get("cached_at") or ""))
+        if platform not in latest or observed >= latest[platform][0]:
+            latest[platform] = (observed, catalog["projects"])
+    identities: set[tuple[str, str]] = set()
+    for platform, (_, projects) in latest.items():
+        for project in projects:
+            if not isinstance(project, dict):
+                continue
+            url = _safe_external_url(project.get("url"))
+            if url:
+                parsed = urlsplit(url)
+                identity = urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), "", ""))
+            else:
+                identity = str(project.get("id") or "").strip()
+            if identity:
+                identities.add((platform, identity))
+    return len(identities)
+
+
 def query_chat_history(
     local_store_root: Path | str,
     *,
@@ -450,6 +494,7 @@ def query_chat_history(
     normalized_source = normalize_chat_history_source(source)
     normalized_query = str(query or "").strip()[:120].casefold()
     query_terms = tuple(normalized_query.split())
+    project_count = count_cached_projects(local_store_root, normalized_source)
     all_messages = load_chat_history_messages(local_store_root, normalized_source)
     requested_session = str(session or "").strip()[:160]
     all_sessions = _sort_chat_history_sessions(_build_chat_history_sessions(all_messages), sort)
@@ -500,6 +545,7 @@ def query_chat_history(
             items=session_messages[start : start + safe_page_size],
             total_count=len(session_messages),
             conversation_count=1,
+            project_count=project_count,
             current_page=current_page,
             total_pages=total_pages,
             page_size=safe_page_size,
@@ -556,6 +602,7 @@ def query_chat_history(
         items=tuple(page_items),
         total_count=total_count,
         conversation_count=len({(item.source, item.conversation_id) for item in messages}),
+        project_count=project_count,
         current_page=current_page,
         total_pages=total_pages,
         page_size=safe_page_size,

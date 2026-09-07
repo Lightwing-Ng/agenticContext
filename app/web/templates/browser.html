@@ -1,4 +1,4 @@
-<!-- Code version: v1.62.3-codex.1 -->
+<!-- Code version: v1.65.0-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,16 +9,16 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.2-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.96.2-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.98.0-codex.1') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.1-codex.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.31.1-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.31.2-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.1.3-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.2.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.3.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-actions.js', v='browser-session-actions-v1.1.1-codex.1') }}"></script>
 </head>
@@ -255,49 +255,6 @@
                             <h2>{{ "Cached media browser" if filters.view == "media" else ("Saved prompts" if filters.view == "prompts" else "Cached text browser") }}</h2>
                             {% endif %}
                         </div>
-                        <div class="browser-heading-tools">
-                            {% if filters.view == "text" and text_page.session_detail and text_page.current_session.conversation_url %}
-                            <div
-                            class="browser-session-actions browser-session-actions-drawer"
-                            data-browser-session-actions
-                            data-browser-session-actions-drawer
-                            role="group"
-                            aria-label="Session actions"
-                        >
-                            <button
-                                type="button"
-                                class="browser-session-action-button browser-session-actions-trigger browser-session-open-original-button"
-                                data-browser-session-open-original
-                                data-browser-session-original-url="{{ text_page.current_session.conversation_url }}"
-                                aria-label="Open original in Safari"
-                                title="Open original in Safari"
-                            >
-                                <span class="icon browser-session-safari-icon" aria-hidden="true"></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="browser-session-action-button browser-session-refresh-button"
-                                data-browser-session-refresh-url="{{ url_for('browser', view='text', source=filters.source, q=filters.q, sort=filters.sort, session_view='1', session=text_page.current_session.stable_id, session_page=filters.session_page, page=filters.page, refresh='1') }}"
-                                data-wait-title="Refreshing page"
-                                data-wait-copy="Reloading the current cached session page."
-                                aria-label="Refresh current page"
-                                title="Refresh current page"
-                            >
-                                <span class="icon browser-session-drawer-refresh-icon" aria-hidden="true"></span>
-                            </button>
-                            <button
-                                type="button"
-                                class="browser-session-action-button browser-session-full-export-button"
-                                data-browser-session-download-url="{{ url_for('browser_session_export', session_id=text_page.current_session.stable_id, source=filters.source, sort=filters.sort) }}"
-                                aria-label="Export Markdown"
-                                title="Export Markdown"
-                            >
-                                <span class="icon browser-session-export-icon" aria-hidden="true"></span>
-                            </button>
-
-                            </div>
-                            {% endif %}
-                        </div>
                     </div>
                 </div>
                 <div class="report-card workspace-content-card browser-content-card{% if filters.view == 'text' %} browser-text-summary-card{% endif %}" data-layout-role="content-scrollport">
@@ -327,15 +284,46 @@
                                 <button type="button" class="browser-session-control-button browser-session-neighbor-button" disabled aria-label="No next session" title="No next session"><span class="icon browser-session-neighbor-next-icon" aria-hidden="true"></span></button>
                                 {% endif %}
                             </nav>
-                            <button
-                                type="button"
-                                class="browser-session-control-button browser-session-page-export-button"
-                                data-browser-session-download-url="{{ url_for('browser_session_export', session_id=text_page.current_session.stable_id, source=filters.source, sort=filters.sort, page=filters.page, scope='page') }}"
-                                aria-label="Export current page results"
-                                title="Export current page results"
+                            <div
+                                class="browser-session-actions browser-session-actions-drawer"
+                                data-browser-session-actions
+                                data-browser-session-actions-drawer
+                                role="group"
+                                aria-label="Session actions"
                             >
-                                <span class="icon browser-session-page-export-icon" aria-hidden="true"></span>
-                            </button>
+                                <button
+                                    type="button"
+                                    class="browser-session-action-button browser-session-actions-trigger browser-session-open-original-button"
+                                    data-browser-session-open-original
+                                {% if not text_page.current_session.conversation_url %}disabled{% endif %}
+                                    data-browser-session-original-url="{{ text_page.current_session.conversation_url }}"
+                                    aria-label="Open original in Safari"
+                                    title="Open original in Safari"
+                                >
+                                    <span class="icon browser-session-safari-icon" aria-hidden="true"></span>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="browser-session-action-button browser-session-refresh-button"
+                                    data-browser-session-refresh-url="{{ url_for('browser', view='text', source=filters.source, q=filters.q, sort=filters.sort, session_view='1', session=text_page.current_session.stable_id, session_page=filters.session_page, page=filters.page, refresh='1') }}"
+                                    data-wait-title="Refreshing page"
+                                    data-wait-copy="Reloading the current cached session page."
+                                    aria-label="Refresh current page"
+                                    title="Refresh current page"
+                                >
+                                    <span class="icon browser-session-drawer-refresh-icon" aria-hidden="true"></span>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="browser-session-action-button browser-session-full-export-button browser-session-page-export-button"
+                                    data-browser-session-download-url="{{ url_for('browser_session_export', session_id=text_page.current_session.stable_id, source=filters.source, sort=filters.sort) }}"
+                                    aria-label="Export Markdown"
+                                    title="Export Markdown"
+                                >
+                                    <span class="icon browser-session-export-icon" aria-hidden="true"></span>
+                                </button>
+
+                            </div>
                             {% endif %}
                             <div class="field browser-filter-field browser-search-field" data-browser-search>
                                 <div class="browser-search-control">
@@ -433,18 +421,14 @@
                             <span class="metric-label">Messages</span>
                             <strong>{{ "{:,}".format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}</strong>
                         </div>
+                        <div class="metric-card foundation-metric-card metric-card-accent">
+                            <span class="metric-label">Projects</span>
+                            <strong>{{ "{:,}".format(text_page.project_count) }}</strong>
+                        </div>
                     </div>
                     {% endif %}
 
-                    {% if filters.view == "prompts" and prompt_page.items %}
-                    <div class="browser-result-summary" aria-live="polite">
-                        <p>
-                            Showing page {{ "{:,}".format(prompt_page.current_page) }} of {{ "{:,}".format(prompt_page.total_pages) }}
-                            · {{ "{:,}".format(prompt_page.total_count) }} saved prompts
-                        </p>
-                        {% if filters.q or filters.source != "all" %}<span class="status-chip browser-filter-chip">Filtered view</span>{% endif %}
-                    </div>
-                    {% elif filters.view == "media" and media_page.items %}
+                    {% if filters.view == "media" and media_page.items %}
                     <div class="browser-result-summary{% if media_page.pagination_unit == 'session' %} browser-session-controls-row{% endif %}" aria-live="polite">
                         {% if media_page.pagination_unit == "session" %}
                         <div class="browser-result-controls">
@@ -754,6 +738,19 @@
                                         </td>
                                         <td class="browser-prompt-table-remarks">
                                             <div class="browser-prompt-remarks" data-prompt-remarks data-prompt-id="{{ prompt.stable_id }}">
+                                                <div class="browser-prompt-remark-editor">
+                                                    <input
+                                                        type="text"
+                                                        data-prompt-remark-input
+                                                        list="browser_prompt_remark_options"
+                                                        maxlength="48"
+                                                        placeholder="Add remark"
+                                                        aria-label="Add or choose stored remark"
+                                                        aria-autocomplete="list"
+                                                        autocomplete="off"
+                                                        enterkeyhint="done"
+                                                    >
+                                                </div>
                                                 <div class="browser-prompt-tags" data-prompt-tags>
                                                     {% for remark in prompt.remarks %}
                                                     <span class="browser-prompt-tag" data-prompt-tag data-prompt-remark="{{ remark }}">
@@ -768,19 +765,6 @@
                                                         >×</button>
                                                     </span>
                                                     {% endfor %}
-                                                </div>
-                                                <div class="browser-prompt-remark-editor">
-                                                    <input
-                                                        type="text"
-                                                        data-prompt-remark-input
-                                                        list="browser_prompt_remark_options"
-                                                        maxlength="48"
-                                                        placeholder="Add remark"
-                                                        aria-label="Add or choose stored remark"
-                                                        aria-autocomplete="list"
-                                                        autocomplete="off"
-                                                        enterkeyhint="done"
-                                                    >
                                                 </div>
                                                 <span class="browser-prompt-remarks-feedback" data-prompt-remarks-feedback aria-live="polite"></span>
                                             </div>
@@ -890,9 +874,86 @@
                                     <tr>
                                         <th scope="col" class="browser-session-col-number">No.</th>
                                         <th scope="col" class="browser-session-col-title">Session name</th>
-                                        <th scope="col" class="browser-session-col-source">Source</th>
+                                        <th scope="col" class="browser-session-col-source scrollable-data-table-filter-header">
+                                            <span class="scrollable-data-table-filter-default-label">Source</span>
+                                            <form method="get" action="{{ url_for('browser') }}" class="browser-header-filter-form">
+                                                <input type="hidden" name="view" value="text">
+                                                <input type="hidden" name="session_view" value="1">
+                                                <input type="hidden" name="q" value="{{ filters.q }}">
+                                                <input type="hidden" name="sort" value="{{ filters.sort }}">
+                        <div class="trade-strategy-combobox browser-source-filter-combobox scrollable-data-table-filter-field" data-browser-header-filter data-browser-source-filter>
+                            <input type="hidden" name="source" value="{{ filters.source }}" data-browser-source-filter-input>
+                            <button
+                                type="button"
+                                class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger scrollable-data-table-filter-trigger"
+                                    data-browser-source-filter-trigger
+                                    aria-haspopup="listbox"
+                                    aria-expanded="false"
+                                    aria-controls="browser_header_source_filter_options"
+                                    aria-label="Source: {{ selected_source.label }}"
+                                title="{{ selected_source.label }}"
+                            >
+                                <span class="browser-session-trigger-leading">
+                                    <span class="browser-picker-selected-icon-shell">
+                                        <span
+                                            class="cache-source-mark browser-source-filter-mark"
+                                            style="--cache-source-mark: url('{{ url_for('static', filename=selected_source.icon) }}');"
+                                            aria-hidden="true"
+                                            data-browser-source-filter-selected-icon
+                                        ></span>
+                                    </span>
+                                    <span class="trade-strategy-trigger-label browser-session-trigger-label" data-browser-source-filter-selected-label>{{ selected_source.label }}</span>
+                                </span>
+                                <span class="browser-picker-trigger-chevron trade-strategy-trigger-chevron" aria-hidden="true"></span>
+                            </button>
+                            <div
+                                class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown browser-source-filter-dropdown browser-header-filter-menu"
+                                id="browser_header_source_filter_options"
+                                data-browser-source-filter-menu
+                                role="listbox"
+                                aria-label="Filter by source"
+                                hidden
+                            >
+                                <button
+                                    type="button"
+                                    id="browser_header_source_filter_option_all"
+                                    class="trade-strategy-dropdown-option browser-source-filter-option{% if filters.source == 'all' %} is-selected is-active{% endif %}"
+                                    data-browser-source-filter-option="all"
+                                    data-browser-source-filter-label="{{ all_source_label }}"
+                                    data-browser-source-filter-icon="{{ url_for('static', filename=all_source_icon) }}"
+                                    role="option"
+                                    aria-selected="{{ 'true' if filters.source == 'all' else 'false' }}"
+                                    tabindex="-1"
+                                >
+                                    <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+                                    <span class="cache-source-mark browser-source-filter-mark{% if filters.view == 'text' %} is-full-color{% endif %}" style="--cache-source-mark: url('{{ url_for('static', filename=all_source_icon) }}');" aria-hidden="true"></span>
+                                    <span class="trade-strategy-dropdown-text">{{ all_source_label }}</span>
+                                </button>
+                                {% for source in source_options %}
+                                <button
+                                    type="button"
+                                    id="browser_header_source_filter_option_{{ source.key }}"
+                                    class="trade-strategy-dropdown-option browser-source-filter-option{% if filters.source == source.key %} is-selected is-active{% endif %}"
+                                    data-browser-source-filter-option="{{ source.key }}"
+                                    data-browser-source-filter-label="{{ source.label }}"
+                                    data-browser-source-filter-icon="{{ url_for('static', filename=source.icon_filename) }}"
+                                    role="option"
+                                    aria-selected="{{ 'true' if filters.source == source.key else 'false' }}"
+                                    tabindex="-1"
+                                >
+                                    <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+                                    <span class="cache-source-mark browser-source-filter-mark" style="--cache-source-mark: url('{{ url_for('static', filename=source.icon_filename) }}');" aria-hidden="true"></span>
+                                    <span class="trade-strategy-dropdown-text">{{ source.label }}</span>
+                                </button>
+                                {% endfor %}
+                            </div>
+                        </div>
+                                            </form>
+                                        </th>
                                         <th scope="col" class="browser-session-col-count">Messages</th>
-                                        <th scope="col" class="browser-session-col-updated">Updated</th>
+                                        <th scope="col" class="browser-session-col-updated" aria-sort="{{ 'ascending' if filters.sort == 'oldest' else ('descending' if filters.sort == 'newest' else 'none') }}">
+                                            <a class="browser-session-sort-link" href="{{ url_for('browser', view='text', source=filters.source, q=filters.q, sort='newest' if filters.sort == 'oldest' else 'oldest', session_view='1', page=1) }}" aria-label="Last updated: sort {{ 'newest first' if filters.sort == 'oldest' else 'oldest first' }}">Last updated <span aria-hidden="true">{{ '↑' if filters.sort == 'oldest' else '↓' }}</span></a>
+                                        </th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -928,9 +989,9 @@
                                                 target="_blank"
                                                 rel="noopener noreferrer"
                                                 aria-label="Open original {{ session.conversation_title }} conversation"
-                                            ><time datetime="{{ session.last_seen_at }}">{{ format_chat_message_timestamp_label(session.last_seen_at) }}</time></a>
+                                            >{{ render_browser_message_time(session.last_seen_at) }}</a>
                                             {% else %}
-                                            <time datetime="{{ session.last_seen_at }}">{{ format_chat_message_timestamp_label(session.last_seen_at) }}</time>
+                                            {{ render_browser_message_time(session.last_seen_at) }}
                                             {% endif %}
                                         </td>
                                     </tr>

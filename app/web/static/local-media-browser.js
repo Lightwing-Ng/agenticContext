@@ -1,4 +1,4 @@
-/* Code version: v1.31.1-codex.1 */
+/* Code version: v1.31.2-codex.1 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -111,8 +111,9 @@
         const targetUrl = new URL(filterForm.action || window.location.href, window.location.origin);
         const formData = new FormData(filterForm);
         formData.set("view", mode);
+        if (mode === "text") formData.set("session_view", "1");
         targetUrl.search = new URLSearchParams(formData).toString();
-        ["page", "media_id", "session"].forEach((name) => targetUrl.searchParams.delete(name));
+        ["page", "media_id", "session", "session_page"].forEach((name) => targetUrl.searchParams.delete(name));
         if (mode !== "media") targetUrl.searchParams.delete("kind");
         renderOptimisticContentModeNavigation(mode);
         let navigationCommitted = false;

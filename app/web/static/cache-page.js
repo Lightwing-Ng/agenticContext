@@ -1,4 +1,4 @@
-/* Code version: v1.12.0-codex.1 */
+/* Code version: v1.13.0-codex.1 */
 
 (() => {
     "use strict";
@@ -589,6 +589,7 @@
         const auditPercent = clampPercent(state.auditPercent);
         const isIndeterminate = Boolean(state.isIndeterminate);
         statusProgress.classList.toggle("is-indeterminate", isIndeterminate);
+        statusProgress.classList.toggle("is-unavailable", !isIndeterminate && state.hasMeasuredProgress === false);
         statusProgress.classList.toggle("is-auditing", auditPercent > 0 && !isIndeterminate);
         statusProgressFill.style.width = `${completePercent}%`;
         if (statusProgressAudit) statusProgressAudit.style.width = `${auditPercent}%`;

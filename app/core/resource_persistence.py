@@ -1,6 +1,6 @@
 """Shared Parquet schemas and atomic persistence for cached resource state."""
 
-# Code version: v1.8.0-codex.1
+# Code version: v1.9.0-codex.1
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ GROK_WORK_QUEUE_SCHEMA_VERSION = 2
 DELETED_MEDIA_SCHEMA_VERSION = 2
 X_CACHE_CATALOG_SCHEMA_VERSION = 3
 GEMINI_HISTORY_SCHEMA_VERSION = 1
-CHATGPT_HISTORY_SCHEMA_VERSION = 2
+CHATGPT_HISTORY_SCHEMA_VERSION = 3
 GROK_HISTORY_SCHEMA_VERSION = 1
 CLAUDE_HISTORY_SCHEMA_VERSION = 1
 PROMPT_SCHEMA_VERSION = 2

@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.47.1-codex.1
+# Code version: v1.48.1-codex.1
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 from PIL import Image, UnidentifiedImageError
 
 from .cache_timing import wait_for_cache_scan
+from .chatgpt_history_cleanup import is_chatgpt_tool_trace
 from .browser_sessions import browser_descriptors, launch_chromium_context
 from .compute_backend import analyze_image_paths, analyze_image_payload
 from .compute_metrics import PerformanceMetrics
@@ -312,12 +313,42 @@ def _chatgpt_message_timestamp(message: object, fallback: str) -> str:
     return fallback
 
 
+def _chatgpt_message_is_cacheable(message: dict[str, object], role: str) -> bool:
+    """Keep visible prompts and final replies using provider message metadata."""
+    if role not in {"user", "assistant"}:
+        return False
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if metadata.get("is_visually_hidden_from_conversation"):
+        return False
+    content = message.get("content")
+    if not isinstance(content, dict):
+        return False
+    content_type = str(content.get("content_type") or "").strip().lower()
+    if content_type not in {"", "text", "multimodal_text"}:
+        return False
+    if role == "user":
+        return True
+    recipient = str(message.get("recipient") or "").strip().lower()
+    channel = str(message.get("channel") or metadata.get("channel") or "").strip().lower()
+    if recipient not in {"", "all"} or channel not in {"", "final"}:
+        return False
+    if message.get("end_turn") is False:
+        return False
+    if not channel and is_chatgpt_tool_trace(_chatgpt_message_text(message)):
+        return False
+    status = str(message.get("status") or "").strip().lower()
+    # Older conversations omit channel and completion fields on ordinary replies.
+    return status in {"", "finished_successfully"}
+
+
 def _extract_chatgpt_conversation_messages(
     payload: dict[str, object],
     conversation_url: str,
     captured_at: str,
 ) -> list[dict[str, object]]:
-    """Extract all user and assistant text messages from one conversation mapping."""
+    """Extract visible user prompts and final assistant replies from every branch."""
     mapping = payload.get("mapping")
     if not isinstance(mapping, dict):
         return []
@@ -331,7 +362,7 @@ def _extract_chatgpt_conversation_messages(
         message = node["message"]
         author = message.get("author")
         role = str(author.get("role") or "").strip().lower() if isinstance(author, dict) else ""
-        if role not in {"user", "assistant"}:
+        if not _chatgpt_message_is_cacheable(message, role):
             continue
         content_text = _chatgpt_message_text(message)
         if not content_text:
@@ -411,13 +442,17 @@ class ChatGPTHistoryStore:
         )
 
     def conversation_revision_matches(self, conversation_url: str, revision: str) -> bool:
-        """Skip only sessions with a durable matching provider revision."""
+        """Skip only matching revisions already filtered by the current schema."""
         conversation_id = chatgpt_conversation_id(conversation_url)
         rows = [
             row for row in self._rows_by_key.values()
             if row.get("conversation_id") == conversation_id
         ]
-        return bool(revision and rows) and all(row.get("provider_revision") == revision for row in rows)
+        return bool(revision and rows) and all(
+            row.get("provider_revision") == revision
+            and row.get("schema_version") == CHATGPT_HISTORY_SCHEMA_VERSION
+            for row in rows
+        )
 
     def replace_conversation(
         self,

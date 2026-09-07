@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.9.4-codex.1`
+Documentation version: `v1.9.7-codex.1`
 
 ## Launch
 
@@ -245,6 +245,26 @@ you intend to discard that cache. Do not use reset operations as a routine troub
 - Browser profile lock: close duplicate normal browser windows, then retry the session probe.
 - ChatGPT parallel sync: the project workflow uses up to three isolated Edge contexts; lower the
   shared Download workers setting only when the machine cannot sustain that browser load.
+- ChatGPT Text history schema 3 keeps visible user prompts and completed final assistant replies.
+  Tool recipients, non-final channels, hidden context, reasoning payloads, and incomplete replies
+  are excluded using provider metadata, not wording or JSON detection. Ordinary legacy replies
+  without channel/completion metadata remain supported. Older cached sessions are fetched again
+  on the next Text sync even when their provider revision matches; each successful fetch replaces
+  that session's rows while preserving retained messages' first-seen timestamps. Failed fetches
+  leave existing rows intact. Let an active cache task finish before restarting into the new code
+  and running Text sync; do not edit its live Parquet file or reset cached media to apply this change.
+- Legacy ChatGPT tool traces can be reviewed offline with
+  `python3 -m app.core.chatgpt_history_cleanup` (use `py -3 -m` on Windows).
+  Add `--apply` to remove recognized traces preceding a later reply in the same turn.
+  This includes multiline `fast|`, `slow|`, `open|`, and `find|` command batches with
+  an optional trailing `length|short`, `length|medium`, or `length|long` option.
+  Every line must match the protocol; mixed prose and fenced examples are retained.
+  Ordinary prose is retained unless explicitly reviewed with `--remove-message chat-<id>`.
+  The command acquires the cache task lock, backs up the original Parquet and a removal manifest
+  under `local_store/recovery/`, and atomically writes the cleaned history. It preserves user
+  messages, retained content, timestamps, and session IDs. Do not restore the backup over an
+  active cache job. Channel-less future messages also reject standalone tool syntax; explicit
+  final-channel JSON or code answers remain supported.
 - Sync failure: inspect `logs/cachelikes.log.jsonl` for full structured diagnostics. The UI shows a
   bounded status message while retaining the detailed local log.
 - Grok Text cache: the legacy text runtime follows all Grok conversation pages and response

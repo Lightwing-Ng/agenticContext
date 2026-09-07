@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.32.7-codex.1
+Code version: v1.32.13-codex.1
 """
 
 from __future__ import annotations
@@ -780,8 +780,8 @@ def test_text_browser_omits_redundant_per_page_metric(
             page.set_viewport_size({"width": width, "height": height})
             page.goto(route, wait_until="domcontentloaded")
             labels = page.locator(".browser-text-metric-grid .metric-label")
-            expect(labels).to_have_count(2)
-            assert labels.all_text_contents() == ["Sessions", "Messages"]
+            expect(labels).to_have_count(3)
+            assert labels.all_text_contents() == ["Sessions", "Messages", "Projects"]
             body_text = page.locator("body").inner_text()
             assert "Sessions shown" not in body_text
             assert "Messages shown" not in body_text
@@ -2708,19 +2708,10 @@ def test_settings_reuse_shared_primary_and_numeric_control_contracts(
             f"{sidebar_server_url}/settings#settings-maintenance",
             wait_until="domcontentloaded",
         )
-        expect(page.locator("#settings-maintenance")).to_be_visible()
-        expect(page.locator("#settings_workspace .workspace-kicker")).to_have_count(0)
-        for selector in ("#reset_button", "#reset_chatgpt_button"):
-            alignment = page.locator(selector).evaluate(
-                """button => {
-                    const form = button.closest("form");
-                    return {
-                        buttonRight: button.getBoundingClientRect().right,
-                        formRight: form.getBoundingClientRect().right,
-                    };
-                }"""
-            )
-            assert abs(alignment["buttonRight"] - alignment["formRight"]) <= 1
+        expect(page.locator("#settings-maintenance")).to_have_count(0)
+        expect(page.locator("#settings-browser")).to_be_visible()
+        expect(page.locator('[data-settings-category="maintenance"]')).to_have_count(0)
+        expect(page.locator("#reset_button, #reset_chatgpt_button")).to_have_count(0)
 
         assert page.evaluate(
             "() => document.documentElement.scrollWidth <= window.innerWidth"
@@ -9612,7 +9603,7 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
     try:
         page.goto(annotated_resources_server_url + "/browser?view=text&source=chatgpt&session=chatgpt:long-session&page=2")
         expect(page.locator('[data-browser-session-tag]')).to_have_text("This session ×")
-        assert page.locator('[aria-label="Cached text totals"] .metric-label').all_text_contents() == ["Sessions", "Messages"]
+        assert page.locator('[aria-label="Cached text totals"] .metric-label').all_text_contents() == ["Sessions", "Messages", "Projects"]
         geometry = page.evaluate("""() => {
             const box = selector => {const r = document.querySelector(selector).getBoundingClientRect(); return {x:r.x, y:r.y, right:r.right, width:r.width};};
             return {rail: box('.browser-content-toolbar'), back: box('.browser-session-back-link'),
@@ -9623,6 +9614,20 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
         assert geometry["share"]["x"] >= geometry["next"]["right"]
         assert geometry["search"]["right"] <= geometry["rail"]["right"] + 1
         assert geometry["search"]["width"] >= 180
+        expect(page.locator('.browser-heading-row [data-browser-session-actions]')).to_have_count(0)
+        drawer = page.locator('.browser-content-toolbar [data-browser-session-actions]')
+        expect(drawer).to_have_count(1)
+        drawer.locator('.browser-session-full-export-button').focus()
+        expect(drawer.locator('.browser-session-open-original-button')).to_have_css("opacity", "1")
+        layout = drawer.evaluate("""root => {
+            const share = root.querySelector('.browser-session-full-export-button').getBoundingClientRect();
+            const safari = root.querySelector('.browser-session-open-original-button').getBoundingClientRect();
+            return {share: share.x, safari: safari.x, right: safari.right,
+                    gradient: getComputedStyle(root.querySelector('.browser-session-safari-icon')).backgroundImage};
+        }""")
+        assert layout["safari"] > layout["share"]
+        assert layout["right"] <= width
+        assert layout["gradient"] == "none"
         expect(page.locator('[data-browser-search-focus]')).to_have_count(0)
         page.locator('#browser_search_input').click()
         expect(page.locator('#browser_search_input')).to_be_focused()
@@ -9636,6 +9641,9 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
         expect(page.locator('[data-browser-session-tag]')).to_have_count(0)
         expect(page.locator('[data-chat-message-id]')).to_have_count(2)
         assert "source=all" in page.url and "session=" not in page.url
+        page.goto(annotated_resources_server_url + "/browser?view=text&session_view=1")
+        expect(page.locator('.browser-session-table tbody tr').first.locator('td').nth(4).locator('.browser-session-message-time-date')).to_be_visible()
+        expect(page.locator('.browser-session-table tbody tr').first.locator('td').nth(4).locator('.browser-session-message-time-clock')).to_be_visible()
         page.goto(annotated_resources_server_url + "/browser?view=prompts")
         assert page.locator('[aria-label="Saved prompt totals"] .metric-label').all_text_contents() == ["Saved prompts", "Sources"]
         bounds = page.locator('[data-prompt-remark-input]').evaluate("""input => {
@@ -9645,6 +9653,12 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
         assert bounds["radius"] == "10px"
         assert bounds["left"] >= bounds["cellLeft"] and bounds["right"] <= bounds["cellRight"]
         assert page.locator('[data-prompt-tag]').count() == 3
+        expect(page.locator('.browser-result-summary')).to_have_count(0)
+        assert page.locator('[data-prompt-remark-input]').evaluate("""input => {
+            const tags = input.closest('[data-prompt-remarks]').querySelector('[data-prompt-tags]');
+            return input.getBoundingClientRect().bottom <= tags.getBoundingClientRect().top
+                && getComputedStyle(input).fontFamily === getComputedStyle(document.body).fontFamily;
+        }""")
     finally:
         context.close()
 
@@ -9927,5 +9941,97 @@ def test_text_source_selection_survives_global_search_form_submission(
         page.locator("#browser_search_input").press("Enter")
         expect(page).to_have_url(re.compile(r"[?&]source=all(?:&|$)"))
         expect(page.get_by_role("table", name="Cached messages", exact=True)).to_contain_text("timestamp layout")
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("mode", ["media", "prompts"])
+def test_returning_to_text_restores_session_table(
+    disposable_browser: Browser, annotated_resources_server_url: str, mode: str,
+) -> None:
+    """Do not inherit another content mode's flattened message-view flag."""
+    context = disposable_browser.new_context(viewport={"width": 1024, "height": 1332})
+    page = context.new_page()
+    try:
+        page.goto(annotated_resources_server_url + f"/browser?view={mode}&session_view=0&source=all&sort=oldest")
+        page.locator('label[for="browser_view_text"]').click()
+        expect(page.locator('#browser_view_text')).to_be_checked()
+        expect(page.locator('.browser-session-table:not(.browser-session-detail-table)')).to_be_visible()
+        assert "session_view=1" in page.url
+        assert "sort=oldest" in page.url
+        expect(page.locator('.browser-session-detail-table')).to_have_count(0)
+        page.locator('.browser-session-table-title').first.click()
+        expect(page.locator('.browser-session-detail-table')).to_be_visible()
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1024, 390])
+def test_session_header_source_sort_and_two_line_time(
+    disposable_browser: Browser, annotated_resources_server_url: str, width: int,
+) -> None:
+    context = disposable_browser.new_context(viewport={"width": width, "height": 1332})
+    page = context.new_page()
+    try:
+        page.goto(annotated_resources_server_url + "/browser?view=text&source=all&session_view=1&sort=newest&q=crosspage%20needle")
+        table = page.locator('.browser-session-index-table')
+        expect(table.locator('th[aria-sort="descending"]')).to_contain_text("Last updated")
+        stamp = table.locator('.browser-session-message-time').first
+        geometry = stamp.evaluate("""node => {
+            const date=node.querySelector('.browser-session-message-time-date').getBoundingClientRect();
+            const clock=node.querySelector('.browser-session-message-time-clock').getBoundingClientRect();
+            const table=node.closest('table').getBoundingClientRect();
+            return {dateBottom:date.bottom, clockTop:clock.top, right:clock.right, tableRight:table.right};
+        }""")
+        assert geometry['clockTop'] >= geometry['dateBottom']
+        assert geometry['right'] <= geometry['tableRight'] + 1
+        assert geometry['tableRight'] <= width
+        table.locator('.browser-session-sort-link').click()
+        expect(page.locator('th[aria-sort="ascending"]')).to_be_visible()
+        assert 'sort=oldest' in page.url
+        trigger = page.locator('[data-browser-header-filter] [data-browser-source-filter-trigger]')
+        expect(trigger).to_have_css("height", "22px")
+        trigger.click()
+        menu = page.locator('#browser_header_source_filter_options')
+        expect(menu).to_be_visible()
+        assert menu.evaluate('element => element.parentElement === document.body')
+        menu.locator('[data-browser-source-filter-option="chatgpt"]').click()
+        assert 'source=chatgpt' in page.url and 'sort=oldest' in page.url
+        expect(page.locator('#browser_search_input')).to_have_value('crosspage needle')
+        expect(page.locator('#browser_filter_form [data-browser-source-filter-input]')).to_have_value('chatgpt')
+        page.locator('.browser-session-sort-link').click()
+        expect(page.locator('th[aria-sort="descending"]')).to_be_visible()
+        assert 'source=chatgpt' in page.url
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize('width,motion', [(1024, 'no-preference'), (390, 'reduce')])
+def test_cache_progress_reuses_training_track_and_lifecycle(disposable_browser, sidebar_server_url, width, motion):
+    context = disposable_browser.new_context(viewport={'width': width, 'height': 959}, reduced_motion=motion)
+    page = context.new_page()
+    state = {'phase': 'idle', 'running': False, 'queued_tweets': 0, 'processed_tweets': 0,
+             'message': 'Ready', 'progress_unit': 'sessions', 'recent_events': []}
+    page.route('**/api/cache/*/status?*', lambda route: route.fulfill(json=state))
+    try:
+        page.goto(sidebar_server_url + '/cache/chatgpt', wait_until='networkidle')
+        track = page.locator('#status_progress')
+        fill = page.locator('#status_progress_fill')
+        expect(track).to_have_css('height', '6px')
+        expect(track).to_have_class(re.compile('is-unavailable'))
+        expect(track).not_to_have_attribute('aria-valuenow', re.compile('.+'))
+        assert page.locator('#status_progress_value').evaluate('(node) => node.getBoundingClientRect().bottom <= document.querySelector("#status_progress").getBoundingClientRect().top')
+        state.update(phase='collecting', running=True)
+        expect(track).to_have_class(re.compile('is-indeterminate'), timeout=6000)
+        expect(fill).to_have_css('animation-name', 'none' if motion == 'reduce' else 'cacheTrainingProgressPending')
+        state.update(queued_tweets=10, processed_tweets=4)
+        expect(track).to_have_attribute('aria-valuenow', '40', timeout=6000)
+        expect(page.locator('#status_progress_value')).to_have_text('40%')
+        state.update(phase='failed', running=False)
+        expect(page.locator('#phase_value')).to_have_attribute('data-phase', 'failed', timeout=6000)
+        expect(track).to_have_attribute('aria-valuenow', '40')
+        state.update(phase='completed', processed_tweets=10)
+        expect(track).to_have_attribute('aria-valuenow', '100', timeout=6000)
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     finally:
         context.close()

@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.1 */
+/* Code version: v1.3.0-codex.1 */
 
 (() => {
     function initializeSourceFilter(combobox) {
@@ -36,6 +36,16 @@
             combobox.classList.toggle("is-open", isOpen);
             trigger.setAttribute("aria-expanded", String(isOpen));
             menu.hidden = !isOpen;
+            if (combobox.hasAttribute("data-browser-header-filter")) {
+                if (isOpen) {
+                    document.body.append(menu);
+                    const rect = trigger.getBoundingClientRect();
+                    menu.style.left = `${Math.max(10, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 10))}px`;
+                    menu.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - menu.offsetHeight - 10)}px`;
+                } else {
+                    combobox.append(menu);
+                }
+            }
             if (isOpen) {
                 setActiveOption(selectedOption());
             } else {
@@ -119,10 +129,16 @@
         syncTriggerMetadata(selectedOption());
 
         document.addEventListener("click", (event) => {
-            if (!combobox.contains(event.target)) {
+            if (!combobox.contains(event.target) && !menu.contains(event.target)) {
                 setMenuOpen(false);
             }
         });
+        if (combobox.hasAttribute("data-browser-header-filter")) {
+            window.addEventListener("resize", () => setMenuOpen(false));
+            document.addEventListener("scroll", (event) => {
+                if (!menu.contains(event.target) && !menu.hidden) setMenuOpen(false);
+            }, true);
+        }
         document.addEventListener("keydown", (event) => {
             if (event.key === "Escape" && !menu.hidden) {
                 setMenuOpen(false);

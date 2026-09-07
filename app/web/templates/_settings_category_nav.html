@@ -1,4 +1,4 @@
-<!-- Code version: v1.0.0-codex.2 -->
+<!-- Code version: v1.1.0-codex.1 -->
 <nav class="settings-category-nav" aria-label="Settings categories">
     <a
         href="{{ url_for('settings') }}#settings-browser"
@@ -54,17 +54,6 @@
             <span class="icon settings-category-nav-icon"></span>
         </span>
         <span class="settings-category-nav-label">Cloud backup</span>
-    </a>
-    <a
-        href="{{ url_for('settings') }}#settings-maintenance"
-        class="settings-category-nav-item settings-category-nav-item-maintenance{% if current_category == 'maintenance' %} is-active{% endif %}"
-        data-settings-category="maintenance"
-        {% if current_category == 'maintenance' %}aria-current="page"{% endif %}
-    >
-        <span class="settings-category-nav-icon-shell" aria-hidden="true">
-            <span class="icon settings-category-nav-icon"></span>
-        </span>
-        <span class="settings-category-nav-label">Maintenance</span>
     </a>
     <a
         href="{{ url_for('settings_style_tokens') }}"

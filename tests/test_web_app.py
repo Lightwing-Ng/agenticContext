@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.97.8-codex.1
+# Code version: v1.97.12-codex.1
 
 from __future__ import annotations
 
@@ -510,7 +510,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.12.0-codex.1', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.13.0-codex.1', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.2-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt"', chatgpt_body)
@@ -640,7 +640,10 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.21.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.96.2-codex.1"
+                expected_style_version = (
+                    "style-v2.99.0-codex.1" if page_source in {"grok", "chatgpt", "gemini", "x"}
+                    else "style-v2.96.2-codex.1"
+                )
                 self.assertIn(expected_style_version, body)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
                 self.assertIn('id="global_theme_toggle"', body)
@@ -764,7 +767,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Cached media browser", browser_body)
         self.assertIn('data-browser-source-filter', browser_body)
         self.assertEqual(browser_body.count('data-browser-source-filter-option='), 4)
-        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.2.0-codex.1', browser_body)
+        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.3.0-codex.1', browser_body)
         self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"', browser_body)
 
         self.assertIn('class="trade-strategy-dropdown-option browser-source-filter-option', browser_body)
@@ -794,8 +797,8 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(chatgpt_page_fragment=fragment):
                 self.assertIn(fragment, chatgpt_page_script)
         self.assertNotIn('id="reset_button"', grok_body)
-        self.assertIn('id="reset_button"', settings_body)
-        self.assertIn('id="reset_chatgpt_button"', settings_body)
+        self.assertNotIn('id="reset_button"', settings_body)
+        self.assertNotIn('id="reset_chatgpt_button"', settings_body)
         self.assertIn("<h2>Configuration center</h2>", settings_body)
         self.assertEqual(settings_body.count('class="workspace-kicker"'), 0)
         self.assertIn('name="chatgpt_startup_timeout_seconds"', settings_body)
@@ -833,8 +836,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="settings-inline-button settings-inline-button-primary shadow-backup-sync-button"', settings_body)
         self.assertIn('shadow-backup-settings.js?v=shadow-backup-settings-v1.3.0-codex.2', settings_body)
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', settings_body)
-        self.assertIn("Reset Grok state", settings_body)
-        self.assertIn("Reset ChatGPT state", settings_body)
+        self.assertNotIn("Reset Grok state", settings_body)
+        self.assertNotIn("Reset ChatGPT state", settings_body)
 
     def test_cache_source_switcher_uses_one_complete_registry_on_every_cache_page(self) -> None:
         app = create_app()
@@ -2927,11 +2930,17 @@ class WebAppTests(unittest.TestCase):
         settings_form_start = body.index('id="settings_form"')
         settings_form_end = body.index("</form>", settings_form_start)
         self.assertGreater(settings_form_end, settings_form_start)
-        for category in ("downloads", "llm", "agent", "cloud", "maintenance"):
+        for category in ("downloads", "llm", "agent", "cloud"):
             with self.subTest(category=category):
                 self.assertIn(f'data-settings-category="{category}"', body)
                 self.assertIn(f'data-settings-panel="{category}"', body)
                 self.assertIn(f'id="settings-{category}"', body)
+
+        self.assertNotIn("settings-maintenance", body)
+        self.assertNotIn('class="danger-zone"', body)
+        with app.test_client() as client:
+            catalog = client.get("/settings/style-tokens").get_data(as_text=True)
+        self.assertNotIn("settings-maintenance", catalog)
 
         script = SETTINGS_NAVIGATION_SCRIPT_PATH.read_text(encoding="utf-8")
         self.assertIn('new Map([["chatgpt", "llm"]])', script)
@@ -3481,7 +3490,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("style-v2.96.2-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.31.1-codex.1', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.31.2-codex.1', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -3658,10 +3667,10 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Open original in Safari", detail_body)
         self.assertIn("Export Markdown", detail_body)
         self.assertIn("Refresh current page", detail_body)
-        self.assertIn("Export current page results", detail_body)
+        self.assertNotIn("Export current page results", detail_body)
         self.assertIn("browser-session-drawer-refresh-icon", detail_body)
         self.assertIn("data-browser-session-refresh-url", detail_body)
-        self.assertIn("scope=page", detail_body)
+        self.assertEqual(detail_body.count("data-browser-session-actions-drawer"), 1)
         self.assertIn("browser-session-actions.js?v=browser-session-actions-v1.1.1-codex.1", detail_body)
         self.assertEqual(export_response.status_code, 200)
         self.assertEqual(export_response.mimetype, "text/markdown")

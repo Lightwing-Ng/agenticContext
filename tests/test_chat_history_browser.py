@@ -1,6 +1,6 @@
 """Focused tests for the local text-history browser."""
 
-# Code version: v1.5.0-codex.1
+# Code version: v1.6.0-codex.1
 
 from datetime import datetime
 from pathlib import Path
@@ -437,3 +437,33 @@ def test_session_metadata_uses_newer_catalog_and_preserves_identity(tmp_path: Pa
     assert after.conversation_title == "Renamed session"
     assert after.conversation_url == payload["sessions"][0]["url"]
     assert path.read_bytes() == original_bytes
+
+
+def test_projects_use_latest_provider_catalog_and_stable_identity(tmp_path: Path) -> None:
+    """Count containers once across browsers, retaining same-title distinct projects."""
+    from datetime import UTC, timedelta
+    from app.core.agent_source_cache import AgentSourceCache
+
+    cache = AgentSourceCache(tmp_path)
+    now = datetime.now(UTC)
+    cache.store(platform="chatgpt", browser="chrome", source_kind="sources",
+                payload={"projects": [{"id": "removed"}]}, now=now - timedelta(days=1))
+    cache.store(platform="chatgpt", browser="edge", source_kind="browser-session",
+                payload={"agent_sources": {"projects": [
+                    {"id": "first", "title": "Same", "url": "https://chatgpt.com/g/first/project"},
+                    {"id": "alias", "url": "https://chatgpt.com/g/first/project/?tracking=1"},
+                    {"id": "second", "title": "Same"},
+                    {"title": "No stable identity"}, None,
+                ]}}, now=now)
+    for platform in ("gemini", "grok", "claude"):
+        cache.store(platform=platform, browser="edge", source_kind="sources",
+                    payload={"projects": [{"id": "second"}]}, now=now)
+    assert query_chat_history(tmp_path).project_count == 5
+    assert query_chat_history(tmp_path, source="chatgpt", query="no matches", page=9).project_count == 2
+    assert query_chat_history(tmp_path, source="gemini").project_count == 1
+    cache.store(platform="gemini", browser="chrome", source_kind="sources",
+                payload={"projects": []}, now=now + timedelta(seconds=1))
+    assert query_chat_history(tmp_path).project_count == 4
+    cache.store(platform="chatgpt", browser="edge", source_kind="sources",
+                payload={"projects": "invalid"}, now=now + timedelta(seconds=2))
+    assert query_chat_history(tmp_path).project_count == 4

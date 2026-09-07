@@ -1,6 +1,6 @@
 """Focused tests for the Agent's ChatGPT Web source catalog.
 
-Code version: v1.2.5-codex.1
+Code version: v1.2.6-codex.1
 """
 
 from __future__ import annotations
@@ -394,10 +394,27 @@ def test_fetch_conversation_history_reads_authenticated_mapping_without_persiste
                             "create_time": "2026-08-14T01:01:00Z",
                         }
                     },
-                    "assistant-node": {
+                    "progress-node": {
                         "parent": "user-node",
                         "message": {
                             "author": {"role": "assistant"},
+                            "channel": "commentary",
+                            "content": {"parts": ["Checking the font settings"]},
+                        },
+                    },
+                    "tool-call-node": {
+                        "parent": "progress-node",
+                        "message": {
+                            "author": {"role": "assistant"},
+                            "recipient": "functions.inspect",
+                            "content": {"parts": ['{"path": "styles.css"}']},
+                        },
+                    },
+                    "assistant-node": {
+                        "parent": "tool-call-node",
+                        "message": {
+                            "author": {"role": "assistant"},
+                            "channel": "final",
                             "content": {"parts": ["The font stack is configured"]},
                             "create_time": "2026-08-14T01:02:00Z",
                         }

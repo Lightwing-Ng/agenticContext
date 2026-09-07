@@ -1,4 +1,4 @@
-/* Code version: v2.96.3-codex.1 */
+/* Code version: v2.99.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -6130,9 +6130,10 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-session-actions {
     --browser-session-action-gap: 10px;
     --browser-session-action-step: calc(var(--settings-round-icon-button-size) + var(--browser-session-action-gap));
-    position: absolute;
+    position: relative;
+    flex: 0 0 auto;
     top: 0;
-    right: 0;
+    left: 0;
     width: var(--settings-round-icon-button-size);
     height: var(--settings-round-icon-button-size);
     isolation: isolate;
@@ -6200,19 +6201,22 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-session-actions > .browser-session-open-original-button {
-    right: calc(var(--browser-session-action-step) * 2);
-    --browser-session-action-hidden-offset: calc(var(--browser-session-action-step) * 2);
+    right: auto;
+    left: calc(var(--browser-session-action-step) * 2);
+    --browser-session-action-hidden-offset: calc(var(--browser-session-action-step) * -2);
     transition-delay: 56ms;
 }
 
 .browser-session-actions > .browser-session-refresh-button {
-    right: var(--browser-session-action-step);
-    --browser-session-action-hidden-offset: var(--browser-session-action-step);
+    right: auto;
+    left: var(--browser-session-action-step);
+    --browser-session-action-hidden-offset: calc(var(--browser-session-action-step) * -1);
     transition-delay: 28ms;
 }
 
 .browser-session-actions > .browser-session-full-export-button {
-    right: 0;
+    right: auto;
+    left: 0;
     transition-delay: 0ms;
 }
 
@@ -6248,7 +6252,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-session-action-button .browser-session-safari-icon {
-    background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);
+    background: currentColor;
     mask: url("/static/images/safari.svg") center/contain no-repeat;
     -webkit-mask: url("/static/images/safari.svg") center/contain no-repeat;
 }
@@ -6486,7 +6490,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding-right: 18px;
 }
 
-.browser-session-detail-table time.browser-session-message-time {
+.browser-session-table time.browser-session-message-time {
     display: inline-grid;
     gap: 2px;
     white-space: normal;
@@ -6864,7 +6868,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-session-index-table {
-    min-width: 700px;
+    min-width: 0;
+    width: 100%;
 }
 
 .browser-session-index-table .browser-session-col-number {
@@ -6873,19 +6878,19 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-session-index-table .browser-session-col-title {
-    width: 45%;
+    width: auto;
 }
 
 .browser-session-index-table .browser-session-col-source {
-    width: 12%;
+    width: 76px;
 }
 
 .browser-session-index-table .browser-session-col-count {
-    width: 14%;
+    width: 68px;
 }
 
 .browser-session-index-table .browser-session-col-updated {
-    width: 22%;
+    width: 132px;
 }
 
 .browser-prompt-table {
@@ -7021,7 +7026,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     min-width: 0;
 }
 
-.browser-prompt-remark-editor input {
+.browser-prompt-remark-editor input[type="text"] {
+    font-family: var(--font-family-base);
     min-width: 0;
     min-height: 32px;
     height: 32px;
@@ -11787,4 +11793,132 @@ main[data-cache-page] .cache-event-time {
 .agent-response-toolbar > .agent-conversation-link {
     grid-column: 2;
     grid-row: 1;
+}
+
+/* Compact filter headers are a shared scrollable-table contract. */
+.scrollable-data-table-filter-header {
+    position: relative;
+    padding: var(--scrollable-data-table-header-padding);
+    vertical-align: top;
+    color: var(--scrollable-data-table-header-color);
+    pointer-events: auto;
+}
+
+.scrollable-data-table-filter-default-label {
+    position: static;
+    display: block;
+    width: 100%;
+    color: inherit;
+    font: inherit;
+    text-align: inherit;
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity 160ms var(--motion-standard);
+}
+
+.scrollable-data-table-filter-field {
+    position: absolute;
+    inset: 2px 1px;
+    width: 100%;
+    margin: 0;
+    opacity: 0;
+    transition: opacity 160ms var(--motion-standard);
+}
+
+.scrollable-data-table-filter-header:hover .scrollable-data-table-filter-field,
+.scrollable-data-table-filter-header:focus-within .scrollable-data-table-filter-field,
+.scrollable-data-table-filter-header:has(.scrollable-data-table-filter-field.is-open) .scrollable-data-table-filter-field {
+    opacity: 1;
+}
+
+.scrollable-data-table-filter-header:hover .scrollable-data-table-filter-default-label,
+.scrollable-data-table-filter-header:focus-within .scrollable-data-table-filter-default-label,
+.scrollable-data-table-filter-header:has(.scrollable-data-table-filter-field.is-open) .scrollable-data-table-filter-default-label {
+    opacity: 0;
+}
+
+.scrollable-data-table-filter-trigger {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    min-height: 22px;
+    height: 22px;
+    padding: 0 14px 0 4px;
+    border: var(--frosted-glass-border) !important;
+    border-radius: 6px;
+    background: var(--frosted-glass-background);
+    box-shadow: var(--frosted-glass-shadow);
+    backdrop-filter: var(--frosted-glass-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-blur);
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+}
+
+.scrollable-data-table-filter-trigger .trade-strategy-trigger-label {
+    justify-content: center;
+    width: 100%;
+}
+
+.scrollable-data-table-filter-trigger .trade-strategy-trigger-chevron {
+    position: absolute;
+    inset-inline-end: 3px;
+    width: 7px;
+    height: 5px;
+}
+
+.browser-header-filter-form { margin: 0; }
+.browser-header-filter-form .browser-picker-selected-icon-shell { display: none; }
+.browser-header-filter-form .browser-session-trigger-leading { min-width: 0; width: 100%; }
+.browser-header-filter-form .scrollable-data-table-filter-trigger { font: inherit; }
+.browser-header-filter-menu { position: fixed; width: 180px; z-index: var(--layer-overlay, 1000); }
+.browser-session-sort-link { color: inherit; text-decoration: none; white-space: nowrap; }
+.browser-session-sort-link:hover, .browser-session-sort-link:focus-visible { color: var(--accent-text); }
+.browser-header-filter-menu:not([hidden]) { display: grid; gap: 4px; }
+.browser-header-filter-form .scrollable-data-table-filter-trigger {
+    min-height: 22px;
+    height: 22px;
+    padding: 0 14px 0 4px;
+}
+.browser-header-filter-form .browser-source-filter-trigger .trade-strategy-trigger-label { font: inherit; }
+
+/* Cache adapts Worthward's LSTM training progress track and pending motion. */
+main[data-cache-page] .cache-training-progress {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+main[data-cache-page] .cache-training-progress-label {
+    font-size: var(--font-table-body);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+main[data-cache-page] .cache-training-progress .status-progress {
+    height: 6px;
+    border: 0;
+    background: var(--theme-glass-border);
+}
+main[data-cache-page] .cache-training-progress .status-progress-fill {
+    background: var(--theme-accent-positive);
+    box-shadow: none;
+}
+main[data-cache-page] .cache-training-progress .status-progress-audit {
+    background: var(--theme-warning, #f2c94c);
+    box-shadow: none;
+}
+main[data-cache-page] .cache-training-progress .is-indeterminate .status-progress-fill {
+    width: 40% !important;
+    animation: cacheTrainingProgressPending 1.6s ease-in-out infinite alternate;
+}
+main[data-cache-page] .cache-training-progress .is-unavailable .status-progress-fill {
+    width: 0;
+}
+@keyframes cacheTrainingProgressPending {
+    from { transform: translateX(0); }
+    to { transform: translateX(150%); }
+}
+@media (prefers-reduced-motion: reduce) {
+    main[data-cache-page] .cache-training-progress .is-indeterminate .status-progress-fill {
+        animation: none;
+    }
 }

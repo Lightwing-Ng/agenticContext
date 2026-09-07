@@ -1,4 +1,4 @@
-<!-- Code version: v1.30.0-codex.1 -->
+<!-- Code version: v1.31.0-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -426,73 +426,6 @@
 
                         </form>
 
-                        <section
-                            class="settings-category-panel settings-maintenance-panel"
-                            id="settings-maintenance"
-                            data-settings-panel="maintenance"
-                            aria-labelledby="settings_maintenance_heading"
-                        >
-                            <div class="settings-category-heading">
-                                <h3 id="settings_maintenance_heading">Reset cached state</h3>
-                                <p>Remove source-specific cache state when you need a completely fresh download.</p>
-                            </div>
-                            <section class="danger-zone" aria-labelledby="danger_zone_heading">
-                                <div>
-                                    <h3 id="danger_zone_heading">Reset Grok state</h3>
-                                </div>
-                                <p id="reset_grok_description">
-                                    Permanently delete all cached Grok media, manifests, work queues, and resumable partial downloads.
-                                </p>
-                                {% if grok_snapshot.running %}
-                                <p class="danger-zone-note">Unavailable while a Grok sync is running.</p>
-                                {% endif %}
-                                <form
-                                    action="{{ url_for('reset_grok') }}"
-                                    method="post"
-                                    data-wait-title="Resetting Grok state"
-                                    data-wait-copy="Removing cached Grok media, manifests, queues, and resumable partial downloads."
-                                    onsubmit="return window.confirm('Reset Grok state? This will permanently delete all cached Grok media, manifests, queue files, and resumable partial downloads.')"
-                                >
-                                    <button
-                                        type="submit"
-                                        class="danger-button"
-                                        id="reset_button"
-                                        aria-describedby="reset_grok_description"
-                                        {% if grok_snapshot.running %}disabled{% endif %}
-                                    >
-                                        Reset Grok State
-                                    </button>
-                                </form>
-                            </section>
-                            <section class="danger-zone" aria-labelledby="chatgpt_danger_zone_heading">
-                                <div>
-                                    <h3 id="chatgpt_danger_zone_heading">Reset ChatGPT state</h3>
-                                </div>
-                                <p id="reset_chatgpt_description">
-                                    Permanently delete all cached original ChatGPT project images and resumable partial downloads.
-                                </p>
-                                {% if chatgpt_snapshot.running %}
-                                <p class="danger-zone-note">Unavailable while a ChatGPT sync is running.</p>
-                                {% endif %}
-                                <form
-                                    action="{{ url_for('reset_chatgpt') }}"
-                                    method="post"
-                                    data-wait-title="Resetting ChatGPT state"
-                                    data-wait-copy="Removing cached original ChatGPT images and resumable partial downloads."
-                                    onsubmit="return window.confirm('Reset ChatGPT state? This will permanently delete all cached original project images and resumable partial downloads.')"
-                                >
-                                    <button
-                                        type="submit"
-                                        class="danger-button"
-                                        id="reset_chatgpt_button"
-                                        aria-describedby="reset_chatgpt_description"
-                                        {% if chatgpt_snapshot.running %}disabled{% endif %}
-                                    >
-                                        Reset ChatGPT State
-                                    </button>
-                                </form>
-                            </section>
-                        </section>
                     </div>
                     </div>
                 </div>

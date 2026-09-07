@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.39.1-codex.1
+# Code version: v1.40.0-codex.1
 
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ from app.core.chatgpt_downloader import (
 )
 from app.core.resource_persistence import (
     CHATGPT_HISTORY_SCHEMA,
+    CHATGPT_HISTORY_SCHEMA_VERSION,
     read_parquet_rows,
     write_parquet_rows_atomic,
 )
@@ -95,7 +96,112 @@ def _visual_test_image_payload(image_format: str, *, quality: int | None = None)
     return output.getvalue()
 
 
-def test_chatgpt_history_cache_persists_every_user_and_assistant_message(tmp_path: Path) -> None:
+@pytest.mark.parametrize("excluded", [
+    {"channel": "analysis"},
+    {"channel": "commentary"},
+    {"channel": "summary"},
+    {"metadata": {"channel": "commentary"}},
+    {"recipient": "web.run"},
+    {"recipient": "functions.search", "channel": "final"},
+    {"end_turn": False},
+    {"status": "in_progress"},
+    {"status": "finished_partial"},
+    {"metadata": {"is_visually_hidden_from_conversation": True}},
+    {"content": {"content_type": "thoughts", "text": "Intermediate reasoning"}},
+    {"content": {"content_type": "reasoning_recap", "text": "Reasoning summary"}},
+    {"author": {"role": "tool"}},
+])
+def test_chatgpt_history_excludes_internal_messages_and_preserves_final_json(excluded: dict) -> None:
+    final_text = '{"search_query": "This JSON is the requested final answer."}'
+    payload = {"mapping": {
+        "user": {"message": {
+            "author": {"role": "user"},
+            "content": {"content_type": "text", "parts": ["Return JSON"]},
+        }},
+        "internal": {"message": {
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": ["Checking sources"]},
+            **excluded,
+        }},
+        "final": {"message": {
+            "author": {"role": "assistant"},
+            "recipient": "all", "channel": "final", "end_turn": True,
+            "status": "finished_successfully",
+            "content": {"content_type": "text", "parts": [final_text]},
+        }},
+    }}
+    rows = _extract_chatgpt_conversation_messages(payload, "https://chatgpt.com/c/final-only", "now")
+    assert [row["content_text"] for row in rows] == ["Return JSON", final_text]
+    assert [row["message_index"] for row in rows] == [0, 1]
+    assert [row["turn_index"] for row in rows] == [0, 0]
+
+
+@pytest.mark.parametrize("content_type,hidden,expected", [
+    ("text", False, 1),
+    ("multimodal_text", False, 1),
+    ("text", True, 0),
+    ("user_editable_context", False, 0),
+])
+def test_chatgpt_history_preserves_user_json_but_excludes_hidden_context(
+    content_type: str, hidden: bool, expected: int,
+) -> None:
+    payload = {"mapping": {"user": {"message": {
+        "author": {"role": "user"},
+        "metadata": {"is_visually_hidden_from_conversation": hidden},
+        "content": {"content_type": content_type, "parts": ['{"search_query": []}']},
+    }}}}
+    rows = _extract_chatgpt_conversation_messages(payload, "https://chatgpt.com/c/user-json", "now")
+    assert len(rows) == expected
+    if expected:
+        assert rows[0]["content_text"] == '{"search_query": []}'
+
+
+@pytest.mark.parametrize("fetch_fails", [False, True])
+def test_chatgpt_history_refilters_legacy_rows_even_with_matching_revision(
+    tmp_path: Path, fetch_fails: bool,
+) -> None:
+    url = "https://chatgpt.com/c/legacy-filter"
+    payload = {"mapping": {
+        key: {"message": {
+            "author": {"role": role}, "create_time": 1771059600,
+            "content": {"parts": [key]},
+        }}
+        for key, role in (("user", "user"), ("progress", "assistant"), ("final", "assistant"))
+    }}
+    store = ChatGPTHistoryStore(tmp_path / "history.parquet")
+    store.replace_conversation(url, payload, "2026-09-07T00:00:00Z", provider_revision="unchanged")
+    store.save()
+    legacy_rows = read_parquet_rows(store.path)
+    for row in legacy_rows:
+        row["schema_version"] = 2
+    write_parquet_rows_atomic(store.path, legacy_rows, CHATGPT_HISTORY_SCHEMA)
+    before = store.path.read_bytes()
+    store = ChatGPTHistoryStore(store.path)
+    payload["mapping"]["progress"]["message"]["channel"] = "commentary"
+    payload["mapping"]["final"]["message"]["channel"] = "final"
+    with patch(
+        "app.core.chatgpt_downloader._get_chatgpt_api_json_via_page",
+        return_value=payload,
+        side_effect=RuntimeError("Unavailable") if fetch_fails else None,
+    ) as fetch:
+        result = cache_chatgpt_conversation_history(
+            store, [url], object(), {}, TaskState("test"), lambda: False,
+            conversation_revisions_by_id={"legacy-filter": "unchanged"},
+        )
+    fetch.assert_called_once()
+    if fetch_fails:
+        assert result == (0, 0, 0)
+        assert store.path.read_bytes() == before
+        return
+    assert result == (1, 0, 0)
+    rows = read_parquet_rows(store.path)
+    assert [row["content_text"] for row in rows] == ["user", "final"]
+    assert all(row["schema_version"] == CHATGPT_HISTORY_SCHEMA_VERSION for row in rows)
+    assert all(row["first_seen_at"] == "2026-09-07T00:00:00Z" for row in rows)
+    assert ChatGPTHistoryStore(store.path).conversation_revision_matches(url, "unchanged")
+
+
+def test_chatgpt_history_cache_persists_visible_user_and_assistant_messages(tmp_path: Path) -> None:
     conversation_url = "https://chatgpt.com/c/session-complete"
     payload = {
         "title": "Complete session",

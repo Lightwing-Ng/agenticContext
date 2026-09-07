@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.54.1-codex.1
+Code version: v1.54.3-codex.1
 """
 
 import hashlib
@@ -1718,7 +1718,7 @@ def test_browser_prompt_remarks_use_pill_tags_and_stored_controls() -> None:
     assert ".browser-prompt-remark-editor input {" in stylesheet
     assert ".browser-prompt-remark-add {" not in stylesheet
     assert ".browser-prompt-remark-add:focus-visible" not in stylesheet
-    input_start = stylesheet.index(".browser-prompt-remark-editor input {")
+    input_start = stylesheet.index('.browser-prompt-remark-editor input[type="text"] {')
     input_rule = stylesheet[input_start:stylesheet.index("\n}", input_start)]
     assert "min-height: 32px;" in input_rule
     assert "height: 32px;" in input_rule
@@ -2482,7 +2482,7 @@ def test_browser_session_message_time_uses_explicit_two_line_layout() -> None:
     stylesheet = _stylesheet()
 
     time_start = stylesheet.index(
-        ".browser-session-detail-table time.browser-session-message-time {"
+        ".browser-session-table time.browser-session-message-time {"
     )
     time_rule = stylesheet[time_start:stylesheet.index("\n}", time_start)]
     span_start = stylesheet.index(".browser-session-message-time > span {")
