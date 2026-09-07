@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.66.0-codex.1
+# Code version: v1.66.1-codex.1
 
 from __future__ import annotations
 
@@ -540,6 +540,16 @@ def create_app(
         template_folder=str(Path(__file__).resolve().parent / "templates"),
         static_folder=str(Path(__file__).resolve().parent / "static"),
     )
+
+    @app.after_request
+    def set_static_javascript_mime(response: Response) -> Response:
+        """Serve owned JavaScript independently of the host MIME registry."""
+        if request.endpoint == "static" and response.status_code in {200, 206, 304}:
+            filename = str((request.view_args or {}).get("filename", ""))
+            if Path(filename).suffix.lower() in {".js", ".mjs"}:
+                response.mimetype = "text/javascript"
+        return response
+
     app.config.update(
         SECRET_KEY=(
             os.environ.get("AGENTIC_CONTEXT_SESSION_SECRET", "").strip()

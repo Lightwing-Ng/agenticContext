@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.98.4-codex.1
+# Code version: v1.98.5-codex.1
 
 from __future__ import annotations
 
@@ -3213,7 +3213,7 @@ class WebAppTests(unittest.TestCase):
         self.assertGreater(body.index("data-browser-search"), body.index("</aside>"))
         self.assertIn("browser-search.css?v=browser-search-v1.4.1-codex.1", body)
         self.assertIn('type="module"', body)
-        self.assertIn("browser-search.js?v=browser-search-v2.1.3-codex.1", body)
+        self.assertIn("browser-search.js?v=browser-search-v2.1.4-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
         self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.0.0-codex.1", body)
         self.assertIn("data-browser-local-resources-header-actions", body)
@@ -3224,7 +3224,7 @@ class WebAppTests(unittest.TestCase):
         search_script = BROWSER_SEARCH_SCRIPT_PATH.read_text(encoding="utf-8")
         for fragment in (
             'const storageKey = "cachelikes:browser-search-history:v1";',
-            'import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";',
+            'import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0-mime-v1";',
             "includeMatches: true",
             "tokenMatch: \"all\"",
             "useTokenSearch: true",

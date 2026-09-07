@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.4-codex.1`
+Documentation version: `v1.8.5-codex.1`
 
 ## Supported commands
 
@@ -424,6 +424,9 @@ UTF-8. Child pytest runs pin their own root and configuration so Windows tempora
 drive retain diagnostic node IDs and do not inherit the parent's coverage arguments.
 `test_static_asset_delivery.py` checks the actual Flask responses for the search module and its
 Fuse dependency, including exact bytes and executable JavaScript MIME types on the running host.
+It also injects incorrect host MIME mappings without changing global types, and preserves HEAD,
+range, cache validation, error responses, and nonstatic routes. Search entry and dependency URLs
+carry a new cache version so an old incorrectly typed response cannot be reused after upgrading.
 
 CI installs managed Chromium in a job-owned directory under `RUNNER_TEMP` and preserves its
 absolute `PLAYWRIGHT_BROWSERS_PATH` through test isolation. A discovery check imports the isolation

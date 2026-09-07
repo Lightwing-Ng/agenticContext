@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.10.1-codex.1`
+Documentation version: `v1.10.2-codex.1`
 
 ## Launch
 
@@ -324,3 +324,7 @@ rename fails while that stream is open. Permission or persistence errors leave t
 degraded and retain bounded cleanup diagnostics. Read-only recovery does not migrate other,
 historical event files that are never appended again. Structured logging hardens its configured
 directory, active file, and numeric rotations without rewriting existing log contents.
+
+The console serves its JavaScript and module assets with explicit JavaScript MIME types, independent
+of Windows file associations. The search entry script and Fuse dependency use updated cache URLs;
+their contents and behavior remain versioned separately from this delivery policy.

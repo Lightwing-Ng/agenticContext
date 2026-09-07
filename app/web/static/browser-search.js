@@ -1,6 +1,6 @@
-/* Code version: v2.1.3-codex.1 */
+/* Code version: v2.1.4-codex.1 */
 
-import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
+import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0-mime-v1";
 
 (function initializeBrowserSearch() {
     "use strict";
