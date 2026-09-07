@@ -1,6 +1,6 @@
 """Shared Parquet schemas and atomic persistence for cached resource state."""
 
-# Code version: v1.9.0-codex.1
+# Code version: v1.9.2-codex.1
 
 from __future__ import annotations
 
@@ -293,12 +293,42 @@ CLAUDE_HISTORY_SCHEMA = pa.schema(
 )
 
 
+def _parquet_cleanup_note(action: str, path: Path, failure: BaseException) -> str:
+    detail = " ".join(str(failure).split())[:240]
+    name = str(path)
+    candidate = name if len(name) <= 480 else "..." + name[-477:]
+    return f"{action} (candidate: {candidate}): {type(failure).__name__}: {detail}"
+
+
+def _read_parquet_table(path: Path) -> pa.Table:
+    """Close a single-file reader before returning its materialized table."""
+    reader = pq.ParquetFile(path, pre_buffer=False)
+    primary_error = None
+    try:
+        return reader.read()
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            reader.close()
+        except BaseException as exc:
+            if primary_error is None:
+                raise
+            primary_error.add_note(_parquet_cleanup_note(
+                "Closing the Parquet reader also failed", path, exc,
+            ))
+            if exc is not primary_error:
+                for note in getattr(exc, "__notes__", ()):
+                    primary_error.add_note(note)
+
+
 def read_parquet_rows(path: Path) -> list[dict[str, Any]] | None:
     """Read rows from one Parquet state file, returning None when it is unavailable or invalid."""
     if not path.is_file():
         return None
     try:
-        return [dict(row) for row in pq.read_table(path).to_pylist()]
+        return [dict(row) for row in _read_parquet_table(path).to_pylist()]
     except (OSError, ValueError, pa.ArrowException):
         return None
 
@@ -318,16 +348,30 @@ def write_parquet_rows_atomic(
     )
     os.close(descriptor)
     temporary_path = Path(temporary_name)
+    primary_error = None
+    published = False
     try:
         table = pa.Table.from_pylist(materialized_rows, schema=schema)
         pq.write_table(table, temporary_path, compression="zstd")
-        verified = pq.read_table(temporary_path)
+        verified = _read_parquet_table(temporary_path)
         if verified.num_rows != len(materialized_rows) or verified.schema.names != schema.names:
             raise RuntimeError(f"Parquet verification failed for {path}.")
         os.replace(temporary_path, path)
+        published = True
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
+        if not published:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError as exc:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(_parquet_cleanup_note(
+                    "Removing the unpublished Parquet temporary file also failed; "
+                    "the candidate may remain", temporary_path, exc,
+                ))
 
 
 def retire_legacy_file(path: Path) -> bool:

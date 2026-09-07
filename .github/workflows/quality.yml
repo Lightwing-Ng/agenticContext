@@ -1,4 +1,4 @@
-# Code version: v1.2.7-codex.1
+# Code version: v1.2.8-codex.1
 name: Quality gate
 
 on:
@@ -151,6 +151,9 @@ jobs:
             tests/test_failure_reporter.py `
             tests/test_grok_storage.py `
             tests/test_local_media_browser.py `
+            tests/test_resource_persistence.py `
+            tests/test_web_app.py `
+            "tests/test_sidebar_e2e.py::test_cache_overview_groups_unique_metrics_and_keeps_run_progress_current[dark-982]" `
             tests/test_windows_workspace_fingerprint.py `
             tests/test_windows_entrypoints.py `
             tests/test_chromium_profile_boundaries.py `

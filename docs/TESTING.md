@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.7-codex.1`
+Documentation version: `v1.8.8-codex.1`
 
 ## Supported commands
 
@@ -435,6 +435,22 @@ Explicit mismatch cases must still disable Ask and refuse the source catalog. Fi
 compare native paths, URL/catalog fields compare POSIX paths, and disposable Markdown fixtures use
 UTF-8. Child pytest runs pin their own root and configuration so Windows temporary files on another
 drive retain diagnostic node IDs and do not inherit the parent's coverage arguments.
+File-serving tests own their WSGI responses: consume and validate the body, then explicitly
+close the response before temporary-directory cleanup. Consuming `response.data` alone does not
+release a `send_file` stream. Assert deletion before restoration or fixture teardown, and assert
+the restored file and payload while the fixture still exists. Host-neutral OS fields are checked
+against captured settings; Safari availability is checked against the actual host contract.
+
+`test_resource_persistence.py` checks single-file Parquet reader ownership. State reads must close
+their reader before returning; temporary-file verification must close its reader before atomic
+replacement. The tests retain schema/row validation and failure behavior. They do not establish
+that arbitrary external readers permit Windows replacement.
+
+Cache overview geometry failures retain the original assertions and attach bounded element,
+ancestor, viewport, source/mode and browser diagnostics. A local pass or a later native pass does
+not by itself establish the cause of an earlier overflow; do not change breakpoints or deadlines
+without the corresponding layout evidence.
+
 `test_static_asset_delivery.py` checks the actual Flask responses for the search module and its
 Fuse dependency, including exact bytes and executable JavaScript MIME types on the running host.
 It also injects incorrect host MIME mappings without changing global types, and preserves HEAD,

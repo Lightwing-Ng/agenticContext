@@ -1,14 +1,16 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.98.5-codex.1
+# Code version: v1.98.8-codex.1
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import ANY, patch
@@ -901,9 +903,10 @@ class WebAppTests(unittest.TestCase):
                     )
 
     def test_agent_control_plane_allows_private_lan_with_password(self) -> None:
+        selected_settings = ComputerUseSettings(browser="edge", platform="chatgpt")
         with patch(
             "app.core.computer_use_agent.load_computer_use_settings",
-            return_value=ComputerUseSettings(browser="edge", platform="chatgpt"),
+            return_value=selected_settings,
         ):
             app = create_app()
 
@@ -994,8 +997,11 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="trade-strategy-combobox agent-combobox agent-os-combobox"', local_body)
         self.assertNotIn('data-agent-terminal-authorization-button', local_body)
         self.assertNotIn('data-agent-terminal-authorization-status', local_body)
-        self.assertIn('name="operating_system" value="macos" data-agent-prompt-os', local_body)
-        self.assertIn('data-agent-combobox-option="safari"', local_body)
+        self.assertIn(
+            f'name="operating_system" value="{selected_settings.operating_system}" data-agent-prompt-os',
+            local_body,
+        )
+        self.assertEqual('data-agent-combobox-option="safari"' in local_body, sys.platform != "win32")
         self.assertNotIn('name="port"', local_body)
         self.assertIn('id="agent_project_path"', local_body)
         self.assertIn('class="text-input-control agent-monospace-input path-display-input"', local_body)
@@ -1072,7 +1078,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('ChatGPT · GPT-5.6 Sol', local_body)
         self.assertIn('Gemini · 3.1 Pro', local_body)
         self.assertIn('Grok · Build', local_body)
-        self.assertIn('data-agent-combobox-option="safari"', local_body)
+        self.assertEqual('data-agent-combobox-option="safari"' in local_body, sys.platform != "win32")
         self.assertIn('data-agent-heading', local_body)
         self.assertIn('data-agent-prompt-input', local_body)
         self.assertIn('data-agent-prompt-os', local_body)
@@ -2848,6 +2854,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_chatgpt_cache_navigation_ignores_retired_agent_platform_query(self) -> None:
         app = create_app()
+        selected_operating_system = app.extensions["computer_use_settings"].settings.operating_system
 
         with app.test_client() as client:
             response = client.get("/cache/chatgpt?agent_platform=gemini")
@@ -2856,7 +2863,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("Set-Cookie", response.headers)
         agent_body = agent_response.get_data(as_text=True)
-        self.assertIn('name="operating_system" value="macos"', agent_body)
+        self.assertIn(f'name="operating_system" value="{selected_operating_system}"', agent_body)
         self.assertNotIn("Gemini Agent", agent_body)
 
     def test_shadow_backup_destination_control_uses_the_macos_folder_picker(self) -> None:
@@ -3400,7 +3407,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-browser-search-submit-copy="Press Enter to search all cached text."', body)
 
     def test_browser_page_and_secure_media_route_use_isolated_cache(self) -> None:
-        with TemporaryDirectory() as raw_root:
+        with TemporaryDirectory() as raw_root, ExitStack() as responses:
+            closed_media = []
             root = Path(raw_root) / "local_store"
             image_path = root / "x" / "demo" / "image.jpg"
             video_path = root / "media" / "grok" / "clip.mp4"
@@ -3425,10 +3433,13 @@ class WebAppTests(unittest.TestCase):
             app = create_app(root)
             with app.test_client() as client:
                 browser_response = client.get("/browser?view=media")
-                video_response = client.get(
-                    "/browser/media/grok/clip.mp4",
-                    headers={"Range": "bytes=0-3"},
+                video_response = responses.enter_context(
+                    client.get(
+                        "/browser/media/grok/clip.mp4",
+                        headers={"Range": "bytes=0-3"},
+                    )
                 )
+                video_response.call_on_close(lambda: closed_media.append("video"))
                 invalid_extension = client.get("/browser/media/grok/.grok_catalog.json")
                 traversal = client.get("/browser/media/grok/%2e%2e/%2e%2e/outside.mp4")
                 external_link = client.get("/browser/media/grok/outside.mp4")
@@ -3464,6 +3475,9 @@ class WebAppTests(unittest.TestCase):
             self.assertEqual(invalid_extension.status_code, 404)
             self.assertEqual(traversal.status_code, 404)
             self.assertEqual(external_link.status_code, 404)
+            # Consuming a WSGI body does not close its underlying send_file stream.
+            responses.close()
+            self.assertEqual(closed_media, ["video"])
 
     def test_browser_content_mode_switches_to_cached_text_and_points_to_media(self) -> None:
         with TemporaryDirectory() as raw_root:
@@ -4286,7 +4300,8 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(remote_response.status_code, 403)
 
     def test_browser_delete_and_restore_routes_keep_a_preview(self) -> None:
-        with TemporaryDirectory() as raw_root:
+        with TemporaryDirectory() as raw_root, ExitStack() as responses:
+            closed_media = []
             root = Path(raw_root) / "local_store"
             image_path = root / "x" / "demo" / "image.jpg"
             image_path.parent.mkdir(parents=True)
@@ -4299,17 +4314,26 @@ class WebAppTests(unittest.TestCase):
             app = create_app(root)
             with app.test_client() as client:
                 delete_response = client.post(f"/api/browser/media/{stable_id}/delete")
-                deleted_preview = client.get(f"/browser/deleted-preview/{stable_id}")
+                self.assertEqual(delete_response.status_code, 200)
+                self.assertFalse(image_path.exists())
+                with client.get(f"/browser/deleted-preview/{stable_id}") as deleted_preview:
+                    deleted_preview.call_on_close(lambda: closed_media.append("preview"))
+                    self.assertEqual(deleted_preview.status_code, 200)
+                    self.assertEqual(deleted_preview.get_data(), b"image")
+                # The preview request must finish before restore moves its source file.
+                self.assertEqual(closed_media, ["preview"])
                 deleted_browser = client.get("/browser?view=media")
                 restore_response = client.post(f"/api/browser/media/{stable_id}/restore")
-                restored_media = client.get("/browser/media/x/demo/image.jpg")
+                restored_media = responses.enter_context(client.get("/browser/media/x/demo/image.jpg"))
+                restored_media.call_on_close(lambda: closed_media.append("restored"))
 
-        self.assertEqual(delete_response.status_code, 200)
-        self.assertFalse(image_path.exists())
-        self.assertEqual(deleted_preview.status_code, 200)
-        self.assertIn('data-deleted="true"', deleted_browser.get_data(as_text=True))
-        self.assertEqual(restore_response.status_code, 200)
-        self.assertEqual(restored_media.status_code, 200)
+            self.assertIn('data-deleted="true"', deleted_browser.get_data(as_text=True))
+            self.assertEqual(restore_response.status_code, 200)
+            self.assertEqual(restored_media.status_code, 200)
+            self.assertEqual(restored_media.get_data(), b"image")
+            self.assertTrue(image_path.is_file())
+            responses.close()
+            self.assertCountEqual(closed_media, ["preview", "restored"])
 
     def test_cache_reconciliation_skips_failed_snapshots(self) -> None:
         snapshot = {

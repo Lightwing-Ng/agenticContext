@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.34.4-codex.1
+Code version: v1.34.5-codex.1
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from io import BytesIO
 import json
 from pathlib import Path
+import platform
 import re
 from threading import Thread
 
@@ -9604,10 +9605,84 @@ def test_cache_overview_groups_unique_metrics_and_keeps_run_progress_current(
                     headingRight: heading.right, phaseLeft: phase.left,
                 };
             }""")
-            assert geometry["overflow"] <= 1
-            assert geometry["metricsBottom"] <= geometry["progressTop"]
-            assert abs(geometry["barWidth"] - geometry["progressWidth"]) <= 1
-            assert geometry["headingRight"] <= geometry["phaseLeft"]
+            try:
+                assert geometry["overflow"] <= 1
+                assert geometry["metricsBottom"] <= geometry["progressTop"]
+                assert abs(geometry["barWidth"] - geometry["progressWidth"]) <= 1
+                assert geometry["headingRight"] <= geometry["phaseLeft"]
+            except AssertionError as error:
+                try:
+                    diagnostics = page.evaluate("""() => {
+                        const describe = element => {
+                            const rect = element.getBoundingClientRect();
+                            const style = getComputedStyle(element);
+                            return {
+                                tag: element.tagName, id: element.id,
+                                classes: String(element.className).slice(0, 180),
+                                rect: {left: rect.left, right: rect.right, top: rect.top,
+                                    bottom: rect.bottom, width: rect.width, height: rect.height},
+                                clientWidth: element.clientWidth, scrollWidth: element.scrollWidth,
+                                styles: Object.fromEntries([
+                                    'display', 'position', 'width', 'minWidth', 'maxWidth',
+                                    'overflowX', 'gridTemplateColumns', 'whiteSpace', 'transform',
+                                    'fontFamily', 'fontSize',
+                                ].map(key => [key, style[key].slice(0, 180)])),
+                            };
+                        };
+                        const outside = Array.from(document.body.querySelectorAll('*'))
+                            .filter(element => {
+                                const rect = element.getBoundingClientRect();
+                                const style = getComputedStyle(element);
+                                return rect.width > 0 && rect.height > 0
+                                    && style.visibility !== 'hidden'
+                                    && (rect.right > innerWidth + 1 || rect.left < -1);
+                            })
+                            .sort((left, right) => right.getBoundingClientRect().right
+                                - left.getBoundingClientRect().right)
+                            .slice(0, 8);
+                        const ancestors = new Set();
+                        outside.forEach(element => {
+                            for (let parent = element.parentElement, depth = 0;
+                                parent && depth < 3; parent = parent.parentElement, depth += 1) {
+                                ancestors.add(parent);
+                            }
+                        });
+                        return {
+                            url: location.href, readyState: document.readyState,
+                            visibility: document.visibilityState,
+                            viewport: {width: innerWidth, height: innerHeight,
+                                clientWidth: document.documentElement.clientWidth,
+                                scrollWidth: document.documentElement.scrollWidth,
+                                devicePixelRatio, visualWidth: visualViewport?.width},
+                            dark: matchMedia('(prefers-color-scheme: dark)').matches,
+                            reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+                            fontStatus: document.fonts.status,
+                            storedMode: sessionStorage.getItem('cachelikes:browser-content-mode:v1'),
+                            runtimeModes: Array.from(document.querySelectorAll(
+                                '[data-cache-runtime-mode], [data-chatgpt-content-mode-input]'
+                            )).slice(0, 8).map(element => element.value),
+                            layout: [document.documentElement, document.body,
+                                ...document.querySelectorAll(
+                                    '#app_shell, #app_sidebar, #workspace_panel, #overview'
+                                )].map(describe),
+                            outsideViewport: outside.map(describe),
+                            ancestors: Array.from(ancestors).slice(0, 8).map(describe),
+                        };
+                    }""")
+                    error.add_note("Cache overview geometry: " + json.dumps({
+                        "source": source, "mode": mode, "color_scheme": color_scheme,
+                        "operating_system": platform.platform(),
+                        "width": width, "browser_version": disposable_browser.version,
+                        "measured_geometry": geometry,
+                        "page_errors": [message[:240] for message in errors[-5:]],
+                        "page": diagnostics,
+                    }, sort_keys=True))
+                except Exception as diagnostic_error:
+                    error.add_note(
+                        "Cache overview geometry diagnostics failed: "
+                        f"{type(diagnostic_error).__name__}: {str(diagnostic_error)[:240]}"
+                    )
+                raise
             expect(page.locator("#activity")).to_have_count(0)
             if source == "chatgpt":
                 page.screenshot(path=str(tmp_path / f"cache-{mode}-{color_scheme}-{width}.png"))
