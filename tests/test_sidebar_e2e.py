@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.34.0-codex.1
+Code version: v1.34.1-codex.1
 """
 
 from __future__ import annotations
@@ -9664,6 +9664,7 @@ def test_text_source_selection_survives_global_search_form_submission(
             page.locator("[data-browser-source-filter-trigger]").click()
             page.locator(f'[data-browser-source-filter-option="{source}"]').click()
             expect(page).to_have_url(re.compile(rf"[?&]source={source}(?:&|$)"))
+            page.wait_for_load_state("domcontentloaded")
             expect(page.locator("[data-browser-source-filter-trigger]")).to_have_attribute("aria-label", f"Source: {label}")
         page.locator("#browser_search_input").fill("timestamp")
         page.locator("#browser_search_input").press("Enter")

@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.58.2-codex.1
+Code version: v3.58.3-codex.1
 """
 
 from __future__ import annotations
@@ -1447,11 +1447,20 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
     disposable_browser_launch,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Exercise the browser DOM binding without accessing a provider page."""
+    """Exercise isolated DOM binding and bounded timing diagnostics. Version: v1.1.0."""
+    import os
+
+    requested_channel = os.environ.get("AGENTIC_CONTEXT_TEST_CHROMIUM_CHANNEL", "").strip().lower()
+    if requested_channel and requested_channel not in {"chrome", "msedge"}:
+        raise ValueError("AGENTIC_CONTEXT_TEST_CHROMIUM_CHANNEL must be chrome or msedge.")
     playwright_sync = pytest.importorskip("playwright.sync_api")
     with playwright_sync.sync_playwright() as playwright:
         browser_type = playwright.chromium
-        if Path(browser_type.executable_path).is_file():
+        managed_executable_path = browser_type.executable_path
+        selected_channel = requested_channel or "managed"
+        if requested_channel:
+            browser = disposable_browser_launch(browser_type, channel=requested_channel, headless=True)
+        elif Path(managed_executable_path).is_file():
             browser = disposable_browser_launch(browser_type, headless=True)
         else:
             launch_errors: list[str] = []
@@ -1459,6 +1468,7 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
             for channel in ("chrome", "msedge"):
                 try:
                     browser = disposable_browser_launch(browser_type, channel=channel, headless=True)
+                    selected_channel = channel
                     break
                 except Exception as exc:  # pragma: no cover - host browser inventory
                     launch_errors.append(f"{channel}: {exc}")
@@ -1595,11 +1605,66 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                 computer_use_agent, "_is_composer_wait_timeout", record_model_view_timeout
             )
 
+            def start_model_view_timing() -> None:
+                page.evaluate(
+                    r"""() => {
+                        window.__agenticContextStopViewTiming?.();
+                        const timing = {
+                            startedAt: performance.now(),
+                            initialVisibility: document.visibilityState,
+                            initialFocus: document.hasFocus(),
+                            frames: {count: 0, first: [], last: null, maxGap: 0},
+                            timers: {count: 0, first: [], last: null, maxGap: 0},
+                        };
+                        window.__agenticContextViewTiming = timing;
+                        let frameId = 0;
+                        let timerId = 0;
+                        const sample = (bucket) => {
+                            const elapsed = performance.now() - timing.startedAt;
+                            if (bucket.last !== null)
+                                bucket.maxGap = Math.max(bucket.maxGap, elapsed - bucket.last);
+                            bucket.last = elapsed;
+                            bucket.count += 1;
+                            if (bucket.first.length < 16) bucket.first.push(elapsed);
+                            return bucket.count < 128;
+                        };
+                        const frame = () => {
+                            if (sample(timing.frames)) frameId = requestAnimationFrame(frame);
+                        };
+                        const timer = () => {
+                            if (sample(timing.timers)) timerId = setTimeout(timer, 16);
+                        };
+                        frameId = requestAnimationFrame(frame);
+                        timerId = setTimeout(timer, 16);
+                        window.__agenticContextStopViewTiming = () => {
+                            cancelAnimationFrame(frameId);
+                            clearTimeout(timerId);
+                        };
+                    }"""
+                )
+
             def model_view_failure_diagnostics() -> str:
                 diagnostics: dict[str, object] = {
                     "browser_version": browser.version,
+                    "requested_channel": requested_channel or None,
+                    "selected_channel": selected_channel,
+                    "managed_executable_path": managed_executable_path,
                     "timeouts": model_view_timeouts,
                 }
+                session = None
+                try:
+                    session = browser.new_browser_cdp_session()
+                    arguments = session.send("Browser.getBrowserCommandLine").get("arguments", [])
+                    diagnostics["actual_executable_path"] = arguments[0] if arguments else None
+                    diagnostics["browser_launch_arguments"] = arguments
+                except Exception as exc:
+                    diagnostics["executable_diagnostic_error"] = f"{type(exc).__name__}: {exc}"
+                finally:
+                    if session is not None:
+                        try:
+                            session.detach()
+                        except Exception as exc:
+                            diagnostics["cdp_detach_error"] = f"{type(exc).__name__}: {exc}"
                 try:
                     diagnostics["dom"] = page.evaluate(
                         r"""() => {
@@ -1624,7 +1689,11 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                             const menu = menuId ? document.getElementById(menuId) : null;
                             return {
                                 readyState: document.readyState,
+                                visibilityState: document.visibilityState,
+                                hidden: document.hidden,
+                                hasFocus: document.hasFocus(),
                                 userAgent: navigator.userAgent,
+                                timing: window.__agenticContextViewTiming || null,
                                 trigger: describe(trigger),
                                 menu: describe(menu),
                                 items: Array.from(menu?.querySelectorAll(
@@ -1641,12 +1710,14 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                 "<style>[role=menuitem] { display: block; }</style>" + view_menu
             )
             view_trigger = page.locator("#view-trigger")
+            start_model_view_timing()
             assert _chatgpt_set_model_view(
                 page, view_trigger, True
             ), model_view_failure_diagnostics()
             assert page.locator(
                 '[data-testid="composer-model-picker-slider-advanced-view"]'
             ).get_attribute("inert") is None
+            start_model_view_timing()
             assert _chatgpt_set_model_view(
                 page, view_trigger, False
             ), model_view_failure_diagnostics()

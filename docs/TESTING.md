@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.2-codex.1`
+Documentation version: `v1.8.3-codex.1`
 
 ## Supported commands
 
@@ -410,6 +410,13 @@ and observe content changes. `test_owner_only_permissions.py` verifies private a
 ACL failure handling; Windows cases inspect the actual owner and protected DACL instead of POSIX
 mode bits. Native Stop checks wait for the identified worker handle to signal as well as checking
 the Job Object's active process count.
+
+CI installs managed Chromium in a job-owned directory under `RUNNER_TEMP` and preserves its
+absolute `PLAYWRIGHT_BROWSERS_PATH` through test isolation. A discovery check imports the isolation
+fixture before checking the installed executable, so redirected home/profile paths cannot silently
+substitute a host browser. The Windows preflight also runs the model-view DOM contract separately
+with installed Chrome and Edge. Their exit codes remain failures even when managed Chromium passes;
+frame/timer diagnostics do not change the original click deadline or retry a failed click.
 
 Run related suites first and then one complete platform gate at a time; the coverage files are
 shared within each checkout. A Windows CI pass verifies disposable local files/processes/browser

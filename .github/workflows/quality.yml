@@ -1,4 +1,4 @@
-# Code version: v1.2.3-codex.1
+# Code version: v1.2.4-codex.1
 name: Quality gate
 
 on:
@@ -37,7 +37,22 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
 
       - name: Install Playwright Chromium
-        run: python -m playwright install --with-deps chromium
+        run: |
+          export PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/agenticcontext-playwright-browsers"
+          echo "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" >> "$GITHUB_ENV"
+          python -m playwright install --with-deps chromium
+
+      - name: Verify browser discovery after test isolation
+        run: |
+          python - <<'PY'
+          import tests.conftest
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as runtime:
+              executable = Path(runtime.chromium.executable_path)
+              assert executable.is_file(), f"Isolated tests cannot find installed Chromium: {executable}"
+              print(f"Isolated test Chromium: {executable}")
+          PY
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v7
@@ -80,7 +95,24 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
 
       - name: Install Playwright Chromium
-        run: python -m playwright install chromium
+        shell: pwsh
+        run: |
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:RUNNER_TEMP 'agenticcontext-playwright-browsers'
+          "PLAYWRIGHT_BROWSERS_PATH=$env:PLAYWRIGHT_BROWSERS_PATH" >> $env:GITHUB_ENV
+          python -m playwright install chromium
+
+      - name: Verify browser discovery after test isolation
+        shell: pwsh
+        run: |
+          @'
+          import tests.conftest
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as runtime:
+              executable = Path(runtime.chromium.executable_path)
+              assert executable.is_file(), f"Isolated tests cannot find installed Chromium: {executable}"
+              print(f"Isolated test Chromium: {executable}")
+          '@ | python
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v7
@@ -91,7 +123,19 @@ jobs:
         shell: pwsh
         run: |
           $env:AGENTIC_CONTEXT_PYTHON = (Get-Command python).Source
+          $channelFailures = @()
+          $env:DEBUG = 'pw:browser'
+          foreach ($channel in @('chrome', 'msedge')) {
+            $env:AGENTIC_CONTEXT_TEST_CHROMIUM_CHANNEL = $channel
+            .\scripts\test.ps1 --tb=short --capture=no `
+              tests/test_computer_use_agent.py::test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner
+            if ($LASTEXITCODE -ne 0) { $channelFailures += $channel }
+          }
+          Remove-Item Env:AGENTIC_CONTEXT_TEST_CHROMIUM_CHANNEL
+          Remove-Item Env:DEBUG
           .\scripts\test.ps1 --tb=short --show-capture=no `
+            tests/test_test_isolation.py `
+            tests/test_agent_browser_cleanup.py `
             tests/test_compute_jobs.py `
             tests/test_windows_anchored_delete.py `
             tests/test_owner_only_permissions.py `
@@ -104,6 +148,12 @@ jobs:
             tests/test_agent_source_cache.py `
             tests/test_scraper_and_browser_sessions.py `
             tests/test_agent_session_pool.py
+          $coreExitCode = $LASTEXITCODE
+          if ($channelFailures.Count -gt 0) {
+            Write-Error "Native installed-browser checks failed: $($channelFailures -join ', ')"
+            exit 1
+          }
+          exit $coreExitCode
 
       - name: Run the quality gate
         shell: pwsh
