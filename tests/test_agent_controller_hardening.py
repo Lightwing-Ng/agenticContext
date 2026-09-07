@@ -1,13 +1,14 @@
 """Focused tests for controller hardening: model verification, action parser,
 directory picker, recent-session catalog, and browser interruption recovery.
 
-Code version: v3.49.1-codex.1
+Code version: v3.49.2-codex.1
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
@@ -1175,7 +1176,9 @@ class TestDirectoryPickerValidation:
 
     def test_symlink_to_system_directory_is_excluded(self, tmp_path: Path) -> None:
         link = tmp_path / "system-link"
-        link.symlink_to("/System")
+        system = Path(os.environ["SystemRoot"]) if os.name == "nt" else Path("/")
+        assert system.is_dir()
+        link.symlink_to(system, target_is_directory=True)
         valid, reason, _resolved = validate_local_directory_path(str(link))
         assert valid is False
         assert "System directories" in reason

@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.3.0-codex.1
+Code version: v1.3.1-codex.1
 """
 
 from __future__ import annotations
@@ -678,7 +678,11 @@ class ComputeJobManager:
         self._save_metadata(metadata)
         try:
             if os.name == "nt" and metadata.get("windows_job_name"):
-                _windows_processes.terminate_job(str(metadata["windows_job_name"]))
+                _windows_processes.terminate_job(
+                    str(metadata["windows_job_name"]),
+                    pid=int(metadata["pid"]),
+                    expected_identity=str(metadata["process_identity"]),
+                )
             else:
                 _terminate_process_group(int(metadata["pid"]))
             if _identity_matches(metadata["pid"], metadata["process_identity"]):

@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.19.4-codex.1`
+Documentation version: `v1.19.5-codex.1`
 
 ## Windows host operating constraints
 
@@ -14,8 +14,10 @@ Documentation version: `v1.19.4-codex.1`
   an application-level control rather than an OS sandbox boundary.
 - Safari is macOS-only and is normalized away on Windows (`normalize_host_browser` in
   `app/core/config.py`); Agent sessions on Windows require Edge or Chrome.
-- Windows file permissions use inherited ACLs rather than the explicit POSIX `0700`/`0600` mode
-  bits applied on macOS. Local stores inherit the containing directory's ACL.
+- Agent settings, persisted run snapshots, and context bundles use verified native owner DACLs
+  on Windows. Their app-owned runtime/task directories are explicitly protected. This does not
+  change user project permissions or the broader local stores, which inherit their containing
+  directory's ACL. Windows synthetic `st_mode` bits are not an ACL verification mechanism.
 - Prefer the `py -3` launcher on Windows; the resolver also accepts a `python` command that
   resolves to Python 3.13 or newer. Do not assume `python3` exists. `AGENTIC_CONTEXT_PYTHON`
   overrides the resolver on both platforms.

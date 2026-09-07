@@ -1,11 +1,12 @@
 """Native Windows identities and lifetime containment for compute workers.
 
-Code version: v1.0.0-codex.1
+Code version: v1.0.1-codex.1
 """
 
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import time
 
@@ -99,17 +100,21 @@ def process_identity(pid: int) -> str:
     if not handle:
         return ""
     try:
-        if kernel.WaitForSingleObject(handle, 0) != _WAIT_TIMEOUT:
-            return ""
-        created, exited, kernel_time, user_time = (_FileTime() for _ in range(4))
-        if not kernel.GetProcessTimes(
-            handle, ctypes.byref(created), ctypes.byref(exited),
-            ctypes.byref(kernel_time), ctypes.byref(user_time),
-        ):
-            return ""
-        return f"windows:{(created.high << 32) | created.low:016x}"
+        return _handle_identity(kernel, handle)
     finally:
         kernel.CloseHandle(handle)
+
+
+def _handle_identity(kernel, handle) -> str:
+    if kernel.WaitForSingleObject(handle, 0) != _WAIT_TIMEOUT:
+        return ""
+    created, exited, kernel_time, user_time = (_FileTime() for _ in range(4))
+    if not kernel.GetProcessTimes(
+        handle, ctypes.byref(created), ctypes.byref(exited),
+        ctypes.byref(kernel_time), ctypes.byref(user_time),
+    ):
+        return ""
+    return f"windows:{(created.high << 32) | created.low:016x}"
 
 
 def _check(success: int) -> None:
@@ -198,14 +203,31 @@ class WorkerJob:
         self.handle = None
 
 
-def terminate_job(name: str, *, timeout: float = 5.0) -> None:
-    """Stop a named, already identity-checked worker job and verify every member."""
+def terminate_job(name: str, *, pid: int, expected_identity: str, timeout: float = 5.0) -> None:
+    """Wait for the verified worker to exit and its job to report no active members."""
     kernel = _kernel()
     handle = kernel.OpenJobObjectW(_JOB_QUERY | _JOB_TERMINATE, False, name)
     _check(bool(handle))
+    worker = None
     try:
+        worker = kernel.OpenProcess(_QUERY_LIMITED_INFORMATION | _SYNCHRONIZE, False, pid)
+        _check(bool(worker))
+        if not expected_identity or _handle_identity(kernel, worker) != expected_identity:
+            raise OSError("Compute worker identity changed before job termination.")
+        member = ctypes.c_int()
+        _check(kernel.IsProcessInJob(worker, handle, ctypes.byref(member)))
+        if not member.value:
+            raise OSError("Compute worker no longer belongs to its recorded job.")
         _check(kernel.TerminateJobObject(handle, 1))
         deadline = time.monotonic() + timeout
+        # Job accounting can reach zero before asynchronous process teardown ends.
+        # Keep the verified handle open so waiting cannot target a reused PID.
+        milliseconds = min(0xFFFFFFFE, max(0, math.ceil((deadline - time.monotonic()) * 1000)))
+        result = kernel.WaitForSingleObject(worker, milliseconds)
+        if result == 0xFFFFFFFF:
+            _check(False)
+        if result != 0:
+            raise OSError("Compute worker termination could not be confirmed.")
         while True:
             accounting = _Accounting()
             _check(kernel.QueryInformationJobObject(handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None))
@@ -215,4 +237,6 @@ def terminate_job(name: str, *, timeout: float = 5.0) -> None:
                 raise OSError("Compute job termination could not be confirmed.")
             time.sleep(0.05)
     finally:
+        if worker:
+            kernel.CloseHandle(worker)
         kernel.CloseHandle(handle)

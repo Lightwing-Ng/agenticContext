@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.3.1-codex.1
+Code version: v1.3.2-codex.1
 """
 
 from __future__ import annotations
@@ -713,32 +713,119 @@ def test_windows_job_setup_failure_prevents_optimizer_launch(tmp_path: Path, mon
     assert "job assignment denied" in metadata["message"]
 
 
-def test_windows_stop_waits_for_every_job_member(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def windows_stop_kernel(monkeypatch: pytest.MonkeyPatch):
     from types import SimpleNamespace
     from app.core.agent import _windows_processes
 
-    counts = iter([3, 1, 0])
-    observed: list[int] = []
+    state = {"counts": [0], "member": 1, "wait_result": 0, "terminated": False}
+    calls: list[tuple] = []
     closed: list[int] = []
+
+    def process_times(handle, created, *_other):
+        assert handle == 777
+        created._obj.low = 42
+        return 1
+
+    def membership(process, job, member):
+        assert (process, job) == (777, 999)
+        member._obj.value = state["member"]
+        return 1
+
+    def terminate(handle, status):
+        assert (handle, status) == (999, 1)
+        state["terminated"] = True
+        return 1
+
+    def wait(handle, milliseconds):
+        assert handle == 777
+        if milliseconds == 0:
+            return 258
+        assert state["terminated"]
+        calls.append(("wait", milliseconds))
+        return state["wait_result"]
 
     def query_job(handle, information_class, accounting, _size, _returned):
         assert handle == 999
         assert information_class == 1
-        active = next(counts)
-        observed.append(active)
+        active = state["counts"].pop(0)
+        calls.append(("active", active))
         accounting._obj.active_processes = active
         return 1
 
     kernel = SimpleNamespace(
         OpenJobObjectW=lambda rights, inherit, name: 999,
-        TerminateJobObject=lambda handle, status: 1,
+        OpenProcess=lambda rights, inherit, pid: 777 if pid == 424242 and not inherit else None,
+        GetProcessTimes=process_times,
+        IsProcessInJob=membership,
+        WaitForSingleObject=wait,
+        TerminateJobObject=terminate,
         QueryInformationJobObject=query_job,
         CloseHandle=lambda handle: closed.append(handle),
     )
     monkeypatch.setattr(_windows_processes, "_kernel", lambda: kernel)
-    _windows_processes.terminate_job("Local\\test-job")
-    assert observed == [3, 1, 0]
-    assert closed == [999]
+    return state, calls, closed
+
+
+@pytest.mark.parametrize("counts", [[0], [3, 1, 0]])
+def test_windows_stop_waits_for_worker_signal_and_every_job_member(windows_stop_kernel, counts) -> None:
+    from app.core.agent import _windows_processes
+
+    state, calls, closed = windows_stop_kernel
+    state["counts"] = counts.copy()
+    _windows_processes.terminate_job("Local\\test-job", pid=424242, expected_identity="windows:000000000000002a")
+    assert state["terminated"] is True
+    assert calls[0][0] == "wait"
+    assert 0 < calls[0][1] <= 5000
+    assert calls[1:] == [("active", count) for count in counts]
+    assert closed == [777, 999]
+
+
+@pytest.mark.parametrize("changed", ["identity", "membership"])
+def test_windows_stop_refuses_reused_pid_or_foreign_job(windows_stop_kernel, changed) -> None:
+    from app.core.agent import _windows_processes
+
+    state, calls, closed = windows_stop_kernel
+    if changed == "membership":
+        state["member"] = 0
+    expected = "old-birth" if changed == "identity" else "windows:000000000000002a"
+    with pytest.raises(OSError, match="identity changed|no longer belongs"):
+        _windows_processes.terminate_job("Local\\test-job", pid=424242, expected_identity=expected)
+    assert state["terminated"] is False
+    assert calls == []
+    assert closed == [777, 999]
+
+
+@pytest.mark.parametrize("wait_result", [258, 0xFFFFFFFF])
+def test_windows_stop_unconfirmed_signal_remains_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows_stop_kernel, wait_result: int,
+) -> None:
+    import os
+    from types import SimpleNamespace
+    from app.core.agent import _windows_processes
+
+    manager, job_id = _running_record(tmp_path, monkeypatch)
+    birth = "windows:000000000000002a"
+    metadata = manager._load_metadata(job_id)
+    metadata.update(process_identity=birth, windows_job_name="Local\\test-job")
+    manager._save_metadata(metadata)
+    monkeypatch.setattr(compute_jobs, "_process_identity", lambda _pid: birth)
+    monkeypatch.setattr(compute_jobs, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    monkeypatch.setattr(_windows_processes.ctypes, "get_last_error", lambda: 5, raising=False)
+    monkeypatch.setattr(_windows_processes.ctypes, "WinError", lambda code: OSError(code, "wait denied"), raising=False)
+    state, calls, closed = windows_stop_kernel
+    state["wait_result"] = wait_result
+    with pytest.raises(ComputeJobError, match="not confirmed"):
+        manager.stop(job_id)
+    status = manager.status(job_id)
+    assert state["terminated"] is True
+    assert calls[0][0] == "wait"
+    assert len(calls) == 1
+    assert closed == [777, 999]
+    assert status["state"] == "stopping"
+    assert status["active"] is True
+    assert status["ended_at"] == ""
+    assert ("termination could not be confirmed" if wait_result == 258 else "wait denied") in status["message"]
 
 
 def test_windows_job_descendant_pid_reuse_does_not_kill_foreign_process(monkeypatch: pytest.MonkeyPatch) -> None:

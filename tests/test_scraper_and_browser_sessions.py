@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.7.3-codex.1
+Code version: v1.7.4-codex.1
 """
 
 from __future__ import annotations
@@ -782,7 +782,9 @@ def test_stale_chromium_profiles_retain_unknown_owners_and_other_temp_paths(
     assert "browser-process ownership is unverified" in caplog.text
 
 
-def test_clone_browser_profile_continues_when_macos_blocks_local_state(tmp_path: Path) -> None:
+def test_clone_browser_profile_continues_when_macos_blocks_local_state(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: False)
     source_user_data_dir = tmp_path / "Edge"
     source_profile_dir = source_user_data_dir / "Default"
     source_profile_dir.mkdir(parents=True)

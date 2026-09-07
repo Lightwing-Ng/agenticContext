@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.58.0-codex.1
+Code version: v3.58.1-codex.1
 """
 
 from __future__ import annotations
@@ -1730,6 +1730,11 @@ def _atomic_write_owner_only_text(path: Path, content: str) -> None:
         or _path_is_unsafe_file_leaf(path)
     ):
         raise OSError(f"Refusing to replace linked or non-regular local file {path}.")
+    if os.name == "nt":
+        from .owner_only_permissions import atomic_write_owner_only_text
+
+        atomic_write_owner_only_text(path, content)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, raw_temporary_path = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -2004,11 +2009,20 @@ def build_context_markdown(
         encoded_parts.append(truncation_note)
         break
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        destination.parent.chmod(0o700)
-        destination.write_bytes(b"".join(encoded_parts))
-        destination.chmod(0o600)
+        if os.name == "nt":
+            from .owner_only_permissions import (
+                atomic_write_owner_only_bytes,
+                ensure_owner_only_directory,
+            )
+
+            ensure_owner_only_directory(destination.parent)
+            atomic_write_owner_only_bytes(destination, b"".join(encoded_parts))
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.parent.chmod(0o700)
+            destination.write_bytes(b"".join(encoded_parts))
+            destination.chmod(0o600)
         byte_count = destination.stat().st_size
     except Exception:
         try:
@@ -4192,7 +4206,8 @@ def _workspace_mutation_fingerprint(
             if _path_has_ignored_part(relative):
                 continue
             try:
-                initial_stat = entry.stat(follow_symlinks=False)
+                # Windows directory-entry caches omit device, inode, and link count.
+                initial_stat = path.lstat()
             except OSError:
                 return digest.hexdigest(), False
             relative_bytes = relative.as_posix().encode(
@@ -4962,7 +4977,12 @@ def _cleanup_orphaned_agent_contexts(
         snapshot_path = root / PERSISTED_AGENT_SNAPSHOT_FILENAME
         if _path_is_unsafe_file_leaf(snapshot_path):
             return 0, 0, (snapshot_path,)
-        root.chmod(0o700)
+        if os.name == "nt":
+            from .owner_only_permissions import ensure_owner_only_directory
+
+            ensure_owner_only_directory(root)
+        else:
+            root.chmod(0o700)
         candidates = tuple(root.iterdir())
     except (OSError, ValueError):
         return 0, 0, (raw_root,)
@@ -4985,7 +5005,10 @@ def _cleanup_orphaned_agent_contexts(
                 continue
             resolved_run_directory = run_directory.resolve(strict=True)
             resolved_run_directory.relative_to(root)
-            run_directory.chmod(0o700)
+            if os.name == "nt":
+                ensure_owner_only_directory(run_directory)
+            else:
+                run_directory.chmod(0o700)
             context_stat = context_path.lstat()
             if (
                 _path_is_link_like(context_path)
@@ -5001,7 +5024,12 @@ def _cleanup_orphaned_agent_contexts(
             is_preserved = (
                 preserved is not None and resolved_context_path == preserved
             )
-            context_path.chmod(0o600)
+            if os.name == "nt":
+                from .owner_only_permissions import ensure_owner_only_file
+
+                ensure_owner_only_file(context_path)
+            else:
+                context_path.chmod(0o600)
             if is_preserved:
                 continue
             context_path.unlink()
@@ -5260,8 +5288,13 @@ class ComputerUseAgentService:
             LOGGER.warning("Refusing to replace linked Agent run metadata at %s.", path)
             return
         try:
-            raw_runtime_root.mkdir(parents=True, exist_ok=True)
-            raw_runtime_root.chmod(0o700)
+            if os.name == "nt":
+                from .owner_only_permissions import ensure_owner_only_directory
+
+                ensure_owner_only_directory(raw_runtime_root)
+            else:
+                raw_runtime_root.mkdir(parents=True, exist_ok=True)
+                raw_runtime_root.chmod(0o700)
             _atomic_write_owner_only_text(
                 path,
                 json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

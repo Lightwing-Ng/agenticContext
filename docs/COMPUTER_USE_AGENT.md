@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.58.0-codex.1`
+Documentation version: `v3.58.1-codex.1`
 
 ## Purpose
 
@@ -545,8 +545,11 @@ actions.
   verification, attachment confirmation, timestamps, conversation target, bodycheck state, and a
   temporary context cleanup path and byte count while a run is active or cleanup recovery is pending. It does not persist prompt
   bodies, responses, conversation history, source text, or error stacks in that snapshot. The
-  runtime directory and each task directory are owner-only, and context and snapshot files use mode
-  `0600`. Its run identifier, monotonic run revision, event-chain state, event count, last action, last event kind, and
+  runtime directory and each task directory are owner-only. Context and snapshot files use POSIX
+  mode `0600`, or a protected Windows DACL verified to grant access only to the current user.
+  Windows temporary files receive their private descriptor before any content is written; the
+  implementation does not change user project ACLs. Its run identifier, monotonic run revision,
+  event-chain state, event count, last action, last event kind, and
   verification state and confirmed-conversation-binding flag are also bounded metadata. If a persisted run was
   still marked active when the service exited, the next process restores it as `interrupted`
   instead of claiming that it is still running or completed.

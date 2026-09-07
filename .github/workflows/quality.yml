@@ -1,4 +1,4 @@
-# Code version: v1.2.2-codex.1
+# Code version: v1.2.3-codex.1
 name: Quality gate
 
 on:
@@ -94,6 +94,8 @@ jobs:
           .\scripts\test.ps1 --tb=short --show-capture=no `
             tests/test_compute_jobs.py `
             tests/test_windows_anchored_delete.py `
+            tests/test_owner_only_permissions.py `
+            tests/test_windows_workspace_fingerprint.py `
             tests/test_windows_entrypoints.py `
             tests/test_chromium_profile_boundaries.py `
             tests/test_computer_use_agent.py `

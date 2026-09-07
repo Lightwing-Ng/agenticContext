@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.1-codex.1`
+Documentation version: `v1.8.2-codex.1`
 
 ## Supported commands
 
@@ -403,6 +403,13 @@ deletion, changed content/root, sharing conflicts, and replacement attempts. `te
 exercises portable output collection, native identity, job ownership, and verified stopping
 on the host where it runs. Abrupt worker-exit containment still requires the native acceptance
 check; a normal Stop test does not establish that separate lifecycle. A macOS fake is not native Windows evidence.
+
+`test_windows_workspace_fingerprint.py` reproduces Windows directory-entry metadata with missing
+identity fields. Fingerprinting must obtain authoritative file metadata, keep link and size limits,
+and observe content changes. `test_owner_only_permissions.py` verifies private artifact creation and
+ACL failure handling; Windows cases inspect the actual owner and protected DACL instead of POSIX
+mode bits. Native Stop checks wait for the identified worker handle to signal as well as checking
+the Job Object's active process count.
 
 Run related suites first and then one complete platform gate at a time; the coverage files are
 shared within each checkout. A Windows CI pass verifies disposable local files/processes/browser

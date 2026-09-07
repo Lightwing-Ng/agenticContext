@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.58.0-codex.2
+Code version: v3.58.1-codex.1
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.owner_only_permissions import assert_owner_only_path
 from app.core.computer_use_agent import (
     AGENT_MODEL_OPTIONS_BY_PLATFORM,
     AGENT_PLATFORM_OPTIONS,
@@ -3531,17 +3532,26 @@ def test_open_browser_for_login_windows_uses_resolved_executable(
     assert launched[0][1]["creationflags"] == 0x208
 
 
-def test_host_operating_system_detection_uses_supported_host_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("platform", "os_name", "expected"),
+    (
+        ("darwin", "posix", "macos"),
+        ("win32", "nt", "windows"),
+        ("linux", "posix", "macos"),
+        ("linux", "nt", "windows"),
+    ),
+)
+def test_host_operating_system_detection_uses_supported_host_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    os_name: str,
+    expected: str,
+) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    assert detect_host_operating_system() == "macos"
-
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
-    assert detect_host_operating_system() == "windows"
-
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "linux")
-    assert detect_host_operating_system() == "macos"
+    monkeypatch.setattr(computer_use_agent, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(computer_use_agent, "os", SimpleNamespace(name=os_name))
+    assert detect_host_operating_system() == expected
 
 
 def test_terminal_execution_permission_reports_selected_project_access(
@@ -3841,7 +3851,7 @@ def test_saved_settings_are_owner_readable_only() -> None:
         settings_path = Path(raw_root) / "computer-use-agent.json"
         save_computer_use_settings(ComputerUseSettings(), settings_path)
 
-        assert settings_path.stat().st_mode & 0o777 == 0o600
+        assert_owner_only_path(settings_path, directory=False)
         assert "owner_token" not in settings_path.read_text(encoding="utf-8")
 
 
@@ -5640,9 +5650,9 @@ def test_service_startup_removes_only_unreferenced_context_bundles(
     assert not orphaned_directory.exists()
     assert preserved_context.read_text(encoding="utf-8") == "recorded private context"
     assert ignored_context.exists()
-    assert runtime_root.stat().st_mode & 0o777 == 0o700
-    assert preserved_directory.stat().st_mode & 0o777 == 0o700
-    assert preserved_context.stat().st_mode & 0o777 == 0o600
+    assert_owner_only_path(runtime_root, directory=True)
+    assert_owner_only_path(preserved_directory, directory=True)
+    assert_owner_only_path(preserved_context, directory=False)
 
 
 def test_orphaned_context_cleanup_failure_blocks_the_next_task(
@@ -5897,7 +5907,7 @@ def test_snapshot_persistence_ignores_a_precreated_fixed_temporary_link(
     snapshot_path = runtime_root / "last-run.json"
     assert snapshot_path.is_file()
     assert not snapshot_path.is_symlink()
-    assert snapshot_path.stat().st_mode & 0o777 == 0o600
+    assert_owner_only_path(snapshot_path, directory=False)
     assert fixed_temporary_link.is_symlink()
     assert outside_file.read_text(encoding="utf-8") == "outside metadata"
     assert outside_file.stat().st_mode & 0o777 == original_mode
@@ -6003,8 +6013,8 @@ def test_context_markdown_contains_instructions_request_and_bounded_index(
         assert '?? "safe.py"' in content
         assert ".env" not in content
         assert "credentials/token.txt" not in content
-        assert path.stat().st_mode & 0o777 == 0o600
-        assert path.parent.stat().st_mode & 0o777 == 0o700
+        assert_owner_only_path(path, directory=False)
+        assert_owner_only_path(path.parent, directory=True)
 
 
 @pytest.mark.parametrize(
@@ -6121,14 +6131,26 @@ def test_context_post_write_and_unlink_failure_persists_recovery_pointer(
     assert persisted["context_bytes"] == context_path.stat().st_size
 
 
+@pytest.mark.parametrize("executable_name", ("git", "git.exe"))
 def test_git_status_stream_has_a_global_raw_limit_and_stops_the_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    executable_name: str,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
+    trusted_tools = tmp_path / "Trusted tools 工具"
+    trusted_tools.mkdir()
+    trusted_git = trusted_tools / executable_name
+    trusted_git.write_text("", encoding="utf-8")
+    trusted_git = trusted_git.resolve(strict=True)
+    monkeypatch.setattr(
+        computer_use_agent.shutil,
+        "which",
+        lambda name: str(trusted_git) if name == "git" else None,
+    )
     observed_command: list[str] = []
     stopped: list[object] = []
 
@@ -6166,11 +6188,17 @@ def test_git_status_stream_has_a_global_raw_limit_and_stops_the_process(
     assert truncated is True
     assert len(output) == 64
     assert stopped == [process]
-    assert Path(observed_command[0]).is_absolute()
-    assert Path(observed_command[0]).name == "git"
-    assert "--porcelain=v1" in observed_command
-    assert "-z" in observed_command
-    assert "--untracked-files=normal" in observed_command
+    assert observed_command == [
+        str(trusted_git),
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=normal",
+    ]
 
 
 def test_filtered_git_status_drops_sensitive_rename_and_truncated_records(
@@ -6561,7 +6589,7 @@ def test_action_loop_records_workspace_and_delete_receipt_provenance(
     workspace.mkdir()
     secret = "PRIVATE_AUDIT_CONTENT\n"
     audit_file = workspace / "audit.txt"
-    audit_file.write_text(secret, encoding="utf-8")
+    audit_file.write_bytes(secret.encode("utf-8"))
     digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
     stop_requested = Event()
     controller = WorkspaceController(
@@ -8979,7 +9007,7 @@ def test_workspace_controller_delete_requires_a_current_read_sha256() -> None:
         assert not wrong_digest["ok"]
         assert obsolete.exists()
 
-        obsolete.write_text("changed after read\n", encoding="utf-8")
+        obsolete.write_bytes(b"changed after read\n")
         stale_digest = controller.execute(
             {
                 "action": "delete",
@@ -9355,9 +9383,12 @@ def _mock_rg_popen(
     stderr: str = "",
     returncode: int = 0,
     observed_command: list[str] | None = None,
-) -> None:
-    """Install a completed UTF-8 text process for bounded ripgrep tests."""
+    observed_options: dict[str, object] | None = None,
+) -> list[object]:
+    """Record launch and cleanup of a fake UTF-8 process without signaling a PID."""
     import app.core.computer_use_agent as computer_use_agent
+
+    stopped: list[object] = []
 
     class _SearchProcess:
         pid = 12_345
@@ -9376,24 +9407,38 @@ def _mock_rg_popen(
     def launch(command: list[str], **kwargs: object) -> _SearchProcess:
         if observed_command is not None:
             observed_command.extend(command)
+        if observed_options is not None:
+            observed_options.update(kwargs)
+        assert kwargs["text"] is True
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
         return _SearchProcess()
 
+    def stop_process(process: object, *, timeout: float) -> None:
+        assert isinstance(process, _SearchProcess)
+        assert timeout == 1
+        stopped.append(process)
+        process.returncode = -15
+
     monkeypatch.setattr(computer_use_agent.subprocess, "Popen", launch)
+    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
+    return stopped
 
 
 def test_rg_json_parser_preserves_posix_colons_and_backslashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from pathlib import PurePosixPath
+
     import app.core.computer_use_agent as computer_use_agent
 
     monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
+    monkeypatch.setattr(computer_use_agent, "Path", PurePosixPath)
 
     assert computer_use_agent._parse_rg_search_match(
         _rg_json_match("outer:part/docs/name\\literal.md", 7, "marker")
     ) == (
-        Path("outer:part/docs/name\\literal.md"),
+        PurePosixPath("outer:part/docs/name\\literal.md"),
         "outer:part/docs/name\\literal.md:7:marker",
     )
 
@@ -9401,18 +9446,22 @@ def test_rg_json_parser_preserves_posix_colons_and_backslashes(
 def test_rg_json_parser_normalizes_windows_separators(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from pathlib import PureWindowsPath
+
     import app.core.computer_use_agent as computer_use_agent
 
     monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    monkeypatch.setattr(computer_use_agent, "Path", PureWindowsPath)
 
     assert computer_use_agent._parse_rg_search_match(
         _rg_json_match(r"docs\nested\agent.py", 3, "marker")
     ) == (
-        Path("docs/nested/agent.py"),
+        PureWindowsPath("docs/nested/agent.py"),
         "docs/nested/agent.py:3:marker",
     )
 
 
+@pytest.mark.parametrize("windows_host", (False, True), ids=("posix", "windows"))
 @pytest.mark.parametrize(
     ("glob", "expected_matches"),
     (
@@ -9426,7 +9475,11 @@ def test_workspace_search_rg_explicit_file_keeps_the_filename_and_glob_semantics
     trusted_mock_rg: Path,
     glob: str,
     expected_matches: list[str],
+    windows_host: bool,
 ) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: windows_host)
     workspace = tmp_path / "project"
     workspace.mkdir()
     (workspace / "AGENTS.md").write_text(
@@ -9476,8 +9529,10 @@ def test_workspace_search_rg_explicit_file_keeps_the_filename_and_glob_semantics
     assert "!**/node_modules/**" in observed_command
     assert "!.computer-use-agent/**" in observed_command
     assert "!**/credentials/**" in observed_command
-    assert "--glob" in observed_command
-    assert glob in observed_command
+    include_index = observed_command.index(glob)
+    assert observed_command[include_index - 1] == (
+        "--iglob" if windows_host else "--glob"
+    )
     assert observed_command[-3:] == ["--", "Definition of Done", "AGENTS.md"]
 
 
@@ -9581,14 +9636,21 @@ def test_workspace_search_rg_matches_workspace_relative_globs(
     assert result["ok"]
     assert result["engine"] == "rg"
     assert result["matches"] == expected_matches
-    assert observed_command[-3:] == ["--", "Definition of Done", "docs/AGENTS.md"]
+    assert observed_command[-3:] == [
+        "--", "Definition of Done", str(Path("docs") / "AGENTS.md")
+    ]
 
 
+@pytest.mark.parametrize("windows_host", (False, True), ids=("posix", "windows"))
 def test_workspace_search_rg_applies_root_relative_glob_before_exclusions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     trusted_mock_rg: Path,
+    windows_host: bool,
 ) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: windows_host)
     workspace = tmp_path / "project"
     source = workspace / "app" / "core" / "agent.py"
     source.parent.mkdir(parents=True)
@@ -9622,9 +9684,16 @@ def test_workspace_search_rg_applies_root_relative_glob_before_exclusions(
     assert result["matches"] == [
         "app/core/agent.py:1:ROOT_RELATIVE_GLOB_MARKER"
     ]
-    assert "core/*.py" in observed_command
-    assert "app/core/*.py" in observed_command
-    assert observed_command.index("--glob") < observed_command.index("--iglob")
+    first_exclusion = min(
+        index for index, value in enumerate(observed_command) if value.startswith("!")
+    )
+    assert observed_command[first_exclusion - 1] == "--iglob"
+    for pattern in ("core/*.py", "app/core/*.py"):
+        index = observed_command.index(pattern)
+        assert observed_command[index - 1] == (
+            "--iglob" if windows_host else "--glob"
+        )
+        assert index < first_exclusion
 
 
 def test_windows_search_glob_normalizes_separators_case_and_engine_parity(
@@ -9635,11 +9704,18 @@ def test_windows_search_glob_normalizes_separators_case_and_engine_parity(
     import app.core.computer_use_agent as computer_use_agent
 
     monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        computer_use_agent.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
+    )
+    monkeypatch.setattr(
+        computer_use_agent.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False
+    )
     workspace = tmp_path / "project"
     source = workspace / "app" / "core" / "agent.py"
     source.parent.mkdir(parents=True)
     source.write_text("WINDOWS_GLOB_MARKER\n", encoding="utf-8")
     observed_command: list[str] = []
+    observed_options: dict[str, object] = {}
     _mock_rg_popen(
         monkeypatch,
         stdout=_rg_json_match(
@@ -9649,6 +9725,7 @@ def test_windows_search_glob_normalizes_separators_case_and_engine_parity(
         )
         + "\n",
         observed_command=observed_command,
+        observed_options=observed_options,
     )
     controller = WorkspaceController(
         workspace,
@@ -9670,6 +9747,14 @@ def test_windows_search_glob_normalizes_separators_case_and_engine_parity(
     assert "--glob" not in observed_command
     assert "core/*.PY" in observed_command
     assert "app/core/*.PY" in observed_command
+    assert observed_command[-3:] == ["--", "WINDOWS_GLOB_MARKER", "app"]
+    assert observed_options["creationflags"] == 0x08000200
+    assert "start_new_session" not in observed_options
+    assert "shell" not in observed_options
+    assert observed_options["cwd"] == workspace.resolve()
+    assert observed_options["stdin"] == subprocess.DEVNULL
+    assert observed_options["stdout"] == subprocess.PIPE
+    assert observed_options["stderr"] == subprocess.PIPE
 
     monkeypatch.setattr(
         computer_use_agent.subprocess,
@@ -9933,13 +10018,16 @@ def test_workspace_search_rg_rejects_linked_external_and_protected_targets(
     assert "PROTECTED_LINK_SECRET" not in str(result)
 
 
+@pytest.mark.parametrize("windows_host", (False, True), ids=("posix", "windows"))
 def test_workspace_search_rg_stops_at_the_global_raw_event_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     trusted_mock_rg: Path,
+    windows_host: bool,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: windows_host)
     workspace = tmp_path / "project"
     workspace.mkdir()
     controller = WorkspaceController(
@@ -9951,7 +10039,7 @@ def test_workspace_search_rg_stops_at_the_global_raw_event_limit(
         _rg_json_match(f"docs/file-{index}.txt", 1, "marker")
         for index in range(computer_use_agent.SEARCH_MAX_RAW_EVENTS + 1)
     )
-    _mock_rg_popen(monkeypatch, stdout=output)
+    stopped = _mock_rg_popen(monkeypatch, stdout=output)
 
     result = controller.execute(
         {
@@ -9966,13 +10054,19 @@ def test_workspace_search_rg_stops_at_the_global_raw_event_limit(
     assert result["engine"] == "rg"
     assert result["matches"] == []
     assert result["truncated"] is True
+    assert len(stopped) == 1
 
 
+@pytest.mark.parametrize("windows_host", (False, True), ids=("posix", "windows"))
 def test_workspace_search_rg_stop_clears_the_active_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     trusted_mock_rg: Path,
+    windows_host: bool,
 ) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: windows_host)
     workspace = tmp_path / "project"
     workspace.mkdir()
     stop_checks = {"value": 0}
@@ -9988,7 +10082,7 @@ def test_workspace_search_rg_stop_clears_the_active_process(
         should_stop,
         process_changed=lambda process: process_states.append(process is not None),
     )
-    _mock_rg_popen(
+    stopped = _mock_rg_popen(
         monkeypatch,
         stdout=_rg_json_match("safe.txt", 1, "marker") + "\n",
     )
@@ -10004,6 +10098,7 @@ def test_workspace_search_rg_stop_clears_the_active_process(
         "error": "Stop requested.",
     }
     assert process_states == [True, False]
+    assert len(stopped) == 1
 
 
 def test_workspace_search_rg_failure_never_exposes_raw_output_or_diagnostics(
@@ -10043,15 +10138,20 @@ def test_workspace_search_rg_failure_never_exposes_raw_output_or_diagnostics(
     assert "credentials" not in str(result)
 
 
+@pytest.mark.parametrize("windows_host", (False, True), ids=("posix", "windows"))
 def test_workspace_search_rg_timeout_returns_a_bounded_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     trusted_mock_rg: Path,
+    windows_host: bool,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
+    stopped: list[object] = []
+    process_states: list[object] = []
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: windows_host)
 
     class _SlowOutput:
         def __iter__(self) -> "_SlowOutput":
@@ -10078,16 +10178,26 @@ def test_workspace_search_rg_timeout_returns_a_bounded_observation(
         def wait(self, **_kwargs: object) -> int:
             return self.returncode
 
+    process = _SearchProcess()
+
+    def stop_process(value: object, *, timeout: float) -> None:
+        assert value is process
+        assert timeout == 1
+        stopped.append(value)
+        process.returncode = -15
+
     monkeypatch.setattr(computer_use_agent, "SEARCH_TIMEOUT_SECONDS", 0.001)
     monkeypatch.setattr(
         computer_use_agent.subprocess,
         "Popen",
-        lambda *_args, **_kwargs: _SearchProcess(),
+        lambda *_args, **_kwargs: process,
     )
+    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),
         lambda: False,
+        process_changed=process_states.append,
     )
 
     result = controller.execute(
@@ -10099,6 +10209,8 @@ def test_workspace_search_rg_timeout_returns_a_bounded_observation(
         "action": "search",
         "error": "Search exceeded the 0.001-second controller limit.",
     }
+    assert stopped == [process]
+    assert process_states == [process, None]
 
 
 def test_workspace_search_stream_failure_stops_and_clears_the_process(
@@ -12294,7 +12406,7 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
     assert payload["run_revision"] == 1
     assert Path(payload["context_file"]).name == "context.md"
     assert payload["context_bytes"] > 0
-    assert snapshot_path.stat().st_mode & 0o777 == 0o600
+    assert_owner_only_path(snapshot_path, directory=False)
     serialized = snapshot_path.read_text(encoding="utf-8")
     assert "prompt" not in payload
     assert "response" not in payload
@@ -12321,7 +12433,7 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
     assert recovered_payload["running"] is False
     assert recovered_payload["phase"] == "interrupted"
     assert recovered_payload["context_attached"] is context_attached
-    assert snapshot_path.stat().st_mode & 0o777 == 0o600
+    assert_owner_only_path(snapshot_path, directory=False)
 
     release.set()
     deadline = time.monotonic() + 2
