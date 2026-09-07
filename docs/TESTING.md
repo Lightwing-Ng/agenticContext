@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.0-codex.1`
+Documentation version: `v1.8.1-codex.1`
 
 ## Supported commands
 
@@ -50,6 +50,11 @@ On Windows:
 ```powershell
 $env:AGENTIC_CONTEXT_TEST_MARK_EXPRESSION='live'; .\scripts\test.ps1
 ```
+
+Set `AGENTIC_CONTEXT_TEST_REPORT_FAILURES=1` to flush each failed test or collection report before
+the final pytest summary. Windows CI enables this diagnostic and checks the native core boundaries
+before running the complete gate. The diagnostic preserves the original test outcomes, selection,
+and exit codes; the preliminary checks do not replace the full coverage run.
 
 Run the complete quality gate:
 

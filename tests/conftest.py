@@ -1,6 +1,6 @@
 """Shared pytest fixtures for isolated agenticContext tests.
 
-Code version: v1.3.1-codex.1
+Code version: v1.3.2-codex.1
 """
 
 from __future__ import annotations
@@ -148,6 +148,16 @@ _install_browser_guards()
 # Import web tooling only after host paths and real dispatch boundaries are isolated.
 from flask import Flask  # noqa: E402
 from flask.testing import FlaskClient  # noqa: E402
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Opt into failure details before a cancelled CI run loses the final summary."""
+    if os.environ.get("AGENTIC_CONTEXT_TEST_REPORT_FAILURES") == "1":
+        from tests.failure_reporter import ImmediateFailureReporter
+
+        config.pluginmanager.register(
+            ImmediateFailureReporter(config), "agenticcontext-immediate-failures"
+        )
 
 
 @pytest.fixture(scope="session")

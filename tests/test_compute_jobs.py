@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.3.0-codex.1
+Code version: v1.3.1-codex.1
 """
 
 from __future__ import annotations
@@ -524,7 +524,10 @@ def test_compute_job_stop_route_uses_the_dedicated_job_boundary(tmp_path: Path) 
 def test_native_process_identity_is_live_stable_and_not_reused() -> None:
     import subprocess
 
-    process = subprocess.Popen([sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"],
+    process = subprocess.Popen([sys.executable, "-c", (
+        "import sys, time; sys.stdout.buffer.write(b'ready\\n'); "
+        "sys.stdout.buffer.flush(); time.sleep(30)"
+    )],
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL)
     try:

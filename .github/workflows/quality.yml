@@ -1,4 +1,4 @@
-# Code version: v1.2.1-codex.1
+# Code version: v1.2.2-codex.1
 name: Quality gate
 
 on:
@@ -61,6 +61,7 @@ jobs:
     timeout-minutes: 20
     env:
       TZ: UTC
+      AGENTIC_CONTEXT_TEST_REPORT_FAILURES: '1'
 
     steps:
       - name: Check out repository
@@ -85,6 +86,22 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '22'
+
+      - name: Check native Windows boundaries before browser tests
+        shell: pwsh
+        run: |
+          $env:AGENTIC_CONTEXT_PYTHON = (Get-Command python).Source
+          .\scripts\test.ps1 --tb=short --show-capture=no `
+            tests/test_compute_jobs.py `
+            tests/test_windows_anchored_delete.py `
+            tests/test_windows_entrypoints.py `
+            tests/test_chromium_profile_boundaries.py `
+            tests/test_computer_use_agent.py `
+            tests/test_agent_controller_hardening.py `
+            tests/test_agent_profile_binding.py `
+            tests/test_agent_source_cache.py `
+            tests/test_scraper_and_browser_sessions.py `
+            tests/test_agent_session_pool.py
 
       - name: Run the quality gate
         shell: pwsh
