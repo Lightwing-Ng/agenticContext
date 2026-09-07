@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.34.1-codex.1
+Code version: v1.34.2-codex.1
 """
 
 from __future__ import annotations
@@ -6494,7 +6494,7 @@ def test_finished_snapshot_does_not_auto_select_recent_chatgpt_session(
 
         expect(page.locator("#agent_ask_button")).to_be_enabled()
         page.locator("[data-agent-prompt-input]").fill("Inspect the workspace without changing files.")
-        with page.expect_request(re.compile(r"/api/agent/ask$")):
+        with page.expect_response(re.compile(r"/api/agent/ask$")):
             page.locator("#agent_ask_button").click()
         assert captured_ask_payloads
         payload = captured_ask_payloads[0]
@@ -8471,8 +8471,13 @@ def test_hydrated_running_agent_handles_the_first_finished_status_without_losing
         reduced_motion="reduce",
     )
     page = context.new_page()
+
+    def hold_agent_status(route) -> None:
+        pending_status_routes.append(route)
+        page.evaluate("window.__hydratedAgentStatusRouteCaptured = true")
+
     page.route("**/agent/edge/chatgpt", hydrate_running_markup)
-    page.route("**/api/agent/status", lambda route: pending_status_routes.append(route))
+    page.route("**/api/agent/status", hold_agent_status)
     page.route(
         "**/api/browser-session**",
         lambda route: route.fulfill(json=browser_status),
@@ -8490,6 +8495,7 @@ def test_hydrated_running_agent_handles_the_first_finished_status_without_losing
         activity_panel = page.locator("#agent_activity_panel")
         expect(prompt).to_have_value(completed_prompt)
         expect(activity_panel).to_have_js_property("open", True)
+        page.wait_for_function("window.__hydratedAgentStatusRouteCaptured === true")
         assert len(pending_status_routes) == 1
         if edit_same_text:
             prompt.fill(completed_prompt)

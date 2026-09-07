@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.58.3-codex.1
+Code version: v3.58.4-codex.1
 """
 
 from __future__ import annotations
@@ -1447,8 +1447,9 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
     disposable_browser_launch,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Exercise isolated DOM binding and bounded timing diagnostics. Version: v1.1.0."""
+    """Exercise isolated DOM binding and bounded timing diagnostics. Version: v1.2.0."""
     import os
+    from urllib.parse import quote
 
     requested_channel = os.environ.get("AGENTIC_CONTEXT_TEST_CHROMIUM_CHANNEL", "").strip().lower()
     if requested_channel and requested_channel not in {"chrome", "msedge"}:
@@ -1605,8 +1606,8 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                 computer_use_agent, "_is_composer_wait_timeout", record_model_view_timeout
             )
 
-            def start_model_view_timing() -> None:
-                page.evaluate(
+            def start_model_view_timing(target_page=page) -> None:
+                target_page.evaluate(
                     r"""() => {
                         window.__agenticContextStopViewTiming?.();
                         const timing = {
@@ -1651,20 +1652,6 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                     "managed_executable_path": managed_executable_path,
                     "timeouts": model_view_timeouts,
                 }
-                session = None
-                try:
-                    session = browser.new_browser_cdp_session()
-                    arguments = session.send("Browser.getBrowserCommandLine").get("arguments", [])
-                    diagnostics["actual_executable_path"] = arguments[0] if arguments else None
-                    diagnostics["browser_launch_arguments"] = arguments
-                except Exception as exc:
-                    diagnostics["executable_diagnostic_error"] = f"{type(exc).__name__}: {exc}"
-                finally:
-                    if session is not None:
-                        try:
-                            session.detach()
-                        except Exception as exc:
-                            diagnostics["cdp_detach_error"] = f"{type(exc).__name__}: {exc}"
                 try:
                     diagnostics["dom"] = page.evaluate(
                         r"""() => {
@@ -1704,6 +1691,95 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                     )
                 except Exception as exc:
                     diagnostics["diagnostic_error"] = f"{type(exc).__name__}: {exc}"
+                session = None
+                try:
+                    session = browser.new_browser_cdp_session()
+                    arguments = session.send("Browser.getBrowserCommandLine").get("arguments", [])
+                    diagnostics["actual_executable_path"] = arguments[0] if arguments else None
+                    diagnostics["browser_launch_arguments"] = arguments
+                except Exception as exc:
+                    diagnostics["executable_diagnostic_error"] = f"{type(exc).__name__}: {exc}"
+                finally:
+                    if session is not None:
+                        try:
+                            session.detach()
+                        except Exception as exc:
+                            diagnostics["cdp_detach_error"] = f"{type(exc).__name__}: {exc}"
+
+                # These independent counterexamples run only after the original failure.
+                # They cannot retry or satisfy its assertion and use no provider content.
+                button_html = """<!doctype html>
+                    <button id="target" type="button">Select model</button>
+                    <script>
+                      document.querySelector('#target').addEventListener('click', () => {
+                        document.body.dataset.clicked = 'true';
+                      });
+                    </script>"""
+                counterexamples: list[dict[str, object]] = []
+                diagnostics["page_lifecycle_counterexamples"] = counterexamples
+                for case in (
+                    "fresh_set_content",
+                    "repeated_set_content",
+                    "repeated_set_content_bring_to_front",
+                    "fresh_data_navigation",
+                ):
+                    result: dict[str, object] = {
+                        "case": case,
+                        "click_attempted": False,
+                        "click_completed": False,
+                    }
+                    counterexamples.append(result)
+                    counterexample_page = None
+                    stage = "new_page"
+                    try:
+                        counterexample_page = browser.new_page()
+                        stage = "set_content"
+                        if case.startswith("repeated_set_content"):
+                            for content in ("First", "Second", "Third"):
+                                counterexample_page.set_content(f"<p>{content}</p>", timeout=1_000)
+                        if case == "fresh_data_navigation":
+                            stage = "data_navigation"
+                            counterexample_page.goto(
+                                "data:text/html," + quote(button_html), timeout=1_000
+                            )
+                        else:
+                            counterexample_page.set_content(button_html, timeout=1_000)
+                        if case == "repeated_set_content_bring_to_front":
+                            stage = "bring_to_front"
+                            counterexample_page.bring_to_front()
+                        stage = "start_timing"
+                        start_model_view_timing(counterexample_page)
+                        stage = "click"
+                        result["click_attempted"] = True
+                        counterexample_page.locator("#target").click(timeout=1_000)
+                        result["click_completed"] = True
+                    except Exception as exc:
+                        result["error_stage"] = stage
+                        result["error"] = f"{type(exc).__name__}: {exc}"
+                    finally:
+                        if counterexample_page is not None:
+                            try:
+                                result["dom"] = counterexample_page.evaluate(
+                                    r"""() => {
+                                        window.__agenticContextStopViewTiming?.();
+                                        return {
+                                            url: location.href,
+                                            readyState: document.readyState,
+                                            visibilityState: document.visibilityState,
+                                            hidden: document.hidden,
+                                            hasFocus: document.hasFocus(),
+                                            clicked: document.body?.dataset.clicked === 'true',
+                                            timing: window.__agenticContextViewTiming || null,
+                                        };
+                                    }"""
+                                )
+                            except Exception as exc:
+                                result["diagnostic_error"] = f"{type(exc).__name__}: {exc}"
+                            finally:
+                                try:
+                                    counterexample_page.close()
+                                except Exception as exc:
+                                    result["close_error"] = f"{type(exc).__name__}: {exc}"
                 return json.dumps(diagnostics, ensure_ascii=True, indent=2)
 
             page.set_content(

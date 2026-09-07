@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.3.3-codex.1
+Code version: v1.3.4-codex.1
 """
 
 from __future__ import annotations
@@ -125,13 +125,16 @@ def test_job_start_is_durable_idempotent_and_outside_verification_timeout(tmp_pa
         idempotency_key="nightly-search-001",
     )
 
-    assert started["job_id"] == duplicate["job_id"]
-    assert started["max_runtime_seconds"] == 43_200
+    assert started["job_id"] == duplicate["job_id"], {
+        "started": started,
+        "duplicate": duplicate,
+    }
+    assert started["max_runtime_seconds"] == 43_200, started
     finished = _wait_for_terminal(ComputeJobManager(workspace, runtime), str(started["job_id"]))
-    assert finished["state"] == "succeeded"
-    assert finished["progress"]["evaluations_completed"] == 8
-    assert "optimization complete" in finished["log_tail"]
-    assert _workspace_mutation_fingerprint(workspace) == before_fingerprint
+    assert finished["state"] == "succeeded", finished
+    assert finished["progress"].get("evaluations_completed") == 8, finished
+    assert "optimization complete" in finished["log_tail"], finished
+    assert _workspace_mutation_fingerprint(workspace) == before_fingerprint, finished
 
 
 def test_controller_job_actions_do_not_change_verification_generation(tmp_path: Path) -> None:
