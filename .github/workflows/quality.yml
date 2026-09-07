@@ -1,4 +1,4 @@
-# Code version: v1.2.8-codex.1
+# Code version: v1.2.9-codex.1
 name: Quality gate
 
 on:
@@ -137,6 +137,7 @@ jobs:
             tests/test_test_isolation.py `
             tests/test_agent_browser_cleanup.py `
             tests/test_compute_jobs.py `
+            tests/test_compute_startup_races.py `
             tests/test_compute_json_io.py `
             tests/test_windows_compute_io.py `
             tests/test_windows_anchored_delete.py `
@@ -154,6 +155,7 @@ jobs:
             tests/test_resource_persistence.py `
             tests/test_web_app.py `
             "tests/test_sidebar_e2e.py::test_cache_overview_groups_unique_metrics_and_keeps_run_progress_current[dark-982]" `
+            "tests/test_sidebar_e2e.py::test_resource_annotations_search_scope_toolbar_and_remark_bounds[390]" `
             tests/test_windows_workspace_fingerprint.py `
             tests/test_windows_entrypoints.py `
             tests/test_chromium_profile_boundaries.py `

@@ -1,16 +1,19 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.3.9-codex.1
+Code version: v1.3.11-codex.1
 """
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
 import sys
+from threading import Event
 import time
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -415,8 +418,65 @@ def test_owned_compute_fixture_cleanup_preserves_error_priority(body_fails, clea
         assert "Closing the owned Job handle also failed." in primary.__notes__
 
 
+_OWNED_CHILD_PID_MARKER_PUBLICATION = """
+marker_temporary = marker_path.with_name("." + marker_path.name + ".tmp")
+marker_temporary.write_text(str(child.pid), encoding="utf-8")
+marker_temporary.replace(marker_path)
+"""
+
+
+@pytest.mark.parametrize("publication", ("direct-write-control", "atomic"))
+def test_child_pid_marker_visibility_requires_complete_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publication: str,
+) -> None:
+    marker = tmp_path / "child 用户.pid"
+    opened, write_allowed = Event(), Event()
+    streams, replacements = [], []
+    original_replace = Path.replace
+
+    def blocked_write(path, content, *, encoding):
+        with path.open("w", encoding=encoding) as stream:
+            streams.append(stream)
+            opened.set()
+            assert write_allowed.wait(5), "The controlled marker writer was not released."
+            return stream.write(content)
+
+    def replace_after_close(source, destination):
+        assert source.parent == destination.parent
+        assert not destination.exists()
+        assert streams and all(stream.closed for stream in streams)
+        replacements.append(True)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "write_text", blocked_write)
+    monkeypatch.setattr(Path, "replace", replace_after_close)
+    source = (
+        'marker_path.write_text(str(child.pid), encoding="utf-8")'
+        if publication == "direct-write-control"
+        else _OWNED_CHILD_PID_MARKER_PUBLICATION
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(exec, source, {"marker_path": marker, "child": SimpleNamespace(pid=12345)})
+        try:
+            assert opened.wait(5), "The controlled marker writer did not open its file."
+            if publication == "direct-write-control":
+                assert marker.exists()
+                assert marker.read_text(encoding="utf-8") == ""
+                with pytest.raises(ValueError):
+                    int(marker.read_text(encoding="utf-8"))
+            else:
+                assert not marker.exists()
+        finally:
+            write_allowed.set()
+        pending.result(timeout=5)
+    assert int(marker.read_text(encoding="utf-8")) == 12345
+    assert streams and all(stream.closed for stream in streams)
+    assert replacements == ([True] if publication == "atomic" else [])
+    assert list(tmp_path.iterdir()) == [marker]
+
+
 def test_stop_terminates_owned_worker_tree(tmp_path: Path) -> None:
-    script = """
+    script = f"""
 import argparse
 from pathlib import Path
 import subprocess
@@ -428,7 +488,8 @@ parser.add_argument("--job-runtime", required=True)
 parser.add_argument("--resume")
 args = parser.parse_args()
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-(Path(args.job_runtime) / "child.pid").write_text(str(child.pid))
+marker_path = Path(args.job_runtime) / "child.pid"
+{_OWNED_CHILD_PID_MARKER_PUBLICATION}
 time.sleep(60)
 """
     workspace, _config = _prepare_workspace(tmp_path, script_body=script)
@@ -1050,7 +1111,7 @@ args = parser.parse_args()
     with patch.dict(os.environ, {"AGENTIC_TEST_PRIVATE_TOKEN": "synthetic-secret"}):
         started = manager.start(entrypoint_id="optimizer", config_path="optimizer.json", idempotency_key="isolated-environment-001")
         finished = _wait_for_terminal(manager, str(started["job_id"]))
-    assert finished["state"] == "succeeded"
+    assert finished["state"] == "succeeded", _compute_job_failure_diagnostics(manager, started)
     environment = json.loads((manager.jobs_root / str(started["job_id"]) / "result.json").read_text(encoding="utf-8"))
     assert {key: environment[key] for key in expected} == expected
     assert "AGENTIC_TEST_PRIVATE_TOKEN" not in environment

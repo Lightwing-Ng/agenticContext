@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.34.5-codex.1
+Code version: v1.34.6-codex.1
 """
 
 from __future__ import annotations
@@ -9382,6 +9382,7 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
         expect(page.locator('[data-browser-session-tag]')).to_be_visible()
         expect(page.locator('.browser-session-detail-table')).to_contain_text("crosspage needle")
         assert "page=2" not in page.url
+        page.wait_for_load_state("domcontentloaded")
         page.locator('[data-browser-session-scope-remove]').click()
         expect(page.locator('[data-browser-session-tag]')).to_have_count(0)
         expect(page.locator('[data-chat-message-id]')).to_have_count(2)

@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.3.3-codex.1
+Code version: v1.3.4-codex.1
 """
 
 from __future__ import annotations
@@ -674,6 +674,9 @@ class ComputeJobManager:
             except (OSError, subprocess.TimeoutExpired, ComputeJobError) as exc:
                 cleanup_failure = exc
         metadata = self._load_metadata(job_id)
+        # A fast worker can publish its terminal record after the last startup read.
+        if cleanup_failure is None and metadata.get("state") in TERMINAL_STATES:
+            return self.status(job_id)
         metadata["state"] = "stopping" if cleanup_failure is not None else "failed"
         metadata["updated_at"] = _utc_now()
         metadata["ended_at"] = "" if cleanup_failure is not None else metadata["updated_at"]

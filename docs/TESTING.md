@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.8-codex.1`
+Documentation version: `v1.8.10-codex.1`
 
 ## Supported commands
 
@@ -417,6 +417,18 @@ exercises portable output collection, native identity, job ownership, and verifi
 on the host where it runs. Abrupt worker-exit containment still requires the native acceptance
 check; a normal Stop test does not establish that separate lifecycle. A macOS fake is not native Windows evidence.
 
+A PID marker used as an existence-based readiness signal must be published only after its
+contents are complete: write and close a same-directory temporary file, then atomically rename
+it to the marker. Keep the parent's original deadline and PID/termination assertions. A file
+that merely exists may still be empty; test receivers with an independent producer-completion
+barrier are a different case and should not be changed solely for using the same write API.
+
+`test_compute_startup_races.py` models a supervisor completing between the starting-state
+read and process poll, or while confirmed startup cleanup finishes. Preserve its published
+terminal record rather than overwrite it with a generic readiness failure. Unconfirmed
+cleanup still takes precedence, and an exited process without a terminal record still fails.
+The model does not identify the cause of a separately observed worker-environment failure.
+
 `test_windows_workspace_fingerprint.py` reproduces Windows directory-entry metadata with missing
 identity fields. Fingerprinting must obtain authoritative file metadata, keep link and size limits,
 and observe content changes. `test_owner_only_permissions.py` verifies private artifact creation and
@@ -445,6 +457,11 @@ against captured settings; Safari availability is checked against the actual hos
 their reader before returning; temporary-file verification must close its reader before atomic
 replacement. The tests retain schema/row validation and failure behavior. They do not establish
 that arbitrary external readers permit Windows replacement.
+
+Browser navigation tests wait for the new document to finish `DOMContentLoaded` before
+using module-bound controls; server-rendered text and URL assertions alone do not prove
+that event handlers are installed. Controlled delayed-module tests distinguish this readiness
+boundary from a failed click or a later failed navigation, without repeating the action.
 
 Cache overview geometry failures retain the original assertions and attach bounded element,
 ancestor, viewport, source/mode and browser diagnostics. A local pass or a later native pass does
