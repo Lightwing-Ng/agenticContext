@@ -1,4 +1,4 @@
-/* Code version: v3.36.2-codex.1 */
+/* Code version: v3.36.5-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -236,6 +236,8 @@
 
     let executionScope = executionStorageKey();
     let executionSessionId = rememberedExecutionSession() || "new";
+    // The server-rendered document belongs to the default worker, before browser selection restores.
+    let lastRenderedExecutionSessionId = "primary";
     const executionConversationUrls = new Map();
     const executionConversationTitles = new Map();
 
@@ -253,6 +255,44 @@
     let executionCanStart = false;
     let executionSelectionRestored = false;
     const executionDrafts = new Map();
+    let restoredExecutionConfiguration = "";
+
+    function restoreExecutionConfiguration(agent, {force = false} = {}) {
+        if (agent?.session_id !== executionSessionId || !agent.workspace_path
+            || agent.platform !== selectedPlatform() || agent.browser !== selectedBrowser()) return;
+        const signature = JSON.stringify([executionScope, executionSessionId, agent.run_id,
+            agent.workspace_path, agent.project_url, agent.conversation_url, agent.session_mode]);
+        if (!force && restoredExecutionConfiguration === signature) return;
+        restoredExecutionConfiguration = signature;
+        syncProjectPath(agent.workspace_path);
+        if (elements.projectPath) elements.projectPath.value = agent.workspace_path;
+        const project = isAgentProjectUrl(selectedPlatform(), agent.project_url) ? agent.project_url : "";
+        const conversation = isAgentConversationUrl(selectedPlatform(), agent.conversation_url)
+            ? agent.conversation_url : "";
+        const restoreChoice = (combobox, value, label) => {
+            if (!combobox || !value) return;
+            const menu = combobox.querySelector("[data-agent-combobox-menu]");
+            if (menu && !Array.from(menu.querySelectorAll("[data-agent-combobox-option]"))
+                .some((option) => option.dataset.agentComboboxOption === value)) {
+                menu.append(sourceOptionButton(value, label));
+            }
+            selectSessionListValue(combobox, value, label);
+        };
+        sessionTitleOverride = agent.session_title || "";
+        elements.sessionMode.value = project ? "project" : conversation ? "recent" : "new";
+        if (elements.projectUrl) elements.projectUrl.value = "";
+        if (elements.recentSessionUrl) elements.recentSessionUrl.value = "";
+        if (elements.projectSessionUrl) elements.projectSessionUrl.value = "new";
+        if (project) {
+            const known = agentSources.projects?.find((item) => item.url === project);
+            restoreChoice(elements.projectCombobox, project, known?.title || agent.project_title || project);
+            restoreChoice(elements.projectSessionCombobox, conversation || "new",
+                conversation ? (agent.session_title || conversation) : "New session in project");
+        } else if (conversation) {
+            restoreChoice(elements.recentSessionCombobox, conversation, agent.session_title || conversation);
+        }
+        updateSessionChoiceInputs();
+    }
     const executionRail = document.querySelector("[data-agent-execution-sessions]");
     // Keep warm server templates aligned without interrupting active sessions.
     document.querySelector("#agent_runtime_form")?.after(...(executionRail ? [executionRail] : []));
@@ -341,10 +381,12 @@
         if (focusedId) Array.from(executionList.children).find((node) => node.dataset.executionSessionId === focusedId)?.focus();
     }
 
-    async function selectExecutionSession(sessionId, {routeChanged = false} = {}) {
+    async function selectExecutionSession(sessionId, {routeChanged = false, previousScope = executionScope} = {}) {
         if (!routeChanged && (promptSubmissionPending || sessionId === executionSessionId)) return;
-        executionDrafts.set(executionSessionId, elements.promptInput?.value || "");
+        executionDrafts.set(JSON.stringify([previousScope, executionSessionId]), elements.promptInput?.value || "");
         executionSessionId = sessionId;
+        restoredExecutionConfiguration = "";
+        projectSessionRequestId += 1;
         syncExecutionWorkspace(sessionId);
         try { window.sessionStorage.setItem(executionStorageKey(), sessionId); } catch (_error) {}
         const epoch = ++executionSessionEpoch;
@@ -353,16 +395,12 @@
         lastRenderedAgentStartedAt = "";
         lastRenderedAgentRunning = false;
         boundAgentSessionSignature = "";
-        remoteSessionHistoryRequestId += 1;
-        remoteSessionHistory = [];
-        remoteSessionHistoryUrl = "";
-        remoteSessionHistoryLoading = false;
-        responseHistorySignature = "";
+        resetRemoteSessionHistory();
         doctorRequestId += 1;
         doctorPayload = null;
         sessionTitleOverride = "";
         if (elements.sessionMode) elements.sessionMode.value = "new";
-        if (elements.promptInput) elements.promptInput.value = executionDrafts.get(sessionId) || "";
+        if (elements.promptInput) elements.promptInput.value = executionDrafts.get(JSON.stringify([executionScope, sessionId])) || "";
         promptHasLocalDraft = Boolean(elements.promptInput?.value);
         // Clear the old stop target immediately; stale network responses cannot restore it.
         render({...lastPayload, agent: {session_id: sessionId}});
@@ -503,13 +541,14 @@
 
     function syncAgentRoute() {
         if (executionScope !== executionStorageKey()) {
+            const previousScope = executionScope;
             executionScope = executionStorageKey();
             executionSessions = [];
             executionSelectionRestored = false;
             executionCanStart = false;
             lastPayload = {...lastPayload, can_start: false};
             delete lastPayload.sessions;
-            void selectExecutionSession(rememberedExecutionSession() || "new", {routeChanged: true});
+            void selectExecutionSession(rememberedExecutionSession() || "new", {routeChanged: true, previousScope});
         }
         const routePrefix = String(elements.agentPage?.dataset.agentRoutePrefix || "/agent").replace(/\/$/, "");
         const nextPath = `${routePrefix}/${encodeURIComponent(selectedBrowser())}/${encodeURIComponent(selectedPlatform())}`;
@@ -698,8 +737,18 @@
         responseHistoryPage = 1;
     }
 
+    function selectedHistoryConversationUrl() {
+        const managed = executionSessions.some((item) => item.session_id === executionSessionId);
+        if (managed) {
+            const agent = lastPayload?.agent;
+            return agent?.session_id === executionSessionId && agent.conversation_bound
+                ? String(agent.conversation_url || "").trim() : "";
+        }
+        return selectedConversationUrl();
+    }
+
     function remoteHistoryMatchesSelection() {
-        const selectedUrl = selectedConversationUrl();
+        const selectedUrl = selectedHistoryConversationUrl();
         return Boolean(selectedUrl)
             && remoteSessionHistoryPlatform === selectedPlatform()
             && historyUrlKey(remoteSessionHistoryUrl) === historyUrlKey(selectedUrl)
@@ -1172,7 +1221,8 @@
         }
         const managed = executionSessions.some((item) => item.session_id === executionSessionId);
         const active = lastPayload.agent || {};
-        if (managed && selectedSessionMode() === "new" && active.conversation_bound && active.conversation_url) {
+        if (managed && active.session_id === executionSessionId && selectedSessionMode() === "new"
+            && active.conversation_bound && active.conversation_url) {
             if (elements.promptSessionMode) elements.promptSessionMode.value = active.project_url ? "project_session" : "recent";
             if (elements.promptConversationUrl) elements.promptConversationUrl.value = active.conversation_url;
             if (elements.promptProjectUrl) elements.promptProjectUrl.value = active.project_url || "";
@@ -1433,6 +1483,11 @@
     }
 
     function restoreRememberedSessionSelection() {
+        if (executionSessionId !== "new" && lastPayload.agent?.session_id === executionSessionId
+            && lastPayload.agent?.workspace_path) {
+            restoreExecutionConfiguration(lastPayload.agent, {force: true});
+            return;
+        }
         if (catalogState !== "ready") return;
         const cacheKey = sessionSelectionCacheKey();
         if (sessionSelectionRestoredKey === cacheKey) return;
@@ -1594,7 +1649,6 @@
                 toggleCombobox(combobox);
             });
             const selectOption = (option) => {
-                const previousValue = input.value;
                 input.value = option.dataset.agentComboboxOption || "";
                 if (combobox === elements.effortCombobox) effortSelectionTouched = true;
                 if (combobox === elements.modelCombobox) preferredModel = input.value;
@@ -1604,14 +1658,6 @@
                 syncExecutionChoices();
                 const isRouteSelection = combobox.classList.contains("agent-platform-combobox")
                     || combobox.classList.contains("agent-browser-combobox");
-                if (
-                    isRouteSelection
-                    && previousValue !== input.value
-                    && elements.promptInput instanceof HTMLTextAreaElement
-                ) {
-                    elements.promptInput.value = "";
-                    resizePrompt();
-                }
                 if (combobox.classList.contains("agent-platform-combobox")) {
                     sessionTitleOverride = "";
                     resetRemoteSessionHistory();
@@ -1830,6 +1876,7 @@
             if (stateCopy) stateCopy.textContent = catalogError;
             if (spinner) spinner.hidden = true;
         }
+        restoreExecutionConfiguration(lastPayload.agent, {force: true});
     }
 
     function setCatalogControlsLoading(loading) {
@@ -2053,6 +2100,9 @@
         if (remoteSessionHistoryLoading) {
             status = "loading";
             phaseLabel = "Loading";
+        } else if (remoteSessionHistoryError) {
+            status = "failed";
+            phaseLabel = "History unavailable";
         } else if (running && agent?.paused) {
             status = "paused";
             phaseLabel = "Paused";
@@ -2873,14 +2923,14 @@
                 finished_at: agent.finished_at || "",
             });
         }
-        const selectedUrl = selectedConversationUrl();
+        const selectedUrl = selectedHistoryConversationUrl();
         let history = localHistory;
-        if (selectedUrl && !executionSessions.some((item) => item.session_id === executionSessionId)) {
+        if (selectedUrl) {
             const localSessionMatches = historyUrlKey(agent?.conversation_url) === historyUrlKey(selectedUrl);
             if (remoteHistoryMatchesSelection()) {
                 history = [...remoteSessionHistory];
                 if (localSessionMatches) history = mergeAgentHistory(history, localHistory);
-            } else {
+            } else if (!executionSessions.some((item) => item.session_id === executionSessionId)) {
                 history = [];
             }
         }
@@ -2963,6 +3013,15 @@
         if (!hasPersistedAgent) return;
         renderExecutionSessions(nextPayload);
         const persistedAgent = nextPayload.agent || {};
+        restoreExecutionConfiguration(persistedAgent);
+        if (persistedAgent.session_id === executionSessionId
+            && lastRenderedExecutionSessionId !== executionSessionId) {
+            lastRenderedExecutionSessionId = executionSessionId;
+            lastRenderedAgentRunIdentity = "";
+            lastRenderedAgentRunRevision = 0;
+            lastRenderedAgentStartedAt = "";
+            lastRenderedAgentRunning = false;
+        }
         const readiness = readinessState(nextPayload);
         const selectionMatchesAgent = agentSnapshotMatchesSelection(persistedAgent);
         const agent = selectionMatchesAgent
@@ -3096,6 +3155,15 @@
             );
             if (isRuntimeChoice) trigger.disabled = false;
         });
+        // Restored run metadata deliberately omits message bodies; read the bound provider history.
+        const historyUrl = selectedHistoryConversationUrl();
+        if (!running && agent.run_id && !agent.response && !agent.history?.length
+            && executionSessions.some((item) => item.session_id === executionSessionId)
+            && ["chatgpt", "grok"].includes(selectedPlatform())
+            && isAgentConversationUrl(selectedPlatform(), historyUrl)
+            && !remoteHistoryMatchesSelection()) {
+            void loadSelectedSessionHistory(historyUrl);
+        }
         syncSessionListControls(running);
         if (running) {
             closeAgentComposerCombobox(elements.modelCombobox);

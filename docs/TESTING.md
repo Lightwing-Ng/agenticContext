@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.7.10-codex.1`
+Documentation version: `v1.7.11-codex.1`
 
 ## Supported commands
 
@@ -232,6 +232,36 @@ Do not weaken an assertion, skip a platform branch, lower coverage, or add a ret
 failure has been classified as a real product regression or a test environment assumption.
 
 ## Test organization
+
+### Windows Agent browser verification
+
+Offline regressions in `test_computer_use_agent.py`, `test_scraper_and_browser_sessions.py`, and
+`test_web_app.py` cover configured Windows login/conversation arguments, saved-config forwarding,
+provider-page window selection (including empty contexts), pre-submission window-control failure,
+passive launch modes, and cleanup failure/error precedence using disposable fixtures. They do not
+read authenticated profiles or prove native window or provider behavior.
+
+Before claiming native Windows 11 support for the complete workflow, record the commit, Python,
+Playwright and Edge/Chrome versions, display layout, scaling, and profile selection, then perform
+the following explicit manual checks with the user's authorized test account. Keep credentials,
+cookies, and conversation content out of test artifacts. Do not add these checks to the default
+suite or CI; an automated equivalent must be marked `live`.
+
+| Scenario | Required evidence |
+| --- | --- |
+| Edge `Default` and a configured non-default Chrome profile | Login handoff, Recheck, and task select the same data root/profile; copying and launching alone do not establish authentication. |
+| Source browser open during clone creation | Record copy success or an actionable access/copy error; do not silently switch to writable automation of the real profile. |
+| Passive readiness/source checks | Windows probes remain offscreen/minimized and do not activate the browser. |
+| Existing provider tab, unrelated first tab, and empty clone | The selected or newly created provider page owns the normalized task window; count native windows separately from contexts. |
+| Single display, high scaling, and multiple displays | Verify the actual provider window is usable; fixed CDP geometry is not proof of work-area fit. |
+| Human verification | The same controlled clone and turn survive manual verification and the existing Resume gate. |
+| Normal completion, Stop, closed provider window, and launch failure | The context exits; inspect remaining task-owned processes and temporary paths without disturbing the user's browser. |
+| Failed profile removal | A retained-path diagnostic is present; an existing task/launch error remains primary; no successful cleanup is claimed. |
+
+Run the native offline gate separately with `.\scripts\check.ps1`. A passing macOS mock run or a
+Windows CI run without the authenticated manual checks is not live Windows provider evidence.
+
+### General test layers
 
 - Pure unit tests cover URL normalization, source parsing, media classification, state
   transitions, durable queue behavior, retries, and path validation.

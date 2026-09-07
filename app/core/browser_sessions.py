@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.20.0-codex.1
+# Code version: v1.20.1-codex.1
 
 from __future__ import annotations
 
@@ -729,10 +729,27 @@ def _housekeep_stale_chromium_profiles(descriptor: BrowserDescriptor) -> int:
     return removed
 
 
-def _cleanup_cloned_browser_profile(temp_profile_dir: tempfile.TemporaryDirectory[str]) -> None:
-    """Release one cloned profile and remove its temporary directory."""
-    _ACTIVE_CHROMIUM_PROFILE_ROOTS.discard(Path(temp_profile_dir.name))
-    temp_profile_dir.cleanup()
+def _cleanup_cloned_browser_profile(
+    temp_profile_dir: tempfile.TemporaryDirectory[str],
+    *,
+    original_error: BaseException | None = None,
+) -> None:
+    """Report retained profiles without replacing an existing task or launch error."""
+    profile_root = Path(temp_profile_dir.name)
+    try:
+        temp_profile_dir.cleanup()
+    except OSError as exc:
+        message = (
+            f"Could not remove the task's temporary browser profile at {profile_root}. "
+            "It remains protected from this process's stale-profile cleanup; "
+            "check for remaining task-owned browser processes before removing it."
+        )
+        LOGGER.warning("%s %s", message, exc)
+        if original_error is not None:
+            original_error.add_note(message)
+            return
+        raise RuntimeError(message) from exc
+    _ACTIVE_CHROMIUM_PROFILE_ROOTS.discard(profile_root)
 
 
 def _is_idempotent_chromium_context_close_error(error: Exception) -> bool:
@@ -874,8 +891,8 @@ def launch_chromium_context(
         temp_user_data_dir, temp_profile_dir = clone_browser_profile(descriptor)
         try:
             context = do_launch(temp_user_data_dir)
-        except Exception:
-            _cleanup_cloned_browser_profile(temp_profile_dir)
+        except Exception as exc:
+            _cleanup_cloned_browser_profile(temp_profile_dir, original_error=exc)
             raise
     else:
         try:
@@ -887,8 +904,8 @@ def launch_chromium_context(
             temp_user_data_dir, temp_profile_dir = clone_browser_profile(descriptor)
             try:
                 context = do_launch(temp_user_data_dir)
-            except Exception:
-                _cleanup_cloned_browser_profile(temp_profile_dir)
+            except Exception as exc:
+                _cleanup_cloned_browser_profile(temp_profile_dir, original_error=exc)
                 raise
 
     if temp_profile_dir is None:
@@ -899,15 +916,21 @@ def launch_chromium_context(
             return context
 
         def __exit__(self_nonlocal, exc_type, exc, tb):
+            primary_error = exc
             try:
                 try:
                     context.close()
                 except Exception as close_error:
                     if not _is_idempotent_chromium_context_close_error(close_error):
-                        raise
-                    LOGGER.info("Chromium context was already closed during cleanup.")
+                        if primary_error is None:
+                            primary_error = close_error
+                            raise
+                        primary_error.add_note(f"Browser context cleanup also failed: {close_error}")
+                        LOGGER.warning("Browser context cleanup also failed: %s", close_error)
+                    else:
+                        LOGGER.info("Chromium context was already closed during cleanup.")
             finally:
-                _cleanup_cloned_browser_profile(temp_profile_dir)
+                _cleanup_cloned_browser_profile(temp_profile_dir, original_error=primary_error)
             return False
 
     return ManagedContext()
@@ -979,7 +1002,7 @@ def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile
         shutil.copytree(source_profile_dir, target_profile_dir, dirs_exist_ok=True, ignore=ignore_transient_files)
     except PermissionError as exc:
         denied_path = getattr(exc, "filename", None) or source_profile_dir
-        _cleanup_cloned_browser_profile(temp_dir)
+        _cleanup_cloned_browser_profile(temp_dir, original_error=exc)
         if is_macos_host():
             raise RuntimeError(
                 f"macOS denied access to the {descriptor.label} profile at {denied_path}. "
@@ -992,8 +1015,8 @@ def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile
                 "Close any running Edge or Chrome windows, then retry the browser session check."
             ) from exc
         raise
-    except OSError:
-        _cleanup_cloned_browser_profile(temp_dir)
+    except OSError as exc:
+        _cleanup_cloned_browser_profile(temp_dir, original_error=exc)
         raise
     return target_user_data_dir, temp_dir
 

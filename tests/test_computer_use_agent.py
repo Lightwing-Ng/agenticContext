@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.57.4-codex.1
+Code version: v3.57.5-codex.1
 """
 
 from __future__ import annotations
@@ -3355,7 +3355,12 @@ def test_open_agent_in_browser_windows_uses_resolved_executable_and_detached_fla
     assert result["opened"] is True
     assert launched == [
         (
-            [resolved_executable, "https://chatgpt.com/"],
+            [
+                resolved_executable,
+                f"--user-data-dir={computer_use_agent.browser_descriptors(CrawlConfig())['edge'].user_data_dir}",
+                "--profile-directory=Default",
+                "https://chatgpt.com/",
+            ],
             {
                 "stdin": computer_use_agent.subprocess.DEVNULL,
                 "stdout": computer_use_agent.subprocess.DEVNULL,
@@ -3473,9 +3478,11 @@ def test_resolve_windows_browser_executable_returns_none_when_all_candidates_mis
     assert resolve_windows_browser_executable("edge") is None
 
 
+@pytest.mark.parametrize("browser_name", ("edge", "chrome"))
 def test_open_browser_for_login_windows_uses_resolved_executable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    browser_name: str,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
@@ -3506,11 +3513,21 @@ def test_open_browser_for_login_windows_uses_resolved_executable(
         lambda command, **options: launched.append((command, options)),
     )
 
-    result = open_browser_for_login("chatgpt", "chrome")
+    config = CrawlConfig(
+        chrome_user_data_dir=tmp_path / "Custom Chrome data",
+        chrome_profile_directory="Profile 2",
+    )
+    descriptor = computer_use_agent.browser_descriptors(config)[browser_name]
+    result = open_browser_for_login("chatgpt", browser_name, config=config)
 
     assert result["opened"] is True
     assert result["background"] is False
-    assert launched[0][0] == [resolved_executable, "https://chatgpt.com/"]
+    assert launched[0][0] == [
+        resolved_executable,
+        f"--user-data-dir={descriptor.user_data_dir}",
+        f"--profile-directory={descriptor.profile_directory}",
+        "https://chatgpt.com/",
+    ]
     assert launched[0][1]["creationflags"] == 0x208
 
 
@@ -4428,13 +4445,18 @@ def test_pre_requested_stop_never_opens_a_web_browser_context(
 
 @pytest.mark.parametrize("engine", ("safari", "chromium"))
 @pytest.mark.parametrize("stop_stage", ("context", "navigation"))
+@pytest.mark.parametrize("host_platform", ("darwin", "win32", "linux"))
 def test_stop_during_browser_startup_never_enters_the_action_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     engine: str,
     stop_stage: str,
+    host_platform: str,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
+
+    monkeypatch.setattr(computer_use_agent.sys, "platform", host_platform)
+    monkeypatch.setattr(computer_use_agent, "_keep_task_stage_window_available", lambda _page: None)
 
     class _Descriptor:
         def __init__(self, selected_engine: str) -> None:
@@ -4541,12 +4563,16 @@ def test_stop_during_browser_startup_never_enters_the_action_loop(
     ),
 )
 @pytest.mark.parametrize("host_platform", ("darwin", "win32", "linux"))
+@pytest.mark.parametrize("empty_context", (False, True))
+@pytest.mark.parametrize("window_failure", (False, True))
 def test_chromium_agent_selects_the_provider_tab_before_navigation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     browser_name: str,
     expected_app: str,
     host_platform: str,
+    empty_context: bool,
+    window_failure: bool,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
@@ -4568,17 +4594,20 @@ def test_chromium_agent_selects_the_provider_tab_before_navigation(
     extension_page = _Page("edge-extension://demo/index.html", "Extension")
     provider_page = _Page("https://gemini.google.com/app", "Gemini")
 
+    closed_contexts: list[bool] = []
+
     class _BrowserContext:
-        pages = [blank_page, extension_page, provider_page]
+        pages = [] if empty_context else [blank_page, extension_page, provider_page]
 
         def __enter__(self) -> "_BrowserContext":
             return self
 
         def __exit__(self, *_args: object) -> None:
-            return None
+            closed_contexts.append(True)
 
         def new_page(self) -> _Page:
-            raise AssertionError("The matching Gemini tab must be reused.")
+            assert empty_context, "The matching Gemini tab must be reused."
+            return provider_page
 
     class _PlaywrightContext:
         def __enter__(self) -> object:
@@ -4623,7 +4652,12 @@ def test_chromium_agent_selects_the_provider_tab_before_navigation(
         lambda *_args, **kwargs: (launch_options.append(kwargs) or browser_context),
     )
     monkeypatch.setattr(computer_use_agent.sys, "platform", host_platform)
-    monkeypatch.setattr(computer_use_agent, "_keep_task_stage_window_available", available_pages.append)
+    def restore_window(page: _Page) -> None:
+        available_pages.append(page)
+        if window_failure:
+            raise RuntimeError("Window restore failed")
+
+    monkeypatch.setattr(computer_use_agent, "_keep_task_stage_window_available", restore_window)
     monkeypatch.setattr(
         computer_use_agent,
         "_capture_macos_frontmost_application",
@@ -4646,24 +4680,38 @@ def test_chromium_agent_selects_the_provider_tab_before_navigation(
 
     monkeypatch.setattr(computer_use_agent, "_run_web_action_loop", run_action_loop)
 
-    result = run_web_computer_use(
-        prompt="Inspect the project.",
-        workspace=workspace,
-        context_path=context_path,
-        config=CrawlConfig(),
-        settings=settings,
-        should_stop=lambda: False,
-        update=lambda **_changes: None,
-        process_changed=lambda _process: None,
-    )
+    def run_task():
+        return run_web_computer_use(
+            prompt="Inspect the project.",
+            workspace=workspace,
+            context_path=context_path,
+            config=CrawlConfig(),
+            settings=settings,
+            should_stop=lambda: False,
+            update=lambda **_changes: None,
+            process_changed=lambda _process: None,
+        )
 
+    if window_failure and host_platform != "linux":
+        with pytest.raises(RuntimeError, match="Window restore failed"):
+            run_task()
+        assert navigated_pages == action_loop_pages == []
+        assert closed_contexts == [True]
+        assert available_pages == [provider_page]
+        assert restored_frontmost_apps == (
+            [("WeChat", expected_app)] if host_platform == "darwin" else []
+        )
+        return
+
+    result = run_task()
+    assert closed_contexts == [True]
     assert result == expected_result
     assert navigated_pages == [provider_page]
     assert action_loop_pages == [provider_page]
     assert len(launch_options) == 1
     assert launch_options[0]["clone_profile_first"] is True
     assert launch_options[0]["window_mode"] == ("offscreen" if host_platform == "linux" else "task_stage")
-    assert available_pages == ([] if host_platform == "linux" else [blank_page])
+    assert available_pages == ([] if host_platform == "linux" else [provider_page])
     assert launch_options[0]["headless"] is False
     assert launch_options[0]["background_window"] is True
     assert launch_options[0]["silent"] is (host_platform == "darwin")
@@ -14621,6 +14669,27 @@ def test_task_stage_window_keeps_only_the_owned_clone_normal_without_focus(
             },
         ),
     ] if host_platform == "win32" else []) + [("detach", None)]
+
+
+@pytest.mark.parametrize("failure", ("no_cdp", "no_window", "cdp_error"))
+def test_windows_task_window_reports_unavailable_control_and_detaches(
+    monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
+    session = Mock()
+    session.send.return_value = {}
+    if failure == "cdp_error":
+        session.send.side_effect = RuntimeError("Target closed")
+    context = SimpleNamespace() if failure == "no_cdp" else SimpleNamespace(
+        new_cdp_session=lambda _page: session,
+    )
+    with pytest.raises(RuntimeError, match="stopped before submitting a provider prompt"):
+        computer_use_agent._keep_task_stage_window_available(SimpleNamespace(context=context))
+    assert session.detach.call_count == (0 if failure == "no_cdp" else 1)
 
 
 def test_macos_task_stage_restores_the_previous_frontmost_application(

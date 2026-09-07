@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.57.4-codex.1
+Code version: v3.57.5-codex.1
 """
 
 from __future__ import annotations
@@ -1354,6 +1354,7 @@ def open_agent_in_browser(
     target_url: str = "",
     *,
     background: bool = True,
+    config: CrawlConfig | None = None,
 ) -> dict[str, Any]:
     """Open one trusted Web Agent target in the explicitly selected browser."""
     selected_platform = str(platform or DEFAULT_AGENT_PLATFORM).strip().lower()
@@ -1417,7 +1418,13 @@ def open_agent_in_browser(
         resolved_executable = resolve_windows_browser_executable(selected_browser)
         if resolved_executable is None:
             raise RuntimeError(f"{application} could not be found on this host.")
-        command = [resolved_executable, destination]
+        descriptor = browser_descriptors(config if config is not None else CrawlConfig())[selected_browser]
+        command = [
+            resolved_executable,
+            f"--user-data-dir={descriptor.user_data_dir}",
+            f"--profile-directory={descriptor.profile_directory}",
+            destination,
+        ]
         creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
             subprocess,
             "DETACHED_PROCESS",
@@ -1457,6 +1464,8 @@ def open_agent_in_browser(
 def open_browser_for_login(
     platform: str,
     browser: str,
+    *,
+    config: CrawlConfig | None = None,
 ) -> dict[str, Any]:
     """Open a visible supported browser at its platform home for sign-in."""
     selected_platform = str(platform or "").strip().lower()
@@ -1474,6 +1483,7 @@ def open_browser_for_login(
         selected_browser,
         _platform_home_url(selected_platform),
         background=sys.platform == "darwin",
+        config=config,
     )
 
 
@@ -6435,10 +6445,15 @@ def run_web_computer_use(
             ),
         ) as context:
             try:
+                if should_stop():
+                    return stopped_result
+                page = select_provider_tab(
+                    context,
+                    home_url=selected_target_url,
+                    hosts=_platform_hosts(settings.platform),
+                )
                 if task_stage_window:
-                    pages = list(getattr(context, "pages", []) or [])
-                    if pages:
-                        _keep_task_stage_window_available(pages[0])
+                    _keep_task_stage_window_available(page)
             finally:
                 if restore_macos_focus:
                     _restore_macos_frontmost_application_after_task_stage(
@@ -6447,11 +6462,6 @@ def run_web_computer_use(
                     )
             if should_stop():
                 return stopped_result
-            page = select_provider_tab(
-                context,
-                home_url=selected_target_url,
-                hosts=_platform_hosts(settings.platform),
-            )
             goto_with_retry(
                 page,
                 selected_target_url,
@@ -7571,12 +7581,12 @@ def _keep_task_stage_window_available(page: Any) -> None:
     try:
         new_cdp_session = getattr(context, "new_cdp_session", None)
         if not callable(new_cdp_session):
-            return
+            raise RuntimeError("The task browser does not expose CDP window control.")
         session = new_cdp_session(page)
         window = session.send("Browser.getWindowForTarget")
         window_id = window.get("windowId") if isinstance(window, dict) else None
         if window_id is None:
-            return
+            raise RuntimeError("The provider page has no controllable browser window.")
         session.send(
             "Browser.setWindowBounds",
             {"windowId": window_id, "bounds": {"windowState": "normal"}},
@@ -7590,7 +7600,12 @@ def _keep_task_stage_window_available(page: Any) -> None:
                 },
             )
     except Exception as exc:
-        LOGGER.debug("Could not keep the task browser window available: %s", exc)
+        if sys.platform == "win32":
+            raise RuntimeError(
+                "Could not restore the Windows provider task window. "
+                "The task was stopped before submitting a provider prompt."
+            ) from exc
+        LOGGER.warning("Could not keep the task browser window available: %s", exc)
     finally:
         detach = getattr(session, "detach", None)
         if callable(detach):

@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.65.1-codex.1
+# Code version: v1.65.2-codex.1
 
 from __future__ import annotations
 
@@ -1615,6 +1615,7 @@ def create_app(
                 browser,
                 target_url,
                 background=background,
+                config=saved_config,
             )
         except (RuntimeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 409
@@ -2609,7 +2610,7 @@ def create_app(
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
         try:
-            result = open_browser_for_login(platform_name, browser_name)
+            result = open_browser_for_login(platform_name, browser_name, config=saved_config)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.13.4-codex.1`
+Documentation version: `v1.13.5-codex.1`
 
 ## Runtime flow
 
@@ -126,6 +126,21 @@ bounded metadata rather than prompt, provider response, source, command, or page
 to offer an event timeline and explicit recovery actions. Recovery never retries the original
 external prompt implicitly; a user-selected continuation may send only the fixed continuation
 request after a persisted conversation-binding proof succeeds.
+
+## Agent execution-session selection
+
+The Agent execution selector persists a separate session ID for each browser/provider route.
+An explicit `unknown_agent_session` status response recovers to `new` without submitting a prompt.
+Route changes invalidate pending response epochs and restore only the target route's selection.
+Unsent drafts remain in page memory, keyed by browser/provider scope and execution session ID;
+changing routes restores that route's draft without sending it or copying it into another route.
+Drafts are not persisted across a page reload.
+
+`AgentSessionPool.catalog()` and atomic admission share the same capacity predicate. The frontend
+uses `can_start` to gate Ask, while the locked backend remains authoritative if capacity changes
+between polling and submission. A worker with a recorded run cannot be reassigned to a different
+browser or provider. A stale status snapshot can still lead to a legitimate HTTP 409; it is not
+proof that the admission rules differ.
 
 ## Durable compute-job boundary
 

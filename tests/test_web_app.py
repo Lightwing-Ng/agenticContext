@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.97.3-codex.1
+# Code version: v1.97.5-codex.1
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from app.core.state import TaskSnapshot
 from app.core.config import CrawlConfig
@@ -1042,7 +1042,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', local_body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.36.2-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.36.5-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1701,7 +1701,9 @@ class WebAppTests(unittest.TestCase):
         launch.assert_called_once_with("macos")
 
     def test_browser_session_login_route_is_local_and_uses_canonical_selection(self) -> None:
-        app = create_app()
+        config = CrawlConfig(chrome_profile_directory="Profile 2")
+        with patch("app.web.app.load_saved_config", return_value=config):
+            app = create_app()
         opened = {
             "opened": True,
             "platform": "chatgpt",
@@ -1726,7 +1728,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), opened)
         self.assertEqual(remote_response.status_code, 403)
-        open_login.assert_called_once_with("chatgpt", "edge")
+        open_login.assert_called_once_with("chatgpt", "edge", config=config)
 
     def test_browser_session_login_route_rejects_invalid_selection(self) -> None:
         app = create_app()
@@ -1760,7 +1762,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(failed.status_code, 409)
         self.assertIn("could not be found", failed.get_json()["error"])
-        open_login.assert_called_once_with("chatgpt", "edge")
+        open_login.assert_called_once_with("chatgpt", "edge", config=ANY)
 
         isolated_app = create_app(agent_external_operations_enabled=False)
         with patch("app.web.app.open_browser_for_login") as isolated_open_login:
@@ -1830,6 +1832,7 @@ class WebAppTests(unittest.TestCase):
             "edge",
             "https://chatgpt.com/c/current-session",
             background=True,
+            config=ANY,
         )
 
     def test_agent_sidebar_log_and_chat_composer_keep_runtime_targets_in_sync(self) -> None:
@@ -1929,7 +1932,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.36.2-codex.1',
+            'computer-use-agent-v3.36.5-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-direct-list="true"',

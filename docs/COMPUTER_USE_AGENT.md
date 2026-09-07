@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.55.7-codex.1`
+Documentation version: `v3.55.8-codex.1`
 
 ## Purpose
 
@@ -618,12 +618,15 @@ selected provider's DOM directly. Passive source checks use a quiet, task-indepe
 ChatGPT source checks use a non-headless context because ChatGPT's Cloudflare challenge rejects
 headless clones with HTTP 403. Windows retains the backgrounded/offscreen probe policy; existing
 macOS silent probes retain their task-stage window policy and foreground-app restoration.
-On macOS and Windows, an executing Edge or Chrome task uses one normal, non-offscreen task-owned
-window. Windows normalizes the same clone through CDP and positions it on screen without requesting
-activation; it does not run macOS foreground-app capture or restore. On macOS, the previous
+On macOS and Windows, an executing Edge or Chrome task selects or creates its provider page before
+normalizing that page's window in the isolated, non-offscreen context. Windows requests normal
+state and fixed bounds `(80, 80, 1280, 900)` through CDP without requesting activation; it does not
+run macOS foreground-app capture or restore. Missing CDP window control or a failed window command
+stops the task before provider prompt submission. Fixed geometry does not verify the available
+display work area, and a cloned context may restore more than one native window. On macOS, the previous
 foreground app is restored if the browser took focus, leaving the task window available for the user to
 inspect through macOS window management. macOS ultimately determines Stage Manager grouping.
-The user's original profile is never opened for writing. Chromium still suppresses first-run,
+Automated execution never opens the user's original profile for writing. Chromium still suppresses first-run,
 crash, notification, and repost prompts; a normal task exit closes the isolated context and removes
 its temporary profile. The next Chromium launch removes only abandoned `cachelikes-edge-*` or
 `cachelikes-chrome-*` directories older than 24 hours. Safari uses one shared Apple Events context,
@@ -635,12 +638,22 @@ that state and does not attempt a login bypass.
 
 When an Agent browser status is not signed in, the status card exposes an `Open <Browser> to sign in`
 action. It opens the selected browser visibly at the provider home page; the user must then choose the
-existing recheck action to verify the new session. It does not assume that opening the browser completed sign-in
-and does not add automatic login polling. Windows runtime behavior for this workflow remains not locally verified.
+existing recheck action to verify the new session. Windows login and conversation handoff explicitly
+select the data root and profile from the same saved configuration used by probes and tasks: Edge
+uses `Default`, while Chrome uses its configured profile. The explicit handoff lets the real browser
+persist the user's login; automated execution still uses a temporary clone. Copying the profile is
+not an atomic snapshot of a running browser, and neither copying nor launching proves that the
+provider session is authenticated. Readiness must be checked inside the clone. Opening the browser
+does not imply sign-in and does not add automatic login polling. Windows runtime behavior for this
+workflow remains not locally verified.
 
 Chromium cleanup treats only the known Playwright already-closed and driver-disconnected close
 errors as an idempotent second close, while still removing the temporary profile. Unexpected
-context-close failures continue to propagate instead of being hidden.
+context-close failures continue to propagate instead of being hidden. If a task error already
+exists, subsequent close and profile-removal failures are logged and attached as exception notes
+without replacing it. A profile-removal failure with no earlier error fails the operation and
+identifies the retained temporary directory. Failed removals remain excluded from this process's
+stale-profile cleanup; this is not durable process-ownership tracking across service restarts.
 
 The traditional Edge handoff is intentionally separate from the isolated Agent context. On a failed
 Edge and ChatGPT run with a verified conversation URL, the service records an available handoff but

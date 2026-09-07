@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.0.3-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.0.6-codex.1."""
 
 from copy import deepcopy
 
@@ -385,5 +385,168 @@ def test_route_switch_isolates_worker_and_obeys_global_admission(disposable_brow
         page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{original}"]').click()
         expect(page.get_by_role("button", name="Ask ChatGPT Web", exact=True)).to_be_enabled()
         assert requested[-1] == ("edge:chatgpt", "original")
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1138, 390])
+def test_restored_session_loads_bound_history_and_ignores_late_reply(
+    disposable_browser, sidebar_server_url, width
+):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 959})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
+    held = []
+    requested = []
+    sessions = [
+        {"session_id": key, "session_title": key, "conversation_url": f"https://chatgpt.com/c/{key}",
+         "running": False, "phase": "finished"}
+        for key in ("primary", "restored", "late", "unavailable")
+    ]
+
+    def status(route):
+        key = route.request.headers.get("x-cachelikes-agent-session", "new")
+        agent = {**base["agent"], "session_id": key, "run_id": key, "run_revision": 100,
+                 "conversation_url": f"https://chatgpt.com/c/{key}", "conversation_bound": True,
+                 "history": [], "prompt": "", "response": "", "response_html": ""}
+        route.fulfill(json={**base, "agent": agent, "sessions": sessions, "active_count": 0})
+
+    def history(route):
+        from urllib.parse import parse_qs, urlsplit
+
+        key = parse_qs(urlsplit(route.request.url).query)["conversation_url"][0].rsplit("/", 1)[-1]
+        requested.append(key)
+        if key == "late":
+            held.append(route)
+        elif key == "unavailable":
+            route.fulfill(status=503, json={"error": "History service unavailable"})
+        else:
+            route.fulfill(json={"history": [{"prompt": f"Question {key}", "response": f"Answer {key}",
+                                            "response_html": f"<p>Answer {key}</p>"}]})
+
+    page.route("**/api/agent/status", status)
+    page.route("**/api/agent/chatgpt-session-history?*", history)
+
+    def default_worker_document(route):
+        import re
+
+        response = route.fetch()
+        body = re.sub(r'data-agent-run-id="[^"]*"', 'data-agent-run-id="primary"', response.text())
+        body = re.sub(r'data-agent-run-revision="[^"]*"', 'data-agent-run-revision="700"', body)
+        route.fulfill(response=response, body=body)
+
+    page.route("**/agent/edge/chatgpt", default_worker_document)
+    catalog = fixtures._chatgpt_catalog_sessions()
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
+        "agent_sources": catalog,
+    }))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        expect(page.locator("#agent_response_question")).to_have_text("Question primary")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        page.locator("[data-execution-session-id=restored]").click()
+        expect(page.locator("#agent_response_question")).to_have_text("Question restored")
+        expect(page.locator("#agent_response_answer")).to_contain_text("Answer restored")
+        page.locator("[data-execution-session-id=unavailable]").click()
+        expect(page.locator("#agent_response_status")).to_contain_text("History unavailable")
+        page.locator("[data-execution-session-id=late]").click()
+        expect(page.locator("#agent_response_status")).to_contain_text("Loading")
+        page.locator("[data-execution-session-id=restored]").click()
+        expect(page.locator("#agent_response_question")).to_have_text("Question restored")
+        assert held
+        held.pop().fulfill(json={"history": [{"prompt": "Wrong question", "response": "Wrong answer",
+                                            "response_html": "<p>Wrong answer</p>"}]})
+        expect(page.locator("#agent_response_question")).to_have_text("Question restored")
+        page.reload()
+        expect(page.locator("#agent_response_question")).to_have_text("Question restored")
+        assert requested.count("late") == 1
+        assert requested.count("unavailable") == 1
+        assert requested.count("restored") == 3
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("choice,target", [("platform", "grok"), ("browser", "chrome")])
+@pytest.mark.parametrize("width", [1161, 390])
+def test_new_session_drafts_are_isolated_by_route(
+    disposable_browser, sidebar_server_url, choice, target, width
+):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 959})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    catalog = fixtures._chatgpt_catalog_sessions()
+    page.route("**/api/agent/status", lambda route: route.fulfill(json={
+        **base, "agent": {"session_id": "new"}, "sessions": [], "active_count": 0, "can_start": True,
+    }))
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True, "logged_in": True, "browser": "edge", "platform": "chatgpt",
+        "agent_sources": catalog,
+    }))
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        prompt = page.locator("#agent_prompt_input")
+        prompt.fill("Draft for Edge ChatGPT")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        trigger = page.locator(f'.agent-{choice}-combobox [data-agent-combobox-trigger]')
+        trigger.click()
+        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
+        expect(prompt).to_have_value("")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        prompt.fill("Draft for the other route")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        trigger.click()
+        original = "chatgpt" if choice == "platform" else "edge"
+        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{original}"]').click()
+        expect(prompt).to_have_value("Draft for Edge ChatGPT")
+        trigger.click()
+        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
+        expect(prompt).to_have_value("Draft for the other route")
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1138, 390])
+def test_execution_session_restores_workspace_and_project(disposable_browser, sidebar_server_url, width):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 959})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    agents = {}
+    for key in ("primary", "second"):
+        agents[key] = {**base["agent"], "session_id": key, "run_id": key,
+            "browser": "edge", "platform": "chatgpt", "workspace_path": f"/tmp/{key}",
+            "session_mode": "project_session", "project_url": f"https://chatgpt.com/g/g-p-{key}/project",
+            "conversation_url": f"https://chatgpt.com/c/{key}", "conversation_bound": True,
+            "session_title": f"Task {key}", "running": False, "phase": "failed"}
+
+    def status(route):
+        key = route.request.headers.get("x-cachelikes-agent-session", "primary")
+        route.fulfill(json={**base, "agent": agents.get(key, {"session_id": key}),
+            "sessions": list(agents.values()), "active_count": 0, "can_start": True})
+
+    page.route("**/api/agent/status", status)
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True, "browser": "edge", "platform": "chatgpt",
+        "agent_sources": {"recent_sessions": [], "projects": []}}))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        for key in ("second", "primary", "second"):
+            page.locator(f"[data-execution-session-id={key}]").click()
+            expect(page.locator('input[name="workspace_path"]')).to_have_value(f"/tmp/{key}")
+            expect(page.locator('input[name="project_url"]')).to_have_value(agents[key]["project_url"])
+            expect(page.locator('input[name="conversation_url"]')).to_have_value(agents[key]["conversation_url"])
+            expect(page.locator('input[name="session_mode"]')).to_have_value("project_session")
+        page.reload()
+        expect(page.locator('input[name="workspace_path"]')).to_have_value("/tmp/second")
+        expect(page.locator('input[name="project_url"]')).to_have_value(agents["second"]["project_url"])
     finally:
         context.close()

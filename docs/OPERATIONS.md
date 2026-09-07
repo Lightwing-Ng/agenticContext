@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.9.3-codex.1`
+Documentation version: `v1.9.4-codex.1`
 
 ## Launch
 
@@ -52,18 +52,34 @@ to override it. A successful unlock is stored in the signed Flask session for th
   non-headless context because the provider's Cloudflare challenge rejects headless clones with
   HTTP 403. Windows probes retain offscreen/minimized launch arguments. Existing macOS silent
   probes retain their task-stage window policy and foreground-app restoration.
-- Executing Edge or Chrome tasks on macOS and Windows use one visible, isolated profile clone,
-  without offscreen or start-minimized launch arguments. Windows uses CDP to normalize and
-  position that same task window on screen without requesting activation. Only macOS restores
+- Executing Edge or Chrome tasks on macOS and Windows use an isolated profile clone,
+  without offscreen or start-minimized launch arguments. The task selects or creates its provider
+  page before normalizing that page's window, including when the clone initially has no pages.
+  Windows uses CDP to request normal state and position `(80, 80)` at `1,280 × 900`, without
+  requesting activation. A CDP window-control failure aborts before provider prompt submission.
+  These fixed bounds are not a display-work-area guarantee; scaling and multiple monitors still
+  require native Windows verification. One context does not guarantee one restored native window.
+  Only macOS restores
   the previous foreground app; macOS decides Stage Manager grouping. Human verification reuses
   the same clone and retains the existing Resume gate. Automated execution never opens the user's
   original profile for writing. First-run, crash, notification, and repost prompts remain disabled.
-- Explicit login handoff opens the selected real browser visibly. Windows uses its resolved
-  absolute executable path. Opening the page does not establish sign-in; the user must choose
+- Explicit login handoff opens the selected real browser visibly. Windows login and conversation
+  handoff use the resolved absolute executable with the same data root and profile as session
+  probes and tasks: Edge uses `Default`; Chrome uses the saved Chrome configuration. This explicit
+  user handoff allows the real browser to save login changes; automated probes/tasks write only
+  to their clone. Opening the page does not establish sign-in; the user must choose
   Recheck. Native Windows 11 browser execution remains unverified on this macOS host.
+- Copying profile files and launching the clone do not prove provider authentication. The copy
+  is not an atomic snapshot of a running browser. Check readiness in the clone; report copy or
+  access errors without closing the user's browser or retrying against its writable profile.
 - Normal task exit closes the isolated context and removes its temporary profile. Each subsequent
   Chromium launch also removes only abandoned `cachelikes-edge-*` or `cachelikes-chrome-*`
   directories older than 24 hours; unrelated temporary paths are not touched.
+- A failed temporary-profile removal reports its retained directory and remains protected from
+  stale-profile cleanup in the current process. Cleanup errors become exception notes and log
+  warnings when an earlier task, launch, copy, or close error already exists; otherwise they fail
+  the operation. Inspect task-owned browser processes before manual cleanup. This protection is
+  process-local, not a durable orphan-process tracker across service restarts.
 - Do not add or repeatedly troubleshoot login flows as part of normal runtime operation. The
   application assumes an existing signed-in session.
 

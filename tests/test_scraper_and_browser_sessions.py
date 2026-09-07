@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.7.1-codex.1
+Code version: v1.7.2-codex.1
 """
 
 from __future__ import annotations
@@ -648,6 +648,91 @@ def test_managed_chromium_context_propagates_unexpected_close_errors(
     assert exc_info.value is close_error
     context.close.assert_called_once_with()
     assert not temporary_profile_root.exists()
+
+
+@pytest.mark.parametrize("failure_stage", ("success", "task", "launch", "close"))
+def test_chromium_cleanup_failure_retains_profile_and_preserves_primary_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_stage: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import app.core.browser_sessions as browser_sessions
+
+    source = tmp_path / "Edge"
+    source.mkdir()
+    temp_root = tmp_path / "cachelikes-edge-owned"
+    temp_root.mkdir()
+    profile = SimpleNamespace(
+        name=str(temp_root),
+        cleanup=MagicMock(side_effect=PermissionError("Profile is still open")),
+    )
+    monkeypatch.setattr(browser_sessions, "_ACTIVE_CHROMIUM_PROFILE_ROOTS", {temp_root})
+    monkeypatch.setattr(browser_sessions, "clone_browser_profile", lambda _descriptor: (temp_root, profile))
+    monkeypatch.setattr(browser_sessions.tempfile, "gettempdir", lambda: str(tmp_path))
+    descriptor = BrowserDescriptor(
+        browser_id="edge", label="Edge", icon_filename="", engine="chromium",
+        user_data_dir=source, profile_directory="Default", channel="msedge",
+    )
+    primary_error = ValueError(f"Original {failure_stage} failure")
+    context = MagicMock()
+    if failure_stage == "close":
+        context.close.side_effect = primary_error
+    elif failure_stage == "task":
+        context.close.side_effect = RuntimeError("Secondary close failure")
+    launch = MagicMock(return_value=context)
+    if failure_stage == "launch":
+        launch.side_effect = primary_error
+    playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch))
+
+    with pytest.raises((RuntimeError, ValueError)) as caught:
+        with launch_chromium_context(playwright, descriptor, headless=False):
+            if failure_stage == "task":
+                raise primary_error
+
+    if failure_stage == "success":
+        assert "Could not remove" in str(caught.value)
+        assert str(temp_root) in str(caught.value)
+    else:
+        assert caught.value is primary_error
+        assert any(str(temp_root) in note for note in primary_error.__notes__)
+    assert "Could not remove" in caplog.text
+    assert temp_root in browser_sessions._ACTIVE_CHROMIUM_PROFILE_ROOTS
+    assert context.close.call_count == (0 if failure_stage == "launch" else 1)
+    old_time = time.time() - 2 * 24 * 60 * 60
+    os.utime(temp_root, (old_time, old_time))
+    assert _housekeep_stale_chromium_profiles(descriptor) == 0
+    assert temp_root.exists()
+
+    profile.cleanup.side_effect = None
+    browser_sessions._cleanup_cloned_browser_profile(profile)
+    assert temp_root not in browser_sessions._ACTIVE_CHROMIUM_PROFILE_ROOTS
+
+
+def test_clone_copy_failure_is_not_replaced_by_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.browser_sessions as browser_sessions
+
+    source = tmp_path / "Edge"
+    (source / "Default").mkdir(parents=True)
+    temp_root = tmp_path / "cachelikes-edge-copy"
+    temp_root.mkdir()
+    profile = SimpleNamespace(
+        name=str(temp_root), cleanup=MagicMock(side_effect=PermissionError("File in use")),
+    )
+    monkeypatch.setattr(browser_sessions, "_ACTIVE_CHROMIUM_PROFILE_ROOTS", set())
+    monkeypatch.setattr(browser_sessions, "_housekeep_stale_chromium_profiles", lambda _descriptor: 0)
+    monkeypatch.setattr(browser_sessions.tempfile, "TemporaryDirectory", lambda **_kwargs: profile)
+    copy_error = OSError("Source profile changed during copy")
+    monkeypatch.setattr(browser_sessions.shutil, "copytree", MagicMock(side_effect=copy_error))
+    descriptor = BrowserDescriptor(
+        browser_id="edge", label="Edge", icon_filename="", engine="chromium",
+        user_data_dir=source, profile_directory="Default", channel="msedge",
+    )
+    with pytest.raises(OSError) as caught:
+        clone_browser_profile(descriptor)
+    assert caught.value is copy_error
+    assert any(str(temp_root) in note for note in copy_error.__notes__)
+    assert (source / "Default").is_dir()
 
 
 def test_stale_chromium_profiles_are_removed_without_touching_other_temp_paths(
