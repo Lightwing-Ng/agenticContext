@@ -1,4 +1,4 @@
-{# Code version: v1.28.0-codex.1 #}
+{# Code version: v1.29.1-codex.1 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,15 +8,14 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.99.0-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.100.1-codex.1') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.2-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.9.2-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.8.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.13.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.14.0-codex.1') }}"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -248,36 +247,7 @@
                     {% block source_notice %}{% endblock %}
                     </article>
 
-                    <section class="workspace-grid workspace-content-card">
-                        <div class="report-card workspace-article-card log-card anchor-section" id="activity">
-                            <div class="report-heading-row">
-                                <div>
-                                    <h2>Recent activity</h2>
-                                </div>
-                            </div>
-                            <div class="events-table-shell">
-                                <div class="events-table-scroll">
-                                    <table class="events-table" aria-label="Recent events table">
-                                        <thead>
-                                            <tr>
-                                                <th scope="col" class="events-col-index">#</th>
-                                                <th scope="col">Event</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody id="recent_events_body"></tbody>
-                                    </table>
-                                </div>
-                                <nav
-                                    class="browser-pagination local-store-pagination local-store-pagination--floating events-pagination"
-                                    data-layout-role="pagination"
-                                    id="recent_events_pagination"
-                                    aria-label="Recent event pages"
-                                    hidden
-                                >
-                                </nav>
-                            </div>
-                        </div>
-                    </section>
+
                 </div>
             </div>
         </section>
@@ -285,7 +255,6 @@
 
     {% set dock_section = cache_source.key %}
     {% include "_sidebar_dock.html" %}
-    <script type="application/json" id="cache_page_initial_state">{{ {"recent_events": snapshot.recent_events}|tojson }}</script>
 </main>
 
 {% include "_waiting_modal.html" %}

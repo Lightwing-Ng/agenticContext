@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.97.12-codex.1
+# Code version: v1.97.13-codex.1
 
 from __future__ import annotations
 
@@ -510,7 +510,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.13.0-codex.1', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.14.0-codex.1', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.2-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt"', chatgpt_body)
@@ -641,7 +641,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.21.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
-                    "style-v2.99.0-codex.1" if page_source in {"grok", "chatgpt", "gemini", "x"}
+                    "style-v2.100.0-codex.1" if page_source in {"grok", "chatgpt", "gemini", "x"}
                     else "style-v2.96.2-codex.1"
                 )
                 self.assertIn(expected_style_version, body)
@@ -750,16 +750,9 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('<select', heading_markup)
                 self.assertIn('class="cache-phase-live-marker"', body)
                 self.assertIn('role="status"', body)
-                self.assertIn('id="recent_events_pagination"', body)
-                self.assertIn(
-                    'class="browser-pagination local-store-pagination local-store-pagination--floating events-pagination"',
-                    body,
-                )
-                pagination_start = body.index('id="recent_events_pagination"')
-                pagination_end = body.index(">", pagination_start)
-                pagination_markup = body[pagination_start:pagination_end]
-                self.assertIn('aria-label="Recent event pages"', pagination_markup)
-                self.assertIn("hidden", pagination_markup)
+                self.assertNotIn('id="activity"', body)
+                self.assertNotIn('id="recent_events_pagination"', body)
+                self.assertNotIn('id="cache_page_initial_state"', body)
                 self.assertNotIn('class="local-store-pagination-indicator" aria-hidden="true"></span>', body)
                 self.assertNotIn('class="events-page-button"', body)
                 self.assertNotIn('class="events-page-indicator"', body)
@@ -3062,42 +3055,13 @@ class WebAppTests(unittest.TestCase):
             "targetUrl.origin !== window.location.origin",
             "targetUrl.href === window.location.href",
             "window.location.assign(targetUrl.href)",
-            'const normalizedActiveId = ["overview", sourceKey, "activity"].includes(activeId)',
+            'const normalizedActiveId = ["overview", sourceKey].includes(activeId)',
             '? "cache"',
         )
 
         for fragment in expected_fragments:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
-
-    def test_recent_events_use_the_resource_browser_pagination_pattern(self) -> None:
-        script = CACHE_PAGE_SCRIPT_PATH.read_text(encoding="utf-8")
-
-        expected_fragments = (
-            'document.getElementById("recent_events_pagination")',
-            "function buildRecentEventsPaginationItems(totalPages, currentPage)",
-            "if (totalPages <= 1) return [];",
-            'items.push({ kind: "previous", page: startPage - 1 })',
-            'items.push({ kind: "ellipsis" })',
-            'button.className = `local-store-page-button',
-            'indicator.className = "local-store-pagination-indicator"',
-            "function positionRecentEventsPaginationIndicator({ immediate = false } = {})",
-            "paginationMotion.positionPaginationIndicator(",
-            "paginationMotion?.capturePaginationAnimation(",
-            "paginationMotion.animatePaginationIndicator(",
-        )
-
-        for fragment in expected_fragments:
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, script)
-
-        for removed_identifier in (
-            "recent_events_prev",
-            "recent_events_next",
-            "recent_events_page",
-        ):
-            with self.subTest(removed_identifier=removed_identifier):
-                self.assertNotIn(removed_identifier, script)
 
     def test_pagination_motion_reuses_capture_and_replay_animation_pattern(self) -> None:
         script = PAGINATION_MOTION_SCRIPT_PATH.read_text(encoding="utf-8")
@@ -3111,22 +3075,6 @@ class WebAppTests(unittest.TestCase):
             'pagination.classList.add("is-animated", "is-animating");',
             "getPaginationMotionDurationMs(pagination)",
         ):
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, script)
-
-    def test_recent_events_pagination_hides_when_only_one_page_is_available(self) -> None:
-        script = CACHE_PAGE_SCRIPT_PATH.read_text(encoding="utf-8")
-
-        expected_fragments = (
-            "function buildRecentEventsPaginationState(totalPages, currentPage)",
-            "const shouldRender = normalizedTotalPages > 1;",
-            "recentEventsPagination.hidden = !paginationState.shouldRender;",
-            "recentEventsPagination.replaceChildren();",
-            'recentEventsPagination.style.removeProperty("--local-store-pagination-slots");',
-            'recentEventsPagination.classList.remove("is-animated");',
-        )
-
-        for fragment in expected_fragments:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
 
@@ -3147,7 +3095,6 @@ class WebAppTests(unittest.TestCase):
 
         for fragment in (
             'const statusPollIntervalMs = 3_000;',
-            'if (nextSignature === recentEventsSignature) return;',
             'if (nextSignature === lastRenderedStatusSignature && !statusRefreshFailed) return;',
             'if (!statusUrl || statusRefreshInFlight || document.hidden) return;',
             'document.addEventListener("visibilitychange", handleVisibilityChange);',
@@ -3155,8 +3102,6 @@ class WebAppTests(unittest.TestCase):
             'const datetimeFormatter = new Intl.DateTimeFormat("en-US",',
             'if (element.dataset.statusFormat === "datetime")',
             'formatDatetime(rawValue)',
-            'function formatRecentEvent(eventText)',
-            'formatRecentEvent(eventText)',
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)

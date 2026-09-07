@@ -1,4 +1,4 @@
-/* Code version: v1.13.0-codex.1 */
+/* Code version: v1.14.0-codex.1 */
 
 (() => {
     "use strict";
@@ -10,7 +10,6 @@
     const sourceLabel = page.dataset.cacheSourceLabel || "Cache";
     const statusUrl = page.dataset.cacheStatusUrl || "";
     const progressStrategyName = page.dataset.cacheProgressStrategy || "queue";
-    const recentEventsPageSize = 12;
     const statusPollIntervalMs = 3_000;
     const terminalPhases = new Set(["finished", "completed", "success", "stopped"]);
     const numberFormatter = new Intl.NumberFormat("en-US");
@@ -51,19 +50,12 @@
     const statusProgressValue = document.getElementById("status_progress_value");
     const statusProgressDetail = document.getElementById("status_progress_detail");
     const progressProcessedLabel = document.querySelector("[data-progress-unit-label]");
-    const recentEventsBody = document.getElementById("recent_events_body");
-    const recentEventsPagination = document.getElementById("recent_events_pagination");
-    const paginationMotion = window.CACHELIKES_PAGINATION_MOTION;
     const cacheSourceSwitcher = document.querySelector("[data-cache-source-switcher]");
     const sectionLinks = Array.from(document.querySelectorAll("[data-section-link]"));
     const statusFields = Array.from(document.querySelectorAll("[data-status-field]"));
-    const initialStateNode = document.getElementById("cache_page_initial_state");
     const cacheContentModeControl = document.querySelector("[data-cache-content-mode]");
     const cacheContentModeStorageKey = "cachelikes:browser-content-mode:v1";
 
-    let recentEvents = [];
-    let recentEventsCurrentPage = 1;
-    let recentEventsSignature = "";
     let lastRenderedStatusSignature = "";
     let statusPollTimer = 0;
     let statusRefreshInFlight = false;
@@ -192,16 +184,6 @@
             + " (" + timezoneCode + ")";
     }
 
-    function formatRecentEvent(eventText) {
-        const rawEvent = String(eventText || "");
-        const match = rawEvent.match(/^\[([^\]]+)\](.*)$/);
-        if (!match) return rawEvent;
-        const formattedTimestamp = formatDatetime(match[1]);
-        return formattedTimestamp === "Unknown date"
-            ? rawEvent
-            : "[" + formattedTimestamp + "]" + match[2];
-    }
-
     function setPhaseState(phase) {
         const normalizedPhase = String(phase || "idle");
         if (phaseChip) {
@@ -218,198 +200,8 @@
         }
     }
 
-    function recentEventsTotalPages() {
-        return Math.max(1, Math.ceil(recentEvents.length / recentEventsPageSize));
-    }
-
-    function normalizePaginationPage(value, fallback = 1) {
-        const numericValue = Number(value);
-        if (!Number.isFinite(numericValue)) return fallback;
-        return Math.max(1, Math.trunc(numericValue));
-    }
-
-    function buildRecentEventsPaginationState(totalPages, currentPage) {
-        const normalizedTotalPages = normalizePaginationPage(totalPages);
-        const normalizedCurrentPage = Math.min(
-            normalizedTotalPages,
-            normalizePaginationPage(currentPage),
-        );
-        const shouldRender = normalizedTotalPages > 1;
-        return {
-            totalPages: normalizedTotalPages,
-            currentPage: normalizedCurrentPage,
-            shouldRender,
-            items: shouldRender
-                ? buildRecentEventsPaginationItems(normalizedTotalPages, normalizedCurrentPage)
-                : [],
-        };
-    }
-
-    function buildRecentEventsPaginationItems(totalPages, currentPage) {
-        if (totalPages <= 1) return [];
-
-        const chunkSize = 5;
-        const startPage = Math.floor((currentPage - 1) / chunkSize) * chunkSize + 1;
-        const endPage = Math.min(startPage + chunkSize - 1, totalPages);
-        const items = [];
-
-        if (startPage > 1) {
-            items.push({ kind: "previous", page: startPage - 1 });
-            items.push({ kind: "page", page: 1 });
-            items.push({ kind: "ellipsis" });
-        }
-        for (let pageNumber = startPage; pageNumber <= endPage; pageNumber += 1) {
-            items.push({ kind: "page", page: pageNumber, isActive: pageNumber === currentPage });
-        }
-        if (endPage < totalPages) {
-            items.push({ kind: "ellipsis" });
-            items.push({ kind: "page", page: totalPages });
-            items.push({ kind: "next", page: endPage + 1 });
-        }
-        return items;
-    }
-
-    function positionRecentEventsPaginationIndicator({ immediate = false } = {}) {
-        if (!recentEventsPagination || !paginationMotion) return;
-        paginationMotion.positionPaginationIndicator(
-            recentEventsPagination,
-            recentEventsPagination.querySelector(".local-store-page-button.is-active"),
-            { immediate },
-        );
-    }
-
-    function renderRecentEventsPagination(totalPages, { animationState = null } = {}) {
-        if (!recentEventsPagination) return;
-        const paginationState = buildRecentEventsPaginationState(totalPages, recentEventsCurrentPage);
-        recentEventsCurrentPage = paginationState.currentPage;
-        recentEventsPagination.hidden = !paginationState.shouldRender;
-
-        if (!paginationState.shouldRender) {
-            paginationMotion?.clearPaginationAnimation(recentEventsPagination);
-            recentEventsPagination.replaceChildren();
-            recentEventsPagination.style.removeProperty("--local-store-pagination-slots");
-            recentEventsPagination.classList.remove("is-animated");
-            return;
-        }
-
-        const indicator = recentEventsPagination.querySelector(".local-store-pagination-indicator")
-            || document.createElement("span");
-        indicator.className = "local-store-pagination-indicator";
-        indicator.setAttribute("aria-hidden", "true");
-        const items = paginationState.items;
-        const controls = items.map((item) => {
-            if (item.kind === "ellipsis") {
-                const ellipsis = document.createElement("span");
-                ellipsis.className = "local-store-page-ellipsis";
-                ellipsis.setAttribute("aria-hidden", "true");
-                const dots = document.createElement("span");
-                dots.className = "local-store-page-ellipsis-dots";
-                ellipsis.appendChild(dots);
-                return ellipsis;
-            }
-
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = `local-store-page-button${item.isActive ? " is-active" : ""}${item.kind === "page" ? "" : " local-store-page-nav"}`;
-            button.dataset.paginationTarget = String(item.page);
-            button.dataset.paginationCurrent = item.isActive ? "1" : "0";
-            if (item.isActive) {
-                button.setAttribute("aria-current", "page");
-            }
-
-            if (item.kind === "page") {
-                button.textContent = String(item.page);
-                button.setAttribute("aria-label", `Event page ${item.page}`);
-            } else {
-                const isPrevious = item.kind === "previous";
-                button.setAttribute("aria-label", isPrevious ? "Previous event page group" : "Next event page group");
-                const icon = document.createElement("span");
-                icon.className = `icon ${isPrevious ? "icon-page-prev" : "icon-page-next"}`;
-                icon.setAttribute("aria-hidden", "true");
-                button.appendChild(icon);
-            }
-
-            button.addEventListener("click", () => {
-                if (item.isActive) return;
-                const nextAnimationState = paginationMotion?.capturePaginationAnimation(
-                    recentEventsPagination,
-                    item.page,
-                );
-                recentEventsCurrentPage = item.page;
-                renderRecentEventsPage({ animationState: nextAnimationState });
-            });
-            return button;
-        });
-
-        recentEventsPagination.style.setProperty("--local-store-pagination-slots", String(items.length));
-        recentEventsPagination.replaceChildren(indicator, ...controls);
-        window.requestAnimationFrame(() => {
-            if (animationState && paginationMotion) {
-                paginationMotion.animatePaginationIndicator(recentEventsPagination, animationState);
-                return;
-            }
-            positionRecentEventsPaginationIndicator({ immediate: true });
-        });
-    }
-
-    function renderRecentEventsPage({ animationState = null } = {}) {
-        if (!recentEventsBody || !recentEventsPagination) return;
-        const totalPages = recentEventsTotalPages();
-        recentEventsCurrentPage = Math.min(Math.max(recentEventsCurrentPage, 1), totalPages);
-        const pageStartIndex = (recentEventsCurrentPage - 1) * recentEventsPageSize;
-        const pageItems = recentEvents.slice(pageStartIndex, pageStartIndex + recentEventsPageSize);
-        recentEventsBody.replaceChildren();
-
-        if (!pageItems.length) {
-            const row = document.createElement("tr");
-            const indexCell = document.createElement("td");
-            const messageCell = document.createElement("td");
-            indexCell.textContent = "-";
-            indexCell.className = "events-empty-index";
-            messageCell.textContent = "No recent events.";
-            messageCell.className = "events-empty-message";
-            row.append(indexCell, messageCell);
-            recentEventsBody.appendChild(row);
-        } else {
-            pageItems.forEach((eventText, index) => {
-                const row = document.createElement("tr");
-                const indexCell = document.createElement("td");
-                const messageCell = document.createElement("td");
-                indexCell.textContent = String(pageStartIndex + index + 1);
-                const formattedEvent = formatRecentEvent(eventText);
-                const timestampedEvent = formattedEvent.match(/^\[([^\]]+)\]\s*(.*)$/s);
-                if (timestampedEvent) {
-                    const timestamp = document.createElement("span");
-                    timestamp.className = "cache-event-time";
-                    timestamp.textContent = timestampedEvent[1];
-                    const description = document.createElement("span");
-                    description.textContent = timestampedEvent[2];
-                    messageCell.append(timestamp, description);
-                } else {
-                    messageCell.textContent = formattedEvent;
-                }
-                row.append(indexCell, messageCell);
-                recentEventsBody.appendChild(row);
-            });
-        }
-
-        renderRecentEventsPagination(totalPages, { animationState });
-    }
-
-    function setRecentEvents(events) {
-        const nextEvents = (Array.isArray(events) ? events : [])
-            .map((eventText) => String(eventText || ""))
-            .filter((eventText) => eventText.trim().length > 0);
-        const nextSignature = JSON.stringify(nextEvents);
-        if (nextSignature === recentEventsSignature) return;
-        recentEvents = nextEvents;
-        recentEventsSignature = nextSignature;
-        recentEventsCurrentPage = recentEventsTotalPages();
-        renderRecentEventsPage();
-    }
-
     function updateSectionLinkState(activeId) {
-        const normalizedActiveId = ["overview", sourceKey, "activity"].includes(activeId)
+        const normalizedActiveId = ["overview", sourceKey].includes(activeId)
             // Cache page anchors belong to the Cache Dock section, not a source-specific Dock item.
             ? "cache"
             : activeId;
@@ -764,7 +556,6 @@
         statusRefreshFailed = false;
         updateStatusFields(data);
         setPhaseState(data.phase);
-        setRecentEvents(data.recent_events || []);
         updateProgressUnitLabel(data);
         updateProgress(data);
         updateActionState(data);
@@ -801,26 +592,10 @@
         if (!document.hidden) void refreshStatus();
     }
 
-    function readInitialEvents() {
-        if (!initialStateNode) return [];
-        try {
-            const payload = JSON.parse(initialStateNode.textContent || "{}");
-            return Array.isArray(payload.recent_events) ? payload.recent_events : [];
-        } catch (_error) {
-            return [];
-        }
-    }
-
-    window.addEventListener(
-        "resize",
-        () => positionRecentEventsPaginationIndicator({ immediate: true }),
-        { passive: true },
-    );
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("pagehide", () => window.clearTimeout(statusPollTimer), { once: true });
 
     initializeCacheSourceSwitcher();
     initializeSectionTracking();
-    setRecentEvents(readInitialEvents());
     void refreshStatus();
 })();

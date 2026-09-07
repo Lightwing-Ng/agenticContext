@@ -1,4 +1,4 @@
-/* Code version: v2.99.0-codex.1 */
+/* Code version: v2.100.1-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -171,11 +171,11 @@
     --radius-soft: var(--radius-panel);
     --radius-pill: 999px;
     --mode-switch-radius: var(--radius-pill);
-    --mode-switch-pad: 4px;
+    --mode-switch-pad: 2px;
     --mode-switch-gap: 4px;
-    --mode-switch-min-height: 36px;
-    --mode-switch-thumb-inset: 4px;
-    --mode-switch-thumb-offset: 6px;
+    --mode-switch-min-height: 32px;
+    --mode-switch-thumb-inset: 2px;
+    --mode-switch-thumb-offset: 4px;
     --mode-switch-label-pad-inline: 12px;
     --mode-switch-label-min-height: 28px;
     --mode-switch-thumb-background: var(--accent-fill);
@@ -2159,19 +2159,6 @@ html.sidebar-memory-collapsed .app-shell .cache-overview-title-card {
     height: 100%;
 }
 
-main[data-cache-page] #workspace_panel > .workspace-header > .cache-workspace-content > .workspace-grid {
-    flex: 1 0 240px;
-    height: auto;
-    min-height: 240px;
-}
-
-#workspace_panel .log-card {
-    grid-column: 1;
-    grid-row: 1;
-    min-height: 0;
-    height: 100%;
-}
-
 #settings_workspace {
     min-height: 0;
     max-height: 100%;
@@ -2325,17 +2312,6 @@ main[data-cache-page] #workspace_panel > .workspace-header > .cache-workspace-co
     min-height: 0;
     flex: 1 1 auto;
     align-content: stretch;
-    overflow: hidden;
-}
-
-.log-card {
-    grid-column: span 3;
-    height: 100%;
-    min-height: 0;
-    min-width: 0;
-    max-height: 100%;
-    display: flex;
-    flex-direction: column;
     overflow: hidden;
 }
 
@@ -2762,10 +2738,6 @@ a.ghost-link[href$="/settings"] {
     vertical-align: middle;
 }
 
-.events-col-index {
-    width: 68px;
-}
-
 .events-table tbody tr {
     background: var(--scrollable-data-table-row-background);
 }
@@ -2787,11 +2759,6 @@ a.ghost-link[href$="/settings"] {
 
 .events-table tbody tr + tr td {
     border-top: 1px solid var(--theme-glass-border);
-}
-
-.events-empty-index,
-.events-empty-message {
-    color: var(--muted) !important;
 }
 
 .notice[data-dismissible-notice],
@@ -3365,19 +3332,12 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
         grid-template-rows: auto minmax(0, 1fr);
     }
 
-    .log-card {
-        grid-column: span 2;
-    }
 }
 
 @media (max-width: 600px) {
     .workspace-grid {
         grid-template-columns: 1fr;
         grid-template-rows: auto auto minmax(0, 1fr);
-    }
-
-    .log-card {
-        grid-column: auto;
     }
 
     .metric-grid {
@@ -5028,7 +4988,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     -webkit-backdrop-filter: var(--frosted-glass-blur);
     overflow: hidden;
 }
-
 
 .workspace-modal-icon {
     grid-column: 1;
@@ -8801,22 +8760,6 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     pointer-events: none;
 }
 
-.browser-pagination.events-pagination {
-    position: absolute;
-    left: 50%;
-    bottom: var(--events-pagination-edge-inset);
-    z-index: var(--layer-inline-ornament);
-    width: max-content;
-    max-width: calc(100% - 16px);
-    margin: 0;
-    transform: translateX(-50%);
-    pointer-events: none;
-}
-
-.browser-pagination.events-pagination .local-store-page-button {
-    pointer-events: auto;
-}
-
 .browser-dialog {
     display: grid;
     grid-template-columns: minmax(0, 1.18fr) minmax(280px, 0.82fr);
@@ -11068,7 +11011,6 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .chart-tooltip-list dt { color: var(--muted); }
 .chart-tooltip-list dd { font-variant-numeric: tabular-nums; }
 
-
 .style-token-metric-demo-shell { padding: 8px 0; }
 
 .style-token-metric-card-demo {
@@ -11683,8 +11625,7 @@ main[data-cache-page] .cache-progress-heading {
     margin: 0;
 }
 
-main[data-cache-page] .cache-progress-heading h2,
-main[data-cache-page] #activity h2 {
+main[data-cache-page] .cache-progress-heading h2 {
     margin: 0;
     font-size: var(--font-ui-lg);
     font-weight: var(--font-weight-medium);
@@ -11737,32 +11678,6 @@ main[data-cache-page] .progress-metric-grid:not(:has(> :not([hidden]))) {
 main[data-cache-page] .progress-metric-card strong {
     font-size: var(--font-ui-lg);
     color: var(--text);
-}
-
-main[data-cache-page] #activity > .report-heading-row {
-    margin-block: 4px 12px;
-}
-
-main[data-cache-page] .events-table tbody td {
-    padding-block: 10px;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-}
-
-main[data-cache-page] .events-table {
-    min-width: 0;
-}
-
-main[data-cache-page] .events-col-index {
-    width: 36px;
-}
-
-main[data-cache-page] .cache-event-time {
-    display: block;
-    margin-block-end: 4px;
-    color: var(--muted);
-    font-size: var(--font-ui-sm);
-    font-variant-numeric: tabular-nums;
 }
 
 /* The status summary owns the activity disclosure and its latest-item preview. */

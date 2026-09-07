@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.32.13-codex.1
+Code version: v1.32.14-codex.1
 """
 
 from __future__ import annotations
@@ -421,10 +421,8 @@ def test_cache_events_card_stays_inside_content_scrollport_when_viewport_has_roo
             }"""
         )
         assert geometry["overview"] is not None
-        assert geometry["activity"] is not None
+        assert geometry["activity"] is None
         assert geometry["scrollport"] is not None
-        assert geometry["activity"]["top"] >= geometry["overview"]["bottom"]
-        assert geometry["activity"]["bottom"] <= geometry["scrollport"]["bottom"] + 1
         assert geometry["scrollHeight"] == geometry["clientHeight"]
         assert geometry["documentOverflow"] <= 1
     finally:
@@ -4487,7 +4485,7 @@ def test_chatgpt_media_uses_agent_recent_project_picker(
         expect(page.locator("#chatgpt_project_url_help")).to_have_count(0)
         expect(page.locator('[name="chatgpt_scan_wait_seconds"]')).to_have_count(0)
         expect(page.locator('#overview > .workspace-kicker')).to_have_count(0)
-        expect(page.locator('#activity h2')).to_have_text("Recent activity")
+        expect(page.locator("#activity")).to_have_count(0)
         expect(page.locator('[aria-label="ChatGPT sync notice"]')).to_have_count(0)
     finally:
         context.close()
@@ -9514,18 +9512,7 @@ def test_cache_annotations_keep_motion_icons_and_remaining_space(
         assert 8 <= gap <= 16
         if width <= 900:
             page.locator("#sidebar_toggle").click()
-        page.locator("#activity").scroll_into_view_if_needed()
-        geometry = page.evaluate("""() => {
-            const activity = document.querySelector('#activity').getBoundingClientRect();
-            const scroll = document.querySelector('.events-table-scroll');
-            const port = document.querySelector('.cache-workspace-content').getBoundingClientRect();
-            return {height: activity.height, bottom: activity.bottom, portBottom: port.bottom,
-                eventHeight: scroll.clientHeight, overflow: document.documentElement.scrollWidth - innerWidth};
-        }""")
-        assert geometry["height"] >= 238
-        assert geometry["eventHeight"] > 100
-        assert geometry["bottom"] <= geometry["portBottom"] + 1
-        assert geometry["overflow"] <= 1
+        expect(page.locator("#activity")).to_have_count(0)
         page.goto(f"{sidebar_server_url}/agent", wait_until="domcontentloaded")
         if width <= 900:
             page.locator("#sidebar_toggle").click()
@@ -9848,34 +9835,25 @@ def test_cache_overview_groups_unique_metrics_and_keeps_run_progress_current(
                 const bar = rect('#status_progress');
                 const phase = rect('#phase_value');
                 const heading = rect('#cache_progress_heading');
-                const activity = rect('#activity');
                 return {
                     overflow: document.documentElement.scrollWidth - innerWidth,
                     metricsBottom: metrics.bottom, progressTop: progress.top,
-                    progressBottom: progress.bottom, activityTop: activity.top,
                     barWidth: bar.width, progressWidth: progress.width,
                     headingRight: heading.right, phaseLeft: phase.left,
                 };
             }""")
             assert geometry["overflow"] <= 1
             assert geometry["metricsBottom"] <= geometry["progressTop"]
-            assert geometry["progressBottom"] <= geometry["activityTop"]
             assert abs(geometry["barWidth"] - geometry["progressWidth"]) <= 1
             assert geometry["headingRight"] <= geometry["phaseLeft"]
-            assert page.locator(".events-table-scroll").evaluate(
-                "node => node.scrollWidth <= node.clientWidth"
-            )
+            expect(page.locator("#activity")).to_have_count(0)
             if source == "chatgpt":
                 page.screenshot(path=str(tmp_path / f"cache-{mode}-{color_scheme}-{width}.png"))
         page.goto(f"{sidebar_server_url}/cache/chatgpt", wait_until="networkidle")
         snapshot.update(phase="failed", message="Cache run failed.")
         expect(page.locator("#phase_value")).to_have_attribute("data-phase", "failed", timeout=6_000)
         expect(page.locator("#message")).to_have_text("Cache run failed.")
-        page.get_by_role("button", name="Event page 1", exact=True).click()
-        expect(page.locator("#recent_events_body tr")).to_have_count(12)
-        expect(page.locator("#recent_events_body tr").first).to_contain_text("6 Sep 2026")
-        page.get_by_role("button", name="Event page 3", exact=True).click()
-        expect(page.locator("#recent_events_body tr")).to_have_count(1)
+        expect(page.locator("#recent_events_body")).to_have_count(0)
         assert errors == []
     finally:
         context.close()

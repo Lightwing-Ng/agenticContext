@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.54.3-codex.1
+Code version: v1.54.4-codex.1
 """
 
 import hashlib
@@ -647,7 +647,7 @@ def test_cache_source_heading_uses_the_shared_picker_and_live_marker() -> None:
 
 
 def test_events_table_consumes_shared_scrollable_table_tokens() -> None:
-    """Protect the log stream table against drifting away from sibling table tokens."""
+    """Protect the shared resource table against drifting away from sibling table tokens."""
     stylesheet = _stylesheet()
 
     expected_tokens = (
@@ -661,9 +661,6 @@ def test_events_table_consumes_shared_scrollable_table_tokens() -> None:
         "color: var(--scrollable-data-table-header-color);",
         "background: var(--scrollable-data-table-row-background);",
         "background: var(--scrollable-data-table-row-background-alt);",
-        ".browser-pagination.events-pagination {",
-        "bottom: var(--events-pagination-edge-inset);",
-        ".browser-pagination.events-pagination .local-store-page-button {",
     )
 
     for token in expected_tokens:
@@ -1617,8 +1614,6 @@ def test_cache_workspace_reuses_the_shared_title_rail_and_scroll_layer() -> None
         "padding-inline-end: 68px;",
         ".cache-overview-title-card .report-heading {",
         "text-wrap: balance;",
-        "main[data-cache-page] #workspace_panel > .workspace-header > .cache-workspace-content > .workspace-grid {",
-        "flex: 1 0 240px;",
         "height: auto;",
     ):
         assert token in stylesheet
