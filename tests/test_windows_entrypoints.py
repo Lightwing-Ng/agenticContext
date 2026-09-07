@@ -1,4 +1,4 @@
-"""Native Windows launcher and fail-closed gate tests. Code version: v1.1.1-codex.1."""
+"""Native Windows launcher and fail-closed gate tests. Code version: v1.1.2-codex.1."""
 
 import os
 from pathlib import Path
@@ -31,10 +31,14 @@ def test_windows_test_entrypoint_executes_pytest_and_preserves_exit_code(tmp_pat
     """A launcher returning zero without running the requested module must not pass."""
     probe = tmp_path / "test_probe.py"
     probe.write_text(f"def test_probe():\n    assert {passes}\n", encoding="utf-8")
+    configuration = tmp_path / "pytest.ini"
+    configuration.write_text("[pytest]\naddopts =\n", encoding="utf-8")
     environment = _windows_environment()
     environment["AGENTIC_CONTEXT_PYTHON"] = sys.executable
+    environment.pop("PYTEST_ADDOPTS", None)
     result = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", str(PROJECT_ROOT / "scripts/test.ps1"), str(probe), "-q"],
+        ["pwsh", "-NoProfile", "-File", str(PROJECT_ROOT / "scripts/test.ps1"),
+         "-c", str(configuration), str(probe)],
         env=environment, capture_output=True, text=True, timeout=60,
     )
     assert result.returncode == (0 if passes else 1), result.stdout + result.stderr

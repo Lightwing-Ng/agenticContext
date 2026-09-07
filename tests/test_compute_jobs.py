@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.3.2-codex.1
+Code version: v1.3.3-codex.1
 """
 
 from __future__ import annotations
@@ -168,6 +168,7 @@ def test_checkpoint_is_atomic_validated_and_explicitly_resumable(tmp_path: Path)
         idempotency_key="resume-source-001",
     )
     completed = _wait_for_terminal(manager, str(first["job_id"]))
+    assert completed["state"] == "succeeded", completed
     assert completed["can_resume"]
 
     resumed = manager.start(
@@ -177,7 +178,8 @@ def test_checkpoint_is_atomic_validated_and_explicitly_resumable(tmp_path: Path)
         resume_job_id=str(first["job_id"]),
     )
     assert resumed["resumed_from"] == first["job_id"]
-    assert _wait_for_terminal(manager, str(resumed["job_id"]))["state"] == "succeeded"
+    finished = _wait_for_terminal(manager, str(resumed["job_id"]))
+    assert finished["state"] == "succeeded", finished
 
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()

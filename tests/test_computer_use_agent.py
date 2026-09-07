@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.58.1-codex.1
+Code version: v3.58.2-codex.1
 """
 
 from __future__ import annotations
@@ -1443,7 +1443,10 @@ def test_chatgpt_effort_slider_finder_rejects_an_unrelated_generic_slider() -> N
 
 
 @pytest.mark.integration
-def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(disposable_browser_launch) -> None:
+def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
+    disposable_browser_launch,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Exercise the browser DOM binding without accessing a provider page."""
     playwright_sync = pytest.importorskip("playwright.sync_api")
     with playwright_sync.sync_playwright() as playwright:
@@ -1575,15 +1578,78 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(disposab
                   })();
                 </script>
             """
+            import app.core.computer_use_agent as computer_use_agent
+
+            model_view_timeouts: list[dict[str, str]] = []
+            original_timeout_classifier = computer_use_agent._is_composer_wait_timeout
+
+            def record_model_view_timeout(exc: Exception) -> bool:
+                timed_out = original_timeout_classifier(exc)
+                if timed_out and len(model_view_timeouts) < 4:
+                    model_view_timeouts.append(
+                        {"type": type(exc).__name__, "message": str(exc)[:6_000]}
+                    )
+                return timed_out
+
+            monkeypatch.setattr(
+                computer_use_agent, "_is_composer_wait_timeout", record_model_view_timeout
+            )
+
+            def model_view_failure_diagnostics() -> str:
+                diagnostics: dict[str, object] = {
+                    "browser_version": browser.version,
+                    "timeouts": model_view_timeouts,
+                }
+                try:
+                    diagnostics["dom"] = page.evaluate(
+                        r"""() => {
+                            const describe = (element) => {
+                                if (!element) return null;
+                                const rect = element.getBoundingClientRect();
+                                const center = document.elementFromPoint(
+                                    rect.x + rect.width / 2, rect.y + rect.height / 2
+                                );
+                                const style = getComputedStyle(element);
+                                return {
+                                    html: element.outerHTML.slice(0, 1200),
+                                    inert: Boolean(element.closest('[inert]')),
+                                    display: style.display,
+                                    visibility: style.visibility,
+                                    rect: rect.toJSON(),
+                                    centerHit: center?.outerHTML.slice(0, 400) || null,
+                                };
+                            };
+                            const trigger = document.querySelector('#view-trigger');
+                            const menuId = trigger?.getAttribute('aria-controls');
+                            const menu = menuId ? document.getElementById(menuId) : null;
+                            return {
+                                readyState: document.readyState,
+                                userAgent: navigator.userAgent,
+                                trigger: describe(trigger),
+                                menu: describe(menu),
+                                items: Array.from(menu?.querySelectorAll(
+                                    '[role="menuitem"], [data-testid$="-view"]'
+                                ) || []).slice(0, 8).map(describe),
+                            };
+                        }"""
+                    )
+                except Exception as exc:
+                    diagnostics["diagnostic_error"] = f"{type(exc).__name__}: {exc}"
+                return json.dumps(diagnostics, ensure_ascii=True, indent=2)
+
             page.set_content(
                 "<style>[role=menuitem] { display: block; }</style>" + view_menu
             )
             view_trigger = page.locator("#view-trigger")
-            assert _chatgpt_set_model_view(page, view_trigger, True)
+            assert _chatgpt_set_model_view(
+                page, view_trigger, True
+            ), model_view_failure_diagnostics()
             assert page.locator(
                 '[data-testid="composer-model-picker-slider-advanced-view"]'
             ).get_attribute("inert") is None
-            assert _chatgpt_set_model_view(page, view_trigger, False)
+            assert _chatgpt_set_model_view(
+                page, view_trigger, False
+            ), model_view_failure_diagnostics()
             assert page.locator(
                 '[data-testid="composer-model-picker-slider-simple-view"]'
             ).get_attribute("inert") is None
@@ -4145,14 +4211,30 @@ def test_atomic_settings_replace_failure_preserves_the_previous_file(
     settings_path = tmp_path / "computer-use-agent.json"
     original = b'{"preserve":"the complete prior settings"}\n'
     settings_path.write_bytes(original)
+    attempted_destinations: list[Path] = []
 
-    def fail_replace(_source: object, _destination: object) -> None:
+    def fail_replace(source: Path, destination: Path) -> None:
+        assert source.stat().st_size > 0
+        attempted_destinations.append(destination)
         raise OSError("replace failed")
 
-    monkeypatch.setattr(computer_use_agent.os, "replace", fail_replace)
+    if os.name == "nt":
+        from app.core import owner_only_permissions
+
+        def fail_publish(_api: object, descriptor: int, target: Path) -> None:
+            assert os.fstat(descriptor).st_size > 0
+            attempted_destinations.append(target)
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(
+            owner_only_permissions._WindowsPermissions, "publish", fail_publish
+        )
+    else:
+        monkeypatch.setattr(computer_use_agent.os, "replace", fail_replace)
     with pytest.raises(OSError, match="replace failed"):
         save_computer_use_settings(ComputerUseSettings(), settings_path)
 
+    assert attempted_destinations == [settings_path]
     assert settings_path.read_bytes() == original
     assert list(tmp_path.glob(".computer-use-agent.json.*.tmp")) == []
 
@@ -6047,13 +6129,33 @@ def test_context_post_write_failure_leaves_no_orphan_or_recovery_pointer(
     store = ComputerUseSettingsStore(tmp_path / "settings.json")
     runtime_root = tmp_path / "runtime"
     original_chmod = Path.chmod
+    failed_contexts: list[Path] = []
 
     def fail_context_chmod(path: Path, mode: int) -> None:
         if path.name == "context.md":
-            raise OSError("context chmod failed")
+            assert path.stat().st_size > 0
+            failed_contexts.append(path)
+            raise OSError("context post-write check failed")
         original_chmod(path, mode)
 
-    monkeypatch.setattr(Path, "chmod", fail_context_chmod)
+    if os.name == "nt":
+        from app.core import owner_only_permissions
+
+        original_atomic_write = owner_only_permissions.atomic_write_owner_only_bytes
+
+        def fail_context_after_write(path: Path, content: bytes) -> None:
+            original_atomic_write(path, content)
+            if path.name == "context.md":
+                assert path.read_bytes() == content
+                assert content
+                failed_contexts.append(path)
+                raise OSError("context post-write check failed")
+
+        monkeypatch.setattr(
+            owner_only_permissions, "atomic_write_owner_only_bytes", fail_context_after_write
+        )
+    else:
+        monkeypatch.setattr(Path, "chmod", fail_context_chmod)
     monkeypatch.setattr(
         "app.core.computer_use_agent._start_macos_idle_sleep_assertion",
         lambda: None,
@@ -6074,7 +6176,8 @@ def test_context_post_write_failure_leaves_no_orphan_or_recovery_pointer(
     snapshot = service.snapshot()
     assert snapshot["running"] is False
     assert snapshot["phase"] == "failed"
-    assert "context chmod failed" in snapshot["last_error"]
+    assert len(failed_contexts) == 1
+    assert "context post-write check failed" in snapshot["last_error"]
     assert snapshot["context_file"] == ""
     assert snapshot["context_bytes"] == 0
     assert list(runtime_root.glob("*/context.md")) == []
@@ -6090,10 +6193,13 @@ def test_context_post_write_and_unlink_failure_persists_recovery_pointer(
     runtime_root = tmp_path / "runtime"
     original_chmod = Path.chmod
     original_unlink = Path.unlink
+    failed_contexts: list[Path] = []
 
     def fail_context_chmod(path: Path, mode: int) -> None:
         if path.name == "context.md":
-            raise OSError("context chmod failed")
+            assert path.stat().st_size > 0
+            failed_contexts.append(path)
+            raise OSError("context post-write check failed")
         original_chmod(path, mode)
 
     def fail_context_unlink(path: Path, *args: object, **kwargs: object) -> None:
@@ -6101,7 +6207,24 @@ def test_context_post_write_and_unlink_failure_persists_recovery_pointer(
             raise OSError("context unlink failed")
         original_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "chmod", fail_context_chmod)
+    if os.name == "nt":
+        from app.core import owner_only_permissions
+
+        original_atomic_write = owner_only_permissions.atomic_write_owner_only_bytes
+
+        def fail_context_after_write(path: Path, content: bytes) -> None:
+            original_atomic_write(path, content)
+            if path.name == "context.md":
+                assert path.read_bytes() == content
+                assert content
+                failed_contexts.append(path)
+                raise OSError("context post-write check failed")
+
+        monkeypatch.setattr(
+            owner_only_permissions, "atomic_write_owner_only_bytes", fail_context_after_write
+        )
+    else:
+        monkeypatch.setattr(Path, "chmod", fail_context_chmod)
     monkeypatch.setattr(Path, "unlink", fail_context_unlink)
     monkeypatch.setattr(
         "app.core.computer_use_agent._start_macos_idle_sleep_assertion",
@@ -6109,6 +6232,9 @@ def test_context_post_write_and_unlink_failure_persists_recovery_pointer(
     )
     service = ComputerUseAgentService(
         store,
+        runner=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("The Web runner must not start after a context build failure.")
+        ),
         runtime_root=runtime_root,
     )
 
@@ -6121,8 +6247,10 @@ def test_context_post_write_and_unlink_failure_persists_recovery_pointer(
     context_path = Path(snapshot["context_file"])
     assert snapshot["running"] is False
     assert snapshot["phase"] == "failed"
+    assert failed_contexts == [context_path]
     assert context_path.is_file()
     assert snapshot["context_bytes"] == context_path.stat().st_size
+    assert "context post-write check failed" in snapshot["last_error"]
     assert "context unlink failed" in snapshot["last_error"]
     persisted = json.loads(
         (runtime_root / "last-run.json").read_text(encoding="utf-8")

@@ -1,14 +1,17 @@
 """Native privacy checks for Agent settings, context, and runtime artifacts.
 
-Code version: v1.0.0-codex.1
+Code version: v1.0.1-codex.1
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
 import ctypes
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import os
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -241,7 +244,9 @@ def test_native_rename_buffer_encodes_full_unicode_name_and_replace_flag(tmp_pat
             assert information.root is None
             assert (
                 size
-                >= privacy._FileRenameInformation.name.offset + information.name_length
+                >= privacy._FileRenameInformation.name.offset
+                + information.name_length
+                + 2
             )
             encoded = ctypes.string_at(
                 ctypes.addressof(buffer) + privacy._FileRenameInformation.name.offset,
@@ -250,6 +255,15 @@ def test_native_rename_buffer_encodes_full_unicode_name_and_replace_flag(tmp_pat
             assert encoded.decode(
                 "utf-16-le"
             ) == privacy._WindowsPermissions._native_name(target)
+            assert (
+                ctypes.string_at(
+                    ctypes.addressof(buffer)
+                    + privacy._FileRenameInformation.name.offset
+                    + information.name_length,
+                    2,
+                )
+                == b"\x00\x00"
+            )
             return True
 
     target = tmp_path / "safe 用户.json"
@@ -326,3 +340,137 @@ def test_private_parent_cannot_be_swapped_during_native_creation(tmp_path, monke
     privacy.atomic_write_owner_only_text(target, "safe")
     assert parent.is_dir()
     assert target.read_text(encoding="utf-8") == "safe"
+
+
+@pytest.mark.parametrize("change", (False, True))
+def test_native_directory_access_participates_in_sharing_and_avoids_acl_propagation(
+    tmp_path, change
+):
+    class Kernel:
+        def CreateFileW(self, _path, access, sharing, *_arguments):
+            if change:
+                assert access == privacy._MAXIMUM_ALLOWED
+                assert sharing == 0
+            else:
+                assert access & privacy._FILE_LIST_DIRECTORY
+                assert not sharing & 4
+            return 123
+
+        def GetFileInformationByHandle(self, _handle, information):
+            information._obj.attributes = privacy._FILE_ATTRIBUTE_DIRECTORY
+            return True
+
+        def CloseHandle(self, _handle):
+            return True
+
+    api = privacy._WindowsPermissions.__new__(privacy._WindowsPermissions)
+    api.kernel = Kernel()
+    with api._existing(tmp_path, directory=True, change=change) as handle:
+        assert handle == 123
+
+
+@pytest.mark.parametrize("changed", ("file", "parent", "missing-parent"))
+def test_native_publication_requires_the_actual_expected_file_and_pinned_parent(
+    tmp_path, changed
+):
+    target = tmp_path / "private.txt"
+    api = privacy._WindowsPermissions.__new__(privacy._WindowsPermissions)
+    api._pinned_parent_handle = 2
+    names = {
+        1: privacy.ntpath.normcase(
+            privacy.ntpath.normpath(privacy._WindowsPermissions._native_name(target))
+        ),
+        2: privacy.ntpath.normcase(
+            privacy.ntpath.normpath(privacy._WindowsPermissions._native_name(tmp_path))
+        ),
+    }
+    api._final_name = names.__getitem__
+    api._verify_published_name(1, target)
+    if changed == "file":
+        names[1] += "wrong-name"
+    elif changed == "parent":
+        names[2] += "moved-parent"
+    else:
+        api._pinned_parent_handle = None
+    with pytest.raises(OSError, match="unexpected path|parent changed"):
+        api._verify_published_name(1, target)
+
+
+def test_already_private_directory_never_reopens_for_exclusive_mutation(tmp_path):
+    api = privacy._WindowsPermissions.__new__(privacy._WindowsPermissions)
+    current_user = "S-1-5-21-100"
+    calls = []
+
+    @contextmanager
+    def inspect_existing(_path, *, directory, change):
+        assert directory
+        assert not change
+        calls.append(True)
+        yield 123
+
+    api._existing = inspect_existing
+    api._read_acl = lambda _handle: {
+        "owner": current_user,
+        "current_user": current_user,
+        "protected": True,
+        "entries": [
+            {
+                "type": 0,
+                "flags": 3,
+                "mask": privacy._FILE_ALL_ACCESS,
+                "sid": current_user,
+            }
+        ],
+    }
+    api.protect(tmp_path, directory=True)
+    assert calls == [True]
+
+
+def test_two_runs_can_share_private_root_while_one_retains_parent_handles(tmp_path):
+    root = tmp_path / "runtime"
+    first_run, second_run = root / "run-one", root / "run-two"
+    for directory in (root, first_run, second_run):
+        privacy.ensure_owner_only_directory(directory)
+    pinned, completed = Event(), Event()
+
+    def first_worker():
+        @contextmanager
+        def retain_parents():
+            if os.name == "nt":
+                with privacy._WindowsPermissions().pin_parent_chain(
+                    first_run / "context.md"
+                ):
+                    yield
+            else:
+                yield
+
+        with retain_parents():
+            pinned.set()
+            assert completed.wait(10)
+            privacy.atomic_write_owner_only_text(
+                first_run / "context.md", "first synthetic context"
+            )
+
+    def second_worker():
+        assert pinned.wait(10)
+        try:
+            privacy.ensure_owner_only_directory(root)
+            privacy.atomic_write_owner_only_text(
+                second_run / "context.md", "second synthetic context"
+            )
+            privacy.atomic_write_owner_only_text(root / "last-run.json", "{}")
+        finally:
+            completed.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(first_worker), executor.submit(second_worker)]
+        for future in futures:
+            future.result(timeout=15)
+    assert (first_run / "context.md").read_text() == "first synthetic context"
+    assert (second_run / "context.md").read_text() == "second synthetic context"
+    for path in (
+        first_run / "context.md",
+        second_run / "context.md",
+        root / "last-run.json",
+    ):
+        privacy.assert_owner_only_path(path, directory=False)

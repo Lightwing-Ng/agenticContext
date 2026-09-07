@@ -1,6 +1,6 @@
 """Profile-bound readiness and stale-response browser regressions.
 
-Code version: v1.2.0-codex.1
+Code version: v1.2.1-codex.1
 """
 
 import json
@@ -181,12 +181,19 @@ def test_late_source_catalog_cannot_repopulate_the_previous_profile(disposable_b
             ready.pop("agent_sources")
         route.fulfill(json=ready)
 
+    def hold_source(route):
+        held.append(route)
+        page.evaluate("window.__testSourceRouteHeld = true")
+
     page.route("**/api/agent/status", status)
     page.route("**/api/browser-session?*", readiness)
-    page.route("**/api/agent/sources?*", lambda route: held.append(route))
+    page.route("**/api/agent/sources?*", hold_source)
     try:
         with page.expect_request("**/api/agent/sources?*"):
             page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        # Request emission precedes route dispatch. Change profiles only after
+        # the test owns the pending route that it will release below.
+        page.wait_for_function("window.__testSourceRouteHeld === true")
         assert held
         active[0] = "profile-b"
         expect(page.locator('[data-recent-conversation-url]')).to_contain_text("New profile session", timeout=10000)

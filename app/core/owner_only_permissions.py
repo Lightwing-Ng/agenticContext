@@ -1,12 +1,14 @@
 """Private Agent artifacts with POSIX modes or verified Windows owner DACLs.
 
-Code version: v1.0.0-codex.1
+Code version: v1.0.1-codex.1
 
 Native contracts:
 https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
 https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo
 https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew
 https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-string-format
+https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info
+https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 from contextlib import ExitStack, contextmanager
 import ctypes
 import logging
+import ntpath
 import os
 from pathlib import Path
 import stat
@@ -23,8 +26,8 @@ from uuid import uuid4
 
 LOGGER = logging.getLogger(__name__)
 _READ_CONTROL = 0x00020000
-_WRITE_DAC = 0x00040000
-_WRITE_OWNER = 0x00080000
+_MAXIMUM_ALLOWED = 0x02000000
+_FILE_LIST_DIRECTORY = 1
 _FILE_READ_ATTRIBUTES = 0x80
 _FILE_ALL_ACCESS = 0x001F01FF
 _FILE_ATTRIBUTE_DIRECTORY = 0x10
@@ -124,6 +127,12 @@ class _WindowsPermissions:
         self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         self.security = ctypes.WinDLL("advapi32", use_last_error=True)
         definitions = (
+            (
+                self.kernel,
+                "GetFinalPathNameByHandleW",
+                [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32],
+                ctypes.c_uint32,
+            ),
             (self.kernel, "GetCurrentProcess", [], ctypes.c_void_p),
             (self.kernel, "CloseHandle", [ctypes.c_void_p], ctypes.c_int32),
             (self.kernel, "LocalFree", [ctypes.c_void_p], ctypes.c_void_p),
@@ -327,10 +336,16 @@ class _WindowsPermissions:
 
     @contextmanager
     def _existing(self, path: Path, *, directory: bool, change: bool):
+        # Attribute-only opens do not participate in file sharing checks.
+        # Directory data access is required to make the missing DELETE share real.
         access = (
-            _READ_CONTROL
-            | _FILE_READ_ATTRIBUTES
-            | ((_WRITE_DAC | _WRITE_OWNER) if change else 0)
+            _MAXIMUM_ALLOWED
+            if change
+            else (
+                _READ_CONTROL
+                | _FILE_READ_ATTRIBUTES
+                | (_FILE_LIST_DIRECTORY if directory else 0)
+            )
         )
         handle = self.kernel.CreateFileW(
             self._native_name(path),
@@ -433,8 +448,17 @@ class _WindowsPermissions:
             return self._read_acl(handle)
 
     def protect(self, path: Path, *, directory: bool) -> None:
-        # Exclusive directory handles prevent SetSecurityInfo from propagating
-        # inheritable ACEs into existing children, which might be external links.
+        # Routine writes share private roots. Do not reacquire exclusive mutation
+        # access when their owner and DACL already satisfy the contract.
+        current = self.inspect(path, directory=directory)
+        try:
+            _assert_acl(current, directory=directory)
+        except OSError:
+            pass
+        else:
+            return
+        # SetSecurityInfo documents no child propagation for MAXIMUM_ALLOWED
+        # handles. Existing linked children must retain their original ACLs.
         with self._existing(path, directory=directory, change=True) as handle:
             current = self._read_acl(handle)
             if current["owner"] not in {self.user_sid, self.owner_sid}:
@@ -531,7 +555,7 @@ class _WindowsPermissions:
         encoded = self._native_name(target).encode("utf-16-le")
         offset = _FileRenameInformation.name.offset
         buffer = ctypes.create_string_buffer(
-            max(ctypes.sizeof(_FileRenameInformation), offset + len(encoded))
+            max(ctypes.sizeof(_FileRenameInformation), offset + len(encoded) + 2)
         )
         information = _FileRenameInformation.from_buffer(buffer)
         information.flags = 1
@@ -541,6 +565,35 @@ class _WindowsPermissions:
         if not self.kernel.SetFileInformationByHandle(handle, 3, buffer, len(buffer)):
             raise ctypes.WinError(ctypes.get_last_error())
 
+    def _final_name(self, handle) -> str:
+        length = self.kernel.GetFinalPathNameByHandleW(handle, None, 0, 0)
+        if not length:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_unicode_buffer(length)
+        written = self.kernel.GetFinalPathNameByHandleW(handle, buffer, length, 0)
+        if not written:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if written >= length:
+            raise OSError(
+                "The retained Agent artifact name changed during verification."
+            )
+        return ntpath.normcase(ntpath.normpath(buffer.value))
+
+    def _verify_published_name(self, handle, target: Path) -> None:
+        expected = ntpath.normcase(ntpath.normpath(self._native_name(target)))
+        if self._final_name(handle) != expected:
+            raise OSError(
+                "Windows renamed the private Agent artifact to an unexpected path."
+            )
+        parent_handle = getattr(self, "_pinned_parent_handle", None)
+        expected_parent = ntpath.normcase(
+            ntpath.normpath(self._native_name(target.parent))
+        )
+        if parent_handle is None or self._final_name(parent_handle) != expected_parent:
+            raise OSError(
+                "The private Agent destination parent changed during publication."
+            )
+
     def publish(self, descriptor: int, target: Path) -> None:
         """Rename the still-exclusive creation handle, never reopen its path."""
         import msvcrt
@@ -548,6 +601,7 @@ class _WindowsPermissions:
         handle = msvcrt.get_osfhandle(descriptor)
         _assert_acl(self._read_acl(handle), directory=False)
         self._rename(handle, target)
+        self._verify_published_name(handle, target)
         _assert_acl(self._read_acl(handle), directory=False)
 
     def _discard_handle(self, handle) -> None:
@@ -568,10 +622,15 @@ class _WindowsPermissions:
         """Keep parent names fixed without changing their existing security descriptors."""
         with ExitStack() as stack:
             for parent in (*reversed(path.parent.parents), path.parent):
-                stack.enter_context(
+                parent_handle = stack.enter_context(
                     self._existing(parent, directory=True, change=False)
                 )
-            yield
+            previous_parent = getattr(self, "_pinned_parent_handle", None)
+            self._pinned_parent_handle = parent_handle
+            try:
+                yield
+            finally:
+                self._pinned_parent_handle = previous_parent
 
 
 def _assert_acl(evidence: dict, *, directory: bool) -> None:
