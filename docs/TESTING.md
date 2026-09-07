@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.6-codex.1`
+Documentation version: `v1.8.7-codex.1`
 
 ## Supported commands
 
@@ -222,6 +222,12 @@ Tests must follow these rules:
   fixture preserves its readiness and termination deadlines; readiness failures report bounded
   start/current state and log evidence before cleaning only the fixture's job. A macOS pass does
   not establish the cause of a Windows readiness failure.
+- Windows JSON publication tests retain the temporary file's creation handle through publication
+  and exercise both native replacement semantics and incompatible-reader controls. Failures must
+  preserve the old target, report cleanup errors, and never remove a replacement found under a
+  reused temporary name. Approved worker fixtures use the public progress and checkpoint writers.
+  The independent model-view fixture uses its own page; both view switches still share one DOM,
+  and the original owner-binding page retains its same-DOM stale-scope rejection assertions.
 
 ## Local-compute benchmark contract
 

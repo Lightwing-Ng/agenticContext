@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.58.1-codex.1`
+Documentation version: `v3.58.2-codex.1`
 
 ## Purpose
 
@@ -401,8 +401,12 @@ birth identity. A live match is rebound. A missing or mismatched identity become
 is never signaled, preventing PID reuse from killing an unrelated process. Stop first rechecks that
 identity, then terminates the owned process group. The default active-job limit is one per workspace.
 
-Optimizers should import `write_compute_progress_atomic()` and
-`write_optimizer_checkpoint_atomic()` from `app.core.agent.compute_jobs`. Checkpoint schema 1
+Optimizers must publish progress and checkpoints through `write_compute_progress_atomic()` and
+`write_optimizer_checkpoint_atomic()` from `app.core.agent.compute_jobs`. On Windows, their native
+publication protocol works with the application's delete-shared JSON readers. A custom
+`Path.replace()` or `os.replace()` writer does not implement that protocol and can fail while a
+status reader holds the destination open. Unsupported Windows or filesystem operations fail
+explicitly; these helpers do not fall back to deleting the old destination. Checkpoint schema 1
 requires `optimizer_version`, `iteration`, `population` or `optimizer_state`, `rng_state`, `seed`,
 `best_objective`, `best_parameters`, and `evaluation_count`. Resume accepts only a validated complete
 checkpoint from a terminal job and always creates a new job after an explicit request; it never

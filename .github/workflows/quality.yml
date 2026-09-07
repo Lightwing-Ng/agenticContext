@@ -1,4 +1,4 @@
-# Code version: v1.2.6-codex.1
+# Code version: v1.2.7-codex.1
 name: Quality gate
 
 on:
@@ -138,6 +138,7 @@ jobs:
             tests/test_agent_browser_cleanup.py `
             tests/test_compute_jobs.py `
             tests/test_compute_json_io.py `
+            tests/test_windows_compute_io.py `
             tests/test_windows_anchored_delete.py `
             tests/test_owner_only_permissions.py `
             tests/test_logging_setup.py `

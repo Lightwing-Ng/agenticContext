@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.14.1-codex.1`
+Documentation version: `v1.14.2-codex.1`
 
 ## Runtime flow
 
@@ -169,9 +169,12 @@ PID-reuse termination. On startup or status inspection, active records are recon
 process identity. Missing workers become `interrupted`; they are never resubmitted automatically.
 
 Compute JSON readers use a bounded read of the opened regular file. Windows readers explicitly
-share deletion so status polling does not prevent the worker's atomic replacement of metadata or
-progress. An existing reader consumes its original file while a subsequent reader sees the new
-record. This sharing policy is specific to compute JSON; protected append and verified-deletion
+share deletion, and writers use `FileRenameInfoEx` with replacement and POSIX semantics while
+retaining the temporary file's creation handle. Both parts are required: ordinary `os.replace`
+uses Windows replacement semantics that reject an open destination even when it shares deletion.
+An existing reader consumes its original file while a subsequent reader sees the new record.
+Unsupported native publication fails without deleting the old target or retrying. This protocol
+is specific to compute JSON; protected append and verified-deletion
 handles retain their separate access restrictions. It does not guarantee publication against an
 unrelated program holding an incompatible handle, nor make multiple writers transactional.
 

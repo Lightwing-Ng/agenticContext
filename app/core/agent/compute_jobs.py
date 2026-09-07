@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.3.2-codex.1
+Code version: v1.3.3-codex.1
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import threading
 import time
 from typing import Any, BinaryIO, Iterator
 
-from . import _windows_processes
+from . import _windows_compute_io, _windows_processes
 
 
 APPROVAL_FILENAME = ".agenticContext-compute.json"
@@ -69,6 +69,12 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise ComputeJobError("Compute-job metadata cannot use a symbolic link.")
+    if os.name == "nt":
+        content = json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        _windows_compute_io.atomic_write_bytes(path, content)
+        return
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     try:
         with temporary.open("x", encoding="utf-8") as handle:

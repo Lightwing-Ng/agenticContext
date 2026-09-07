@@ -1,6 +1,6 @@
 """Real-file compute JSON sharing, bounded reads, and native handle ownership.
 
-Code version: v1.0.0-codex.1
+Code version: v1.1.0-codex.1
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.agent import compute_jobs as jobs
+from app.core.agent import _windows_compute_io as windows_io
 
 
 class _ObservedReader:
@@ -53,6 +54,7 @@ def test_real_production_reader_overlaps_atomic_writer(
     original_open = jobs._open_json_reader
     readers, replacements = [], []
     original_replace = os.replace
+    original_publish = windows_io._WindowsComputeIO.publish
 
     def hold_reader(stream, count):
         assert count == 1_025
@@ -80,9 +82,25 @@ def test_real_production_reader_overlaps_atomic_writer(
         replacements.append(True)
         return original_replace(source, destination)
 
+    def observed_publish(native, descriptor, destination):
+        assert destination.name == path.name and destination.parent.samefile(path.parent)
+        assert entered.is_set() and not release.is_set()
+        assert len(readers) == 1 and not readers[0].closed
+        position = os.lseek(descriptor, 0, os.SEEK_CUR)
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            assert json.loads(os.read(descriptor, 1_024)) == new
+        finally:
+            os.lseek(descriptor, position, os.SEEK_SET)
+        replacements.append(True)
+        return original_publish(native, descriptor, destination)
+
     with monkeypatch.context() as patch:
         patch.setattr(jobs, "_open_json_reader", observed_open)
-        patch.setattr(os, "replace", observed_replace)
+        if os.name == "nt":
+            patch.setattr(windows_io._WindowsComputeIO, "publish", observed_publish)
+        else:
+            patch.setattr(os, "replace", observed_replace)
         with ThreadPoolExecutor(max_workers=1) as executor:
             pending = executor.submit(jobs._read_json_object, path, maximum_bytes=1_024)
             try:
@@ -106,6 +124,43 @@ def test_real_production_reader_overlaps_atomic_writer(
     assert jobs._read_json_object(path, maximum_bytes=1_024) == new
     path.unlink()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_failed_publication_preserves_target_and_cleans_only_its_owned_source(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "record 用户.json"
+    jobs._atomic_write_json(path, {"value": 1})
+    primary = OSError("Synthetic publication failure.")
+    publications = []
+
+    def failed_native(native, descriptor, destination):
+        assert destination.name == path.name and destination.parent.samefile(tmp_path)
+        source = Path(native.final_path(native.crt.get_osfhandle(descriptor)))
+        assert source.name.startswith(f".{path.name}.")
+        with pytest.raises(OSError):
+            source.unlink()
+        with pytest.raises(OSError):
+            source.rename(tmp_path / "stolen-source.json")
+        publications.append(source.name)
+        raise primary
+
+    def failed_posix(source, destination):
+        assert destination == path
+        assert json.loads(source.read_text(encoding="utf-8")) == {"value": 2}
+        publications.append(source.name)
+        raise primary
+
+    if os.name == "nt":
+        monkeypatch.setattr(windows_io._WindowsComputeIO, "publish", failed_native)
+    else:
+        monkeypatch.setattr(os, "replace", failed_posix)
+    with pytest.raises(OSError) as caught:
+        jobs._atomic_write_json(path, {"value": 2})
+    assert caught.value is primary
+    assert len(publications) == 1
+    assert json.loads(path.read_text(encoding="utf-8")) == {"value": 1}
+    assert sorted(item.name for item in tmp_path.iterdir()) == [path.name]
 
 
 @pytest.mark.parametrize(

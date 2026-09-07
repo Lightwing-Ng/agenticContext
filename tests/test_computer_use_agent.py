@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.58.5-codex.1
+Code version: v3.58.6-codex.1
 """
 
 from __future__ import annotations
@@ -1447,7 +1447,7 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
     disposable_browser_launch,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Exercise isolated DOM binding and bounded timing diagnostics. Version: v1.2.0."""
+    """Exercise isolated DOM binding and bounded timing diagnostics. Version: v1.2.1."""
     import os
     from urllib.parse import quote
 
@@ -1606,7 +1606,7 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                 computer_use_agent, "_is_composer_wait_timeout", record_model_view_timeout
             )
 
-            def start_model_view_timing(target_page=page) -> None:
+            def start_model_view_timing(target_page) -> None:
                 target_page.evaluate(
                     r"""() => {
                         window.__agenticContextStopViewTiming?.();
@@ -1644,7 +1644,7 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                     }"""
                 )
 
-            def model_view_failure_diagnostics() -> str:
+            def model_view_failure_diagnostics(target_page) -> str:
                 diagnostics: dict[str, object] = {
                     "browser_version": browser.version,
                     "requested_channel": requested_channel or None,
@@ -1653,7 +1653,7 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                     "timeouts": model_view_timeouts,
                 }
                 try:
-                    diagnostics["dom"] = page.evaluate(
+                    diagnostics["dom"] = target_page.evaluate(
                         r"""() => {
                             const describe = (element) => {
                                 if (!element) return null;
@@ -1782,22 +1782,25 @@ def test_chatgpt_effort_slider_binding_requires_the_verified_menu_owner(
                                     result["close_error"] = f"{type(exc).__name__}: {exc}"
                 return json.dumps(diagnostics, ensure_ascii=True, indent=2)
 
-            page.set_content(
+            # Model-view transitions are an independent DOM scenario. Keep both
+            # transitions on one fresh page; owner-scope mutations use page below.
+            model_view_page = browser.new_page()
+            model_view_page.set_content(
                 "<style>[role=menuitem] { display: block; }</style>" + view_menu
             )
-            view_trigger = page.locator("#view-trigger")
-            start_model_view_timing()
+            view_trigger = model_view_page.locator("#view-trigger")
+            start_model_view_timing(model_view_page)
             assert _chatgpt_set_model_view(
-                page, view_trigger, True
-            ), model_view_failure_diagnostics()
-            assert page.locator(
+                model_view_page, view_trigger, True
+            ), model_view_failure_diagnostics(model_view_page)
+            assert model_view_page.locator(
                 '[data-testid="composer-model-picker-slider-advanced-view"]'
             ).get_attribute("inert") is None
-            start_model_view_timing()
+            start_model_view_timing(model_view_page)
             assert _chatgpt_set_model_view(
-                page, view_trigger, False
-            ), model_view_failure_diagnostics()
-            assert page.locator(
+                model_view_page, view_trigger, False
+            ), model_view_failure_diagnostics(model_view_page)
+            assert model_view_page.locator(
                 '[data-testid="composer-model-picker-slider-simple-view"]'
             ).get_attribute("inert") is None
 

@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.3.7-codex.1
+Code version: v1.3.9-codex.1
 """
 
 from __future__ import annotations
@@ -79,6 +79,10 @@ SUCCESS_SCRIPT = """
 import argparse
 import json
 from pathlib import Path
+from app.core.agent.compute_jobs import (
+    write_compute_progress_atomic,
+    write_optimizer_checkpoint_atomic,
+)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", required=True)
@@ -86,10 +90,9 @@ parser.add_argument("--job-runtime", required=True)
 parser.add_argument("--resume")
 args = parser.parse_args()
 runtime = Path(args.job_runtime)
-progress = runtime / "progress.json"
-temporary = runtime / ".progress.tmp"
-temporary.write_text(json.dumps({"iteration": 2, "evaluations_completed": 8, "summary": "Generation 2 complete"}))
-temporary.replace(progress)
+write_compute_progress_atomic(
+    runtime, {"iteration": 2, "evaluations_completed": 8, "summary": "Generation 2 complete"}
+)
 checkpoint = {
     "schema_version": 1,
     "optimizer_version": "test-v1",
@@ -101,9 +104,7 @@ checkpoint = {
     "best_parameters": {"workers": 4},
     "evaluation_count": 8,
 }
-temporary = runtime / ".checkpoint.tmp"
-temporary.write_text(json.dumps(checkpoint))
-temporary.replace(runtime / "checkpoint.json")
+write_optimizer_checkpoint_atomic(runtime, checkpoint)
 (runtime / "result.json").write_text(json.dumps({"best_objective": 0.25}))
 print("optimization complete")
 """
@@ -812,16 +813,22 @@ def test_worker_preserves_primary_and_cleanup_errors(tmp_path: Path, monkeypatch
 
 @pytest.fixture
 def _host_json_io_for_process_model(monkeypatch: pytest.MonkeyPatch):
-    """Keep real file validation while a synchronous fixture models Windows processes."""
+    """Keep native JSON readers and writers in synchronous Windows process models."""
     import os as host_os
 
     read_json = compute_jobs._read_json_object
+    write_json = compute_jobs._atomic_write_json
 
     def read_with_host_io(*arguments, **options):
         with patch.object(compute_jobs, "os", host_os):
             return read_json(*arguments, **options)
 
+    def write_with_host_io(*arguments, **options):
+        with patch.object(compute_jobs, "os", host_os):
+            return write_json(*arguments, **options)
+
     monkeypatch.setattr(compute_jobs, "_read_json_object", read_with_host_io)
+    monkeypatch.setattr(compute_jobs, "_atomic_write_json", write_with_host_io)
 
 
 @pytest.mark.usefixtures("_host_json_io_for_process_model")
