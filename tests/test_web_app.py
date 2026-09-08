@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.98.4-codex.1
+# Code version: v1.100.0-codex.1
 
 from __future__ import annotations
 
@@ -68,6 +68,7 @@ BROWSER_SESSION_MESSAGES_SCRIPT_PATH = (
     Path(__file__).resolve().parents[1] / "app/web/static/browser-session-messages.js"
 )
 FUSE_ASSET_PATH = Path(__file__).resolve().parents[1] / "app/web/static/vendor/fuse.min.mjs"
+KATEX_ASSET_ROOT = Path(__file__).resolve().parents[1] / "app/web/static/vendor/katex"
 THEME_MODE_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "app/web/static/theme-mode.js"
 BROWSER_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "app/web/templates/browser.html"
 CACHE_PAGE_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "app/web/templates/_cache_page.html"
@@ -100,6 +101,34 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(render_agent_response(f"```json\n{source}\n```"), rendered)
         for ordinary in ('{"action":"list","path":"."}', '{"action":"final"}', '```json\n{broken}\n```'):
             self.assertEqual(render_agent_response(ordinary), render_prompt_markdown(ordinary))
+
+    def test_agent_response_preserves_math_delimiters_for_local_katex(self) -> None:
+        source = (
+            "Amount remains ordinary: $36,646.96\n\n"
+            r"\[$14,523.85-\text{cost basis}=$1,755.92\]"
+            "\n\n"
+            r"Inline \(x^2 + y^2\) and `\[literal code\]`."
+        )
+
+        rendered = str(render_agent_response(source))
+
+        self.assertIn("$36,646.96", rendered)
+        self.assertIn(r"\[$14,523.85-\text{cost basis}=$1,755.92\]", rendered)
+        self.assertIn(r"\(x^2 + y^2\)", rendered)
+        self.assertIn(r"<code>\[literal code\]</code>", rendered)
+        self.assertNotIn("\ue000", rendered)
+
+    def test_local_katex_vendor_bundle_is_complete(self) -> None:
+        self.assertTrue((KATEX_ASSET_ROOT / "katex.min.js").is_file())
+        self.assertTrue((KATEX_ASSET_ROOT / "katex.min.css").is_file())
+        self.assertTrue((KATEX_ASSET_ROOT / "contrib/auto-render.min.js").is_file())
+        self.assertTrue((KATEX_ASSET_ROOT / "fonts/KaTeX_Main-Regular.woff2").is_file())
+        self.assertIn("MIT License", (KATEX_ASSET_ROOT / "LICENSE").read_text(encoding="utf-8"))
+        self.assertIn(
+            "sha512-h+UCwkZ+4Jz8WQ7MLGfj7UVFrRCizGb912fwF4luGdYsC5paYG1vx+jy+KRcC/"
+            "XkpjGva/P7nAWuxNnPzRvzHw==",
+            (KATEX_ASSET_ROOT / "NOTICE.md").read_text(encoding="utf-8"),
+        )
 
     def test_agent_history_reuses_parquet_after_restart_and_preserves_source(self) -> None:
         source = json.dumps({"action": "final", "summary": "**Restored**"})
@@ -1042,7 +1071,13 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', local_body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.40.0-codex.1', local_body)
+        self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
+        self.assertIn('style-v2.104.0-codex.1', local_body)
+        self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
+        self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
+        self.assertIn('agent-sessions.css?v=1.6.0', local_body)
+        self.assertIn('data-agent-new-session', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.42.0-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1928,7 +1963,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.40.0-codex.1',
+            'computer-use-agent-v3.42.0-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',

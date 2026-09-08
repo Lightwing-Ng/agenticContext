@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.55.0-codex.1
+Code version: v1.56.1-codex.1
 """
 
 import hashlib
@@ -1948,7 +1948,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.96.2-codex.1 */",
+        "/* Code version: v2.104.0-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2511,15 +2511,27 @@ def test_agent_response_pagination_keeps_spatial_effects_unclipped() -> None:
 
 
 def test_agent_doctor_actions_keep_spatial_effects_unclipped() -> None:
-    """Keep Doctor recovery action effects outside the rounded panel boundary."""
+    """Keep the warning disclosure and recovery effects visible outside its boundary."""
     stylesheet = _stylesheet()
 
     panel_start = stylesheet.index(".agent-doctor-panel {")
     panel_rule = stylesheet[panel_start:stylesheet.index("\n}", panel_start)]
+    summary_start = stylesheet.index(".agent-doctor-panel > summary {")
+    summary_rule = stylesheet[summary_start:stylesheet.index("\n}", summary_start)]
+    focus_start = stylesheet.index(".agent-doctor-panel > summary:focus-visible {")
+    focus_rule = stylesheet[focus_start:stylesheet.index("\n}", focus_start)]
     events_start = stylesheet.index(".agent-doctor-events {")
     events_rule = stylesheet[events_start:stylesheet.index("\n}", events_start)]
 
+    assert "border: 1px solid var(--theme-warning);" in panel_rule
+    assert "background: var(--theme-warning-translucent);" in panel_rule
+    assert "box-shadow: inset 0 1px 0 var(--theme-glass-highlight);" in panel_rule
     assert "overflow: visible;" in panel_rule
+    assert "color: var(--theme-warning-text);" in summary_rule
+    assert "grid-template-columns: minmax(0, 1fr) auto var(--agent-doctor-collapse-icon-size);" in summary_rule
+    assert ".agent-doctor-panel > summary::after {" in stylesheet
+    assert ".agent-doctor-panel[open] > summary::after {" in stylesheet
+    assert "outline: 2px solid var(--accent-text);" in focus_rule
     assert "overflow-y: auto;" in events_rule
 
 

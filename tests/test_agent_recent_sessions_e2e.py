@@ -1,4 +1,4 @@
-"""Unified recent-session source and filtering. Code version: v1.2.0-codex.1."""
+"""Unified recent-session source and filtering. Code version: v1.3.0-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -81,6 +81,16 @@ def test_unified_recent_sessions_filter_count_and_continue(disposable_browser, s
                 expect(badge).to_be_visible()
                 bounds = badge.bounding_box()
                 assert abs(bounds['height'] - bounds['width']) < 1
+                badge_style = badge.evaluate("""element => {
+                    const style = getComputedStyle(element);
+                    return {
+                        backgroundColor: style.backgroundColor,
+                        borderColor: style.borderColor,
+                        color: style.color,
+                    };
+                }""")
+                assert badge_style['backgroundColor'] == 'rgba(0, 0, 0, 0)'
+                assert badge_style['borderColor'] == badge_style['color']
             else:
                 expect(badge).to_be_hidden(timeout=6000)
         source.locator('[data-agent-combobox-trigger]').click()

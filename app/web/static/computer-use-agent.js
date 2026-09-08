@@ -1,4 +1,4 @@
-/* Code version: v3.40.0-codex.1 */
+/* Code version: v3.42.0-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -86,6 +86,7 @@
         projectField: document.querySelector("[data-agent-project-field]"),
         projectCombobox: document.querySelector('[data-agent-session-list="projects"]'),
         projectUrl: document.querySelector("[data-agent-project-url]"),
+        newSessionButton: document.querySelector("[data-agent-new-session]"),
         comboboxTriggers: Array.from(document.querySelectorAll("[data-agent-combobox-trigger]")),
     };
 
@@ -255,6 +256,13 @@
     let executionSelectionRestored = false;
     const executionDrafts = new Map();
     let restoredExecutionConfiguration = "";
+    let newSessionSelectionPending = false;
+
+    function syncNewSessionButton() {
+        if (elements.newSessionButton) {
+            elements.newSessionButton.disabled = promptSubmissionPending || newSessionSelectionPending;
+        }
+    }
 
     function restoreExecutionConfiguration(agent, {force = false} = {}) {
         if (agent?.session_id !== executionSessionId || !agent.workspace_path
@@ -432,6 +440,39 @@
         rememberSessionSelection();
         render(lastPayload);
         void loadSelectedSessionHistory(session.conversation_url);
+    }
+
+    async function beginNewSession() {
+        if (promptSubmissionPending || newSessionSelectionPending) return;
+        const retainedMode = selectedSessionMode();
+        const retainedProjectUrl = selectedProjectUrl();
+        newSessionSelectionPending = true;
+        syncNewSessionButton();
+        try {
+            if (executionSessionId !== "new") {
+                await selectExecutionSession("new", {preserveSourceSelection: true});
+            }
+            if (executionSessionId !== "new") return;
+
+            if (elements.sessionMode) elements.sessionMode.value = retainedMode;
+            if (retainedMode === "project" && elements.projectUrl instanceof HTMLInputElement) {
+                elements.projectUrl.value = retainedProjectUrl;
+            }
+            selectedRemoteConversationUrl = "";
+            selectedProjectConversationUrl = "new";
+            sessionTitleOverride = "";
+            resetRemoteSessionHistory();
+            doctorRequestId += 1;
+            doctorPayload = null;
+            if (elements.doctorPanel) elements.doctorPanel.open = false;
+            updateSessionChoiceInputs();
+            rememberSessionSelection();
+            render({...lastPayload, agent: {session_id: "new"}});
+            elements.promptInput?.focus();
+        } finally {
+            newSessionSelectionPending = false;
+            syncNewSessionButton();
+        }
     }
 
     async function selectExecutionSession(sessionId, {routeChanged = false, previousScope = executionScope, preserveSourceSelection = false} = {}) {
@@ -2673,6 +2714,44 @@
         responseCopyFeedbackTimer = window.setTimeout(clearResponseCopyFeedback, 1_600);
     }
 
+    function escapeAgentMathCurrencySymbols(expression) {
+        const source = String(expression || "");
+        let escaped = "";
+        for (let index = 0; index < source.length; index += 1) {
+            const character = source[index];
+            if (character !== "$") {
+                escaped += character;
+                continue;
+            }
+            let precedingBackslashes = 0;
+            for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
+                precedingBackslashes += 1;
+            }
+            escaped += precedingBackslashes % 2 === 0 ? "\\$" : "$";
+        }
+        return escaped;
+    }
+
+    function renderAgentMath(root) {
+        if (!root || typeof window.renderMathInElement !== "function") return;
+        window.renderMathInElement(root, {
+            delimiters: [
+                {left: "$$", right: "$$", display: true},
+                {left: "\\(", right: "\\)", display: false},
+                {left: "\\begin{equation}", right: "\\end{equation}", display: true},
+                {left: "\\begin{align}", right: "\\end{align}", display: true},
+                {left: "\\begin{alignat}", right: "\\end{alignat}", display: true},
+                {left: "\\begin{gather}", right: "\\end{gather}", display: true},
+                {left: "\\[", right: "\\]", display: true},
+            ],
+            errorCallback: () => {},
+            preProcess: escapeAgentMathCurrencySymbols,
+            strict: "ignore",
+            throwOnError: false,
+            trust: false,
+        });
+    }
+
     function renderAgentResponsePage({animationState = null} = {}) {
         const entry = responseHistory[responseHistoryPage - 1] || null;
         const pageKey = String(responseHistoryPage);
@@ -2703,8 +2782,10 @@
         renderResponseCopy(entry);
         if (elements.responseAnswerContent) {
             elements.responseAnswerContent.innerHTML = entry?.response_html || "";
+            renderAgentMath(elements.responseAnswerContent);
         } else if (elements.responseAnswer) {
             elements.responseAnswer.innerHTML = entry?.response_html || "";
+            renderAgentMath(elements.responseAnswer);
         }
         if (elements.responseOutput) elements.responseOutput.hidden = !entry;
         renderAgentResponsePagination({animationState});
@@ -2887,6 +2968,7 @@
             pendingSubmissionPreviousRunRevision = 0;
             pendingSubmissionPreviousRunStartedAt = "";
         }
+        syncNewSessionButton();
         syncExecutionChoices();
         syncPlatformState(agent);
         bindCompletedAgentSession(agent, completedTransition);
@@ -3007,6 +3089,7 @@
                 pendingSubmissionPreviousRunIdentity = "";
                 pendingSubmissionPreviousRunRevision = 0;
                 pendingSubmissionPreviousRunStartedAt = "";
+                syncNewSessionButton();
             }
             setResponseStatusFallback(error.message);
             if (elements.errorRecord && elements.errorRecordContent) {
@@ -3097,6 +3180,7 @@
         schedulePreferenceSave();
         promptHasLocalDraft = false;
         promptSubmissionPending = true;
+        syncNewSessionButton();
         pendingSubmissionPreviousRunIdentity = agentRunIdentity(lastPayload.agent)
             || elements.agentPage?.dataset.agentRunId
             || "";
@@ -3109,6 +3193,9 @@
     });
     elements.resume?.addEventListener("click", () => {
         mutate("/api/agent/resume");
+    });
+    elements.newSessionButton?.addEventListener("click", () => {
+        void beginNewSession();
     });
     elements.computeJobStop?.addEventListener("click", async () => {
         const jobId = String(elements.computeJob?.dataset.jobId || "");
@@ -3203,8 +3290,10 @@
     updateSessionChoiceInputs();
     syncProjectPath(elements.projectPath?.value || elements.workspacePath?.value || "");
     syncExecutionChoices();
+    syncNewSessionButton();
     syncAgentRoute();
     resizePrompt();
+    renderAgentMath(elements.responseAnswerContent || elements.responseAnswer);
 
     async function pollStatus() {
         const epoch = executionSessionEpoch;

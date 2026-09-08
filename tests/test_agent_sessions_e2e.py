@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.2.1-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.4.0-codex.1."""
 
 from copy import deepcopy
 
@@ -6,9 +6,60 @@ import pytest
 from playwright.sync_api import expect
 
 from tests import test_sidebar_e2e as fixtures
+from app.web.app import render_agent_response
 
 disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
+
+
+@pytest.mark.parametrize(("width", "color_scheme"), [(1024, "light"), (390, "dark")])
+def test_agent_response_renders_latex_without_treating_currency_as_math(
+    disposable_browser, sidebar_server_url, width, color_scheme,
+):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 959},
+        color_scheme=color_scheme,
+    )
+    page = context.new_page()
+    raw_response = (
+        "Ordinary currency stays text: $36,646.96\n\n"
+        r"\[$14,523.85-\text{已售成本}=$1,755.92\]"
+        "\n\n"
+        r"Inline \(x^2 + y^2\) and `\[literal code\]`."
+    )
+    base = fixtures._finished_chatgpt_agent_payload()
+    base["agent"].update(
+        response=raw_response,
+        response_html=str(render_agent_response(raw_response)),
+        history=[],
+    )
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True,
+        "browser": "edge",
+        "platform": "chatgpt",
+        "agent_sources": {"recent_sessions": [], "projects": []},
+    }))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        answer = page.locator("#agent_response_answer")
+        expect(answer.locator(".katex-display .katex")).to_have_count(1)
+        expect(answer.locator(".katex")).to_have_count(2)
+        expect(answer.locator(".katex-mathml math")).to_have_count(2)
+        expect(answer.locator(".katex-display .katex-html")).to_contain_text("已售成本")
+        expect(answer.locator("code")).to_have_text(r"\[literal code\]")
+        expect(answer).to_contain_text("Ordinary currency stays text: $36,646.96")
+        assert answer.locator(".katex-error").count() == 0
+        geometry = answer.locator(".katex-display").evaluate(
+            "element => ({clientWidth: element.clientWidth, scrollWidth: element.scrollWidth})",
+        )
+        assert geometry["clientWidth"] <= answer.evaluate("element => element.clientWidth")
+        assert geometry["scrollWidth"] >= geometry["clientWidth"]
+        assert not errors
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize("width", [1138, 390])
@@ -52,6 +103,7 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
             page.locator("#sidebar_toggle").click()
         rail = page.locator("[data-agent-execution-sessions]")
         expect(page.locator('[data-agent-new-task]')).to_have_count(0)
+        expect(page.locator('[data-agent-new-session]')).to_be_visible()
         expect(rail).to_have_js_property('open', True)
         summary = rail.locator('summary')
         summary.focus()
@@ -117,6 +169,137 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
         context.close()
 
 
+@pytest.mark.parametrize(("width", "color_scheme"), [(1024, "light"), (390, "dark")])
+def test_new_session_inherits_selected_project_without_stopping_existing_task(
+    disposable_browser, sidebar_server_url, width, color_scheme,
+):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 1_164},
+        color_scheme=color_scheme,
+    )
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    project_url = "https://chatgpt.com/g/g-p-demo/project"
+    conversation_url = "https://chatgpt.com/c/project-session"
+    selected_agent = {
+        **base["agent"],
+        "session_id": "selected",
+        "run_id": "selected-run",
+        "running": True,
+        "phase": "running",
+        "workspace_path": "/tmp/demo-project",
+        "project_url": project_url,
+        "conversation_url": conversation_url,
+        "session_title": "Existing project task",
+    }
+    stopped = []
+    submitted = []
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def status(route):
+        session_id = route.request.headers.get("x-cachelikes-agent-session", "new")
+        agent = selected_agent if session_id == "selected" else {"session_id": "new"}
+        route.fulfill(json={
+            **base,
+            "agent": agent,
+            "sessions": [selected_agent],
+            "active_count": 1,
+            "can_start": True,
+        })
+
+    page.route("**/api/agent/status", status)
+    page.route("**/api/agent/stop", lambda route: (stopped.append(True), route.fulfill(json=base)))
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True,
+        "logged_in": True,
+        "browser": "edge",
+        "platform": "chatgpt",
+        "agent_sources": {
+            "recent_sessions": [],
+            "projects": [{"url": project_url, "title": "Demo project"}],
+        },
+    }))
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json={
+        "recent_sessions": [],
+        "projects": [{"url": project_url, "title": "Demo project"}],
+    }))
+    page.route("**/api/agent/project-sessions**", lambda route: route.fulfill(json={
+        "sessions": [{"url": conversation_url, "title": "Existing project task"}],
+    }))
+    page.route("**/api/agent/chatgpt-session-history**", lambda route: route.fulfill(json={"history": []}))
+
+    def ask(route):
+        submitted.append(route.request.post_data_json)
+        route.fulfill(json={
+            **base,
+            "agent": {**base["agent"], "session_id": "created", "running": True, "phase": "running"},
+            "sessions": [selected_agent],
+            "active_count": 1,
+            "can_start": True,
+        })
+
+    page.route("**/api/agent/ask", ask)
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        source = page.locator(".agent-session-mode-combobox")
+        source.locator("[data-agent-combobox-trigger]").click()
+        source.locator('[data-agent-combobox-option="project"]').click()
+        projects = page.locator('[data-agent-session-list="projects"]')
+        projects.locator("[data-agent-combobox-trigger]").click()
+        projects.get_by_role("option", name="Demo project", exact=True).click()
+        page.locator("[data-execution-session-id=selected]").click()
+        expect(page.locator("#agent_response_question")).to_have_text(selected_agent["prompt"])
+
+        prompt = page.locator("#agent_prompt_input")
+        prompt.fill("Start a separate task in the same project.")
+        new_session = page.locator("[data-agent-new-session]")
+        expect(new_session).to_have_class("secondary-button agent-new-session-button")
+        placement = new_session.evaluate("""button => {
+            const form = document.querySelector('#agent_runtime_form');
+            const project = document.querySelector('[data-agent-project-field]');
+            const recent = document.querySelector('[data-agent-execution-sessions]');
+            return {
+                inForm: form.contains(button),
+                afterProject: Boolean(project.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING),
+                beforeRecent: Boolean(button.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING),
+            };
+        }""")
+        assert placement == {"inForm": True, "afterProject": True, "beforeRecent": True}
+        new_session.click()
+
+        expect(page.locator('input[name="session_mode"]')).to_have_value("project_new")
+        expect(page.locator('input[name="project_url"]')).to_have_value(project_url)
+        expect(page.locator('input[name="conversation_url"]')).to_have_value("")
+        expect(projects.locator("[data-agent-combobox-selected-label]")).to_have_text("Demo project")
+        expect(prompt).to_have_value("")
+        expect(page.locator("#agent_response_output")).to_be_hidden()
+        expect(page.locator("[data-execution-session-id=selected]")).to_have_attribute("aria-pressed", "false")
+        assert not stopped
+
+        page.locator("[data-execution-session-id=selected]").click()
+        expect(prompt).to_have_value("Start a separate task in the same project.")
+        new_session.click()
+        expect(prompt).to_have_value("")
+        prompt.fill("Start the inherited project task.")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+
+        page.get_by_role("button", name="Ask ChatGPT Web", exact=True).click()
+        expect(page.get_by_role("button", name="Stop Agent task", exact=True)).to_be_visible()
+        assert len(submitted) == 1
+        assert submitted[0]["session_mode"] == "project_new"
+        assert submitted[0]["project_url"] == project_url
+        assert submitted[0]["conversation_url"] == ""
+        assert submitted[0]["prompt"] == "Start the inherited project task."
+        assert not stopped
+        assert not errors
+    finally:
+        context.close()
+
+
 def test_late_response_cannot_replace_new_selection(disposable_browser, sidebar_server_url):
     context = disposable_browser.new_context(viewport={"width": 1138, "height": 959})
     page = context.new_page()
@@ -147,6 +330,7 @@ def test_late_response_cannot_replace_new_selection(disposable_browser, sidebar_
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        page.locator("[data-execution-session-id=primary]").click()
         expect(page.locator("#agent_response_question")).to_have_text("primary")
         delay_second[0] = True
         page.locator("[data-execution-session-id=second]").click()
@@ -575,7 +759,11 @@ def test_execution_session_restores_workspace_and_project(disposable_browser, si
 @pytest.mark.parametrize("width", [1024, 390])
 @pytest.mark.parametrize("phase", ["finished", "failed"])
 def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_browser, sidebar_server_url, width, phase):
-    context = disposable_browser.new_context(viewport={"width": width, "height": 1164})
+    color_scheme = "dark" if width == 390 else "light"
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 1164},
+        color_scheme=color_scheme,
+    )
     page = context.new_page()
     base = fixtures._finished_chatgpt_agent_payload()
     agent = base["agent"]
@@ -608,8 +796,33 @@ def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_
         else:
             expect(panel).to_be_visible()
             expect(panel).to_have_js_property("open", False)
+            warning_style = panel.evaluate('''element => {
+                const panelStyle = getComputedStyle(element);
+                const summary = element.querySelector("summary");
+                const summaryStyle = getComputedStyle(summary);
+                const affordanceStyle = getComputedStyle(summary, "::after");
+                return {
+                    backgroundColor: panelStyle.backgroundColor,
+                    borderColor: panelStyle.borderColor,
+                    boxShadow: panelStyle.boxShadow,
+                    summaryColor: summaryStyle.color,
+                    maskImage: affordanceStyle.maskImage,
+                    transform: affordanceStyle.transform,
+                };
+            }''')
+            assert warning_style["backgroundColor"] == "rgba(244, 197, 66, 0.12)"
+            assert warning_style["borderColor"] == "rgb(244, 197, 66)"
+            assert warning_style["boxShadow"] != "none"
+            expected_summary_color = "rgb(244, 197, 66)" if color_scheme == "dark" else "rgb(107, 82, 0)"
+            assert warning_style["summaryColor"] == expected_summary_color
+            assert warning_style["maskImage"] != "none"
             panel.locator("summary").click()
             expect(panel).to_have_js_property("open", True)
+            page.wait_for_timeout(220)
+            open_transform = panel.locator("summary").evaluate(
+                'summary => getComputedStyle(summary, "::after").transform',
+            )
+            assert open_transform != warning_style["transform"]
             panel.locator("summary").click()
             expect(panel).to_have_js_property("open", False)
         bounds = page.evaluate('''() => {

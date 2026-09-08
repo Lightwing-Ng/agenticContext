@@ -1,4 +1,4 @@
-/* Code version: v2.102.0-codex.1 */
+/* Code version: v2.104.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -3541,33 +3541,68 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 }
 
 .agent-doctor-panel {
+    --agent-doctor-collapse-icon-size: 12px;
+    --agent-doctor-collapse-icon-height: 8px;
+    --agent-doctor-collapse-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.41 1.59 6 6.17l4.59-4.58L12 3l-6 5-6-5z' fill='currentColor'/%3E%3C/svg%3E");
     margin-top: 12px;
-    border: var(--frosted-glass-border);
+    border: 1px solid var(--theme-warning);
     border-radius: var(--radius-soft);
-    background: var(--glass-surface-background-soft);
+    background: var(--theme-warning-translucent);
+    box-shadow: inset 0 1px 0 var(--theme-glass-highlight);
     /* Keep recovery action shadows and spatial effects visible beyond the panel. */
     overflow: visible;
 }
 
 .agent-doctor-panel > summary {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto var(--agent-doctor-collapse-icon-size);
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    min-height: 40px;
-    padding: 0 12px;
-    color: var(--text);
-    font-size: var(--font-table-body);
+    column-gap: 12px;
+    min-height: 44px;
+    padding: 0 14px;
+    color: var(--theme-warning-text);
+    font-size: var(--font-ui-lg);
     cursor: pointer;
     list-style: none;
 }
 
+.agent-doctor-panel > summary::marker,
 .agent-doctor-panel > summary::-webkit-details-marker {
     display: none;
+    content: "";
+}
+
+.agent-doctor-panel > summary::after {
+    content: "";
+    grid-column: 3;
+    grid-row: 1;
+    width: var(--agent-doctor-collapse-icon-size);
+    height: var(--agent-doctor-collapse-icon-height);
+    background-color: currentColor;
+    mask: var(--agent-doctor-collapse-icon) center/contain no-repeat;
+    -webkit-mask: var(--agent-doctor-collapse-icon) center/contain no-repeat;
+    transform: rotate(0deg);
+    transform-origin: center;
+    transition: transform 180ms var(--motion-standard);
+    pointer-events: none;
+}
+
+.agent-doctor-panel[open] > summary::after {
+    transform: rotate(180deg);
+}
+
+.agent-doctor-panel > summary:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+    border-radius: var(--radius-soft);
+}
+
+.agent-doctor-panel > summary > :first-child {
+    font-weight: var(--font-weight-bold);
 }
 
 .agent-doctor-status {
-    color: var(--theme-warning-text);
+    color: inherit;
     font-size: var(--font-ui-sm);
 }
 
@@ -3578,13 +3613,13 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 .agent-doctor-content {
     display: grid;
     gap: 10px;
-    padding: 12px;
-    border-top: var(--frosted-glass-border);
+    padding: 14px;
+    border-top: 1px solid color-mix(in srgb, var(--theme-warning) 48%, transparent);
 }
 
 .agent-doctor-summary {
     margin: 0;
-    color: var(--muted);
+    color: var(--theme-warning-text);
     font-size: var(--font-ui-sm);
     line-height: 1.45;
 }
@@ -3594,7 +3629,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     gap: 6px;
     margin: 0;
     padding-left: 20px;
-    color: var(--muted);
+    color: var(--theme-warning-text);
     font-size: var(--font-ui-sm);
 }
 
@@ -3616,7 +3651,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-doctor-checks li[data-status="warn"],
 .agent-doctor-checks li[data-status="info"] {
-    color: var(--muted);
+    color: var(--theme-warning-text);
 }
 
 .agent-doctor-checks li[data-status="warn"] strong,
@@ -3635,7 +3670,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     margin: 0;
     padding: 0 0 0 20px;
     overflow-y: auto;
-    color: var(--muted);
+    color: var(--theme-warning-text);
     font-size: var(--font-ui-sm);
 }
 
@@ -3657,6 +3692,12 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 .agent-doctor-events li[data-status="failed"],
 .agent-doctor-events li[data-status="blocked"] {
     color: var(--theme-error-strong);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .agent-doctor-panel > summary::after {
+        transition: none;
+    }
 }
 
 .agent-doctor-actions {
@@ -4505,6 +4546,19 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-response-answer-content > :last-child {
     margin-bottom: 0;
+}
+
+.agent-response-answer-content .katex {
+    font-size: 1em;
+}
+
+.agent-response-answer-content .katex-display {
+    max-width: 100%;
+    margin: 1em 0;
+    padding: 2px 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
 }
 
 .agent-response-copy {

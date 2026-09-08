@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.66.0-codex.1
+# Code version: v1.67.0-codex.1
 
 from __future__ import annotations
 
@@ -309,6 +309,30 @@ def render_prompt_markdown(value: str) -> Markup:
     return Markup(PROMPT_MARKDOWN_RENDERER.render(prompt)) if prompt else Markup("")
 
 
+def _render_agent_markdown(value: str) -> Markup:
+    """Preserve TeX delimiters that Markdown would otherwise consume as escapes."""
+    source = str(value or "").replace("\x00", "").strip()
+    if not source:
+        return Markup("")
+
+    sentinel = "\ue000"
+    while sentinel in source:
+        sentinel += "\ue000"
+    replacements = {
+        rf"{sentinel}0{sentinel}": r"\[",
+        rf"{sentinel}1{sentinel}": r"\]",
+        rf"{sentinel}2{sentinel}": r"\(",
+        rf"{sentinel}3{sentinel}": r"\)",
+    }
+    protected = source
+    for replacement, delimiter in replacements.items():
+        protected = protected.replace(delimiter, replacement)
+    rendered = PROMPT_MARKDOWN_RENDERER.render(protected)
+    for replacement, delimiter in replacements.items():
+        rendered = rendered.replace(replacement, delimiter)
+    return Markup(rendered)
+
+
 def render_agent_response(value: str) -> Markup:
     """Render live and restored final actions through the same Markdown boundary.
 
@@ -349,7 +373,7 @@ def render_agent_response(value: str) -> Markup:
             source = _render_final_action(payload)
     except (ValueError, TypeError):
         pass
-    return render_prompt_markdown(source)
+    return _render_agent_markdown(source)
 
 
 def render_cached_message(content_text: str, content_html: str = "") -> Markup:
