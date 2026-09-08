@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.7.0-codex.1`
+Documentation version: `v1.8.0-codex.1`
 
 ## Authority
 
@@ -27,6 +27,20 @@ values through its `--theme-*`, status-color, glass, focus, and scrollbar tokens
 When the sibling project's theme changes, update both color-scheme variants here from
 that configuration before adjusting component-specific CSS. Do not introduce replacement
 hex values or derive a separate palette in this project.
+
+## Western Typeface Source
+
+`../../worthward/app/web/static/assets/fonts/UniversNextforHSBC.ttc` is the
+single approved source for Western interface glyphs in both projects. Named
+platform fallbacks and product-local chart, code, or icon typefaces are not part
+of the contract. CJK fallback families remain available only for glyphs absent
+from Univers Next for HSBC, and KaTeX keeps its scoped mathematical fonts.
+
+Chromium does not honor TTC face fragments and selects the collection's first
+Bold face for every CSS weight. Each project therefore serves deterministic
+standalone transport faces extracted from the canonical TTC; those files retain
+the original glyphs, metrics, and PostScript names and do not constitute another
+typeface.
 
 ## Required Workflow for UI Changes
 

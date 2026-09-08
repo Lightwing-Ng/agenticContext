@@ -1,4 +1,4 @@
-/* Code version: v2.110.0-codex.1 */
+/* Code version: v2.111.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -458,10 +458,10 @@
     --font-weight-semibold: 600;
     --font-weight-bold: 700;
     --font-family-brand: "Univers Next for HSBC";
-    --font-family-cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-    --font-family-base: var(--font-family-brand), var(--font-family-cjk), "Helvetica Neue", Helvetica, Arial, "PingFang HK", "PingFang TC", "Microsoft JhengHei", sans-serif;
-    --font-family-mono-cjk: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", monospace;
-    --font-family-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --font-family-cjk: "PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei", "Microsoft JhengHei", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
+    --font-family-base: var(--font-family-brand), var(--font-family-cjk);
+    --font-family-mono-cjk: var(--font-family-base);
+    --font-family-mono: var(--font-family-base);
     --font-mono: var(--font-family-mono);
     --font-ui-xs: var(--font-size-1);
     --font-ui-sm: var(--font-size-2);
@@ -552,7 +552,7 @@ body {
     height: var(--viewport-block-size);
     min-height: 100svh;
     overflow: hidden;
-    font-family: "GDS Transport", "Helvetica Neue", Arial, sans-serif;
+    font-family: var(--font-family-base);
     color: var(--text);
     background:
         radial-gradient(circle at 10% 15%, rgba(124, 186, 255, 0.34), transparent 24%),
@@ -1590,7 +1590,7 @@ input[type="number"] {
     backdrop-filter: var(--control-liquid-blur);
     -webkit-backdrop-filter: var(--control-liquid-blur);
     color: var(--text);
-    font-family: "SFMono-Regular", "SF Mono", Menlo, monospace;
+    font-family: var(--font-family-base);
     font-size: var(--font-form-control);
     font-weight: var(--font-weight-regular);
     padding: 5px 10px;
@@ -1699,7 +1699,7 @@ input.formatted-number-input {
 }
 
 input[type="url"].text-input-control {
-    font-family: "SFMono-Regular", "SF Mono", Menlo, monospace;
+    font-family: var(--font-family-base);
     font-weight: var(--font-weight-regular);
 }
 
@@ -3578,7 +3578,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     min-width: 0;
     margin: 0;
     color: var(--text);
-    font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+    font-family: var(--font-family-mono);
     font-size: var(--font-ui-sm);
     line-height: 1.45;
     white-space: pre-wrap;
@@ -3729,7 +3729,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-doctor-events li strong {
     color: var(--text);
-    font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+    font-family: var(--font-family-mono);
     font-size: 0.92em;
     font-weight: 600;
     overflow-wrap: anywhere;
@@ -4488,7 +4488,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     overflow: visible;
     overflow-wrap: anywhere;
     color: var(--text);
-    font-family: var(--font-family-brand), "Helvetica Neue", Helvetica, Arial, "PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei", "Microsoft JhengHei", sans-serif;
+    font-family: var(--font-family-base);
     font-size: var(--font-table-body);
     line-height: 1.55;
 }
@@ -4919,7 +4919,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
  */
 :root {
     --font-family-brand: "Univers Next for HSBC";
-    --font-family-base: var(--font-family-brand), var(--font-family-cjk), "Helvetica Neue", Helvetica, Arial, "PingFang HK", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    --font-family-base: var(--font-family-brand), var(--font-family-cjk);
     --radius-soft: var(--radius-panel);
     --motion-duration-instant: 100ms;
     --motion-duration-fast: 160ms;
@@ -6051,7 +6051,7 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 .browser-workspace {
     min-width: 0;
     overflow: visible;
-    font-family: var(--font-family-brand), var(--font-family-cjk), "Helvetica Neue", Helvetica, Arial, "PingFang HK", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    font-family: var(--font-family-base);
 }
 
 .chart-panel.workspace.browser-workspace {
@@ -7137,7 +7137,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-session-table-id {
-    font-family: "SFMono-Regular", "SF Mono", Menlo, monospace;
+    font-family: var(--font-family-base);
     overflow-wrap: anywhere;
 }
 
@@ -8079,7 +8079,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-media-prompt-markdown code {
-    font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+    font-family: var(--font-family-mono);
     font-size: 0.92em;
 }
 
@@ -8373,7 +8373,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     min-width: 0;
     overflow: hidden;
     color: var(--theme-muted);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-family-mono);
     font-size: var(--font-ui-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -10249,7 +10249,7 @@ dialog.browser-dialog:not([open]) {
     font-size: var(--font-table-body);
     line-height: 1.35;
     vertical-align: top;
-    font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-family: var(--font-family-mono);
 }
 
 .style-token-table tbody tr:first-child td { border-top: 0; }
@@ -11388,7 +11388,7 @@ dialog.browser-dialog:not([open]) {
     --theme-shadow: 0 24px 80px rgba(17, 24, 39, 0.10);
     --theme-shadow-ambient: rgba(17, 24, 39, 0.12);
     --theme-glass-border: rgba(148, 163, 184, 0.22);
-    --font-family-base: "Univers Next for HSBC", "Helvetica Neue", Helvetica, Arial, "PingFang HK", "PingFang TC", "PingFang SC", "Microsoft JhengHei", "Microsoft YaHei", sans-serif;
+    --font-family-base: var(--font-family-brand), var(--font-family-cjk);
     --frosted-glass-background:
         linear-gradient(
             180deg,
@@ -11462,7 +11462,7 @@ dialog.browser-dialog:not([open]) {
     justify-content: center;
     color: var(--settings-round-icon-button-color);
     cursor: pointer;
-    font: 700 15px Arial;
+    font: 700 15px / normal var(--font-family-base);
     transition: background 160ms var(--motion-standard), box-shadow 160ms var(--motion-standard), color 160ms var(--motion-standard), transform 460ms var(--motion-press);
 }
 
@@ -11607,7 +11607,7 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
     font-size: var(--font-table-body);
     line-height: 1.35;
     vertical-align: top;
-    font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-family: var(--font-family-mono);
 }
 
 .style-token-page .style-token-table tbody tr + tr td {

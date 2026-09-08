@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.1 */
+/* Code version: v1.1.0-codex.1 */
 (() => {
     "use strict";
     const CHATGPT_PROJECT_ICON_DEFINITIONS = {
@@ -25,7 +25,7 @@
         },
         function: {
             viewBox: "0 0 20 20",
-            body: '<text x="10" y="15" fill="currentColor" font-family="Georgia, serif" font-size="16" font-weight="700" text-anchor="middle">ƒ</text>',
+            body: '<text x="10" y="15" fill="currentColor" font-family="Univers Next for HSBC" font-size="16" font-weight="700" text-anchor="middle">ƒ</text>',
         },
     };
 
@@ -34,7 +34,7 @@
         if (!iconName) return fallback;
         const definition = CHATGPT_PROJECT_ICON_DEFINITIONS[iconName] || {
             viewBox: "0 0 20 20",
-            body: `<text x="10" y="14" fill="currentColor" font-family="Arial, sans-serif" font-size="9" font-weight="700" text-anchor="middle">${iconName.replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "•"}</text>`,
+            body: `<text x="10" y="14" fill="currentColor" font-family="Univers Next for HSBC" font-size="9" font-weight="700" text-anchor="middle">${iconName.replace(/[^a-z0-9]/gi, "").slice(0, 2).toUpperCase() || "•"}</text>`,
         };
         const rawColor = String(item?.icon_color || "").trim();
         const iconColor = /^#[0-9a-f]{6}$/i.test(rawColor) ? rawColor : "#111827";

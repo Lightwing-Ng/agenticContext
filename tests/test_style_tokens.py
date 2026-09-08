@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.60.0-codex.1
+Code version: v1.61.0-codex.1
 """
 
 import hashlib
@@ -77,8 +77,10 @@ def test_typography_matches_the_sibling_font_contract() -> None:
         "--font-size-7: 32px;",
         "--font-size-8: 36px;",
         '--font-family-brand: "Univers Next for HSBC";',
-        '--font-family-cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;',
-        '--font-family-mono-cjk: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", monospace;',
+        '--font-family-cjk: "PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei", "Microsoft JhengHei", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;',
+        '--font-family-base: var(--font-family-brand), var(--font-family-cjk);',
+        '--font-family-mono-cjk: var(--font-family-base);',
+        '--font-family-mono: var(--font-family-base);',
         "--font-ui-md: var(--font-size-4);",
         "--font-ui-lg: var(--font-size-5);",
         "--font-form-label: var(--font-size-5);",
@@ -97,6 +99,36 @@ def test_typography_matches_the_sibling_font_contract() -> None:
     for token in expected_tokens:
         assert token in stylesheet
     assert 'format("truetype-collection")' not in stylesheet
+
+
+def test_runtime_sources_name_no_alternate_western_typeface() -> None:
+    """Keep Univers Next for HSBC as the only Western interface typeface."""
+    runtime_sources = (
+        STYLE_PATH.read_text(encoding="utf-8"),
+        (PROJECT_ROOT / "app/web/static/chatgpt-project-icons.js").read_text(encoding="utf-8"),
+    )
+    forbidden_families = (
+        "GDS Transport",
+        "Helvetica",
+        "Arial",
+        "Georgia",
+        "Inter",
+        "SF Pro",
+        "SFMono",
+        "SF Mono",
+        "Menlo",
+        "Monaco",
+        "Consolas",
+        "Liberation Mono",
+        "Courier New",
+        "Times New Roman",
+        "ui-monospace",
+        "system-ui",
+    )
+
+    for source in runtime_sources:
+        for family in forbidden_families:
+            assert family not in source
 
 
 def test_hsbc_font_collection_is_present_and_checksum_pinned() -> None:
@@ -265,13 +297,13 @@ def test_field_titles_and_scrollable_headers_use_the_agent_reference_role() -> N
             assert declaration in selector_rule
 
 
-def test_form_inputs_use_regular_weight_monospace_text() -> None:
-    """Keep path and numeric values legible without an inherited bold weight."""
+def test_form_inputs_use_regular_weight_brand_text() -> None:
+    """Keep path and numeric values on the sole Western typeface."""
     stylesheet = _stylesheet()
     selector_start = stylesheet.index('input[type="text"],\ninput[type="number"] {')
     selector_rule = stylesheet[selector_start:stylesheet.index("\n}", selector_start)]
 
-    assert 'font-family: "SFMono-Regular", "SF Mono", Menlo, monospace;' in selector_rule
+    assert "font-family: var(--font-family-base);" in selector_rule
     assert "font-weight: var(--font-weight-regular);" in selector_rule
 
 
@@ -295,7 +327,7 @@ def test_danger_zone_actions_align_to_the_card_end() -> None:
 
 
 def test_cache_sidebar_cards_and_url_inputs_use_the_shared_control_treatment() -> None:
-    """Keep shared configuration tactile and URL values legible in monospace."""
+    """Keep shared configuration tactile and URL values on the brand face."""
     stylesheet = _stylesheet()
 
     cache_card_start = stylesheet.index(".cache-common-config--physical {")
@@ -319,7 +351,7 @@ def test_cache_sidebar_cards_and_url_inputs_use_the_shared_control_treatment() -
     ):
         assert token in cache_card_rule
 
-    assert 'font-family: "SFMono-Regular", "SF Mono", Menlo, monospace;' in url_input_rule
+    assert "font-family: var(--font-family-base);" in url_input_rule
     assert "font-weight: var(--font-weight-regular);" in url_input_rule
     assert "padding-block: 10px;" in action_row_rule
     assert "grid-template-columns: minmax(0, 1fr);" in action_slot_rule
@@ -1897,7 +1929,7 @@ def test_browser_workspace_prefers_simplified_chinese_font_fallbacks() -> None:
     stylesheet = _stylesheet()
     workspace_start = stylesheet.index(".browser-workspace {")
     workspace_rule = stylesheet[workspace_start:stylesheet.index("\n}", workspace_start)]
-    font_family = 'font-family: var(--font-family-brand), var(--font-family-cjk), "Helvetica Neue", Helvetica, Arial, "PingFang HK", "PingFang TC", "Microsoft JhengHei", sans-serif;'
+    font_family = "font-family: var(--font-family-base);"
 
     assert font_family in workspace_rule
     cjk_token_start = stylesheet.index('--font-family-cjk:')
@@ -2050,7 +2082,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-            "/* Code version: v2.110.0-codex.1 */",
+        "/* Code version: v2.111.0-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
