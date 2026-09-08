@@ -1,4 +1,4 @@
-"""Regression coverage for the shared floating-banner contract. Code version: v0.1.0-codex.4."""
+"""Regression coverage for the shared floating-banner contract. Code version: v0.1.1-codex.1."""
 
 from pathlib import Path
 
