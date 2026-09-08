@@ -1,4 +1,4 @@
-<!-- Code version: v1.6.7-codex.1 -->
+<!-- Code version: v1.7.1-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,12 +8,12 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.105.0-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.109.0-codex.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='resizer.js', v='resizer-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='settings-style-tokens.js', v='settings-style-tokens-v1.2.3-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='settings-style-tokens.js', v='settings-style-tokens-v1.3.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-navigation.js', v='settings-navigation-v1.2.0-codex.1') }}"></script>
 </head>
 <body>
@@ -152,6 +152,27 @@
                                     </span>
                                 </span>
                             </label>
+                            {% elif row.sample_kind == "strategy-tuning-control" %}
+                            <section class="style-token-strategy-tuning-demo" data-style-token-strategy-tuning aria-label="Strategy tuning control demo">
+                                <span class="style-token-strategy-tuning-label">{{ row.sample_title }}</span>
+                                <div class="style-token-strategy-tuning-row">
+                                    <button type="button" class="trade-strategy-select form-select trade-strategy-trigger browser-filter-select-trigger style-token-strategy-tuning-trigger" aria-label="{{ row.sample_title }}: {{ row.sample_button }}">
+                                        <span class="trade-strategy-trigger-label">{{ row.sample_button }}</span>
+                                    </button>
+                                    <button type="button" class="trade-strategy-tune-button is-active" data-style-token-strategy-tune-button aria-label="Tune strategy parameters" aria-pressed="true" aria-expanded="true" aria-controls="style_token_strategy_tuning_panel">
+                                        <span class="icon icon-strategy-tune" aria-hidden="true"></span>
+                                    </button>
+                                </div>
+                                <section id="style_token_strategy_tuning_panel" class="trade-strategy-params-popover style-token-strategy-tuning-panel" data-style-token-strategy-tuning-panel role="region" aria-label="Strategy parameters">
+                                    <div class="style-token-strategy-tuning-heading">
+                                        <span>Strategy parameters</span>
+                                        <span class="style-token-strategy-tuning-chevron" aria-hidden="true"></span>
+                                    </div>
+                                    <div class="style-token-strategy-tuning-grid">
+                                        {% for field in row.sample_fields %}<div class="style-token-strategy-tuning-param"><span>{{ field.label }}</span><output>{{ field.value }}</output></div>{% endfor %}
+                                    </div>
+                                </section>
+                            </section>
                             {% elif row.sample_kind == "switch" %}
                             <label class="switch-row style-token-switch-demo">
                                 <span>{{ row.sample_title }}</span>

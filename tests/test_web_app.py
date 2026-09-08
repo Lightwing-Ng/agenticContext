@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.100.1-codex.1
+# Code version: v1.101.3-codex.1
 
 from __future__ import annotations
 
@@ -673,8 +673,9 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.21.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.105.0-codex.1"
+                expected_style_version = "style-v2.109.0-codex.1"
                 self.assertIn(expected_style_version, body)
+                self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
                 self.assertIn('id="global_theme_toggle"', body)
                 self.assertIn('class="global-quick-action-button global-theme-toggle"', body)
@@ -790,7 +791,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Cached media browser", browser_body)
         self.assertIn('data-browser-source-filter', browser_body)
         self.assertEqual(browser_body.count('data-browser-source-filter-option='), 4)
-        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.3.0-codex.1', browser_body)
+        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.4.0-codex.1', browser_body)
         self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"', browser_body)
 
         self.assertIn('class="trade-strategy-dropdown-option browser-source-filter-option', browser_body)
@@ -1069,7 +1070,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.105.0-codex.1', local_body)
+        self.assertIn('style-v2.109.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.6.0', local_body)
@@ -3228,7 +3229,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('type="module"', body)
         self.assertIn("browser-search.js?v=browser-search-v2.1.3-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
-        self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.0.0-codex.1", body)
+        self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.1.0-codex.1", body)
+        self.assertLess(
+            body.index("select-controller.js?v=select-controller-v1.0.0"),
+            body.index("browser-filter-select.js"),
+        )
         self.assertIn("data-browser-local-resources-header-actions", body)
         self.assertIn('class="icon browser-search-icon"', body)
         self.assertIn('placeholder="Search cached text"', body)
@@ -3269,8 +3274,8 @@ class WebAppTests(unittest.TestCase):
             'aria-haspopup", "listbox"',
             'className = "trade-strategy-dropdown browser-filter-select-dropdown"',
             'select.dispatchEvent(new Event("change", {bubbles: true}))',
-            'event.key === "ArrowDown"',
-            'event.key === "Escape"',
+            'window.SHARED_SELECT.createController',
+            'controller.bindKeyboard()',
         ):
             with self.subTest(filter_select_script_fragment=fragment):
                 self.assertIn(fragment, filter_select_script)
@@ -3453,7 +3458,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.105.0-codex.1", body)
+            self.assertIn("style-v2.109.0-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.32.0-codex.1', body)

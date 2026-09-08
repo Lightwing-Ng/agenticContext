@@ -1,6 +1,7 @@
-/* Code version: v1.0.0-codex.1 */
+/* Code version: v1.1.0-codex.1 */
 
 (() => {
+    const controllerUrl = new URL("select-controller.js?v=select-controller-v1.0.0", document.currentScript.src);
     let selectIndex = 0;
 
     function closeOtherMenus(activeSelect) {
@@ -74,6 +75,7 @@
         const options = Array.from(select.options).map((nativeOption, optionIndex) => {
             const option = document.createElement("button");
             option.type = "button";
+            option.disabled = nativeOption.disabled || nativeOption.parentElement?.disabled === true;
             option.className = "trade-strategy-dropdown-option browser-filter-select-option";
             option.id = `${selectId}_option_${optionIndex}`;
             option.dataset.browserFilterSelectOption = nativeOption.value;
@@ -113,13 +115,13 @@
             });
         }
 
-        function setActiveOption(option) {
-            options.forEach((candidate) => candidate.classList.toggle("is-active", candidate === option));
-            if (option?.id) {
-                trigger.setAttribute("aria-activedescendant", option.id);
-                option.scrollIntoView({block: "nearest"});
-            }
-        }
+        const controller = window.SHARED_SELECT.createController({
+            getTrigger: () => trigger,
+            getMenu: () => menu,
+            getOptions: () => options,
+            open: () => setMenuOpen(selectShell, true),
+            close: () => setMenuOpen(selectShell, false),
+        });
 
         function selectOption(option) {
             if (!option) return;
@@ -132,55 +134,12 @@
         trigger.addEventListener("click", () => {
             const isOpen = selectShell.classList.contains("is-open");
             setMenuOpen(selectShell, !isOpen);
-            if (!isOpen) setActiveOption(selectedOption());
+            if (!isOpen) controller.highlightSelected();
         });
 
-        trigger.addEventListener("keydown", (event) => {
-            if (event.key === "Escape") {
-                if (!selectShell.classList.contains("is-open")) return;
-                event.preventDefault();
-                setMenuOpen(selectShell, false);
-                trigger.focus({preventScroll: true});
-                return;
-            }
-            if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-
-            event.preventDefault();
-            setMenuOpen(selectShell, true);
-            const selectedIndex = Math.max(options.indexOf(selectedOption()), 0);
-            const targetIndex = event.key === "Home"
-                ? 0
-                : event.key === "End"
-                    ? options.length - 1
-                    : Math.min(Math.max(selectedIndex + (event.key === "ArrowDown" ? 1 : -1), 0), options.length - 1);
-            setActiveOption(options[targetIndex]);
-            options[targetIndex].focus({preventScroll: true});
-        });
-
-        options.forEach((option, index) => {
+        controller.bindKeyboard();
+        options.forEach((option) => {
             option.addEventListener("click", () => selectOption(option));
-            option.addEventListener("keydown", (event) => {
-                if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-                    event.preventDefault();
-                    const nextIndex = event.key === "Home"
-                        ? 0
-                        : event.key === "End"
-                            ? options.length - 1
-                            : Math.min(Math.max(index + (event.key === "ArrowDown" ? 1 : -1), 0), options.length - 1);
-                    setActiveOption(options[nextIndex]);
-                    options[nextIndex].focus({preventScroll: true});
-                } else if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    selectOption(option);
-                    trigger.focus({preventScroll: true});
-                } else if (event.key === "Escape") {
-                    event.preventDefault();
-                    setMenuOpen(selectShell, false);
-                    trigger.focus({preventScroll: true});
-                } else if (event.key === "Tab") {
-                    setMenuOpen(selectShell, false);
-                }
-            });
         });
 
         select.addEventListener("change", syncSelection);
@@ -197,7 +156,9 @@
         document.querySelectorAll("[data-browser-filter-select]").forEach((selectShell) => setMenuOpen(selectShell, false));
     });
 
-    document.addEventListener("DOMContentLoaded", () => {
+    document.addEventListener("DOMContentLoaded", async () => {
+        // Cached templates may predate the shared script tag.
+        if (!window.SHARED_SELECT) await import(controllerUrl.href);
         document.querySelectorAll(".browser-filter-form select.form-select").forEach(initializeSelect);
     });
 })();

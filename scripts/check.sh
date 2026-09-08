@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Code version: v1.3.1-codex.1
+# Code version: v1.3.2-codex.1
 
 set -euo pipefail
 
@@ -49,7 +49,7 @@ if (( JS_FILE_COUNT == 0 )); then
 fi
 
 echo "[4/5] JavaScript unit tests"
-node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs
+node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs tests/test_select_controller.mjs
 
 echo "[5/5] Python tests with branch coverage"
 COVERAGE_STARTED_AT="$(mktemp "$ROOT_DIR/test-results/coverage-start.XXXXXX")"

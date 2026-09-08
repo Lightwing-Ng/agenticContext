@@ -1,4 +1,4 @@
-/* Code version: v2.105.0-codex.1 */
+/* Code version: v2.109.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -281,8 +281,24 @@
     --shared-select-dropdown-radius: var(--radius-soft);
     --shared-select-dropdown-max-height: min(360px, 55vh);
     --shared-select-option-padding: 9px 10px;
+    --shared-select-option-min-height: 36px;
     --shared-select-option-radius: var(--radius-pill);
+    --strategy-tune-button-size: var(--shared-select-control-height);
+    --strategy-tune-button-icon-size: 14px;
+    --strategy-tune-button-radius: var(--radius-pill);
+    --strategy-tune-button-material: var(--settings-round-icon-button-background);
+    --strategy-tune-panel-material: var(--glass-popover-background);
+    --strategy-tune-panel-gap: 4px;
+    --strategy-tune-panel-padding: 10px;
+    --strategy-tune-panel-radius: var(--radius-soft);
+    --strategy-tune-panel-row-gap: 10px;
+    --strategy-tune-panel-row-height: 35px;
+    --strategy-tune-panel-label-share: 65%;
+    --strategy-tune-panel-border: 1px solid var(--theme-glass-highlight);
+    --strategy-tune-panel-shadow: var(--glass-popover-shadow), 0 12px 24px var(--theme-shadow-ambient);
+    --strategy-tune-panel-blur: var(--glass-popover-blur);
     --shared-select-option-gap: 8px;
+    --secondary-button-min-height: 32px;
     --settings-general-option-radius: var(--radius-soft);
     --settings-general-option-pad-block: 14px;
     --settings-general-option-pad-inline: 16px;
@@ -331,15 +347,21 @@
     --workspace-content-article-background: transparent;
     --workspace-content-article-shadow: none;
     --workspace-content-article-blur: none;
+    --workspace-metric-label-font-size: var(--font-ui-lg);
+    --workspace-metric-label-line-height: normal;
+    --workspace-metric-label-letter-spacing: normal;
+    --workspace-metric-label-font-weight: var(--font-weight-regular);
+    --workspace-metric-label-color: var(--text);
     --workspace-metric-value-font-size: var(--font-metric-md);
     --workspace-metric-value-line-height: 1;
     --workspace-metric-value-letter-spacing: -0.04em;
     --workspace-metric-value-font-weight: var(--font-weight-regular);
     --workspace-metric-decimal-scale: var(--font-numeric-fraction-scale);
     --workspace-metric-card-padding: 6px 8px 8px;
-    --workspace-metric-card-row-gap: 4px;
+    --workspace-metric-card-row-gap: 2px;
     --workspace-metric-card-radius: var(--radius-panel);
-    --workspace-metric-card-label-min-height: 24px;
+    --workspace-metric-card-label-min-height: 18px;
+    --workspace-metric-card-min-height: 48px;
     --app-shell-gap: 14px;
     --viewport-block-size: 100vh;
     --sidebar-motion-duration: var(--motion-duration-spatial);
@@ -1324,14 +1346,14 @@ h2 {
 
 .trade-strategy-dropdown-option {
     width: 100%;
-    min-height: 44px;
+    min-height: var(--shared-select-option-min-height);
     padding: 9px 10px;
     border: 0;
     border-radius: var(--shared-select-option-radius);
     background: transparent;
     color: var(--text);
     display: grid;
-    grid-template-columns: 16px 22px minmax(0, 1fr);
+    grid-template-columns: 16px minmax(0, 1fr);
     column-gap: 8px;
     align-items: center;
     text-align: left;
@@ -1339,6 +1361,10 @@ h2 {
     line-height: 1.2;
     font-weight: var(--font-weight-regular);
     transition: background 140ms var(--motion-standard), box-shadow 140ms var(--motion-standard);
+}
+
+.trade-strategy-dropdown-option:has(> .browser-picker-option-icon) {
+    grid-template-columns: 16px 22px minmax(0, 1fr);
 }
 
 .trade-strategy-dropdown-option:hover,
@@ -2324,6 +2350,7 @@ html.sidebar-memory-collapsed .app-shell .cache-overview-title-card {
 .metric-card {
     position: relative;
     min-width: 128px;
+    min-height: var(--workspace-metric-card-min-height);
     padding: 8px 8px 6px;
     border-radius: var(--workspace-metric-card-radius);
     background: transparent;
@@ -2331,14 +2358,18 @@ html.sidebar-memory-collapsed .app-shell .cache-overview-title-card {
     box-shadow: none;
     overflow: hidden;
     display: grid;
-    gap: 2px;
+    gap: var(--workspace-metric-card-row-gap);
 }
 
 .metric-label {
     display: block;
-    margin-bottom: 2px;
-    font-size: var(--font-ui-md);
-    font-weight: var(--font-weight-regular);
+    min-height: var(--workspace-metric-card-label-min-height);
+    margin-bottom: 0;
+    font-size: var(--workspace-metric-label-font-size);
+    line-height: var(--workspace-metric-label-line-height);
+    letter-spacing: var(--workspace-metric-label-letter-spacing);
+    font-weight: var(--workspace-metric-label-font-weight);
+    color: var(--workspace-metric-label-color);
 }
 
 .metric-card strong {
@@ -2530,7 +2561,7 @@ a.ghost-link[href$="/settings"] {
     width: fit-content;
     max-width: 100%;
     min-width: 0;
-    min-height: 0;
+    min-height: var(--secondary-button-min-height);
     justify-self: end;
     margin-inline-start: auto;
     border: var(--glass-chip-border);
@@ -9273,7 +9304,7 @@ dialog.browser-dialog:not([open]) {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    margin: 10px 2px 0;
+    margin: 0;
     padding-top: 2px;
     isolation: isolate;
 }
@@ -9341,24 +9372,25 @@ dialog.browser-dialog:not([open]) {
 
 .settings-category-nav-item:hover,
 .settings-category-nav-item:focus-visible {
-    background: color-mix(in srgb, var(--theme-muted) 12%, transparent);
+    background: var(--theme-muted-translucent);
 }
 
 .settings-category-nav-item.is-active {
     background: transparent;
     color: var(--accent-text);
+    box-shadow: none;
 }
 
 .settings-category-nav-icon-shell {
     flex: 0 0 auto;
     width: 28px;
     height: 28px;
-    border-radius: var(--radius-soft);
+    border-radius: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--settings-category-icon-surface, color-mix(in srgb, var(--theme-muted) 12%, transparent));
-    box-shadow: inset 0 1px 0 var(--theme-glass-highlight);
+    background: transparent;
+    box-shadow: none;
 }
 
 .settings-category-nav-icon {
@@ -9407,6 +9439,15 @@ dialog.browser-dialog:not([open]) {
     --settings-category-icon-url: url("/static/images/trash.svg");
     --settings-category-icon-tint: var(--theme-error-strong);
     --settings-category-icon-surface: var(--theme-error-translucent);
+}
+
+.settings-category-nav-item:not(.settings-category-nav-item-maintenance) {
+    --settings-category-icon-tint: var(--theme-muted);
+    --settings-category-icon-surface: transparent;
+}
+
+.settings-category-nav-item.is-active .settings-category-nav-icon {
+    background: var(--accent-fill);
 }
 
 .settings-category-sidebar-help {
@@ -9870,10 +9911,7 @@ dialog.browser-dialog:not([open]) {
 }
 
 .settings-category-nav-item-style-tokens {
-    --settings-category-icon-url: url("/static/images/textformat.size.svg");
-    --settings-category-icon-tint: color-mix(in srgb, var(--theme-accent-primary) 76%, var(--theme-accent-secondary) 24%);
-    --settings-category-icon-surface: color-mix(in srgb, var(--theme-accent-primary) 12%, var(--theme-accent-secondary) 4%);
-    --settings-icon-background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);
+    --settings-category-icon-url: url("/static/images/wand.and.sparkles.inverse.svg");
 }
 
 /* Sibling-compatible Style tokens layout. */
@@ -10153,6 +10191,7 @@ dialog.browser-dialog:not([open]) {
 .style-token-copy-button {
     flex: 0 0 auto;
     margin-left: auto;
+    margin-inline-end: max(0px, calc(var(--global-quick-actions-right) - var(--page-edge-pad)));
     transform: none;
 }
 
@@ -10343,7 +10382,7 @@ dialog.browser-dialog:not([open]) {
     -webkit-backdrop-filter: none;
     overflow: hidden;
     display: grid;
-    gap: 2px;
+    gap: var(--workspace-metric-card-row-gap);
 }
 
 .foundation-metric-card .progress-metric-label {
@@ -10415,6 +10454,154 @@ dialog.browser-dialog:not([open]) {
     justify-content: flex-start;
     min-height: 31px;
     margin: 0;
+}
+
+/* Code version: v1.0.0-codex.7 */
+.trade-strategy-tune-button {
+    display: inline-grid;
+    place-items: center;
+    width: var(--strategy-tune-button-size);
+    min-width: var(--strategy-tune-button-size);
+    height: var(--strategy-tune-button-size);
+    min-height: var(--strategy-tune-button-size);
+    padding: 0;
+    border: var(--settings-round-icon-button-border);
+    border-radius: var(--strategy-tune-button-radius);
+    background: var(--strategy-tune-button-material);
+    color: var(--settings-round-icon-button-color);
+    box-shadow: var(--settings-round-icon-button-shadow);
+    backdrop-filter: var(--frosted-glass-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-blur);
+    transition: background 160ms var(--motion-standard), box-shadow 160ms var(--motion-standard), color 160ms var(--motion-standard), transform 160ms var(--motion-press);
+}
+
+.trade-strategy-tune-button:hover,
+.trade-strategy-tune-button:focus-visible {
+    background: var(--settings-round-icon-button-background-hover);
+    color: var(--settings-round-icon-button-color-hover);
+    box-shadow: var(--settings-round-icon-button-shadow-hover);
+    transform: translateY(-1px);
+}
+
+.trade-strategy-tune-button.is-active,
+.trade-strategy-tune-button[aria-pressed="true"] {
+    background: var(--settings-round-icon-button-background-hover);
+    color: var(--settings-round-icon-button-color-hover);
+    box-shadow: var(--settings-round-icon-button-shadow-active);
+    transform: translateY(1px) scale(0.985);
+}
+
+.trade-strategy-tune-button.is-hidden {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.trade-strategy-tune-button .icon {
+    width: var(--strategy-tune-button-icon-size);
+    height: var(--strategy-tune-button-icon-size);
+    background-color: currentColor;
+}
+
+.icon-strategy-tune {
+    mask: url("/static/images/slider.horizontal.2.square.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/slider.horizontal.2.square.svg") center/contain no-repeat;
+}
+
+.trade-strategy-params-popover {
+    position: static;
+    margin-top: var(--strategy-tune-panel-gap);
+    padding: var(--strategy-tune-panel-padding);
+    overflow: visible;
+    border: var(--strategy-tune-panel-border);
+    border-radius: var(--strategy-tune-panel-radius);
+    background: var(--strategy-tune-panel-material);
+    box-shadow: var(--strategy-tune-panel-shadow);
+    backdrop-filter: var(--strategy-tune-panel-blur);
+    -webkit-backdrop-filter: var(--strategy-tune-panel-blur);
+}
+
+.style-token-strategy-tuning-demo {
+    display: grid;
+    align-content: start;
+    width: min(100%, 286px);
+    min-width: 0;
+    overflow: visible;
+}
+
+.style-token-strategy-tuning-label {
+    margin-bottom: 6px;
+    color: var(--text);
+    font-size: var(--font-ui-lg);
+    font-weight: var(--font-weight-regular);
+    line-height: 1;
+}
+
+.style-token-strategy-tuning-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--strategy-tune-button-size);
+    gap: 8px;
+    align-items: center;
+}
+
+.style-token-strategy-tuning-trigger {
+    width: 100%;
+    height: var(--shared-select-control-height);
+    min-height: var(--shared-select-control-height);
+}
+
+.style-token-strategy-tuning-panel {
+    box-sizing: border-box;
+    width: 100%;
+}
+
+.style-token-strategy-tuning-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: var(--strategy-tune-panel-row-height);
+    color: var(--text);
+    font-size: var(--font-ui-lg);
+    font-weight: var(--font-weight-semibold);
+}
+
+.style-token-strategy-tuning-chevron {
+    width: 8px;
+    height: 8px;
+    border-inline-end: 1.5px solid currentColor;
+    border-block-end: 1.5px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+}
+
+.style-token-strategy-tuning-grid {
+    display: grid;
+    gap: var(--strategy-tune-panel-row-gap);
+}
+
+.style-token-strategy-tuning-param {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, var(--strategy-tune-panel-label-share)) minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+    min-height: var(--strategy-tune-panel-row-height);
+    color: var(--text);
+    font-size: var(--font-ui-lg);
+    font-weight: var(--font-weight-regular);
+}
+
+.style-token-strategy-tuning-param + .style-token-strategy-tuning-param::before {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: calc(var(--strategy-tune-panel-row-gap) / -2);
+    height: 1px;
+    background: var(--theme-glass-border);
+}
+
+.style-token-strategy-tuning-param output {
+    min-width: 0;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 
 .style-token-secondary-button-preview {
@@ -11207,7 +11394,14 @@ dialog.browser-dialog:not([open]) {
 }
 
 .style-token-page .panel.sidebar {
-    background: var(--frosted-glass-background);
+    padding: var(--layout-edge-gap) var(--layout-edge-gap) var(--sidebar-bottom-pad);
+    background:
+        linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--theme-glass-highlight) 56%, transparent) 0%,
+            color-mix(in srgb, var(--theme-glass-highlight) 16%, transparent) 100%
+        ),
+        color-mix(in srgb, var(--theme-background) 62%, transparent);
     box-shadow: 0 18px 44px var(--theme-shadow-ambient);
     backdrop-filter: saturate(180%) blur(28px);
     -webkit-backdrop-filter: saturate(180%) blur(28px);
@@ -11616,10 +11810,12 @@ main[data-cache-page] .foundation-metric-card {
 }
 
 main[data-cache-page] .foundation-metric-card .metric-label {
-    color: var(--muted);
-    font-size: var(--font-ui-sm);
-    line-height: 1.45;
-    letter-spacing: 0;
+    min-height: var(--workspace-metric-card-label-min-height);
+    color: var(--workspace-metric-label-color);
+    font-size: var(--workspace-metric-label-font-size);
+    line-height: var(--workspace-metric-label-line-height);
+    letter-spacing: var(--workspace-metric-label-letter-spacing);
+    font-weight: var(--workspace-metric-label-font-weight);
 }
 
 main[data-cache-page] .foundation-metric-card strong {

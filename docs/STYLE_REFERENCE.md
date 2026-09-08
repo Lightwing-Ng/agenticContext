@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.4.3-codex.1`
+Documentation version: `v1.6.0-codex.1`
 
 ## Authority
 
@@ -106,12 +106,28 @@ uses the 48px effect bleed where needed. The browser content card and cache over
 content are explicit data scrollports; local tables, answer panes, dropdowns, and
 media viewers may retain clipping only as their documented viewport.
 
-## Component catalog alignment, 5 Sep 2026
+## Component catalog alignment, 8 Sep 2026
 
-The shared layout contract v1.1.0 removes the obsolete Workspace article specimen.
+The shared layout contract v1.3.0 removes the obsolete Workspace article specimen.
 Secondary button is the canonical intrinsic-width glass-chip action, including its
-13px catalog typography. Align it to the right edge of its owning container with
-end grid alignment and an automatic inline-start margin; retain its intrinsic width. Shared dropdown/filter triggers are 30px, while the Agent
-session rail stays 36px. Modal and floating-notice close actions are error red and
+13px catalog typography and a 32px minimum height. Align it to the right edge of its
+owning container with end grid alignment and an automatic inline-start margin; retain
+its intrinsic width. Shared dropdown/filter triggers are 30px, while their options
+are 36px and the Agent session rail stays 36px. Options without media use only the
+check and text columns so their labels do not truncate behind an empty icon slot.
+
+Style-token copy actions share the global theme action's right anchor. Settings
+navigation follows Worthward's 10px sidebar inset, 62-percent theme-background glass
+layer, 28px icon slot, 16px monochrome symbols, transparent icon shells, and
+muted-to-accent state change. Style tokens uses the shared sparkles symbol, and the
+optional Beta Dock destination uses the same local `sparkles.2.svg` asset in both
+projects. Modal and floating-notice close actions are error red and
 hover-revealed on fine pointers, with keyboard-focus and touch visibility retained.
 See tests/test_style_alignment_e2e.py for isolated responsive acceptance checks.
+
+Workspace metric labels use the Agent runtime form-field label as their shared
+typographic reference: 15px regular primary text with normal line height and
+letter spacing. Numeric values remain 24px regular. Metric cards reserve an
+18px label line and 48px minimum height, then grow when a narrow column wraps
+the label. Both Style tokens catalogs use the same `Total trades` and `2`
+specimen; Worthward's production Workspace cards consume the same tokens.

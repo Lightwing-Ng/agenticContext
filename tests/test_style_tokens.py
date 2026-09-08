@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.56.2-codex.1
+Code version: v1.59.0-codex.1
 """
 
 import hashlib
@@ -10,8 +10,9 @@ import struct
 from scripts.build_web_fonts import FACE_NAMES, checksum, extract_face
 
 
-FONT_PATH = Path(__file__).resolve().parents[1] / "app/web/static/fonts/UniversNextforHSBC.ttc"
-STYLE_PATH = Path(__file__).resolve().parents[1] / "app/web/static/style.css"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+FONT_PATH = PROJECT_ROOT / "app/web/static/fonts/UniversNextforHSBC.ttc"
+STYLE_PATH = PROJECT_ROOT / "app/web/static/style.css"
 
 
 def _stylesheet() -> str:
@@ -1159,6 +1160,44 @@ def test_style_token_component_catalog_consumes_the_sibling_control_contracts() 
         assert fragment in stylesheet
 
 
+def test_strategy_tuning_catalog_uses_the_shared_button_panel_contract() -> None:
+    """Keep the optional tuning action and its panel synchronized with Worthward."""
+    stylesheet = _stylesheet()
+    template = (
+        STYLE_PATH.parents[1] / "templates/settings_style_tokens.html"
+    ).read_text(encoding="utf-8")
+    controller = (
+        STYLE_PATH.parent / "settings-style-tokens.js"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "--strategy-tune-button-size: var(--shared-select-control-height);",
+        "--strategy-tune-button-icon-size: 14px;",
+        "--strategy-tune-panel-gap: 4px;",
+        "--strategy-tune-panel-padding: 10px;",
+        "--strategy-tune-panel-row-gap: 10px;",
+        "--strategy-tune-panel-row-height: 35px;",
+        "--strategy-tune-panel-label-share: 65%;",
+    ):
+        assert token in stylesheet
+    for selector in (
+        ".trade-strategy-tune-button {",
+        ".trade-strategy-params-popover {",
+        ".style-token-strategy-tuning-demo {",
+    ):
+        assert selector in stylesheet
+    for marker in (
+        'row.sample_kind == "strategy-tuning-control"',
+        "data-style-token-strategy-tune-button",
+        "data-style-token-strategy-tuning-panel",
+        'aria-label="Tune strategy parameters"',
+        ">Strategy parameters</span>",
+    ):
+        assert marker in template
+    assert "bindStyleTokenStrategyTuningDemo" in controller
+    assert 'panel.hidden = !open;' in controller
+
+
 def test_browser_refresh_action_uses_the_13px_annotation_size() -> None:
     """Keep the remaining Local resources refresh action on the shared text-size token."""
     stylesheet = _stylesheet()
@@ -1226,6 +1265,9 @@ def test_shared_select_reuses_regular_labels_pill_options_and_browser_height() -
 
     assert "font-weight: var(--font-weight-regular);" in label_rule
     assert "border-radius: var(--shared-select-option-radius);" in option_rule
+    assert "min-height: var(--shared-select-option-min-height);" in option_rule
+    assert "grid-template-columns: 16px minmax(0, 1fr);" in option_rule
+    assert "--shared-select-option-min-height: 36px;" in stylesheet
     assert "min-height: var(--control-form-height);" in agent_browser_rule
     assert "padding-block: 3px;" in agent_browser_rule
 
@@ -1528,8 +1570,8 @@ def test_browser_session_safari_drawer_icon_uses_two_theme_accents() -> None:
         assert token in icon_rule
 
 
-def test_style_tokens_sidebar_icon_preserves_colorful_mark() -> None:
-    """Keep the Style tokens sidebar mark colorful in both Settings nav variants."""
+def test_style_tokens_sidebar_matches_the_canonical_worthward_icon_rail() -> None:
+    """Keep the Settings icon rail surface-free and active-blue."""
     stylesheet = _stylesheet()
     category_icon_start = stylesheet.index(".settings-category-nav-icon {")
     category_icon_rule = stylesheet[
@@ -1555,8 +1597,33 @@ def test_style_tokens_sidebar_icon_preserves_colorful_mark() -> None:
     assert "background: var(--settings-icon-background, var(--settings-category-icon-tint, var(--theme-muted)));" in category_icon_rule
     assert "background: var(--settings-icon-background, var(--settings-icon-tint, var(--theme-muted)));" in settings_icon_rule
     assert "background: var(--settings-icon-background, var(--accent-fill));" in active_rule
-    for rule in (style_token_rule, settings_style_token_rule):
-        assert "--settings-icon-background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);" in rule
+    assert '--settings-category-icon-url: url("/static/images/wand.and.sparkles.inverse.svg");' in style_token_rule
+    assert "--settings-icon-background:" not in style_token_rule
+    assert "--settings-icon-background: linear-gradient" in settings_style_token_rule
+
+    nav_start = stylesheet.index(".settings-category-nav {")
+    nav_rule = stylesheet[nav_start:stylesheet.index("\n}", nav_start)]
+    shell_start = stylesheet.index(".settings-category-nav-icon-shell {")
+    shell_rule = stylesheet[shell_start:stylesheet.index("\n}", shell_start)]
+    sidebar_start = stylesheet.index(".style-token-page .panel.sidebar {")
+    sidebar_rule = stylesheet[sidebar_start:stylesheet.index("\n}", sidebar_start)]
+    assert "margin: 0;" in nav_rule
+    assert "border-radius: 0;" in shell_rule
+    assert "background: transparent;" in shell_rule
+    assert "box-shadow: none;" in shell_rule
+    assert "padding: var(--layout-edge-gap) var(--layout-edge-gap) var(--sidebar-bottom-pad);" in sidebar_rule
+    assert "color-mix(in srgb, var(--theme-background) 62%, transparent);" in sidebar_rule
+
+
+def test_beta_dock_uses_the_shared_sparkles_asset() -> None:
+    """Keep the optional Beta destination on the cross-project Dock symbol."""
+    template = (
+        PROJECT_ROOT / "app" / "web" / "templates" / "_sidebar_dock.html"
+    ).read_text(encoding="utf-8")
+    asset = PROJECT_ROOT / "app" / "web" / "static" / "images" / "sparkles.2.svg"
+
+    assert "filename='images/sparkles.2.svg'" in template
+    assert asset.is_file()
 
 
 def test_browser_session_title_reuses_regular_untagged_link_contract() -> None:
@@ -1667,13 +1734,20 @@ def test_browser_summary_metric_contract_reuses_foundation_for_siblings() -> Non
 
 
 def test_metric_labels_use_the_shared_regular_weight_token() -> None:
-    """Keep all Local resources metric labels on the 400-weight baseline."""
+    """Keep Workspace metric labels aligned with the Agent field-label reference."""
     stylesheet = _stylesheet()
     label_start = stylesheet.index(".metric-label {")
     label_rule = stylesheet[label_start:stylesheet.index("\n}", label_start)]
 
-    assert "font-weight: var(--font-weight-regular);" in label_rule
-    assert "font-size: var(--font-ui-md);" in label_rule
+    for token in (
+        "min-height: var(--workspace-metric-card-label-min-height);",
+        "font-size: var(--workspace-metric-label-font-size);",
+        "line-height: var(--workspace-metric-label-line-height);",
+        "letter-spacing: var(--workspace-metric-label-letter-spacing);",
+        "font-weight: var(--workspace-metric-label-font-weight);",
+        "color: var(--workspace-metric-label-color);",
+    ):
+        assert token in label_rule
     assert "font-weight: var(--font-weight-semibold);" not in label_rule
 
 
@@ -1952,7 +2026,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.105.0-codex.1 */",
+            "/* Code version: v2.109.0-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',

@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.3.3-codex.1
+Code version: v1.5.0-codex.1
 """
 
 import re
@@ -70,12 +70,13 @@ def test_style_token_component_rows_form_a_complete_sorted_component_catalog() -
         "settings-execution-option",
         "shared-select-dropdown",
         "shared-select-filter",
+        "strategy-tuning-control",
         "switch",
         "text-input-control",
         "tooltip",
         "workspace-metric-value",
     }
-    assert len(rows) == 20
+    assert len(rows) == 21
     assert all(row["id"] != "workspace-article" for row in rows)
     assert {row["id"] for row in rows} == expected_ids
     assert len({row["id"] for row in rows}) == len(rows)
@@ -171,7 +172,8 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert 'data-style-token-demo="type-specimen"' not in html
     assert 'aria-label="Frosted glass demo"' in html
     assert 'class="metric-card foundation-metric-card metric-card-accent style-token-metric-card-demo"' in html
-    assert ">Cached messages</span>" in html
+    assert ">Total trades</span>" in html
+    assert ">2</strong>" in html
     for dead_demo in (
         "status-states",
         "control-playground",
@@ -188,7 +190,19 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert 'data-style-token-card="segmented-control"' in html
     assert 'data-style-token-copy="Segmented control"' in html
     assert 'data-style-token-inventory-demo' not in html
-    assert html.count('data-style-token-card=') == 20
+    assert html.count('data-style-token-card=') == 21
+    assert 'data-style-token-card="strategy-tuning-control"' in html
+    assert "--strategy-tune-button-size" in html
+    assert "--strategy-tune-panel-padding" in html
+    for token_name in (
+        "--workspace-metric-label-font-size",
+        "--workspace-metric-label-line-height",
+        "--workspace-metric-label-letter-spacing",
+        "--workspace-metric-label-font-weight",
+        "--workspace-metric-label-color",
+        "--workspace-metric-card-min-height",
+    ):
+        assert token_name in html
     assert 'href="#frosted-glass"' in html
     assert 'data-style-token-control' in html
     assert 'href="/settings/style-tokens"' in html

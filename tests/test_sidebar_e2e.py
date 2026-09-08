@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.33.2-codex.1
+Code version: v1.36.0-codex.1
 """
 
 from __future__ import annotations
@@ -1129,7 +1129,7 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
     )
     try:
         cards = page.locator("[data-style-token-card]")
-        expect(cards).to_have_count(20)
+        expect(cards).to_have_count(21)
         assert page.evaluate(
             "document.documentElement.scrollWidth === document.documentElement.clientWidth"
         )
@@ -1160,11 +1160,27 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
         assert refresh_geometry["width"] <= refresh_geometry["previewWidth"] + 1
         assert refresh_geometry["previewWidth"] < refresh_geometry["demoWidth"]
         assert refresh_button.get_attribute("data-style-token-secondary-button-use-icon") == "false"
+        assert refresh_button.evaluate(
+            "element => element.getBoundingClientRect().height"
+        ) == 32
 
         tag_typography = page.locator("[data-style-token-prompt-tag]").evaluate(
             "element => { const style = getComputedStyle(element); return { fontSize: style.fontSize, fontWeight: style.fontWeight }; }"
         )
         assert tag_typography == {"fontSize": "12px", "fontWeight": "500"}
+
+        metric_label = page.locator(
+            '[data-style-token-card="workspace-metric-value"] .metric-label'
+        )
+        expect(metric_label).to_have_text("Total trades")
+        assert metric_label.evaluate(
+            "element => { const style = getComputedStyle(element); return { fontSize: style.fontSize, fontWeight: style.fontWeight, lineHeight: style.lineHeight, color: style.color }; }"
+        ) == {
+            "fontSize": "15px",
+            "fontWeight": "400",
+            "lineHeight": "normal",
+            "color": "rgb(11, 12, 12)",
+        }
 
         sort_label_weight = page.locator(
             '#shared-select-filter [data-style-token-shared-filter-label]'
@@ -1185,9 +1201,42 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
         )
         period_trigger.focus()
         period_trigger.press("ArrowDown")
+        period_option = page.locator(
+            '#shared-select-dropdown [data-style-token-shared-filter-option="1y"]'
+        )
+        assert period_option.evaluate(
+            "element => element.getBoundingClientRect().height"
+        ) == 36
+        assert period_option.locator(".trade-strategy-dropdown-text").inner_text() == "1 year"
+        assert period_option.locator(".trade-strategy-dropdown-text").evaluate(
+            "element => element.scrollWidth <= element.clientWidth"
+        )
         page.keyboard.press("End")
         page.keyboard.press("Enter")
         expect(page.locator("#shared-select-dropdown select")).to_have_value("max")
+
+        tune_button = page.locator("[data-style-token-strategy-tune-button]")
+        tune_panel = page.locator("[data-style-token-strategy-tuning-panel]")
+        expect(tune_button).to_have_attribute("aria-pressed", "true")
+        expect(tune_button).to_have_attribute("aria-expanded", "true")
+        expect(tune_panel).to_be_visible()
+        assert tune_button.evaluate(
+            "element => getComputedStyle(element).width"
+        ) == "30px"
+        assert tune_button.locator(".icon").evaluate(
+            "element => getComputedStyle(element).width"
+        ) == "14px"
+        assert tune_panel.evaluate(
+            "element => getComputedStyle(element).padding"
+        ) == "10px"
+        page.locator(".style-token-strategy-tuning-label").click()
+        expect(tune_panel).to_be_visible()
+        tune_button.click()
+        expect(tune_button).to_have_attribute("aria-pressed", "false")
+        expect(tune_button).to_have_attribute("aria-expanded", "false")
+        expect(tune_panel).to_be_hidden()
+        tune_button.click()
+        expect(tune_panel).to_be_visible()
 
         agent_trigger.press("ArrowDown")
         page.keyboard.press("End")
@@ -1195,6 +1244,38 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
         expect(page.locator("[data-style-token-agent-browser-input]")).to_have_value(
             "chrome"
         )
+
+        action_right = page.locator("#global_theme_toggle").evaluate(
+            "element => element.getBoundingClientRect().right"
+        )
+        copy_rights = page.locator(".style-token-copy-button").evaluate_all(
+            "elements => elements.map(element => element.getBoundingClientRect().right)"
+        )
+        assert all(abs(right - action_right) <= 1 for right in copy_rights)
+
+        active_icon = page.locator(
+            ".settings-category-nav-item.is-active .settings-category-nav-icon"
+        )
+        assert active_icon.evaluate(
+            "element => getComputedStyle(element).backgroundColor"
+        ) == "rgb(0, 85, 204)"
+        icon_shell = page.locator(
+            ".settings-category-nav-item.is-active .settings-category-nav-icon-shell"
+        )
+        assert icon_shell.evaluate(
+            "element => getComputedStyle(element).backgroundColor"
+        ) == "rgba(0, 0, 0, 0)"
+        sidebar_style = page.locator("#app_sidebar").evaluate(
+            "element => { const style = getComputedStyle(element); return { backgroundColor: style.backgroundColor, paddingTop: style.paddingTop }; }"
+        )
+        assert sidebar_style["paddingTop"] == "10px"
+        assert "0.62" in sidebar_style["backgroundColor"]
+
+        beta_icon = page.locator('[data-dock-section="beta"] .dock-icon')
+        if beta_icon.count():
+            assert "sparkles.2.svg" in beta_icon.evaluate(
+                "element => getComputedStyle(element).maskImage"
+            )
 
         prompt_tag = page.locator("[data-style-token-prompt-tag]")
         page.locator("[data-style-token-prompt-tag-remove]").click()
@@ -1294,6 +1375,22 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
             "element => getComputedStyle(element).gridTemplateColumns.split(' ').length"
         ) == 1
         expect(narrow_page.locator("[data-style-token-resizer]")).to_be_hidden()
+        narrow_tuning = narrow_page.locator("[data-style-token-strategy-tuning]")
+        expect(narrow_tuning.locator("[data-style-token-strategy-tuning-panel]")).to_be_visible()
+        assert narrow_tuning.evaluate(
+            "element => element.scrollWidth <= element.clientWidth"
+        )
+        narrow_metric_label = narrow_page.locator(
+            '[data-style-token-card="workspace-metric-value"] .metric-label'
+        )
+        assert narrow_metric_label.evaluate(
+            "element => { const style = getComputedStyle(element); return { fontSize: style.fontSize, fontWeight: style.fontWeight, lineHeight: style.lineHeight, color: style.color }; }"
+        ) == {
+            "fontSize": "15px",
+            "fontWeight": "400",
+            "lineHeight": "normal",
+            "color": "rgb(11, 12, 12)",
+        }
         title_left = narrow_page.locator(
             ".settings-summary-card .report-heading"
         ).bounding_box()["x"]

@@ -1,4 +1,4 @@
-/* Code version: v1.2.3-codex.1 */
+/* Code version: v1.3.0-codex.1 */
 
 (() => {
     "use strict";
@@ -607,6 +607,33 @@
         });
     };
 
+    const bindStyleTokenStrategyTuningDemo = () => {
+        document.querySelectorAll("[data-style-token-strategy-tuning]").forEach((demo) => {
+            if (!(demo instanceof HTMLElement) || demo.dataset.bound === "1") {
+                return;
+            }
+            const button = demo.querySelector("[data-style-token-strategy-tune-button]");
+            const panel = demo.querySelector("[data-style-token-strategy-tuning-panel]");
+            if (!(button instanceof HTMLButtonElement) || !(panel instanceof HTMLElement)) {
+                return;
+            }
+            demo.dataset.bound = "1";
+            const sync = (open) => {
+                button.classList.toggle("is-active", open);
+                button.setAttribute("aria-pressed", String(open));
+                button.setAttribute("aria-expanded", String(open));
+                panel.hidden = !open;
+            };
+            sync(button.getAttribute("aria-pressed") === "true");
+            button.addEventListener("click", () => {
+                sync(button.getAttribute("aria-pressed") !== "true");
+                showStatus(button.getAttribute("aria-pressed") === "true"
+                    ? "Strategy parameters expanded"
+                    : "Strategy parameters collapsed");
+            });
+        });
+    };
+
     const attachStyleTokenControls = () => {
         const shell = document.querySelector("[data-style-token-shell]");
         if (!(shell instanceof HTMLElement)) {
@@ -812,6 +839,7 @@
     bindSecondaryButtonDemo();
     bindStyleTokenPrimaryButtonDemo();
     bindStyleTokenThemeToggleDemo();
+    bindStyleTokenStrategyTuningDemo();
     attachStyleTokenControls();
     attachTextInputClearHandlers();
     attachStyleTokenReferences();

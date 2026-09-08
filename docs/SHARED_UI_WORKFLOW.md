@@ -1,6 +1,22 @@
 # Shared UI workflow
 
-Documentation version: `v1.0.4`
+Documentation version: `v1.0.5`
+
+## Shared select keyboard adapter
+
+`app/web/static/select-controller.js` v1.0.0 is vendored byte-for-byte from
+Worthward's `app/web/static/assets/js/select-controller.js`. The keyboard
+contract is owned by the sibling's `docs/SHARED_UI_WORKFLOW.md`.
+`browser-filter-select.js` and `browser-source-filter.js` delegate navigation
+and DOM focus to this controller; submission, metadata, pointer dismissal, and
+header-menu positioning remain local. Opening with ArrowUp/ArrowDown now focuses
+the selected option consistently; it no longer advances the native-select adapter
+on its first key press. Other pickers remain unmigrated.
+Both entrypoints also import the controller when a cached template lacks its
+script tag, before upgrading the original form controls.
+
+Run `node --test tests/test_select_controller.mjs` and
+`./scripts/test.sh tests/test_select_keyboard_e2e.py` for focused validation.
 
 This is the short entrypoint for shared visual and interaction work. The only
 long-form synchronization state lives in:

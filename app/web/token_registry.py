@@ -1,6 +1,6 @@
 """Read the local CSS foundation token registry for the Style tokens page.
 
-Code version: v0.5.2-codex.1
+Code version: v0.8.0-codex.1
 """
 
 from __future__ import annotations
@@ -320,7 +320,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "sample_kind": "secondary-button",
             "sample_title": "Refresh cache",
             "use_icon": False,
-            "token_names": ("--glass-chip-background-strong", "--glass-chip-background-hover", "--glass-chip-border", "--glass-chip-shadow", "--glass-chip-shadow-hover", "--radius-pill", "--font-size-3", "--font-weight-semibold"),
+            "token_names": ("--secondary-button-min-height", "--glass-chip-background-strong", "--glass-chip-background-hover", "--glass-chip-border", "--glass-chip-shadow", "--glass-chip-shadow-hover", "--radius-pill", "--font-size-3", "--font-weight-semibold"),
         },
         {
             "id": "segmented-control",
@@ -365,8 +365,27 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "name": "Shared select filter",
             "sample_kind": "shared-select-filter",
             "sample_title": "Sort cached text",
-            "token_names": ("--shared-select-control-height", "--shared-select-trigger-material", "--shared-select-dropdown-padding", "--shared-select-dropdown-radius", "--shared-select-dropdown-max-height", "--shared-select-option-padding", "--shared-select-option-radius", "--shared-select-option-gap", "--control-liquid-background", "--control-liquid-background-hover", "--control-liquid-border"),
+            "token_names": ("--shared-select-control-height", "--shared-select-trigger-material", "--shared-select-dropdown-padding", "--shared-select-dropdown-radius", "--shared-select-dropdown-max-height", "--shared-select-option-min-height", "--shared-select-option-padding", "--shared-select-option-radius", "--shared-select-option-gap", "--control-liquid-background", "--control-liquid-background-hover", "--control-liquid-border"),
             "material_names": ("--shared-select-trigger-material", "--shared-select-dropdown-material"),
+        },
+        {
+            "id": "strategy-tuning-control",
+            "name": "Strategy tuning control",
+            "sample_kind": "strategy-tuning-control",
+            "sample_title": "Strategy",
+            "sample_button": "Grid Trading",
+            "sample_fields": (
+                {"label": "Trigger price min", "value": "1.00"},
+                {"label": "Trigger price max", "value": "1,000.00"},
+                {"label": "Rise %", "value": "2.00"},
+                {"label": "Fall %", "value": "1.00"},
+            ),
+            "token_names": ("--strategy-tune-button-material", "--strategy-tune-button-size", "--strategy-tune-button-icon-size", "--strategy-tune-button-radius", "--strategy-tune-panel-material", "--strategy-tune-panel-gap", "--strategy-tune-panel-padding", "--strategy-tune-panel-radius", "--strategy-tune-panel-row-gap", "--strategy-tune-panel-row-height", "--strategy-tune-panel-label-share", "--strategy-tune-panel-border", "--strategy-tune-panel-shadow", "--strategy-tune-panel-blur"),
+            "material_names": ("--strategy-tune-button-material", "--strategy-tune-panel-material"),
+            "related_styles": (
+                {"name": "Circular icon button", "target_id": "circular-icon-button"},
+                {"name": "Shared select filter", "target_id": "shared-select-filter"},
+            ),
         },
         {
             "id": "switch",
@@ -395,9 +414,9 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "id": "workspace-metric-value",
             "name": "Workspace metric value",
             "sample_kind": "metric-value",
-            "sample_title": "Cached messages",
-            "sample_value": "12,486",
-            "token_names": ("--workspace-metric-value-font-size", "--workspace-metric-value-line-height", "--workspace-metric-value-letter-spacing", "--workspace-metric-value-font-weight", "--workspace-metric-decimal-scale", "--workspace-metric-card-padding", "--workspace-metric-card-row-gap", "--workspace-metric-card-radius", "--workspace-metric-card-label-min-height"),
+            "sample_title": "Total trades",
+            "sample_value": "2",
+            "token_names": ("--workspace-metric-label-font-size", "--workspace-metric-label-line-height", "--workspace-metric-label-letter-spacing", "--workspace-metric-label-font-weight", "--workspace-metric-label-color", "--workspace-metric-value-font-size", "--workspace-metric-value-line-height", "--workspace-metric-value-letter-spacing", "--workspace-metric-value-font-weight", "--workspace-metric-decimal-scale", "--workspace-metric-card-padding", "--workspace-metric-card-row-gap", "--workspace-metric-card-radius", "--workspace-metric-card-label-min-height", "--workspace-metric-card-min-height"),
         },
     )
 
