@@ -1,6 +1,6 @@
 """Read the local CSS foundation token registry for the Style tokens page.
 
-Code version: v0.8.0-codex.1
+Code version: v0.9.0-codex.1
 """
 
 from __future__ import annotations
@@ -240,7 +240,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "name": "Agent browser selector",
             "sample_kind": "agent-browser-selector",
             "sample_title": "Browser",
-            "token_names": ("--control-form-height", "--control-liquid-background", "--control-liquid-background-hover", "--control-liquid-border", "--control-liquid-shadow", "--control-liquid-shadow-focus", "--control-liquid-blur", "--shared-select-dropdown-material", "--shared-select-option-radius", "--theme-success-strong", "--radius-pill", "--font-table-body"),
+            "token_names": ("--control-form-height", "--control-liquid-background", "--control-liquid-background-hover", "--control-liquid-border", "--control-liquid-shadow", "--control-liquid-shadow-focus", "--control-liquid-blur", "--shared-select-dropdown-material", "--shared-select-option-radius", "--theme-success-strong", "--radius-pill", "--font-table-body", "--field-title-font-size", "--field-title-line-height", "--field-title-letter-spacing", "--field-title-font-weight", "--field-title-color"),
             "material_names": ("--shared-select-dropdown-material",),
         },
         {
@@ -311,7 +311,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "name": "Scrollable data table",
             "sample_kind": "scrollable-data-table",
             "sample_title": "Cache history",
-            "token_names": ("--scrollable-data-table-header-material", "--scrollable-data-table-header-padding", "--scrollable-data-table-cell-padding", "--scrollable-data-table-summary-padding", "--scrollable-data-table-header-height", "--scrollable-data-table-min-width", "--scrollable-data-table-header-color", "--scrollable-data-table-scrollbar-gutter", "--scrollable-data-table-row-background", "--scrollable-data-table-row-background-alt", "--scrollable-data-table-summary-background", "--scrollable-data-table-summary-border", "--scrollable-data-table-summary-shadow", "--scrollable-data-table-summary-blur"),
+            "token_names": ("--scrollable-data-table-header-material", "--scrollable-data-table-header-padding", "--scrollable-data-table-cell-padding", "--scrollable-data-table-summary-padding", "--scrollable-data-table-header-height", "--scrollable-data-table-min-width", "--scrollable-data-table-header-color", "--scrollable-data-table-scrollbar-gutter", "--scrollable-data-table-row-background", "--scrollable-data-table-row-background-alt", "--scrollable-data-table-summary-background", "--scrollable-data-table-summary-border", "--scrollable-data-table-summary-shadow", "--scrollable-data-table-summary-blur", "--field-title-font-size", "--field-title-line-height", "--field-title-letter-spacing", "--field-title-font-weight", "--field-title-color"),
             "material_names": ("--scrollable-data-table-header-material",),
         },
         {
@@ -400,7 +400,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "sample_kind": "text-input-control",
             "sample_title": "Cache label",
             "sample_value": "Saved prompts",
-            "token_names": ("--text-input-control-radius", "--text-input-control-pad-block", "--text-input-control-pad-inline", "--text-input-control-background", "--text-input-control-border", "--text-input-control-color", "--text-input-control-font-size", "--text-input-control-shadow", "--text-input-control-shadow-hover"),
+            "token_names": ("--text-input-control-radius", "--text-input-control-pad-block", "--text-input-control-pad-inline", "--text-input-control-background", "--text-input-control-border", "--text-input-control-color", "--text-input-control-font-size", "--text-input-control-shadow", "--text-input-control-shadow-hover", "--field-title-font-size", "--field-title-line-height", "--field-title-letter-spacing", "--field-title-font-weight", "--field-title-color"),
         },
         {
             "id": "tooltip",

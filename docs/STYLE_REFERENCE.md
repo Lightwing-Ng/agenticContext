@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.6.0-codex.1`
+Documentation version: `v1.7.0-codex.1`
 
 ## Authority
 
@@ -69,6 +69,13 @@ page uses one explicit `.settings-content-scrollport`; the shared
 cutting elevated card shadows without moving either width anchor. Smaller tables and
 data lists continue to own their own overflow. Pagination that belongs to a
 token-limited surface remains horizontally centered inside that surface.
+
+Field titles and reusable scrollable-table headers consume the shared
+`--field-title-*` role: `15px`, regular `400` weight, normal line height and letter
+spacing, and primary text color. Apply it to filter headings and Style token specimen
+titles without changing the legacy `--font-form-label` role used by values and
+supporting copy. The role is breakpoint-independent; existing containers continue to
+own wrapping and available width.
 
 ## Shared spatial layout contract
 

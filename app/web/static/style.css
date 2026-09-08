@@ -1,4 +1,4 @@
-/* Code version: v2.109.0-codex.1 */
+/* Code version: v2.110.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -480,6 +480,11 @@
     --font-card-subtitle: var(--font-ui-lg);
     --font-agent-prompt: 16px;
     --font-metric-value: var(--font-metric-md);
+    --field-title-font-size: var(--font-ui-lg);
+    --field-title-line-height: normal;
+    --field-title-letter-spacing: normal;
+    --field-title-font-weight: var(--font-weight-regular);
+    --field-title-color: var(--text);
     --font-numeric-fraction-scale: 0.76;
     --text-input-control-radius: var(--radius-pill);
     --text-input-control-pad-block: 5px;
@@ -1535,7 +1540,15 @@ h2 {
     gap: 8px;
 }
 
-.field > span,
+.field > span {
+    margin: 0;
+    font-size: var(--field-title-font-size);
+    line-height: var(--field-title-line-height);
+    letter-spacing: var(--field-title-letter-spacing);
+    color: var(--field-title-color);
+    font-weight: var(--field-title-font-weight);
+}
+
 .switch-label {
     margin: 0;
     font-size: var(--font-form-label);
@@ -1545,6 +1558,7 @@ h2 {
 
 /* Keep routine form labels regular; reserve stronger weights for explicit emphasis. */
 .field > .field-help {
+    font-size: var(--font-form-label);
     font-weight: var(--font-weight-regular);
 }
 
@@ -2756,11 +2770,12 @@ a.ghost-link[href$="/settings"] {
     top: 0;
     z-index: 1;
     text-align: left;
-    font-size: var(--font-table-body);
-    font-weight: var(--font-weight-semibold);
-    letter-spacing: normal;
+    font-size: var(--field-title-font-size);
+    line-height: var(--field-title-line-height);
+    font-weight: var(--field-title-font-weight);
+    letter-spacing: var(--field-title-letter-spacing);
     text-transform: none;
-    color: var(--scrollable-data-table-header-color);
+    color: var(--field-title-color);
     background: color-mix(in srgb, var(--frosted-glass-background) 92%, var(--panel-strong));
     backdrop-filter: var(--frosted-glass-blur);
     -webkit-backdrop-filter: var(--frosted-glass-blur);
@@ -5731,7 +5746,11 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 }
 
 .browser-filter-field > span {
-    font-weight: var(--font-weight-medium);
+    font-size: var(--field-title-font-size);
+    line-height: var(--field-title-line-height);
+    letter-spacing: var(--field-title-letter-spacing);
+    font-weight: var(--field-title-font-weight);
+    color: var(--field-title-color);
 }
 
 .browser-source-filter-combobox {
@@ -10618,10 +10637,11 @@ dialog.browser-dialog:not([open]) {
 
 .style-token-component-kicker {
     margin: 0;
-    color: var(--text);
-    font-size: var(--font-form-control);
-    font-weight: var(--font-weight-bold);
-    line-height: 1.25;
+    color: var(--field-title-color);
+    font-size: var(--field-title-font-size);
+    font-weight: var(--field-title-font-weight);
+    line-height: var(--field-title-line-height);
+    letter-spacing: var(--field-title-letter-spacing);
 }
 
 .style-token-pagination-demo,
@@ -11132,8 +11152,15 @@ dialog.browser-dialog:not([open]) {
     display: grid;
     gap: 8px;
     width: 100%;
-    color: var(--text);
-    font-size: var(--font-form-label);
+}
+
+.style-token-shared-select-field > span:first-child,
+.style-token-text-input-demo > span:first-child {
+    color: var(--field-title-color);
+    font-size: var(--field-title-font-size);
+    line-height: var(--field-title-line-height);
+    letter-spacing: var(--field-title-letter-spacing);
+    font-weight: var(--field-title-font-weight);
 }
 
 .style-token-shared-select-field .browser-filter-select {

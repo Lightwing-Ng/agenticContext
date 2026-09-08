@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.59.0-codex.1
+Code version: v1.60.0-codex.1
 """
 
 import hashlib
@@ -87,6 +87,11 @@ def test_typography_matches_the_sibling_font_contract() -> None:
         "--font-table-head: var(--font-size-3);",
         "--font-card-subtitle: var(--font-ui-lg);",
         "--font-metric-value: var(--font-metric-md);",
+        "--field-title-font-size: var(--font-ui-lg);",
+        "--field-title-line-height: normal;",
+        "--field-title-letter-spacing: normal;",
+        "--field-title-font-weight: var(--font-weight-regular);",
+        "--field-title-color: var(--text);",
         "--font-numeric-fraction-scale: 0.76;",
     )
     for token in expected_tokens:
@@ -121,12 +126,12 @@ def test_routine_labels_use_restrained_font_weights() -> None:
     expected_rules = {
         ".workspace-kicker,": "font-weight: var(--font-weight-semibold);",
         ".browser-session-panel-label {": "font-weight: var(--font-weight-regular);",
-        ".field > span,": "font-weight: var(--font-weight-regular);",
+        ".field > span {": "font-weight: var(--field-title-font-weight);",
         ".field > .field-help {": "font-weight: var(--font-weight-regular);",
         ".cache-common-config-title {": "font-weight: var(--font-weight-regular);",
         ".cache-number-label {": "font-weight: var(--font-weight-regular);",
         ".summary-row dt {": "font-weight: var(--font-weight-regular);",
-        ".events-table thead th {": "font-weight: var(--font-weight-semibold);",
+        ".events-table thead th {": "font-weight: var(--field-title-font-weight);",
     }
 
     for selector, declaration in expected_rules.items():
@@ -135,10 +140,17 @@ def test_routine_labels_use_restrained_font_weights() -> None:
         assert declaration in selector_rule
         assert "font-weight: var(--font-weight-bold);" not in selector_rule
 
-    for selector in (".field > span,", ".cache-number-label {"):
+    for selector in (".cache-number-label {",):
         selector_start = stylesheet.index(selector)
         selector_rule = stylesheet[selector_start:stylesheet.index("\n}", selector_start)]
         assert "font-size: var(--font-form-label);" in selector_rule
+
+    field_start = stylesheet.index(".field > span {")
+    field_rule = stylesheet[field_start:stylesheet.index("\n}", field_start)]
+    assert "font-size: var(--field-title-font-size);" in field_rule
+    help_start = stylesheet.index(".field > .field-help {")
+    help_rule = stylesheet[help_start:stylesheet.index("\n}", help_start)]
+    assert "font-size: var(--font-form-label);" in help_rule
 
 
 def test_settings_fields_use_a_single_column_layout() -> None:
@@ -232,13 +244,25 @@ def test_chart_tooltip_title_uses_the_medium_weight_token() -> None:
     assert "font-weight: var(--font-weight-semibold);" not in selector_rule
 
 
-def test_browser_filter_labels_use_the_medium_weight_token() -> None:
-    """Give Local resources filter labels the shared medium emphasis."""
+def test_field_titles_and_scrollable_headers_use_the_agent_reference_role() -> None:
+    """Keep annotated titles on the exact Agent form-field typography role."""
     stylesheet = _stylesheet()
-    selector_start = stylesheet.index(".browser-filter-field > span {")
-    selector_rule = stylesheet[selector_start:stylesheet.index("\n}", selector_start)]
-
-    assert "font-weight: var(--font-weight-medium);" in selector_rule
+    for selector in (
+        ".browser-filter-field > span {",
+        ".events-table thead th {",
+        ".style-token-component-kicker {",
+        ".style-token-shared-select-field > span:first-child,",
+    ):
+        selector_start = stylesheet.index(selector)
+        selector_rule = stylesheet[selector_start:stylesheet.index("\n}", selector_start)]
+        for declaration in (
+            "font-size: var(--field-title-font-size);",
+            "line-height: var(--field-title-line-height);",
+            "letter-spacing: var(--field-title-letter-spacing);",
+            "font-weight: var(--field-title-font-weight);",
+            "color: var(--field-title-color);",
+        ):
+            assert declaration in selector_rule
 
 
 def test_form_inputs_use_regular_weight_monospace_text() -> None:
@@ -2026,7 +2050,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-            "/* Code version: v2.109.0-codex.1 */",
+            "/* Code version: v2.110.0-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',

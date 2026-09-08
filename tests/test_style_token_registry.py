@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.5.0-codex.1
+Code version: v1.6.0-codex.1
 """
 
 import re
@@ -317,6 +317,14 @@ def test_style_tokens_route_renders_requested_browser_components_and_table(clien
     assert 'data-style-token-table-demo' in html
     assert 'class="style-token-table-demo-summary-row"' not in html
     assert 'class="style-token-component-kicker">Sessions</p>' not in html
+    for token_name in (
+        "--field-title-font-size",
+        "--field-title-line-height",
+        "--field-title-letter-spacing",
+        "--field-title-font-weight",
+        "--field-title-color",
+    ):
+        assert html.count(token_name) >= 3
     assert '<legend class="sr-only">Execution option</legend>' not in html
     assert 'data-style-token-table-filter-option="buy"' in html
     assert 'data-style-token-table-pagination' in html
