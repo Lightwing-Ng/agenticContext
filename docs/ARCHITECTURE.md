@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.13.5-codex.1`
+Documentation version: `v1.14.0-codex.1`
 
 ## Runtime flow
 
@@ -91,6 +91,21 @@ export only the symbols needed by its caller and should not become a second impl
 Web routes may orchestrate core services and present serialized state. Core modules must not
 depend on templates or browser DOM details. Source-specific automation belongs at a browser or
 transport boundary, while durable cache and state rules stay in core modules.
+
+## Optional Beta experiments
+
+`app/web/beta.py` registers an optional GET-only Blueprint and an immutable experiment catalog.
+`create_app(beta_enabled=False)` or `AGENTIC_CONTEXT_BETA_ENABLED=0` removes its routes and Dock
+entry. `beta_experiments` selects a subset by ID; an empty subset removes the module. Beta has no
+production service, storage, thread, or browser-controller dependency. The only shared template
+change is its conditional Dock entry before Settings, including the fifth-slot active indicator.
+
+`beta.html` reuses the application shell and Settings navigation styles. Its CSS is scoped under
+`.beta-page`; its script runs only on Beta pages and lazily imports pure `beta/engines.mjs` when
+the user runs an experiment. Pasted text and explicit file imports are processed in the browser.
+Draft fields use `agenticcontext:beta:v1:draft:<experiment-id>` in `sessionStorage`; results use
+plain-text DOM rendering and user-triggered Markdown copy/export. Beta does not read existing
+storage keys or call Cache, Agent, or Settings APIs. Full details are in [BETA.md](BETA.md).
 
 ## OpenAI Site tools and Agent Optimization boundary
 

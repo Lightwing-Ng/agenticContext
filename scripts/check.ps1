@@ -1,5 +1,5 @@
 # agenticContext Windows quality gate.
-# Code version: v1.3.0-codex.1
+# Code version: v1.3.1-codex.1
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -69,7 +69,7 @@ try {
     }
 
     Write-Host "[4/5] JavaScript unit tests"
-    & node --test tests/test_agent_optimization.mjs
+    & node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     Write-Host "[5/5] Python tests with branch coverage"

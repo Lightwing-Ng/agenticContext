@@ -1,8 +1,8 @@
-{# Code version: v1.8.5-codex.2 #}
+{# Code version: v1.9.0-codex.1 #}
 {% set cache_source_keys = cache_sources | map(attribute="key") | list %}
 {% set llm_cache_source_keys = llm_cache_sources | map(attribute="key") | list %}
 {% set cache_dock_source_key = dock_section if dock_section in cache_source_keys or dock_section in llm_cache_source_keys else "chatgpt" %}
-<nav class="sidebar-dock" aria-label="Workspace sections" data-layout-role="sidebar-dock">
+<nav class="sidebar-dock" aria-label="Workspace sections" data-layout-role="sidebar-dock"{% if beta_enabled and dock_section == 'settings' %} style="--active-index: 4"{% endif %}>
     <a
         href="{{ agent_entry_url() }}"
         class="sidebar-dock-item{% if dock_section == 'agent' %} is-active{% endif %}"
@@ -39,6 +39,19 @@
         <span class="icon dock-icon dock-icon-local-resources" aria-hidden="true"></span>
         <span class="sidebar-dock-label" aria-hidden="true">Local resources</span>
     </a>
+    {% if beta_enabled %}
+    <a
+        href="{{ url_for('beta.index') }}"
+        class="sidebar-dock-item{% if dock_section == 'beta' %} is-active{% endif %}"
+        data-dock-section="beta"
+        data-tooltip="Beta"
+        aria-label="Beta"
+        {% if dock_section == 'beta' %}aria-current="page"{% endif %}
+    >
+        <span class="icon dock-icon" aria-hidden="true" style="mask: url('{{ url_for('static', filename='images/wand.and.sparkles.inverse.svg') }}') center/contain no-repeat; -webkit-mask: url('{{ url_for('static', filename='images/wand.and.sparkles.inverse.svg') }}') center/contain no-repeat"></span>
+        <span class="sidebar-dock-label" aria-hidden="true">Beta</span>
+    </a>
+    {% endif %}
     <a
         href="{{ url_for('settings') }}"
         class="sidebar-dock-item{% if dock_section == 'settings' %} is-active{% endif %}"

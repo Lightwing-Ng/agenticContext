@@ -1,0 +1,102 @@
+{# Code version: v0.1.0-codex.1 #}
+<!doctype html>
+<html lang="en-US">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>{{ beta_experiment.title }} · Beta · {{ product_name }}</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
+    <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.100.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='beta/beta.css', v=beta_version) }}">
+    <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='beta/beta.js', v=beta_version) }}"></script>
+</head>
+<body>
+{% include "_sidebar_bootstrap.html" %}
+{% set field_configs = {
+    'idea-collision': {'source': 'Resource A', 'second': 'Resource B', 'hint': 'Bring two unrelated notes, saved ideas, or conversation excerpts.', 'action': 'Collide ideas'},
+    'context-capsule': {'source': 'Source material', 'hint': 'Select original evidence for a new conversation without losing its line references.', 'action': 'Build capsule'},
+    'question-radar': {'source': 'Notes or conversation', 'hint': 'Surface explicit questions, TODOs, and blockers that deserve another look.', 'action': 'Find questions'},
+    'memory-diff': {'source': 'Earlier snapshot', 'second': 'Later snapshot', 'hint': 'Inspect what changed before carrying old context into a new task.', 'action': 'Compare snapshots'},
+    'decision-wind-tunnel': {'source': 'Proposal', 'second': 'Assumptions · one per line', 'hint': 'Turn assumptions into failure branches and small, reversible probes.', 'action': 'Challenge proposal'},
+    'mission-forge': {'source': 'Context and constraints', 'second': 'Acceptance checks · one per line', 'hint': 'Turn a rough goal into a reviewable brief that an Agent can execute later.', 'action': 'Build mission'}
+} %}
+{% set fields = field_configs[beta_experiment.id] %}
+<main class="page beta-page" data-beta-root data-beta-experiment="{{ beta_experiment.id }}" data-beta-version="{{ beta_version }}">
+    <button type="button" class="sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+        <span class="icon sidebar-toggle-icon" aria-hidden="true"></span>
+    </button>
+    <div class="app-shell is-sidebar-open" id="app_shell">
+        {% include "_theme_toggle.html" %}
+        <button type="button" class="sidebar-backdrop" id="sidebar_backdrop" aria-label="Close sidebar" aria-hidden="true" tabindex="-1" hidden></button>
+        <aside class="panel sidebar" id="app_sidebar">
+            <section class="hero" data-layout-role="sidebar-title"><h1>Beta</h1></section>
+            <nav class="settings-category-nav beta-nav" aria-label="Beta experiments">
+                {% for experiment in beta_experiments %}
+                <a href="{{ url_for('beta.experiment', experiment_id=experiment.id) }}" class="settings-category-nav-item beta-nav-{{ experiment.id }}{% if experiment.id == beta_experiment.id %} is-active{% endif %}" {% if experiment.id == beta_experiment.id %}aria-current="page"{% endif %}>
+                    <span class="settings-category-nav-icon-shell" aria-hidden="true"><span class="icon settings-category-nav-icon"></span></span>
+                    <span class="settings-category-nav-label">{{ experiment.title }}</span>
+                </a>
+                {% endfor %}
+            </nav>
+            <div class="beta-sidebar-note">
+                <p>Room for the next idea.</p>
+                <p>Local experiments. Drafts stay in this tab. Take useful results with you.</p>
+                <span class="beta-version">{{ beta_version }}</span>
+            </div>
+        </aside>
+        <section class="panel chart-panel workspace" id="workspace_panel">
+            <section class="workspace-header settings-workspace-header beta-workspace">
+                <article class="report-card workspace-article-card workspace-summary-card settings-summary-card beta-title" data-layout-role="title-rail">
+                    <div class="report-heading-row" data-layout-role="title-heading"><p class="report-heading">{{ beta_experiment.title }}</p></div>
+                </article>
+                <div class="settings-content-scrollport beta-scrollport" data-layout-role="content-scrollport">
+                    <div class="beta-content">
+                        <header class="beta-intro">
+                            <p class="beta-kicker">RESEARCH PLAYGROUND <span>EXPERIMENT {{ '%02d'|format(beta_experiments.index(beta_experiment) + 1) }}</span></p>
+                            <h2>{{ beta_experiment.description }}</h2>
+                            <p>{{ fields.hint }}</p>
+                            <div class="beta-intro-meta"><span class="beta-mode">Local {{ 'analysis' if beta_experiment.id in ['question-radar', 'memory-diff', 'context-capsule'] else 'recipe' }}</span><span>Deterministic tools · no model inference</span></div>
+                        </header>
+                        <form class="report-card beta-input-card" data-beta-form onsubmit="return false;">
+                            <div class="beta-section-heading"><h3>Your material</h3><button type="button" class="secondary-button settings-inline-button" data-beta-example>Try example</button></div>
+                            <label class="beta-field beta-objective" for="beta_objective"><span>What would you like to explore? <span class="beta-optional">Optional</span></span><input class="text-input-control" type="text" id="beta_objective" name="objective" maxlength="4000" placeholder="A question, a goal, or a direction…"></label>
+                            <div class="beta-source-grid{% if not fields.second %} beta-source-single{% endif %}">
+                                <label class="beta-field" for="beta_source"><span>{{ fields.source }}</span><textarea class="text-input-control" id="beta_source" name="source" rows="7" maxlength="60000" required placeholder="Paste an excerpt from Local resources, a saved Prompt, or your own notes." aria-describedby="beta_material_help"></textarea></label>
+                                {% if fields.second %}
+                                <label class="beta-field" for="beta_second"><span>{{ fields.second }}</span><textarea class="text-input-control" id="beta_second" name="second" rows="7" maxlength="60000" {% if beta_experiment.id == 'idea-collision' %}required{% endif %} placeholder="{{ 'Paste the other source…' if beta_experiment.id in ['idea-collision', 'memory-diff'] else 'Add one item per line…' }}"></textarea></label>
+                                {% endif %}
+                            </div>
+                            <div class="beta-material-tools">
+                                <button type="button" class="secondary-button settings-inline-button" data-beta-import>Import {{ fields.source|lower }}</button>
+                                <input type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json" data-beta-file hidden>
+                                <a class="beta-text-link" href="{{ url_for('browser', view='text', source='all', kind='all', q='', sort='newest', session_view='1') }}" target="_blank" rel="noopener">Browse Local resources <span aria-hidden="true">↗</span></a>
+                            </div>
+                            <p class="beta-help" id="beta_material_help">Paste a copy, or import a text, Markdown, or JSON file up to 240 KB. Original resources stay in place.</p>
+                            {% if beta_experiment.id == 'context-capsule' %}
+                            <label class="beta-field beta-budget" for="beta_budget"><span>Export character budget</span><input class="text-input-control" type="number" id="beta_budget" name="budget" value="4000" min="500" max="20000" step="1"><span class="beta-help">500–20,000 characters, including references. This is not a token count.</span></label>
+                            {% endif %}
+                            <div class="beta-actions"><button type="submit" class="settings-inline-button settings-inline-button-primary" data-beta-run data-idle-label="{{ fields.action }}" disabled>{{ fields.action }}</button><button type="button" class="secondary-button settings-inline-button" data-beta-clear>Clear draft</button><span class="beta-help" data-beta-draft-status>Only this experiment</span></div>
+                            <p class="beta-status" role="status" aria-live="polite" aria-atomic="true" data-beta-status></p>
+                        </form>
+                        <section class="report-card beta-result" data-beta-result hidden aria-labelledby="beta_result_title" tabindex="-1">
+                            <div class="beta-section-heading"><h3 id="beta_result_title">Experiment output</h3><div class="beta-export-actions"><button type="button" class="secondary-button settings-inline-button" data-beta-copy>Copy</button><button type="button" class="secondary-button settings-inline-button" data-beta-export>Export .md</button></div></div>
+                            <p class="beta-help" data-beta-result-summary></p>
+                            <dl class="beta-metrics" data-beta-metrics></dl>
+                            <div class="beta-result-sections" data-beta-sections></div>
+                        </section>
+                        <footer class="beta-footnote"><span>Research inspiration</span><a href="{{ beta_experiment.source_url }}" target="_blank" rel="noopener noreferrer">{{ beta_experiment.source_title }} <span aria-hidden="true">↗</span></a><p>Explore the method, review the output, then decide what to carry into your next task.</p></footer>
+                        <noscript><p>Enable JavaScript to run these local experiments. Existing navigation remains available.</p></noscript>
+                    </div>
+                </div>
+            </section>
+        </section>
+    </div>
+    {% set dock_section = 'beta' %}
+    {% include "_sidebar_dock.html" %}
+</main>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.21.0-codex.1') }}"></script>
+</body>
+</html>

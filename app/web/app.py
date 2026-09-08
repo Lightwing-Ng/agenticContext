@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.65.2-codex.1
+# Code version: v1.66.0-codex.1
 
 from __future__ import annotations
 
@@ -122,6 +122,7 @@ from app.core.storage import (
     reveal_media_path,
     resolve_browser_media_path,
 )
+from app.web.beta import register_beta
 from app.web.cache_sources import (
     LLM_CACHE_SOURCE_VIEWS,
     LLM_SWITCHER_SOURCE_VIEWS,
@@ -530,6 +531,8 @@ def create_app(
     computer_use_settings_path: Path | None = None,
     computer_use_runtime_root: Path | None = None,
     agent_external_operations_enabled: bool = True,
+    beta_enabled: bool | None = None,
+    beta_experiments: Iterable[str] | None = None,
 ) -> Flask:
     """Build and configure the Flask app."""
     configure_logging(APP_VERSION)
@@ -547,6 +550,12 @@ def create_app(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         AGENT_EXTERNAL_OPERATIONS_ENABLED=bool(agent_external_operations_enabled),
+    )
+    register_beta(
+        app,
+        version=APP_VERSION,
+        enabled=beta_enabled,
+        experiment_ids=beta_experiments,
     )
 
     media_catalog = LocalMediaCatalog(local_store_root or LOCAL_STORE_ROOT)
@@ -727,6 +736,7 @@ def create_app(
             "llm_cache_sources": LLM_CACHE_SOURCE_VIEWS,
             "chat_history_sources": LLM_SWITCHER_SOURCE_VIEWS,
             "product_name": PRODUCT_NAME,
+            "beta_enabled": "beta" in app.blueprints,
         }
 
     def serialize_media_item(item) -> dict[str, Any]:

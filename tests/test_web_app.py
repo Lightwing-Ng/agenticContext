@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.98.3-codex.1
+# Code version: v1.98.4-codex.1
 
 from __future__ import annotations
 
@@ -603,7 +603,7 @@ class WebAppTests(unittest.TestCase):
                 dock_markup = body[dock_start:dock_end]
                 self.assertEqual(dock_markup.count('data-cache-source-option='), 0)
                 self.assertEqual(dock_markup.count('data-section-link='), 4)
-                self.assertEqual(dock_markup.count('data-dock-section='), 4)
+                self.assertEqual(dock_markup.count('data-dock-section='), 5)
                 self.assertLess(
                     dock_markup.index('data-dock-section="agent"'),
                     dock_markup.index('data-dock-section="cache"'),
@@ -614,6 +614,10 @@ class WebAppTests(unittest.TestCase):
                 )
                 self.assertLess(
                     dock_markup.index('data-dock-section="local-resources"'),
+                    dock_markup.index('data-dock-section="beta"'),
+                )
+                self.assertLess(
+                    dock_markup.index('data-dock-section="beta"'),
                     dock_markup.index('data-dock-section="settings"'),
                 )
                 self.assertIn('aria-label="Agent"', dock_markup)

@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.16.3-codex.1`
+Documentation version: `v1.17.0-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -25,6 +25,12 @@ Agent Optimization. It exposes bounded capability discovery, current-page metada
 same-origin navigation while keeping cached records, Cache lifecycle actions, Agent execution,
 terminal authorization, and settings writes outside the v1 tool boundary. Browsers without Site
 tools retain the complete human interface.
+
+The optional **Beta** Dock section is a local research playground with six experiments: Idea
+Collision, Context Capsule, Question Radar, Memory Diff, Decision Wind Tunnel, and Mission Forge.
+They process explicitly pasted or imported copies with deterministic browser tools, keep drafts
+within the current tab, and export reviewable Markdown. They do not start an Agent or modify
+cached resources. See [Beta experiments](docs/BETA.md) for the module boundary and disable switch.
 
 ## Visual Style Reference
 
@@ -120,6 +126,7 @@ Start with the [documentation index](docs/README.md) to distinguish current cont
 - [Known operating constraints](docs/KNOWN_ISSUES.md)
 - [ChatGPT Web Computer Use Agent](docs/COMPUTER_USE_AGENT.md)
 - [OpenAI Site tools and Agent Optimization](docs/AGENT_OPTIMIZATION.md)
+- [Beta experiments](docs/BETA.md)
 - [Static-file numbered-copy housekeeping](docs/STATIC_FILE_HOUSEKEEPING.md)
 - [Third-party notices](docs/THIRD_PARTY_NOTICES.md)
 - [Engineering and test contract](docs/AGENTS.md)
