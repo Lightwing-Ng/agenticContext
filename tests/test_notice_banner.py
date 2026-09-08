@@ -44,7 +44,9 @@ def test_banner_styles_follow_the_sibling_top_aligned_contract() -> None:
     for token in (
         ".notice-floating-banner {",
         "display: grid !important;",
-        "grid-template-columns: var(--workspace-modal-icon-size) minmax(0, 1fr);",
+        "var(--workspace-modal-close-size)",
+        "var(--workspace-modal-icon-size)",
+        "minmax(0, 1fr)",
         "align-items: start !important;",
         ".notice-floating-banner-content {",
         ".notice-floating-banner-copy {",

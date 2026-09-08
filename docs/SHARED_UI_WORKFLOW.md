@@ -1,11 +1,11 @@
 # Shared UI workflow
 
-Documentation version: `v1.0.3`
+Documentation version: `v1.0.4`
 
 This is the short entrypoint for shared visual and interaction work. The only
 long-form synchronization state lives in:
 
-`/Users/lightwing/Desktop/SHARED_UI_SYNC.md`
+`/Users/lightwing/Desktop/shared_docs/SHARED_UI_SYNC.md`
 
 ## Read order
 

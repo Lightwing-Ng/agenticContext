@@ -1,4 +1,4 @@
-/* Code version: v2.104.0-codex.1 */
+/* Code version: v2.105.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -301,15 +301,15 @@
     --workspace-title-rail-collapsed-pad-inline-start: calc(var(--settings-round-icon-button-size) + 22px);
     --workspace-title-safe-top: 60px;
     --workspace-modal-radius: var(--radius-panel);
-    --workspace-modal-pad-block: 18px;
-    --workspace-modal-pad-inline: 18px;
-    --workspace-modal-close-offset: 10px;
+    --workspace-modal-pad-block: 12px;
+    --workspace-modal-pad-inline: 12px;
+    --workspace-modal-close-offset: 12px;
     --workspace-modal-close-size: 24px;
     --workspace-modal-close-center-offset: calc(var(--workspace-modal-close-offset) + (var(--workspace-modal-close-size) / 2));
     --workspace-modal-icon-size: 36px;
     --workspace-modal-column-gap: 12px;
     --workspace-modal-row-gap: 4px;
-    --workspace-modal-title-margin-end: 32px;
+    --workspace-modal-title-margin-end: 0px;
     --style-token-demo-width: var(--layout-control-width);
     --style-token-column-gap: 24px;
     --style-token-resizer-width: 32px;
@@ -2796,14 +2796,14 @@ a.ghost-link[href$="/settings"] {
 
 .notice-floating-banner {
     display: grid !important;
-    grid-template-columns: var(--workspace-modal-icon-size) minmax(0, 1fr);
+    grid-template-columns:
+        var(--workspace-modal-close-size)
+        var(--workspace-modal-icon-size)
+        minmax(0, 1fr);
     column-gap: var(--workspace-modal-column-gap);
     row-gap: 0;
     align-items: start !important;
-    padding: var(--workspace-modal-pad-block)
-        calc(var(--workspace-modal-pad-inline) + var(--workspace-modal-title-margin-end))
-        var(--workspace-modal-pad-block)
-        var(--workspace-modal-pad-inline);
+    padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline);
     border-radius: var(--workspace-modal-radius);
     overflow: visible;
     transform: none;
@@ -2833,7 +2833,7 @@ a.ghost-link[href$="/settings"] {
 }
 
 .notice-floating-banner-icon {
-    grid-column: 1;
+    grid-column: 2;
     grid-row: 1;
     align-self: start;
     margin-top: 2px;
@@ -2841,7 +2841,7 @@ a.ghost-link[href$="/settings"] {
 }
 
 .notice-floating-banner-content {
-    grid-column: 2;
+    grid-column: 3;
     grid-row: 1;
     min-width: 0;
     margin: 0;
@@ -2901,8 +2901,8 @@ a.ghost-link[href$="/settings"] {
 
 .notice-floating-banner .notice-close {
     position: absolute;
-    top: calc(var(--workspace-modal-close-center-offset) - (var(--workspace-modal-close-size) / 2));
-    right: calc(var(--workspace-modal-close-center-offset) - (var(--workspace-modal-close-size) / 2));
+    top: var(--workspace-modal-close-offset);
+    left: var(--workspace-modal-close-offset);
 }
 
 .dismiss-button {
@@ -2964,14 +2964,14 @@ a.ghost-link[href$="/settings"] {
 }
 
 .browser-session-refresh-banner {
-    grid-template-columns: var(--workspace-modal-icon-size) minmax(0, 1fr);
+    grid-template-columns:
+        var(--workspace-modal-close-size)
+        var(--workspace-modal-icon-size)
+        minmax(0, 1fr);
     column-gap: var(--workspace-modal-column-gap);
     row-gap: 0;
     align-items: start;
-    padding: var(--workspace-modal-pad-block)
-        calc(var(--workspace-modal-pad-inline) + var(--workspace-modal-title-margin-end))
-        var(--workspace-modal-pad-block)
-        var(--workspace-modal-pad-inline);
+    padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline);
 }
 
 .notice-floating-banner-global.browser-session-refresh-banner {
@@ -2979,7 +2979,7 @@ a.ghost-link[href$="/settings"] {
 }
 
 .browser-session-refresh-banner-icon {
-    grid-column: 1;
+    grid-column: 2;
     grid-row: 1;
     align-self: start;
     margin-top: 2px;
@@ -4977,12 +4977,15 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     isolation: isolate;
     z-index: var(--layer-modal-dialog);
     display: grid;
-    grid-template-columns: var(--workspace-modal-icon-size) minmax(0, 1fr);
+    grid-template-columns:
+        var(--workspace-modal-close-size)
+        var(--workspace-modal-icon-size)
+        minmax(0, 1fr);
     column-gap: var(--workspace-modal-column-gap);
     row-gap: var(--workspace-modal-row-gap);
     align-items: start;
     width: min(420px, calc(100vw - 32px));
-    padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline) 16px;
+    padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline);
     pointer-events: auto;
     opacity: 1;
     border: var(--frosted-glass-border);
@@ -4995,7 +4998,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 }
 
 .workspace-modal-icon {
-    grid-column: 1;
+    grid-column: 2;
     grid-row: 1;
     --loading-spinner-size: var(--workspace-modal-icon-size);
     width: var(--workspace-modal-icon-size);
@@ -5005,8 +5008,8 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .workspace-modal-close {
     position: absolute;
-    top: calc(var(--workspace-modal-close-center-offset) - (var(--workspace-modal-close-size) / 2));
-    right: calc(var(--workspace-modal-close-center-offset) - (var(--workspace-modal-close-size) / 2));
+    top: var(--workspace-modal-close-offset);
+    left: var(--workspace-modal-close-offset);
     z-index: var(--layer-control-affordance);
     display: inline-grid;
     width: var(--workspace-modal-close-size);
@@ -5042,9 +5045,9 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 }
 
 .workspace-modal-title {
-    grid-column: 2;
+    grid-column: 3;
     grid-row: 1;
-    margin: 0 var(--workspace-modal-title-margin-end) 0 0;
+    margin: 0;
     align-self: center;
     color: var(--text);
     font-size: var(--font-ui-lg);
@@ -5054,7 +5057,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 }
 
 .workspace-modal-copy {
-    grid-column: 2;
+    grid-column: 3;
     grid-row: 2;
     margin: 0;
     color: var(--muted);

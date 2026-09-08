@@ -1,6 +1,6 @@
 """Read the local CSS foundation token registry for the Style tokens page.
 
-Code version: v0.5.1-codex.1
+Code version: v0.5.2-codex.1
 """
 
 from __future__ import annotations
@@ -271,7 +271,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "sample_kind": "modal-dialog",
             "sample_title": "Refreshing local cache",
             "sample_copy": "We are checking the local catalog for new items. Keep this page open while the refresh finishes.",
-            "token_names": ("--workspace-modal-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-size", "--workspace-modal-icon-size", "--workspace-modal-column-gap", "--workspace-modal-row-gap"),
+            "token_names": ("--workspace-modal-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-icon-size", "--workspace-modal-column-gap", "--workspace-modal-row-gap"),
             "material_names": ("--workspace-modal-material",),
         },
         {
@@ -280,7 +280,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "sample_kind": "floating-banner",
             "sample_title": "Cache settings updated",
             "sample_copy": "New browser sessions will use the saved settings.",
-            "token_names": ("--notice-floating-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-size", "--workspace-modal-icon-size", "--workspace-modal-column-gap"),
+            "token_names": ("--notice-floating-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-icon-size", "--workspace-modal-column-gap"),
             "material_names": ("--notice-floating-material",),
             "related_styles": ({"name": "Modal dialog", "target_id": "modal-dialog"},),
         },

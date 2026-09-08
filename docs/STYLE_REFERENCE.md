@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.4.2-codex.1`
+Documentation version: `v1.4.3-codex.1`
 
 ## Authority
 
@@ -10,7 +10,7 @@ this project, follow the current implementation in that sibling project.
 
 Before changing a shared UI component, also read
 `docs/SHARED_UI_WORKFLOW.md` and the central ledger at
-`/Users/lightwing/Desktop/SHARED_UI_SYNC.md`. The workflow defines the required
+`/Users/lightwing/Desktop/shared_docs/SHARED_UI_SYNC.md`. The workflow defines the required
 two-project verification and the Cache-first promotion path.
 
 The reference applies to shared visual behavior, including the application shell,
@@ -73,7 +73,7 @@ token-limited surface remains horizontally centered inside that surface.
 ## Shared spatial layout contract
 
 The normative cross-project contract is maintained in
-[`../../SHARED_UI_LAYOUT_CONTRACT.md`](../../SHARED_UI_LAYOUT_CONTRACT.md). The
+[`../../shared_docs/SHARED_UI_LAYOUT_CONTRACT.md`](../../shared_docs/SHARED_UI_LAYOUT_CONTRACT.md). The
 `worthward` implementation is the complete reference; this project keeps the same
 geometry and adapts only route-specific markup and interactions.
 

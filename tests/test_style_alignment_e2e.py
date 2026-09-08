@@ -1,4 +1,4 @@
-"""Shared component annotation regressions. Code version: v1.0.1-codex.1."""
+"""Shared component annotation regressions. Code version: v1.1.0-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -28,6 +28,25 @@ def test_shared_component_annotations(disposable_browser, sidebar_server_url, wi
         closes = page.locator('.style-token-modal-demo > .workspace-modal-close')
         expect(closes).to_have_count(2)
         for close in closes.all():
+            surface = close.locator('..')
+            expect(surface).to_have_css("padding", "12px")
+            expect(close).to_have_css("width", "24px")
+            expect(close).to_have_css("height", "24px")
+            expect(close).to_have_css("border-radius", "50%")
+            geometry = surface.evaluate(
+                """node => {
+                    const button = node.querySelector('.workspace-modal-close').getBoundingClientRect();
+                    const icon = node.querySelector('.workspace-modal-icon').getBoundingClientRect();
+                    const bounds = node.getBoundingClientRect();
+                    return {
+                        centerTop: button.top + (button.height / 2) - bounds.top,
+                        centerLeft: button.left + (button.width / 2) - bounds.left,
+                        controlIconGap: icon.left - button.right,
+                    };
+                }"""
+            )
+            assert abs(geometry["centerTop"] - geometry["centerLeft"]) <= 1
+            assert geometry["controlIconGap"] > 0
             page.mouse.move(0, 0)
             expect(close).to_have_css("opacity", "0")
             close.locator('..').hover()

@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.56.1-codex.1
+Code version: v1.56.2-codex.1
 """
 
 import hashlib
@@ -730,7 +730,9 @@ def test_waiting_feedback_uses_the_sibling_vector_spinner_and_modal() -> None:
         ".workspace-modal-overlay {",
         "place-items: center;",
         ".workspace-modal-dialog {",
-        "grid-template-columns: var(--workspace-modal-icon-size) minmax(0, 1fr);",
+        "var(--workspace-modal-close-size)",
+        "var(--workspace-modal-icon-size)",
+        "minmax(0, 1fr)",
         ".workspace-modal-copy {",
         ".browser-media-loading-notice {",
         ".shadow-backup-status-spinner {",
@@ -748,8 +750,10 @@ def test_browser_session_refresh_uses_the_modal_dialog_banner_message() -> None:
         ".browser-session-refresh-banner {",
         ".notice-floating-banner-global.browser-session-refresh-banner {",
         "animation-name: browserSessionRefreshBannerFadeIn;",
-        "grid-template-columns: var(--workspace-modal-icon-size) minmax(0, 1fr);",
-        "calc(var(--workspace-modal-pad-inline) + var(--workspace-modal-title-margin-end))",
+        "var(--workspace-modal-close-size)",
+        "var(--workspace-modal-icon-size)",
+        "minmax(0, 1fr)",
+        "padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline);",
         ".browser-session-refresh-banner-icon {",
         'mask: url("/static/images/info.circle.fill.svg") center/contain no-repeat;',
         ".browser-session-refresh-banner-heading {",
@@ -1948,7 +1952,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.104.0-codex.1 */",
+        "/* Code version: v2.105.0-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
