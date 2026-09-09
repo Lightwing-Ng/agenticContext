@@ -1,6 +1,6 @@
 """Bounded, independently controlled Web Agent sessions.
 
-Code version: v1.5.0-codex.1
+Code version: v1.7.2-codex.1
 """
 
 from contextlib import contextmanager
@@ -127,7 +127,7 @@ class AgentSessionPool:
                 raise RuntimeError(compute_reason)
             self._workspace_leases[service] = ("", workspace_identities)
             try:
-                yield
+                yield workspace_identities
             finally:
                 latest = service.snapshot()
                 if latest.get("running"):
@@ -139,7 +139,7 @@ class AgentSessionPool:
                     self._workspace_leases.pop(service, None)
 
     def _snapshot_rows(self):
-        """Attach fixed admission identities to running snapshots and release stale leases."""
+        """Refresh active paths against their fixed admission root identities."""
         snapshots = {}
         active_services = set()
         for service in self._services.values():
@@ -149,21 +149,48 @@ class AgentSessionPool:
                 run_id = str(snapshot.get("run_id") or "")
                 lease = self._workspace_leases.get(service)
                 if lease is None or lease[0] != run_id:
-                    try:
-                        identities = self._workspace_identity_chain(
-                            snapshot.get("workspace_path", "")
-                        )
-                    except (OSError, RuntimeError, ValueError):
-                        identities = ()
-                    lease = (run_id, identities)
+                    admitted_identity = self._snapshot_workspace_identity(snapshot)
+                    lease = (
+                        run_id,
+                        (admitted_identity,) if admitted_identity is not None else (),
+                    )
                     self._workspace_leases[service] = lease
+                try:
+                    current_identities = self._workspace_identity_chain(
+                        snapshot.get("workspace_path", "")
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    current_identities = ()
+                admitted_identity = lease[1][0] if lease[1] else None
+                if (
+                    admitted_identity is None
+                    or not current_identities
+                    or current_identities[0] != admitted_identity
+                ):
+                    current_identities = ()
                 snapshot = dict(snapshot)
-                snapshot["_workspace_identity_chain"] = lease[1]
+                snapshot["_workspace_identity_chain"] = current_identities
             snapshots[service] = snapshot
         for service in tuple(self._workspace_leases):
             if service not in active_services:
                 self._workspace_leases.pop(service, None)
         return snapshots
+
+    @staticmethod
+    def _snapshot_workspace_identity(snapshot):
+        """Return a persisted admission root identity when it is well formed."""
+        device = snapshot.get("workspace_device")
+        inode = snapshot.get("workspace_inode")
+        if (
+            isinstance(device, bool)
+            or not isinstance(device, int)
+            or device < 0
+            or isinstance(inode, bool)
+            or not isinstance(inode, int)
+            or inode <= 0
+        ):
+            return None
+        return device, inode
 
     @staticmethod
     def _workspace_identity_chain(workspace):
@@ -196,6 +223,23 @@ class AgentSessionPool:
         """Return whether either selected root is an ancestor of the other."""
         return bool(left and right and (left[0] in right or right[0] in left))
 
+    @staticmethod
+    def _workspace_paths_lexically_overlap(left, right):
+        """Conservatively compare absolute normalized paths without filesystem reads."""
+        try:
+            normalized_left = os.path.normcase(
+                os.path.normpath(os.path.abspath(os.path.expanduser(str(left or ""))))
+            )
+            normalized_right = os.path.normcase(
+                os.path.normpath(os.path.abspath(os.path.expanduser(str(right or ""))))
+            )
+            if not str(left or "").strip() or not str(right or "").strip():
+                return False
+            common = os.path.commonpath((normalized_left, normalized_right))
+        except (OSError, TypeError, ValueError):
+            return False
+        return common in {normalized_left, normalized_right}
+
     @classmethod
     def _workspaces_overlap(cls, left, right):
         """Return whether two selected roots can address any of the same files."""
@@ -225,17 +269,26 @@ class AgentSessionPool:
             if bool(item.get("read_only")):
                 continue
             active_workspace = str(item.get("workspace_path") or "").strip()
-            active_identities = item.get("_workspace_identity_chain")
-            if not active_identities and active_workspace:
+            if "_workspace_identity_chain" in item:
+                active_identities = item.get("_workspace_identity_chain")
+            elif active_workspace:
                 try:
                     active_identities = self._workspace_identity_chain(active_workspace)
                 except (OSError, RuntimeError, ValueError):
                     active_identities = ()
+            else:
+                active_identities = ()
             if not active_identities:
                 return self._WORKSPACE_UNVERIFIED
-            if self._identity_chains_overlap(
-                active_identities,
-                workspace_identities,
+            if (
+                self._identity_chains_overlap(
+                    active_identities,
+                    workspace_identities,
+                )
+                or self._workspace_paths_lexically_overlap(
+                    active_workspace,
+                    workspace,
+                )
             ):
                 return self._WORKSPACE_CONFLICT
         return ""
@@ -374,12 +427,15 @@ class AgentSessionPool:
                     read_only=bool(read_only),
                 )
         active_count = len(active)
+        selected_workspace_identity = self._workspace_identity(workspace)
         fields = ("workspace_path", "project_url", "conversation_url", "session_title", "running", "paused", "phase", "message", "started_at", "finished_at", "run_id", "read_only")
         sessions = [
             {"session_id": key, **{field: item.get(field) for field in fields}}
             for key, item in snapshots
             if item.get("run_id") and (item.get("browser"), item.get("platform"))
             == (browser, platform)
+            and self._workspace_identity(item.get("workspace_path"))
+            == selected_workspace_identity
         ]
         sessions.sort(key=lambda item: (not item["running"], str(item["started_at"] or "")))
         return {"sessions": sessions, "active_count": active_count, "concurrency_limit": self._concurrency_limit(browser),

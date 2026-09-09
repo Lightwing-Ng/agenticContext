@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.18.0-codex.1`
+Documentation version: `v1.21.0-codex.1`
 
 ## Runtime flow
 
@@ -168,11 +168,14 @@ between polling and submission. A worker with a recorded run cannot be reassigne
 browser or provider. A stale status snapshot can still lead to a legitimate HTTP 409; it is not
 proof that the admission rules differ.
 Admission also gives overlapping workspace roots one write-capable owner. Directory identity,
-resolved aliases, and parent/child roots participate in that decision; the admitted root and its
-ancestor device/inode chain remain fixed for the lease even if a path is renamed. Read-only sessions
-may run beside readers or one writer. Durable compute metadata records the same root identity and is
-scanned under explicit bounds; an active overlapping job blocks another writer, while malformed or
-unreadable job metadata fails admission closed. Read-only inspection remains available.
+resolved aliases, and conservative lexical parent/child roots participate in that decision. The
+admitted root identity is fixed and handed through the worker to the controller before context or
+browser startup. Each later admission refreshes an active root's ancestor device/inode chain against
+that fixed root; a rebound, missing, or otherwise unverifiable active path blocks new writers.
+Read-only sessions may run beside readers or one writer. Durable compute metadata records the same
+root identity and is scanned under explicit bounds; an active overlapping job blocks another writer,
+while malformed or unreadable job metadata fails admission closed. Read-only inspection remains
+available.
 
 ## Durable compute-job boundary
 
@@ -191,7 +194,8 @@ entrypoint snapshot through the fixed `--config`, `--job-runtime`, and optional 
 It also strips the inherited environment to a small non-secret allowlist. Replacing the live source
 after approval therefore cannot change the entrypoint bytes selected for that job.
 On macOS, the detached optimizer is also launched through `/usr/bin/sandbox-exec` with `network*`
-denied, so even approved code cannot open a download or other network socket during the job.
+and `process-fork` denied, so approved code cannot open a download or other network socket and must
+remain single-process. Thread-level concurrency remains available.
 The Windows path does not currently apply an equivalent OS-level network-denying sandbox profile;
 the worker runs with the current user's permissions.
 
@@ -199,6 +203,10 @@ Runtime metadata, progress, checkpoints, results, and rolling logs live below th
 runtime root in `compute-jobs/<workspace-hash>/<job-id>/`; they never live in the selected source
 workspace. A 128-bit unpredictable `job_id`, stable idempotency key, request fingerprint, PID birth
 identity, and a one-active-job scan prevent ordinary duplicate submission and PID-reuse termination.
+A persistent workspace-bucket lock covers reconciliation, idempotency and active-job admission,
+staging, atomic publication, and directory fsync. It composes an in-process mutex with POSIX
+`flock` or Windows `msvcrt` byte locking so independent manager instances cannot publish competing
+jobs for the same workspace.
 Launcher and worker updates use a cross-process metadata lock, monotonic revision, and an ownership
 handshake so a stale launcher snapshot cannot overwrite a terminal worker result. A published
 `starting` record without a committed PID remains fail-closed after its bounded handshake window;
@@ -211,11 +219,15 @@ commands. Read-only inspection and `bodycheck` remain available so the provider 
 durable job ID and current state without waiting for a long optimizer to finish.
 
 The detached worker owns the approved maximum runtime, capped at 24 hours, and remains alive after
-the provider turn or browser session ends. The approved child enters a dedicated POSIX process group
-or Windows Job Object before its launch gate opens. A portable reader thread drains its output, and
-the worker publishes a terminal state only after the direct child has been reaped and the contained
-descendant tree is empty. Timeout, explicit Stop, and an otherwise successful script that leaves
-descendants all clear that containment first. On macOS, a job-scoped
+the provider turn or browser session ends. Before its launch gate opens, the approved child enters a
+Windows Job Object, a verified Linux cgroup v2, or the macOS no-fork sandbox and dedicated process
+group. Linux refuses to execute the entrypoint when a writable cgroup v2 with `cgroup.kill` cannot be
+created and verified; macOS refuses when `/usr/bin/sandbox-exec` is unavailable. A bounded scan for
+the exact inherited job marker remains an anomaly detector, but it is not accepted as the
+containment receipt because child code can replace its environment. A portable reader thread drains
+output, and the worker publishes a terminal state only after the platform containment boundary is
+proved empty. Timeout, explicit Stop, and an otherwise successful script that leaves descendants all
+clear that containment first. On macOS, a job-scoped
 `caffeinate -i -w <worker-pid>` assertion follows the worker rather than the Web Agent turn. It exits
 with the worker and is also identity-checked during terminal-state reconciliation. The project does
 not currently inhibit Windows idle sleep for the equivalent task. Windows Job Objects provide the

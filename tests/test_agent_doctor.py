@@ -1,6 +1,6 @@
 """Route and service tests for Agent doctor recovery UX.
 
-Code version: v1.6.1-codex.1
+Code version: v1.7.0-codex.1
 """
 
 from __future__ import annotations
@@ -53,11 +53,23 @@ def _write_valid_event_chain(
             data={
                 "delivery_checkpoint_version": "1.0.0",
                 "delivery_phase": delivery_phase,
-                "delivery_kind": "controller_observation",
-                "exchange_id": "exchange-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "exchange_sequence": 1,
-                "exchange_outbound_sha256": "b" * 64,
-                "exchange_response_sha256": "c" * 64,
+                "delivery_kind": (
+                    "" if delivery_phase == "idle" else "controller_observation"
+                ),
+                "exchange_id": (
+                    ""
+                    if delivery_phase == "idle"
+                    else "exchange-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                "exchange_sequence": 0 if delivery_phase == "idle" else 1,
+                "exchange_outbound_sha256": (
+                    "" if delivery_phase == "idle" else "b" * 64
+                ),
+                "exchange_response_sha256": (
+                    ""
+                    if delivery_phase in {"idle", "prepared", "commit_attempted", "delivered"}
+                    else "c" * 64
+                ),
             },
         ) is not None
     if terminal_kind:
@@ -472,6 +484,130 @@ def test_finished_completed_delivery_checkpoint_is_healthy(tmp_path) -> None:
     assert checks["event_chain"]["status"] == "pass"
     assert checks["delivery_checkpoint"]["status"] == "pass"
     assert checks["delivery_checkpoint"]["phase"] == "completed"
+
+
+def test_delivery_event_recovers_a_checkpoint_when_snapshot_replace_was_lost(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    run_id = "run-1234567890abcdef"
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    workspace_stat = workspace.stat()
+    service._snapshot.running = True
+    service._snapshot.phase = "running"
+    service._snapshot.workspace_path = str(workspace)
+    service._snapshot.workspace_device = int(workspace_stat.st_dev)
+    service._snapshot.workspace_inode = int(workspace_stat.st_ino)
+    service._snapshot.conversation_url = "https://chatgpt.com/c/crash-window"
+    service._snapshot.conversation_bound = True
+    service._snapshot.operating_system = detect_host_operating_system()
+    service._snapshot.platform = "chatgpt"
+    service._snapshot.browser = "edge"
+    service._snapshot.run_id = run_id
+    service._event_chain = AgentEventChain(runtime_root, run_id)
+    assert service._event_chain.start(
+        data={
+            "workspace_identity": {
+                "device": int(workspace_stat.st_dev),
+                "inode": int(workspace_stat.st_ino),
+            }
+        }
+    ) is not None
+    service._persist_snapshot_locked(required=True)
+    idle_snapshot = (runtime_root / "last-run.json").read_bytes()
+
+    service._checkpoint_update(
+        delivery_checkpoint_version="1.0.0",
+        delivery_phase="commit_attempted",
+        delivery_kind="controller_observation",
+        exchange_id="exchange-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        exchange_sequence=1,
+        exchange_outbound_sha256="b" * 64,
+        exchange_response_sha256="",
+    )
+    records = [
+        json.loads(line)
+        for line in service._event_chain.path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[-1]["data"]["delivery_checkpoint_version"] == "1.0.0"
+
+    (runtime_root / "last-run.json").write_bytes(idle_snapshot)
+    recovered = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    snapshot = recovered.snapshot()
+    actions = {action["id"]: action for action in recovered.doctor()["actions"]}
+
+    assert snapshot["delivery_checkpoint_version"] == "1.0.0"
+    assert snapshot["delivery_phase"] == "commit_attempted"
+    assert snapshot["exchange_sequence"] == 1
+    assert actions["continue"]["enabled"] is False
+
+
+def test_newer_unknown_delivery_event_blocks_continuation(tmp_path: Path) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    run_id = "run-fedcba0987654321"
+    chain = _write_valid_event_chain(
+        runtime_root,
+        run_id,
+        workspace=workspace,
+        delivery_phase="idle",
+    )
+    assert chain.page_observation(
+        "page.observe.agent_status",
+        status="future_phase",
+        detail="Future delivery checkpoint recorded.",
+        data={
+            "delivery_checkpoint_version": "2.0.0",
+            "delivery_phase": "future_phase",
+            "delivery_kind": "controller_observation",
+            "exchange_id": "exchange-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "exchange_sequence": 1,
+            "exchange_outbound_sha256": "c" * 64,
+            "exchange_response_sha256": "",
+        },
+    ) is not None
+    (runtime_root / "last-run.json").write_text(
+        json.dumps(
+            {
+                "running": True,
+                "phase": "running",
+                "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
+                "conversation_url": "https://chatgpt.com/c/future-event",
+                "conversation_bound": True,
+                "operating_system": detect_host_operating_system(),
+                "platform": "chatgpt",
+                "browser": "edge",
+                "run_id": run_id,
+                "delivery_checkpoint_version": "1.0.0",
+                "delivery_phase": "idle",
+                "exchange_sequence": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    recovered = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    snapshot = recovered.snapshot()
+    doctor = recovered.doctor()
+    actions = {action["id"]: action for action in doctor["actions"]}
+
+    assert snapshot["delivery_checkpoint_version"] == "unknown"
+    assert snapshot["delivery_phase"] == "unknown"
+    assert actions["continue"]["enabled"] is False
 
 
 @pytest.mark.parametrize(

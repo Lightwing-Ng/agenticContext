@@ -1,6 +1,6 @@
 """Focused tests for the durable, bounded Agent event chain.
 
-Code version: v1.2.1-codex.1
+Code version: v1.3.1-codex.1
 """
 
 from __future__ import annotations
@@ -127,6 +127,7 @@ def test_observation_summary_keeps_evidence_metadata_without_raw_content() -> No
             "matches": ["PRIVATE_SOURCE_CONTENT"],
             "checks": [{"name": "bodycheck", "ok": True}],
             "path": "README.md",
+            "recovery_path": ".README.md.agent-backup-a1b2c3d4e5f60718.tmp",
             "workspace_identity": {"device": 123, "inode": 456},
             "read_receipt": {
                 "sha256": digest,
@@ -151,6 +152,7 @@ def test_observation_summary_keeps_evidence_metadata_without_raw_content() -> No
         "checks": [{"name": "bodycheck", "ok": True}],
         "output_chars": len("PRIVATE_COMMAND_OUTPUT"),
         "path": "README.md",
+        "recovery_path": ".README.md.agent-backup-a1b2c3d4e5f60718.tmp",
         "workspace_identity": {"device": 123, "inode": 456},
         "read_receipt": {
             "sha256": digest,
@@ -287,4 +289,28 @@ def test_event_append_refuses_before_exceeding_the_reloadable_line_cap(
 
     reloaded = AgentEventChain(runtime_root, run_id)
     assert reloaded.summary()["state"] == "ready"
+    assert reloaded.summary()["count"] == 2
+
+
+def test_event_reload_rejects_records_copied_from_another_run(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    first_run_id = new_run_id()
+    second_run_id = new_run_id()
+    first = AgentEventChain(runtime_root, first_run_id)
+    second = AgentEventChain(runtime_root, second_run_id)
+    assert first.start() is not None
+    assert second.start() is not None
+    assert second.page_observation(
+        "page.observe.agent_status",
+        data={
+            "delivery_checkpoint_version": "1.0.0",
+            "delivery_phase": "idle",
+            "exchange_sequence": 0,
+        },
+    ) is not None
+
+    first.path.write_bytes(second.path.read_bytes())
+    reloaded = AgentEventChain(runtime_root, first_run_id)
+
+    assert reloaded.summary()["state"] == "invalid"
     assert reloaded.summary()["count"] == 2

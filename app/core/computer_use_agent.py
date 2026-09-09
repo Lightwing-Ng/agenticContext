@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.62.2-codex.1
+Code version: v3.66.0-codex.1
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 import base64
 import binascii
 from collections import deque
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from glob import translate as translate_glob
 import hashlib
@@ -30,7 +30,7 @@ import tempfile
 from threading import Event, RLock, Thread, current_thread
 import time
 import traceback
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 from urllib.parse import urlencode, urlsplit
 
 if os.name == "posix":
@@ -550,6 +550,10 @@ _IGNORED_DIRECTORY_NAMES = frozenset(
         "vendor",
         "venv",
     }
+)
+_CONTROLLER_INTERNAL_FILE_PATTERN = re.compile(
+    r"\..+\.agent-(?:(?:backup|cleanup|delete)-)?[0-9a-f]{16}\.tmp",
+    re.IGNORECASE | re.DOTALL,
 )
 SEARCH_MAX_FILE_BYTES = 2 * 1_024 * 1_024
 SEARCH_MAX_RAW_EVENTS = 12_000
@@ -1837,6 +1841,22 @@ def load_computer_use_settings(
         return ComputerUseSettings()
 
 
+def _fsync_directory_path(directory: Path) -> None:
+    """Persist a directory-entry change on hosts that expose directory fsync."""
+    if os.name != "posix":
+        return
+    descriptor = os.open(
+        directory,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _atomic_write_owner_only_text(path: Path, content: str) -> None:
     """Atomically replace one local text file through an owner-only unique sibling."""
     if (
@@ -1859,6 +1879,7 @@ def _atomic_write_owner_only_text(path: Path, content: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
+        _fsync_directory_path(path.parent)
     finally:
         if descriptor >= 0:
             try:
@@ -2176,6 +2197,7 @@ def _filtered_git_status(
                 or candidate.is_absolute()
                 or ".." in candidate.parts
                 or _path_has_ignored_part(candidate)
+                or _path_has_controller_internal_file(candidate)
                 or _path_has_sensitive_part(candidate)
             ):
                 safe = False
@@ -2213,6 +2235,7 @@ def _safe_untracked_paths_from_status(status: str) -> list[Path]:
             or candidate.is_absolute()
             or ".." in candidate.parts
             or _path_has_ignored_part(candidate)
+            or _path_has_controller_internal_file(candidate)
             or _path_has_sensitive_part(candidate)
         ):
             continue
@@ -2367,6 +2390,7 @@ def _is_safe_context_file(workspace: Path, path: Path) -> bool:
             _path_is_link_like(path)
             or not path.is_file()
             or _path_has_ignored_part(relative)
+            or _path_has_controller_internal_file(relative)
             or _path_has_sensitive_part(relative)
         ):
             return False
@@ -2440,6 +2464,216 @@ def _path_crosses_link_like_component(path: Path) -> bool:
     return False
 
 
+def _open_windows_directory_identity(
+    directory: Path,
+    *,
+    deny_delete: bool,
+) -> tuple[Any, tuple[int, int]]:
+    """Open one Windows directory without following a reparse point."""
+    if os.name != "nt":
+        raise RuntimeError("Windows directory handles are unavailable on this host.")
+    import ctypes
+    from ctypes import wintypes
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("CreationTime", wintypes.FILETIME),
+            ("LastAccessTime", wintypes.FILETIME),
+            ("LastWriteTime", wintypes.FILETIME),
+            ("VolumeSerialNumber", wintypes.DWORD),
+            ("FileSizeHigh", wintypes.DWORD),
+            ("FileSizeLow", wintypes.DWORD),
+            ("NumberOfLinks", wintypes.DWORD),
+            ("FileIndexHigh", wintypes.DWORD),
+            ("FileIndexLow", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    share_mode = 0x00000001 | 0x00000002
+    if not deny_delete:
+        share_mode |= 0x00000004
+    handle = kernel32.CreateFileW(
+        str(directory),
+        0x0080,
+        share_mode,
+        None,
+        3,
+        0x00200000 | 0x02000000,
+        None,
+    )
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        information = ByHandleFileInformation()
+        if not kernel32.GetFileInformationByHandle(
+            handle,
+            ctypes.byref(information),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if information.FileAttributes & 0x00000400:
+            raise RuntimeError(
+                "The mutation path changed into a Windows reparse point."
+            )
+        identity = (
+            int(information.VolumeSerialNumber),
+            (int(information.FileIndexHigh) << 32) | int(information.FileIndexLow),
+        )
+        return handle, identity
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+
+
+def _uses_windows_directory_handles() -> bool:
+    """Return whether controller mutations require native Windows handles."""
+    return os.name == "nt"
+
+
+def _close_windows_directory_handle(handle: Any) -> None:
+    """Close one handle returned by the Windows directory identity helper."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle(handle)
+
+
+def _windows_directory_identity(directory: Path) -> tuple[int, int]:
+    """Read one stable Windows volume-and-file-index directory identity."""
+    handle, identity = _open_windows_directory_identity(
+        directory,
+        deny_delete=False,
+    )
+    try:
+        return identity
+    finally:
+        _close_windows_directory_handle(handle)
+
+
+@contextmanager
+def _windows_workspace_mutation_guard(
+    workspace: Path,
+    parent: Path,
+    *,
+    expected_workspace_identity: tuple[int, int],
+    expected_parent_identity: tuple[int, int],
+) -> Iterator[None]:
+    """Hold every Windows parent and verify its pre-mutation native identity."""
+    if os.name != "nt":
+        raise RuntimeError(
+            "Safe path-based workspace mutation is available only with Windows directory "
+            "handles."
+        )
+    try:
+        relative_parent = parent.relative_to(workspace)
+    except ValueError as exc:
+        raise RuntimeError(
+            "The mutation parent is outside the selected Agent workspace."
+        ) from exc
+    directories = [workspace]
+    current = workspace
+    for component in relative_parent.parts:
+        current /= component
+        directories.append(current)
+
+    handles: list[Any] = []
+    identities: list[tuple[Path, tuple[int, int]]] = []
+    try:
+        for directory in directories:
+            handle, identity = _open_windows_directory_identity(
+                directory,
+                deny_delete=True,
+            )
+            handles.append(handle)
+            if _path_is_link_like(directory) or not directory.is_dir():
+                raise RuntimeError(
+                    "The mutation path no longer names a regular workspace directory."
+                )
+            identities.append((directory, identity))
+        if identities[0][1] != expected_workspace_identity:
+            raise RuntimeError(
+                "The selected Agent workspace changed before the Windows mutation guard."
+            )
+        if identities[-1][1] != expected_parent_identity:
+            raise RuntimeError(
+                "The mutation parent changed before the Windows mutation guard."
+            )
+        for directory, identity in identities:
+            if _windows_directory_identity(directory) != identity:
+                raise RuntimeError(
+                    "The mutation path changed while Windows directory handles were acquired."
+                )
+        yield
+        for directory, identity in identities:
+            if _windows_directory_identity(directory) != identity:
+                raise RuntimeError(
+                    "The mutation path changed before its Windows directory guard was released."
+                )
+    finally:
+        for handle in reversed(handles):
+            _close_windows_directory_handle(handle)
+
+
+def _ensure_windows_workspace_parent(
+    workspace: Path,
+    relative_parent: Path,
+    *,
+    expected_workspace_identity: tuple[int, int],
+) -> tuple[Path, tuple[int, int]]:
+    """Create missing Windows parents while each existing ancestor is guarded."""
+    if os.name != "nt" or relative_parent.is_absolute() or ".." in relative_parent.parts:
+        raise RuntimeError("The Windows mutation parent is invalid.")
+    current = workspace
+    current_identity = expected_workspace_identity
+    for component in relative_parent.parts:
+        with _windows_workspace_mutation_guard(
+            workspace,
+            current,
+            expected_workspace_identity=expected_workspace_identity,
+            expected_parent_identity=current_identity,
+        ):
+            candidate = current / component
+            try:
+                candidate.mkdir(mode=0o755)
+            except FileExistsError:
+                pass
+            if _path_is_link_like(candidate) or not candidate.is_dir():
+                raise RuntimeError(
+                    "The Windows mutation parent changed into a linked or non-directory path."
+                )
+            resolved = candidate.resolve(strict=True)
+            try:
+                resolved.relative_to(workspace)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "The Windows mutation parent left the selected Agent workspace."
+                ) from exc
+            current = resolved
+            current_identity = _windows_directory_identity(current)
+    return current, current_identity
+
+
 def _is_safe_context_directory(workspace: Path, path: Path) -> bool:
     """Return whether traversal may enter one real directory inside the workspace."""
     try:
@@ -2448,6 +2682,7 @@ def _is_safe_context_directory(workspace: Path, path: Path) -> bool:
             _path_is_link_like(path)
             or not path.is_dir()
             or _path_has_ignored_part(relative)
+            or _path_has_controller_internal_file(relative)
             or _path_has_sensitive_part(relative)
         ):
             return False
@@ -2552,6 +2787,14 @@ def _path_has_ignored_part(relative: Path) -> bool:
     return any(part.casefold() in _IGNORED_DIRECTORY_NAMES for part in relative.parts)
 
 
+def _path_has_controller_internal_file(relative: Path) -> bool:
+    """Reserve unpredictable controller temporary and recovery filenames."""
+    return any(
+        _CONTROLLER_INTERNAL_FILE_PATTERN.fullmatch(part) is not None
+        for part in relative.parts
+    )
+
+
 def _path_has_sensitive_part(relative: Path) -> bool:
     """Keep credentials and private keys outside Web-visible controller context."""
     for part in relative.parts:
@@ -2579,6 +2822,7 @@ def _search_exclusion_globs() -> tuple[str, ...]:
         )
     }
     patterns.update({"!.env.*", "!**/.env.*"})
+    patterns.update({"!.*.agent-*.tmp", "!**/.*.agent-*.tmp"})
     for suffix in _SENSITIVE_PATH_SUFFIXES:
         patterns.update({f"!*{suffix}", f"!**/*{suffix}"})
     return tuple(sorted(patterns, key=str.casefold))
@@ -2883,6 +3127,7 @@ def _is_confined_search_match(
         resolved_relative = resolved_candidate.relative_to(resolved_workspace)
         if (
             _path_has_ignored_part(resolved_relative)
+            or _path_has_controller_internal_file(resolved_relative)
             or _path_has_sensitive_part(resolved_relative)
         ):
             return False
@@ -2973,6 +3218,7 @@ def _fallback_search_matches(
                 relative_to_workspace = path.relative_to(workspace)
                 if (
                     _path_has_ignored_part(relative_to_workspace)
+                    or _path_has_controller_internal_file(relative_to_workspace)
                     or _path_has_sensitive_part(relative_to_workspace)
                     or not _is_confined_search_match(
                         workspace,
@@ -3232,19 +3478,51 @@ class WorkspaceController:
         read_only: bool = False,
         compute_job_runtime_root: Path | None = None,
         action_checkpoint: dict[str, Any] | None = None,
+        expected_workspace_identity: tuple[int, int] | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
-        workspace_metadata = self.workspace.stat()
-        if not stat_module.S_ISDIR(workspace_metadata.st_mode):
-            raise ValueError("The selected Agent workspace must be a directory.")
-        self._workspace_identity = (
-            int(workspace_metadata.st_dev),
-            int(workspace_metadata.st_ino),
-        )
-        self._workspace_audit_metadata = _workspace_audit_metadata(
-            self.workspace,
-            metadata=workspace_metadata,
-        )
+        windows_root_handle: Any | None = None
+        windows_workspace_identity: tuple[int, int] | None = None
+        try:
+            if _uses_windows_directory_handles():
+                windows_root_handle, windows_workspace_identity = (
+                    _open_windows_directory_identity(
+                        self.workspace,
+                        deny_delete=True,
+                    )
+                )
+            workspace_metadata = self.workspace.stat()
+            if not stat_module.S_ISDIR(workspace_metadata.st_mode):
+                raise ValueError("The selected Agent workspace must be a directory.")
+            self._workspace_identity = (
+                int(workspace_metadata.st_dev),
+                int(workspace_metadata.st_ino),
+            )
+            if (
+                expected_workspace_identity is not None
+                and self._workspace_identity != expected_workspace_identity
+            ):
+                raise RuntimeError(
+                    "The Agent workspace identity changed after admission; the task was stopped "
+                    "before opening its browser."
+                )
+            if (
+                windows_workspace_identity is not None
+                and _windows_directory_identity(self.workspace)
+                != windows_workspace_identity
+            ):
+                raise RuntimeError(
+                    "The Agent workspace identity changed while its Windows root handle was "
+                    "acquired; the task was stopped before opening its browser."
+                )
+            self._windows_workspace_identity = windows_workspace_identity
+            self._workspace_audit_metadata = _workspace_audit_metadata(
+                self.workspace,
+                metadata=workspace_metadata,
+            )
+        finally:
+            if windows_root_handle is not None:
+                _close_windows_directory_handle(windows_root_handle)
         self.settings = settings
         self.state = ActionState.from_checkpoint(action_checkpoint)
         self.should_stop = should_stop
@@ -3364,7 +3642,34 @@ class WorkspaceController:
         except (OSError, RuntimeError, ValueError) as exc:
             return {"ok": False, "action": action, "error": str(exc)[:2_000]}
 
+    def _require_workspace_identity(self) -> None:
+        """Reject a task after its selected root is rebound to another directory."""
+        if _path_is_link_like(self.workspace):
+            raise RuntimeError(
+                "The Agent workspace changed after admission; start a new task."
+            )
+        metadata = self.workspace.stat()
+        if (
+            not stat_module.S_ISDIR(metadata.st_mode)
+            or (int(metadata.st_dev), int(metadata.st_ino))
+            != self._workspace_identity
+        ):
+            raise RuntimeError(
+                "The Agent workspace changed after admission; start a new task."
+            )
+        if os.name == "nt":
+            expected_windows_identity = self._windows_workspace_identity
+            if (
+                expected_windows_identity is None
+                or _windows_directory_identity(self.workspace)
+                != expected_windows_identity
+            ):
+                raise RuntimeError(
+                    "The Agent workspace changed after admission; start a new task."
+                )
+
     def _resolve_path(self, raw_path: Any, *, allow_missing: bool = False) -> Path:
+        self._require_workspace_identity()
         candidate = Path(str(raw_path or "."))
         lexical = candidate.expanduser() if candidate.is_absolute() else self.workspace / candidate
         try:
@@ -3400,10 +3705,13 @@ class WorkspaceController:
             raise ValueError(
                 "Controller access to ignored, generated, or runtime directories is not allowed."
             )
+        if _path_has_controller_internal_file(relative):
+            raise ValueError("Controller access to internal recovery files is not allowed.")
         if _path_has_sensitive_part(relative):
             raise ValueError(
                 "Controller access to credentials and private-key files is not allowed."
             )
+        self._require_workspace_identity()
         return resolved
 
     @staticmethod
@@ -3580,7 +3888,25 @@ class WorkspaceController:
         os.fsync(directory_fd)
         return True
 
-    def _replace_text_file(self, relative: Path, old: str, new: str) -> None:
+    @staticmethod
+    def _restore_path_quarantine(quarantine_path: Path, target_path: Path) -> bool:
+        """Restore a path-based quarantine without replacing a concurrent target."""
+        try:
+            os.link(quarantine_path, target_path)
+        except FileExistsError:
+            return False
+        except OSError:
+            if os.name != "nt":
+                raise
+            try:
+                quarantine_path.rename(target_path)
+            except FileExistsError:
+                return False
+            return True
+        quarantine_path.unlink()
+        return True
+
+    def _replace_text_file(self, relative: Path, old: str, new: str) -> str:
         """Compare and atomically replace one existing text file."""
         if _ANCHORED_MUTATION_SUPPORTED:
             directory_fd, leaf_name, _created = self._open_anchored_parent(relative)
@@ -3693,8 +4019,19 @@ class WorkspaceController:
                     raise RuntimeError(
                         "The replaced file changed before the controller could verify it."
                     )
-                os.unlink(backup_name, dir_fd=directory_fd)
-                backup_exists = False
+                final_backup_digest, _final_backup_size, final_backup_identity, final_backup_fd = (
+                    self._hash_anchored_file(directory_fd, backup_name)
+                )
+                try:
+                    if (
+                        final_backup_digest != source_digest
+                        or final_backup_identity != source_identity
+                    ):
+                        raise RuntimeError(
+                            "The prior file received a late edit after replacement publication."
+                        )
+                finally:
+                    os.close(final_backup_fd)
                 os.fsync(directory_fd)
             except BaseException as exc:
                 if backup_exists and not replacement_published:
@@ -3732,8 +4069,37 @@ class WorkspaceController:
                 if directory_lock_held:
                     fcntl.flock(directory_fd, fcntl.LOCK_UN)
                 os.close(directory_fd)
-            return
+            return (relative.parent / backup_name).as_posix()
 
+        if os.name != "nt":
+            raise RuntimeError(
+                "Safe workspace replacement is unavailable without anchored directory "
+                "operations or Windows directory handles."
+            )
+        return self._replace_text_file_windows(relative, old, new)
+
+    def _replace_text_file_windows(self, relative: Path, old: str, new: str) -> str:
+        """Hold the Windows workspace path stable through a guarded replacement."""
+        path = self._resolve_path(relative)
+        workspace_identity = self._windows_workspace_identity
+        if workspace_identity is None:
+            raise RuntimeError("The Windows workspace identity is unavailable.")
+        parent_identity = _windows_directory_identity(path.parent)
+        with _windows_workspace_mutation_guard(
+            self.workspace,
+            path.parent,
+            expected_workspace_identity=workspace_identity,
+            expected_parent_identity=parent_identity,
+        ):
+            return self._replace_text_file_path_guarded(relative, old, new)
+
+    def _replace_text_file_path_guarded(
+        self,
+        relative: Path,
+        old: str,
+        new: str,
+    ) -> str:
+        """Replace one file after a platform guard has fenced every parent path."""
         path = self._resolve_path(relative)
         source_bytes, source_digest, _source_size, source_identity = (
             self._current_file_snapshot(path)
@@ -3755,12 +4121,26 @@ class WorkspaceController:
             dir=path.parent,
         )
         temporary_path = Path(raw_temporary_path)
+        temporary_stat = os.fstat(descriptor)
+        temporary_locator = (
+            int(temporary_stat.st_dev),
+            int(temporary_stat.st_ino),
+        )
+        backup_path = path.with_name(
+            f".{path.name}.agent-backup-{secrets.token_hex(8)}.tmp"
+        )
+        temporary_exists = True
+        backup_exists = False
+        replacement_published = False
+        replacement_identity: tuple[int, int, int, int, int] | None = None
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 descriptor = -1
                 handle.write(replacement)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.chmod(temporary_path, stat_module.S_IMODE(source_identity[4]))
+            replacement_identity = self._stable_file_identity(temporary_path)
             current_path = self._resolve_path(relative)
             current_parent_identity = (
                 int(current_path.parent.stat().st_dev),
@@ -3778,11 +4158,90 @@ class WorkspaceController:
                 raise RuntimeError(
                     "The file or its parent changed before replacement; read it again before retrying."
                 )
-            os.replace(temporary_path, current_path)
+            current_path.rename(backup_path)
+            backup_exists = True
+            committed_digest, _committed_size, committed_identity = (
+                self._current_file_sha256(backup_path)
+            )
+            if committed_digest != source_digest or committed_identity != source_identity:
+                raise RuntimeError(
+                    "The file changed at the replacement commit boundary; the concurrent "
+                    "version was preserved."
+                )
+            publish_path = self._resolve_path(relative, allow_missing=True)
+            publish_parent_identity = (
+                int(publish_path.parent.stat().st_dev),
+                int(publish_path.parent.stat().st_ino),
+            )
+            if publish_path != path or publish_parent_identity != parent_identity:
+                raise RuntimeError(
+                    "The file parent changed at the replacement commit boundary; the prior "
+                    "version was preserved."
+                )
+            try:
+                os.link(temporary_path, publish_path)
+            except FileExistsError as exc:
+                raise RuntimeError(
+                    "A concurrent file appeared at the replacement commit boundary; it was "
+                    "preserved."
+                ) from exc
+            replacement_published = True
+            temporary_path.unlink()
+            temporary_exists = False
+            rebound = self._resolve_path(relative)
+            rebound_digest, _rebound_size, rebound_identity = (
+                self._current_file_sha256(rebound)
+            )
+            if (
+                rebound_digest != hashlib.sha256(replacement).hexdigest()
+                or rebound_identity != replacement_identity
+            ):
+                raise RuntimeError(
+                    "The replaced file changed before the controller could verify it."
+                )
+            final_backup_digest, _final_backup_size, final_backup_identity = (
+                self._current_file_sha256(backup_path)
+            )
+            if (
+                final_backup_digest != source_digest
+                or final_backup_identity != source_identity
+            ):
+                raise RuntimeError(
+                    "The prior file received a late edit after replacement publication."
+                )
+            return backup_path.relative_to(self.workspace).as_posix()
+        except BaseException as exc:
+            if backup_exists and not replacement_published:
+                try:
+                    restored = self._restore_path_quarantine(backup_path, path)
+                except OSError:
+                    restored = False
+                if restored:
+                    backup_exists = False
+                else:
+                    raise RuntimeError(
+                        "The replacement was cancelled after a concurrent change. The "
+                        f"displaced version was preserved as {backup_path.name}."
+                    ) from exc
+            elif backup_exists and replacement_published:
+                raise RuntimeError(
+                    "The replacement could not be verified. The prior version was preserved "
+                    f"as {backup_path.name}."
+                ) from exc
+            raise
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
-            temporary_path.unlink(missing_ok=True)
+            if temporary_exists:
+                try:
+                    temporary_stat = temporary_path.lstat()
+                    if (
+                        int(temporary_stat.st_dev),
+                        int(temporary_stat.st_ino),
+                    ) == temporary_locator:
+                        temporary_path.unlink()
+                except (FileNotFoundError, OSError, RuntimeError, ValueError):
+                    pass
 
     def _write_new_file(self, relative: Path, content: bytes) -> int:
         """Create one new file without following or replacing an existing entry."""
@@ -3837,7 +4296,7 @@ class WorkspaceController:
                     "The write action creates new files only; use replace for an existing file."
                 ) from exc
             except BaseException as exc:
-                if created and write_completed and file_identity is not None:
+                if created:
                     try:
                         os.rename(
                             leaf_name,
@@ -3858,9 +4317,12 @@ class WorkspaceController:
                         finally:
                             os.close(current_fd)
                         if (
-                            current_identity == file_identity
-                            and cleanup_handle_identity == file_identity
-                            and current_digest == hashlib.sha256(content).hexdigest()
+                            cleanup_handle_identity is not None
+                            and current_identity == cleanup_handle_identity
+                            and (
+                                not write_completed
+                                or current_digest == hashlib.sha256(content).hexdigest()
+                            )
                         ):
                             os.unlink(cleanup_name, dir_fd=directory_fd)
                             cleanup_exists = False
@@ -3903,28 +4365,149 @@ class WorkspaceController:
                     fcntl.flock(directory_fd, fcntl.LOCK_UN)
                 os.close(directory_fd)
 
+        if os.name != "nt":
+            raise RuntimeError(
+                "Safe workspace creation is unavailable without anchored directory operations "
+                "or Windows directory handles."
+            )
+        return self._write_new_file_windows(relative, content)
+
+    def _write_new_file_windows(self, relative: Path, content: bytes) -> int:
+        """Create one Windows file while every parent remains guarded."""
+        if relative.is_absolute() or not relative.name or ".." in relative.parts:
+            raise ValueError("The write action requires one workspace-relative file path.")
+        workspace_identity = self._windows_workspace_identity
+        if workspace_identity is None:
+            raise RuntimeError("The Windows workspace identity is unavailable.")
+        parent, parent_identity = _ensure_windows_workspace_parent(
+            self.workspace,
+            relative.parent,
+            expected_workspace_identity=workspace_identity,
+        )
+        with _windows_workspace_mutation_guard(
+            self.workspace,
+            parent,
+            expected_workspace_identity=workspace_identity,
+            expected_parent_identity=parent_identity,
+        ):
+            return self._write_new_file_path_guarded(relative, content)
+
+    def _write_new_file_path_guarded(self, relative: Path, content: bytes) -> int:
+        """Create one file after a platform guard has fenced every parent path."""
         path = self._resolve_path(relative, allow_missing=True)
-        path.parent.mkdir(parents=True, exist_ok=True)
         checked_path = self._resolve_path(relative, allow_missing=True)
         if checked_path != path:
             raise RuntimeError(
                 "The file parent changed before creation; start a new task before retrying."
             )
+        descriptor = -1
+        created = False
+        created_locator: tuple[int, int] | None = None
+        failure_identity: tuple[int, int, int, int, int] | None = None
+        cleanup_path = checked_path.with_name(
+            f".{checked_path.name}.agent-cleanup-{secrets.token_hex(8)}.tmp"
+        )
+        cleanup_exists = False
         try:
-            with checked_path.open("xb") as handle:
+            descriptor = os.open(
+                checked_path,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                0o644,
+            )
+            created = True
+            created_stat = os.fstat(descriptor)
+            created_locator = (int(created_stat.st_dev), int(created_stat.st_ino))
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = -1
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
+                created_identity = self._stable_file_identity_from_stat(
+                    os.fstat(handle.fileno())
+                )
+            final_path = self._resolve_path(relative)
+            final_content, _final_digest, _final_size, final_identity = (
+                self._current_file_snapshot(final_path)
+            )
+            if (
+                final_path != checked_path
+                or final_identity != created_identity
+                or final_content != content
+            ):
+                raise RuntimeError(
+                    "The created file could not be rebound to the selected workspace safely."
+                )
+            return len(content)
         except FileExistsError as exc:
             raise ValueError(
                 "The write action creates new files only; use replace for an existing file."
             ) from exc
-        final_path = self._resolve_path(relative)
-        if final_path != checked_path or final_path.stat().st_size != len(content):
-            raise RuntimeError(
-                "The created file could not be rebound to the selected workspace safely."
-            )
-        return len(content)
+        except BaseException as exc:
+            if descriptor >= 0:
+                try:
+                    failure_identity = self._stable_file_identity_from_stat(
+                        os.fstat(descriptor)
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    failure_identity = None
+                os.close(descriptor)
+                descriptor = -1
+            elif created:
+                try:
+                    failure_identity = self._stable_file_identity(checked_path)
+                except (OSError, RuntimeError, ValueError):
+                    failure_identity = None
+            if created and created_locator is not None:
+                try:
+                    checked_path.rename(cleanup_path)
+                    cleanup_exists = True
+                    cleanup_identity = self._stable_file_identity(cleanup_path)
+                    cleanup_locator = (
+                        int(cleanup_identity[0]),
+                        int(cleanup_identity[1]),
+                    )
+                    if (
+                        cleanup_locator == created_locator
+                        and failure_identity is not None
+                        and cleanup_identity == failure_identity
+                    ):
+                        cleanup_path.unlink()
+                        cleanup_exists = False
+                    else:
+                        restored = self._restore_path_quarantine(
+                            cleanup_path,
+                            checked_path,
+                        )
+                        cleanup_exists = not restored
+                        if not restored:
+                            raise RuntimeError(
+                                "The failed write encountered a concurrent file. The displaced "
+                                f"version was preserved as {cleanup_path.name}."
+                            ) from exc
+                except FileNotFoundError:
+                    pass
+                except (OSError, RuntimeError, ValueError) as cleanup_error:
+                    if cleanup_exists:
+                        try:
+                            restored = self._restore_path_quarantine(
+                                cleanup_path,
+                                checked_path,
+                            )
+                        except OSError:
+                            restored = False
+                        if not restored:
+                            raise RuntimeError(
+                                "The failed write could not restore a concurrently changed file. "
+                                f"It was preserved as {cleanup_path.name}."
+                            ) from cleanup_error
+            raise
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
 
     def _mark_edit(self) -> None:
         """Advance controller and workspace generations after one local mutation."""
@@ -3979,10 +4562,12 @@ class WorkspaceController:
 
     def refresh_workspace_evidence(self) -> dict[str, Any]:
         """Refresh the point-in-time content evidence used by finalization gates."""
+        self._require_workspace_identity()
         snapshot_id, complete = _workspace_mutation_fingerprint(
             self.workspace,
             should_stop=self.should_stop,
         )
+        self._require_workspace_identity()
         changed = self._record_workspace_snapshot(
             snapshot_id,
             complete=complete,
@@ -4080,6 +4665,7 @@ class WorkspaceController:
                 relative_to_workspace = path.relative_to(self.workspace)
                 if (
                     _path_has_ignored_part(relative_to_workspace)
+                    or _path_has_controller_internal_file(relative_to_workspace)
                     or _path_has_sensitive_part(relative_to_workspace)
                     or _path_is_link_like(path)
                 ):
@@ -4319,6 +4905,7 @@ class WorkspaceController:
                 candidate_path = self.workspace / relative_path
                 if (
                     _path_has_ignored_part(relative_path)
+                    or _path_has_controller_internal_file(relative_path)
                     or _path_has_sensitive_part(relative_path)
                 ):
                     continue
@@ -4417,12 +5004,13 @@ class WorkspaceController:
         if not old:
             raise ValueError("The replace action requires non-empty old text.")
         self._mark_edit()
-        self._replace_text_file(relative, old, new)
+        recovery_path = self._replace_text_file(relative, old, new)
         return {
             "ok": True,
             "action": "replace",
             "path": relative.as_posix(),
             "changed_characters": len(new) - len(old),
+            "recovery_path": recovery_path,
         }
 
     def _write(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -4463,12 +5051,13 @@ class WorkspaceController:
             allow_empty=True,
         )
         self._mark_edit()
-        self._replace_text_file(relative, old, new)
+        recovery_path = self._replace_text_file(relative, old, new)
         return {
             "ok": True,
             "action": "replace_base64",
             "path": relative.as_posix(),
             "changed_characters": len(new) - len(old),
+            "recovery_path": recovery_path,
         }
 
     def _write_base64(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -5040,7 +5629,10 @@ def _workspace_mutation_fingerprint(
                 relative = path.relative_to(workspace)
             except ValueError:
                 return digest.hexdigest(), False
-            if _path_has_ignored_part(relative):
+            if (
+                _path_has_ignored_part(relative)
+                or _path_has_controller_internal_file(relative)
+            ):
                 continue
             try:
                 initial_stat = entry.stat(follow_symlinks=False)
@@ -5525,6 +6117,7 @@ def _validate_inspection_arguments(
                 part.casefold() in {".git", ".computer-use-agent"}
                 for part in portable_path.parts
             )
+            or _path_has_controller_internal_file(portable_path)
             or _path_has_sensitive_part(portable_path)
         ):
             raise ValueError(
@@ -5548,6 +6141,7 @@ def _validate_inspection_arguments(
             resolved_relative = resolved_candidate.relative_to(resolved_workspace)
             if (
                 _path_has_ignored_part(resolved_relative)
+                or _path_has_controller_internal_file(resolved_relative)
                 or _path_has_sensitive_part(resolved_relative)
             ):
                 raise ValueError(
@@ -6256,43 +6850,92 @@ class ComputerUseAgentService:
         if self._event_chain is None:
             return
         checkpoint = self._event_chain.latest_delivery_checkpoint()
+        if not checkpoint:
+            return
+
+        def fail_closed() -> None:
+            self._snapshot.delivery_checkpoint_version = "unknown"
+            self._snapshot.delivery_phase = "unknown"
+
+        raw_sequence = checkpoint.get("exchange_sequence")
+        if (
+            isinstance(raw_sequence, bool)
+            or not isinstance(raw_sequence, int)
+            or not 0 <= raw_sequence < _MAX_AGENT_RUN_REVISION
+        ):
+            fail_closed()
+            return
+        sequence = raw_sequence
+        current_sequence = int(self._snapshot.exchange_sequence or 0)
+        if sequence < current_sequence:
+            return
         if checkpoint.get("delivery_checkpoint_version") != "1.0.0":
+            fail_closed()
             return
         if self._snapshot.delivery_checkpoint_version != "1.0.0":
+            fail_closed()
             return
         if self._snapshot.delivery_phase == "unknown":
             return
-        try:
-            sequence = int(checkpoint.get("exchange_sequence") or 0)
-        except (TypeError, ValueError):
+        phase_value = checkpoint.get("delivery_phase")
+        if not isinstance(phase_value, str) or phase_value not in _DELIVERY_PHASE_ORDER:
+            fail_closed()
             return
-        if sequence < int(self._snapshot.exchange_sequence or 0):
+        phase = phase_value
+        if (phase == "idle" and sequence != 0) or (phase != "idle" and sequence < 1):
+            fail_closed()
             return
-        phase = str(checkpoint.get("delivery_phase") or "")
-        exchange_id = str(checkpoint.get("exchange_id") or "")
-        if phase not in _DELIVERY_CHECKPOINT_PHASES:
+        delivery_kind_value = checkpoint.get("delivery_kind", "")
+        if (
+            not isinstance(delivery_kind_value, str)
+            or phase != "idle"
+            and not delivery_kind_value.strip()
+            or len(delivery_kind_value) > 80
+        ):
+            fail_closed()
             return
-        if sequence == int(self._snapshot.exchange_sequence or 0) and (
+        exchange_id_value = checkpoint.get("exchange_id", "")
+        if not isinstance(exchange_id_value, str):
+            fail_closed()
+            return
+        exchange_id = exchange_id_value
+        if phase != "idle" and not _EXCHANGE_ID_PATTERN.fullmatch(exchange_id):
+            fail_closed()
+            return
+        if exchange_id and not _EXCHANGE_ID_PATTERN.fullmatch(exchange_id):
+            fail_closed()
+            return
+        outbound_sha256 = checkpoint.get("exchange_outbound_sha256", "")
+        response_sha256 = checkpoint.get("exchange_response_sha256", "")
+        if not isinstance(outbound_sha256, str) or not isinstance(response_sha256, str):
+            fail_closed()
+            return
+        outbound_sha256 = outbound_sha256.casefold()
+        response_sha256 = response_sha256.casefold()
+        if phase != "idle" and not re.fullmatch(r"[0-9a-f]{64}", outbound_sha256):
+            fail_closed()
+            return
+        if outbound_sha256 and not re.fullmatch(r"[0-9a-f]{64}", outbound_sha256):
+            fail_closed()
+            return
+        if response_sha256 and not re.fullmatch(r"[0-9a-f]{64}", response_sha256):
+            fail_closed()
+            return
+        if phase in {"response_received", "response_consumed", "completed"} and not response_sha256:
+            fail_closed()
+            return
+        if sequence == current_sequence and (
             _DELIVERY_PHASE_ORDER.get(phase, -1)
             < _DELIVERY_PHASE_ORDER.get(self._snapshot.delivery_phase, -1)
         ):
             return
-        if exchange_id and not _EXCHANGE_ID_PATTERN.fullmatch(exchange_id):
-            return
         self._snapshot.delivery_phase = phase
         self._snapshot.delivery_checkpoint_version = "1.0.0"
-        self._snapshot.delivery_kind = str(
-            checkpoint.get("delivery_kind") or ""
-        )[:80]
+        self._snapshot.delivery_kind = delivery_kind_value
         self._snapshot.exchange_id = exchange_id
         self._snapshot.exchange_sequence = sequence
-        for field_name in ("exchange_outbound_sha256", "exchange_response_sha256"):
-            value = str(checkpoint.get(field_name) or "").casefold()
-            setattr(
-                self._snapshot,
-                field_name,
-                value if re.fullmatch(r"[0-9a-f]{64}", value) else "",
-            )
+        self._snapshot.exchange_outbound_sha256 = outbound_sha256
+        self._snapshot.exchange_response_sha256 = response_sha256
 
     def _record_agent_status_observation_locked(self, *, detail: str) -> bool:
         """Record bounded Agent lifecycle state without persisting prompt content."""
@@ -6314,6 +6957,9 @@ class ComputerUseAgentService:
                 "last_action_id": str(self._snapshot.last_action_id or ""),
                 "verification_passed": bool(self._snapshot.verification_passed),
                 "bodycheck_passed": bool(self._snapshot.bodycheck_passed),
+                "delivery_checkpoint_version": str(
+                    self._snapshot.delivery_checkpoint_version or "unknown"
+                ),
                 "delivery_phase": str(self._snapshot.delivery_phase or "idle"),
                 "delivery_kind": str(self._snapshot.delivery_kind or ""),
                 "exchange_id": str(self._snapshot.exchange_id or ""),
@@ -6491,7 +7137,7 @@ class ComputerUseAgentService:
             target_url,
             workspace,
             bool(read_only),
-        ), self._lock:
+        ) as admission_workspace_identities, self._lock:
             if self._shutdown_started:
                 raise RuntimeError("The Agent service is shutting down.")
             if self._snapshot.running:
@@ -6521,6 +7167,36 @@ class ComputerUseAgentService:
                 else ActionState()
             )
             workspace_metadata = workspace.stat()
+            observed_workspace_identity = (
+                int(workspace_metadata.st_dev),
+                int(workspace_metadata.st_ino),
+            )
+            if admission_workspace_identities is None:
+                admitted_workspace_identity = observed_workspace_identity
+            else:
+                try:
+                    admitted_workspace_identity = tuple(
+                        admission_workspace_identities[0]
+                    )
+                except (IndexError, TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "The Agent admission guard returned an invalid workspace identity."
+                    ) from exc
+                if (
+                    len(admitted_workspace_identity) != 2
+                    or any(
+                        isinstance(value, bool) or not isinstance(value, int)
+                        for value in admitted_workspace_identity
+                    )
+                ):
+                    raise RuntimeError(
+                        "The Agent admission guard returned an invalid workspace identity."
+                    )
+            if observed_workspace_identity != admitted_workspace_identity:
+                raise RuntimeError(
+                    "The selected workspace changed during Agent admission; the task was not "
+                    "started."
+                )
 
             self._snapshot = AgentRunSnapshot(
                 running=True,
@@ -6532,8 +7208,8 @@ class ComputerUseAgentService:
                 ),
                 prompt=clean_prompt,
                 workspace_path=str(workspace),
-                workspace_device=int(workspace_metadata.st_dev),
-                workspace_inode=int(workspace_metadata.st_ino),
+                workspace_device=admitted_workspace_identity[0],
+                workspace_inode=admitted_workspace_identity[1],
                 conversation_url=target_url,
                 project_url=normalize_agent_project_url(settings.platform, project_url),
                 session_title=resolved_session_title,
@@ -6559,7 +7235,10 @@ class ComputerUseAgentService:
                     "platform": settings.platform,
                     "browser": settings.browser,
                     "session_mode": normalized_session_mode,
-                    **_workspace_audit_metadata(workspace),
+                    **_workspace_audit_metadata(
+                        workspace,
+                        metadata=workspace_metadata,
+                    ),
                 }
             )
             if started_event is None:
@@ -6585,6 +7264,7 @@ class ComputerUseAgentService:
                     resolved_session_title,
                     bool(read_only),
                     bool(continuation),
+                    admitted_workspace_identity,
                 ),
                 daemon=True,
             )
@@ -7277,12 +7957,26 @@ class ComputerUseAgentService:
         session_title: str,
         read_only: bool,
         continuation: bool,
+        expected_workspace_identity: tuple[int, int],
     ) -> None:
         sleep_assertion: subprocess.Popen[Any] | None = None
         sleep_assertion_registration_completed = False
         context_path: Path | None = None
         completion: dict[str, Any] = {}
         try:
+            workspace_metadata = workspace.stat()
+            if (
+                not stat_module.S_ISDIR(workspace_metadata.st_mode)
+                or (
+                    int(workspace_metadata.st_dev),
+                    int(workspace_metadata.st_ino),
+                )
+                != expected_workspace_identity
+            ):
+                raise RuntimeError(
+                    "The Agent workspace identity changed after admission; the task was "
+                    "stopped before preparing context or opening its browser."
+                )
             sleep_assertion = _start_macos_idle_sleep_assertion()
             self._set_sleep_assertion(sleep_assertion)
             sleep_assertion_registration_completed = True
@@ -7353,6 +8047,9 @@ class ComputerUseAgentService:
                     )
                     runner_kwargs["checkpoint_update"] = self._checkpoint_update
                     runner_kwargs["prepare_context_bundle"] = context_path is not None
+                    runner_kwargs["expected_workspace_identity"] = (
+                        expected_workspace_identity
+                    )
                 response, conversation_url, turn_count, bodycheck_passed = self._runner(
                     **runner_kwargs,
                 )
@@ -7609,6 +8306,7 @@ def run_web_computer_use(
     action_checkpoint: dict[str, Any] | None = None,
     checkpoint_update: Callable[..., None] | None = None,
     prepare_context_bundle: bool = False,
+    expected_workspace_identity: tuple[int, int] | None = None,
 ) -> tuple[str, str, int, bool]:
     """Run one selected Web AI session as a local controller action loop."""
     descriptor = browser_descriptors(config)[settings.browser]
@@ -7628,6 +8326,7 @@ def run_web_computer_use(
         read_only=read_only,
         compute_job_runtime_root=compute_job_runtime_root,
         action_checkpoint=action_checkpoint,
+        expected_workspace_identity=expected_workspace_identity,
     )
     initial_evidence = controller.refresh_workspace_evidence()
     if not initial_evidence["evidence_complete"]:

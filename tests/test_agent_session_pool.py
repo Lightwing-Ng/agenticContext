@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Code version: v1.3.0-codex.1."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.5.1-codex.1."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+from app.core.agent import compute_jobs
 from app.core.agent.session_pool import AgentSessionPool
 from app.core.computer_use_agent import ComputerUseAgentService, ComputerUseSettingsStore, default_model_for_platform
 from app.core.foundation import CrawlConfig
@@ -83,6 +84,7 @@ def write_compute_job_metadata(pool, workspace, *, raw_text=""):
                 "state": "running",
                 "pid": 123,
                 "process_identity": "test-worker-birth",
+                "containment_kind": compute_jobs._platform_compute_containment_kind(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
         ),
@@ -145,12 +147,9 @@ def test_same_conversation_rejected_and_paused_slot_counted(sessions):
     catalog = pool.catalog("edge", "chatgpt", str(workspace))
     assert catalog["active_count"] == 2
     assert catalog["can_start"] is False
-    assert len(catalog["sessions"]) == 2
-    assert len(pool.catalog("edge", "chatgpt", "/unrelated")["sessions"]) == 2
-    assert {item["workspace_path"] for item in catalog["sessions"]} == {
-        str(workspace),
-        str(second_workspace),
-    }
+    assert len(catalog["sessions"]) == 1
+    assert pool.catalog("edge", "chatgpt", "/unrelated")["sessions"] == []
+    assert {item["workspace_path"] for item in catalog["sessions"]} == {str(workspace)}
     assert pool.catalog("edge", "gemini", str(workspace))["sessions"] == []
 
 
@@ -263,7 +262,8 @@ def test_api_targets_only_selected_session_and_rejects_unknown(tmp_path, monkeyp
             }).json
             assert payload["agent"]["prompt"] == prompt
             assert payload["active_count"] == 2
-            assert len(payload["sessions"]) == 2
+            assert len(payload["sessions"]) == 1
+            assert payload["sessions"][0]["session_id"] == key
         assert client.post("/api/agent/stop", headers={**headers, "X-CacheLikes-Agent-Session": ids[0]}).json["stop_requested"]
         wait_until(lambda: not pool.get(ids[0]).snapshot()["running"])
         assert pool.get(ids[1]).snapshot()["running"]
@@ -360,7 +360,7 @@ def test_workspace_lease_blocks_overlapping_parent_and_child_writers(sessions):
     assert pool.get(reader).snapshot()["read_only"] is True
 
 
-def test_workspace_lease_retains_identity_after_workspace_rename(sessions):
+def test_workspace_lease_fails_closed_when_active_path_cannot_be_verified(sessions):
     pool, workspace, entered = sessions
     start(pool, workspace, "original-writer")
     wait_until(lambda: "original-writer" in entered)
@@ -369,8 +369,115 @@ def test_workspace_lease_retains_identity_after_workspace_rename(sessions):
     workspace.rename(moved)
     assert pool._workspace_identity(moved) == original_identity
 
-    with pytest.raises(RuntimeError, match="active write-capable Agent task"):
+    with pytest.raises(RuntimeError, match="could not be verified safely"):
         start(pool, moved, "renamed-writer")
+
+
+def test_workspace_lease_refreshes_ancestors_after_parent_replacement(sessions):
+    pool, workspace, entered = sessions
+    parent = workspace.parent / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    (child / "README.md").write_text("Nested workspace", encoding="utf-8")
+    start(pool, child, "child-writer")
+    wait_until(lambda: "child-writer" in entered)
+
+    old_parent = workspace.parent / "parent-old"
+    parent.rename(old_parent)
+    parent.mkdir()
+    (old_parent / child.name).rename(child)
+
+    catalog = pool.catalog("edge", "chatgpt", str(parent))
+    assert catalog["can_start"] is False
+    assert "write-capable" in catalog["start_blocked_reason"]
+    with pytest.raises(RuntimeError, match="active write-capable Agent task"):
+        start(pool, parent, "replacement-parent-writer")
+
+
+def test_workspace_lease_blocks_lexical_overlap_across_chain_sampling_race(
+    sessions,
+    monkeypatch,
+):
+    pool, workspace, entered = sessions
+    parent = workspace.parent / "race-parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    (child / "README.md").write_text("Nested workspace", encoding="utf-8")
+    start(pool, child, "racing-child-writer")
+    wait_until(lambda: "racing-child-writer" in entered)
+
+    original_identity_chain = pool._workspace_identity_chain
+    old_parent = workspace.parent / "race-parent-old"
+    swapped = False
+
+    def identity_chain_with_parent_swap(candidate):
+        nonlocal swapped
+        identities = original_identity_chain(candidate)
+        if not swapped and Path(candidate) == child:
+            swapped = True
+            parent.rename(old_parent)
+            parent.mkdir()
+            (old_parent / child.name).rename(child)
+        return identities
+
+    monkeypatch.setattr(
+        pool,
+        "_workspace_identity_chain",
+        identity_chain_with_parent_swap,
+    )
+
+    with pytest.raises(RuntimeError, match="active write-capable Agent task"):
+        start(pool, parent, "racing-parent-writer")
+    assert swapped is True
+    assert "racing-parent-writer" not in entered
+
+
+def test_worker_rejects_workspace_rebound_after_admission(sessions, monkeypatch):
+    pool, workspace, entered = sessions
+    deferred = []
+
+    class DeferredThread:
+        def __init__(self, *, target, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+            self._alive = False
+            deferred.append(self)
+
+        def start(self):
+            self._alive = True
+
+        def run(self):
+            try:
+                self._target(*self._args, **self._kwargs)
+            finally:
+                self._alive = False
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            del timeout
+
+    monkeypatch.setattr("app.core.computer_use_agent.Thread", DeferredThread)
+    session_id = start(pool, workspace, "delayed-writer")
+    assert len(deferred) == 1
+    assert pool.get(session_id).snapshot()["running"] is True
+
+    moved = workspace.with_name("workspace-before-rebind")
+    workspace.rename(moved)
+    workspace.mkdir()
+    (workspace / "README.md").write_text("Replacement workspace", encoding="utf-8")
+    catalog = pool.catalog("edge", "chatgpt", str(workspace))
+    assert catalog["can_start"] is False
+    assert "could not be verified safely" in catalog["start_blocked_reason"]
+    deferred[0].run()
+
+    snapshot = pool.get(session_id).snapshot()
+    assert snapshot["running"] is False
+    assert snapshot["phase"] == "failed"
+    assert "workspace identity changed after admission" in snapshot["last_error"]
+    assert "delayed-writer" not in entered
 
 
 def test_workspace_lease_uses_ancestor_identity_for_case_variant_path(sessions):
@@ -485,6 +592,27 @@ def test_stale_compute_job_is_reconciled_before_writer_admission(
     wait_until(lambda: "writer-after-stale-job" in entered)
     assert pool.get(writer).snapshot()["running"] is True
     assert json.loads(metadata_path.read_text(encoding="utf-8"))["state"] == "interrupted"
+
+
+def test_stale_compute_job_without_containment_provenance_fails_closed(
+    sessions,
+    monkeypatch,
+):
+    pool, workspace, _ = sessions
+    metadata_path = write_compute_job_metadata(pool, workspace)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("containment_kind")
+    metadata["updated_at"] = "2026-01-01T00:00:00+00:00"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setattr(
+        "app.core.agent.compute_jobs._process_identity",
+        lambda _pid: "",
+    )
+
+    with pytest.raises(RuntimeError, match="metadata could not be verified"):
+        start(pool, workspace, "writer-with-legacy-active-job")
+
+    assert json.loads(metadata_path.read_text(encoding="utf-8"))["state"] == "running"
 
 
 def test_unverifiable_live_compute_process_fails_closed_for_writers(

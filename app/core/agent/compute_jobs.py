@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.4.0-codex.1
+Code version: v1.6.0-codex.1
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import signal
 import stat
 import subprocess
 import sys
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 import time
 from typing import Any, Callable, Iterator
 
@@ -26,6 +26,7 @@ from typing import Any, Callable, Iterator
 APPROVAL_FILENAME = ".agenticContext-compute.json"
 LEGACY_APPROVAL_FILENAME = ".cachelikes-compute.json"
 COMPUTE_JOBS_DIRNAME = "compute-jobs"
+COMPUTE_JOB_LOCKS_DIRNAME = "compute-job-locks"
 DEFAULT_MAX_RUNTIME_SECONDS = 12 * 60 * 60
 MAX_MAX_RUNTIME_SECONDS = 24 * 60 * 60
 MAX_CONFIG_BYTES = 1 * 1024 * 1024
@@ -37,9 +38,19 @@ MAX_METADATA_BYTES = 128 * 1024
 MAX_ENTRYPOINT_BYTES = 16 * 1024 * 1024
 MAX_METADATA_SCAN_WORKSPACES = 512
 MAX_METADATA_SCAN_RECORDS = 2_048
+MAX_POSIX_JOB_MARKER_SCAN_PROCESSES = 65_536
+MAX_POSIX_JOB_MARKER_SCAN_BYTES = 32 * 1024 * 1024
+MAX_POSIX_PROCESS_ENVIRONMENT_BYTES = 2 * 1024 * 1024
+MAX_POSIX_JOB_MARKER_ENVIRONMENT_BYTES = 64 * 1024 * 1024
+POSIX_JOB_MARKER_SCAN_SECONDS = 2.0
 WORKER_OWNERSHIP_HANDSHAKE_SECONDS = 30.0
 MACOS_SANDBOX_EXECUTABLE = Path("/usr/bin/sandbox-exec")
-MACOS_NETWORK_DENY_PROFILE = "(version 1) (allow default) (deny network*)"
+MACOS_COMPUTE_SANDBOX_PROFILE = (
+    "(version 1) (allow default) (deny network*) (deny process-fork)"
+)
+LINUX_CGROUP_FILESYSTEM = Path("/sys/fs/cgroup")
+MAX_LINUX_CGROUP_FILE_BYTES = 1 * 1024 * 1024
+MAX_LINUX_CGROUP_PROCESSES = 65_536
 PROGRESS_FIELDS = frozenset(
     {
         "generation",
@@ -58,6 +69,19 @@ _ENTRYPOINT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _IDEMPOTENCY_KEY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}\Z")
 _WORKSPACE_KEY_RE = re.compile(r"[0-9a-f]{24}\Z")
 _JOB_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
+_PROCESS_WORKSPACE_LOCKS_GUARD = Lock()
+_PROCESS_WORKSPACE_LOCKS: dict[str, Any] = {}
+
+
+def _platform_compute_containment_kind() -> str:
+    """Return the containment contract required before an approved child can run."""
+    if os.name == "nt":
+        return "windows-job-object"
+    if sys.platform == "darwin":
+        return "macos-sandbox-no-fork"
+    if sys.platform.startswith("linux"):
+        return "linux-cgroup-v2"
+    return ""
 
 
 class ComputeJobError(RuntimeError):
@@ -112,6 +136,60 @@ def _write_runtime_snapshot(path: Path, content: bytes) -> None:
         os.fsync(handle.fileno())
     os.chmod(path, 0o600)
     _fsync_directory(path.parent)
+
+
+@contextmanager
+def _persistent_workspace_lock(lock_path: Path) -> Iterator[None]:
+    """Serialize one workspace bucket across threads and application processes."""
+    lock_key = str(lock_path.absolute())
+    with _PROCESS_WORKSPACE_LOCKS_GUARD:
+        process_lock = _PROCESS_WORKSPACE_LOCKS.setdefault(lock_key, Lock())
+    with process_lock:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        if lock_path.is_symlink():
+            raise ComputeJobError("Compute-job workspace lock cannot use a symbolic link.")
+        flags = (
+            os.O_RDWR
+            | os.O_CREAT
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOINHERIT", 0)
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(lock_path, flags, 0o600)
+        except OSError as exc:
+            raise ComputeJobError("Compute-job workspace lock is unavailable.") from exc
+        with os.fdopen(descriptor, "r+b") as handle:
+            lock_metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(lock_metadata.st_mode):
+                raise ComputeJobError(
+                    "Compute-job workspace lock must be a regular file."
+                )
+            created = lock_metadata.st_size == 0
+            if created:
+                handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+                _fsync_directory(lock_path.parent)
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                return
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _cleanup_staged_job(staged_job_root: Path) -> None:
@@ -307,6 +385,31 @@ def _validate_compute_job_metadata(
     state = metadata.get("state")
     if state not in ACTIVE_STATES | TERMINAL_STATES:
         raise ComputeJobError("Compute-job metadata state is invalid.")
+    containment_cleared_at = metadata.get("containment_cleared_at", "")
+    if (
+        not isinstance(containment_cleared_at, str)
+        or len(containment_cleared_at) > 128
+        or state in ACTIVE_STATES
+        and containment_cleared_at
+    ):
+        raise ComputeJobError(
+            "Compute-job metadata containment receipt is invalid."
+        )
+    containment_kind = metadata.get("containment_kind", "")
+    child_cgroup = metadata.get("child_cgroup", "")
+    if (
+        not isinstance(containment_kind, str)
+        or containment_kind
+        not in {
+            "",
+            "linux-cgroup-v2",
+            "macos-sandbox-no-fork",
+            "windows-job-object",
+        }
+        or not isinstance(child_cgroup, str)
+        or len(child_cgroup) > 4_096
+    ):
+        raise ComputeJobError("Compute-job containment metadata is invalid.")
     compute_job_workspace_identity(metadata)
     if state in ACTIVE_STATES:
         pid = metadata.get("pid")
@@ -567,7 +670,7 @@ def _process_identity(pid: int) -> str:
         pass
     try:
         result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "lstart=", "-o", "command="],
+            ["ps", "-p", str(pid), "-o", "lstart="],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -582,7 +685,7 @@ def _process_identity(pid: int) -> str:
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
         return ""
-    return "ps:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"ps:{pid}:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _identity_matches(pid: Any, expected: Any) -> bool:
@@ -640,8 +743,15 @@ def _posix_process_group_exists(group_id: int) -> bool:
     return True
 
 
-def _terminate_posix_process_group(group_id: int, *, timeout: float) -> bool:
+def _terminate_posix_process_group(
+    group_id: int,
+    *,
+    timeout: float,
+    reap_process: Callable[[], Any] | None = None,
+) -> bool:
     """Terminate a job-owned process group and prove that it became empty."""
+    if reap_process is not None:
+        reap_process()
     if not _posix_process_group_exists(group_id):
         return True
     try:
@@ -650,6 +760,8 @@ def _terminate_posix_process_group(group_id: int, *, timeout: float) -> bool:
         return True
     deadline = time.monotonic() + max(0.05, timeout)
     while time.monotonic() < deadline:
+        if reap_process is not None:
+            reap_process()
         if not _posix_process_group_exists(group_id):
             return True
         time.sleep(0.05)
@@ -659,10 +771,545 @@ def _terminate_posix_process_group(group_id: int, *, timeout: float) -> bool:
         return True
     deadline = time.monotonic() + max(0.05, timeout)
     while time.monotonic() < deadline:
+        if reap_process is not None:
+            reap_process()
         if not _posix_process_group_exists(group_id):
             return True
         time.sleep(0.05)
     return not _posix_process_group_exists(group_id)
+
+
+def _bounded_posix_process_listing(*, timeout: float) -> bytes:
+    """Read a bounded process-and-environment snapshot without inheriting job markers."""
+    if os.name != "posix":
+        raise ComputeJobError("POSIX process inspection is unavailable on this host.")
+    executable = next(
+        (
+            candidate
+            for candidate in (Path("/bin/ps"), Path("/usr/bin/ps"))
+            if candidate.is_file() and os.access(candidate, os.X_OK)
+        ),
+        None,
+    )
+    if executable is None:
+        raise ComputeJobError(
+            "POSIX job-marker inspection is unavailable; writer admission remains blocked."
+        )
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"LANG", "LC_ALL", "LC_CTYPE", "PATH", "TMPDIR"}
+        and key != "AGENTIC_CONTEXT_COMPUTE_JOB"
+    }
+    environment["LANG"] = "C"
+    environment["LC_ALL"] = "C"
+    environment["PATH"] = "/usr/bin:/bin"
+    process: subprocess.Popen[bytes] | None = None
+    output = bytearray()
+    deadline = time.monotonic() + max(0.05, min(timeout, POSIX_JOB_MARKER_SCAN_SECONDS))
+    try:
+        process = subprocess.Popen(
+            [str(executable), "eww", "-axo", "pid=,lstart=,command="],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        if process.stdout is None:
+            raise ComputeJobError(
+                "POSIX job-marker inspection output is unavailable; writer admission remains "
+                "blocked."
+            )
+        descriptor = process.stdout.fileno()
+        os.set_blocking(descriptor, False)
+        import select
+
+        while True:
+            remaining_time = deadline - time.monotonic()
+            if remaining_time <= 0:
+                raise ComputeJobError(
+                    "POSIX job-marker inspection timed out; writer admission remains blocked."
+                )
+            readable, _, _ = select.select(
+                [descriptor],
+                [],
+                [],
+                min(0.1, remaining_time),
+            )
+            if not readable:
+                continue
+            try:
+                chunk = os.read(
+                    descriptor,
+                    min(
+                        64 * 1024,
+                        MAX_POSIX_JOB_MARKER_SCAN_BYTES + 1 - len(output),
+                    ),
+                )
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > MAX_POSIX_JOB_MARKER_SCAN_BYTES:
+                raise ComputeJobError(
+                    "POSIX job-marker inspection exceeded its byte limit; writer admission "
+                    "remains blocked."
+                )
+        remaining_time = deadline - time.monotonic()
+        if remaining_time <= 0:
+            raise ComputeJobError(
+                "POSIX job-marker inspection timed out; writer admission remains blocked."
+            )
+        try:
+            return_code = process.wait(timeout=remaining_time)
+        except subprocess.TimeoutExpired as exc:
+            raise ComputeJobError(
+                "POSIX job-marker inspection timed out; writer admission remains blocked."
+            ) from exc
+        if return_code != 0:
+            raise ComputeJobError(
+                "POSIX job-marker inspection failed; writer admission remains blocked."
+            )
+        return bytes(output)
+    except OSError as exc:
+        raise ComputeJobError(
+            "POSIX job-marker inspection failed; writer admission remains blocked."
+        ) from exc
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=0.5)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            if process.stdout is not None:
+                process.stdout.close()
+
+
+def _scan_linux_job_marker_processes(
+    job_id: str,
+    *,
+    exclude_pids: frozenset[int],
+    timeout: float,
+) -> dict[int, str]:
+    """Find same-user Linux processes carrying one exact inherited job marker."""
+    marker = f"AGENTIC_CONTEXT_COMPUTE_JOB={job_id}".encode("ascii")
+    deadline = time.monotonic() + max(0.05, min(timeout, POSIX_JOB_MARKER_SCAN_SECONDS))
+    records: dict[int, str] = {}
+    process_count = 0
+    environment_bytes = 0
+    try:
+        iterator = os.scandir("/proc")
+    except OSError as exc:
+        raise ComputeJobError(
+            "Linux job-marker inspection is unavailable; writer admission remains blocked."
+        ) from exc
+    with iterator:
+        for entry in iterator:
+            if not entry.name.isdecimal():
+                continue
+            process_count += 1
+            if process_count > MAX_POSIX_JOB_MARKER_SCAN_PROCESSES:
+                raise ComputeJobError(
+                    "Linux job-marker inspection exceeded its process limit; writer admission "
+                    "remains blocked."
+                )
+            if time.monotonic() >= deadline:
+                raise ComputeJobError(
+                    "Linux job-marker inspection timed out; writer admission remains blocked."
+                )
+            pid = int(entry.name)
+            if pid in exclude_pids:
+                continue
+            try:
+                process_metadata = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ComputeJobError(
+                    "Linux job-marker ownership could not be inspected; writer admission remains "
+                    "blocked."
+                ) from exc
+            if process_metadata.st_uid != os.geteuid():
+                continue
+            before_identity = _process_identity(pid)
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            try:
+                descriptor = os.open(f"/proc/{pid}/environ", flags)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ComputeJobError(
+                    "Linux job-marker environment could not be inspected; writer admission "
+                    "remains blocked."
+                ) from exc
+            try:
+                environment = bytearray()
+                while True:
+                    chunk = os.read(
+                        descriptor,
+                        min(
+                            64 * 1024,
+                            MAX_POSIX_PROCESS_ENVIRONMENT_BYTES + 1 - len(environment),
+                        ),
+                    )
+                    if not chunk:
+                        break
+                    environment.extend(chunk)
+                    environment_bytes += len(chunk)
+                    if len(environment) > MAX_POSIX_PROCESS_ENVIRONMENT_BYTES:
+                        raise ComputeJobError(
+                            "Linux process environment exceeded its inspection limit; writer "
+                            "admission remains blocked."
+                        )
+                    if environment_bytes > MAX_POSIX_JOB_MARKER_ENVIRONMENT_BYTES:
+                        raise ComputeJobError(
+                            "Linux job-marker inspection exceeded its byte limit; writer "
+                            "admission remains blocked."
+                        )
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ComputeJobError(
+                    "Linux job-marker environment could not be inspected; writer admission "
+                    "remains blocked."
+                ) from exc
+            finally:
+                os.close(descriptor)
+            if marker not in bytes(environment).split(b"\0"):
+                continue
+            after_identity = _process_identity(pid)
+            if not before_identity or before_identity != after_identity:
+                raise ComputeJobError(
+                    "A job-marker process changed identity during inspection; writer admission "
+                    "remains blocked."
+                )
+            records[pid] = before_identity
+    return records
+
+
+def _scan_ps_job_marker_processes(
+    job_id: str,
+    *,
+    exclude_pids: frozenset[int],
+    timeout: float,
+) -> dict[int, str]:
+    """Find marker-bearing processes in one bounded BSD-style process snapshot."""
+    marker = f"AGENTIC_CONTEXT_COMPUTE_JOB={job_id}".encode("ascii")
+    output = _bounded_posix_process_listing(timeout=timeout)
+    records: dict[int, str] = {}
+    process_count = 0
+    for line in output.splitlines():
+        process_count += 1
+        if process_count > MAX_POSIX_JOB_MARKER_SCAN_PROCESSES:
+            raise ComputeJobError(
+                "POSIX job-marker inspection exceeded its process limit; writer admission "
+                "remains blocked."
+            )
+        match = re.fullmatch(rb"\s*(\d+)\s+(.{24})\s+(.*)", line)
+        if match is None:
+            raise ComputeJobError(
+                "POSIX job-marker inspection returned ambiguous output; writer admission remains "
+                "blocked."
+            )
+        pid = int(match.group(1))
+        if pid in exclude_pids:
+            continue
+        fields = re.split(rb"[\t ]+", match.group(3).strip())
+        if marker not in fields:
+            continue
+        if pid in records:
+            raise ComputeJobError(
+                "POSIX job-marker inspection returned a duplicate PID; writer admission remains "
+                "blocked."
+            )
+        lstart = match.group(2)
+        identity = f"ps:{pid}:" + hashlib.sha256(lstart).hexdigest()
+        records[pid] = identity
+    return records
+
+
+def _scan_posix_job_marker_processes(
+    job_id: str,
+    *,
+    exclude_pids: frozenset[int] = frozenset(),
+    timeout: float = POSIX_JOB_MARKER_SCAN_SECONDS,
+) -> dict[int, str]:
+    """Return identity-bound processes carrying the exact cooperative job marker."""
+    if os.name != "posix" or not _JOB_ID_RE.fullmatch(job_id):
+        raise ComputeJobError("POSIX job-marker inspection request is invalid.")
+    if sys.platform.startswith("linux") and Path("/proc").is_dir():
+        return _scan_linux_job_marker_processes(
+            job_id,
+            exclude_pids=exclude_pids,
+            timeout=timeout,
+        )
+    return _scan_ps_job_marker_processes(
+        job_id,
+        exclude_pids=exclude_pids,
+        timeout=timeout,
+    )
+
+
+def _terminate_posix_job_marker_processes(
+    job_id: str,
+    *,
+    exclude_pids: frozenset[int] = frozenset(),
+    timeout: float,
+) -> tuple[bool, bool]:
+    """Terminate identity-verified marker processes and prove two empty scans."""
+    if os.name != "posix":
+        return True, False
+    started = time.monotonic()
+    deadline = started + max(0.1, timeout)
+    force_deadline = started + max(0.05, timeout / 2)
+    descendants_detected = False
+    empty_scans = 0
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        matches = _scan_posix_job_marker_processes(
+            job_id,
+            exclude_pids=exclude_pids,
+            timeout=max(0.05, remaining),
+        )
+        if not matches:
+            empty_scans += 1
+            if empty_scans >= 2:
+                return True, descendants_detected
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            continue
+        descendants_detected = True
+        empty_scans = 0
+        requested_signal = (
+            signal.SIGKILL if time.monotonic() >= force_deadline else signal.SIGTERM
+        )
+        for pid, expected_identity in matches.items():
+            if not _identity_matches(pid, expected_identity):
+                continue
+            try:
+                os.kill(pid, requested_signal)
+            except ProcessLookupError:
+                continue
+            except (OSError, PermissionError) as exc:
+                raise ComputeJobError(
+                    "A job-marker process could not be terminated safely; writer admission "
+                    "remains blocked."
+                ) from exc
+        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+    matches = _scan_posix_job_marker_processes(
+        job_id,
+        exclude_pids=exclude_pids,
+        timeout=0.1,
+    )
+    if not matches:
+        empty_scans += 1
+    return empty_scans >= 2, descendants_detected
+
+
+def _read_linux_cgroup_file(path: Path) -> bytes:
+    """Read one cgroup control file without links or unbounded allocation."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ComputeJobError("Linux cgroup state could not be inspected safely.") from exc
+    try:
+        payload = bytearray()
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, MAX_LINUX_CGROUP_FILE_BYTES + 1 - len(payload)),
+            )
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > MAX_LINUX_CGROUP_FILE_BYTES:
+                raise ComputeJobError("Linux cgroup state exceeded its bounded size.")
+        return bytes(payload)
+    except OSError as exc:
+        raise ComputeJobError("Linux cgroup state could not be inspected safely.") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _write_linux_cgroup_file(path: Path, payload: bytes) -> None:
+    """Write one complete command to a non-linked cgroup control file."""
+    flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            written = os.write(descriptor, payload)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ComputeJobError("Linux cgroup control could not be updated safely.") from exc
+    if written != len(payload):
+        raise ComputeJobError("Linux cgroup control write was incomplete.")
+
+
+class _LinuxCgroup:
+    """Own one verified cgroup v2 used as the Linux process-tree receipt."""
+
+    def __init__(self, path: Path, job_id: str) -> None:
+        self.path = path
+        self.job_id = job_id
+
+    @classmethod
+    def create(cls, job_id: str) -> _LinuxCgroup:
+        if not sys.platform.startswith("linux") or not _JOB_ID_RE.fullmatch(job_id):
+            raise ComputeJobError("Linux cgroup containment request is invalid.")
+        try:
+            filesystem = LINUX_CGROUP_FILESYSTEM.resolve(strict=True)
+            if not (filesystem / "cgroup.controllers").is_file():
+                raise ComputeJobError("The host does not expose cgroup v2 containment.")
+            membership = _read_linux_cgroup_file(Path("/proc/self/cgroup"))
+        except OSError as exc:
+            raise ComputeJobError("Linux cgroup v2 containment is unavailable.") from exc
+        entries = []
+        try:
+            for line in membership.decode("ascii").splitlines():
+                hierarchy, controllers, relative = line.split(":", 2)
+                if hierarchy == "0" and not controllers and relative.startswith("/"):
+                    entries.append(relative)
+        except (UnicodeError, ValueError) as exc:
+            raise ComputeJobError("Linux cgroup v2 membership is invalid.") from exc
+        if len(entries) != 1:
+            raise ComputeJobError("Linux cgroup v2 membership is ambiguous.")
+        relative = Path(entries[0].lstrip("/"))
+        if ".." in relative.parts:
+            raise ComputeJobError("Linux cgroup v2 membership escaped its filesystem.")
+        try:
+            parent = (filesystem / relative).resolve(strict=True)
+            parent.relative_to(filesystem)
+        except (OSError, ValueError) as exc:
+            raise ComputeJobError("Linux cgroup v2 membership is unavailable.") from exc
+        name = f"agentic-context-{job_id}-{secrets.token_hex(8)}"
+        path = parent / name
+        try:
+            path.mkdir(mode=0o700)
+        except OSError as exc:
+            raise ComputeJobError(
+                "Linux cgroup v2 is not delegated to the compute worker."
+            ) from exc
+        cgroup = cls(path, job_id)
+        try:
+            cgroup._validate_controls()
+        except ComputeJobError:
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+            raise
+        return cgroup
+
+    @classmethod
+    def from_metadata(cls, job_id: str, raw_path: str) -> _LinuxCgroup | None:
+        if not _JOB_ID_RE.fullmatch(job_id) or not raw_path:
+            return None
+        path = Path(raw_path)
+        expected_name = re.fullmatch(
+            rf"agentic-context-{re.escape(job_id)}-[0-9a-f]{{16}}",
+            path.name,
+        )
+        if not path.is_absolute() or expected_name is None:
+            raise ComputeJobError("Persisted Linux cgroup containment path is invalid.")
+        try:
+            filesystem = LINUX_CGROUP_FILESYSTEM.resolve(strict=True)
+            parent = path.parent.resolve(strict=True)
+            parent.relative_to(filesystem)
+        except (OSError, ValueError) as exc:
+            raise ComputeJobError("Persisted Linux cgroup containment path is invalid.") from exc
+        if not path.exists():
+            return None
+        cgroup = cls(path, job_id)
+        cgroup._validate_controls()
+        return cgroup
+
+    def _validate_controls(self) -> None:
+        try:
+            if self.path.is_symlink() or not self.path.is_dir():
+                raise ComputeJobError("Linux cgroup containment directory is invalid.")
+            controls = ("cgroup.events", "cgroup.kill", "cgroup.procs")
+            if any(not (self.path / name).is_file() for name in controls):
+                raise ComputeJobError("Linux cgroup v2 lacks required containment controls.")
+            if any(not os.access(self.path / name, os.R_OK) for name in ("cgroup.events", "cgroup.procs")):
+                raise ComputeJobError("Linux cgroup v2 state is not readable.")
+            if any(not os.access(self.path / name, os.W_OK) for name in ("cgroup.kill", "cgroup.procs")):
+                raise ComputeJobError("Linux cgroup v2 controls are not writable.")
+        except OSError as exc:
+            raise ComputeJobError("Linux cgroup controls could not be verified.") from exc
+
+    def pids(self) -> tuple[int, ...]:
+        if not self.path.exists():
+            return ()
+        payload = _read_linux_cgroup_file(self.path / "cgroup.procs")
+        pids: list[int] = []
+        try:
+            for line in payload.decode("ascii").splitlines():
+                if not line.isdecimal():
+                    raise ComputeJobError("Linux cgroup process membership is invalid.")
+                pids.append(int(line))
+                if len(pids) > MAX_LINUX_CGROUP_PROCESSES:
+                    raise ComputeJobError("Linux cgroup process membership exceeded its limit.")
+        except UnicodeError as exc:
+            raise ComputeJobError("Linux cgroup process membership is invalid.") from exc
+        if len(set(pids)) != len(pids):
+            raise ComputeJobError("Linux cgroup process membership contains duplicate PIDs.")
+        return tuple(pids)
+
+    def populated(self) -> bool:
+        if not self.path.exists():
+            return False
+        payload = _read_linux_cgroup_file(self.path / "cgroup.events")
+        fields: dict[str, str] = {}
+        try:
+            for line in payload.decode("ascii").splitlines():
+                name, value = line.split(maxsplit=1)
+                fields[name] = value
+        except (UnicodeError, ValueError) as exc:
+            raise ComputeJobError("Linux cgroup event state is invalid.") from exc
+        if fields.get("populated") not in {"0", "1"}:
+            raise ComputeJobError("Linux cgroup populated state is unavailable.")
+        return fields["populated"] == "1"
+
+    def assign(self, pid: int, expected_identity: str) -> None:
+        if not _identity_matches(pid, expected_identity):
+            raise ComputeJobError("Linux cgroup child identity changed before assignment.")
+        _write_linux_cgroup_file(self.path / "cgroup.procs", str(pid).encode("ascii"))
+        if (
+            not _identity_matches(pid, expected_identity)
+            or pid not in self.pids()
+            or not self.populated()
+        ):
+            raise ComputeJobError("Linux cgroup child assignment could not be verified.")
+
+    def terminate_and_remove(self, *, timeout: float) -> tuple[bool, bool]:
+        detected = self.populated()
+        deadline = time.monotonic() + max(0.1, timeout)
+        empty_scans = 0
+        while time.monotonic() < deadline:
+            if self.populated():
+                detected = True
+                empty_scans = 0
+                _write_linux_cgroup_file(self.path / "cgroup.kill", b"1")
+            else:
+                empty_scans += 1
+                if empty_scans >= 2:
+                    try:
+                        self.path.rmdir()
+                    except FileNotFoundError:
+                        return True, detected
+                    except OSError:
+                        return False, detected
+                    return True, detected
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        return False, detected
 
 
 class _WindowsJob:
@@ -815,7 +1462,10 @@ def _read_process_output(stream: Any, output_queue: Queue[bytes | None]) -> None
     """Move pipe bytes into a bounded queue on every supported host."""
     try:
         while True:
-            chunk = os.read(stream.fileno(), 64 * 1024)
+            try:
+                chunk = os.read(stream.fileno(), 64 * 1024)
+            except OSError:
+                break
             if not chunk:
                 break
             output_queue.put(chunk)
@@ -885,11 +1535,70 @@ def _reconcile_scanned_compute_job_metadata(
                 "Compute-job wrapper ended while its child process group is still active; "
                 "writer admission remains blocked."
             )
+        if os.name == "posix":
+            containment_kind = str(current.get("containment_kind") or "")
+            if sys.platform == "darwin":
+                if containment_kind != "macos-sandbox-no-fork":
+                    raise ComputeJobError(
+                        "Compute-job fork containment provenance is unavailable; writer "
+                        "admission remains blocked."
+                    )
+            elif sys.platform.startswith("linux"):
+                if containment_kind != "linux-cgroup-v2":
+                    raise ComputeJobError(
+                        "Compute-job cgroup containment provenance is unavailable; writer "
+                        "admission remains blocked."
+                    )
+                raw_cgroup = str(current.get("child_cgroup") or "")
+                cgroup = _LinuxCgroup.from_metadata(
+                    str(current.get("job_id") or ""),
+                    raw_cgroup,
+                )
+                if cgroup is not None:
+                    if cgroup.populated():
+                        raise ComputeJobError(
+                            "Compute-job wrapper ended while its Linux cgroup is still populated; "
+                            "writer admission remains blocked."
+                        )
+                    cgroup_cleared, _cgroup_detected = cgroup.terminate_and_remove(
+                        timeout=0.2,
+                    )
+                    if not cgroup_cleared:
+                        raise ComputeJobError(
+                            "Compute-job Linux cgroup cleanup is incomplete; writer admission "
+                            "remains blocked."
+                        )
+                elif child_pid > 0 and not raw_cgroup:
+                    raise ComputeJobError(
+                        "Compute-job Linux cgroup state is ambiguous; writer admission remains "
+                        "blocked."
+                    )
+            else:
+                raise ComputeJobError(
+                    "This POSIX host has no durable process-tree containment receipt; writer "
+                    "admission remains blocked."
+                )
+            marker_processes = _scan_posix_job_marker_processes(
+                str(current.get("job_id") or ""),
+            )
+            if marker_processes:
+                raise ComputeJobError(
+                    "Compute-job wrapper ended while job-marker descendants are still active; "
+                    "writer admission remains blocked."
+                )
         if (
             os.name == "nt"
-            and child_pid > 0
-            and not str(current.get("containment_cleared_at") or "")
+            and current.get("containment_kind") != "windows-job-object"
         ):
+            raise ComputeJobError(
+                "Compute-job Windows Job Object provenance is unavailable; writer admission "
+                "remains blocked."
+            )
+        if os.name == "nt" and child_pid > 0:
+            if str(current.get("containment_cleared_at") or ""):
+                raise ComputeJobError(
+                    "Active compute-job metadata has an invalid containment receipt."
+                )
             raise ComputeJobError(
                 "Compute-job wrapper ended before its Windows Job Object published a "
                 "containment receipt; writer admission remains blocked."
@@ -937,6 +1646,8 @@ def _terminate_process_group(
     expected_identity: str = "",
 ) -> bool:
     """Terminate one wrapper after checking its persisted birth identity."""
+    if not expected_identity:
+        return False
     if expected_identity and not _identity_matches(pid, expected_identity):
         return True
     if os.name == "posix":
@@ -946,7 +1657,10 @@ def _terminate_process_group(
             except ProcessLookupError:
                 return True
             except PermissionError:
-                return not _identity_matches(pid, expected_identity)
+                return bool(expected_identity) and not _identity_matches(
+                    pid,
+                    expected_identity,
+                )
             deadline = time.monotonic() + max(0.05, timeout)
             while time.monotonic() < deadline:
                 if expected_identity:
@@ -1063,6 +1777,11 @@ class ComputeJobManager:
         self.workspace_key = hashlib.sha256(str(self.workspace).encode("utf-8")).hexdigest()[:24]
         self.jobs_root = self.runtime_root / self.workspace_key
         self.staging_root = self.runtime_root.parent / "compute-job-staging" / self.workspace_key
+        self.workspace_lock_path = (
+            self.runtime_root.parent
+            / COMPUTE_JOB_LOCKS_DIRNAME
+            / f"{self.workspace_key}.lock"
+        )
         self._caffeinate_executable = caffeinate_executable
         self.jobs_root.mkdir(parents=True, exist_ok=True)
         self.staging_root.mkdir(parents=True, exist_ok=True)
@@ -1154,8 +1873,8 @@ class ComputeJobManager:
             raise ComputeJobError("Compute entrypoint bytes do not match the approved SHA-256.")
         return entrypoint, record, entrypoint_bytes, entrypoint_sha256
 
-    def reconcile(self) -> None:
-        """Rebind live jobs and mark missing or identity-mismatched workers interrupted."""
+    def _reconcile_unlocked(self) -> None:
+        """Reconcile this bucket while the caller owns its admission lock."""
         for metadata in self._all_metadata():
             if metadata.get("state") in ACTIVE_STATES:
                 metadata = _reconcile_scanned_compute_job_metadata(
@@ -1166,8 +1885,73 @@ class ComputeJobManager:
                 continue
             self._release_assertion(metadata)
 
+    def reconcile(self) -> None:
+        """Rebind live jobs under the workspace bucket admission lock."""
+        with _persistent_workspace_lock(self.workspace_lock_path):
+            self._reconcile_unlocked()
+
     def _release_assertion(self, metadata: dict[str, Any]) -> None:
         _release_sleep_assertion(metadata)
+
+    def _reserve_starting_job(
+        self,
+        *,
+        metadata: dict[str, Any],
+        entrypoint_bytes: bytes,
+        config_bytes: bytes,
+        checkpoint_bytes: bytes | None,
+    ) -> str:
+        """Deduplicate, admit, and durably publish one starting job under one lock."""
+        job_id = str(metadata["job_id"])
+        idempotency_key = str(metadata["idempotency_key"])
+        request_fingerprint = str(metadata["request_fingerprint"])
+        with _persistent_workspace_lock(self.workspace_lock_path):
+            self._reconcile_unlocked()
+            records = self._all_metadata()
+            for existing in records:
+                if existing.get("idempotency_key") != idempotency_key:
+                    continue
+                if existing.get("request_fingerprint") != request_fingerprint:
+                    raise ComputeJobError(
+                        "Idempotency key was already used for a different compute request."
+                    )
+                return str(existing["job_id"])
+            active = [
+                item for item in records if item.get("state") in ACTIVE_STATES
+            ]
+            if active:
+                raise ComputeJobError(
+                    f"Compute job {active[0]['job_id']} is already active; "
+                    "concurrency is limited to 1."
+                )
+
+            job_root = self.jobs_root / job_id
+            staged_job_root = self.staging_root / job_id
+            staged_job_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+            published = False
+            try:
+                _write_runtime_snapshot(
+                    staged_job_root / "entrypoint.py",
+                    entrypoint_bytes,
+                )
+                _write_runtime_snapshot(
+                    staged_job_root / "config.json",
+                    config_bytes,
+                )
+                if checkpoint_bytes is not None:
+                    _write_runtime_snapshot(
+                        staged_job_root / "resume-checkpoint.json",
+                        checkpoint_bytes,
+                    )
+                _atomic_write_json(staged_job_root / "metadata.json", metadata)
+                os.rename(staged_job_root, job_root)
+                published = True
+            finally:
+                if not published:
+                    _cleanup_staged_job(staged_job_root)
+            _fsync_directory(self.staging_root)
+            _fsync_directory(self.jobs_root)
+        return job_id
 
     def start(
         self,
@@ -1236,85 +2020,57 @@ class ComputeJobManager:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
-        self.reconcile()
-        for existing in self._all_metadata():
-            if existing.get("idempotency_key") != idempotency_key:
-                continue
-            if existing.get("request_fingerprint") != request_fingerprint:
-                raise ComputeJobError(
-                    "Idempotency key was already used for a different compute request."
-                )
-            return self.status(str(existing["job_id"]))
-        active = [
-            item for item in self._all_metadata() if item.get("state") in ACTIVE_STATES
-        ]
-        if active:
-            raise ComputeJobError(
-                f"Compute job {active[0]['job_id']} is already active; concurrency is limited to 1."
-            )
-
         job_id = secrets.token_hex(16)
+        now = _utc_now()
+        metadata: dict[str, Any] = {
+            "schema_version": 1,
+            "revision": 1,
+            "job_id": job_id,
+            "workspace": str(self.workspace),
+            "workspace_device": self.workspace_device,
+            "workspace_inode": self.workspace_inode,
+            "state": "starting",
+            "pid": 0,
+            "process_identity": "",
+            "child_pid": 0,
+            "child_process_identity": "",
+            "child_process_group": 0,
+            "child_cgroup": "",
+            "containment_kind": _platform_compute_containment_kind(),
+            "containment_cleared_at": "",
+            "started_at": now,
+            "updated_at": now,
+            "ended_at": "",
+            "entrypoint": entrypoint_id,
+            "entrypoint_path": entrypoint.relative_to(self.workspace).as_posix(),
+            "entrypoint_snapshot_path": "entrypoint.py",
+            "entrypoint_sha256": entrypoint_sha256,
+            "config_path": config.relative_to(self.workspace).as_posix(),
+            "config_sha256": config_sha256,
+            "resume_checkpoint_path": (
+                "resume-checkpoint.json" if checkpoint_bytes is not None else ""
+            ),
+            "resume_checkpoint_sha256": checkpoint_sha256,
+            "checkpoint_path": "checkpoint.json",
+            "result_path": "result.json",
+            "exit_status": None,
+            "idempotency_key": idempotency_key,
+            "request_fingerprint": request_fingerprint,
+            "resumed_from": resume_job_id,
+            "max_runtime_seconds": max_runtime,
+            "message": "Starting approved compute worker.",
+            "sleep_assertion_pid": 0,
+            "sleep_assertion_identity": "",
+        }
+        reserved_job_id = self._reserve_starting_job(
+            metadata=metadata,
+            entrypoint_bytes=entrypoint_bytes,
+            config_bytes=config_bytes,
+            checkpoint_bytes=checkpoint_bytes,
+        )
+        if reserved_job_id != job_id:
+            return self.status(reserved_job_id)
         job_root = self.jobs_root / job_id
-        staged_job_root = self.staging_root / job_id
-        staged_job_root.mkdir(mode=0o700, parents=False, exist_ok=False)
-        published = False
-        try:
-            entrypoint_snapshot = staged_job_root / "entrypoint.py"
-            _write_runtime_snapshot(entrypoint_snapshot, entrypoint_bytes)
-            config_snapshot = staged_job_root / "config.json"
-            _write_runtime_snapshot(config_snapshot, config_bytes)
-            if checkpoint_bytes is not None:
-                _write_runtime_snapshot(
-                    staged_job_root / "resume-checkpoint.json",
-                    checkpoint_bytes,
-                )
-            now = _utc_now()
-            metadata: dict[str, Any] = {
-                "schema_version": 1,
-                "revision": 1,
-                "job_id": job_id,
-                "workspace": str(self.workspace),
-                "workspace_device": self.workspace_device,
-                "workspace_inode": self.workspace_inode,
-                "state": "starting",
-                "pid": 0,
-                "process_identity": "",
-                "child_pid": 0,
-                "child_process_identity": "",
-                "child_process_group": 0,
-                "containment_cleared_at": "",
-                "started_at": now,
-                "updated_at": now,
-                "ended_at": "",
-                "entrypoint": entrypoint_id,
-                "entrypoint_path": entrypoint.relative_to(self.workspace).as_posix(),
-                "entrypoint_snapshot_path": "entrypoint.py",
-                "entrypoint_sha256": entrypoint_sha256,
-                "config_path": config.relative_to(self.workspace).as_posix(),
-                "config_sha256": config_sha256,
-                "resume_checkpoint_path": (
-                    "resume-checkpoint.json" if checkpoint_bytes is not None else ""
-                ),
-                "resume_checkpoint_sha256": checkpoint_sha256,
-                "checkpoint_path": "checkpoint.json",
-                "result_path": "result.json",
-                "exit_status": None,
-                "idempotency_key": idempotency_key,
-                "request_fingerprint": request_fingerprint,
-                "resumed_from": resume_job_id,
-                "max_runtime_seconds": max_runtime,
-                "message": "Starting approved compute worker.",
-                "sleep_assertion_pid": 0,
-                "sleep_assertion_identity": "",
-            }
-            _atomic_write_json(staged_job_root / "metadata.json", metadata)
-            os.rename(staged_job_root, job_root)
-            published = True
-        finally:
-            if not published:
-                _cleanup_staged_job(staged_job_root)
-        _fsync_directory(self.staging_root)
-        _fsync_directory(self.jobs_root)
         entrypoint_snapshot = job_root / "entrypoint.py"
         config_snapshot = job_root / "config.json"
         checkpoint_path = (
@@ -1379,8 +2135,18 @@ class ComputeJobManager:
         if current_metadata.get("state") in TERMINAL_STATES:
             return self.status(job_id)
         if not identity or process.poll() is not None:
-            _terminate_process_group(process.pid, timeout=1)
+            wrapper_ended = process.poll() is not None
+            if not wrapper_ended:
+                try:
+                    process.kill()
+                    process.wait(timeout=2.0)
+                    wrapper_ended = True
+                except (OSError, subprocess.TimeoutExpired):
+                    wrapper_ended = process.poll() is not None
+
             def mark_identity_failed(current: dict[str, Any]) -> dict[str, Any] | None:
+                if not wrapper_ended:
+                    return None
                 if current.get("state") in TERMINAL_STATES:
                     return None
                 current["state"] = "failed"
@@ -1390,6 +2156,11 @@ class ComputeJobManager:
                 return current
 
             self._transition_metadata(job_id, mark_identity_failed)
+            if not wrapper_ended:
+                raise ComputeJobError(
+                    "Compute worker identity and termination could not be verified; writer "
+                    "admission remains blocked."
+                )
             raise ComputeJobError("Compute worker identity could not be verified.")
 
         def commit_running(current: dict[str, Any]) -> dict[str, Any] | None:
@@ -1537,39 +2308,128 @@ class ComputeJobManager:
         return allowed
 
     def stop(self, job_id: str) -> dict[str, Any]:
-        """Stop only the identity-verified worker process group for one job."""
+        """Request worker-owned containment and fall back only where it is provable."""
         stop_committed = False
+        identity_mismatch = False
 
         def commit_stop(current: dict[str, Any]) -> dict[str, Any] | None:
-            nonlocal stop_committed
+            nonlocal identity_mismatch, stop_committed
             if current.get("state") not in ACTIVE_STATES:
                 return None
             if not _identity_matches(
                 current.get("pid"),
                 current.get("process_identity"),
             ):
-                raise ComputeJobError(
-                    "Compute worker identity changed; refusing to terminate a reused PID."
-                )
+                identity_mismatch = True
+                return None
             current["state"] = "stopping"
             current["updated_at"] = _utc_now()
+            current["message"] = "Stop requested; the worker is clearing its process container."
             stop_committed = True
             return current
 
         metadata = self._transition_metadata(job_id, commit_stop)
+        if identity_mismatch:
+            _reconcile_scanned_compute_job_metadata(
+                self._metadata_path(job_id),
+                metadata,
+            )
+            raise ComputeJobError(
+                "Compute worker identity changed; refusing to terminate a reused PID."
+            )
         if not stop_committed:
             return self.status(job_id)
-        child_group = int(metadata.get("child_process_group") or 0)
-        if os.name == "posix" and child_group > 0:
-            if not _terminate_posix_process_group(child_group, timeout=5.0):
+        worker_pid = int(metadata["pid"])
+        worker_identity = str(metadata["process_identity"])
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            current = self._load_metadata(job_id)
+            if current.get("state") in TERMINAL_STATES:
+                self._release_assertion(current)
+                return self.status(job_id)
+            if not _identity_matches(worker_pid, worker_identity):
+                reconciled = _reconcile_scanned_compute_job_metadata(
+                    self._metadata_path(job_id),
+                    current,
+                )
+                if reconciled.get("state") in TERMINAL_STATES:
+                    self._release_assertion(reconciled)
+                    return self.status(job_id)
+                break
+            time.sleep(0.05)
+
+        if os.name != "posix":
+            raise ComputeJobError(
+                "The Windows worker did not publish a Job Object containment receipt; writer "
+                "admission remains blocked."
+            )
+
+        current = self._load_metadata(job_id)
+        child_pid = int(current.get("child_pid") or 0)
+        if sys.platform == "darwin":
+            if current.get("containment_kind") != "macos-sandbox-no-fork":
                 raise ComputeJobError(
-                    "Compute child process containment could not be cleared; writer admission "
+                    "Compute-job fork containment provenance is unavailable; writer admission "
                     "remains blocked."
                 )
-        _terminate_process_group(int(metadata["pid"]))
-        child_pid = int(metadata.get("child_pid") or 0)
-        child_identity = str(metadata.get("child_process_identity") or "")
-        if child_pid > 0 and _identity_matches(child_pid, child_identity):
+        elif sys.platform.startswith("linux"):
+            if current.get("containment_kind") != "linux-cgroup-v2":
+                raise ComputeJobError(
+                    "Compute-job cgroup containment provenance is unavailable; writer admission "
+                    "remains blocked."
+                )
+            raw_cgroup = str(current.get("child_cgroup") or "")
+            if child_pid > 0 and not raw_cgroup:
+                raise ComputeJobError(
+                    "Compute-job Linux cgroup record is incomplete; writer admission remains "
+                    "blocked."
+                )
+            cgroup = _LinuxCgroup.from_metadata(job_id, raw_cgroup)
+            if cgroup is not None:
+                cgroup_cleared, _cgroup_detected = cgroup.terminate_and_remove(
+                    timeout=2.0,
+                )
+                if not cgroup_cleared:
+                    raise ComputeJobError(
+                        "Compute child cgroup could not be cleared; writer admission remains "
+                        "blocked."
+                    )
+        child_group = int(current.get("child_process_group") or 0)
+        if child_group > 0 and not _terminate_posix_process_group(
+            child_group,
+            timeout=2.0,
+        ):
+            raise ComputeJobError(
+                "Compute child process containment could not be cleared; writer admission "
+                "remains blocked."
+            )
+        if not _terminate_process_group(
+            worker_pid,
+            timeout=2.0,
+            expected_identity=worker_identity,
+        ):
+            raise ComputeJobError(
+                "Compute wrapper termination could not be verified; writer admission remains "
+                "blocked."
+            )
+        marker_processes_cleared, _marker_processes_detected = (
+            _terminate_posix_job_marker_processes(
+                job_id,
+                timeout=2.0,
+            )
+        )
+        if not marker_processes_cleared:
+            raise ComputeJobError(
+                "Compute job-marker descendants could not be cleared; writer admission remains "
+                "blocked."
+            )
+        child_identity = str(current.get("child_process_identity") or "")
+        if (
+            child_pid > 0
+            and _identity_matches(child_pid, child_identity)
+            or child_group > 0
+            and _posix_process_group_exists(child_group)
+        ):
             raise ComputeJobError(
                 "Compute child process containment is still active; writer admission remains "
                 "blocked."
@@ -1585,6 +2445,7 @@ class ComputeJobManager:
             current["state"] = "stopped"
             current["updated_at"] = _utc_now()
             current["ended_at"] = current["updated_at"]
+            current["containment_cleared_at"] = current["updated_at"]
             current["message"] = "Compute job was stopped with its owned process tree."
             return current
 
@@ -1671,11 +2532,13 @@ def _approved_child_main(arguments: list[str]) -> int:
     ]
     if checkpoint is not None:
         command.extend(["--resume", str(checkpoint)])
-    if sys.platform == "darwin" and MACOS_SANDBOX_EXECUTABLE.is_file():
+    if sys.platform == "darwin":
+        if not MACOS_SANDBOX_EXECUTABLE.is_file():
+            return 77
         command = [
             str(MACOS_SANDBOX_EXECUTABLE),
             "-p",
-            MACOS_NETWORK_DENY_PROFILE,
+            MACOS_COMPUTE_SANDBOX_PROFILE,
             *command,
         ]
     environment = dict(os.environ)
@@ -1823,10 +2686,30 @@ def _worker_main(arguments: list[str]) -> int:
     ]
     if checkpoint is not None:
         child_command.append(str(checkpoint))
+    required_containment_kind = _platform_compute_containment_kind()
+    if metadata.get("containment_kind") != required_containment_kind:
+        return publish_failure("Compute process-tree containment provenance is invalid.")
     child_options: dict[str, Any] = {}
     windows_job: _WindowsJob | None = None
+    linux_cgroup: _LinuxCgroup | None = None
     if os.name == "posix":
         child_options["start_new_session"] = True
+        if sys.platform == "darwin":
+            if not MACOS_SANDBOX_EXECUTABLE.is_file():
+                return publish_failure(
+                    "macOS compute fork containment is unavailable; approved code was not run."
+                )
+        elif sys.platform.startswith("linux"):
+            try:
+                linux_cgroup = _LinuxCgroup.create(str(metadata.get("job_id") or ""))
+            except ComputeJobError:
+                return publish_failure(
+                    "Linux cgroup v2 containment is unavailable; approved code was not run."
+                )
+        else:
+            return publish_failure(
+                "This POSIX host lacks an approved process-tree containment boundary."
+            )
     elif os.name == "nt":
         child_options["creationflags"] = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -1850,10 +2733,24 @@ def _worker_main(arguments: list[str]) -> int:
     except OSError:
         if windows_job is not None:
             windows_job.close()
-        return publish_failure("Approved compute child could not be started.")
+        containment_cleared = True
+        if linux_cgroup is not None:
+            try:
+                containment_cleared, _detected = linux_cgroup.terminate_and_remove(
+                    timeout=0.5,
+                )
+            except ComputeJobError:
+                containment_cleared = False
+        return publish_failure(
+            "Approved compute child could not be started.",
+            containment_cleared=containment_cleared,
+        )
+
+    posix_marker_descendants_detected = False
 
     def clear_child_containment(timeout: float) -> bool:
         """Terminate the child container and prove that it no longer has members."""
+        nonlocal posix_marker_descendants_detected
         if windows_job is not None:
             try:
                 if windows_job.active_processes() > 0:
@@ -1862,7 +2759,41 @@ def _worker_main(arguments: list[str]) -> int:
             except OSError:
                 return False
         if os.name == "posix":
-            return _terminate_posix_process_group(child.pid, timeout=timeout)
+            cgroup_cleared = True
+            cgroup_processes_detected = False
+            if linux_cgroup is not None:
+                try:
+                    cgroup_cleared, cgroup_processes_detected = (
+                        linux_cgroup.terminate_and_remove(timeout=timeout)
+                    )
+                except ComputeJobError:
+                    cgroup_cleared = False
+                posix_marker_descendants_detected = (
+                    posix_marker_descendants_detected or cgroup_processes_detected
+                )
+            process_group_cleared = _terminate_posix_process_group(
+                child.pid,
+                timeout=timeout,
+                reap_process=child.poll,
+            )
+            try:
+                marker_processes_cleared, marker_processes_detected = (
+                    _terminate_posix_job_marker_processes(
+                        str(metadata.get("job_id") or ""),
+                        exclude_pids=frozenset({os.getpid()}),
+                        timeout=timeout,
+                    )
+                )
+            except ComputeJobError:
+                return False
+            posix_marker_descendants_detected = (
+                posix_marker_descendants_detected or marker_processes_detected
+            )
+            return (
+                cgroup_cleared
+                and process_group_cleared
+                and marker_processes_cleared
+            )
         return child.poll() is not None
 
     try:
@@ -1882,6 +2813,15 @@ def _worker_main(arguments: list[str]) -> int:
                 "Approved compute child identity could not be verified.",
                 containment_cleared=containment_cleared,
             )
+        if linux_cgroup is not None:
+            try:
+                linux_cgroup.assign(child.pid, child_identity)
+            except ComputeJobError:
+                containment_cleared = clear_child_containment(2.0)
+                return publish_failure(
+                    "Approved compute child could not enter Linux cgroup containment.",
+                    containment_cleared=containment_cleared,
+                )
         child_registered = False
 
         def register_child(current: dict[str, Any]) -> dict[str, Any] | None:
@@ -1901,6 +2841,9 @@ def _worker_main(arguments: list[str]) -> int:
             current["child_pid"] = child.pid
             current["child_process_identity"] = child_identity
             current["child_process_group"] = child.pid
+            current["child_cgroup"] = (
+                str(linux_cgroup.path) if linux_cgroup is not None else ""
+            )
             current["updated_at"] = _utc_now()
             child_registered = True
             return current
@@ -1917,7 +2860,11 @@ def _worker_main(arguments: list[str]) -> int:
 
         output_queue: Queue[bytes | None] = Queue(maxsize=8)
         if child.stdout is None:
-            return publish_failure("Approved compute child output could not be captured.")
+            containment_cleared = clear_child_containment(2.0)
+            return publish_failure(
+                "Approved compute child output could not be captured.",
+                containment_cleared=containment_cleared,
+            )
         output_reader = Thread(
             target=_read_process_output,
             args=(child.stdout, output_queue),
@@ -1929,7 +2876,13 @@ def _worker_main(arguments: list[str]) -> int:
         started = time.monotonic()
         timed_out = False
         interrupted = False
+        stop_committed = False
+        descendants_detected = posix_marker_descendants_detected
+        containment_cleared = True
+        containment_attempted = False
         reader_finished = False
+        pipe_close_deadline: float | None = None
+        last_state_check = 0.0
         while True:
             while True:
                 try:
@@ -1940,44 +2893,90 @@ def _worker_main(arguments: list[str]) -> int:
                     reader_finished = True
                     break
                 _bounded_log_append(log_path, chunk)
-            if stop_requested.is_set() and child.poll() is None:
+            now = time.monotonic()
+            if now - last_state_check >= 0.1:
+                current = _validate_compute_job_metadata(
+                    _read_json_object(
+                        metadata_path,
+                        maximum_bytes=MAX_METADATA_BYTES,
+                    ),
+                    expected_job_id=metadata_path.parent.name,
+                )
+                if current.get("state") == "stopping":
+                    stop_committed = True
+                elif current.get("state") != "running":
+                    raise ComputeJobError(
+                        "Compute-job state changed outside the worker lifecycle."
+                    )
+                if (
+                    int(current.get("pid") or 0) != os.getpid()
+                    or not _identity_matches(
+                        os.getpid(),
+                        current.get("process_identity"),
+                    )
+                ):
+                    raise ComputeJobError(
+                        "Compute wrapper ownership changed while the child was active."
+                    )
+                last_state_check = now
+            if stop_requested.is_set():
                 interrupted = True
-                if windows_job is not None:
-                    windows_job.terminate()
-                elif os.name == "posix":
-                    _terminate_posix_process_group(child.pid, timeout=2.0)
-            if time.monotonic() - started >= max_runtime and child.poll() is None:
+            if now - started >= max_runtime:
                 timed_out = True
+            direct_exit_status = child.poll()
+            containment_active = False
+            if direct_exit_status is not None and not containment_attempted:
                 if windows_job is not None:
-                    windows_job.terminate()
+                    containment_active = windows_job.active_processes() > 0
                 elif os.name == "posix":
-                    _terminate_posix_process_group(child.pid, timeout=2.0)
-            if child.poll() is not None and reader_finished:
+                    containment_active = _posix_process_group_exists(child.pid)
+                if containment_active:
+                    descendants_detected = True
+            if (
+                (stop_committed or interrupted or timed_out or containment_active)
+                and not containment_attempted
+            ):
+                containment_attempted = True
+                containment_cleared = clear_child_containment(2.0)
+                pipe_close_deadline = time.monotonic() + 2.0
+                if not containment_cleared:
+                    break
+            if direct_exit_status is not None and pipe_close_deadline is None:
+                pipe_close_deadline = time.monotonic() + 2.0
+            if direct_exit_status is not None and reader_finished:
+                break
+            if (
+                direct_exit_status is not None
+                and pipe_close_deadline is not None
+                and time.monotonic() >= pipe_close_deadline
+            ):
+                containment_cleared = False
                 break
             time.sleep(0.05)
-        exit_status = child.wait()
+        exit_status = child.poll()
+        if exit_status is None and containment_cleared:
+            try:
+                exit_status = child.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                containment_cleared = False
+        if exit_status is None:
+            exit_status = 70
         output_reader.join(timeout=2.0)
-        descendants_detected = False
-        containment_cleared = True
-        if windows_job is not None:
-            descendants_detected = windows_job.active_processes() > 0
-            if descendants_detected:
-                windows_job.terminate()
-                containment_cleared = windows_job.wait_empty(5.0)
-        elif os.name == "posix":
-            descendants_detected = _posix_process_group_exists(child.pid)
-            if descendants_detected:
-                containment_cleared = _terminate_posix_process_group(
-                    child.pid,
-                    timeout=2.0,
-                )
+        if containment_cleared and os.name == "posix":
+            containment_cleared = clear_child_containment(2.0)
+            descendants_detected = (
+                descendants_detected or posix_marker_descendants_detected
+            )
         if not containment_cleared:
-            return exit_status or 70
+            return publish_failure(
+                "Compute child containment could not be proved empty; writer admission remains "
+                "blocked.",
+                containment_cleared=False,
+            )
 
         def finish(current: dict[str, Any]) -> dict[str, Any] | None:
-            if current.get("state") == "stopping":
-                return None
-            if current.get("state") != "running":
+            state = current.get("state")
+            if state not in {"running", "stopping"}:
                 return None
             if (
                 int(current.get("pid") or 0) != os.getpid()
@@ -1991,29 +2990,38 @@ def _worker_main(arguments: list[str]) -> int:
                 )
             current["exit_status"] = exit_status
             current["state"] = (
-                "succeeded"
-                if exit_status == 0
-                and not timed_out
-                and not interrupted
-                and not descendants_detected
-                else ("interrupted" if interrupted else "failed")
+                "stopped"
+                if state == "stopping"
+                else (
+                    "succeeded"
+                    if exit_status == 0
+                    and not timed_out
+                    and not interrupted
+                    and not descendants_detected
+                    else ("interrupted" if interrupted else "failed")
+                )
             )
             current["updated_at"] = _utc_now()
             current["ended_at"] = current["updated_at"]
+            current["containment_cleared_at"] = current["updated_at"]
             current["message"] = (
-                "Compute job exceeded its approved runtime limit."
-                if timed_out
+                "Compute job was stopped with its owned process tree."
+                if state == "stopping"
                 else (
-                    "Compute job left descendant processes; they were terminated before the "
-                    "workspace lease was released."
-                    if descendants_detected
+                    "Compute job exceeded its approved runtime limit."
+                    if timed_out
                     else (
-                        "Compute job was interrupted and its process tree was cleared."
-                        if interrupted
+                        "Compute job left descendant processes; they were terminated before the "
+                        "workspace lease was released."
+                        if descendants_detected
                         else (
-                            "Compute job completed."
-                            if exit_status == 0
-                            else "Compute job exited with a failure status."
+                            "Compute job was interrupted and its process tree was cleared."
+                            if interrupted
+                            else (
+                                "Compute job completed."
+                                if exit_status == 0
+                                else "Compute job exited with a failure status."
+                            )
                         )
                     )
                 )
@@ -2023,15 +3031,11 @@ def _worker_main(arguments: list[str]) -> int:
         _update_metadata_file(metadata_path, finish)
         return exit_status
     except (ComputeJobError, OSError, RuntimeError, ValueError):
-        if os.name == "posix":
-            _terminate_posix_process_group(child.pid, timeout=2.0)
-        elif windows_job is not None:
-            try:
-                windows_job.terminate()
-                windows_job.wait_empty(2.0)
-            except OSError:
-                pass
-        return publish_failure("Compute worker failed before terminal publication.")
+        containment_cleared = clear_child_containment(2.0)
+        return publish_failure(
+            "Compute worker failed before terminal publication.",
+            containment_cleared=containment_cleared,
+        )
     finally:
         try:
             ready_path.unlink(missing_ok=True)

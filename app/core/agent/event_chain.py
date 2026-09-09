@@ -1,6 +1,6 @@
 """Durable, bounded event chains for one Web Agent run.
 
-Code version: v1.3.1-codex.1
+Code version: v1.4.1-codex.1
 """
 
 from __future__ import annotations
@@ -172,6 +172,7 @@ def summarize_observation(observation: dict[str, Any] | None) -> dict[str, Any]:
         summary["output_chars"] = len(observation["output"])
     for key in (
         "path",
+        "recovery_path",
         "changed_characters",
         "bytes",
         "deleted_bytes",
@@ -321,7 +322,7 @@ class AgentEventChain:
                 for line in lines
                 if line.strip()
             ]
-            self._validate_chain(self._events)
+            self._validate_chain(self._events, expected_run_id=self.run_id)
         except (json.JSONDecodeError, EventChainError) as exc:
             self._state = "invalid"
             self._error = _bounded_text(exc)
@@ -335,9 +336,15 @@ class AgentEventChain:
             self._next_action_number = max(action_numbers) + 1
 
     @staticmethod
-    def _validate_chain(events: list[AgentEvent]) -> None:
+    def _validate_chain(
+        events: list[AgentEvent],
+        *,
+        expected_run_id: str,
+    ) -> None:
         if not events:
             return
+        if events[0].run_id != expected_run_id:
+            raise EventChainError("event records do not match the requested run")
         seen_events: set[str] = set()
         requested: dict[str, AgentEvent] = {}
         observed: set[str] = set()
@@ -470,7 +477,7 @@ class AgentEventChain:
             )
             candidate_events = [*self._events, event]
             try:
-                self._validate_chain(candidate_events)
+                self._validate_chain(candidate_events, expected_run_id=self.run_id)
             except EventChainError:
                 self._state = "invalid"
                 self._error = "new event would break the ordered chain"

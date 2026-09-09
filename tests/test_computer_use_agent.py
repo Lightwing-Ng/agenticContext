@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.60.1-codex.1
+Code version: v3.63.0-codex.1
 """
 
 from __future__ import annotations
@@ -4216,6 +4216,35 @@ def test_atomic_settings_fsync_failure_preserves_the_previous_file(
     assert list(tmp_path.glob(".computer-use-agent.json.*.tmp")) == []
 
 
+def test_atomic_settings_fsyncs_parent_after_replacing_the_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    settings_path = tmp_path / "computer-use-agent.json"
+    operations: list[tuple[str, Path]] = []
+    original_replace = computer_use_agent.os.replace
+
+    def record_replace(source: object, destination: object) -> None:
+        original_replace(source, destination)
+        operations.append(("replace", Path(destination)))
+
+    monkeypatch.setattr(computer_use_agent.os, "replace", record_replace)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_fsync_directory_path",
+        lambda directory: operations.append(("directory_fsync", Path(directory))),
+    )
+
+    save_computer_use_settings(ComputerUseSettings(), settings_path)
+
+    assert operations == [
+        ("replace", settings_path),
+        ("directory_fsync", tmp_path),
+    ]
+
+
 LEGACY_MACOS_SYSTEM_PROMPT = (
     "You are the reasoning component of a local Computer Use coding agent.\n"
     "The controller runs on macOS and owns one selected project.\n"
@@ -6460,6 +6489,122 @@ def test_provider_progress_status_is_not_treated_as_a_controller_response() -> N
         stable_since=10,
         now=20,
     )
+
+
+def test_windows_controller_fences_root_before_admission_identity_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    original = tmp_path / "project-original"
+    admitted_metadata = workspace.stat()
+    admitted_identity = (
+        int(admitted_metadata.st_dev),
+        int(admitted_metadata.st_ino),
+    )
+    root_handle = object()
+    closed_handles: list[object] = []
+
+    def open_guarded_root(
+        directory: Path,
+        *,
+        deny_delete: bool,
+    ) -> tuple[object, tuple[int, int]]:
+        assert directory == workspace.resolve()
+        assert deny_delete is True
+        workspace.rename(original)
+        workspace.mkdir()
+        return root_handle, (900, 901)
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_uses_windows_directory_handles",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_open_windows_directory_identity",
+        open_guarded_root,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_close_windows_directory_handle",
+        closed_handles.append,
+    )
+
+    with pytest.raises(RuntimeError, match="identity changed after admission"):
+        WorkspaceController(
+            workspace,
+            ComputerUseSettings(workspace_path=str(workspace)),
+            lambda: False,
+            expected_workspace_identity=admitted_identity,
+        )
+
+    assert closed_handles == [root_handle]
+    assert original.is_dir()
+    assert workspace.is_dir()
+
+
+def test_windows_controller_rejects_root_rebound_during_native_identity_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    original = tmp_path / "project-original"
+    admitted_metadata = workspace.stat()
+    admitted_identity = (
+        int(admitted_metadata.st_dev),
+        int(admitted_metadata.st_ino),
+    )
+    root_handle = object()
+    closed_handles: list[object] = []
+
+    def read_rebound_identity(_directory: Path) -> tuple[int, int]:
+        workspace.rename(original)
+        workspace.mkdir()
+        return 902, 903
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_uses_windows_directory_handles",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_open_windows_directory_identity",
+        lambda _directory, *, deny_delete: (
+            root_handle,
+            (900, 901),
+        ),
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_windows_directory_identity",
+        read_rebound_identity,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_close_windows_directory_handle",
+        closed_handles.append,
+    )
+
+    with pytest.raises(RuntimeError, match="Windows root handle was acquired"):
+        WorkspaceController(
+            workspace,
+            ComputerUseSettings(workspace_path=str(workspace)),
+            lambda: False,
+            expected_workspace_identity=admitted_identity,
+        )
+
+    assert closed_handles == [root_handle]
+    assert original.is_dir()
+    assert workspace.is_dir()
 
 
 def test_action_loop_does_not_spend_the_turn_budget_on_one_format_retry(
@@ -9739,6 +9884,514 @@ def test_workspace_replace_preserves_a_concurrent_user_edit(
     assert "changed before replacement" in result["error"]
     assert target.read_text(encoding="utf-8") == "user edit wins\n"
     assert controller.state.edit_generation == 1
+
+
+def test_workspace_replace_preserves_a_late_edit_through_the_old_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+        pytest.skip("Anchored mutation descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("controller source\n", encoding="utf-8")
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    old_descriptor = os.open(target, os.O_WRONLY)
+    original_snapshot = controller._current_file_sha256
+    replacement = b"controller replacement\n"
+    late_edit = b"late user edit through old descriptor\n"
+    wrote_late_edit = False
+
+    def write_after_replacement_verification(
+        path: Path,
+    ) -> tuple[str, int, tuple[int, int, int, int, int]]:
+        nonlocal wrote_late_edit
+        snapshot = original_snapshot(path)
+        if (
+            not wrote_late_edit
+            and path == target
+            and snapshot[0] == hashlib.sha256(replacement).hexdigest()
+        ):
+            wrote_late_edit = True
+            os.lseek(old_descriptor, 0, os.SEEK_SET)
+            os.ftruncate(old_descriptor, 0)
+            os.write(old_descriptor, late_edit)
+            os.fsync(old_descriptor)
+        return snapshot
+
+    monkeypatch.setattr(
+        controller,
+        "_current_file_sha256",
+        write_after_replacement_verification,
+    )
+    try:
+        result = controller.execute(
+            {
+                "action": "replace",
+                "path": "target.txt",
+                "old": "controller source",
+                "new": "controller replacement",
+            }
+        )
+    finally:
+        os.close(old_descriptor)
+
+    assert wrote_late_edit is True
+    assert result["ok"] is False
+    assert "prior version was preserved" in result["error"]
+    assert target.read_bytes() == replacement
+    backups = list(workspace.glob(".target.txt.agent-backup-*.tmp"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == late_edit
+
+
+def test_workspace_replace_retains_recovery_after_the_final_backup_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+        pytest.skip("Anchored mutation descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("controller source\n", encoding="utf-8")
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    old_descriptor = os.open(target, os.O_WRONLY)
+    original_hash = controller._hash_anchored_file
+    late_edit = b"late user edit after final backup check\n"
+    backup_checks = 0
+
+    def write_after_final_backup_check(
+        directory_fd: int,
+        leaf_name: str,
+    ) -> tuple[str, int, tuple[int, int, int, int, int], int]:
+        nonlocal backup_checks
+        snapshot = original_hash(directory_fd, leaf_name)
+        if ".agent-backup-" in leaf_name:
+            backup_checks += 1
+            if backup_checks == 2:
+                os.lseek(old_descriptor, 0, os.SEEK_SET)
+                os.ftruncate(old_descriptor, 0)
+                os.write(old_descriptor, late_edit)
+                os.fsync(old_descriptor)
+        return snapshot
+
+    monkeypatch.setattr(
+        controller,
+        "_hash_anchored_file",
+        write_after_final_backup_check,
+    )
+    try:
+        result = controller.execute(
+            {
+                "action": "replace",
+                "path": "target.txt",
+                "old": "controller source",
+                "new": "controller replacement",
+            }
+        )
+    finally:
+        os.close(old_descriptor)
+
+    assert result["ok"] is True
+    assert backup_checks == 2
+    recovery_path = workspace / result["recovery_path"]
+    assert recovery_path.read_bytes() == late_edit
+    assert target.read_text(encoding="utf-8") == "controller replacement\n"
+    listed = controller.execute({"action": "list", "path": ".", "depth": 1})
+    protected_read = controller.execute(
+        {"action": "read", "path": result["recovery_path"]}
+    )
+    assert result["recovery_path"] not in listed["entries"]
+    assert protected_read["ok"] is False
+    assert "internal recovery" in protected_read["error"]
+    search_result = controller.execute(
+        {"action": "search", "query": "late user edit after final backup check", "path": "."}
+    )
+    run_result = controller.execute(
+        {
+            "action": "run",
+            "command": f"python3 -m py_compile {result['recovery_path']}",
+        }
+    )
+    context_path, _context_bytes = build_context_markdown(
+        workspace,
+        "Inspect the project.",
+        ComputerUseSettings(workspace_path=str(workspace)),
+        tmp_path / "context.md",
+    )
+    before_fingerprint = computer_use_agent._workspace_mutation_fingerprint(workspace)
+    recovery_path.write_bytes(b"later recovery-only bytes\n")
+    after_fingerprint = computer_use_agent._workspace_mutation_fingerprint(workspace)
+    assert search_result["matches"] == []
+    assert run_result["ok"] is False
+    assert "internal Agent metadata" in run_result["error"]
+    assert result["recovery_path"] not in context_path.read_text(encoding="utf-8")
+    assert computer_use_agent._safe_untracked_paths_from_status(
+        f"?? {json.dumps(result['recovery_path'])}"
+    ) == []
+    assert before_fingerprint == after_fingerprint
+
+
+def test_path_guarded_replace_preserves_an_edit_at_the_rename_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("controller source\n", encoding="utf-8")
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    original_rename = os.rename
+    raced = False
+
+    def edit_before_quarantine(source: object, destination: object) -> None:
+        nonlocal raced
+        if Path(source) == target and ".agent-backup-" in Path(destination).name:
+            raced = True
+            target.write_text("user edit wins\n", encoding="utf-8")
+        original_rename(source, destination)
+
+    monkeypatch.setattr(os, "rename", edit_before_quarantine)
+
+    with pytest.raises(RuntimeError, match="commit boundary"):
+        controller._replace_text_file_path_guarded(
+            Path("target.txt"),
+            "controller source",
+            "controller replacement",
+        )
+
+    assert raced is True
+    assert target.read_text(encoding="utf-8") == "user edit wins\n"
+    assert list(workspace.glob(".target.txt.agent-backup-*.tmp")) == []
+
+
+def test_path_guarded_replace_preserves_a_late_edit_through_the_old_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("controller source\n", encoding="utf-8")
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    old_descriptor = os.open(target, os.O_WRONLY)
+    original_snapshot = controller._current_file_sha256
+    replacement = b"controller replacement\n"
+    late_edit = b"late user edit through old descriptor\n"
+    wrote_late_edit = False
+
+    def write_after_replacement_verification(
+        path: Path,
+    ) -> tuple[str, int, tuple[int, int, int, int, int]]:
+        nonlocal wrote_late_edit
+        snapshot = original_snapshot(path)
+        if (
+            not wrote_late_edit
+            and path == target
+            and snapshot[0] == hashlib.sha256(replacement).hexdigest()
+        ):
+            wrote_late_edit = True
+            os.lseek(old_descriptor, 0, os.SEEK_SET)
+            os.ftruncate(old_descriptor, 0)
+            os.write(old_descriptor, late_edit)
+            os.fsync(old_descriptor)
+        return snapshot
+
+    monkeypatch.setattr(
+        controller,
+        "_current_file_sha256",
+        write_after_replacement_verification,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="prior version was preserved"):
+            controller._replace_text_file_path_guarded(
+                Path("target.txt"),
+                "controller source",
+                "controller replacement",
+            )
+    finally:
+        os.close(old_descriptor)
+
+    assert wrote_late_edit is True
+    assert target.read_bytes() == replacement
+    backups = list(workspace.glob(".target.txt.agent-backup-*.tmp"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == late_edit
+
+
+def test_path_guarded_replace_retains_recovery_after_the_final_backup_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("controller source\n", encoding="utf-8")
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    old_descriptor = os.open(target, os.O_WRONLY)
+    original_snapshot = controller._current_file_sha256
+    late_edit = b"late user edit after final backup check\n"
+    backup_checks = 0
+
+    def write_after_final_backup_check(
+        path: Path,
+    ) -> tuple[str, int, tuple[int, int, int, int, int]]:
+        nonlocal backup_checks
+        snapshot = original_snapshot(path)
+        if ".agent-backup-" in path.name:
+            backup_checks += 1
+            if backup_checks == 2:
+                os.lseek(old_descriptor, 0, os.SEEK_SET)
+                os.ftruncate(old_descriptor, 0)
+                os.write(old_descriptor, late_edit)
+                os.fsync(old_descriptor)
+        return snapshot
+
+    monkeypatch.setattr(
+        controller,
+        "_current_file_sha256",
+        write_after_final_backup_check,
+    )
+    try:
+        recovery_path = controller._replace_text_file_path_guarded(
+            Path("target.txt"),
+            "controller source",
+            "controller replacement",
+        )
+    finally:
+        os.close(old_descriptor)
+
+    assert backup_checks == 2
+    assert (workspace / recovery_path).read_bytes() == late_edit
+    assert target.read_text(encoding="utf-8") == "controller replacement\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="This contract covers non-Windows fallback hosts.")
+def test_unanchored_non_windows_write_fails_before_a_parent_rebind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    workspace = tmp_path / "project"
+    nested = workspace / "nested"
+    outside = tmp_path / "outside"
+    nested.mkdir(parents=True)
+    outside.mkdir()
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    monkeypatch.setattr(computer_use_agent, "_ANCHORED_MUTATION_SUPPORTED", False)
+    original_resolve = controller._resolve_path
+    resolve_calls = 0
+
+    def rebind_after_initial_resolution(
+        raw_path: object,
+        *,
+        allow_missing: bool = False,
+    ) -> Path:
+        nonlocal resolve_calls
+        resolve_calls += 1
+        resolved = original_resolve(raw_path, allow_missing=allow_missing)
+        if resolve_calls == 2:
+            nested.rmdir()
+            nested.symlink_to(outside, target_is_directory=True)
+        return resolved
+
+    monkeypatch.setattr(controller, "_resolve_path", rebind_after_initial_resolution)
+    result = controller.execute(
+        {"action": "write", "path": "nested/new.txt", "content": "controller\n"}
+    )
+
+    assert result["ok"] is False
+    assert "Safe workspace creation is unavailable" in result["error"]
+    assert not (outside / "new.txt").exists()
+
+
+def test_workspace_write_removes_its_partial_file_after_a_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+        pytest.skip("Anchored mutation descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "partial.txt"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+
+    def fail_after_partial_write(descriptor: int, _content: bytes) -> None:
+        os.write(descriptor, b"partial")
+        os.fsync(descriptor)
+        raise OSError("injected write failure")
+
+    monkeypatch.setattr(controller, "_write_descriptor", fail_after_partial_write)
+    result = controller.execute(
+        {"action": "write", "path": "partial.txt", "content": "complete\n"}
+    )
+
+    assert result["ok"] is False
+    assert "injected write failure" in result["error"]
+    assert not target.exists()
+    assert list(workspace.glob(".partial.txt.agent-cleanup-*.tmp")) == []
+
+
+def test_workspace_write_preserves_a_replacement_after_partial_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+        pytest.skip("Anchored mutation descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "partial.txt"
+    displaced = workspace / "controller-partial.txt"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+
+    def replace_after_partial_write(descriptor: int, _content: bytes) -> None:
+        os.write(descriptor, b"partial")
+        os.fsync(descriptor)
+        target.rename(displaced)
+        target.write_text("user replacement\n", encoding="utf-8")
+        raise OSError("injected write failure")
+
+    monkeypatch.setattr(controller, "_write_descriptor", replace_after_partial_write)
+    result = controller.execute(
+        {"action": "write", "path": "partial.txt", "content": "complete\n"}
+    )
+
+    assert result["ok"] is False
+    assert target.read_text(encoding="utf-8") == "user replacement\n"
+    assert displaced.read_bytes() == b"partial"
+    assert list(workspace.glob(".partial.txt.agent-cleanup-*.tmp")) == []
+
+
+def test_path_guarded_write_removes_its_file_after_fsync_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "guarded.txt"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        os,
+        "fsync",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("injected fsync failure")),
+    )
+
+    with pytest.raises(OSError, match="injected fsync failure"):
+        controller._write_new_file_path_guarded(Path("guarded.txt"), b"complete\n")
+
+    assert not target.exists()
+    assert list(workspace.glob(".guarded.txt.agent-cleanup-*.tmp")) == []
+
+
+def test_path_guarded_write_preserves_replacement_after_fsync_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "guarded.txt"
+    displaced = workspace / "controller-created.txt"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    original_rename = Path.rename
+    raced = False
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("injected fsync failure")
+
+    def replace_before_cleanup(source: Path, destination: Path) -> Path:
+        nonlocal raced
+        if source == target and ".agent-cleanup-" in destination.name and not raced:
+            raced = True
+            original_rename(source, displaced)
+            target.write_text("user replacement\n", encoding="utf-8")
+        return original_rename(source, destination)
+
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    monkeypatch.setattr(Path, "rename", replace_before_cleanup)
+
+    with pytest.raises(OSError, match="injected fsync failure"):
+        controller._write_new_file_path_guarded(Path("guarded.txt"), b"complete\n")
+
+    assert raced is True
+    assert target.read_text(encoding="utf-8") == "user replacement\n"
+    assert displaced.read_bytes() == b"complete\n"
+    assert list(workspace.glob(".guarded.txt.agent-cleanup-*.tmp")) == []
+
+
+def test_path_guarded_write_cleans_up_after_final_validation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "guarded.txt"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_current_file_snapshot",
+        lambda _path: (_ for _ in ()).throw(OSError("injected validation failure")),
+    )
+
+    with pytest.raises(OSError, match="injected validation failure"):
+        controller._write_new_file_path_guarded(Path("guarded.txt"), b"complete\n")
+
+    assert not target.exists()
+    assert list(workspace.glob(".guarded.txt.agent-cleanup-*.tmp")) == []
 
 
 def test_workspace_write_uses_exclusive_creation_under_a_race(

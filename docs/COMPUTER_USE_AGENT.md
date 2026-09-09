@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.63.0-codex.1`
+Documentation version: `v3.66.0-codex.1`
 
 ## Purpose
 
@@ -399,12 +399,17 @@ complete directory into the durable job catalog. The worker revalidates both con
 snapshots and runs the entrypoint snapshot with the current Python interpreter and fixed optimizer
 protocol. Replacing the live source after approval cannot redirect that job to different entrypoint
 bytes. A changed source digest, absolute path, traversal, linked path, non-JSON config, incomplete
-runtime publication, or a second active job fails closed. An idempotency key reused for the same
-request returns the existing job; reuse for different bytes or parameters is rejected.
+runtime publication, or a second active job fails closed. A persistent workspace-bucket lock spans
+reconciliation, the idempotency and active-job decisions, staging, publication, and both parent
+directory fsyncs. Concurrent callers with the same idempotency key therefore receive one published
+job; different keys cannot both pass the one-active-job boundary. An idempotency key reused for the
+same request returns the existing job; reuse for different bytes or parameters is rejected.
 On macOS, the fixed optimizer command runs through `/usr/bin/sandbox-exec` with all network
-operations denied. This converts the action-level ban on download commands into an operating-system
-network boundary for the approved worker as well. The Windows path does not currently apply an
-equivalent OS-level network-denying sandbox profile.
+operations and process forks denied. This converts the action-level ban on download commands into an
+operating-system network boundary and prevents a child from escaping its process group by creating a
+new session. macOS optimizers must use one process, though thread-level concurrency remains
+available. The Windows path does not currently apply an equivalent OS-level network-denying sandbox
+profile.
 
 Each job has an unpredictable 32-hex-character `job_id` and an external task-owned directory. Its
 atomic metadata contains a monotonic revision, state, wrapper and child PID birth identities,
@@ -434,8 +439,14 @@ after the registered child and its containment are also clear; otherwise writer 
 blocked. Stop first rechecks ownership, then clears the dedicated POSIX process group or Windows Job
 Object before publishing terminal state. A normal direct-child exit also checks for descendants;
 unexpected descendants are terminated and make the job fail rather than releasing the workspace
-lease early. Output uses a bounded reader thread rather than a platform-specific pipe selector. The
-default active-job limit is one per workspace.
+lease early. Linux opens the child gate only after moving its identity-verified PID into a newly
+created cgroup v2 that exposes readable membership and event state plus writable `cgroup.kill`; when
+that kernel boundary is unavailable, approved code is not executed. macOS instead requires the
+no-fork sandbox and proves the dedicated process group empty. A bounded `/proc` or sanitized absolute
+`ps` scan checks the inherited job marker for anomalies, but never substitutes for those platform
+receipts because child code may replace its environment. Scan timeout, excess output, unreadable
+ownership data, or ambiguous output fails closed. Output uses a bounded reader thread rather than a
+platform-specific pipe selector. The default active-job limit is one per workspace.
 Once a controller starts a job, it refuses `replace`, `replace_base64`, `write`, `write_base64`,
 `delete`, and verification `run` until the job becomes terminal. Read-only inspection and
 `bodycheck` remain available, and final may report the durable job ID and current bounded state.
@@ -516,11 +527,22 @@ actions.
   links. Replacement reads one stable identity, writes and fsyncs a unique same-directory file,
   then moves the current leaf to an unpredictable quarantine name. It publishes the replacement
   only after the quarantined identity and content still match the read source; a conflicting leaf is
-  preserved, and an indeterminate failure retains the displaced prior version for recovery. Failed
+  preserved, and an indeterminate failure retains the displaced prior version for recovery. A
+  successful replacement also retains that old inode under its unpredictable internal name and
+  returns the relative `recovery_path`. This is required because POSIX cannot prove that another
+  process will never write again through a descriptor opened before publication. Controller context,
+  Git status, fingerprints, `list`, `read`, `search`, and verification commands reserve these names,
+  so a later Web action cannot consume or alter the recovery copy. The user may review and remove
+  obsolete recovery copies directly after editors have released old file handles. Failed
   new-file verification uses the same quarantine-before-cleanup rule, so it does not unlink a leaf
-  that another process rebound first. The
-  Windows fallback repeats path, parent, identity, and content validation around exclusive creation
-  or atomic replacement because Python does not expose the same directory-relative primitives there.
+  that another process rebound first. On Windows, the controller opens the selected root with delete
+  sharing disabled before it compares the admission-time device/inode and adopts the native
+  volume/file-index identity. Each write or replacement then holds non-reparse directory handles for
+  the root and every existing parent below it. New files use exclusive creation. Replacement moves
+  the current leaf to an unpredictable quarantine name and publishes a same-directory temporary file
+  through an exclusive hard link, so a concurrent leaf is preserved instead of overwritten. Failed
+  creation cleans up only the identity it created. Replacement returns the same protected
+  `recovery_path` contract, including for an ambiguous prior version.
   `delete` accepts one regular, single-link file only after the same
   controller has returned its current SHA-256 through `read`; any intervening edit invalidates the
   receipt. On supported POSIX hosts, deletion opens every parent below the recorded workspace with
@@ -648,8 +670,9 @@ Former `text or regex` query fields are normalized even when their JSON whitespa
 authoritative literal-only instruction is added when absent. User-authored guidance outside
 generated protocol sections and unrelated settings remain intact. Settings are
 written through an owner-only, same-directory temporary file, flushed with `fsync`, and atomically
-replaced. A failed write preserves the complete previous file. Successful migrations are immediate
-and idempotent across later service starts.
+replaced. POSIX also fsyncs the parent directory after publication. A failed write preserves the
+complete previous file. Successful migrations are immediate and idempotent across later service
+starts.
 
 The selected provider's file-upload limit remains authoritative. ChatGPT documents a 512 MB hard
 file limit and a 2 million-token limit for text and document files; the application uses the lower
@@ -714,10 +737,13 @@ does not imply sign-in and does not add automatic login polling. Windows runtime
 workflow remains not locally verified.
 
 Independently of browser capacity, admission permits one write-capable Agent for any overlapping
-workspace roots. It resolves aliases and parent/child roots before deciding; read-only sessions may
-remain concurrent. A detached durable compute job also holds the write boundary for its selected
-workspace. This coordination does not change browser launch, profile selection, login handoff, tab
-reuse, or foreground-app restoration.
+workspace roots. It fixes the admitted root identity, passes that identity into the worker and
+controller before any context or browser opens, and refreshes each active root's current ancestor
+chain for later admission decisions. Unverifiable or rebound active roots block new writers. Resolved
+aliases, conservative lexical parent/child paths, and identity-based parent/child roots all
+participate; read-only sessions may remain concurrent. A detached durable compute job also holds the
+write boundary for its selected workspace. This coordination does not change browser launch, profile
+selection, login handoff, tab reuse, or foreground-app restoration.
 
 The Windows Agent session pool exposes one active slot because all providers in one Edge or Chrome
 debug browser share a rendered context. While that slot is active, live source, Project-session,
