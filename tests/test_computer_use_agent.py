@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.57.5-codex.1
+Code version: v3.58.0-codex.1
 """
 
 from __future__ import annotations
@@ -3484,51 +3484,97 @@ def test_open_browser_for_login_windows_uses_resolved_executable(
     tmp_path: Path,
     browser_name: str,
 ) -> None:
+    """On Windows the login handoff signs in through the project debug browser."""
     import app.core.computer_use_agent as computer_use_agent
+    from app.core.agent_debug_browser import DebugBrowserHandle
 
-    resolved_executable = str(tmp_path / "chrome.exe")
-    launched: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
     monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+
+    ensure_calls: list[str] = []
+
+    def fake_ensure_debug_browser(browser_id: str) -> DebugBrowserHandle:
+        ensure_calls.append(browser_id)
+        return DebugBrowserHandle(
+            browser_id=browser_id,
+            cdp_endpoint="http://127.0.0.1:9223",
+            user_data_dir=tmp_path / "debug-profile",
+        )
+
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.ensure_debug_browser",
+        fake_ensure_debug_browser,
+    )
+
+    navigated: list[str] = []
+    page = SimpleNamespace(
+        url="https://chatgpt.com/",
+        goto=lambda url, **_kwargs: navigated.append(url),
+    )
+    context = SimpleNamespace(pages=[page], new_page=lambda: page)
+    close_calls: list[bool] = []
+    browser = SimpleNamespace(
+        contexts=[context],
+        new_context=lambda: context,
+        close=lambda: close_calls.append(True),
+    )
+
+    class _SyncPlaywright:
+        def __enter__(self) -> "_SyncPlaywright":
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+        @property
+        def chromium(self) -> object:
+            return SimpleNamespace(connect_over_cdp=lambda _endpoint: browser)
+
     monkeypatch.setattr(
         computer_use_agent,
-        "resolve_windows_browser_executable",
-        lambda _browser: resolved_executable,
-    )
-    monkeypatch.setattr(
-        computer_use_agent.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0x200,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        computer_use_agent.subprocess,
-        "DETACHED_PROCESS",
-        0x8,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        computer_use_agent.subprocess,
-        "Popen",
-        lambda command, **options: launched.append((command, options)),
+        "sync_playwright_or_error",
+        lambda: _SyncPlaywright(),
     )
 
     config = CrawlConfig(
         chrome_user_data_dir=tmp_path / "Custom Chrome data",
         chrome_profile_directory="Profile 2",
     )
-    descriptor = computer_use_agent.browser_descriptors(config)[browser_name]
     result = open_browser_for_login("chatgpt", browser_name, config=config)
 
+    assert ensure_calls == [browser_name]
     assert result["opened"] is True
-    assert result["background"] is False
-    assert launched[0][0] == [
-        resolved_executable,
-        f"--user-data-dir={descriptor.user_data_dir}",
-        f"--profile-directory={descriptor.profile_directory}",
+    assert result["browser"] == browser_name
+    assert result["debug_browser"] is True
+    assert navigated == ["https://chatgpt.com/"]
+    assert close_calls == [True]
+
+
+def test_open_browser_for_login_macos_preserves_standard_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Windows debug-browser route must not replace the macOS login handoff."""
+    from unittest.mock import Mock
+
+    import app.core.computer_use_agent as computer_use_agent
+
+    expected = {"opened": True, "browser": "edge"}
+    handoff = Mock(return_value=expected)
+    config = CrawlConfig()
+    monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
+    monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", handoff)
+
+    result = open_browser_for_login("chatgpt", "edge", config=config)
+
+    assert result is expected
+    handoff.assert_called_once_with(
+        "chatgpt",
+        "edge",
         "https://chatgpt.com/",
-    ]
-    assert launched[0][1]["creationflags"] == 0x208
+        background=True,
+        config=config,
+    )
 
 
 def test_host_operating_system_detection_uses_supported_host_keys(monkeypatch: pytest.MonkeyPatch) -> None:

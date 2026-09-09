@@ -1,11 +1,12 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.7.2-codex.1
+Code version: v1.8.0-codex.1
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -764,6 +765,10 @@ def test_stale_chromium_profiles_are_removed_without_touching_other_temp_paths(
     assert unrelated_path.exists()
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("darwin"),
+    reason="Local State read-failure tolerance is a macOS-only behavior.",
+)
 def test_clone_browser_profile_continues_when_macos_blocks_local_state(tmp_path: Path) -> None:
     source_user_data_dir = tmp_path / "Edge"
     source_profile_dir = source_user_data_dir / "Default"
@@ -846,6 +851,418 @@ def test_clone_browser_profile_reports_windows_profile_permission_error(
     ):
         with pytest.raises(RuntimeError, match="Close any running Edge or Chrome windows"):
             clone_browser_profile(descriptor)
+
+
+def test_clone_browser_profile_reports_windows_running_browser_shutil_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A running-browser Cookie lock surfaces as a clear message, not a shutil.Error stack.
+
+    ``shutil.copytree`` aggregates per-file failures into a ``shutil.Error`` (an
+    ``OSError`` subclass that is not a ``PermissionError``), so the Windows branch
+    that guards the friendlier message must recognize that shape explicitly.
+    """
+    import shutil
+
+    source_user_data_dir = tmp_path / "Edge"
+    source_profile_dir = source_user_data_dir / "Default"
+    source_profile_dir.mkdir(parents=True)
+    locked_cookies = source_profile_dir / "Network" / "Cookies"
+    locked_cookies.parent.mkdir(parents=True, exist_ok=True)
+    locked_cookies.write_bytes(b"")
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=source_user_data_dir,
+        profile_directory="Default",
+        channel="msedge",
+    )
+
+    copy_error = shutil.Error([
+        (
+            str(locked_cookies),
+            str(tmp_path / "clone" / "Cookies"),
+            "[WinError 32] The process cannot access the file because it is being used by another process",
+        ),
+    ])
+
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    with patch("app.core.browser_sessions.shutil.copytree", side_effect=copy_error):
+        with pytest.raises(RuntimeError, match="keeps its sign-in cookies locked"):
+            clone_browser_profile(descriptor)
+
+
+def test_clone_browser_profile_preserves_macos_shutil_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Windows Cookie-lock adaptation must not alter the macOS copy path."""
+    import shutil
+
+    source_user_data_dir = tmp_path / "Edge"
+    source_profile_dir = source_user_data_dir / "Default"
+    source_profile_dir.mkdir(parents=True)
+    locked_cookies = source_profile_dir / "Network" / "Cookies"
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=source_user_data_dir,
+        profile_directory="Default",
+        channel="msedge",
+    )
+    copy_error = shutil.Error([
+        (
+            str(locked_cookies),
+            str(tmp_path / "clone" / "Cookies"),
+            "[WinError 32] The process cannot access the file because it is being used by another process",
+        ),
+    ])
+
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: False)
+    with patch("app.core.browser_sessions.shutil.copytree", side_effect=copy_error):
+        with pytest.raises(shutil.Error) as caught:
+            clone_browser_profile(descriptor)
+
+    assert caught.value is copy_error
+
+
+def test_clone_browser_profile_reraises_non_lock_shutil_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shutil.Error that is not a running-browser Cookie lock still surfaces directly."""
+    import shutil
+
+    source_user_data_dir = tmp_path / "Edge"
+    source_profile_dir = source_user_data_dir / "Default"
+    source_profile_dir.mkdir(parents=True)
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=source_user_data_dir,
+        profile_directory="Default",
+        channel="msedge",
+    )
+
+    copy_error = shutil.Error([
+        (
+            str(source_profile_dir / "Preferences"),
+            str(tmp_path / "clone" / "Preferences"),
+            "[Errno 5] Input/output error",
+        ),
+    ])
+
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    with patch("app.core.browser_sessions.shutil.copytree", side_effect=copy_error):
+        with pytest.raises(shutil.Error):
+            clone_browser_profile(descriptor)
+
+
+def test_launch_chromium_context_falls_back_to_cdp_attach_when_cookies_locked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A running-browser Cookie lock triggers the project debug browser over CDP."""
+    import shutil
+
+    import app.core.browser_sessions as browser_sessions
+    from app.core.agent_debug_browser import DebugBrowserHandle
+
+    source_user_data_dir = tmp_path / "Edge"
+    source_profile_dir = source_user_data_dir / "Default"
+    source_profile_dir.mkdir(parents=True)
+    locked_cookies = source_profile_dir / "Network" / "Cookies"
+    locked_cookies.parent.mkdir(parents=True, exist_ok=True)
+    locked_cookies.write_bytes(b"")
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=source_user_data_dir,
+        profile_directory="Default",
+        channel="msedge",
+    )
+
+    clone_error = shutil.Error([
+        (
+            str(locked_cookies),
+            str(tmp_path / "clone" / "Cookies"),
+            "[WinError 32] The process cannot access the file because it is being used by another process",
+        ),
+    ])
+    clone_runtime_error = RuntimeError("Edge keeps its sign-in cookies locked.")
+    clone_runtime_error.__cause__ = clone_error
+
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        browser_sessions,
+        "clone_browser_profile",
+        MagicMock(side_effect=clone_runtime_error),
+    )
+
+    attached_page = SimpleNamespace(url="https://chatgpt.com/")
+    attached_context = SimpleNamespace(pages=[attached_page], new_page=MagicMock())
+    browser_close = MagicMock()
+    attached_browser = SimpleNamespace(
+        contexts=[attached_context],
+        new_context=MagicMock(),
+        close=browser_close,
+    )
+
+    connect_calls: list[str] = []
+
+    class Chromium:
+        def connect_over_cdp(self, endpoint: str) -> object:
+            connect_calls.append(endpoint)
+            return attached_browser
+
+    playwright = SimpleNamespace(chromium=Chromium())
+
+    ensure_calls: list[str] = []
+
+    def fake_ensure_debug_browser(browser_id: str) -> DebugBrowserHandle:
+        ensure_calls.append(browser_id)
+        return DebugBrowserHandle(
+            browser_id=browser_id,
+            cdp_endpoint="http://127.0.0.1:9999",
+            user_data_dir=tmp_path / "debug-profile",
+        )
+
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.ensure_debug_browser",
+        fake_ensure_debug_browser,
+    )
+
+    with launch_chromium_context(
+        playwright,
+        descriptor,
+        headless=False,
+        clone_profile_first=True,
+        allow_cdp_attach=True,
+    ) as context:
+        assert ensure_calls == ["edge"]
+        assert connect_calls == ["http://127.0.0.1:9999"]
+        assert context.pages == [attached_page]
+
+    browser_close.assert_called_once()
+
+
+def test_launch_chromium_context_reuses_running_debug_browser_before_clone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A login handoff's live debug profile remains authoritative for later Windows work."""
+    import app.core.browser_sessions as browser_sessions
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "missing-daily-profile",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    attached_page = SimpleNamespace(url="https://chatgpt.com/")
+    attached_context = SimpleNamespace(pages=[attached_page], new_page=MagicMock())
+    browser_close = MagicMock()
+    attached_browser = SimpleNamespace(
+        contexts=[attached_context],
+        new_context=MagicMock(),
+        close=browser_close,
+    )
+    connect = MagicMock(return_value=attached_browser)
+    playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=connect))
+
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_login_url",
+        lambda browser_id: "http://127.0.0.1:42421" if browser_id == "edge" else None,
+    )
+    clone = MagicMock(side_effect=AssertionError("A running debug profile must be reused"))
+    monkeypatch.setattr(browser_sessions, "clone_browser_profile", clone)
+
+    with launch_chromium_context(
+        playwright,
+        descriptor,
+        headless=False,
+        clone_profile_first=True,
+    ) as context:
+        assert context.pages == [attached_page]
+
+    clone.assert_not_called()
+    connect.assert_called_once_with("http://127.0.0.1:42421")
+    browser_close.assert_called_once_with()
+
+
+def test_launch_chromium_context_reraises_non_lock_clone_error_without_cdp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-lock clone failure does not trigger the CDP attach fallback."""
+    import app.core.browser_sessions as browser_sessions
+
+    source_user_data_dir = tmp_path / "Edge"
+    source_profile_dir = source_user_data_dir / "Default"
+    source_profile_dir.mkdir(parents=True)
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=source_user_data_dir,
+        profile_directory="Default",
+        channel="msedge",
+    )
+
+    unrelated_error = RuntimeError("profile directory was not found")
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        browser_sessions,
+        "clone_browser_profile",
+        MagicMock(side_effect=unrelated_error),
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.ensure_debug_browser",
+        MagicMock(side_effect=AssertionError("CDP attach must not run for a non-lock failure")),
+    )
+
+    playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=MagicMock()))
+    with pytest.raises(RuntimeError, match="profile directory was not found"):
+        launch_chromium_context(
+            playwright,
+            descriptor,
+            headless=False,
+            clone_profile_first=True,
+            allow_cdp_attach=True,
+        )
+
+
+def test_launch_chromium_context_skips_cdp_attach_when_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disabling the CDP fallback surfaces the running-browser lock directly."""
+    import shutil
+
+    import app.core.browser_sessions as browser_sessions
+
+    source_user_data_dir = tmp_path / "Edge"
+    source_profile_dir = source_user_data_dir / "Default"
+    source_profile_dir.mkdir(parents=True)
+    locked_cookies = source_profile_dir / "Network" / "Cookies"
+    locked_cookies.parent.mkdir(parents=True, exist_ok=True)
+    locked_cookies.write_bytes(b"")
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=source_user_data_dir,
+        profile_directory="Default",
+        channel="msedge",
+    )
+
+    clone_error = shutil.Error([
+        (
+            str(locked_cookies),
+            str(tmp_path / "clone" / "Cookies"),
+            "[WinError 32] The process cannot access the file because it is being used by another process",
+        ),
+    ])
+    clone_runtime_error = RuntimeError("Edge keeps its sign-in cookies locked.")
+    clone_runtime_error.__cause__ = clone_error
+
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        browser_sessions,
+        "clone_browser_profile",
+        MagicMock(side_effect=clone_runtime_error),
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.ensure_debug_browser",
+        MagicMock(side_effect=AssertionError("CDP attach must not run when disabled")),
+    )
+
+    playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=MagicMock()))
+    with pytest.raises(RuntimeError, match="sign-in cookies locked"):
+        launch_chromium_context(
+            playwright,
+            descriptor,
+            headless=False,
+            clone_profile_first=True,
+            allow_cdp_attach=False,
+        )
+
+
+def test_ensure_debug_browser_reuses_recorded_port_when_alive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recorded port whose CDP endpoint answers is reused without relaunching."""
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "agent_browser_profile" / "edge"
+    profile_root.mkdir(parents=True)
+    (profile_root / "debug_port").write_text("42421", encoding="utf-8")
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr(adb, "_cdp_endpoint_alive", lambda port: port == 42421)
+
+    handle = adb.ensure_debug_browser("edge")
+    assert handle.browser_id == "edge"
+    assert handle.cdp_endpoint == "http://127.0.0.1:42421"
+    assert handle.user_data_dir == profile_root
+
+
+def test_ensure_debug_browser_launches_when_no_recorded_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing or dead recorded port triggers a fresh detached launch."""
+    import app.core.agent_debug_browser as adb
+
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr(adb, "_read_recorded_port", lambda _browser_id: None)
+    monkeypatch.setattr(
+        adb,
+        "_resolve_browser_executable",
+        lambda _browser_id: str(tmp_path / "msedge.exe"),
+    )
+    monkeypatch.setattr(adb, "_pick_free_port", lambda: 50123)
+
+    launched: dict[str, object] = {}
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            launched["called"] = True
+
+        def terminate(self) -> None:
+            launched["terminated"] = True
+
+    monkeypatch.setattr(adb, "_launch_debug_browser", lambda _bid, _exe, _port: FakeProcess())
+    monkeypatch.setattr(adb, "_wait_for_cdp_ready", lambda _port, _timeout: True)
+    monkeypatch.setattr(adb, "_record_port", lambda _bid, _port: None)
+
+    handle = adb.ensure_debug_browser("edge")
+    assert launched.get("called") is True
+    assert launched.get("terminated") is None
+    assert handle.cdp_endpoint == "http://127.0.0.1:50123"
 
 
 def test_safari_profile_link_detection_uses_the_rendered_navigation() -> None:

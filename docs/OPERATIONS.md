@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.9.7-codex.1`
+Documentation version: `v1.10.0-codex.1`
 
 ## Launch
 
@@ -63,15 +63,26 @@ to override it. A successful unlock is stored in the signed Flask session for th
   the previous foreground app; macOS decides Stage Manager grouping. Human verification reuses
   the same clone and retains the existing Resume gate. Automated execution never opens the user's
   original profile for writing. First-run, crash, notification, and repost prompts remain disabled.
-- Explicit login handoff opens the selected real browser visibly. Windows login and conversation
-  handoff use the resolved absolute executable with the same data root and profile as session
-  probes and tasks: Edge uses `Default`; Chrome uses the saved Chrome configuration. This explicit
-  user handoff allows the real browser to save login changes; automated probes/tasks write only
-  to their clone. Opening the page does not establish sign-in; the user must choose
-  Recheck. Native Windows 11 browser execution remains unverified on this macOS host.
+- Explicit login handoff opens the selected real browser visibly. macOS login and Windows
+  conversation handoff use the resolved absolute executable with the same data root and profile
+  as session probes and tasks: Edge uses `Default`; Chrome uses the saved Chrome configuration.
+  This explicit user handoff allows the real browser to save login changes; automated
+  probes/tasks write only to their clone. Opening the page does not establish sign-in; the user
+  must choose Recheck. Native Windows 11 browser execution remains unverified on this macOS host.
+- Windows login handoff targets the project-owned debug browser instead of the user's daily
+  profile. Because a running Edge or Chrome keeps its sign-in cookies under an exclusive OS
+  lock, the Agent reuses a separate Chromium instance launched with `--remote-debugging-port`
+  against a dedicated user-data directory under `local_store/agent_browser_profile/<browser>`.
+  The login handoff navigates that debug browser to the provider home so the authenticated
+  session lands in the debug profile the Agent reads over CDP. While that browser remains
+  reachable, subsequent checks and tasks reuse it before attempting a daily-profile clone.
+  The first sign-in on a fresh debug profile is the only manual login the user performs there.
 - Copying profile files and launching the clone do not prove provider authentication. The copy
   is not an atomic snapshot of a running browser. Check readiness in the clone; report copy or
   access errors without closing the user's browser or retrying against its writable profile.
+  On Windows, when the host browser holds its `Network/Cookies` lock, the launcher falls back to
+  the project-owned debug browser over CDP instead of failing the clone; no file is read from the
+  locked profile.
 - Normal task exit closes the isolated context and removes its temporary profile. Each subsequent
   Chromium launch also removes only abandoned `cachelikes-edge-*` or `cachelikes-chrome-*`
   directories older than 24 hours; unrelated temporary paths are not touched.
@@ -242,7 +253,10 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   used by the application. On Windows run `.\scripts\setup_python.ps1` or `py -3 -m playwright install chromium`.
 - Missing downloader: install the project requirements so `yt-dlp` is available to the selected
   supported interpreter.
-- Browser profile lock: close duplicate normal browser windows, then retry the session probe.
+- Browser profile lock: on Windows a running Edge or Chrome locks `Network/Cookies`, so the
+  Agent falls back to the project-owned debug browser over CDP and the first sign-in on that
+  debug profile is the only manual step. On macOS, close duplicate normal browser windows, then
+  retry the session probe.
 - ChatGPT parallel sync: the project workflow uses up to three isolated Edge contexts; lower the
   shared Download workers setting only when the machine cannot sustain that browser load.
 - ChatGPT Text history schema 3 keeps visible user prompts and completed final assistant replies.

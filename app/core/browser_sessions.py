@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.20.1-codex.1
+# Code version: v1.21.0-codex.1
 
 from __future__ import annotations
 
@@ -761,6 +761,44 @@ def _is_idempotent_chromium_context_close_error(error: Exception) -> bool:
     )
 
 
+def _is_browser_running_copy_error(error: BaseException) -> bool:
+    """Return whether a profile copy failed because the host browser holds its login cookies.
+
+    On Windows a running Chrome or Edge keeps ``Network/Cookies`` under an exclusive
+    SQLite lock, so ``shutil.copytree`` aggregates a ``WinError 32`` sharing
+    violation into a ``shutil.Error``. That error is an ``OSError`` subclass but not
+    a ``PermissionError``, so it bypasses the friendlier message below unless we
+    recognize it explicitly. We match on the locked file ending in ``Cookies`` to
+    avoid mistaking unrelated transient copy errors for a running-browser lock.
+    """
+    lock_markers = ("winerror 32", "being used by another process")
+
+    def message_indicates_lock(message: object) -> bool:
+        normalized = str(message or "").casefold()
+        return any(marker in normalized for marker in lock_markers)
+
+    def source_is_cookie_file(source: object) -> bool:
+        name = Path(str(source or "")).name.lower()
+        return name == "cookies"
+
+    if isinstance(error, shutil.Error):
+        failures = error.args[0] if error.args else []
+        for entry in failures:
+            try:
+                source, _destination, message = entry
+            except (TypeError, ValueError):
+                continue
+            if message_indicates_lock(message) and source_is_cookie_file(source):
+                return True
+        return False
+
+    if isinstance(error, PermissionError) and getattr(error, "winerror", None) == 32:
+        denied_path = getattr(error, "filename", None) or ""
+        return source_is_cookie_file(denied_path)
+
+    return False
+
+
 def select_provider_tab(
     context: Any,
     *,
@@ -818,6 +856,40 @@ def select_provider_tab(
     return chosen
 
 
+class _CdpAttachContext:
+    """Wrap a CDP-attached browser/context so callers can use it like a launch.
+
+    The underlying debug browser process is intentionally left running after the
+    context manager exits; closing only drops the Playwright CDP connection so
+    the next request can reattach to the same authenticated session.
+    """
+
+    def __init__(self, browser: Any, context: Any) -> None:
+        self._browser = browser
+        self._context = context
+
+    @property
+    def pages(self) -> Any:
+        return self._context.pages
+
+    def new_page(self, *args: Any, **kwargs: Any) -> Any:
+        return self._context.new_page(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._context, name)
+
+    def __enter__(self) -> "_CdpAttachContext":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        try:
+            self._browser.close()
+        except Exception as close_error:
+            if not _is_idempotent_chromium_context_close_error(close_error):
+                LOGGER.warning("Closing the CDP attach connection failed: %s", close_error)
+        return False
+
+
 def launch_chromium_context(
     playwright,
     descriptor: BrowserDescriptor,
@@ -826,13 +898,20 @@ def launch_chromium_context(
     background_window: bool = True,
     silent: bool = False,
     window_mode: str | None = None,
+    *,
+    allow_cdp_attach: bool = True,
 ):
-    """Launch an isolated Chromium-family browser with an explicit window mode."""
+    """Launch an isolated Chromium-family browser with an explicit window mode.
+
+    On Windows, when the host browser is running it keeps its sign-in cookies
+    under an exclusive lock, so cloning the profile cannot read them. When
+    ``allow_cdp_attach`` is true and that lock is detected, the launcher falls
+    back to a project-owned debug browser reached through CDP, which exposes the
+    live login state without touching the locked profile files.
+    """
     user_data_dir = descriptor.user_data_dir
     if user_data_dir is None:
         raise RuntimeError(f"{descriptor.label} does not expose a Chromium profile directory.")
-    if not user_data_dir.exists():
-        raise RuntimeError(f"{descriptor.label} user data directory was not found: {user_data_dir}")
 
     temp_profile_dir: tempfile.TemporaryDirectory[str] | None = None
     if window_mode is None:
@@ -887,8 +966,40 @@ def launch_chromium_context(
         )
         return any(marker in normalized_error for marker in retry_markers)
 
+    def attach_debug_browser(cdp_endpoint: str | None = None) -> Any:
+        """Attach to an existing or newly started project debug browser over CDP."""
+        from .agent_debug_browser import ensure_debug_browser
+
+        endpoint = cdp_endpoint or ensure_debug_browser(descriptor.browser_id).cdp_endpoint
+        browser = playwright.chromium.connect_over_cdp(endpoint)
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        return _CdpAttachContext(browser, context)
+
+    if allow_cdp_attach and is_windows_host():
+        from .agent_debug_browser import debug_browser_login_url
+
+        running_debug_endpoint = debug_browser_login_url(descriptor.browser_id)
+        if running_debug_endpoint:
+            LOGGER.info(
+                "Reusing the project debug %s over CDP.",
+                descriptor.label,
+            )
+            return attach_debug_browser(running_debug_endpoint)
+
+    if not user_data_dir.exists():
+        raise RuntimeError(f"{descriptor.label} user data directory was not found: {user_data_dir}")
+
     if clone_profile_first:
-        temp_user_data_dir, temp_profile_dir = clone_browser_profile(descriptor)
+        try:
+            temp_user_data_dir, temp_profile_dir = clone_browser_profile(descriptor)
+        except RuntimeError as exc:
+            if allow_cdp_attach and is_windows_host() and _is_browser_running_copy_error(exc.__cause__ or exc):
+                LOGGER.info(
+                    "%s keeps its sign-in cookies locked; attaching the project debug browser over CDP.",
+                    descriptor.label,
+                )
+                return attach_debug_browser()
+            raise
         try:
             context = do_launch(temp_user_data_dir)
         except Exception as exc:
@@ -901,7 +1012,16 @@ def launch_chromium_context(
             error_text = str(exc)
             if not should_retry_with_cloned_profile(error_text):
                 raise
-            temp_user_data_dir, temp_profile_dir = clone_browser_profile(descriptor)
+            try:
+                temp_user_data_dir, temp_profile_dir = clone_browser_profile(descriptor)
+            except RuntimeError as clone_exc:
+                if allow_cdp_attach and is_windows_host() and _is_browser_running_copy_error(clone_exc.__cause__ or clone_exc):
+                    LOGGER.info(
+                        "%s keeps its sign-in cookies locked; attaching the project debug browser over CDP.",
+                        descriptor.label,
+                    )
+                    return attach_debug_browser()
+                raise
             try:
                 context = do_launch(temp_user_data_dir)
             except Exception as exc:
@@ -1013,6 +1133,14 @@ def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile
             raise RuntimeError(
                 f"Windows denied access to the {descriptor.label} profile at {denied_path}. "
                 "Close any running Edge or Chrome windows, then retry the browser session check."
+            ) from exc
+        raise
+    except shutil.Error as exc:
+        _cleanup_cloned_browser_profile(temp_dir, original_error=exc)
+        if is_windows_host() and _is_browser_running_copy_error(exc):
+            raise RuntimeError(
+                f"{descriptor.label} keeps its sign-in cookies locked while it is running. "
+                "Close all Edge or Chrome windows, then retry the browser session check."
             ) from exc
         raise
     except OSError as exc:

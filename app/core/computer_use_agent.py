@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.57.6-codex.1
+Code version: v3.58.0-codex.1
 """
 
 from __future__ import annotations
@@ -1347,6 +1347,47 @@ def open_agent_in_default_browser(platform: str = DEFAULT_AGENT_PLATFORM, target
     }
 
 
+def _open_login_in_debug_browser(
+    selected_platform: str,
+    selected_browser: str,
+    destination: str,
+) -> dict[str, Any]:
+    """Open the login destination in the project-owned debug browser window.
+
+    Ensures the debug browser is running, attaches over CDP, and navigates a
+    visible page to the login URL so the user can sign in. The CDP connection
+    is dropped afterwards, but the debug browser process keeps running so the
+    Agent can reattach to the same authenticated session.
+    """
+    from .agent_debug_browser import ensure_debug_browser
+
+    handle = ensure_debug_browser(selected_browser)
+    application = "Microsoft Edge" if selected_browser == "edge" else "Google Chrome"
+    with sync_playwright_or_error() as playwright:
+        browser = playwright.chromium.connect_over_cdp(handle.cdp_endpoint)
+        try:
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.pages[0] if context.pages else context.new_page()
+            try:
+                page.goto(destination, wait_until="domcontentloaded", timeout=60_000)
+            except Exception as exc:  # pragma: no cover - depends on local browser state
+                raise RuntimeError(
+                    f"Could not open the {application} login page in the debug browser: {exc}"
+                ) from exc
+        finally:
+            browser.close()
+    return {
+        "opened": True,
+        "platform": selected_platform,
+        "browser": selected_browser,
+        "application": application,
+        "url": destination,
+        "targeted_conversation": bool(normalize_agent_conversation_url(selected_platform, destination)),
+        "background": False,
+        "debug_browser": True,
+    }
+
+
 def open_agent_in_browser(
     platform: str = DEFAULT_AGENT_PLATFORM,
     browser: str = "edge",
@@ -1477,6 +1518,16 @@ def open_browser_for_login(
         raise ValueError("Gemini, Grok, and Claude Agent sessions require Edge or Chrome.")
     if sys.platform != "darwin" and not is_windows_host():
         raise RuntimeError("Browser login handoff is only supported on macOS and Windows.")
+    # On Windows the Agent reuses a project-owned debug browser (reached over
+    # CDP) whenever the host browser keeps its sign-in cookies locked. The login
+    # handoff must write into that same debug profile, otherwise the Agent could
+    # never reuse the session, so route the sign-in page through it directly.
+    if is_windows_host() and selected_browser in {"edge", "chrome"}:
+        return _open_login_in_debug_browser(
+            selected_platform,
+            selected_browser,
+            _platform_home_url(selected_platform),
+        )
     return open_agent_in_browser(
         selected_platform,
         selected_browser,
