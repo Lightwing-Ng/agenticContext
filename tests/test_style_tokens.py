@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.61.0-codex.1
+Code version: v1.61.1-codex.1
 """
 
 import hashlib
@@ -1312,6 +1312,10 @@ def test_shared_select_reuses_regular_labels_pill_options_and_browser_height() -
     label_rule = stylesheet[label_start:stylesheet.index("\n}", label_start)]
     option_start = stylesheet.index(".trade-strategy-dropdown-option {")
     option_rule = stylesheet[option_start:stylesheet.index("\n}", option_start)]
+    source_option_start = stylesheet.index(".browser-source-filter-option {")
+    source_option_rule = stylesheet[
+        source_option_start:stylesheet.index("\n}", source_option_start)
+    ]
     agent_browser_start = stylesheet.index(
         ".agent-browser-combobox .agent-combobox-trigger {"
     )
@@ -1323,6 +1327,7 @@ def test_shared_select_reuses_regular_labels_pill_options_and_browser_height() -
     assert "border-radius: var(--shared-select-option-radius);" in option_rule
     assert "min-height: var(--shared-select-option-min-height);" in option_rule
     assert "grid-template-columns: 16px minmax(0, 1fr);" in option_rule
+    assert "grid-template-columns: 16px 22px minmax(0, 1fr);" in source_option_rule
     assert "--shared-select-option-min-height: 36px;" in stylesheet
     assert "min-height: var(--control-form-height);" in agent_browser_rule
     assert "padding-block: 3px;" in agent_browser_rule
@@ -2082,7 +2087,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.111.0-codex.1 */",
+        "/* Code version: v2.111.1-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',

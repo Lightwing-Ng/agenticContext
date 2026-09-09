@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.2.0-codex.1
+Code version: v1.3.0-codex.1
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from app.core.agent.compute_jobs import (
     ComputeJobError,
     ComputeJobManager,
     MAX_LOG_BYTES,
+    scan_compute_job_metadata,
     validate_optimizer_checkpoint,
     write_optimizer_checkpoint_atomic,
 )
@@ -127,6 +128,10 @@ def test_job_start_is_durable_idempotent_and_outside_verification_timeout(tmp_pa
 
     assert started["job_id"] == duplicate["job_id"]
     assert started["max_runtime_seconds"] == 43_200
+    metadata = manager._load_metadata(str(started["job_id"]))
+    workspace_metadata = workspace.stat()
+    assert metadata["workspace_device"] == int(workspace_metadata.st_dev)
+    assert metadata["workspace_inode"] == int(workspace_metadata.st_ino)
     finished = _wait_for_terminal(ComputeJobManager(workspace, runtime), str(started["job_id"]))
     assert finished["state"] == "succeeded"
     assert finished["progress"]["evaluations_completed"] == 8
@@ -155,7 +160,78 @@ def test_controller_job_actions_do_not_change_verification_generation(tmp_path: 
     assert controller.state.verification_generation == -1
     status = controller.execute({"action": "job_status", "job_id": result["job"]["job_id"]})
     assert status["ok"]
+    assert controller.state.edit_generation == 0
     _wait_for_terminal(controller._compute_job_manager(), result["job"]["job_id"])
+
+
+def test_active_job_blocks_controller_workspace_mutations_and_run(tmp_path: Path) -> None:
+    script = """
+import argparse
+import time
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", required=True)
+parser.add_argument("--job-runtime", required=True)
+parser.add_argument("--resume")
+parser.parse_args()
+time.sleep(60)
+"""
+    workspace, _config = _prepare_workspace(tmp_path, script_body=script)
+    (workspace / "existing.txt").write_text("original\n", encoding="utf-8")
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(command_timeout_seconds=5),
+        lambda: False,
+        compute_job_runtime_root=tmp_path / "runtime",
+    )
+    started = controller.execute(
+        {
+            "action": "job_start",
+            "entrypoint": "optimizer",
+            "config_path": "optimizer.json",
+            "idempotency_key": "controller-blocking-001",
+        }
+    )
+    assert started["ok"]
+    job_id = str(started["job"]["job_id"])
+    blocked_actions = (
+        {
+            "action": "replace",
+            "path": "existing.txt",
+            "old": "original\n",
+            "new": "changed\n",
+        },
+        {
+            "action": "replace_base64",
+            "path": "existing.txt",
+            "old_base64": "b3JpZ2luYWwK",
+            "new_base64": "Y2hhbmdlZAo=",
+        },
+        {"action": "write", "path": "new.txt", "content": "new\n"},
+        {
+            "action": "write_base64",
+            "path": "new-base64.txt",
+            "content_base64": "bmV3Cg==",
+        },
+        {
+            "action": "delete",
+            "path": "existing.txt",
+            "expected_sha256": _sha256(workspace / "existing.txt"),
+        },
+        {"action": "run", "command": "python3 -m py_compile optimizer.py"},
+    )
+    try:
+        for action in blocked_actions:
+            result = controller.execute(action)
+            assert result["ok"] is False
+            assert "durable compute job is active" in result["error"]
+        assert (workspace / "existing.txt").read_text(encoding="utf-8") == "original\n"
+        assert not (workspace / "new.txt").exists()
+        assert not (workspace / "new-base64.txt").exists()
+        assert controller.execute({"action": "bodycheck"})["ok"] is True
+    finally:
+        stopped = controller.execute({"action": "job_stop", "job_id": job_id})
+        assert stopped["ok"] is True
 
 
 def test_checkpoint_is_atomic_validated_and_explicitly_resumable(tmp_path: Path) -> None:
@@ -274,6 +350,84 @@ def test_restart_reconciles_live_and_missing_worker_identity(tmp_path: Path, mon
     monkeypatch.setattr(compute_jobs, "_process_identity", lambda _pid: "")
     manager.reconcile()
     assert manager._load_metadata("a" * 32)["state"] == "interrupted"
+
+
+def test_corrupt_job_metadata_is_never_silently_skipped(tmp_path: Path) -> None:
+    workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
+    manager = ComputeJobManager(workspace, tmp_path / "runtime")
+    job_root = manager.jobs_root / ("c" * 32)
+    job_root.mkdir()
+    (job_root / "metadata.json").write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(ComputeJobError, match="Invalid JSON"):
+        manager.status()
+
+
+def test_global_metadata_scan_is_bounded_and_validates_workspace_identity(
+    tmp_path: Path,
+) -> None:
+    workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
+    runtime = tmp_path / "runtime"
+    manager = ComputeJobManager(workspace, runtime)
+    workspace_metadata = workspace.stat()
+    for job_id in ("d" * 32, "e" * 32):
+        job_root = manager.jobs_root / job_id
+        job_root.mkdir()
+        compute_jobs._atomic_write_json(
+            job_root / "metadata.json",
+            {
+                "schema_version": 1,
+                "job_id": job_id,
+                "workspace": str(workspace),
+                "workspace_device": int(workspace_metadata.st_dev),
+                "workspace_inode": int(workspace_metadata.st_ino),
+                "state": "succeeded",
+            },
+        )
+
+    with pytest.raises(ComputeJobError, match="bounded scan limit"):
+        scan_compute_job_metadata(runtime, maximum_records=1)
+
+    metadata_path = manager.jobs_root / ("d" * 32) / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("workspace_inode")
+    compute_jobs._atomic_write_json(metadata_path, metadata)
+    with pytest.raises(ComputeJobError, match="workspace identity"):
+        scan_compute_job_metadata(runtime)
+
+
+def test_global_metadata_scan_reconciles_a_stale_active_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
+    runtime = tmp_path / "runtime"
+    manager = ComputeJobManager(workspace, runtime)
+    workspace_metadata = workspace.stat()
+    job_id = "f" * 32
+    job_root = manager.jobs_root / job_id
+    job_root.mkdir()
+    compute_jobs._atomic_write_json(
+        job_root / "metadata.json",
+        {
+            "schema_version": 1,
+            "job_id": job_id,
+            "workspace": str(workspace),
+            "workspace_device": int(workspace_metadata.st_dev),
+            "workspace_inode": int(workspace_metadata.st_ino),
+            "state": "running",
+            "pid": 987_654,
+            "process_identity": "missing-worker-birth",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "ended_at": "",
+        },
+    )
+    monkeypatch.setattr(compute_jobs, "_process_identity", lambda _pid: "")
+
+    records = scan_compute_job_metadata(runtime, reconcile_liveness=True)
+
+    assert records[0]["state"] == "interrupted"
+    assert manager._load_metadata(job_id)["state"] == "interrupted"
 
 
 def test_pid_reuse_refuses_stop_without_signaling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

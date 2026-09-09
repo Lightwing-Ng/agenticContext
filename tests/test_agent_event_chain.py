@@ -1,6 +1,6 @@
 """Focused tests for the durable, bounded Agent event chain.
 
-Code version: v1.1.1-codex.1
+Code version: v1.2.1-codex.1
 """
 
 from __future__ import annotations
@@ -8,6 +8,9 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
+from app.core.agent import event_chain as event_chain_module
 from app.core.agent.event_chain import (
     AgentEventChain,
     event_chain_for_snapshot,
@@ -237,3 +240,51 @@ def test_non_regular_event_file_is_rejected_without_reading_or_blocking(tmp_path
 
     assert chain.summary()["state"] == "invalid"
     assert chain.summary()["count"] == 0
+
+
+def test_event_append_does_not_enter_memory_when_persistence_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = AgentEventChain(tmp_path / "runtime", new_run_id())
+    assert chain.start() is not None
+
+    def reject_fsync(_descriptor: int) -> None:
+        raise OSError("simulated durable-write failure")
+
+    monkeypatch.setattr("app.core.agent.event_chain.os.fsync", reject_fsync)
+    action_id, event = chain.begin_action(
+        "agent.action.write",
+        turn=1,
+        action_name="write",
+    )
+
+    assert action_id == "action-0001"
+    assert event is None
+    assert chain.summary()["state"] == "degraded"
+    assert chain.summary()["count"] == 1
+    assert chain.append("page.observation") is None
+
+
+def test_event_append_refuses_before_exceeding_the_reloadable_line_cap(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(event_chain_module, "MAX_EVENT_FILE_LINES", 2)
+    runtime_root = tmp_path / "runtime"
+    run_id = new_run_id()
+    chain = AgentEventChain(runtime_root, run_id)
+
+    assert chain.start() is not None
+    assert chain.page_observation("page.observe.agent_status") is not None
+    persisted_at_cap = chain.path.read_bytes()
+
+    assert chain.page_observation("page.observe.agent_status") is None
+    assert chain.summary()["state"] == "degraded"
+    assert chain.summary()["count"] == 2
+    assert chain.path.read_bytes() == persisted_at_cap
+    assert len(chain.path.read_text(encoding="utf-8").splitlines()) == 2
+
+    reloaded = AgentEventChain(runtime_root, run_id)
+    assert reloaded.summary()["state"] == "ready"
+    assert reloaded.summary()["count"] == 2

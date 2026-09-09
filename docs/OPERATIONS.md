@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.10.0-codex.1`
+Documentation version: `v1.11.0-codex.1`
 
 ## Launch
 
@@ -52,10 +52,14 @@ to override it. A successful unlock is stored in the signed Flask session for th
   non-headless context because the provider's Cloudflare challenge rejects headless clones with
   HTTP 403. Windows probes retain offscreen/minimized launch arguments. Existing macOS silent
   probes retain their task-stage window policy and foreground-app restoration.
-- Executing Edge or Chrome tasks on macOS and Windows use an isolated profile clone,
-  without offscreen or start-minimized launch arguments. The task selects or creates its provider
-  page before normalizing that page's window, including when the clone initially has no pages.
-  Windows uses CDP to request normal state and position `(80, 80)` at `1,280 × 900`, without
+- Executing Edge or Chrome tasks on macOS use an isolated profile clone without offscreen or
+  start-minimized launch arguments. On Windows, a clone may be used before the project debug
+  profile is initialized. After a successful debug-browser launch creates its marker, every later
+  Agent readiness, source, Project, and history probe or Agent task restarts or reuses that same
+  persistent project profile over CDP, including after the user closes its window. Ordinary Cache
+  probes and sync workers retain their existing clone-first behavior. The task selects or creates its provider page before
+  normalizing that page's window. Windows uses CDP to request normal state and position
+  `(80, 80)` at `1,280 × 900`, without
   requesting activation. A CDP window-control failure aborts before provider prompt submission.
   These fixed bounds are not a display-work-area guarantee; scaling and multiple monitors still
   require native Windows verification. One context does not guarantee one restored native window.
@@ -63,29 +67,34 @@ to override it. A successful unlock is stored in the signed Flask session for th
   the previous foreground app; macOS decides Stage Manager grouping. Human verification reuses
   the same clone and retains the existing Resume gate. Automated execution never opens the user's
   original profile for writing. First-run, crash, notification, and repost prompts remain disabled.
-- Explicit login handoff opens the selected real browser visibly. macOS login and Windows
-  conversation handoff use the resolved absolute executable with the same data root and profile
-  as session probes and tasks: Edge uses `Default`; Chrome uses the saved Chrome configuration.
-  This explicit user handoff allows the real browser to save login changes; automated
-  probes/tasks write only to their clone. Opening the page does not establish sign-in; the user
-  must choose Recheck. Native Windows 11 browser execution remains unverified on this macOS host.
+- Explicit login handoff opens the selected browser visibly. macOS login and Windows conversation
+  handoff use the normal resolved browser. Windows login uses the project-owned persistent debug
+  profile so Recheck and later tasks read the same authentication state. Opening the page does not
+  establish sign-in; the user must choose Recheck. Native Windows 11 browser execution remains
+  unverified on this macOS host.
 - Windows login handoff targets the project-owned debug browser instead of the user's daily
   profile. Because a running Edge or Chrome keeps its sign-in cookies under an exclusive OS
   lock, the Agent reuses a separate Chromium instance launched with `--remote-debugging-port`
   against a dedicated user-data directory under `local_store/agent_browser_profile/<browser>`.
   The login handoff navigates that debug browser to the provider home so the authenticated
-  session lands in the debug profile the Agent reads over CDP. While that browser remains
-  reachable, subsequent checks and tasks reuse it before attempting a daily-profile clone.
+  session lands in the debug profile the Agent reads over CDP. Once initialized, subsequent Agent
+  checks and tasks use it as the authoritative Windows Agent profile and restart it when necessary.
   The first sign-in on a fresh debug profile is the only manual login the user performs there.
+  One process-local lock owns each browser for the full CDP caller lifetime. Waiting is bounded to
+  five seconds, and a busy operation fails clearly instead of blocking indefinitely. The Windows
+  Agent therefore advertises and admits one active task; macOS retains its existing concurrency.
+  Multiple application processes are not coordinated by this lock.
 - Copying profile files and launching the clone do not prove provider authentication. The copy
   is not an atomic snapshot of a running browser. Check readiness in the clone; report copy or
   access errors without closing the user's browser or retrying against its writable profile.
   On Windows, when the host browser holds its `Network/Cookies` lock, the launcher falls back to
   the project-owned debug browser over CDP instead of failing the clone; no file is read from the
   locked profile.
-- Normal task exit closes the isolated context and removes its temporary profile. Each subsequent
-  Chromium launch also removes only abandoned `cachelikes-edge-*` or `cachelikes-chrome-*`
-  directories older than 24 hours; unrelated temporary paths are not touched.
+- Normal clone-backed task exit closes the isolated context and removes its temporary profile. A
+  CDP-backed Windows exit closes only the Playwright connection and leaves the project browser and
+  persistent login profile available. Each subsequent Chromium launch also removes only abandoned
+  `cachelikes-edge-*` or `cachelikes-chrome-*` directories older than 24 hours; unrelated temporary
+  paths are not touched.
 - A failed temporary-profile removal reports its retained directory and remains protected from
   stale-profile cleanup in the current process. Cleanup errors become exception notes and log
   warnings when an earlier task, launch, copy, or close error already exists; otherwise they fail
@@ -127,6 +136,11 @@ to override it. A successful unlock is stored in the signed Flask session for th
   check; model and effort discovery happen in that check; later task submissions verify their requested settings without a separate refresh button. Concurrent requests share one flight. The
   response's `cache.status` is `hit`, `miss`, `refreshed`, or `stale`; a stale response means the
   previous verified catalog was retained after an explicit check failed.
+- While a Windows Agent task owns Edge or Chrome, source, Project-session, history, and bootstrap
+  routes do not start another live collector for that browser. They return a cached entry without
+  background refresh, return `unprobed` on a catalog/bootstrap miss, or return HTTP 409 on a history
+  miss. The rule is browser-wide because every provider shares that browser's CDP context. It is
+  deliberately absent on macOS.
 - ChatGPT and Claude on `/agent` use one agent-scoped browser bootstrap through Recent sessions:
   the same bounded initial check verifies readiness, collects the root session/project catalog,
   returns it to the selector, and seeds the memory/Parquet cache. Cache reuse and task completion
@@ -257,8 +271,10 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   Agent falls back to the project-owned debug browser over CDP and the first sign-in on that
   debug profile is the only manual step. On macOS, close duplicate normal browser windows, then
   retry the session probe.
-- ChatGPT parallel sync: the project workflow uses up to three isolated Edge contexts; lower the
-  shared Download workers setting only when the machine cannot sustain that browser load.
+- ChatGPT parallel sync: Cache Download workers retain their clone-first path and can use up to
+  three isolated Edge contexts. If Windows profile copying reaches the existing Cookie-lock CDP
+  fallback, that fallback is serialized through the single-owner project debug browser. Lower the
+  shared Download workers setting only when the machine cannot sustain the browser load.
 - ChatGPT Text history schema 3 keeps visible user prompts and completed final assistant replies.
   Tool recipients, non-final channels, hidden context, reasoning payloads, and incomplete replies
   are excluded using provider metadata, not wording or JSON detection. Ordinary legacy replies

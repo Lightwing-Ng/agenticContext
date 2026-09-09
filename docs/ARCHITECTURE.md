@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.14.0-codex.1`
+Documentation version: `v1.18.0-codex.1`
 
 ## Runtime flow
 
@@ -137,6 +137,17 @@ drifting into separate lists without granting WebMCP direct access to the Agent 
 new `run_id`, persists `run.started`, and appends ordered action, observation, verification,
 bodycheck, lifecycle/page observations, interruption, recovery, and terminal events. It stores
 bounded metadata rather than prompt, provider response, source, command, or page content.
+An Action executes only after its `action.requested` event is durably appended, and another provider
+message is sent only after the resulting observation is durable. Provider exchanges add content-free
+`prepared`, `commit_attempted`, `delivered`, `response_received`, `response_consumed`, and
+`completed` checkpoints with a random exchange ID, sequence, and SHA-256 identities. Chromium
+ChatGPT marks delivery only after the exact new user turn is visible in the same canonical
+conversation. Other Chromium providers derive their visible turn-receipt marker from the exchange
+ID, and the outbound digest covers the exact message including that marker. A failed `fsync`
+degrades the chain and stops later side effects. The append boundary refuses a new event before the
+bounded JSONL line limit, so one process cannot persist a chain that the next process will reject as
+oversized. Unsupported or malformed delivery-checkpoint types degrade to `unknown` and disable
+automatic continuation instead of breaking service startup.
 `ComputerUseAgentService.doctor()` and the `/api/agent/doctor` routes consume the same chain summary
 to offer an event timeline and explicit recovery actions. Recovery never retries the original
 external prompt implicitly; a user-selected continuation may send only the fixed continuation
@@ -156,6 +167,12 @@ uses `can_start` to gate Ask, while the locked backend remains authoritative if 
 between polling and submission. A worker with a recorded run cannot be reassigned to a different
 browser or provider. A stale status snapshot can still lead to a legitimate HTTP 409; it is not
 proof that the admission rules differ.
+Admission also gives overlapping workspace roots one write-capable owner. Directory identity,
+resolved aliases, and parent/child roots participate in that decision; the admitted root and its
+ancestor device/inode chain remain fixed for the lease even if a path is renamed. Read-only sessions
+may run beside readers or one writer. Durable compute metadata records the same root identity and is
+scanned under explicit bounds; an active overlapping job blocks another writer, while malformed or
+unreadable job metadata fails admission closed. Read-only inspection remains available.
 
 ## Durable compute-job boundary
 
@@ -167,10 +184,12 @@ bodycheck gates remain authoritative for source edits.
 
 A job starts only when `.agenticContext-compute.json` uniquely names a workspace-relative regular
 Python entrypoint and pins its current SHA-256. The controller accepts no shell string or arbitrary
-argument vector. It invokes the approved file through the fixed `--config`, `--job-runtime`, and
-optional `--resume` protocol, copies the bounded JSON config into the task-owned runtime directory,
-and strips the inherited environment to a small non-secret allowlist. Approval is therefore a code
-review boundary: changing the entrypoint bytes invalidates approval before execution.
+argument vector. It stable-reads the approved entrypoint and bounded JSON config, fsyncs those exact
+bytes into a private staging directory, and atomically publishes the complete task-owned runtime
+directory before spawning a worker. The worker revalidates both runtime snapshots and executes the
+entrypoint snapshot through the fixed `--config`, `--job-runtime`, and optional `--resume` protocol.
+It also strips the inherited environment to a small non-secret allowlist. Replacing the live source
+after approval therefore cannot change the entrypoint bytes selected for that job.
 On macOS, the detached optimizer is also launched through `/usr/bin/sandbox-exec` with `network*`
 denied, so even approved code cannot open a download or other network socket during the job.
 The Windows path does not currently apply an equivalent OS-level network-denying sandbox profile;
@@ -179,17 +198,29 @@ the worker runs with the current user's permissions.
 Runtime metadata, progress, checkpoints, results, and rolling logs live below the external Agent
 runtime root in `compute-jobs/<workspace-hash>/<job-id>/`; they never live in the selected source
 workspace. A 128-bit unpredictable `job_id`, stable idempotency key, request fingerprint, PID birth
-identity, process-group ownership, and a one-active-job limit prevent duplicate submission and
-PID-reuse termination. On startup or status inspection, active records are reconciled with the live
-process identity. Missing workers become `interrupted`; they are never resubmitted automatically.
+identity, and a one-active-job scan prevent ordinary duplicate submission and PID-reuse termination.
+Launcher and worker updates use a cross-process metadata lock, monotonic revision, and an ownership
+handshake so a stale launcher snapshot cannot overwrite a terminal worker result. A published
+`starting` record without a committed PID remains fail-closed after its bounded handshake window;
+it is not guessed stale while a detached worker may still exist. On startup or status inspection,
+active records are reconciled with the live wrapper and child identities. Missing workers become
+`interrupted` only after the child containment record is also clear, and jobs are never resubmitted
+automatically.
+While a job is active, the same Web controller refuses file mutations, deletion, and verification
+commands. Read-only inspection and `bodycheck` remain available so the provider can report the
+durable job ID and current state without waiting for a long optimizer to finish.
 
 The detached worker owns the approved maximum runtime, capped at 24 hours, and remains alive after
-the provider turn or browser session ends. On macOS, a job-scoped `caffeinate -i -w <worker-pid>`
-assertion follows the worker rather than the Web Agent turn. It exits with the worker and is also
-identity-checked during terminal-state reconciliation. The project does not currently inhibit
-Windows idle sleep for the equivalent task. On Windows, process-tree cleanup uses
-`taskkill /T /F` where applicable; this is a termination mechanism, not an OS-level sandbox
-boundary. Service exit deliberately does not stop an active compute job.
+the provider turn or browser session ends. The approved child enters a dedicated POSIX process group
+or Windows Job Object before its launch gate opens. A portable reader thread drains its output, and
+the worker publishes a terminal state only after the direct child has been reaped and the contained
+descendant tree is empty. Timeout, explicit Stop, and an otherwise successful script that leaves
+descendants all clear that containment first. On macOS, a job-scoped
+`caffeinate -i -w <worker-pid>` assertion follows the worker rather than the Web Agent turn. It exits
+with the worker and is also identity-checked during terminal-state reconciliation. The project does
+not currently inhibit Windows idle sleep for the equivalent task. Windows Job Objects provide the
+process-tree lifecycle boundary, but they do not provide the macOS network-denying sandbox. Service
+exit deliberately does not stop an active compute job.
 
 ## Responsive application-shell contract
 
@@ -347,6 +378,10 @@ selected local project
 The web model never receives direct process or filesystem authority. The local controller resolves
 every path below the selected project, separates explicit file actions from a restricted command
 layer, bounds turns and output, and rejects final completion after an edit until bodycheck passes.
+For a production run, the controller records a complete workspace fingerprint before constructing
+the context bundle and repeats it immediately afterward. Drift or an incomplete scan stops the run
+before any browser context opens, so the submitted bundle and the initial local evidence share one
+stable task boundary.
 Controller actions travel in fenced `json` code blocks, and the browser reader prefers the literal
 code-block text so Markdown rendering cannot consume source-code punctuation before parsing.
 The provider adapter validates each official root session, Project, or Project session before the
@@ -381,6 +416,11 @@ The Agent-scoped browser-session status route uses that same cache. Passive poll
 cached bootstrap, including a bounded negative result; an explicit `refresh=1`, `true`, or `yes`
 requests a synchronous fresh result and coalesces with an in-flight collector for the same key.
 The fresh result is stored and supersedes any older in-flight browser response.
+On Windows, an active Agent worker suppresses every live source/history/bootstrap collector for
+the same Edge or Chrome debug browser. A cached entry is returned without background refresh; a
+history miss returns an observable busy response, while bootstrap and catalog misses remain
+`unprobed`. This browser-wide gate is not used on macOS, where the existing isolated-context
+behavior remains unchanged.
 Agent bootstrap checks use quiet, task-independent Chromium contexts. ChatGPT source checks
 remain non-headless because its Cloudflare challenge rejects headless clones with HTTP 403.
 On macOS, silent probes and executing
@@ -393,6 +433,15 @@ the user's normal browser profile and unrelated temporary paths are not modified
 On Windows, the controller uses PowerShell-compatible paths and trusted PowerShell execution for
 approved `.ps1` scripts. The Windows path has no OS-level sandbox equivalent to macOS
 `sandbox-exec`, and `taskkill /T /F` remains process-tree cleanup rather than sandbox isolation.
+The first successful Windows debug-browser launch initializes a persistent project profile under
+`local_store/agent_browser_profile/<browser>`. After that marker exists, Agent browser launches
+restart or reuse that profile and attach over CDP instead of returning to the daily-browser clone. Every
+CDP caller for one browser holds a process-local reentrant lock through context cleanup. Lock
+acquisition is bounded to five seconds, and the Windows Agent session pool admits one task so a
+second worker cannot appear active while waiting for the same rendered browser. Edge and Chrome
+have independent locks. This coordination assumes the supported single application process; it
+does not coordinate multiple WSGI processes. Ordinary Cache launches remain clone-first, and
+macOS never enters this persistent CDP path.
 Traditional failure handoff does not reuse that writable clone. It records only the normalized
 official conversation URL for the browser selected by the failed run; a normal Edge window opens
 only after the user invokes the handoff action. That remote ChatGPT page never receives local
@@ -401,6 +450,9 @@ An interrupted continuation is eligible only when the persisted run records a co
 conversation binding in addition to a valid Edge and ChatGPT target, workspace, operating system,
 permission state, and effort policy. A process failure before the first confirmed binding therefore
 cannot cause Doctor to send a continuation message to a merely selected recent-session URL.
+Any non-idle delivery checkpoint or `action.requested` event without a durable observation disables
+continuation. The user can inspect the recorded conversation, but the service does not guess whether
+to resend a provider message, consume an unseen response, or replay a local Action.
 
 ## Data ownership
 

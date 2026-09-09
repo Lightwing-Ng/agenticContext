@@ -1,6 +1,6 @@
 """Provider-neutral Web Agent Project and session discovery.
 
-Code version: v1.9.5-codex.1
+Code version: v1.9.6-codex.1
 """
 
 from __future__ import annotations
@@ -1258,6 +1258,7 @@ def _run_chromium_source_collection(
             clone_profile_first=True,
             background_window=True,
             silent=silent,
+            prefer_initialized_debug_profile=True,
         ) as context:
             home_host = (urlsplit(home_url).hostname or "").lower()
             hosts = {home_host, f"www.{home_host}"} if home_host else set()

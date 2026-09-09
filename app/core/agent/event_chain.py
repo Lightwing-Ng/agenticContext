@@ -1,6 +1,6 @@
 """Durable, bounded event chains for one Web Agent run.
 
-Code version: v1.2.1-codex.1
+Code version: v1.3.1-codex.1
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ EVENT_FILE_DIRECTORY = "events"
 MAX_EVENT_DETAIL_CHARS = 320
 MAX_EVENT_DATA_KEYS = 24
 MAX_EVENT_LIST_ITEMS = 24
-MAX_EVENT_FILE_LINES = 2_000
+MAX_EVENT_FILE_LINES = 65_536
 MAX_PUBLIC_EVENTS = 80
 RUN_ID_PATTERN = re.compile(r"^run-[a-f0-9]{16,64}$")
 ACTION_ID_PATTERN = re.compile(r"^action-[0-9]{1,6}$")
@@ -33,6 +33,7 @@ SENSITIVE_EVENT_KEYS = frozenset(
         "command",
         "conversation_url",
         "content",
+        "diff",
         "error",
         "html",
         "history",
@@ -40,6 +41,7 @@ SENSITIVE_EVENT_KEYS = frozenset(
         "matches",
         "page_text",
         "prompt",
+        "patch",
         "response",
         "source",
         "text",
@@ -135,6 +137,10 @@ def summarize_observation(observation: dict[str, Any] | None) -> dict[str, Any]:
         "duration_seconds",
         "mutated_workspace",
         "workspace_scan_complete",
+        "workspace_changed",
+        "workspace_generation",
+        "edit_generation",
+        "evidence_complete",
         "bodycheck_current",
         "verification_current",
         "action",
@@ -172,6 +178,7 @@ def summarize_observation(observation: dict[str, Any] | None) -> dict[str, Any]:
         "workspace_identity",
         "read_receipt",
         "delete_digest",
+        "snapshot_id",
     ):
         if key in observation:
             summary[key] = _bounded_value(observation[key])
@@ -382,7 +389,7 @@ class AgentEventChain:
             seen_events.add(event.event_id)
             previous = event
 
-    def _write_event(self, event: AgentEvent) -> None:
+    def _write_event(self, event: AgentEvent) -> bool:
         try:
             event_directory = self._path.parent
             for directory in (self.runtime_root, event_directory):
@@ -408,9 +415,22 @@ class AgentEventChain:
                 if descriptor >= 0:
                     os.close(descriptor)
             os.chmod(self._path, 0o600)
+            if os.name == "posix":
+                directory_fd = os.open(
+                    event_directory,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                )
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            return True
         except OSError as exc:
             self._state = "degraded"
             self._error = _bounded_text(exc)
+            return False
 
     def append(
         self,
@@ -423,12 +443,16 @@ class AgentEventChain:
         detail: str = "",
         data: dict[str, Any] | None = None,
     ) -> AgentEvent | None:
-        """Append one validated event and retain it even if disk persistence degrades."""
+        """Append one validated event only after durable persistence succeeds."""
         normalized_kind = str(kind or "").strip()
         if normalized_kind not in EVENT_KINDS:
             raise EventChainError(f"unsupported event kind: {normalized_kind}")
         with self._lock:
-            if self._state == "invalid":
+            if self._state != "ready":
+                return None
+            if len(self._events) >= MAX_EVENT_FILE_LINES:
+                self._state = "degraded"
+                self._error = "event file reached the bounded line limit"
                 return None
             parent = parent_event_id or (self._events[-1].event_id if self._events else "")
             event = AgentEvent(
@@ -451,7 +475,8 @@ class AgentEventChain:
                 self._state = "invalid"
                 self._error = "new event would break the ordered chain"
                 return None
-            self._write_event(event)
+            if not self._write_event(event):
+                return None
             self._events.append(event)
             return event
 
@@ -604,6 +629,20 @@ class AgentEventChain:
         """Return bounded chain health and the last event metadata."""
         with self._lock:
             last = self._events[-1] if self._events else None
+            observed = {
+                event.action_id
+                for event in self._events
+                if event.kind == "observation"
+            }
+            pending_action_id = next(
+                (
+                    event.action_id
+                    for event in reversed(self._events)
+                    if event.kind == "action.requested"
+                    and event.action_id not in observed
+                ),
+                "",
+            )
             return {
                 "version": EVENT_CHAIN_VERSION,
                 "run_id": self.run_id,
@@ -611,12 +650,22 @@ class AgentEventChain:
                 "state": self._state,
                 "error": self._error,
                 "last_event": self._public_event(last) if last else None,
+                "pending_action_id": pending_action_id,
             }
 
     def has_terminal_event(self) -> bool:
         """Return whether this run already has a terminal event before recovery metadata."""
         with self._lock:
             return any(event.kind in TERMINAL_EVENT_KINDS for event in self._events)
+
+    def latest_delivery_checkpoint(self) -> dict[str, Any]:
+        """Return the newest content-free provider-delivery boundary in this chain."""
+        with self._lock:
+            for event in reversed(self._events):
+                phase = str(event.data.get("delivery_phase") or "")
+                if event.kind == "page.observation" and phase:
+                    return dict(event.data)
+        return {}
 
     @staticmethod
     def _public_event(event: AgentEvent | None) -> dict[str, Any] | None:

@@ -7,7 +7,7 @@ login state. This module owns a separate Chromium instance launched with
 can ``connect_over_cdp`` to it and read the authenticated session without ever
 touching the locked profile files.
 
-Code version: v1.21.0-codex.1
+Code version: v1.22.0-codex.1
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import json
 import logging
 import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -32,6 +33,46 @@ DEBUG_BROWSER_ROOT = LOCAL_STORE_ROOT / "agent_browser_profile"
 DEBUG_PORT_FILENAME = "debug_port"
 CDP_READY_TIMEOUT_SECONDS = 20.0
 CDP_PROBE_TIMEOUT_SECONDS = 3.0
+CDP_CALLER_LOCK_TIMEOUT_SECONDS = 5.0
+
+# One reentrant lock per browser identity serializes the complete lifetime of a
+# CDP caller. The Windows debug browser reuses one process and one rendered tab,
+# while clone-profile launches remain isolated and do not use these locks.
+_DEBUG_BROWSER_LOCKS: dict[str, threading.RLock] = {}
+_DEBUG_BROWSER_LOCKS_GUARD = threading.Lock()
+
+
+def _debug_browser_lock(browser_id: str) -> threading.RLock:
+    """Return the process-wide reentrant lock for one debug browser identity."""
+    with _DEBUG_BROWSER_LOCKS_GUARD:
+        lock = _DEBUG_BROWSER_LOCKS.get(browser_id)
+        if lock is None:
+            lock = threading.RLock()
+            _DEBUG_BROWSER_LOCKS[browser_id] = lock
+        return lock
+
+
+def _acquire_debug_browser_lock(browser_id: str) -> threading.RLock:
+    """Acquire one debug-browser lock without allowing an indefinite wait."""
+    lock = _debug_browser_lock(browser_id)
+    if not lock.acquire(timeout=CDP_CALLER_LOCK_TIMEOUT_SECONDS):
+        raise RuntimeError(
+            f"The project debug {browser_id} is busy with another operation. "
+            "Retry after it finishes."
+        )
+    return lock
+
+
+@contextlib.contextmanager
+def debug_browser_lock(browser_id: str):
+    """Hold one browser's CDP lock for the complete caller block."""
+    lock = _acquire_debug_browser_lock(browser_id)
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 _DEFAULT_VIEWPORT_ARGS = (
     "--no-first-run",
     "--no-default-browser-check",
@@ -201,3 +242,10 @@ def debug_browser_login_url(browser_id: str) -> str | None:
     if recorded_port is None or not _cdp_endpoint_alive(recorded_port):
         return None
     return f"http://127.0.0.1:{recorded_port}"
+
+
+def debug_browser_profile_initialized(browser_id: str) -> bool:
+    """Return whether one debug profile completed a prior successful launch."""
+    if not is_windows_host() or browser_id not in {"edge", "chrome"}:
+        return False
+    return _read_recorded_port(browser_id) is not None

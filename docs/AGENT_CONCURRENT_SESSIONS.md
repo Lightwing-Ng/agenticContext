@@ -1,7 +1,7 @@
 # Edge ChatGPT concurrent Agent sessions
 
-Documentation version: v1.2.0-codex.1
-Date: 6 Sep 2026
+Documentation version: v1.3.0-codex.1
+Date: 9 Sep 2026
 
 ## Behavior
 
@@ -13,16 +13,19 @@ selected session and its recorded workspace are restored after a page refresh.
 Selecting a row updates the local project fields before requesting that task state;
 it does not rewrite global preferences or move the running worker.
 
-The backend admits at most two active workers. Both must use ChatGPT in Edge;
-other browser/provider combinations retain exclusive execution. Paused and stopping
-workers occupy a slot until lifecycle cleanup completes. A third submission returns
-HTTP 409 and is not queued or retried. Two workers cannot execute the same normalized
-provider conversation concurrently. This is an application concurrency limit, not an
-assurance about provider account enforcement.
+On macOS, the backend admits at most two active workers. Both must use ChatGPT in
+Edge; other browser/provider combinations retain exclusive execution. On Windows,
+the initialized project debug browser has one rendered context, so the backend
+advertises and admits one Agent worker. Paused and stopping workers occupy a slot
+until lifecycle cleanup completes. An over-capacity submission returns HTTP 409 and
+is not queued or retried. Two workers cannot execute the same normalized provider
+conversation concurrently. These are application concurrency limits, not assurances
+about provider account enforcement.
 
 Each session owns its worker, stop/resume signals, event chain, context bundle,
-response history, and browser context. The existing Chromium launcher gives each
-execution a unique temporary cloned profile. Stop, Resume, diagnostics, recovery,
+response history, and browser context. macOS Chromium execution retains a unique
+temporary cloned profile. Windows uses one project-owned persistent debug profile
+and therefore admits one worker. Stop, Resume, diagnostics, recovery,
 open-conversation, and compute-job control resolve the selected session. The admission
 guard also covers diagnostic continuation. Shutdown signals all workers before joining
 any worker. Persisted metadata restores individual sessions; the existing privacy
@@ -41,6 +44,12 @@ policy still excludes response bodies and full in-memory history from disk snaps
   existing controls and theme tokens.
 - `tests/test_agent_session_pool.py`, `tests/test_agent_sessions_e2e.py`, and
   `tests/test_web_app.py`: regression coverage and updated asset version expectations.
+
+The 9 Sep 2026 Windows extension adds browser-wide active-worker detection, a
+process-local per-browser CDP lock with a five-second acquisition bound, and
+single-worker Windows admission. Source and history routes do not start a competing
+collector while that browser is active. This leaves the macOS two-worker behavior
+and the historical macOS acceptance evidence below unchanged.
 
 The session header is `X-CacheLikes-Agent-Session`. Omission retains the legacy
 `primary` worker; `new` represents a draft and allocates a new session only on Ask.

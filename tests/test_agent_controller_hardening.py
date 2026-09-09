@@ -1,7 +1,7 @@
 """Focused tests for controller hardening: model verification, action parser,
 directory picker, recent-session catalog, and browser interruption recovery.
 
-Code version: v3.49.1-codex.1
+Code version: v3.50.0-codex.1
 """
 
 from __future__ import annotations
@@ -866,7 +866,7 @@ class TestAriaDescribedbyRegression:
             ComputerUseSettings(workspace_path=str(workspace), max_turns=8),
             lambda: stop_state["requested"],
         )
-        controller.state.bodycheck_generation = controller.state.edit_generation
+        assert controller.execute({"action": "bodycheck"})["bodycheck_current"]
         submitted: list[str] = []
         stopped: list[str] = []
 
@@ -940,7 +940,7 @@ class TestAriaDescribedbyRegression:
             ComputerUseSettings(workspace_path=str(workspace), max_turns=8),
             stop_signal.is_set,
         )
-        controller.state.bodycheck_generation = controller.state.edit_generation
+        assert controller.execute({"action": "bodycheck"})["bodycheck_current"]
         submitted: list[str] = []
         stop_attempts: list[bool] = []
 

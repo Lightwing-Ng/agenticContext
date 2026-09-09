@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.58.0-codex.1
+Code version: v3.62.2-codex.1
 """
 
 from __future__ import annotations
@@ -129,10 +129,16 @@ _ANCHORED_DELETE_SUPPORTED = bool(
     and fcntl is not None
     and hasattr(os, "O_DIRECTORY")
     and hasattr(os, "O_NOFOLLOW")
+    and os.link in getattr(os, "supports_dir_fd", set())
     and os.open in getattr(os, "supports_dir_fd", set())
+    and os.rename in getattr(os, "supports_dir_fd", set())
     and os.unlink in getattr(os, "supports_dir_fd", set())
     and os.stat in getattr(os, "supports_dir_fd", set())
     and os.stat in getattr(os, "supports_follow_symlinks", set())
+)
+_ANCHORED_MUTATION_SUPPORTED = bool(
+    _ANCHORED_DELETE_SUPPORTED
+    and os.mkdir in getattr(os, "supports_dir_fd", set())
 )
 MAX_ACTION_JSON_CHARS = 800_000
 MAX_INVALID_ACTION_RETRIES = 3
@@ -876,6 +882,8 @@ class AgentRunSnapshot:
     engine: str = "computer_use"
     prompt: str = ""
     workspace_path: str = ""
+    workspace_device: int = -1
+    workspace_inode: int = 0
     response: str = ""
     conversation_url: str = ""
     project_url: str = ""
@@ -919,9 +927,45 @@ class AgentRunSnapshot:
     event_chain_state: str = "idle"
     last_event_kind: str = ""
     verification_passed: bool = False
+    action_checkpoint: dict[str, Any] = field(default_factory=dict)
+    delivery_checkpoint_version: str = "1.0.0"
+    delivery_phase: str = "idle"
+    delivery_kind: str = ""
+    exchange_id: str = ""
+    exchange_sequence: int = 0
+    exchange_outbound_sha256: str = ""
+    exchange_response_sha256: str = ""
 
 
 _MAX_AGENT_RUN_REVISION = (1 << 53) - 1
+_DELIVERY_CHECKPOINT_PHASES = frozenset(
+    {
+        "idle",
+        "prepared",
+        "commit_attempted",
+        "delivered",
+        "response_received",
+        "response_consumed",
+        "completed",
+        "unknown",
+    }
+)
+_UNSAFE_AUTOMATIC_CONTINUATION_PHASES = _DELIVERY_CHECKPOINT_PHASES - {"idle"}
+_DELIVERY_PHASE_ORDER = {
+    phase: index
+    for index, phase in enumerate(
+        (
+            "idle",
+            "prepared",
+            "commit_attempted",
+            "delivered",
+            "response_received",
+            "response_consumed",
+            "completed",
+        )
+    )
+}
+_EXCHANGE_ID_PATTERN = re.compile(r"^exchange-[a-f0-9]{32}$")
 
 
 def _next_agent_run_revision(value: object) -> int:
@@ -937,11 +981,18 @@ def _next_agent_run_revision(value: object) -> int:
 
 @dataclass(slots=True)
 class ActionState:
-    """Track edit and bodycheck ordering for one workspace loop."""
+    """Track controller edits and observed workspace evidence for one loop."""
 
     edit_generation: int = 0
+    workspace_generation: int = 0
     bodycheck_generation: int = -1
+    bodycheck_workspace_generation: int = -1
     verification_generation: int = -1
+    verification_workspace_generation: int = -1
+    workspace_snapshot_id: str = ""
+    bodycheck_snapshot_id: str = ""
+    verification_snapshot_id: str = ""
+    evidence_complete: bool = False
     successful_checks: list[str] = field(default_factory=list)
     read_receipts: dict[
         str,
@@ -950,11 +1001,84 @@ class ActionState:
 
     @property
     def bodycheck_current(self) -> bool:
-        return self.bodycheck_generation == self.edit_generation
+        return bool(
+            self.evidence_complete
+            and self.workspace_snapshot_id
+            and self.bodycheck_snapshot_id == self.workspace_snapshot_id
+            and self.bodycheck_generation == self.edit_generation
+            and self.bodycheck_workspace_generation == self.workspace_generation
+        )
 
     @property
     def verification_current(self) -> bool:
-        return self.verification_generation == self.edit_generation
+        return bool(
+            self.evidence_complete
+            and self.workspace_snapshot_id
+            and self.verification_snapshot_id == self.workspace_snapshot_id
+            and self.verification_generation == self.edit_generation
+            and self.verification_workspace_generation == self.workspace_generation
+        )
+
+    def checkpoint(self) -> dict[str, Any]:
+        """Return versioned, content-free state that can survive worker restart."""
+        return {
+            "version": "1.0.0",
+            "edit_generation": self.edit_generation,
+            "workspace_generation": self.workspace_generation,
+            "bodycheck_generation": self.bodycheck_generation,
+            "bodycheck_workspace_generation": self.bodycheck_workspace_generation,
+            "verification_generation": self.verification_generation,
+            "verification_workspace_generation": self.verification_workspace_generation,
+            "workspace_snapshot_id": self.workspace_snapshot_id,
+            "bodycheck_snapshot_id": self.bodycheck_snapshot_id,
+            "verification_snapshot_id": self.verification_snapshot_id,
+            "evidence_complete": self.evidence_complete,
+        }
+
+    @classmethod
+    def from_checkpoint(cls, payload: Any) -> "ActionState":
+        """Restore only bounded generation counters and SHA-256 snapshot ids."""
+        if not isinstance(payload, dict) or payload.get("version") != "1.0.0":
+            return cls()
+
+        def generation(name: str) -> int:
+            value = payload.get(name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(name)
+            if not -1 <= value <= _MAX_AGENT_RUN_REVISION:
+                raise ValueError(name)
+            return value
+
+        def snapshot_id(name: str) -> str:
+            value = str(payload.get(name) or "").strip().casefold()
+            if value and not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise ValueError(name)
+            return value
+
+        if not isinstance(payload.get("evidence_complete"), bool):
+            return cls()
+        try:
+            state = cls(
+                edit_generation=max(0, generation("edit_generation")),
+                workspace_generation=max(0, generation("workspace_generation")),
+                bodycheck_generation=generation("bodycheck_generation"),
+                bodycheck_workspace_generation=generation(
+                    "bodycheck_workspace_generation"
+                ),
+                verification_generation=generation("verification_generation"),
+                verification_workspace_generation=generation(
+                    "verification_workspace_generation"
+                ),
+                workspace_snapshot_id=snapshot_id("workspace_snapshot_id"),
+                bodycheck_snapshot_id=snapshot_id("bodycheck_snapshot_id"),
+                verification_snapshot_id=snapshot_id("verification_snapshot_id"),
+                evidence_complete=payload["evidence_complete"],
+            )
+        except ValueError:
+            return cls()
+        if not state.workspace_snapshot_id:
+            state.evidence_complete = False
+        return state
 
 
 def is_loopback_address(value: str | None) -> bool:
@@ -1359,23 +1483,24 @@ def _open_login_in_debug_browser(
     is dropped afterwards, but the debug browser process keeps running so the
     Agent can reattach to the same authenticated session.
     """
-    from .agent_debug_browser import ensure_debug_browser
+    from .agent_debug_browser import debug_browser_lock, ensure_debug_browser
 
-    handle = ensure_debug_browser(selected_browser)
     application = "Microsoft Edge" if selected_browser == "edge" else "Google Chrome"
-    with sync_playwright_or_error() as playwright:
-        browser = playwright.chromium.connect_over_cdp(handle.cdp_endpoint)
-        try:
-            context = browser.contexts[0] if browser.contexts else browser.new_context()
-            page = context.pages[0] if context.pages else context.new_page()
+    with debug_browser_lock(selected_browser):
+        handle = ensure_debug_browser(selected_browser)
+        with sync_playwright_or_error() as playwright:
+            browser = playwright.chromium.connect_over_cdp(handle.cdp_endpoint)
             try:
-                page.goto(destination, wait_until="domcontentloaded", timeout=60_000)
-            except Exception as exc:  # pragma: no cover - depends on local browser state
-                raise RuntimeError(
-                    f"Could not open the {application} login page in the debug browser: {exc}"
-                ) from exc
-        finally:
-            browser.close()
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = context.pages[0] if context.pages else context.new_page()
+                try:
+                    page.goto(destination, wait_until="domcontentloaded", timeout=60_000)
+                except Exception as exc:  # pragma: no cover - depends on local browser state
+                    raise RuntimeError(
+                        f"Could not open the {application} login page in the debug browser: {exc}"
+                    ) from exc
+            finally:
+                browser.close()
     return {
         "opened": True,
         "platform": selected_platform,
@@ -2070,6 +2195,31 @@ def _filtered_git_status(
     return "\n".join(rows)
 
 
+def _safe_untracked_paths_from_status(status: str) -> list[Path]:
+    """Recover safe untracked file paths from the already filtered status view."""
+    paths: list[Path] = []
+    for line in str(status or "").splitlines():
+        if not line.startswith("?? "):
+            continue
+        try:
+            value = json.loads(line[3:])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(value, str):
+            continue
+        candidate = Path(value)
+        if (
+            not value
+            or candidate.is_absolute()
+            or ".." in candidate.parts
+            or _path_has_ignored_part(candidate)
+            or _path_has_sensitive_part(candidate)
+        ):
+            continue
+        paths.append(candidate)
+    return paths
+
+
 def _bounded_git_status_output(
     workspace: Path,
     *,
@@ -2091,7 +2241,7 @@ def _bounded_git_status_output(
         "status",
         "--porcelain=v1",
         "-z",
-        "--untracked-files=normal",
+        "--untracked-files=all",
     ]
     try:
         process = subprocess.Popen(
@@ -3081,6 +3231,7 @@ class WorkspaceController:
         process_changed: Callable[[subprocess.Popen[str] | None], None] | None = None,
         read_only: bool = False,
         compute_job_runtime_root: Path | None = None,
+        action_checkpoint: dict[str, Any] | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
         workspace_metadata = self.workspace.stat()
@@ -3095,7 +3246,7 @@ class WorkspaceController:
             metadata=workspace_metadata,
         )
         self.settings = settings
-        self.state = ActionState()
+        self.state = ActionState.from_checkpoint(action_checkpoint)
         self.should_stop = should_stop
         self.process_changed = process_changed or (lambda _process: None)
         self.read_only = read_only
@@ -3195,6 +3346,20 @@ class WorkspaceController:
                 "error": f"Registered action has no controller handler: {action}",
             }
         try:
+            if self._compute_jobs is not None and action in {
+                "replace",
+                "replace_base64",
+                "write",
+                "write_base64",
+                "delete",
+                "run",
+            }:
+                compute_status = self._compute_job_manager().status()
+                if bool(compute_status.get("active")):
+                    raise RuntimeError(
+                        "A durable compute job is active for this workspace. Wait for or stop "
+                        "that job before running controller mutations or verification commands."
+                    )
             return handler(payload)
         except (OSError, RuntimeError, ValueError) as exc:
             return {"ok": False, "action": action, "error": str(exc)[:2_000]}
@@ -3231,6 +3396,10 @@ class WorkspaceController:
             for part in relative.parts
         ):
             raise ValueError("Controller access to internal metadata is not allowed.")
+        if _path_has_ignored_part(relative):
+            raise ValueError(
+                "Controller access to ignored, generated, or runtime directories is not allowed."
+            )
         if _path_has_sensitive_part(relative):
             raise ValueError(
                 "Controller access to credentials and private-key files is not allowed."
@@ -3266,18 +3435,24 @@ class WorkspaceController:
             int(metadata.st_mode),
         )
 
-    def _open_anchored_delete_parent(self, relative: Path) -> tuple[int, str]:
+    def _open_anchored_parent(
+        self,
+        relative: Path,
+        *,
+        create_parents: bool = False,
+    ) -> tuple[int, str, bool]:
         """Open a workspace-confined parent directory without following links."""
-        if not _ANCHORED_DELETE_SUPPORTED:
+        if not _ANCHORED_DELETE_SUPPORTED or (
+            create_parents and not _ANCHORED_MUTATION_SUPPORTED
+        ):
             raise RuntimeError(
-                "Safe delete is unavailable on this host because anchored directory operations "
-                "are not supported."
+                "Anchored workspace mutations are unavailable on this host."
             )
         if relative.is_absolute() or len(relative.parts) < 1 or ".." in relative.parts:
-            raise ValueError("The delete action requires one workspace-relative file path.")
+            raise ValueError("The controller action requires one workspace-relative file path.")
         leaf_name = relative.name
         if leaf_name in {"", ".", ".."}:
-            raise ValueError("The delete action requires one regular file.")
+            raise ValueError("The controller action requires one regular file.")
         directory_flags = (
             os.O_RDONLY
             | os.O_DIRECTORY
@@ -3285,6 +3460,7 @@ class WorkspaceController:
             | getattr(os, "O_CLOEXEC", 0)
         )
         directory_fd = os.open(self.workspace, directory_flags)
+        created_parent = False
         try:
             root_metadata = os.fstat(directory_fd)
             if (
@@ -3292,34 +3468,69 @@ class WorkspaceController:
                 int(root_metadata.st_ino),
             ) != self._workspace_identity:
                 raise RuntimeError(
-                    "The Agent workspace changed before deletion; start a new task."
+                    "The Agent workspace changed before mutation; start a new task."
                 )
             for component in relative.parts[:-1]:
-                next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+                try:
+                    next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    if not create_parents:
+                        raise
+                    os.mkdir(component, mode=0o755, dir_fd=directory_fd)
+                    created_parent = True
+                    next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
                 os.close(directory_fd)
                 directory_fd = next_fd
-            return directory_fd, leaf_name
+            return directory_fd, leaf_name, created_parent
         except BaseException:
             os.close(directory_fd)
             raise
 
+    def _open_anchored_delete_parent(self, relative: Path) -> tuple[int, str]:
+        """Open the anchored parent used by the read-receipt delete contract."""
+        if not _ANCHORED_DELETE_SUPPORTED:
+            raise RuntimeError(
+                "Safe delete is unavailable on this host because anchored directory operations "
+                "are not supported."
+            )
+        directory_fd, leaf_name, _created = self._open_anchored_parent(relative)
+        return directory_fd, leaf_name
+
     @staticmethod
-    def _hash_anchored_file(
+    def _write_descriptor(descriptor: int, content: bytes) -> None:
+        """Write and fsync all bytes to one already confined descriptor."""
+        offset = 0
+        while offset < len(content):
+            written = os.write(descriptor, content[offset:])
+            if written <= 0:
+                raise OSError("The controller could not complete the file write.")
+            offset += written
+        os.fsync(descriptor)
+
+    @staticmethod
+    def _read_anchored_file(
         directory_fd: int,
         leaf_name: str,
-    ) -> tuple[str, int, tuple[int, int, int, int, int], int]:
-        """Open and hash one no-follow file relative to an anchored parent."""
+    ) -> tuple[bytes, str, int, tuple[int, int, int, int, int], int]:
+        """Read one no-follow regular file through its anchored parent."""
         file_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
         file_fd = os.open(leaf_name, file_flags, dir_fd=directory_fd)
         try:
             before = WorkspaceController._stable_file_identity_from_stat(
                 os.fstat(file_fd)
             )
+            content = bytearray()
             digest = hashlib.sha256()
             while True:
                 chunk = os.read(file_fd, 64 * 1_024)
                 if not chunk:
                     break
+                content.extend(chunk)
+                if len(content) > MAX_CONTROLLER_DELETE_BYTES:
+                    raise ValueError(
+                        "The controller action refuses files larger than "
+                        f"{MAX_CONTROLLER_DELETE_BYTES:,} bytes."
+                    )
                 digest.update(chunk)
             after = WorkspaceController._stable_file_identity_from_stat(
                 os.fstat(file_fd)
@@ -3332,14 +3543,465 @@ class WorkspaceController:
                     "The file changed while the controller was checking it; read it again "
                     "before retrying."
                 )
-            return digest.hexdigest(), before[2], before, file_fd
+            return bytes(content), digest.hexdigest(), before[2], before, file_fd
         except BaseException:
             os.close(file_fd)
             raise
 
+    @staticmethod
+    def _hash_anchored_file(
+        directory_fd: int,
+        leaf_name: str,
+    ) -> tuple[str, int, tuple[int, int, int, int, int], int]:
+        """Open and hash one no-follow file relative to an anchored parent."""
+        _content, digest, file_bytes, identity, file_fd = (
+            WorkspaceController._read_anchored_file(directory_fd, leaf_name)
+        )
+        return digest, file_bytes, identity, file_fd
+
+    @staticmethod
+    def _restore_quarantined_entry(
+        directory_fd: int,
+        quarantine_name: str,
+        leaf_name: str,
+    ) -> bool:
+        """Restore a moved entry only while its original name remains unoccupied."""
+        try:
+            os.link(
+                quarantine_name,
+                leaf_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            return False
+        os.unlink(quarantine_name, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+        return True
+
+    def _replace_text_file(self, relative: Path, old: str, new: str) -> None:
+        """Compare and atomically replace one existing text file."""
+        if _ANCHORED_MUTATION_SUPPORTED:
+            directory_fd, leaf_name, _created = self._open_anchored_parent(relative)
+            source_fd = -1
+            temporary_fd = -1
+            temporary_name = f".{leaf_name}.agent-{secrets.token_hex(8)}.tmp"
+            backup_name = f".{leaf_name}.agent-backup-{secrets.token_hex(8)}.tmp"
+            temporary_exists = False
+            backup_exists = False
+            replacement_published = False
+            directory_lock_held = False
+            try:
+                fcntl.flock(directory_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                directory_lock_held = True
+                source_bytes, source_digest, _source_size, source_identity, source_fd = (
+                    self._read_anchored_file(directory_fd, leaf_name)
+                )
+                source = source_bytes.decode("utf-8")
+                occurrences = source.count(old)
+                if occurrences != 1:
+                    raise ValueError(
+                        "Replace text must appear exactly once; found "
+                        f"{occurrences:,} occurrences."
+                    )
+                replacement = source.replace(old, new, 1).encode("utf-8")
+                temporary_fd = os.open(
+                    temporary_name,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_CLOEXEC", 0),
+                    stat_module.S_IMODE(source_identity[4]),
+                    dir_fd=directory_fd,
+                )
+                temporary_exists = True
+                os.fchmod(temporary_fd, stat_module.S_IMODE(source_identity[4]))
+                self._write_descriptor(temporary_fd, replacement)
+                replacement_identity = self._stable_file_identity_from_stat(
+                    os.fstat(temporary_fd)
+                )
+                os.close(temporary_fd)
+                temporary_fd = -1
+                current_digest, _current_size, current_identity, current_fd = (
+                    self._hash_anchored_file(directory_fd, leaf_name)
+                )
+                try:
+                    original_identity = self._stable_file_identity_from_stat(
+                        os.fstat(source_fd)
+                    )
+                finally:
+                    os.close(current_fd)
+                if (
+                    current_digest != source_digest
+                    or current_identity != source_identity
+                    or original_identity != source_identity
+                ):
+                    raise RuntimeError(
+                        "The file changed before replacement; read it again before retrying."
+                    )
+                os.rename(
+                    leaf_name,
+                    backup_name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                )
+                backup_exists = True
+                committed_digest, _committed_size, committed_identity, committed_fd = (
+                    self._hash_anchored_file(directory_fd, backup_name)
+                )
+                os.close(committed_fd)
+                if (
+                    committed_digest != source_digest
+                    or committed_identity != source_identity
+                ):
+                    raise RuntimeError(
+                        "The file changed at the replacement commit boundary; the concurrent "
+                        "version was preserved."
+                    )
+                try:
+                    os.link(
+                        temporary_name,
+                        leaf_name,
+                        src_dir_fd=directory_fd,
+                        dst_dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError as exc:
+                    raise RuntimeError(
+                        "A concurrent file appeared at the replacement commit boundary; it "
+                        "was preserved."
+                    ) from exc
+                replacement_published = True
+                os.unlink(temporary_name, dir_fd=directory_fd)
+                temporary_exists = False
+                os.fsync(directory_fd)
+                try:
+                    rebound = self._resolve_path(relative)
+                    rebound_digest, _rebound_size, rebound_identity = (
+                        self._current_file_sha256(rebound)
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "The replaced file could not be rebound to the selected workspace safely."
+                    ) from exc
+                if (
+                    rebound_digest != hashlib.sha256(replacement).hexdigest()
+                    or rebound_identity != replacement_identity
+                ):
+                    raise RuntimeError(
+                        "The replaced file changed before the controller could verify it."
+                    )
+                os.unlink(backup_name, dir_fd=directory_fd)
+                backup_exists = False
+                os.fsync(directory_fd)
+            except BaseException as exc:
+                if backup_exists and not replacement_published:
+                    try:
+                        restored = self._restore_quarantined_entry(
+                            directory_fd,
+                            backup_name,
+                            leaf_name,
+                        )
+                    except OSError:
+                        restored = False
+                    if restored:
+                        backup_exists = False
+                    else:
+                        raise RuntimeError(
+                            "The replacement was cancelled after a concurrent change. The "
+                            f"displaced version was preserved as {backup_name}."
+                        ) from exc
+                elif backup_exists and replacement_published:
+                    raise RuntimeError(
+                        "The replacement could not be verified. The prior version was preserved "
+                        f"as {backup_name}."
+                    ) from exc
+                raise
+            finally:
+                if temporary_fd >= 0:
+                    os.close(temporary_fd)
+                if source_fd >= 0:
+                    os.close(source_fd)
+                if temporary_exists:
+                    try:
+                        os.unlink(temporary_name, dir_fd=directory_fd)
+                    except OSError:
+                        pass
+                if directory_lock_held:
+                    fcntl.flock(directory_fd, fcntl.LOCK_UN)
+                os.close(directory_fd)
+            return
+
+        path = self._resolve_path(relative)
+        source_bytes, source_digest, _source_size, source_identity = (
+            self._current_file_snapshot(path)
+        )
+        source = source_bytes.decode("utf-8")
+        occurrences = source.count(old)
+        if occurrences != 1:
+            raise ValueError(
+                f"Replace text must appear exactly once; found {occurrences:,} occurrences."
+            )
+        replacement = source.replace(old, new, 1).encode("utf-8")
+        parent_identity = (
+            int(path.parent.stat().st_dev),
+            int(path.parent.stat().st_ino),
+        )
+        descriptor, raw_temporary_path = tempfile.mkstemp(
+            prefix=f".{path.name}.agent-",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        temporary_path = Path(raw_temporary_path)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = -1
+                handle.write(replacement)
+                handle.flush()
+                os.fsync(handle.fileno())
+            current_path = self._resolve_path(relative)
+            current_parent_identity = (
+                int(current_path.parent.stat().st_dev),
+                int(current_path.parent.stat().st_ino),
+            )
+            current_digest, _current_size, current_identity = (
+                self._current_file_sha256(current_path)
+            )
+            if (
+                current_path != path
+                or current_parent_identity != parent_identity
+                or current_identity != source_identity
+                or current_digest != source_digest
+            ):
+                raise RuntimeError(
+                    "The file or its parent changed before replacement; read it again before retrying."
+                )
+            os.replace(temporary_path, current_path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary_path.unlink(missing_ok=True)
+
+    def _write_new_file(self, relative: Path, content: bytes) -> int:
+        """Create one new file without following or replacing an existing entry."""
+        if _ANCHORED_MUTATION_SUPPORTED:
+            directory_fd, leaf_name, _created = self._open_anchored_parent(
+                relative,
+                create_parents=True,
+            )
+            file_fd = -1
+            created = False
+            write_completed = False
+            file_identity: tuple[int, int, int, int, int] | None = None
+            cleanup_name = f".{leaf_name}.agent-cleanup-{secrets.token_hex(8)}.tmp"
+            cleanup_exists = False
+            directory_lock_held = False
+            try:
+                fcntl.flock(directory_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                directory_lock_held = True
+                file_fd = os.open(
+                    leaf_name,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_CLOEXEC", 0),
+                    0o644,
+                    dir_fd=directory_fd,
+                )
+                created = True
+                self._write_descriptor(file_fd, content)
+                file_identity = self._stable_file_identity_from_stat(os.fstat(file_fd))
+                write_completed = True
+                if file_identity[2] != len(content):
+                    raise OSError("The controller could not verify the completed file write.")
+                os.fsync(directory_fd)
+                try:
+                    rebound = self._resolve_path(relative)
+                    rebound_identity = self._stable_file_identity(rebound)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "The created file could not be rebound to the selected workspace safely."
+                    ) from exc
+                if rebound_identity != file_identity:
+                    raise RuntimeError(
+                        "The created file identity changed before the controller verified it."
+                    )
+                os.close(file_fd)
+                file_fd = -1
+                return len(content)
+            except FileExistsError as exc:
+                raise ValueError(
+                    "The write action creates new files only; use replace for an existing file."
+                ) from exc
+            except BaseException as exc:
+                if created and write_completed and file_identity is not None:
+                    try:
+                        os.rename(
+                            leaf_name,
+                            cleanup_name,
+                            src_dir_fd=directory_fd,
+                            dst_dir_fd=directory_fd,
+                        )
+                        cleanup_exists = True
+                        current_digest, _size, current_identity, current_fd = (
+                            self._hash_anchored_file(directory_fd, cleanup_name)
+                        )
+                        try:
+                            cleanup_handle_identity = (
+                                self._stable_file_identity_from_stat(os.fstat(file_fd))
+                                if file_fd >= 0
+                                else file_identity
+                            )
+                        finally:
+                            os.close(current_fd)
+                        if (
+                            current_identity == file_identity
+                            and cleanup_handle_identity == file_identity
+                            and current_digest == hashlib.sha256(content).hexdigest()
+                        ):
+                            os.unlink(cleanup_name, dir_fd=directory_fd)
+                            cleanup_exists = False
+                            os.fsync(directory_fd)
+                        else:
+                            restored = self._restore_quarantined_entry(
+                                directory_fd,
+                                cleanup_name,
+                                leaf_name,
+                            )
+                            cleanup_exists = not restored
+                            if not restored:
+                                raise RuntimeError(
+                                    "The failed write encountered a concurrent file. The "
+                                    f"displaced version was preserved as {cleanup_name}."
+                                ) from exc
+                    except FileNotFoundError:
+                        pass
+                    except (OSError, RuntimeError, ValueError) as cleanup_error:
+                        if cleanup_exists:
+                            try:
+                                restored = self._restore_quarantined_entry(
+                                    directory_fd,
+                                    cleanup_name,
+                                    leaf_name,
+                                )
+                            except OSError:
+                                restored = False
+                            cleanup_exists = not restored
+                            if not restored:
+                                raise RuntimeError(
+                                    "The failed write could not restore a concurrently changed "
+                                    f"file. It was preserved as {cleanup_name}."
+                                ) from cleanup_error
+                raise
+            finally:
+                if file_fd >= 0:
+                    os.close(file_fd)
+                if directory_lock_held:
+                    fcntl.flock(directory_fd, fcntl.LOCK_UN)
+                os.close(directory_fd)
+
+        path = self._resolve_path(relative, allow_missing=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        checked_path = self._resolve_path(relative, allow_missing=True)
+        if checked_path != path:
+            raise RuntimeError(
+                "The file parent changed before creation; start a new task before retrying."
+            )
+        try:
+            with checked_path.open("xb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except FileExistsError as exc:
+            raise ValueError(
+                "The write action creates new files only; use replace for an existing file."
+            ) from exc
+        final_path = self._resolve_path(relative)
+        if final_path != checked_path or final_path.stat().st_size != len(content):
+            raise RuntimeError(
+                "The created file could not be rebound to the selected workspace safely."
+            )
+        return len(content)
+
     def _mark_edit(self) -> None:
-        """Advance the edit generation and invalidate all earlier read receipts."""
+        """Advance controller and workspace generations after one local mutation."""
         self.state.edit_generation += 1
+        self.state.workspace_generation += 1
+        self.state.evidence_complete = False
+        self.state.successful_checks.clear()
+
+    @property
+    def verification_required(self) -> bool:
+        """Return whether this write-capable run owes verification evidence."""
+        return bool(
+            not self.read_only
+            and (
+                self.state.edit_generation > 0
+                or self.state.workspace_generation > 0
+            )
+        )
+
+    def _invalidate_verification_order(self) -> None:
+        """Require a fresh verification followed by a fresh bodycheck."""
+        self.state.verification_generation = -1
+        self.state.verification_workspace_generation = -1
+        self.state.verification_snapshot_id = ""
+        self.state.bodycheck_generation = -1
+        self.state.bodycheck_workspace_generation = -1
+        self.state.bodycheck_snapshot_id = ""
+        self.state.successful_checks.clear()
+
+    def _record_workspace_snapshot(
+        self,
+        snapshot_id: str,
+        *,
+        complete: bool,
+    ) -> bool:
+        """Record one observed workspace version and invalidate stale evidence."""
+        previous = self.state.workspace_snapshot_id
+        changed = bool(complete and previous and previous != snapshot_id)
+        if changed:
+            self.state.workspace_generation += 1
+            self.state.successful_checks.clear()
+        if not complete:
+            if self.state.evidence_complete or previous:
+                self.state.workspace_generation += 1
+                self.state.successful_checks.clear()
+            self.state.workspace_snapshot_id = ""
+            self.state.evidence_complete = False
+            return False
+        self.state.workspace_snapshot_id = snapshot_id
+        self.state.evidence_complete = True
+        return changed
+
+    def refresh_workspace_evidence(self) -> dict[str, Any]:
+        """Refresh the point-in-time content evidence used by finalization gates."""
+        snapshot_id, complete = _workspace_mutation_fingerprint(
+            self.workspace,
+            should_stop=self.should_stop,
+        )
+        changed = self._record_workspace_snapshot(
+            snapshot_id,
+            complete=complete,
+        )
+        return {
+            **self.evidence_metadata(),
+            "workspace_changed": changed,
+        }
+
+    def evidence_metadata(self) -> dict[str, Any]:
+        """Return content-free evidence identifiers for observations and checkpoints."""
+        return {
+            "edit_generation": self.state.edit_generation,
+            "workspace_generation": self.state.workspace_generation,
+            "snapshot_id": self.state.workspace_snapshot_id,
+            "evidence_complete": self.state.evidence_complete,
+            "bodycheck_current": self.state.bodycheck_current,
+            "verification_current": self.state.verification_current,
+        }
 
     def _current_file_sha256(self, path: Path) -> tuple[str, int, tuple[int, int, int, int, int]]:
         """Hash one bounded regular file and reject changes while it is being read."""
@@ -3373,6 +4035,24 @@ class WorkspaceController:
                 "The file changed while the controller was checking it; read it again before retrying."
             )
         return bytes(content), digest.hexdigest(), before[2], before
+
+    def _untracked_files_pass_whitespace_check(self, status: str) -> bool:
+        """Apply Git-style trailing-whitespace checks to safe untracked files."""
+        for relative in _safe_untracked_paths_from_status(status):
+            path = self._resolve_path(relative)
+            if not path.is_file():
+                raise RuntimeError(
+                    "An untracked path changed while bodycheck was inspecting it."
+                )
+            content, _digest, _file_bytes, _identity = self._current_file_snapshot(path)
+            if b"\x00" in content:
+                continue
+            if any(
+                line.rstrip(b"\r\n").endswith((b" ", b"\t"))
+                for line in content.splitlines(keepends=True)
+            ) or re.search(rb"(?:\r?\n){2,}\Z", content):
+                return False
+        return True
 
     def _list(self, payload: dict[str, Any]) -> dict[str, Any]:
         root = self._resolve_path(payload.get("path", "."))
@@ -3441,7 +4121,7 @@ class WorkspaceController:
         self.state.read_receipts[relative_path] = (
             sha256,
             identity,
-            self.state.edit_generation,
+            self.state.workspace_generation,
         )
         return {
             "ok": True,
@@ -3731,20 +4411,17 @@ class WorkspaceController:
         path = self._resolve_path(payload.get("path"))
         if not path.is_file():
             raise ValueError("The replace action requires an existing file.")
+        relative = path.relative_to(self.workspace)
         old = str(payload.get("old") or "")
         new = str(payload.get("new") or "")
         if not old:
             raise ValueError("The replace action requires non-empty old text.")
-        source = path.read_text(encoding="utf-8")
-        occurrences = source.count(old)
-        if occurrences != 1:
-            raise ValueError(f"Replace text must appear exactly once; found {occurrences:,} occurrences.")
-        path.write_text(source.replace(old, new, 1), encoding="utf-8")
         self._mark_edit()
+        self._replace_text_file(relative, old, new)
         return {
             "ok": True,
             "action": "replace",
-            "path": path.relative_to(self.workspace).as_posix(),
+            "path": relative.as_posix(),
             "changed_characters": len(new) - len(old),
         }
 
@@ -3755,14 +4432,16 @@ class WorkspaceController:
         content = str(payload.get("content") or "")
         if not content:
             raise ValueError("The write action requires file content.")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
         self._mark_edit()
+        written_bytes = self._write_new_file(
+            path.relative_to(self.workspace),
+            content.encode("utf-8"),
+        )
         return {
             "ok": True,
             "action": "write",
             "path": path.relative_to(self.workspace).as_posix(),
-            "bytes": path.stat().st_size,
+            "bytes": written_bytes,
         }
 
     def _replace_base64(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3770,6 +4449,7 @@ class WorkspaceController:
         path = self._resolve_path(payload.get("path"))
         if not path.is_file():
             raise ValueError("The replace_base64 action requires an existing file.")
+        relative = path.relative_to(self.workspace)
         old = _decode_base64_utf8(
             str(payload.get("old_base64") or ""),
             field_name="old_base64",
@@ -3782,16 +4462,12 @@ class WorkspaceController:
             field_name="new_base64",
             allow_empty=True,
         )
-        source = path.read_text(encoding="utf-8")
-        occurrences = source.count(old)
-        if occurrences != 1:
-            raise ValueError(f"Replace text must appear exactly once; found {occurrences:,} occurrences.")
-        path.write_text(source.replace(old, new, 1), encoding="utf-8")
         self._mark_edit()
+        self._replace_text_file(relative, old, new)
         return {
             "ok": True,
             "action": "replace_base64",
-            "path": path.relative_to(self.workspace).as_posix(),
+            "path": relative.as_posix(),
             "changed_characters": len(new) - len(old),
         }
 
@@ -3807,14 +4483,16 @@ class WorkspaceController:
         )
         if not content:
             raise ValueError("The write_base64 action requires non-empty decoded content.")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
         self._mark_edit()
+        written_bytes = self._write_new_file(
+            path.relative_to(self.workspace),
+            content.encode("utf-8"),
+        )
         return {
             "ok": True,
             "action": "write_base64",
             "path": path.relative_to(self.workspace).as_posix(),
-            "bytes": path.stat().st_size,
+            "bytes": written_bytes,
         }
 
     def _delete(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3830,7 +4508,7 @@ class WorkspaceController:
                 "The delete action requires the lowercase SHA-256 from a current read action."
             )
         receipt = self.state.read_receipts.get(relative_key)
-        if receipt is None or receipt[2] != self.state.edit_generation:
+        if receipt is None or receipt[2] != self.state.workspace_generation:
             raise ValueError(
                 "The delete action requires this controller to read the current file first."
             )
@@ -3840,6 +4518,8 @@ class WorkspaceController:
             )
         directory_fd, leaf_name = self._open_anchored_delete_parent(relative)
         file_fd = -1
+        tombstone_name = f".{leaf_name}.agent-delete-{secrets.token_hex(8)}.tmp"
+        tombstone_exists = False
         directory_lock_held = False
         try:
             try:
@@ -3866,18 +4546,54 @@ class WorkspaceController:
                 raise RuntimeError(
                     "The file identity changed before deletion; read it again before retrying."
                 )
-            os.unlink(leaf_name, dir_fd=directory_fd)
-            if int(os.fstat(file_fd).st_nlink) != 0:
+            self._mark_edit()
+            os.rename(
+                leaf_name,
+                tombstone_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+            tombstone_exists = True
+            committed_digest, _committed_size, committed_identity, committed_fd = (
+                self._hash_anchored_file(directory_fd, tombstone_name)
+            )
+            os.close(committed_fd)
+            if (
+                committed_digest != expected_sha256
+                or committed_identity != identity
+                or self._stable_file_identity_from_stat(os.fstat(file_fd)) != identity
+            ):
                 raise RuntimeError(
-                    "The file identity changed during deletion; the controller did not record success."
+                    "The file identity changed before deletion; the concurrent version was "
+                    "preserved."
                 )
+            os.unlink(tombstone_name, dir_fd=directory_fd)
+            tombstone_exists = False
+            os.fsync(directory_fd)
+        except BaseException as exc:
+            if tombstone_exists:
+                try:
+                    restored = self._restore_quarantined_entry(
+                        directory_fd,
+                        tombstone_name,
+                        leaf_name,
+                    )
+                except OSError:
+                    restored = False
+                if restored:
+                    tombstone_exists = False
+                else:
+                    raise RuntimeError(
+                        "Deletion was cancelled after a concurrent change. The displaced "
+                        f"version was preserved as {tombstone_name}."
+                    ) from exc
+            raise
         finally:
             if file_fd >= 0:
                 os.close(file_fd)
             if directory_lock_held:
                 fcntl.flock(directory_fd, fcntl.LOCK_UN)
             os.close(directory_fd)
-        self._mark_edit()
         return {
             "ok": True,
             "action": "delete",
@@ -3928,11 +4644,14 @@ class WorkspaceController:
                 "error": "Stop requested.",
             }
         if not before_scan_complete:
+            self._record_workspace_snapshot(before_fingerprint, complete=False)
             raise RuntimeError(
                 "The verification command was not started because the controller could not "
                 "create a complete bounded workspace fingerprint. Narrow the selected "
                 "workspace before continuing."
             )
+        self._record_workspace_snapshot(before_fingerprint, complete=True)
+        self._invalidate_verification_order()
         started = time.monotonic()
         process = subprocess.Popen(
             command_parts,
@@ -3976,7 +4695,12 @@ class WorkspaceController:
         if mutated_workspace or not workspace_scan_complete:
             self._mark_edit()
         elif run_error is None and not stopped and not timed_out and returncode == 0:
+            self._record_workspace_snapshot(after_fingerprint, complete=True)
             self.state.verification_generation = self.state.edit_generation
+            self.state.verification_workspace_generation = (
+                self.state.workspace_generation
+            )
+            self.state.verification_snapshot_id = after_fingerprint
             self.state.successful_checks.append(command)
         if run_error is not None:
             raise run_error
@@ -4005,6 +4729,7 @@ class WorkspaceController:
             "output_truncated": output_truncated,
             "mutated_workspace": mutated_workspace,
             "workspace_scan_complete": workspace_scan_complete,
+            **self.evidence_metadata(),
             "error": (
                 "The verification command changed project files; the prior bodycheck is stale. "
                 "Inspect those changes before continuing."
@@ -4041,6 +4766,48 @@ class WorkspaceController:
 
     def _bodycheck(self, _payload: dict[str, Any]) -> dict[str, Any]:
         checks: list[dict[str, Any]] = []
+        before_snapshot_id, before_complete = _workspace_mutation_fingerprint(
+            self.workspace,
+            should_stop=self.should_stop,
+        )
+        self._record_workspace_snapshot(
+            before_snapshot_id,
+            complete=before_complete,
+        )
+        if not before_complete:
+            return {
+                "ok": False,
+                "action": "bodycheck",
+                "error": (
+                    "Bodycheck could not create a complete bounded workspace snapshot. "
+                    "Narrow the selected workspace before continuing."
+                ),
+                "checks": [
+                    {
+                        "name": "workspace evidence snapshot",
+                        "ok": False,
+                        "output": "The bounded workspace scan was incomplete.",
+                    }
+                ],
+                **self.evidence_metadata(),
+            }
+        if self.verification_required and not self.state.verification_current:
+            return {
+                "ok": False,
+                "action": "bodycheck",
+                "error": (
+                    "Bodycheck requires one successful approved verification command after "
+                    "the latest edit or workspace change."
+                ),
+                "checks": [
+                    {
+                        "name": "current verification",
+                        "ok": False,
+                        "output": "Run an approved verification command before bodycheck.",
+                    }
+                ],
+                **self.evidence_metadata(),
+            }
         if (self.workspace / ".git").exists():
             try:
                 status = _filtered_git_status(
@@ -4085,7 +4852,47 @@ class WorkspaceController:
                     "error": "Stop requested.",
                 }
             diff_check_ok = diff_returncode == 0 and not diff_check_timed_out
-            checks.append({"name": "git status --short", "ok": True, "output": _truncate_text(status, 16_000)})
+            cached_returncode, cached_stopped, cached_check_timed_out = (
+                _bounded_devnull_process(
+                    [
+                        str(git),
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-c",
+                        "core.untrackedCache=false",
+                        "diff",
+                        "--cached",
+                        "--check",
+                    ],
+                    workspace=self.workspace,
+                    timeout_seconds=30,
+                    should_stop=self.should_stop,
+                    process_changed=self.process_changed,
+                )
+            )
+            if cached_stopped:
+                return {
+                    "ok": False,
+                    "action": "bodycheck",
+                    "stopped": True,
+                    "error": "Stop requested.",
+                }
+            cached_check_ok = (
+                cached_returncode == 0 and not cached_check_timed_out
+            )
+            untracked_check_ok = self._untracked_files_pass_whitespace_check(status)
+            status_complete = "[status truncated at the controller output limit]" not in status
+            checks.append(
+                {
+                    "name": "git status --short",
+                    "ok": status_complete,
+                    "output": (
+                        _truncate_text(status, 16_000)
+                        if status_complete
+                        else "Git status exceeded the bounded controller output limit."
+                    ),
+                }
+            )
             checks.append(
                 {
                     "name": "git diff --check",
@@ -4101,18 +4908,78 @@ class WorkspaceController:
                     ),
                 }
             )
+            checks.append(
+                {
+                    "name": "git diff --cached --check",
+                    "ok": cached_check_ok,
+                    "output": (
+                        ""
+                        if cached_check_ok
+                        else (
+                            "Git staged-diff checking exceeded the 30-second controller limit."
+                            if cached_check_timed_out
+                            else "Git found whitespace errors in the staged project diff."
+                        )
+                    ),
+                }
+            )
+            checks.append(
+                {
+                    "name": "untracked file whitespace",
+                    "ok": untracked_check_ok,
+                    "output": (
+                        ""
+                        if untracked_check_ok
+                        else "Git-style whitespace errors were found in an untracked project file."
+                    ),
+                }
+            )
+        after_snapshot_id, after_complete = _workspace_mutation_fingerprint(
+            self.workspace,
+            should_stop=self.should_stop,
+        )
+        if self.should_stop():
+            return {
+                "ok": False,
+                "action": "bodycheck",
+                "stopped": True,
+                "error": "Stop requested.",
+            }
+        workspace_stable = bool(
+            after_complete and after_snapshot_id == before_snapshot_id
+        )
+        self._record_workspace_snapshot(
+            after_snapshot_id,
+            complete=after_complete,
+        )
+        checks.append(
+            {
+                "name": "workspace evidence snapshot",
+                "ok": workspace_stable,
+                "output": (
+                    ""
+                    if workspace_stable
+                    else (
+                        "The workspace changed while bodycheck was running."
+                        if after_complete
+                        else "The final bounded workspace scan was incomplete."
+                    )
+                ),
+            }
+        )
         instructions = [path.relative_to(self.workspace).as_posix() for path in _collect_instruction_files(self.workspace)]
-        passed = all(check["ok"] for check in checks) if checks else True
+        passed = all(check["ok"] for check in checks)
         if passed:
             self.state.bodycheck_generation = self.state.edit_generation
+            self.state.bodycheck_workspace_generation = self.state.workspace_generation
+            self.state.bodycheck_snapshot_id = after_snapshot_id
         return {
             "ok": passed,
             "action": "bodycheck",
-            "bodycheck_current": self.state.bodycheck_current,
-            "verification_current": self.state.verification_current,
             "successful_checks": self.state.successful_checks[-20:],
             "instruction_files": instructions,
             "checks": checks,
+            **self.evidence_metadata(),
         }
 
 
@@ -4127,12 +4994,27 @@ def _workspace_mutation_fingerprint(
     inspected_directories = 0
     inspected_bytes = 0
     pending = deque([workspace])
+    observed_entries: list[tuple[Path, tuple[int, int, int, int, int, int]]] = []
     deadline = time.monotonic() + WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS
     stop_requested = should_stop or (lambda: False)
     try:
         resolved_workspace = workspace.resolve(strict=True)
+        root_stat = os.stat(workspace, follow_symlinks=False)
     except (OSError, ValueError):
         return digest.hexdigest(), False
+    observed_entries.append(
+        (
+            workspace,
+            (
+                int(root_stat.st_dev),
+                int(root_stat.st_ino),
+                int(root_stat.st_mode),
+                int(root_stat.st_size),
+                int(root_stat.st_mtime_ns),
+                int(root_stat.st_ctime_ns),
+            ),
+        )
+    )
 
     while pending:
         if (
@@ -4185,6 +5067,19 @@ def _workspace_mutation_fingerprint(
                 return digest.hexdigest(), False
             if stat_module.S_ISDIR(initial_stat.st_mode):
                 digest.update(b"directory\0")
+                observed_entries.append(
+                    (
+                        path,
+                        (
+                            int(initial_stat.st_dev),
+                            int(initial_stat.st_ino),
+                            int(initial_stat.st_mode),
+                            int(initial_stat.st_size),
+                            int(initial_stat.st_mtime_ns),
+                            int(initial_stat.st_ctime_ns),
+                        ),
+                    )
+                )
                 pending.append(path)
                 continue
             if not stat_module.S_ISREG(initial_stat.st_mode):
@@ -4215,16 +5110,49 @@ def _workspace_mutation_fingerprint(
                 initial_stat.st_mode,
                 initial_stat.st_size,
                 initial_stat.st_mtime_ns,
+                initial_stat.st_ctime_ns,
             ) != (
                 final_stat.st_dev,
                 final_stat.st_ino,
                 final_stat.st_mode,
                 final_stat.st_size,
                 final_stat.st_mtime_ns,
+                final_stat.st_ctime_ns,
             ):
                 return digest.hexdigest(), False
+            observed_entries.append(
+                (
+                    path,
+                    (
+                        int(final_stat.st_dev),
+                        int(final_stat.st_ino),
+                        int(final_stat.st_mode),
+                        int(final_stat.st_size),
+                        int(final_stat.st_mtime_ns),
+                        int(final_stat.st_ctime_ns),
+                    ),
+                )
+            )
             inspected_files += 1
             inspected_bytes += initial_stat.st_size
+
+    for path, expected_identity in observed_entries:
+        if time.monotonic() >= deadline or stop_requested():
+            return digest.hexdigest(), False
+        try:
+            current_stat = os.stat(path, follow_symlinks=False)
+        except OSError:
+            return digest.hexdigest(), False
+        current_identity = (
+            int(current_stat.st_dev),
+            int(current_stat.st_ino),
+            int(current_stat.st_mode),
+            int(current_stat.st_size),
+            int(current_stat.st_mtime_ns),
+            int(current_stat.st_ctime_ns),
+        )
+        if current_identity != expected_identity:
+            return digest.hexdigest(), False
 
     digest.update(
         (
@@ -5053,7 +5981,9 @@ class ComputerUseAgentService:
         config_provider: Callable[[], CrawlConfig] | None = None,
     ) -> None:
         self._settings_store = settings_store
-        self._admission_guard = lambda settings, target_url: nullcontext()
+        self._admission_guard = (
+            lambda settings, target_url, workspace, read_only: nullcontext()
+        )
         self._runner = runner or run_chatgpt_web_computer_use
         self._runtime_root = runtime_root
         self._browser_opener = browser_opener or open_agent_in_browser
@@ -5063,6 +5993,7 @@ class ComputerUseAgentService:
         from .agent.event_chain import event_chain_for_snapshot
 
         self._event_chain = event_chain_for_snapshot(self._runtime_root, self._snapshot.run_id)
+        self._sync_delivery_checkpoint_from_event_chain_locked()
         self._stop_requested = _LinearizedStopSignal()
         self._resume_requested = Event()
         self._worker: Thread | None = None
@@ -5113,8 +6044,15 @@ class ComputerUseAgentService:
             from .agent.compute_jobs import ComputeJobManager
 
             return ComputeJobManager(candidate, self._runtime_root).status()
-        except (OSError, RuntimeError, ValueError):
-            return {"state": "idle", "active": False}
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {
+                "state": "unknown",
+                "active": True,
+                "message": (
+                    "Compute-job metadata could not be reconciled safely: "
+                    f"{str(exc)[:320]}"
+                ),
+            }
 
     def stop_compute_job(self, workspace_path: str, job_id: str) -> dict[str, Any]:
         """Stop one durable compute job independently of the Web Agent turn."""
@@ -5146,6 +6084,51 @@ class ComputerUseAgentService:
             if key in payload
         }
         snapshot = AgentRunSnapshot(**allowed)
+        snapshot.action_checkpoint = ActionState.from_checkpoint(
+            snapshot.action_checkpoint
+        ).checkpoint()
+        workspace_device = snapshot.workspace_device
+        if (
+            isinstance(workspace_device, bool)
+            or not isinstance(workspace_device, int)
+            or workspace_device < 0
+        ):
+            workspace_device = -1
+        snapshot.workspace_device = workspace_device
+        workspace_inode = snapshot.workspace_inode
+        if (
+            isinstance(workspace_inode, bool)
+            or not isinstance(workspace_inode, int)
+            or workspace_inode <= 0
+        ):
+            workspace_inode = 0
+        snapshot.workspace_inode = workspace_inode
+        if (
+            not isinstance(snapshot.delivery_checkpoint_version, str)
+            or snapshot.delivery_checkpoint_version != "1.0.0"
+        ):
+            snapshot.delivery_checkpoint_version = "unknown"
+            snapshot.delivery_phase = "unknown"
+        if (
+            not isinstance(snapshot.delivery_phase, str)
+            or snapshot.delivery_phase not in _DELIVERY_CHECKPOINT_PHASES
+        ):
+            snapshot.delivery_phase = "unknown"
+        if not _EXCHANGE_ID_PATTERN.fullmatch(str(snapshot.exchange_id or "")):
+            snapshot.exchange_id = ""
+        for field_name in ("exchange_outbound_sha256", "exchange_response_sha256"):
+            value = str(getattr(snapshot, field_name, "") or "").strip().casefold()
+            setattr(
+                snapshot,
+                field_name,
+                value if re.fullmatch(r"[0-9a-f]{64}", value) else "",
+            )
+        try:
+            snapshot.exchange_sequence = int(snapshot.exchange_sequence)
+        except (TypeError, ValueError):
+            snapshot.exchange_sequence = 0
+        if not 0 <= snapshot.exchange_sequence < _MAX_AGENT_RUN_REVISION:
+            snapshot.exchange_sequence = 0
         try:
             snapshot.run_revision = int(snapshot.run_revision)
         except (TypeError, ValueError):
@@ -5173,13 +6156,15 @@ class ComputerUseAgentService:
             snapshot.bodycheck_passed = False
         return snapshot
 
-    def _persist_snapshot_locked(self) -> None:
+    def _persist_snapshot_locked(self, *, required: bool = False) -> bool:
         """Atomically persist bounded run metadata without prompts, responses, or source text."""
         fields = (
             "running",
             "phase",
             "message",
             "workspace_path",
+            "workspace_device",
+            "workspace_inode",
             "conversation_url",
             "project_url",
             "session_title",
@@ -5210,20 +6195,32 @@ class ComputerUseAgentService:
             "event_chain_state",
             "last_event_kind",
             "verification_passed",
+            "action_checkpoint",
+            "delivery_checkpoint_version",
+            "delivery_phase",
+            "delivery_kind",
+            "exchange_id",
+            "exchange_sequence",
+            "exchange_outbound_sha256",
+            "exchange_response_sha256",
         )
         payload = {
             field_name: getattr(self._snapshot, field_name) for field_name in fields
         }
         raw_runtime_root = self._runtime_root.expanduser()
         if _path_crosses_link_like_component(raw_runtime_root):
-            LOGGER.warning(
-                "Refusing to persist Agent run metadata through a linked runtime root."
-            )
-            return
+            message = "Refusing to persist Agent run metadata through a linked runtime root."
+            if required:
+                raise RuntimeError(message)
+            LOGGER.warning(message)
+            return False
         path = raw_runtime_root / PERSISTED_AGENT_SNAPSHOT_FILENAME
         if _path_is_unsafe_file_leaf(path):
-            LOGGER.warning("Refusing to replace linked Agent run metadata at %s.", path)
-            return
+            message = f"Refusing to replace linked Agent run metadata at {path}."
+            if required:
+                raise RuntimeError(message)
+            LOGGER.warning(message)
+            return False
         try:
             raw_runtime_root.mkdir(parents=True, exist_ok=True)
             raw_runtime_root.chmod(0o700)
@@ -5231,8 +6228,14 @@ class ComputerUseAgentService:
                 path,
                 json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             )
+            return True
         except OSError as exc:
+            if required:
+                raise RuntimeError(
+                    "The Agent delivery checkpoint could not be persisted safely."
+                ) from exc
             LOGGER.warning("Could not persist bounded Agent run metadata: %s", exc)
+            return False
 
     def _sync_event_chain_summary_locked(self) -> None:
         """Copy bounded event-chain health into the persisted run snapshot."""
@@ -5248,15 +6251,58 @@ class ComputerUseAgentService:
             (summary.get("last_event") or {}).get("kind") or ""
         )
 
-    def _record_agent_status_observation_locked(self, *, detail: str) -> None:
-        """Record bounded Agent lifecycle state without persisting prompt content."""
+    def _sync_delivery_checkpoint_from_event_chain_locked(self) -> None:
+        """Recover a checkpoint that reached the event log before snapshot replacement."""
         if self._event_chain is None:
             return
+        checkpoint = self._event_chain.latest_delivery_checkpoint()
+        if checkpoint.get("delivery_checkpoint_version") != "1.0.0":
+            return
+        if self._snapshot.delivery_checkpoint_version != "1.0.0":
+            return
+        if self._snapshot.delivery_phase == "unknown":
+            return
+        try:
+            sequence = int(checkpoint.get("exchange_sequence") or 0)
+        except (TypeError, ValueError):
+            return
+        if sequence < int(self._snapshot.exchange_sequence or 0):
+            return
+        phase = str(checkpoint.get("delivery_phase") or "")
+        exchange_id = str(checkpoint.get("exchange_id") or "")
+        if phase not in _DELIVERY_CHECKPOINT_PHASES:
+            return
+        if sequence == int(self._snapshot.exchange_sequence or 0) and (
+            _DELIVERY_PHASE_ORDER.get(phase, -1)
+            < _DELIVERY_PHASE_ORDER.get(self._snapshot.delivery_phase, -1)
+        ):
+            return
+        if exchange_id and not _EXCHANGE_ID_PATTERN.fullmatch(exchange_id):
+            return
+        self._snapshot.delivery_phase = phase
+        self._snapshot.delivery_checkpoint_version = "1.0.0"
+        self._snapshot.delivery_kind = str(
+            checkpoint.get("delivery_kind") or ""
+        )[:80]
+        self._snapshot.exchange_id = exchange_id
+        self._snapshot.exchange_sequence = sequence
+        for field_name in ("exchange_outbound_sha256", "exchange_response_sha256"):
+            value = str(checkpoint.get(field_name) or "").casefold()
+            setattr(
+                self._snapshot,
+                field_name,
+                value if re.fullmatch(r"[0-9a-f]{64}", value) else "",
+            )
+
+    def _record_agent_status_observation_locked(self, *, detail: str) -> bool:
+        """Record bounded Agent lifecycle state without persisting prompt content."""
+        if self._event_chain is None:
+            return True
         capability = _registered_page_observation("agent_status")
         if capability is None:
-            return
+            return True
         phase = str(self._snapshot.phase or "observed")
-        self._event_chain.page_observation(
+        event = self._event_chain.page_observation(
             capability.key,
             status=phase,
             detail=detail,
@@ -5268,8 +6314,19 @@ class ComputerUseAgentService:
                 "last_action_id": str(self._snapshot.last_action_id or ""),
                 "verification_passed": bool(self._snapshot.verification_passed),
                 "bodycheck_passed": bool(self._snapshot.bodycheck_passed),
+                "delivery_phase": str(self._snapshot.delivery_phase or "idle"),
+                "delivery_kind": str(self._snapshot.delivery_kind or ""),
+                "exchange_id": str(self._snapshot.exchange_id or ""),
+                "exchange_sequence": int(self._snapshot.exchange_sequence or 0),
+                "exchange_outbound_sha256": str(
+                    self._snapshot.exchange_outbound_sha256 or ""
+                ),
+                "exchange_response_sha256": str(
+                    self._snapshot.exchange_response_sha256 or ""
+                ),
             },
         )
+        return event is not None
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -5429,7 +6486,12 @@ class ComputerUseAgentService:
         )
         clean_session_title = _clean_agent_session_title(session_title, "")
 
-        with self._admission_guard(settings, target_url), self._lock:
+        with self._admission_guard(
+            settings,
+            target_url,
+            workspace,
+            bool(read_only),
+        ), self._lock:
             if self._shutdown_started:
                 raise RuntimeError("The Agent service is shutting down.")
             if self._snapshot.running:
@@ -5453,6 +6515,12 @@ class ComputerUseAgentService:
             from .agent.event_chain import AgentEventChain, new_run_id
 
             run_revision = _next_agent_run_revision(self._snapshot.run_revision)
+            continuation_action_state = (
+                ActionState.from_checkpoint(self._snapshot.action_checkpoint)
+                if continuation
+                else ActionState()
+            )
+            workspace_metadata = workspace.stat()
 
             self._snapshot = AgentRunSnapshot(
                 running=True,
@@ -5464,6 +6532,8 @@ class ComputerUseAgentService:
                 ),
                 prompt=clean_prompt,
                 workspace_path=str(workspace),
+                workspace_device=int(workspace_metadata.st_dev),
+                workspace_inode=int(workspace_metadata.st_ino),
                 conversation_url=target_url,
                 project_url=normalize_agent_project_url(settings.platform, project_url),
                 session_title=resolved_session_title,
@@ -5479,6 +6549,9 @@ class ComputerUseAgentService:
                 conversation_bound=False,
                 run_id=new_run_id(),
                 run_revision=run_revision,
+                bodycheck_passed=False,
+                verification_passed=False,
+                action_checkpoint=continuation_action_state.checkpoint(),
             )
             self._event_chain = AgentEventChain(self._runtime_root, self._snapshot.run_id)
             started_event = self._event_chain.start(
@@ -5598,10 +6671,71 @@ class ComputerUseAgentService:
                 "The interrupted task ended before its ChatGPT conversation binding was "
                 "confirmed. Start a new task instead."
             )
+        if snapshot.delivery_checkpoint_version != "1.0.0":
+            return None, (
+                "The interrupted task uses an unknown delivery-checkpoint version. Inspect "
+                "the recorded conversation and start a new task after reconciliation."
+            )
+        if self._event_chain is None:
+            return None, (
+                "The interrupted task has no trustworthy durable event chain. Inspect the "
+                "local runtime record before sending another provider message."
+            )
+        chain_summary = self._event_chain.summary()
+        chain_state = str(chain_summary.get("state") or "")
+        if chain_state != "ready" or int(chain_summary.get("count") or 0) < 1:
+            return None, (
+                "The interrupted task's durable event chain is not trustworthy. Repair or "
+                "inspect the local runtime record before sending another provider message."
+            )
+        delivery_phase = str(snapshot.delivery_phase or "idle")
+        if delivery_phase in _UNSAFE_AUTOMATIC_CONTINUATION_PHASES:
+            reconciliation = (
+                "The provider exchange reached a final result, but local completion did not "
+                "finish durably. Open the recorded conversation to recover that result; the "
+                "Agent will not send another prompt."
+                if delivery_phase == "completed"
+                else (
+                    "Open the recorded conversation to reconcile whether that turn should be "
+                    "consumed, executed, or retried; the Agent will not advance it automatically."
+                )
+            )
+            return None, (
+                "The interrupted task stopped at the "
+                f"{delivery_phase.replace('_', ' ')} delivery checkpoint. {reconciliation}"
+            )
+        pending_action_id = str(
+            (self._event_chain.summary() if self._event_chain is not None else {}).get(
+                "pending_action_id"
+            )
+            or ""
+        )
+        if pending_action_id:
+            return None, (
+                f"Local action {pending_action_id} was requested but has no durable result. "
+                "Its execution outcome is unknown, so automatic continuation is blocked."
+            )
         try:
             workspace = resolve_workspace_path(snapshot.workspace_path)
         except (OSError, ValueError):
             return None, "The interrupted task workspace is no longer available."
+        try:
+            workspace_metadata = workspace.stat()
+        except OSError:
+            return None, "The interrupted task workspace is no longer available."
+        if (
+            snapshot.workspace_device < 0
+            or snapshot.workspace_inode <= 0
+            or (
+                int(workspace_metadata.st_dev),
+                int(workspace_metadata.st_ino),
+            )
+            != (snapshot.workspace_device, snapshot.workspace_inode)
+        ):
+            return None, (
+                "The interrupted task workspace identity is missing or changed. Start a new "
+                "task so the local lease and context can be rebound safely."
+            )
         conversation_url = normalize_agent_conversation_url(
             "chatgpt",
             snapshot.conversation_url,
@@ -5707,6 +6841,42 @@ class ComputerUseAgentService:
                     "run_id": str(snapshot.get("run_id") or ""),
                     "count": chain_count,
                     "last_event": chain.get("last_event"),
+                }
+            )
+
+            delivery_phase = str(snapshot.get("delivery_phase") or "idle")
+            pending_action_id = str(chain.get("pending_action_id") or "")
+            if pending_action_id:
+                delivery_status = "fail"
+                delivery_detail = (
+                    f"Local action {pending_action_id} has no durable observation; its "
+                    "execution outcome is unknown."
+                )
+            elif phase == "finished" and delivery_phase == "completed":
+                delivery_status = "pass"
+                delivery_detail = (
+                    "The final provider exchange and local completion were both recorded."
+                )
+            elif delivery_phase in _UNSAFE_AUTOMATIC_CONTINUATION_PHASES:
+                delivery_status = "warn"
+                delivery_detail = (
+                    "The last provider exchange stopped at the "
+                    f"{delivery_phase.replace('_', ' ')} checkpoint; automatic resend is "
+                    "disabled."
+                )
+            else:
+                delivery_status = "pass"
+                delivery_detail = (
+                    "The latest provider exchange has no ambiguous automatic-resend state."
+                )
+            checks.append(
+                {
+                    "id": "delivery_checkpoint",
+                    "label": "Provider delivery checkpoint",
+                    "status": delivery_status,
+                    "detail": delivery_detail,
+                    "phase": delivery_phase,
+                    "exchange_id": str(snapshot.get("exchange_id") or ""),
                 }
             )
 
@@ -6136,21 +7306,22 @@ class ComputerUseAgentService:
                     context_file=str(context_path),
                     context_bytes=0,
                 )
-                context_path, context_bytes = build_context_markdown(
-                    workspace,
-                    prompt,
-                    settings,
-                    context_path,
-                )
-                self._update(
-                    phase="preparing",
-                    message=(
-                        "Prepared a "
-                        f"{_format_binary_size(context_bytes)} Markdown context bundle."
-                    ),
-                    context_file=str(context_path),
-                    context_bytes=context_bytes,
-                )
+                if self._runner is not run_chatgpt_web_computer_use:
+                    context_path, context_bytes = build_context_markdown(
+                        workspace,
+                        prompt,
+                        settings,
+                        context_path,
+                    )
+                    self._update(
+                        phase="preparing",
+                        message=(
+                            "Prepared a "
+                            f"{_format_binary_size(context_bytes)} Markdown context bundle."
+                        ),
+                        context_file=str(context_path),
+                        context_bytes=context_bytes,
+                    )
             if self._stop_requested.is_set():
                 response, conversation_url, turn_count, bodycheck_passed = (
                     "",
@@ -6177,6 +7348,11 @@ class ComputerUseAgentService:
                 }
                 if self._runner is run_chatgpt_web_computer_use:
                     runner_kwargs["compute_job_runtime_root"] = self._runtime_root
+                    runner_kwargs["action_checkpoint"] = dict(
+                        self._snapshot.action_checkpoint
+                    )
+                    runner_kwargs["checkpoint_update"] = self._checkpoint_update
+                    runner_kwargs["prepare_context_bundle"] = context_path is not None
                 response, conversation_url, turn_count, bodycheck_passed = self._runner(
                     **runner_kwargs,
                 )
@@ -6309,6 +7485,22 @@ class ComputerUseAgentService:
             self._sync_event_chain_summary_locked()
             self._persist_snapshot_locked()
 
+    def _checkpoint_update(self, **changes: Any) -> None:
+        """Persist a delivery boundary before the next external side effect."""
+        with self._lock:
+            for key, value in changes.items():
+                if hasattr(self._snapshot, key):
+                    setattr(self._snapshot, key, value)
+            if not self._record_agent_status_observation_locked(
+                detail="Durable Agent delivery checkpoint recorded."
+            ):
+                self._sync_event_chain_summary_locked()
+                raise RuntimeError(
+                    "The Agent delivery checkpoint event could not be persisted safely."
+                )
+            self._sync_event_chain_summary_locked()
+            self._persist_snapshot_locked(required=True)
+
 
 def _capture_macos_frontmost_application() -> str:
     """Return the current macOS frontmost app without activating a browser."""
@@ -6414,9 +7606,20 @@ def run_web_computer_use(
     should_resume: Callable[[], bool] | None = None,
     event_chain: AgentEventChain | None = None,
     compute_job_runtime_root: Path | None = None,
+    action_checkpoint: dict[str, Any] | None = None,
+    checkpoint_update: Callable[..., None] | None = None,
+    prepare_context_bundle: bool = False,
 ) -> tuple[str, str, int, bool]:
     """Run one selected Web AI session as a local controller action loop."""
     descriptor = browser_descriptors(config)[settings.browser]
+    selected_target_url = target_url or (
+        _platform_home_url(settings.platform)
+        if settings.platform != DEFAULT_AGENT_PLATFORM
+        else settings.target_url
+    )
+    stopped_result = ("", selected_target_url, 0, False)
+    if should_stop():
+        return stopped_result
     controller = WorkspaceController(
         workspace,
         settings,
@@ -6424,12 +7627,53 @@ def run_web_computer_use(
         process_changed,
         read_only=read_only,
         compute_job_runtime_root=compute_job_runtime_root,
+        action_checkpoint=action_checkpoint,
     )
-    selected_target_url = target_url or (
-        _platform_home_url(settings.platform)
-        if settings.platform != DEFAULT_AGENT_PLATFORM
-        else settings.target_url
-    )
+    initial_evidence = controller.refresh_workspace_evidence()
+    if not initial_evidence["evidence_complete"]:
+        raise RuntimeError(
+            "The Agent browser was not opened because the controller could not create a "
+            "complete bounded workspace evidence baseline. Narrow the selected workspace "
+            "before retrying."
+        )
+    if checkpoint_update is not None:
+        checkpoint_update(
+            action_checkpoint=controller.state.checkpoint(),
+            bodycheck_passed=controller.state.bodycheck_current,
+            verification_passed=controller.state.verification_current,
+        )
+    if prepare_context_bundle and context_path is not None:
+        context_path, context_bytes = build_context_markdown(
+            workspace,
+            prompt,
+            settings,
+            context_path,
+        )
+        update(
+            phase="preparing",
+            message=(
+                "Prepared a "
+                f"{_format_binary_size(context_bytes)} Markdown context bundle."
+            ),
+            context_file=str(context_path),
+            context_bytes=context_bytes,
+        )
+        post_context_evidence = controller.refresh_workspace_evidence()
+        if checkpoint_update is not None:
+            checkpoint_update(
+                action_checkpoint=controller.state.checkpoint(),
+                bodycheck_passed=controller.state.bodycheck_current,
+                verification_passed=controller.state.verification_current,
+            )
+        if (
+            not post_context_evidence["evidence_complete"]
+            or post_context_evidence["workspace_changed"]
+        ):
+            raise RuntimeError(
+                "The Agent browser was not opened because the workspace changed or could not "
+                "be scanned completely while its context bundle was prepared. Retry after the "
+                "workspace is stable."
+            )
     initial_message = (
         CONTINUE_INTERRUPTED_AGENT_PROMPT
         if context_path is None
@@ -6444,7 +7688,6 @@ def run_web_computer_use(
             read_only=read_only,
         )
     )
-    stopped_result = ("", selected_target_url, 0, False)
     if should_stop():
         return stopped_result
 
@@ -6470,6 +7713,7 @@ def run_web_computer_use(
                 should_resume=should_resume,
                 update=update,
                 event_chain=event_chain,
+                checkpoint_update=checkpoint_update,
             )
 
     task_stage_window = settings.browser in {"edge", "chrome"} and sys.platform in {"darwin", "win32"}
@@ -6493,6 +7737,7 @@ def run_web_computer_use(
                 if task_stage_window
                 else CHROMIUM_WINDOW_MODE_OFFSCREEN
             ),
+            prefer_initialized_debug_profile=True,
         ) as context:
             try:
                 if should_stop():
@@ -6535,6 +7780,7 @@ def run_web_computer_use(
                 should_resume=should_resume,
                 update=update,
                 event_chain=event_chain,
+                checkpoint_update=checkpoint_update,
             )
 
 
@@ -7968,6 +9214,7 @@ def _run_web_action_loop(
     platform: str = DEFAULT_AGENT_PLATFORM,
     should_resume: Callable[[], bool] | None = None,
     event_chain: AgentEventChain | None = None,
+    checkpoint_update: Callable[..., None] | None = None,
 ) -> tuple[str, str, int, bool]:
     """Exchange JSON actions and compact observations in one Web AI conversation."""
     session_binding = _ProviderSessionBinding(
@@ -8082,6 +9329,90 @@ def _run_web_action_loop(
             if not available:
                 return None
         return None
+
+    durable_checkpoint_update = checkpoint_update or update
+    exchange_sequence = 0
+
+    def submit_exchange(
+        message: str,
+        *,
+        kind: str,
+        submitted_status: str,
+        source_action_id: str = "",
+    ) -> str:
+        """Persist each provider-transfer boundary around one exact message."""
+        nonlocal exchange_sequence
+        exchange_sequence += 1
+        exchange_id = f"exchange-{secrets.token_hex(16)}"
+        receipt_marker = (
+            f"agent-turn-{exchange_id.removeprefix('exchange-')}"
+            if browser_kind != "safari" and platform != "chatgpt"
+            else ""
+        )
+        submitted_message = (
+            f"{message}\n\nController turn receipt: {receipt_marker}"
+            if receipt_marker
+            else message
+        )
+        outbound_sha256 = hashlib.sha256(
+            submitted_message.encode("utf-8")
+        ).hexdigest()
+        response_recorded = False
+
+        def checkpoint(phase: str, **changes: Any) -> None:
+            checkpoint_changes = {
+                "delivery_checkpoint_version": "1.0.0",
+                "delivery_phase": phase,
+                "delivery_kind": kind,
+                "exchange_id": exchange_id,
+                "exchange_sequence": exchange_sequence,
+                "exchange_outbound_sha256": outbound_sha256,
+                "action_checkpoint": controller.state.checkpoint(),
+                **changes,
+            }
+            if source_action_id:
+                checkpoint_changes["last_action_id"] = source_action_id
+            durable_checkpoint_update(
+                **checkpoint_changes,
+            )
+
+        def response_received(value: str) -> None:
+            nonlocal response_recorded
+            if response_recorded:
+                return
+            response_recorded = True
+            checkpoint(
+                "response_received",
+                exchange_response_sha256=hashlib.sha256(
+                    value.encode("utf-8")
+                ).hexdigest(),
+            )
+
+        checkpoint("prepared", exchange_response_sha256="")
+        response = _submit_and_wait(
+            page,
+            browser_kind,
+            message,
+            should_stop,
+            platform=platform,
+            session_check=session_binding.check,
+            session_recover=session_binding.ensure_response_session,
+            submission_target_url=selected_target_url,
+            session_mode=session_binding.session_mode,
+            availability_check=provider_availability_check,
+            on_response_state=update,
+            on_commit_attempted=lambda: checkpoint("commit_attempted"),
+            on_delivered=lambda: checkpoint("delivered"),
+            on_response_received=response_received,
+            turn_receipt_marker=receipt_marker,
+            on_submitted=lambda: update(
+                phase="running",
+                message=submitted_status,
+            ),
+        )
+        if response and not response_recorded:
+            response_received(response)
+        return response
 
     verified = run_with_provider_availability(
         lambda: _verify_agent_page(
@@ -8278,21 +9609,12 @@ def _run_web_action_loop(
             False,
         )
     first_submission = session_binding.arm_first_submission(initial_message)
-    response = _submit_and_wait(
-        page,
-        browser_kind,
+    response = submit_exchange(
         first_submission,
-        should_stop,
-        platform=platform,
-        session_check=session_binding.check,
-        session_recover=session_binding.ensure_response_session,
-        submission_target_url=selected_target_url,
-        session_mode=session_binding.session_mode,
-        availability_check=provider_availability_check,
-        on_response_state=update,
-        on_submitted=lambda: update(
-            phase="running",
-            message=f"Prompt sent to {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; waiting for the first controller action.",
+        kind="initial_prompt",
+        submitted_status=(
+            f"Prompt sent to {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; "
+            "waiting for the first controller action."
         ),
     )
     if should_stop():
@@ -8486,23 +9808,12 @@ def _run_web_action_loop(
                 "repeated_response": repeated_response,
                 "instruction": correction_instruction,
             }
-            response = _submit_and_wait(
-                page,
-                browser_kind,
+            response = submit_exchange(
                 _observation_message(turn_index + 1, observation),
-                should_stop,
-                platform=platform,
-                session_check=session_binding.check,
-                session_recover=session_binding.ensure_response_session,
-                submission_target_url=selected_target_url,
-                session_mode=session_binding.session_mode,
-                availability_check=provider_availability_check,
-                # A format correction still uses the selected reasoning model;
-                # give it the same bounded response budget as any other turn.
-                on_response_state=update,
-                on_submitted=lambda: update(
-                    phase="running",
-                    message=f"Correction sent to {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; waiting for a valid controller action.",
+                kind="format_correction",
+                submitted_status=(
+                    f"Correction sent to {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; "
+                    "waiting for a valid controller action."
                 ),
             )
             continue
@@ -8547,7 +9858,19 @@ def _run_web_action_loop(
                     include_read_receipt=False,
                 ),
             )
+            if _action_event is None:
+                raise RuntimeError(
+                    "The Agent action was not executed because its durable request event "
+                    "could not be persisted safely."
+                )
             update(last_action_id=action_id)
+        consumed_checkpoint = {
+            "delivery_phase": "response_consumed",
+            "action_checkpoint": controller.state.checkpoint(),
+        }
+        if action_id:
+            consumed_checkpoint["last_action_id"] = action_id
+        durable_checkpoint_update(**consumed_checkpoint)
         if action_name == "final":
             try:
                 if action_capability is None:
@@ -8560,39 +9883,56 @@ def _run_web_action_loop(
                     "error": str(exc),
                 }
                 if event_chain is not None and action_id:
-                    event_chain.observation(
+                    persisted_final_observation = event_chain.observation(
                         action_id,
                         action_capability_key,
                         event_observation_payload(action, invalid_final_observation),
                         status="failed",
                         detail="Final action was rejected by the registry-owned schema boundary.",
                     )
+                    if persisted_final_observation is None:
+                        raise RuntimeError(
+                            "The final correction was not sent because its durable observation "
+                            "could not be persisted safely."
+                        )
                 if finalization_grace_available:
                     raise AgentTurnLimitExceeded(
                         f"{AGENT_PLATFORM_BY_KEY[platform]['label']} reached the configured "
                         f"{settings.max_turns:,}-turn limit before returning a valid final action."
                     ) from exc
-                response = _submit_and_wait(
-                    page,
-                    browser_kind,
+                response = submit_exchange(
                     _observation_message(turn_index, invalid_final_observation),
-                    should_stop,
-                    platform=platform,
-                    session_check=session_binding.check,
-                    session_recover=session_binding.ensure_response_session,
-                    submission_target_url=selected_target_url,
-                    session_mode=session_binding.session_mode,
-                    availability_check=provider_availability_check,
-                    on_response_state=update,
-                    on_submitted=lambda: update(
-                        phase="running",
-                        message=f"Final schema correction sent; waiting for the next {AGENT_PLATFORM_BY_KEY[platform]['label']} action.",
+                    kind="final_schema_correction",
+                    source_action_id=action_id,
+                    submitted_status=(
+                        "Final schema correction sent; waiting for the next "
+                        f"{AGENT_PLATFORM_BY_KEY[platform]['label']} action."
                     ),
                 )
                 continue
+            final_evidence = controller.refresh_workspace_evidence()
+            durable_checkpoint_update(
+                action_checkpoint=controller.state.checkpoint(),
+                bodycheck_passed=controller.state.bodycheck_current,
+                verification_passed=controller.state.verification_current,
+            )
             final_blocker = ""
-            if (
-                controller.state.edit_generation > 0
+            if not final_evidence["evidence_complete"]:
+                final_blocker = (
+                    "Final is blocked because the controller could not create a complete "
+                    "bounded workspace evidence snapshot."
+                )
+            elif final_evidence["workspace_changed"]:
+                final_blocker = (
+                    "Final is blocked because the workspace changed after the latest evidence. "
+                    "Final is blocked until one approved verification command succeeds and "
+                    "then bodycheck succeeds after the latest edit."
+                    if not controller.read_only
+                    else "Final is blocked because the workspace changed after the latest bodycheck. "
+                    "Run bodycheck again."
+                )
+            elif (
+                controller.verification_required
                 and not controller.state.verification_current
             ):
                 final_blocker = (
@@ -8605,7 +9945,7 @@ def _run_web_action_loop(
                 )
             if final_blocker:
                 if event_chain is not None and action_id:
-                    event_chain.observation(
+                    persisted_final_observation = event_chain.observation(
                         action_id,
                         action_capability_key,
                         event_observation_payload(
@@ -8619,14 +9959,17 @@ def _run_web_action_loop(
                         status="blocked",
                         detail="Final action was blocked by the current verification gates.",
                     )
+                    if persisted_final_observation is None:
+                        raise RuntimeError(
+                            "The final-gate correction was not sent because its durable "
+                            "observation could not be persisted safely."
+                        )
                 if finalization_grace_available:
                     raise AgentTurnLimitExceeded(
                         f"{AGENT_PLATFORM_BY_KEY[platform]['label']} reached the configured "
                         f"{settings.max_turns:,}-turn limit before satisfying the final verification gates."
                     )
-                response = _submit_and_wait(
-                    page,
-                    browser_kind,
+                response = submit_exchange(
                     _observation_message(
                         turn_index,
                         {
@@ -8634,17 +9977,11 @@ def _run_web_action_loop(
                             "error": final_blocker,
                         },
                     ),
-                    should_stop,
-                    platform=platform,
-                    session_check=session_binding.check,
-                    session_recover=session_binding.ensure_response_session,
-                    submission_target_url=selected_target_url,
-                    session_mode=session_binding.session_mode,
-                    availability_check=provider_availability_check,
-                    on_response_state=update,
-                    on_submitted=lambda: update(
-                        phase="running",
-                        message=f"Bodycheck requirement sent; waiting for the next {AGENT_PLATFORM_BY_KEY[platform]['label']} action.",
+                    kind="final_gate_correction",
+                    source_action_id=action_id,
+                    submitted_status=(
+                        "Bodycheck requirement sent; waiting for the next "
+                        f"{AGENT_PLATFORM_BY_KEY[platform]['label']} action."
                     ),
                 )
                 continue
@@ -8698,7 +10035,7 @@ def _run_web_action_loop(
                     )
                 raise
             if event_chain is not None and action_id:
-                event_chain.observation(
+                persisted_final_observation = event_chain.observation(
                     action_id,
                     action_capability_key,
                     event_observation_payload(
@@ -8706,13 +10043,17 @@ def _run_web_action_loop(
                         {
                             "ok": True,
                             "action": "final",
-                            "bodycheck_current": controller.state.bodycheck_current,
-                            "verification_current": controller.state.verification_current,
+                            **controller.evidence_metadata(),
                         },
                     ),
                     status="accepted",
                     detail="Final action passed the current verification gates.",
                 )
+                if persisted_final_observation is None:
+                    raise RuntimeError(
+                        "The final result was not published because its durable acceptance "
+                        "event could not be persisted safely."
+                    )
             record_page_observation(
                 "agent_response",
                 status="ready",
@@ -8734,6 +10075,10 @@ def _run_web_action_loop(
                 conversation_url=conversation_url,
                 turn_count=turn_index,
                 bodycheck_passed=True,
+            )
+            durable_checkpoint_update(
+                delivery_phase="completed",
+                action_checkpoint=controller.state.checkpoint(),
             )
             return final_response, conversation_url, turn_index, True
 
@@ -8780,25 +10125,37 @@ def _run_web_action_loop(
         activity[-1]["status"] = "completed" if observation.get("ok") else "failed"
         if event_chain is not None and action_id:
             audit_observation = event_observation_payload(action, observation)
-            event_chain.observation(
+            persisted_observation = event_chain.observation(
                 action_id,
                 action_capability_key,
                 audit_observation,
             )
+            if persisted_observation is None:
+                raise RuntimeError(
+                    "The local action result was not sent because its durable observation "
+                    "could not be persisted safely."
+                )
             if action_name == "run":
-                event_chain.verification(
+                evidence_event = event_chain.verification(
                     action_id,
                     action_capability_key,
                     audit_observation,
                     detail="Approved verification command result recorded.",
                 )
             elif action_name == "bodycheck":
-                event_chain.bodycheck(
+                evidence_event = event_chain.bodycheck(
                     action_id,
                     action_capability_key,
                     audit_observation,
                 )
-        update(
+            else:
+                evidence_event = persisted_observation
+            if evidence_event is None:
+                raise RuntimeError(
+                    "The local action result was not sent because its durable evidence "
+                    "event could not be persisted safely."
+                )
+        durable_checkpoint_update(
             activity=activity,
             message=(
                 f"Completed local {action_name} action."
@@ -8807,24 +10164,17 @@ def _run_web_action_loop(
             ),
             bodycheck_passed=controller.state.bodycheck_current,
             verification_passed=controller.state.verification_current,
+            action_checkpoint=controller.state.checkpoint(),
         )
         if observation.get("stopped"):
             return "", conversation_url, turn_index, controller.state.bodycheck_current
-        response = _submit_and_wait(
-            page,
-            browser_kind,
+        response = submit_exchange(
             _observation_message(turn_index, observation),
-            should_stop,
-            platform=platform,
-            session_check=session_binding.check,
-            session_recover=session_binding.ensure_response_session,
-            submission_target_url=selected_target_url,
-            session_mode=session_binding.session_mode,
-            availability_check=provider_availability_check,
-            on_response_state=update,
-            on_submitted=lambda: update(
-                phase="running",
-                message=f"Controller observation sent; waiting for the next {AGENT_PLATFORM_BY_KEY[platform]['label']} action.",
+            kind="controller_observation",
+            source_action_id=action_id,
+            submitted_status=(
+                "Controller observation sent; waiting for the next "
+                f"{AGENT_PLATFORM_BY_KEY[platform]['label']} action."
             ),
         )
         if turn_index >= settings.max_turns:
@@ -13119,17 +14469,23 @@ def _submit_and_wait(
     availability_check: Callable[[], bool | tuple[bool, float]] | None = None,
     timeout_seconds: float | None = None,
     on_response_state: Callable[..., None] | None = None,
+    on_commit_attempted: Callable[[], None] | None = None,
+    on_delivered: Callable[[], None] | None = None,
+    on_response_received: Callable[[str], None] | None = None,
+    turn_receipt_marker: str = "",
 ) -> str:
     """Submit one message and wait for one stable provider response."""
     if should_stop():
         return ""
-    turn_receipt_marker = ""
     submitted_message = message
     if browser_kind != "safari" and platform != "chatgpt":
-        turn_receipt_marker = f"agent-turn-{secrets.token_hex(16)}"
+        if not re.fullmatch(r"agent-turn-[0-9a-f]{32}", turn_receipt_marker):
+            turn_receipt_marker = f"agent-turn-{secrets.token_hex(16)}"
         submitted_message = (
             f"{message}\n\nController turn receipt: {turn_receipt_marker}"
         )
+    else:
+        turn_receipt_marker = ""
     selector = _web_assistant_selector(platform)
     if browser_kind != "safari":
         def capture_baseline() -> tuple[str, dict[str, Any]]:
@@ -13163,7 +14519,9 @@ def _submit_and_wait(
         baseline = int(baseline_snapshot.get("count") or 0)
         baseline_response = str(baseline_snapshot.get("text") or "")
         baseline_user_count = int(baseline_snapshot.get("userCount") or 0)
-        baseline_user_text = str(baseline_snapshot.get("latestUserText") or "")
+        baseline_user_message_id = str(
+            baseline_snapshot.get("latestUserMessageId") or ""
+        )
         user_receipt_contract = bool(turn_receipt_marker) or (
             "userCount" in baseline_snapshot
             and "latestUserText" in baseline_snapshot
@@ -13180,10 +14538,12 @@ def _submit_and_wait(
         )
         baseline_snapshot = {}
         baseline_user_count = 0
-        baseline_user_text = ""
+        baseline_user_message_id = ""
         user_receipt_contract = False
     if should_stop():
         return ""
+    if on_commit_attempted is not None:
+        on_commit_attempted()
     if browser_kind == "safari":
         if platform != "chatgpt":
             raise RuntimeError(f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome.")
@@ -13259,6 +14619,10 @@ def _submit_and_wait(
         return ""
     if on_submitted is not None and not should_stop():
         on_submitted()
+    delivery_reported = False
+    if not user_receipt_contract and on_delivered is not None:
+        on_delivered()
+        delivery_reported = True
 
     report_connection(conversation=str(_confirmed_session or ""))
     submitted_at = time.monotonic()
@@ -13271,7 +14635,7 @@ def _submit_and_wait(
     stable_since = submitted_at
     previous = ""
     response = ""
-    current_user_receipt_seen = platform == "chatgpt" or not user_receipt_contract
+    current_user_receipt_seen = not user_receipt_contract
     response_timeout_seconds = (
         WEB_TURN_TIMEOUT_SECONDS
         if timeout_seconds is None
@@ -13416,14 +14780,36 @@ def _submit_and_wait(
                     )
                     current_user_receipt_visible = marker_echoed
                 else:
-                    current_user_receipt_seen = current_user_receipt_seen or (
+                    latest_user_message_id = str(
+                        response_snapshot.get("latestUserMessageId") or ""
+                    )
+                    expected_user_text = " ".join(submitted_message.split())
+                    observed_user_text = " ".join(latest_user_text.split())
+                    user_identity_advanced = bool(
                         latest_user_count > baseline_user_count
-                        or bool(
-                            latest_user_text
-                            and latest_user_text != baseline_user_text
+                        or (
+                            baseline_user_message_id
+                            and latest_user_message_id
+                            and latest_user_message_id != baseline_user_message_id
                         )
                     )
-                    current_user_receipt_visible = current_user_receipt_seen
+                    exact_user_receipt = bool(
+                        expected_user_text
+                        and observed_user_text == expected_user_text
+                        and user_identity_advanced
+                    )
+                    if (
+                        current_user_receipt_seen
+                        and user_identity_advanced
+                        and observed_user_text != expected_user_text
+                    ):
+                        raise RuntimeError(
+                            "The latest ChatGPT user turn superseded the current controller receipt."
+                        )
+                    current_user_receipt_seen = (
+                        current_user_receipt_seen or exact_user_receipt
+                    )
+                    current_user_receipt_visible = exact_user_receipt
         else:
             count = int(response_snapshot.get("count") or 0)
             latest_response = str(response_snapshot.get("text") or "")
@@ -13431,6 +14817,10 @@ def _submit_and_wait(
             assistant_after_latest_user = bool(
                 response_snapshot.get("assistantAfterLatestUser", True)
             )
+        if current_user_receipt_seen and not delivery_reported:
+            if on_delivered is not None:
+                on_delivered()
+            delivery_reported = True
         if platform != "chatgpt" and user_receipt_contract:
             if (
                 current_user_receipt_visible
@@ -13442,7 +14832,7 @@ def _submit_and_wait(
                 response = ""
                 previous = ""
                 stable_since = time.monotonic()
-        elif assistant_after_latest_user and (
+        elif current_user_receipt_visible and assistant_after_latest_user and (
             count > baseline
             or (latest_response and latest_response != baseline_response)
             or (
@@ -13464,6 +14854,8 @@ def _submit_and_wait(
             stable_since=stable_since,
             now=now,
         ):
+            if on_response_received is not None:
+                on_response_received(response)
             return response
         wait_for_response_poll()
     if response_timeout_seconds == WEB_TURN_TIMEOUT_SECONDS:

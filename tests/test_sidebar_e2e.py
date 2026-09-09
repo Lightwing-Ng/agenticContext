@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.36.0-codex.1
+Code version: v1.36.1-codex.1
 """
 
 from __future__ import annotations
@@ -9698,6 +9698,27 @@ def test_text_source_selection_survives_global_search_form_submission(
     try:
         if width < 901:
             page.locator("#sidebar_toggle").click()
+        page.locator("[data-browser-source-filter-trigger]").click()
+        menu = page.locator("#browser_source_filter_options")
+        expect(menu).to_be_visible()
+        option_geometry = menu.locator("[data-browser-source-filter-option]").evaluate_all("""options =>
+            options.map(option => {
+                const label = option.querySelector('.trade-strategy-dropdown-text');
+                return {
+                    columns: getComputedStyle(option).gridTemplateColumns.split(' ').length,
+                    height: option.getBoundingClientRect().height,
+                    labelClientWidth: label.clientWidth,
+                    labelScrollWidth: label.scrollWidth,
+                };
+            })
+        """)
+        assert all(item["columns"] == 3 for item in option_geometry)
+        assert all(item["height"] <= 40 for item in option_geometry)
+        assert all(
+            item["labelClientWidth"] >= item["labelScrollWidth"]
+            for item in option_geometry
+        )
+        page.locator("[data-browser-source-filter-trigger]").click()
         for source, label in [("claude", "Claude"), ("gemini", "Gemini"), ("grok", "Grok"), ("chatgpt", "ChatGPT")]:
             page.locator("[data-browser-source-filter-trigger]").click()
             page.locator(f'[data-browser-source-filter-option="{source}"]').click()

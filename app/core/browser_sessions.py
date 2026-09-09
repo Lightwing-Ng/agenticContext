@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.21.0-codex.1
+# Code version: v1.22.0-codex.1
 
 from __future__ import annotations
 
@@ -176,6 +176,7 @@ def probe_browser_session(
     config: CrawlConfig,
     *,
     silent: bool = False,
+    prefer_initialized_debug_profile: bool = False,
 ) -> dict[str, Any]:
     """Probe whether one browser is signed in for the requested platform."""
     descriptors = browser_descriptors(config)
@@ -200,20 +201,51 @@ def probe_browser_session(
 
     try:
         if platform_key == "chatgpt":
-            result.update(_probe_chatgpt_session(descriptor, config, silent=silent))
+            result.update(
+                _probe_chatgpt_session(
+                    descriptor,
+                    config,
+                    silent=silent,
+                    prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+                )
+            )
         elif platform_key == "gemini":
-            result.update(_probe_gemini_session(descriptor, config, silent=silent))
+            result.update(
+                _probe_gemini_session(
+                    descriptor,
+                    config,
+                    silent=silent,
+                    prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+                )
+            )
         elif platform_key == "claude":
-            result.update(_probe_claude_session(descriptor, silent=silent))
+            result.update(
+                _probe_claude_session(
+                    descriptor,
+                    silent=silent,
+                    prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+                )
+            )
         elif descriptor.engine == "safari":
             if platform_key == "x":
                 result.update(_probe_safari_x_session(descriptor))
             else:
                 result.update(_probe_safari_grok_session(descriptor))
         elif platform_key == "x":
-            result.update(_probe_chromium_x_session(descriptor))
+            result.update(
+                _probe_chromium_x_session(
+                    descriptor,
+                    prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+                )
+            )
         else:
-            result.update(_probe_chromium_grok_session(descriptor, silent=silent))
+            result.update(
+                _probe_chromium_grok_session(
+                    descriptor,
+                    silent=silent,
+                    prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+                )
+            )
     except Exception as exc:  # pragma: no cover - depends on local browser state
         result["message"] = f"{type(exc).__name__}: {exc}"
         return result
@@ -230,6 +262,7 @@ def _probe_claude_session(
     descriptor: BrowserDescriptor,
     *,
     silent: bool = False,
+    prefer_initialized_debug_profile: bool = False,
 ) -> dict[str, Any]:
     """Verify a Claude Web composer without reading account or credential data."""
     if descriptor.engine != "chromium":
@@ -248,6 +281,7 @@ def _probe_claude_session(
             clone_profile_first=True,
             background_window=True,
             silent=silent,
+            prefer_initialized_debug_profile=prefer_initialized_debug_profile,
         ) as context:
             page = context.pages[0] if context.pages else context.new_page()
             goto_with_retry(page, CLAUDE_HOME_URL, attempts=2, timeout_ms=60_000)
@@ -318,6 +352,7 @@ def _probe_gemini_session(
     config: CrawlConfig,
     *,
     silent: bool = False,
+    prefer_initialized_debug_profile: bool = False,
 ) -> dict[str, Any]:
     """Verify that the selected browser exposes an authenticated Gemini page."""
     from .gemini_downloader import _wait_for_gemini_ready
@@ -336,6 +371,7 @@ def _probe_gemini_session(
                 clone_profile_first=True,
                 background_window=True,
                 silent=silent,
+                prefer_initialized_debug_profile=prefer_initialized_debug_profile,
             ) as context:
                 page = context.pages[0] if context.pages else context.new_page()
                 goto_with_retry(page, GEMINI_HOME_URL, attempts=2, timeout_ms=60_000)
@@ -366,7 +402,11 @@ def _probe_gemini_session(
     }
 
 
-def _probe_chromium_x_session(descriptor: BrowserDescriptor) -> dict[str, Any]:
+def _probe_chromium_x_session(
+    descriptor: BrowserDescriptor,
+    *,
+    prefer_initialized_debug_profile: bool = False,
+) -> dict[str, Any]:
     """Probe an X session from a Chromium-family browser profile."""
     with _serialized_sync_playwright() as playwright:
         with launch_chromium_context(
@@ -375,6 +415,7 @@ def _probe_chromium_x_session(descriptor: BrowserDescriptor) -> dict[str, Any]:
             headless=True,
             clone_profile_first=True,
             background_window=True,
+            prefer_initialized_debug_profile=prefer_initialized_debug_profile,
         ) as context:
             page = context.pages[0] if context.pages else context.new_page()
             goto_with_retry(page, X_HOME_URL)
@@ -392,6 +433,7 @@ def _probe_chromium_grok_session(
     descriptor: BrowserDescriptor,
     *,
     silent: bool = False,
+    prefer_initialized_debug_profile: bool = False,
 ) -> dict[str, Any]:
     """Probe a Grok session from a Chromium-family browser profile."""
     with _serialized_sync_playwright() as playwright:
@@ -402,6 +444,7 @@ def _probe_chromium_grok_session(
             clone_profile_first=True,
             background_window=True,
             silent=silent,
+            prefer_initialized_debug_profile=prefer_initialized_debug_profile,
         ) as context:
             page = context.pages[0] if context.pages else context.new_page()
             goto_with_retry(page, GROK_FILES_URL)
@@ -506,6 +549,7 @@ def _probe_chatgpt_session(
     config: CrawlConfig,
     *,
     silent: bool = False,
+    prefer_initialized_debug_profile: bool = False,
 ) -> dict[str, Any]:
     """Validate ChatGPT authorization in the selected browser."""
     del config
@@ -531,6 +575,7 @@ def _probe_chatgpt_session(
                 clone_profile_first=True,
                 background_window=True,
                 silent=silent,
+                prefer_initialized_debug_profile=prefer_initialized_debug_profile,
             ) as context:
                 page = context.pages[0] if context.pages else context.new_page()
                 goto_with_retry(page, project_url, attempts=2, timeout_ms=30_000)
@@ -864,9 +909,10 @@ class _CdpAttachContext:
     the next request can reattach to the same authenticated session.
     """
 
-    def __init__(self, browser: Any, context: Any) -> None:
+    def __init__(self, browser: Any, context: Any, lock: Any | None = None) -> None:
         self._browser = browser
         self._context = context
+        self._lock = lock
 
     @property
     def pages(self) -> Any:
@@ -887,6 +933,11 @@ class _CdpAttachContext:
         except Exception as close_error:
             if not _is_idempotent_chromium_context_close_error(close_error):
                 LOGGER.warning("Closing the CDP attach connection failed: %s", close_error)
+        finally:
+            lock = self._lock
+            self._lock = None
+            if lock is not None:
+                lock.release()
         return False
 
 
@@ -900,14 +951,15 @@ def launch_chromium_context(
     window_mode: str | None = None,
     *,
     allow_cdp_attach: bool = True,
+    prefer_initialized_debug_profile: bool = False,
 ):
     """Launch an isolated Chromium-family browser with an explicit window mode.
 
-    On Windows, when the host browser is running it keeps its sign-in cookies
-    under an exclusive lock, so cloning the profile cannot read them. When
-    ``allow_cdp_attach`` is true and that lock is detected, the launcher falls
-    back to a project-owned debug browser reached through CDP, which exposes the
-    live login state without touching the locked profile files.
+    On Windows, Agent callers can explicitly prefer an initialized project debug
+    profile and restart or reuse it over CDP. Other callers retain the existing
+    clone-first behavior. A locked daily profile can still trigger the existing
+    debug-browser fallback. Neither CDP path reads locked cookie files or opens
+    the daily profile for writing.
     """
     user_data_dir = descriptor.user_data_dir
     if user_data_dir is None:
@@ -966,25 +1018,34 @@ def launch_chromium_context(
         )
         return any(marker in normalized_error for marker in retry_markers)
 
-    def attach_debug_browser(cdp_endpoint: str | None = None) -> Any:
-        """Attach to an existing or newly started project debug browser over CDP."""
-        from .agent_debug_browser import ensure_debug_browser
+    def attach_debug_browser() -> Any:
+        """Attach while serializing the complete shared debug-browser use."""
+        from .agent_debug_browser import _acquire_debug_browser_lock, ensure_debug_browser
 
-        endpoint = cdp_endpoint or ensure_debug_browser(descriptor.browser_id).cdp_endpoint
-        browser = playwright.chromium.connect_over_cdp(endpoint)
-        context = browser.contexts[0] if browser.contexts else browser.new_context()
-        return _CdpAttachContext(browser, context)
+        browser_id = descriptor.browser_id
+        lock = _acquire_debug_browser_lock(browser_id)
+        try:
+            endpoint = ensure_debug_browser(browser_id).cdp_endpoint
+            browser = playwright.chromium.connect_over_cdp(endpoint)
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+        except BaseException:
+            lock.release()
+            raise
+        return _CdpAttachContext(browser, context, lock=lock)
 
-    if allow_cdp_attach and is_windows_host():
-        from .agent_debug_browser import debug_browser_login_url
+    if (
+        allow_cdp_attach
+        and prefer_initialized_debug_profile
+        and is_windows_host()
+    ):
+        from .agent_debug_browser import debug_browser_profile_initialized
 
-        running_debug_endpoint = debug_browser_login_url(descriptor.browser_id)
-        if running_debug_endpoint:
+        if debug_browser_profile_initialized(descriptor.browser_id):
             LOGGER.info(
-                "Reusing the project debug %s over CDP.",
+                "Using the initialized project debug %s over CDP.",
                 descriptor.label,
             )
-            return attach_debug_browser(running_debug_endpoint)
+            return attach_debug_browser()
 
     if not user_data_dir.exists():
         raise RuntimeError(f"{descriptor.label} user data directory was not found: {user_data_dir}")

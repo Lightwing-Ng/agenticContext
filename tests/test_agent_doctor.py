@@ -1,6 +1,6 @@
 """Route and service tests for Agent doctor recovery UX.
 
-Code version: v1.4.3-codex.1
+Code version: v1.6.1-codex.1
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+from app.core.agent.event_chain import AgentEventChain
 from app.core.computer_use_agent import (
     CONTINUE_INTERRUPTED_AGENT_PROMPT,
     ComputerUseAgentService,
@@ -25,6 +26,56 @@ def _wait_for_completion(service: ComputerUseAgentService) -> dict[str, object]:
     while service.snapshot()["running"] and time.monotonic() < deadline:
         time.sleep(0.01)
     return service.snapshot()
+
+
+def _write_valid_event_chain(
+    runtime_root: Path,
+    run_id: str,
+    *,
+    workspace: Path | None = None,
+    delivery_phase: str = "",
+    terminal_kind: str = "",
+) -> AgentEventChain:
+    chain = AgentEventChain(runtime_root, run_id)
+    start_data: dict[str, object] = {"platform": "chatgpt", "browser": "edge"}
+    if workspace is not None:
+        workspace_stat = workspace.stat()
+        start_data["workspace_identity"] = {
+            "device": int(workspace_stat.st_dev),
+            "inode": int(workspace_stat.st_ino),
+        }
+    assert chain.start(data=start_data) is not None
+    if delivery_phase:
+        assert chain.page_observation(
+            "page.observe.agent_response",
+            status=delivery_phase,
+            detail="Durable provider delivery checkpoint recorded.",
+            data={
+                "delivery_checkpoint_version": "1.0.0",
+                "delivery_phase": delivery_phase,
+                "delivery_kind": "controller_observation",
+                "exchange_id": "exchange-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "exchange_sequence": 1,
+                "exchange_outbound_sha256": "b" * 64,
+                "exchange_response_sha256": "c" * 64,
+            },
+        ) is not None
+    if terminal_kind:
+        assert chain.terminal(
+            terminal_kind,
+            status="finished" if terminal_kind == "run.completed" else "interrupted",
+            detail="Persisted Agent run terminal state.",
+        ) is not None
+    assert chain.summary()["state"] == "ready"
+    return chain
+
+
+def _workspace_checkpoint(workspace: Path) -> dict[str, int]:
+    workspace_stat = workspace.stat()
+    return {
+        "workspace_device": int(workspace_stat.st_dev),
+        "workspace_inode": int(workspace_stat.st_ino),
+    }
 
 
 def test_idle_doctor_is_healthy_and_marks_run_only_checks_not_applicable(tmp_path) -> None:
@@ -220,6 +271,8 @@ def test_doctor_continues_an_interrupted_edge_chatgpt_task_without_context_uploa
     workspace.mkdir()
     runtime_root = tmp_path / "runtime"
     runtime_root.mkdir()
+    run_id = "run-0123456789abcdef"
+    _write_valid_event_chain(runtime_root, run_id, workspace=workspace)
     snapshot_path = runtime_root / "last-run.json"
     snapshot_path.write_text(
         json.dumps(
@@ -228,6 +281,7 @@ def test_doctor_continues_an_interrupted_edge_chatgpt_task_without_context_uploa
                 "phase": "running",
                 "message": "Agent was running.",
                 "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
                 "conversation_url": "https://chatgpt.com/c/interrupted-flight",
                 "session_title": "demo_flight task",
                 "session_mode": "recent",
@@ -238,7 +292,7 @@ def test_doctor_continues_an_interrupted_edge_chatgpt_task_without_context_uploa
                 "chatgpt_effort": "Cruise review",
                 "read_only": True,
                 "conversation_bound": True,
-                "run_id": "run-0123456789abcdef",
+                "run_id": run_id,
             }
         ),
         encoding="utf-8",
@@ -321,12 +375,15 @@ def test_doctor_rejects_continuation_without_confirmed_conversation_binding(
     workspace.mkdir()
     runtime_root = tmp_path / "runtime"
     runtime_root.mkdir()
+    run_id = "run-fedcba9876543210"
+    _write_valid_event_chain(runtime_root, run_id, workspace=workspace)
     (runtime_root / "last-run.json").write_text(
         json.dumps(
             {
                 "running": True,
                 "phase": "running",
                 "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
                 "conversation_url": "https://chatgpt.com/c/unproved-target",
                 "session_mode": "recent",
                 "operating_system": detect_host_operating_system(),
@@ -336,7 +393,7 @@ def test_doctor_rejects_continuation_without_confirmed_conversation_binding(
                 "chatgpt_effort": "highest_available",
                 "read_only": False,
                 "conversation_bound": False,
-                "run_id": "run-fedcba9876543210",
+                "run_id": run_id,
             }
         ),
         encoding="utf-8",
@@ -356,4 +413,311 @@ def test_doctor_rejects_continuation_without_confirmed_conversation_binding(
     ]["detail"]
     assert actions["continue"]["enabled"] is False
     with pytest.raises(RuntimeError, match="binding was confirmed"):
+        service.recover("continue")
+
+
+def test_finished_completed_delivery_checkpoint_is_healthy(tmp_path) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    run_id = "run-0011223344556677"
+    _write_valid_event_chain(
+        runtime_root,
+        run_id,
+        workspace=workspace,
+        delivery_phase="completed",
+        terminal_kind="run.completed",
+    )
+    (runtime_root / "last-run.json").write_text(
+        json.dumps(
+            {
+                "running": False,
+                "phase": "finished",
+                "message": "Agent completed the requested task.",
+                "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
+                "conversation_url": "https://chatgpt.com/c/completed-delivery",
+                "session_mode": "recent",
+                "operating_system": detect_host_operating_system(),
+                "platform": "chatgpt",
+                "browser": "edge",
+                "model": "gpt-5.6-sol",
+                "chatgpt_effort": "highest_available",
+                "read_only": False,
+                "conversation_bound": True,
+                "run_id": run_id,
+                "verification_passed": True,
+                "bodycheck_passed": True,
+                "delivery_checkpoint_version": "1.0.0",
+                "delivery_phase": "completed",
+                "delivery_kind": "controller_observation",
+                "exchange_id": "exchange-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "exchange_sequence": 1,
+                "exchange_outbound_sha256": "b" * 64,
+                "exchange_response_sha256": "c" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    doctor = service.doctor()
+    checks = {check["id"]: check for check in doctor["checks"]}
+
+    assert doctor["status"] == "healthy"
+    assert checks["event_chain"]["status"] == "pass"
+    assert checks["delivery_checkpoint"]["status"] == "pass"
+    assert checks["delivery_checkpoint"]["phase"] == "completed"
+
+
+@pytest.mark.parametrize(
+    "delivery_phase",
+    [
+        "prepared",
+        "commit_attempted",
+        "delivered",
+        "response_received",
+        "response_consumed",
+        "completed",
+        "unknown",
+    ],
+)
+def test_doctor_blocks_continuation_across_non_idle_delivery_checkpoints(
+    tmp_path,
+    delivery_phase,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    run_id = "run-aabbccddeeff0011"
+    _write_valid_event_chain(
+        runtime_root,
+        run_id,
+        workspace=workspace,
+        delivery_phase=delivery_phase,
+    )
+    (runtime_root / "last-run.json").write_text(
+        json.dumps(
+            {
+                "running": True,
+                "phase": "running",
+                "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
+                "conversation_url": "https://chatgpt.com/c/delivery-boundary",
+                "session_mode": "recent",
+                "operating_system": detect_host_operating_system(),
+                "platform": "chatgpt",
+                "browser": "edge",
+                "model": "gpt-5.6-sol",
+                "chatgpt_effort": "highest_available",
+                "read_only": False,
+                "conversation_bound": True,
+                "run_id": run_id,
+                "delivery_checkpoint_version": "1.0.0",
+                "delivery_phase": delivery_phase,
+                "delivery_kind": "controller_observation",
+                "exchange_id": "exchange-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "exchange_sequence": 1,
+                "exchange_outbound_sha256": "b" * 64,
+                "exchange_response_sha256": "c" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    doctor = service.doctor()
+    checks = {check["id"]: check for check in doctor["checks"]}
+    actions = {action["id"]: action for action in doctor["actions"]}
+
+    assert checks["interrupted_continuation"]["status"] == "warn"
+    assert checks["event_chain"]["status"] == "pass"
+    assert checks["delivery_checkpoint"]["status"] == "warn"
+    assert delivery_phase.replace("_", " ") in checks[
+        "interrupted_continuation"
+    ]["detail"]
+    assert actions["continue"]["enabled"] is False
+    with pytest.raises(RuntimeError, match="delivery checkpoint"):
+        service.recover("continue")
+
+
+def test_doctor_blocks_continuation_when_event_chain_is_corrupted(tmp_path) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    run_id = "run-8899aabbccddeeff"
+    chain = _write_valid_event_chain(runtime_root, run_id, workspace=workspace)
+    with chain.path.open("a", encoding="utf-8") as handle:
+        handle.write("{not-valid-json}\n")
+    (runtime_root / "last-run.json").write_text(
+        json.dumps(
+            {
+                "running": True,
+                "phase": "running",
+                "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
+                "conversation_url": "https://chatgpt.com/c/corrupt-chain",
+                "session_mode": "recent",
+                "operating_system": detect_host_operating_system(),
+                "platform": "chatgpt",
+                "browser": "edge",
+                "model": "gpt-5.6-sol",
+                "chatgpt_effort": "highest_available",
+                "read_only": False,
+                "conversation_bound": True,
+                "run_id": run_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    doctor = service.doctor()
+    checks = {check["id"]: check for check in doctor["checks"]}
+    actions = {action["id"]: action for action in doctor["actions"]}
+
+    assert doctor["status"] == "blocked"
+    assert checks["event_chain"]["status"] == "fail"
+    assert checks["interrupted_continuation"]["status"] == "warn"
+    assert "not trustworthy" in checks["interrupted_continuation"]["detail"]
+    assert actions["continue"]["enabled"] is False
+    with pytest.raises(RuntimeError, match="not trustworthy"):
+        service.recover("continue")
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_version", "delivery_phase"),
+    [("2.0.0", "prepared"), ("1.0.0", "future_phase")],
+)
+def test_doctor_blocks_continuation_for_future_or_unknown_delivery_checkpoint(
+    tmp_path,
+    checkpoint_version,
+    delivery_phase,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    run_id = "run-7766554433221100"
+    _write_valid_event_chain(
+        runtime_root,
+        run_id,
+        workspace=workspace,
+        delivery_phase="idle",
+    )
+    (runtime_root / "last-run.json").write_text(
+        json.dumps(
+            {
+                "running": True,
+                "phase": "running",
+                "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
+                "conversation_url": "https://chatgpt.com/c/future-checkpoint",
+                "session_mode": "recent",
+                "operating_system": detect_host_operating_system(),
+                "platform": "chatgpt",
+                "browser": "edge",
+                "model": "gpt-5.6-sol",
+                "chatgpt_effort": "highest_available",
+                "read_only": False,
+                "conversation_bound": True,
+                "run_id": run_id,
+                "delivery_checkpoint_version": checkpoint_version,
+                "delivery_phase": delivery_phase,
+                "exchange_sequence": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    doctor = service.doctor()
+    checks = {check["id"]: check for check in doctor["checks"]}
+    actions = {action["id"]: action for action in doctor["actions"]}
+
+    assert service.snapshot()["delivery_checkpoint_version"] == (
+        "1.0.0" if checkpoint_version == "1.0.0" else "unknown"
+    )
+    assert checks["interrupted_continuation"]["status"] == "warn"
+    assert "checkpoint" in checks["interrupted_continuation"]["detail"]
+    assert actions["continue"]["enabled"] is False
+    with pytest.raises(RuntimeError, match="checkpoint"):
+        service.recover("continue")
+
+
+@pytest.mark.parametrize(
+    "malformed_phase",
+    [[], {}],
+    ids=["list", "object"],
+)
+def test_doctor_degrades_unhashable_delivery_phase_types_without_crashing(
+    tmp_path,
+    malformed_phase,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    run_id = "run-1029384756abcdef"
+    _write_valid_event_chain(
+        runtime_root,
+        run_id,
+        workspace=workspace,
+        delivery_phase="idle",
+    )
+    (runtime_root / "last-run.json").write_text(
+        json.dumps(
+            {
+                "running": True,
+                "phase": "running",
+                "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
+                "conversation_url": "https://chatgpt.com/c/malformed-checkpoint",
+                "session_mode": "recent",
+                "operating_system": detect_host_operating_system(),
+                "platform": "chatgpt",
+                "browser": "edge",
+                "model": "gpt-5.6-sol",
+                "chatgpt_effort": "highest_available",
+                "read_only": False,
+                "conversation_bound": True,
+                "run_id": run_id,
+                "delivery_checkpoint_version": "1.0.0",
+                "delivery_phase": malformed_phase,
+                "exchange_sequence": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    snapshot = service.snapshot()
+    doctor = service.doctor()
+    checks = {check["id"]: check for check in doctor["checks"]}
+    actions = {action["id"]: action for action in doctor["actions"]}
+
+    assert snapshot["delivery_checkpoint_version"] == "1.0.0"
+    assert snapshot["delivery_phase"] == "unknown"
+    assert checks["delivery_checkpoint"]["status"] == "warn"
+    assert checks["delivery_checkpoint"]["phase"] == "unknown"
+    assert actions["continue"]["enabled"] is False
+    with pytest.raises(RuntimeError, match="delivery checkpoint"):
         service.recover("continue")

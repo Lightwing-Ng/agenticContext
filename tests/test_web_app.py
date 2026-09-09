@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.102.1-codex.1
+# Code version: v1.103.1-codex.1
 
 from __future__ import annotations
 
@@ -673,7 +673,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.21.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.111.0-codex.1"
+                expected_style_version = "style-v2.111.1-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1070,7 +1070,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.111.0-codex.1', local_body)
+        self.assertIn('style-v2.111.1-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.6.0', local_body)
@@ -1239,6 +1239,187 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(loopback_response.headers["Pragma"], "no-cache")
         self.assertEqual(loopback_response.headers["Expires"], "0")
         probe.assert_called_once()
+
+    def test_windows_active_agent_suppresses_browser_session_probe(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch("app.web.app.is_windows_host", return_value=True), patch.object(
+                pool,
+                "has_active_worker",
+                return_value=True,
+            ) as active, patch(
+                "app.web.app.probe_and_collect_chatgpt_sources"
+            ) as probe:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/browser-session?platform=chatgpt&browser=edge&scope=agent"
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json()["browser_session_freshness"]["cache_status"],
+            "unprobed",
+        )
+        active.assert_called_once_with("edge")
+        probe.assert_not_called()
+
+    def test_macos_active_agent_does_not_change_browser_session_probe(self) -> None:
+        status_payload = {
+            "platform": "chatgpt",
+            "browser": "edge",
+            "browser_label": "Edge",
+            "logged_in": True,
+            "can_download": True,
+            "account_name": "ChatGPT account",
+            "message": "Ready",
+        }
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch("app.web.app.is_windows_host", return_value=False), patch.object(
+                pool,
+                "has_active_worker",
+                side_effect=AssertionError("macOS must not use Windows probe suppression"),
+            ) as active, patch(
+                "app.web.app.probe_and_collect_chatgpt_sources",
+                return_value=(status_payload, None),
+            ) as probe:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/browser-session?platform=chatgpt&browser=edge&scope=agent"
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json()["browser_session_freshness"]["kind"],
+            "live_browser",
+        )
+        active.assert_not_called()
+        probe.assert_called_once_with("edge", ANY, silent=True)
+
+    def test_only_agent_gemini_readiness_prefers_the_initialized_debug_profile(self) -> None:
+        status_payload = {
+            "platform": "gemini",
+            "browser": "edge",
+            "browser_label": "Edge",
+            "logged_in": True,
+            "can_download": True,
+            "account_name": "Google account",
+            "message": "Ready",
+        }
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            with patch(
+                "app.web.app.probe_browser_session",
+                return_value=status_payload,
+            ) as probe:
+                with app.test_client() as client:
+                    agent_response = client.get(
+                        "/api/browser-session?platform=gemini&browser=edge&scope=agent"
+                    )
+                    cache_response = client.get(
+                        "/api/browser-session?platform=gemini&browser=edge"
+                    )
+
+        self.assertEqual(agent_response.status_code, 200)
+        self.assertEqual(cache_response.status_code, 200)
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(
+            probe.call_args_list[0].kwargs,
+            {
+                "silent": True,
+                "prefer_initialized_debug_profile": True,
+            },
+        )
+        self.assertEqual(
+            probe.call_args_list[1].kwargs,
+            {
+                "silent": False,
+                "prefer_initialized_debug_profile": False,
+            },
+        )
+
+    def test_windows_active_agent_history_miss_returns_busy_without_collection(self) -> None:
+        conversation_url = "https://chatgpt.com/c/windows-busy"
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch("app.web.app.is_windows_host", return_value=True), patch.object(
+                pool,
+                "has_active_worker",
+                return_value=True,
+            ), patch(
+                "app.web.app.fetch_chatgpt_conversation_history"
+            ) as history:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/agent/chatgpt-session-history?browser=edge&conversation_url="
+                        f"{conversation_url}"
+                    )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Agent task is running", response.get_json()["error"])
+        history.assert_not_called()
+
+    def test_windows_active_agent_suppresses_explicit_source_refresh(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch("app.web.app.is_windows_host", return_value=True), patch.object(
+                pool,
+                "has_active_worker",
+                return_value=True,
+            ), patch("app.web.app.list_agent_sources") as sources:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/agent/sources?platform=grok&browser=edge&refresh=1"
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["cache"]["status"], "unprobed")
+        sources.assert_not_called()
+
+    def test_windows_active_agent_serves_stale_empty_history_without_refresh(self) -> None:
+        conversation_url = "https://chatgpt.com/c/windows-empty"
+        cached_payload = {
+            "conversation_url": conversation_url,
+            "title": "Empty session",
+            "history": [],
+            "limit": 100,
+        }
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            app.extensions["agent_source_cache"].store(
+                platform="chatgpt",
+                browser="edge",
+                source_kind="session-history",
+                project_url=conversation_url,
+                payload=cached_payload,
+                now=datetime(2000, 1, 1, tzinfo=timezone.utc),
+            )
+            with patch("app.web.app.is_windows_host", return_value=True), patch.object(
+                pool,
+                "has_active_worker",
+                return_value=True,
+            ), patch(
+                "app.web.app.fetch_chatgpt_conversation_history"
+            ) as history, patch(
+                "app.core.agent_source_cache.AgentSourceCache._start_background_refresh_locked"
+            ) as background_refresh:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/agent/chatgpt-session-history?browser=edge&conversation_url="
+                        f"{conversation_url}&refresh=1"
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["title"], "Empty session")
+        self.assertEqual(response.get_json()["history"], [])
+        self.assertEqual(response.get_json()["cache"]["status"], "stale")
+        history.assert_not_called()
+        background_refresh.assert_not_called()
 
     def test_isolated_agent_app_injects_private_state_and_blocks_external_operations(
         self,
@@ -3458,7 +3639,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.111.0-codex.1", body)
+            self.assertIn("style-v2.111.1-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.32.0-codex.1', body)

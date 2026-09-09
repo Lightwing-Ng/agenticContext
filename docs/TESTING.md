@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.7.11-codex.1`
+Documentation version: `v1.8.0-codex.1`
 
 ## Supported commands
 
@@ -238,7 +238,9 @@ failure has been classified as a real product regression or a test environment a
 Offline regressions in `test_computer_use_agent.py`, `test_scraper_and_browser_sessions.py`, and
 `test_web_app.py` cover configured Windows login/conversation arguments, saved-config forwarding,
 provider-page window selection (including empty contexts), pre-submission window-control failure,
-passive launch modes, and cleanup failure/error precedence using disposable fixtures. They do not
+debug-profile restart, full CDP caller-lifetime exclusion, single-worker admission, active-worker
+probe suppression, macOS non-interference, passive launch modes, and cleanup failure/error
+precedence using disposable fixtures. They do not
 read authenticated profiles or prove native window or provider behavior.
 
 Before claiming native Windows 11 support for the complete workflow, record the commit, Python,
@@ -249,7 +251,8 @@ suite or CI; an automated equivalent must be marked `live`.
 
 | Scenario | Required evidence |
 | --- | --- |
-| Edge `Default` and a configured non-default Chrome profile | Login handoff, Recheck, and task select the same data root/profile; copying and launching alone do not establish authentication. |
+| Edge and Chrome project debug profiles | Login handoff, Recheck, window close/restart, and task retain the same project-owned authentication state; copying and launching alone do not establish authentication. |
+| Concurrent requests | A second Windows Agent is rejected immediately; source/history probes return cached, `unprobed`, or busy responses without driving the active browser. |
 | Source browser open during clone creation | Record copy success or an actionable access/copy error; do not silently switch to writable automation of the real profile. |
 | Passive readiness/source checks | Windows probes remain offscreen/minimized and do not activate the browser. |
 | Existing provider tab, unrelated first tab, and empty clone | The selected or newly created provider page owns the normalized task window; count native windows separately from contexts. |

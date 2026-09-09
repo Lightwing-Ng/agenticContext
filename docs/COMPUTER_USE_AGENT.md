@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.55.8-codex.1`
+Documentation version: `v3.63.0-codex.1`
 
 ## Purpose
 
@@ -129,8 +129,10 @@ within 0.01px of its label. The user-owned service was not restarted.
    session catalog and keeps the Open conversation link, but it does not switch the page
    off `New session` or write a conversation URL into the next submit. Reuse requires an
    explicit user selection that is present in the latest catalog.
-3. Enter a task. The service validates the selected provider's official URL and opens it in the
-   selected browser profile. When a request switches away from the persisted provider, the service
+3. Enter a task. The service validates the selected provider's official URL, records a complete
+   workspace fingerprint, builds the bounded context bundle, and repeats the fingerprint. Drift or
+   an incomplete scan removes the temporary bundle and stops before a browser opens. A stable task
+   then opens in the selected browser profile. When a request switches away from the persisted provider, the service
    resets a stale previous-provider target URL to the new provider's official home before
    validation.
 4. Before attaching project data or submitting a prompt, every provider must expose a compatible
@@ -321,6 +323,16 @@ within 0.01px of its label. The user-owned service was not restarted.
    The configured budget counts local controller actions. When the last action's observation is
    submitted at the boundary, exactly one additional non-mutating `final` response is accepted;
    any non-final response in that bounded closing window interrupts the run without executing it.
+   Before any local Action executes, its content-free `action.requested` event must be durably
+   appended. Its observation must likewise be durable before the next provider message is sent.
+   Provider submission records `prepared`, `commit_attempted`, `delivered`, `response_received`,
+   and `response_consumed` boundaries using only an exchange ID, sequence, and SHA-256 identities.
+   ChatGPT delivery in Chromium requires the exact new user turn in the same canonical conversation;
+   an empty composer or generating indicator is not accepted as a delivery receipt. Gemini, Grok,
+   and Claude derive their visible receipt marker from the persisted exchange ID, and the outbound
+   SHA-256 covers the exact provider message including that marker. The event writer refuses the
+   append that would exceed its reloadable line bound. A malformed delivery-checkpoint version or
+   non-string phase loads as `unknown`, keeps Doctor available, and disables automatic continuation.
 8. A malformed non-JSON reply receives up to three strict-format corrections without spending the
    configured controller-action budget. Corrections identify repeated invalid output, require only
    the single next unfinished action, and on the last retry offer one exact read-only `list` action
@@ -333,7 +345,13 @@ within 0.01px of its label. The user-owned service was not restarted.
    atomically claim completion against the same linearized Stop signal before rendering or
    publishing; a Stop accepted first wins, while later Stop requests are rejected as already finalizing.
 9. After an edit, the controller rejects a final answer until at least one approved verification
-   command and `bodycheck` both succeed for the current edit generation. If an
+   command and `bodycheck` both succeed for the current edit and workspace generations against the
+   same complete bounded snapshot. A final gate takes a fresh snapshot; external workspace drift
+   invalidates earlier evidence. A write-capable task must repeat verification and `bodycheck`, while
+   a read-only task must repeat `bodycheck`. The versioned Action checkpoint stores only counters and
+   SHA-256 snapshot identities, so explicit recovery cannot reset these gates by constructing a new
+   controller. Bodycheck inspects unstaged and staged Git diffs and applies equivalent trailing-
+   whitespace checks to every bounded safe untracked file without staging it. If an
    Edge and ChatGPT run still fails after an exact conversation URL exists, the service preserves the
    failed state without opening traditional Edge. The local page exposes an explicit `Continue in
    Edge` handoff instead of claiming completion. A traditional ChatGPT window can continue the
@@ -341,7 +359,9 @@ within 0.01px of its label. The user-owned service was not restarted.
    edits and bodycheck therefore remain unfinished. A legacy persisted turn-limit failure is
    reclassified as an interrupted task after restart so the same bound ChatGPT conversation can be
    continued explicitly when its safety metadata is still valid; the historical failed event remains
-   unchanged and no continuation starts automatically.
+   unchanged and no continuation starts automatically. A non-idle provider-delivery checkpoint or a
+   requested local Action without a durable observation disables continuation until the user
+   reconciles the recorded conversation; the Agent does not guess whether to resend or replay work.
 10. The local page renders the final Markdown and links to the selected Web conversation in the
    browser encoded by the task, rather than the system default browser. When a
    ChatGPT recent session or project session is selected, the page fetches that conversation's
@@ -373,21 +393,33 @@ in each generation or evaluation. The local optimizer loop remains ordered and f
 `job_start` requires `.agenticContext-compute.json` in the selected workspace. One entry must uniquely
 match the requested id, name a regular non-linked `.py` file below that workspace, pin its exact
 SHA-256, and approve 43,200 through 86,400 seconds. The action accepts neither shell text nor an
-argument list. The runtime invokes only the current Python interpreter and the fixed optimizer
-protocol. A changed source digest, absolute path, traversal, linked path, non-JSON config, or a
-second active job fails closed. An idempotency key reused for the same request returns the existing
-job; reuse for different bytes or parameters is rejected.
+argument list. Before publishing a job, the manager stable-reads the approved entrypoint and JSON
+config, fsyncs those exact bytes inside a private staging directory, then atomically renames the
+complete directory into the durable job catalog. The worker revalidates both content-addressed
+snapshots and runs the entrypoint snapshot with the current Python interpreter and fixed optimizer
+protocol. Replacing the live source after approval cannot redirect that job to different entrypoint
+bytes. A changed source digest, absolute path, traversal, linked path, non-JSON config, incomplete
+runtime publication, or a second active job fails closed. An idempotency key reused for the same
+request returns the existing job; reuse for different bytes or parameters is rejected.
 On macOS, the fixed optimizer command runs through `/usr/bin/sandbox-exec` with all network
 operations denied. This converts the action-level ban on download commands into an operating-system
 network boundary for the approved worker as well. The Windows path does not currently apply an
 equivalent OS-level network-denying sandbox profile.
 
 Each job has an unpredictable 32-hex-character `job_id` and an external task-owned directory. Its
-atomic metadata contains state, PID and birth identity, timestamps, approved entrypoint identity,
-config identity, exit status, relative checkpoint/result paths, progress summary, and the minimum
-resume lineage. It never stores environment variables, browser data, provider transcripts, prompts,
-or secrets. The source workspace remains the only source boundary; runtime output is excluded from
-verification fingerprints by location rather than by weakening fingerprint rules.
+atomic metadata contains a monotonic revision, state, wrapper and child PID birth identities,
+timestamps, approved entrypoint identity, config identity, the workspace device/inode identity, exit
+status, relative checkpoint/result paths, progress summary, and the minimum resume lineage. Launcher
+and worker transitions use a cross-process metadata lock. The worker waits until the launcher has
+durably committed its ownership, then registers the contained child before releasing that child's
+execution gate. A stale launcher update therefore cannot overwrite a terminal worker result. A
+published `starting` record whose ownership remains unresolved stays fail-closed instead of being
+reclassified while a detached worker may still exist. Metadata never stores environment variables,
+browser data, provider transcripts, prompts, or secrets. Admission scans these records under fixed
+workspace and record limits; a linked, malformed, oversized, unreadable, or ownership-ambiguous
+record blocks a new writer instead of disappearing from the scan. The source workspace remains the
+only source boundary; runtime output is excluded from verification fingerprints by location rather
+than by weakening fingerprint rules.
 
 The detached wrapper owns a fixed 12-hour default and 24-hour hard maximum instead of inheriting
 `command_timeout_seconds`. A provider turn, browser refresh, Web stream interruption, normal Agent
@@ -397,9 +429,16 @@ and stale terminal reconciliation release the assertion; `caffeinate -w` also se
 the worker exits.
 
 On service construction and every status read, active metadata is reconciled against the stored
-birth identity. A live match is rebound. A missing or mismatched identity becomes interrupted and
-is never signaled, preventing PID reuse from killing an unrelated process. Stop first rechecks that
-identity, then terminates the owned process group. The default active-job limit is one per workspace.
+birth identities. A live match is rebound. A missing or mismatched wrapper becomes interrupted only
+after the registered child and its containment are also clear; otherwise writer admission remains
+blocked. Stop first rechecks ownership, then clears the dedicated POSIX process group or Windows Job
+Object before publishing terminal state. A normal direct-child exit also checks for descendants;
+unexpected descendants are terminated and make the job fail rather than releasing the workspace
+lease early. Output uses a bounded reader thread rather than a platform-specific pipe selector. The
+default active-job limit is one per workspace.
+Once a controller starts a job, it refuses `replace`, `replace_base64`, `write`, `write_base64`,
+`delete`, and verification `run` until the job becomes terminal. Read-only inspection and
+`bodycheck` remain available, and final may report the durable job ID and current bounded state.
 
 Optimizers should import `write_compute_progress_atomic()` and
 `write_optimizer_checkpoint_atomic()` from `app.core.agent.compute_jobs`. Checkpoint schema 1
@@ -441,6 +480,9 @@ while Resume, Continue, and context cleanup are recorded as recovery events. Pro
 responses, source text, command text, and page content are removed from event payloads; the
 persisted `last-run.json` keeps bounded run metadata documented above alongside chain health and
 last-event metadata, while still omitting prompt, response, source, command, and page-content text.
+The Action request must reach durable storage before its handler runs; an observation must do the
+same before the next provider exchange. A failed event append therefore stops the loop rather than
+leaving an in-memory event that overstates what survived the process.
 The root event stores workspace identity only as `{device,inode}`. Successful read observations and
 delete audit data can add a read receipt's SHA-256 digest, generation, and file identity; delete
 also records that digest as `delete_digest`. A browser-session event stores only a SHA-256 conversation identity
@@ -454,26 +496,41 @@ timeline, and safe actions. Completed runs with public event metadata retain tha
 inspection. Resume continues a paused turn without a duplicate submit. Context cleanup reconciles
 only the app-owned temporary bundle. `Continue interrupted task` is narrower: it is enabled only for
 an interrupted Edge and ChatGPT run whose persisted metadata proves the original conversation was
-bound after its first submission. It revalidates the workspace, operating system, local-permission
-state, conversation URL, and effort policy, then sends one fixed generic continuation request in
+bound after its first submission. It requires a valid nonempty event chain, a supported delivery-
+checkpoint version, and the workspace device/inode recorded at admission. It revalidates the
+workspace, operating system, local-permission state, conversation URL, and effort policy, then sends
+one fixed generic continuation request in
 that conversation without reconstructing or uploading project context. It never runs automatically
 and never reuses an unbound pre-submission URL. Provider handoff and New task remain explicit UI
 actions.
 
 ## Safety boundary
 
-- Every file action and returned observation resolves below the selected project. `.git` and Agent runtime internals are
-  inaccessible. Environment files, credential stores, cookies, and private keys are excluded from
-  context indexes and from `list`, `read`, and `search` observations.
+- Every file action and returned observation resolves below the selected project. `.git`, Agent
+  runtime internals, and every ignored, generated, cache, log, dependency, or local-store directory
+  omitted from workspace evidence are inaccessible. Environment files, credential stores, cookies,
+  and private keys are excluded from context indexes and from `list`, `read`, and `search` observations.
 - Existing file contents change only through an exact, single-match replacement. New files use an
-  explicit write action. `delete` accepts one regular, single-link file only after the same
+  explicit write action with exclusive creation, so a file created concurrently is never truncated.
+  On supported POSIX hosts, writes open every parent below the recorded workspace without following
+  links. Replacement reads one stable identity, writes and fsyncs a unique same-directory file,
+  then moves the current leaf to an unpredictable quarantine name. It publishes the replacement
+  only after the quarantined identity and content still match the read source; a conflicting leaf is
+  preserved, and an indeterminate failure retains the displaced prior version for recovery. Failed
+  new-file verification uses the same quarantine-before-cleanup rule, so it does not unlink a leaf
+  that another process rebound first. The
+  Windows fallback repeats path, parent, identity, and content validation around exclusive creation
+  or atomic replacement because Python does not expose the same directory-relative primitives there.
+  `delete` accepts one regular, single-link file only after the same
   controller has returned its current SHA-256 through `read`; any intervening edit invalidates the
   receipt. On supported POSIX hosts, deletion opens every parent below the recorded workspace with
-  `O_NOFOLLOW`, takes an advisory directory lock, rechecks the leaf identity, and unlinks the leaf
-  through the anchored directory descriptor. The POSIX unlink primitive is name-based rather than
-  inode-addressed; uncooperative external renames remain a non-atomic limitation and are detected
-  where possible, while hosts without the anchored primitives fail closed. Directories, symlinks,
-  hard links, recursive targets, and files larger than 20 MiB are rejected.
+  `O_NOFOLLOW`, takes an advisory directory lock, rechecks the leaf identity, and moves it to an
+  unpredictable tombstone. Only a tombstone whose content and identity still match the read receipt
+  is unlinked; a concurrent replacement is restored or retained under its quarantine name. POSIX
+  unlink remains name-based, so a process that discovers and races the random internal quarantine
+  name is outside this cooperative concurrency guarantee. Hosts without the anchored primitives fail
+  closed for delete. Directories, symlinks, hard links, recursive targets, and files larger than
+  20 MiB are rejected.
 - Shell commands are restricted to bounded inspection, build, lint, and test work. Approved PATH
   tools are resolved once to an absolute executable outside the workspace before launch; Python
   verification is pinned to the service's own Python runtime. Approved Python modules are imported
@@ -493,6 +550,8 @@ actions.
   installation, downloads, publishing, environment enumeration, and Git-history mutation.
   A bounded before-and-after content fingerprint covers up to 12,000 files, 12,000 directories,
   512 MiB, and 15 seconds per scan while excluding the documented ignored/runtime directories.
+  It re-stats every observed entry before accepting the result, but remains point-in-time evidence;
+  it is not a filesystem transaction against an uncooperative external writer.
   An incomplete initial fingerprint prevents launch; a changed or incomplete final fingerprint
   fails the run, advances the edit generation, and invalidates both verification and bodycheck.
   Verification output is decoded with replacement for invalid UTF-8, retained to 48,000 characters,
@@ -606,20 +665,28 @@ Module restrictions, plugin/configuration checks, and project path confinement s
 Windows uses the same complete action schema and file-action boundary with native Windows paths, a new process group, an
 absolute System32 `taskkill /T /F` fallback, and Edge or Chrome Chromium sessions. Explicit Edge and Chrome handoffs
 resolve an installed browser executable rather than relying on `PATH`; the default-browser helpers continue to use
-Windows URL association. Chromium session probes serialize the complete synchronous Playwright lifecycle, including
-context cleanup, so independent Flask worker threads do not enter that lifecycle concurrently. This round's
+Windows URL association. Synchronous session probes retain their lifecycle lock. Calls attached to one project debug
+browser additionally hold a per-browser, process-local reentrant lock through context cleanup; acquisition fails after
+five seconds instead of waiting indefinitely. This round's
 Windows process-tree contract is covered statically and by mocks, not by a real Windows end-to-end
-run. If a Windows group leader exits before its descendants, `taskkill` is best effort rather than
-the strict Job Object completion barrier required for hostile child processes. Safari remains
+run. For bounded verification commands, if a Windows group leader exits before its descendants,
+`taskkill` is best effort. Durable compute jobs use a separate Windows Job Object and do not publish
+terminal state until its process count reaches zero. Safari remains
 macOS-only. The selected operating system must match the host running the local service.
 
-Edge and Chrome run through an isolated clone of the selected signed-in profile and operate the
-selected provider's DOM directly. Passive source checks use a quiet, task-independent context.
+On macOS, Edge and Chrome run through an isolated clone of the selected signed-in profile. On
+Windows, that clone remains the pre-initialization fallback; after the project debug profile is
+initialized, Agent readiness, source, Project, and history probes and Agent tasks restart or reuse
+that persistent profile over CDP and operate the selected provider's DOM directly. Ordinary Cache
+probes and sync workers remain clone-first. Passive Agent source checks use a quiet,
+task-independent context only when no Windows Agent worker owns that browser.
 ChatGPT source checks use a non-headless context because ChatGPT's Cloudflare challenge rejects
-headless clones with HTTP 403. Windows retains the backgrounded/offscreen probe policy; existing
-macOS silent probes retain their task-stage window policy and foreground-app restoration.
-On macOS and Windows, an executing Edge or Chrome task selects or creates its provider page before
-normalizing that page's window in the isolated, non-offscreen context. Windows requests normal
+headless clones with HTTP 403. Pre-initialization Windows clone probes retain the
+backgrounded/offscreen policy; the persistent debug browser remains a visible project-owned login
+surface. Existing macOS silent probes retain their task-stage window policy and foreground-app
+restoration.
+An executing Edge or Chrome task selects or creates its provider page before normalizing that
+page's window. Windows requests normal
 state and fixed bounds `(80, 80, 1280, 900)` through CDP without requesting activation; it does not
 run macOS foreground-app capture or restore. Missing CDP window control or a failed window command
 stops the task before provider prompt submission. Fixed geometry does not verify the available
@@ -627,8 +694,9 @@ display work area, and a cloned context may restore more than one native window.
 foreground app is restored if the browser took focus, leaving the task window available for the user to
 inspect through macOS window management. macOS ultimately determines Stage Manager grouping.
 Automated execution never opens the user's original profile for writing. Chromium still suppresses first-run,
-crash, notification, and repost prompts; a normal task exit closes the isolated context and removes
-its temporary profile. The next Chromium launch removes only abandoned `cachelikes-edge-*` or
+crash, notification, and repost prompts; a clone-backed task exit closes the isolated context and
+removes its temporary profile. A Windows CDP-backed exit disconnects Playwright while leaving the
+project browser/profile available. The next Chromium launch removes only abandoned `cachelikes-edge-*` or
 `cachelikes-chrome-*` directories older than 24 hours. Safari uses one shared Apple Events context,
 restores the previous frontmost application after window operations, and closes every task-owned
 window on success, stop, failure, or exception. Safari remains available only for ChatGPT's existing
@@ -638,14 +706,24 @@ that state and does not attempt a login bypass.
 
 When an Agent browser status is not signed in, the status card exposes an `Open <Browser> to sign in`
 action. It opens the selected browser visibly at the provider home page; the user must then choose the
-existing recheck action to verify the new session. Windows login and conversation handoff explicitly
-select the data root and profile from the same saved configuration used by probes and tasks: Edge
-uses `Default`, while Chrome uses its configured profile. The explicit handoff lets the real browser
-persist the user's login; automated execution still uses a temporary clone. Copying the profile is
-not an atomic snapshot of a running browser, and neither copying nor launching proves that the
-provider session is authenticated. Readiness must be checked inside the clone. Opening the browser
+existing recheck action to verify the new session. On Windows, login initializes the project-owned
+debug profile under `local_store/agent_browser_profile/<browser>`; later Recheck and Agent tasks use
+that same profile and restart its browser after a window close. The daily Edge or Chrome profile is
+not opened for writing. Copying or launching alone does not prove authentication. Opening the browser
 does not imply sign-in and does not add automatic login polling. Windows runtime behavior for this
 workflow remains not locally verified.
+
+Independently of browser capacity, admission permits one write-capable Agent for any overlapping
+workspace roots. It resolves aliases and parent/child roots before deciding; read-only sessions may
+remain concurrent. A detached durable compute job also holds the write boundary for its selected
+workspace. This coordination does not change browser launch, profile selection, login handoff, tab
+reuse, or foreground-app restoration.
+
+The Windows Agent session pool exposes one active slot because all providers in one Edge or Chrome
+debug browser share a rendered context. While that slot is active, live source, Project-session,
+history, and bootstrap collection for the same browser is suppressed: cached data may be served
+without background refresh, a catalog/bootstrap miss is `unprobed`, and a history miss returns HTTP
+409. macOS does not enter this suppression path and retains its existing isolated-browser behavior.
 
 Chromium cleanup treats only the known Playwright already-closed and driver-disconnected close
 errors as an idempotent second close, while still removing the temporary profile. Unexpected

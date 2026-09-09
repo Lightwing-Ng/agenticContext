@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.67.0-codex.1
+# Code version: v1.68.0-codex.1
 
 from __future__ import annotations
 
@@ -71,6 +71,7 @@ from app.core.foundation import (
     build_initial_snapshot,
     configure_logging,
     get_log_file_path,
+    is_windows_host,
     load_saved_config,
     save_config,
     utc_now,
@@ -1193,15 +1194,22 @@ def create_app(
         source_kind: str,
         project_url: str = "",
         collector: Callable[[], dict[str, Any]],
+        allow_live_collection: bool = True,
     ) -> dict[str, Any]:
-        """Route every Agent catalog request through the shared cache policy."""
+        """Route an Agent catalog through cache without optional browser I/O."""
+        if (
+            allow_live_collection
+            and uses_windows_debug_browser(browser)
+            and agent_session_pool.has_active_worker(browser)
+        ):
+            allow_live_collection = False
         requested_refresh = request.args.get("refresh", "").strip().lower() in {"1", "true", "yes"}
         is_browser_session = source_kind == "browser-session"
         if is_browser_session and platform == "chatgpt":
             # Re-probe legacy bootstrap rows once after the capability upgrade.
             project_url = "capabilities-v3"
         is_passive_source_catalog = source_kind == "sources"
-        force_refresh = requested_refresh
+        force_refresh = requested_refresh and allow_live_collection
         payload = agent_source_cache.get_or_collect(
             platform=platform,
             browser=browser,
@@ -1209,14 +1217,15 @@ def create_app(
             project_url=project_url,
             collector=collector,
             force_refresh=force_refresh,
-            stale_while_revalidate=not (
+            stale_while_revalidate=allow_live_collection and not (
                 is_browser_session
                 or is_passive_source_catalog
                 or source_kind == "project-sessions"
                 or source_kind == "session-history"
                 or requested_refresh
             ),
-            collect_on_miss=not is_passive_source_catalog or requested_refresh,
+            collect_on_miss=allow_live_collection
+            and (not is_passive_source_catalog or requested_refresh),
         )
         if source_kind == "sources":
             normalized = normalize_agent_source_catalog_payload(platform, payload)
@@ -1235,6 +1244,7 @@ def create_app(
         platform: str,
         browser: str,
         collector: Callable[[], tuple[dict[str, Any], dict[str, Any] | None]],
+        allow_live_collection: bool = True,
     ) -> dict[str, Any]:
         """Reuse one provider readiness-and-sources browser flight across Agent polls."""
         platform_label = {
@@ -1266,7 +1276,12 @@ def create_app(
             browser=browser,
             source_kind="browser-session",
             collector=collect_bootstrap,
+            allow_live_collection=allow_live_collection,
         )
+
+    def uses_windows_debug_browser(browser: str) -> bool:
+        """Return whether this host/browser can share one project CDP context."""
+        return is_windows_host() and browser in {"edge", "chrome"}
 
     def selected_agent_session_id() -> str:
         return str(request.headers.get("X-CacheLikes-Agent-Session") or "primary").strip()
@@ -1805,6 +1820,9 @@ def create_app(
         )
         if not conversation_url:
             return jsonify({"error": "Choose a valid ChatGPT conversation before loading its history."}), 400
+        ask_running = uses_windows_debug_browser(
+            browser_name
+        ) and agent_session_pool.has_active_worker(browser_name)
         try:
             payload = load_agent_source_catalog(
                 platform="chatgpt",
@@ -1817,9 +1835,24 @@ def create_app(
                     saved_config,
                     silent=True,
                 ),
+                allow_live_collection=not ask_running,
             )
         except (RuntimeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 409
+        cache_metadata = payload.get("cache")
+        if (
+            ask_running
+            and isinstance(cache_metadata, dict)
+            and cache_metadata.get("status") == "unprobed"
+        ):
+            return jsonify(
+                {
+                    "error": (
+                        "An Agent task is running in this browser. "
+                        "History is unavailable until it finishes."
+                    )
+                }
+            ), 409
         rendered_history: list[dict[str, Any]] = []
         for raw_item in payload.get("history", []):
             if not isinstance(raw_item, dict):
@@ -1850,6 +1883,9 @@ def create_app(
         )
         if not conversation_url:
             return jsonify({"error": "Choose a valid Grok conversation before loading its history."}), 400
+        ask_running = uses_windows_debug_browser(
+            browser_name
+        ) and agent_session_pool.has_active_worker(browser_name)
         try:
             payload = load_agent_source_catalog(
                 platform="grok",
@@ -1862,9 +1898,24 @@ def create_app(
                     saved_config,
                     silent=True,
                 ),
+                allow_live_collection=not ask_running,
             )
         except (RuntimeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 409
+        cache_metadata = payload.get("cache")
+        if (
+            ask_running
+            and isinstance(cache_metadata, dict)
+            and cache_metadata.get("status") == "unprobed"
+        ):
+            return jsonify(
+                {
+                    "error": (
+                        "An Agent task is running in this browser. "
+                        "History is unavailable until it finishes."
+                    )
+                }
+            ), 409
         rendered_history: list[dict[str, Any]] = []
         for raw_item in payload.get("history", []):
             if not isinstance(raw_item, dict):
@@ -2622,6 +2673,9 @@ def create_app(
                 browser_name,
                 saved_config,
                 silent=scope == "agent",
+                prefer_initialized_debug_profile=(
+                    scope == "agent" and platform_name == "gemini"
+                ),
             )
         except ValueError as exc:
             return browser_session_response({"error": str(exc)}, 400)

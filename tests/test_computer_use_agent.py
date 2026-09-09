@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.58.0-codex.1
+Code version: v3.60.1-codex.1
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from app.core.computer_use_agent import (
     AGENT_PLATFORM_OPTIONS,
     AgentRunSnapshot,
     AgentTurnLimitExceeded,
+    ActionState,
     CHATGPT_MODEL_TRIGGER_LABELS,
     CHATGPT_SESSION_BIND_TIMEOUT_SECONDS,
     DEFAULT_CHATGPT_MODEL,
@@ -4489,6 +4490,68 @@ def test_pre_requested_stop_never_opens_a_web_browser_context(
     assert result == ("", "https://chatgpt.com/", 0, False)
 
 
+def test_context_bundle_drift_blocks_before_browser_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Descriptor:
+        engine = "chromium"
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = workspace / "source.txt"
+    source.write_text("initial\n", encoding="utf-8")
+    context_path = tmp_path / "runtime" / "context.md"
+    browser_started = False
+    checkpoints: list[dict[str, object]] = []
+
+    def build_with_drift(
+        _workspace: Path,
+        _prompt: str,
+        _settings: ComputerUseSettings,
+        destination: Path,
+    ) -> tuple[Path, int]:
+        destination.parent.mkdir(parents=True)
+        destination.write_text("bounded context\n", encoding="utf-8")
+        source.write_text("changed during context build\n", encoding="utf-8")
+        return destination, destination.stat().st_size
+
+    def unexpected_browser() -> object:
+        nonlocal browser_started
+        browser_started = True
+        raise AssertionError("Context drift must stop before browser startup.")
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "browser_descriptors",
+        lambda _config: {"edge": _Descriptor()},
+    )
+    monkeypatch.setattr(computer_use_agent, "build_context_markdown", build_with_drift)
+    monkeypatch.setattr(computer_use_agent, "sync_playwright_or_error", unexpected_browser)
+
+    with pytest.raises(RuntimeError, match="workspace changed"):
+        run_web_computer_use(
+            prompt="Inspect the project.",
+            workspace=workspace,
+            context_path=context_path,
+            config=CrawlConfig(),
+            settings=ComputerUseSettings(workspace_path=str(workspace)),
+            target_url="https://chatgpt.com/",
+            should_stop=lambda: False,
+            update=lambda **_changes: None,
+            process_changed=lambda _process: None,
+            checkpoint_update=lambda **changes: checkpoints.append(changes),
+            prepare_context_bundle=True,
+        )
+
+    assert browser_started is False
+    assert len(checkpoints) == 2
+    assert checkpoints[-1]["verification_passed"] is False
+    assert checkpoints[-1]["bodycheck_passed"] is False
+
+
 @pytest.mark.parametrize("engine", ("safari", "chromium"))
 @pytest.mark.parametrize("stop_stage", ("context", "navigation"))
 @pytest.mark.parametrize("host_platform", ("darwin", "win32", "linux"))
@@ -6214,7 +6277,7 @@ def test_git_status_stream_has_a_global_raw_limit_and_stops_the_process(
     assert Path(observed_command[0]).name == "git"
     assert "--porcelain=v1" in observed_command
     assert "-z" in observed_command
-    assert "--untracked-files=normal" in observed_command
+    assert "--untracked-files=all" in observed_command
 
 
 def test_filtered_git_status_drops_sensitive_rename_and_truncated_records(
@@ -6712,6 +6775,62 @@ def test_action_loop_records_workspace_and_delete_receipt_provenance(
     assert event_chain.summary()["state"] == "ready"
 
 
+def test_action_loop_stops_before_local_execution_when_request_event_is_not_durable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Page:
+        url = "https://chatgpt.com/c/event-barrier"
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    executed: list[dict[str, object]] = []
+    controller.execute = lambda action: executed.append(action) or {"ok": True}
+    event_chain = AgentEventChain(tmp_path / "runtime", new_run_id())
+    event_chain.begin_action = lambda *_args, **_kwargs: ("action-0001", None)
+
+    monkeypatch.setattr(computer_use_agent, "_verify_agent_page", lambda *_args: None)
+    monkeypatch.setattr(computer_use_agent, "_select_chat_mode", lambda *_args: None)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_select_web_model",
+        _select_verified_chatgpt_model,
+    )
+    monkeypatch.setattr(computer_use_agent, "_attach_context_file", lambda *_args: False)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_submit_and_wait",
+        lambda *_args, **_kwargs: (
+            '{"action":"write","path":"created.txt","content":"created\\n"}'
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="durable request event"):
+        _run_web_action_loop(
+            page=_Page(),
+            browser_kind="chromium",
+            initial_message="Create one file.",
+            controller=controller,
+            context_path=tmp_path / "context.md",
+            settings=ComputerUseSettings(workspace_path=str(workspace)),
+            session_mode="recent",
+            selected_target_url=_Page.url,
+            should_stop=lambda: False,
+            update=lambda **_changes: None,
+            event_chain=event_chain,
+        )
+
+    assert executed == []
+    assert not (workspace / "created.txt").exists()
+
+
 @pytest.mark.parametrize(
     ("platform", "model", "provider_label", "expected_model", "target_url"),
     (
@@ -7120,7 +7239,7 @@ def test_final_schema_violation_is_rejected_before_completion_and_recovers(
         ComputerUseSettings(workspace_path=str(workspace), max_turns=2),
         lambda: False,
     )
-    controller.state.bodycheck_generation = controller.state.edit_generation
+    assert controller.execute({"action": "bodycheck"})["ok"]
     responses = iter(
         (
             '{"action":"final","summary":"Do not publish.","verification":"not-a-list"}',
@@ -7336,6 +7455,126 @@ def test_verification_gate_resets_after_every_edit(
     assert controller.state.verification_current
     assert controller.state.bodycheck_current
     assert controller.state.edit_generation == 2
+
+
+def test_final_rechecks_external_workspace_drift_after_bodycheck(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Page:
+        url = "https://chatgpt.com/c/external-drift"
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    tracked = workspace / "notes.txt"
+    tracked.write_text("initial\n", encoding="utf-8")
+    settings = ComputerUseSettings(workspace_path=str(workspace), max_turns=4)
+    controller = WorkspaceController(
+        workspace,
+        settings,
+        lambda: False,
+        read_only=True,
+    )
+    responses = iter(
+        (
+            '{"action":"bodycheck"}',
+            '{"action":"final","summary":"Stale result."}',
+            '{"action":"bodycheck"}',
+            '{"action":"final","summary":"Current result."}',
+        )
+    )
+    submitted: list[str] = []
+
+    def submit(
+        _page: object,
+        _browser: str,
+        message: str,
+        _should_stop: object,
+        **_kwargs: object,
+    ) -> str:
+        submitted.append(message)
+        if len(submitted) == 2:
+            tracked.write_text("changed outside the controller\n", encoding="utf-8")
+        return next(responses)
+
+    monkeypatch.setattr(computer_use_agent, "_verify_agent_page", lambda *_args: None)
+    monkeypatch.setattr(computer_use_agent, "_select_chat_mode", lambda *_args: None)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_select_web_model",
+        _select_verified_chatgpt_model,
+    )
+    monkeypatch.setattr(computer_use_agent, "_attach_context_file", lambda *_args: False)
+    monkeypatch.setattr(computer_use_agent, "_submit_and_wait", submit)
+
+    result = _run_web_action_loop(
+        page=_Page(),
+        browser_kind="chromium",
+        initial_message="Audit the project without editing it.",
+        controller=controller,
+        context_path=tmp_path / "context.md",
+        settings=settings,
+        session_mode="recent",
+        selected_target_url=_Page.url,
+        should_stop=lambda: False,
+        update=lambda **_changes: None,
+    )
+
+    assert result == ("Current result.", _Page.url, 4, True)
+    assert "workspace changed after the latest bodycheck" in submitted[2]
+    assert controller.state.edit_generation == 0
+    assert controller.state.workspace_generation == 1
+    assert controller.state.bodycheck_current
+
+
+def test_action_state_checkpoint_restores_only_bounded_evidence() -> None:
+    snapshot_id = "a" * 64
+    state = ActionState(
+        edit_generation=3,
+        workspace_generation=5,
+        bodycheck_generation=3,
+        bodycheck_workspace_generation=5,
+        verification_generation=3,
+        verification_workspace_generation=5,
+        workspace_snapshot_id=snapshot_id,
+        bodycheck_snapshot_id=snapshot_id,
+        verification_snapshot_id=snapshot_id,
+        evidence_complete=True,
+        successful_checks=["must not persist"],
+    )
+
+    restored = ActionState.from_checkpoint(state.checkpoint())
+
+    assert restored.bodycheck_current
+    assert restored.verification_current
+    assert restored.successful_checks == []
+    assert "must not persist" not in str(state.checkpoint())
+    assert ActionState.from_checkpoint(
+        {"version": "1.0.0", "workspace_snapshot_id": "not-a-digest"}
+    ).evidence_complete is False
+
+
+def test_action_state_checkpoint_never_coerces_string_booleans() -> None:
+    snapshot_id = "a" * 64
+    payload = ActionState(
+        workspace_snapshot_id=snapshot_id,
+        bodycheck_snapshot_id=snapshot_id,
+        verification_snapshot_id=snapshot_id,
+        bodycheck_generation=0,
+        bodycheck_workspace_generation=0,
+        verification_generation=0,
+        verification_workspace_generation=0,
+        evidence_complete=True,
+    ).checkpoint()
+    payload["evidence_complete"] = "false"
+
+    restored = ActionState.from_checkpoint(payload)
+
+    assert restored.evidence_complete is False
+    assert restored.bodycheck_current is False
+    assert restored.verification_current is False
 
 
 @pytest.mark.parametrize(
@@ -7711,6 +7950,83 @@ def test_fresh_grok_loop_rebinds_interruption_checks_to_created_conversation(
         for target, _title in interruption_targets
     )
     assert all(title == "Flight atlas audit" for _target, title in interruption_targets)
+
+
+def test_delivery_checkpoint_hashes_the_exact_provider_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Page:
+        url = "https://grok.com/c/checkpoint-message"
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    settings = ComputerUseSettings(
+        workspace_path=str(workspace),
+        platform="grok",
+        model="grok-build",
+        max_turns=2,
+    )
+    controller = WorkspaceController(
+        workspace,
+        settings,
+        lambda: False,
+        read_only=True,
+    )
+    responses = iter(
+        ('{"action":"bodycheck"}', '{"action":"final","summary":"Done."}')
+    )
+    submitted: list[tuple[str, str]] = []
+    checkpoints: list[dict[str, object]] = []
+
+    def submit(
+        _page: object,
+        _browser: str,
+        message: str,
+        _should_stop: object,
+        **kwargs: object,
+    ) -> str:
+        submitted.append((message, str(kwargs.get("turn_receipt_marker") or "")))
+        return next(responses)
+
+    monkeypatch.setattr(computer_use_agent, "_verify_agent_page", lambda *_args: True)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_select_web_model",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(computer_use_agent, "_attach_context_file", lambda *_args: False)
+    monkeypatch.setattr(computer_use_agent, "_submit_and_wait", submit)
+
+    result = _run_web_action_loop(
+        page=_Page(),
+        browser_kind="chromium",
+        initial_message="Audit the project.",
+        controller=controller,
+        context_path=tmp_path / "context.md",
+        settings=settings,
+        platform="grok",
+        session_mode="recent",
+        selected_target_url=_Page.url,
+        should_stop=lambda: False,
+        update=lambda **_changes: None,
+        checkpoint_update=lambda **changes: checkpoints.append(changes),
+    )
+
+    assert result == ("Done.", _Page.url, 2, True)
+    prepared = next(
+        checkpoint
+        for checkpoint in checkpoints
+        if checkpoint.get("delivery_phase") == "prepared"
+    )
+    message, marker = submitted[0]
+    assert marker == f"agent-turn-{str(prepared['exchange_id']).removeprefix('exchange-')}"
+    actual_provider_message = f"{message}\n\nController turn receipt: {marker}"
+    assert prepared["exchange_outbound_sha256"] == hashlib.sha256(
+        actual_provider_message.encode("utf-8")
+    ).hexdigest()
 
 
 def test_project_new_grok_rejects_an_existing_chat_before_any_project_transfer(
@@ -8905,8 +9221,8 @@ def test_workspace_controller_stays_inside_project_and_requires_current_bodychec
         root = Path(raw_root)
         workspace = root / "project"
         workspace.mkdir()
-        file_path = workspace / "sample.txt"
-        file_path.write_text("old value\n", encoding="utf-8")
+        file_path = workspace / "sample.py"
+        file_path.write_text("old_value = 1\n", encoding="utf-8")
         controller = WorkspaceController(
             workspace,
             ComputerUseSettings(workspace_path=str(workspace)),
@@ -8914,18 +9230,22 @@ def test_workspace_controller_stays_inside_project_and_requires_current_bodychec
         )
 
         read_result = controller.execute(
-            {"action": "read", "path": "sample.txt", "start_line": 1, "end_line": 1}
+            {"action": "read", "path": "sample.py", "start_line": 1, "end_line": 1}
         )
         replace_result = controller.execute(
-            {"action": "replace", "path": "sample.txt", "old": "old", "new": "new"}
+            {"action": "replace", "path": "sample.py", "old": "old", "new": "new"}
         )
         escaped_result = controller.execute({"action": "read", "path": "../outside.txt"})
+        run_result = controller.execute(
+            {"action": "run", "command": "python3 -m py_compile sample.py"}
+        )
         bodycheck_result = controller.execute({"action": "bodycheck"})
 
         assert read_result["ok"]
         assert replace_result["ok"]
-        assert file_path.read_text(encoding="utf-8") == "new value\n"
+        assert file_path.read_text(encoding="utf-8") == "new_value = 1\n"
         assert not escaped_result["ok"]
+        assert run_result["ok"]
         assert controller.state.bodycheck_current
         assert bodycheck_result["bodycheck_current"]
 
@@ -9055,6 +9375,10 @@ def test_workspace_controller_delete_anchors_the_parent_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_DELETE_SUPPORTED:
+        pytest.skip("Anchored deletion descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     nested = workspace / "nested"
     nested.mkdir(parents=True)
@@ -9072,17 +9396,25 @@ def test_workspace_controller_delete_anchors_the_parent_directory(
     receipt = controller.execute({"action": "read", "path": "nested/target.txt"})
     assert receipt["ok"]
 
-    original_unlink = os.unlink
+    original_rename = os.rename
     swapped_parent = workspace / "nested-original"
     raced = False
 
-    def swap_parent_before_unlink(
-        path: str | bytes,
+    def swap_parent_before_quarantine(
+        source: str | bytes,
+        destination: str | bytes,
         *,
-        dir_fd: int | None = None,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
     ) -> None:
         nonlocal raced
-        if path == "target.txt" and dir_fd is not None and not raced:
+        if (
+            source == "target.txt"
+            and str(destination).startswith(".target.txt.agent-delete-")
+            and src_dir_fd is not None
+            and dst_dir_fd is not None
+            and not raced
+        ):
             raced = True
             nested.rename(swapped_parent)
             try:
@@ -9090,9 +9422,14 @@ def test_workspace_controller_delete_anchors_the_parent_directory(
             except OSError:
                 swapped_parent.rename(nested)
                 pytest.skip("Directory symlinks are unavailable on this host.")
-        original_unlink(path, dir_fd=dir_fd)
+        original_rename(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
 
-    monkeypatch.setattr(os, "unlink", swap_parent_before_unlink)
+    monkeypatch.setattr(os, "rename", swap_parent_before_quarantine)
     deleted = controller.execute(
         {
             "action": "delete",
@@ -9150,6 +9487,372 @@ def test_workspace_controller_delete_rejects_leaf_replacement(
     assert "identity changed before deletion" in deleted["error"]
     assert original_target.read_text(encoding="utf-8") == "original target\n"
     assert target.read_text(encoding="utf-8") == replacement
+
+
+def test_workspace_replace_preserves_concurrent_replacement_at_commit_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+        pytest.skip("Anchored mutation descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("controller source\n", encoding="utf-8")
+    displaced_by_user = workspace / "target-before-user-edit.txt"
+    concurrent_content = b"concurrent user replacement\n"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    original_rename = os.rename
+    original_open = os.open
+    raced = False
+
+    def replace_leaf_at_quarantine(
+        source: str | bytes,
+        destination: str | bytes,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal raced
+        if (
+            source == "target.txt"
+            and str(destination).startswith(".target.txt.agent-backup-")
+            and src_dir_fd is not None
+            and dst_dir_fd is not None
+            and not raced
+        ):
+            raced = True
+            original_rename(
+                source,
+                displaced_by_user.name,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+            )
+            concurrent_fd = original_open(
+                source,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o644,
+                dir_fd=src_dir_fd,
+            )
+            try:
+                os.write(concurrent_fd, concurrent_content)
+                os.fsync(concurrent_fd)
+            finally:
+                os.close(concurrent_fd)
+        original_rename(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(os, "rename", replace_leaf_at_quarantine)
+    result = controller.execute(
+        {
+            "action": "replace",
+            "path": "target.txt",
+            "old": "controller source",
+            "new": "controller replacement",
+        }
+    )
+
+    assert raced is True
+    assert result["ok"] is False
+    assert "replacement commit boundary" in result["error"]
+    assert target.read_bytes() == concurrent_content
+    assert displaced_by_user.read_text(encoding="utf-8") == "controller source\n"
+
+
+def test_workspace_delete_preserves_concurrent_replacement_at_commit_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_DELETE_SUPPORTED:
+        pytest.skip("Anchored deletion descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("controller source\n", encoding="utf-8")
+    displaced_by_user = workspace / "target-before-user-edit.txt"
+    concurrent_content = b"concurrent user replacement\n"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    receipt = controller.execute({"action": "read", "path": "target.txt"})
+    assert receipt["ok"]
+    original_rename = os.rename
+    original_open = os.open
+    raced = False
+
+    def replace_leaf_at_quarantine(
+        source: str | bytes,
+        destination: str | bytes,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal raced
+        if (
+            source == "target.txt"
+            and str(destination).startswith(".target.txt.agent-delete-")
+            and src_dir_fd is not None
+            and dst_dir_fd is not None
+            and not raced
+        ):
+            raced = True
+            original_rename(
+                source,
+                displaced_by_user.name,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+            )
+            concurrent_fd = original_open(
+                source,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o644,
+                dir_fd=src_dir_fd,
+            )
+            try:
+                os.write(concurrent_fd, concurrent_content)
+                os.fsync(concurrent_fd)
+            finally:
+                os.close(concurrent_fd)
+        original_rename(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(os, "rename", replace_leaf_at_quarantine)
+    result = controller.execute(
+        {
+            "action": "delete",
+            "path": "target.txt",
+            "expected_sha256": receipt["sha256"],
+        }
+    )
+
+    assert raced is True
+    assert result["ok"] is False
+    assert "identity changed before deletion" in result["error"]
+    assert target.read_bytes() == concurrent_content
+    assert displaced_by_user.read_text(encoding="utf-8") == "controller source\n"
+
+
+def test_workspace_write_preserves_concurrent_rebind_during_failed_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+        pytest.skip("Anchored mutation descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "new.txt"
+    displaced_by_user = workspace / "new-before-user-edit.txt"
+    concurrent_content = "concurrent user replacement\n"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    original_resolve = controller._resolve_path
+    raced = False
+
+    def replace_before_rebind(
+        raw_path: object,
+        *,
+        allow_missing: bool = False,
+    ) -> Path:
+        nonlocal raced
+        if not allow_missing and Path(str(raw_path)) == Path("new.txt") and target.exists():
+            raced = True
+            target.rename(displaced_by_user)
+            target.write_text(concurrent_content, encoding="utf-8")
+        return original_resolve(raw_path, allow_missing=allow_missing)
+
+    monkeypatch.setattr(controller, "_resolve_path", replace_before_rebind)
+    result = controller.execute(
+        {"action": "write", "path": "new.txt", "content": "controller-created\n"}
+    )
+
+    assert raced is True
+    assert result["ok"] is False
+    assert "created file identity changed" in result["error"]
+    assert target.read_text(encoding="utf-8") == concurrent_content
+    assert displaced_by_user.read_text(encoding="utf-8") == "controller-created\n"
+
+
+def test_workspace_replace_preserves_a_concurrent_user_edit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+        pytest.skip("Anchored mutation descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("controller source\n", encoding="utf-8")
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    original_hash = controller._hash_anchored_file
+    raced = False
+
+    def edit_before_compare(
+        directory_fd: int,
+        leaf_name: str,
+    ) -> tuple[str, int, tuple[int, int, int, int, int], int]:
+        nonlocal raced
+        if not raced:
+            raced = True
+            target.write_text("user edit wins\n", encoding="utf-8")
+        return original_hash(directory_fd, leaf_name)
+
+    monkeypatch.setattr(controller, "_hash_anchored_file", edit_before_compare)
+    result = controller.execute(
+        {
+            "action": "replace",
+            "path": "target.txt",
+            "old": "controller source",
+            "new": "controller replacement",
+        }
+    )
+
+    assert result["ok"] is False
+    assert "changed before replacement" in result["error"]
+    assert target.read_text(encoding="utf-8") == "user edit wins\n"
+    assert controller.state.edit_generation == 1
+
+
+def test_workspace_write_uses_exclusive_creation_under_a_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+        pytest.skip("Anchored mutation descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = workspace / "new.txt"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    original_open = os.open
+    raced = False
+
+    def create_before_controller(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal raced
+        if (
+            path == "new.txt"
+            and dir_fd is not None
+            and flags & os.O_EXCL
+            and not raced
+        ):
+            raced = True
+            user_fd = original_open(path, flags, mode, dir_fd=dir_fd)
+            try:
+                os.write(user_fd, b"user-created\n")
+                os.fsync(user_fd)
+            finally:
+                os.close(user_fd)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", create_before_controller)
+    result = controller.execute(
+        {"action": "write", "path": "new.txt", "content": "controller-created\n"}
+    )
+
+    assert raced is True
+    assert result["ok"] is False
+    assert "creates new files only" in result["error"]
+    assert target.read_text(encoding="utf-8") == "user-created\n"
+
+
+def test_workspace_write_never_follows_a_swapped_parent_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+        pytest.skip("Anchored mutation descriptors are unavailable on this host.")
+    workspace = tmp_path / "project"
+    nested = workspace / "nested"
+    nested.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    saved_parent = workspace / "nested-original"
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    original_open_parent = controller._open_anchored_parent
+
+    def swap_after_open(
+        relative: Path,
+        *,
+        create_parents: bool = False,
+    ) -> tuple[int, str, bool]:
+        result = original_open_parent(relative, create_parents=create_parents)
+        nested.rename(saved_parent)
+        nested.symlink_to(outside, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(controller, "_open_anchored_parent", swap_after_open)
+    result = controller.execute(
+        {"action": "write", "path": "nested/new.txt", "content": "controller\n"}
+    )
+
+    assert result["ok"] is False
+    assert not (outside / "new.txt").exists()
+    assert not (saved_parent / "new.txt").exists()
+
+
+@pytest.mark.parametrize("path", ("local_store/cache.txt", "logs/agent.log", "dist/app.js"))
+def test_workspace_controller_rejects_paths_excluded_from_evidence(
+    tmp_path: Path,
+    path: str,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+
+    result = controller.execute({"action": "write", "path": path, "content": "x\n"})
+
+    assert result["ok"] is False
+    assert "ignored, generated, or runtime" in result["error"]
+    assert not (workspace / path).exists()
 
 
 def test_workspace_search_uses_python_fallback_when_rg_is_unavailable(
@@ -11070,7 +11773,12 @@ def test_run_invalidates_gates_when_the_final_fingerprint_is_incomplete(
         ComputerUseSettings(workspace_path=str(workspace)),
         lambda: False,
     )
+    controller.state.workspace_snapshot_id = "same"
+    controller.state.evidence_complete = True
     controller.state.bodycheck_generation = controller.state.edit_generation
+    controller.state.bodycheck_workspace_generation = controller.state.workspace_generation
+    controller.state.bodycheck_snapshot_id = "same"
+    assert controller.state.bodycheck_current
 
     result = controller.execute(
         {"action": "run", "command": "python3 -m py_compile sample.py"}
@@ -11506,7 +12214,7 @@ def test_run_stop_records_mutation_and_invalidates_bodycheck(
         ComputerUseSettings(workspace_path=str(workspace)),
         should_stop,
     )
-    controller.state.bodycheck_generation = controller.state.edit_generation
+    assert controller.execute({"action": "bodycheck"})["bodycheck_current"]
 
     result = controller.execute(
         {"action": "run", "command": "python3 -m py_compile sample.py"}
@@ -11572,7 +12280,7 @@ def test_run_timeout_records_mutation_and_stops_the_process(
         lambda: False,
         process_changed=lambda value: process_states.append(value is not None),
     )
-    controller.state.bodycheck_generation = controller.state.edit_generation
+    assert controller.execute({"action": "bodycheck"})["bodycheck_current"]
 
     result = controller.execute(
         {"action": "run", "command": "python3 -m py_compile sample.py"}
@@ -11645,6 +12353,74 @@ def test_bodycheck_never_returns_raw_git_diagnostics(
     assert npm_command[1:3] == ["run", "test"]
 
 
+def test_bodycheck_checks_staged_whitespace_without_touching_the_index(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    subprocess.run(
+        ["/usr/bin/git", "init", "--quiet"],
+        cwd=workspace,
+        check=True,
+    )
+    staged = workspace / "staged.txt"
+    staged.write_text("staged trailing space  \n", encoding="utf-8")
+    subprocess.run(
+        ["/usr/bin/git", "add", "--", staged.name],
+        cwd=workspace,
+        check=True,
+    )
+    before_index = (workspace / ".git" / "index").read_bytes()
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+        read_only=True,
+    )
+
+    result = controller.execute({"action": "bodycheck"})
+
+    cached = next(
+        check for check in result["checks"] if check["name"] == "git diff --cached --check"
+    )
+    assert result["ok"] is False
+    assert cached["ok"] is False
+    assert "staged project diff" in cached["output"]
+    assert (workspace / ".git" / "index").read_bytes() == before_index
+
+
+def test_bodycheck_checks_untracked_file_whitespace_without_staging_it(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    subprocess.run(
+        ["/usr/bin/git", "init", "--quiet"],
+        cwd=workspace,
+        check=True,
+    )
+    (workspace / "untracked.txt").write_text(
+        "untracked trailing tab\t\n",
+        encoding="utf-8",
+    )
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+        read_only=True,
+    )
+
+    result = controller.execute({"action": "bodycheck"})
+
+    untracked = next(
+        check for check in result["checks"] if check["name"] == "untracked file whitespace"
+    )
+    assert result["ok"] is False
+    assert untracked["ok"] is False
+    assert "untracked project file" in untracked["output"]
+    assert not (workspace / ".git" / "index").exists()
+
+
 def test_bodycheck_stop_terminates_diff_check_and_clears_active_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -11684,6 +12460,11 @@ def test_bodycheck_stop_terminates_diff_check_and_clears_active_process(
         computer_use_agent,
         "_filtered_git_status",
         lambda _workspace, **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_workspace_mutation_fingerprint",
+        lambda _workspace, **_kwargs: ("a" * 64, True),
     )
     monkeypatch.setattr(
         computer_use_agent.subprocess,
@@ -11988,7 +12769,11 @@ def test_agent_service_migrates_legacy_turn_limit_snapshot_to_interrupted(
     continue_action = next(
         action for action in doctor["actions"] if action["id"] == "continue"
     )
-    assert continue_action["enabled"]
+    assert continue_action["enabled"] is False
+    continuation_check = next(
+        check for check in doctor["checks"] if check["id"] == "interrupted_continuation"
+    )
+    assert "workspace identity is missing" in continuation_check["detail"]
     persisted = json.loads((runtime_root / "last-run.json").read_text(encoding="utf-8"))
     assert persisted["phase"] == "interrupted"
     assert service._event_chain is not None
@@ -12255,6 +13040,7 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
     payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
     assert set(payload) == {
         "actual_model",
+        "action_checkpoint",
         "bodycheck_passed",
         "browser",
         "conversation_bound",
@@ -12266,6 +13052,10 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
         "effort_catalog_complete",
         "event_chain_state",
         "event_count",
+        "exchange_id",
+        "exchange_outbound_sha256",
+        "exchange_response_sha256",
+        "exchange_sequence",
         "finished_at",
         "last_action_id",
         "last_event_kind",
@@ -12280,17 +13070,25 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
         "run_id",
         "run_revision",
         "read_only",
+        "delivery_checkpoint_version",
+        "delivery_kind",
+        "delivery_phase",
         "session_mode",
         "session_title",
         "started_at",
         "turn_count",
         "thinking_effort",
         "available_efforts",
-        "verification_passed",
-        "workspace_path",
-    }
+            "verification_passed",
+            "workspace_device",
+            "workspace_inode",
+            "workspace_path",
+        }
     assert payload["context_attached"] is context_attached
     assert payload["workspace_path"] == str(workspace)
+    workspace_metadata = workspace.stat()
+    assert payload["workspace_device"] == workspace_metadata.st_dev
+    assert payload["workspace_inode"] == workspace_metadata.st_ino
     assert payload["operating_system"] == detect_host_operating_system()
     assert payload["read_only"] is False
     assert payload["conversation_bound"] is False
@@ -15861,3 +16659,65 @@ def test_chatgpt_identical_response_requires_a_new_matching_message_pair(monkeyp
         submission_target_url=target, session_mode="recent",
     )
     assert result == ("" if mismatch else response)
+
+
+def test_chatgpt_delivery_callbacks_require_exact_new_user_receipt(monkeypatch) -> None:
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/delivery-checkpoint"
+    message = "Continue with the next bounded action."
+    response = '{"action":"bodycheck"}'
+    snapshots = iter(
+        (
+            {
+                "url": target,
+                "count": 2,
+                "text": "previous",
+                "generating": False,
+                "userCount": 2,
+                "latestUserText": "previous request",
+                "assistantAfterLatestUser": True,
+                "assistantMessageId": "assistant-before",
+                "latestUserMessageId": "user-before",
+            },
+            {
+                "url": target,
+                "count": 3,
+                "text": response,
+                "generating": False,
+                "userCount": 3,
+                "latestUserText": message,
+                "assistantAfterLatestUser": True,
+                "assistantMessageId": "assistant-after",
+                "latestUserMessageId": "user-after",
+            },
+        )
+    )
+    phases: list[str] = []
+    monkeypatch.setattr(agent, "_chatgpt_response_snapshot", lambda *_args: next(snapshots))
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent, "WEB_RESPONSE_MINIMUM_SECONDS", 0)
+    monkeypatch.setattr(agent, "WEB_RESPONSE_STABLE_SECONDS", 0)
+    monkeypatch.setattr(agent.time, "monotonic", lambda: 0)
+
+    result = agent._submit_and_wait(
+        SimpleNamespace(url=target),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        submission_target_url=target,
+        session_mode="recent",
+        on_commit_attempted=lambda: phases.append("commit_attempted"),
+        on_delivered=lambda: phases.append("delivered"),
+        on_response_received=lambda value: phases.append(
+            f"response_received:{value}"
+        ),
+    )
+
+    assert result == response
+    assert phases == [
+        "commit_attempted",
+        "delivered",
+        f"response_received:{response}",
+    ]

@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.8.0-codex.1
+Code version: v1.9.0-codex.1
 """
 
 from __future__ import annotations
@@ -1059,12 +1059,205 @@ def test_launch_chromium_context_falls_back_to_cdp_attach_when_cookies_locked(
     browser_close.assert_called_once()
 
 
-def test_launch_chromium_context_reuses_running_debug_browser_before_clone(
+def test_cdp_attach_lock_covers_the_complete_caller_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A login handoff's live debug profile remains authoritative for later Windows work."""
+    """Concurrent Windows callers never drive one debug browser context together."""
     import app.core.browser_sessions as browser_sessions
+    from app.core.agent_debug_browser import DebugBrowserHandle
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "missing-profile",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_profile_initialized",
+        lambda browser_id: browser_id == "edge",
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.ensure_debug_browser",
+        lambda browser_id: DebugBrowserHandle(
+            browser_id=browser_id,
+            cdp_endpoint="http://127.0.0.1:42421",
+            user_data_dir=tmp_path / "debug-profile",
+        ),
+    )
+    monkeypatch.setattr(browser_sessions, "clone_browser_profile", MagicMock())
+
+    class Chromium:
+        def connect_over_cdp(self, _endpoint: str) -> object:
+            context = SimpleNamespace(pages=[], new_page=MagicMock())
+            return SimpleNamespace(
+                contexts=[context],
+                new_context=MagicMock(),
+                close=MagicMock(),
+            )
+
+    playwright = SimpleNamespace(chromium=Chromium())
+    caller_count = 0
+    overlaps: list[bool] = []
+    failures: list[BaseException] = []
+    count_lock = threading.Lock()
+    start_barrier = threading.Barrier(3)
+
+    def attach_once() -> None:
+        nonlocal caller_count
+        try:
+            start_barrier.wait(timeout=5)
+            with launch_chromium_context(
+                playwright,
+                descriptor,
+                headless=False,
+                clone_profile_first=True,
+                prefer_initialized_debug_profile=True,
+            ):
+                with count_lock:
+                    caller_count += 1
+                    overlaps.append(caller_count > 1)
+                time.sleep(0.05)
+                with count_lock:
+                    caller_count -= 1
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=attach_once) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not failures
+    assert all(not thread.is_alive() for thread in threads)
+    assert overlaps == [False, False, False]
+
+
+def test_cdp_attach_failure_releases_the_debug_browser_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed CDP connection does not leave the browser permanently busy."""
+    from app.core.agent_debug_browser import DebugBrowserHandle
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "missing-profile",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_profile_initialized",
+        lambda browser_id: browser_id == "edge",
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.ensure_debug_browser",
+        lambda browser_id: DebugBrowserHandle(
+            browser_id=browser_id,
+            cdp_endpoint="http://127.0.0.1:42421",
+            user_data_dir=tmp_path / "debug-profile",
+        ),
+    )
+    attached_context = SimpleNamespace(pages=[], new_page=MagicMock())
+    attached_browser = SimpleNamespace(
+        contexts=[attached_context],
+        new_context=MagicMock(),
+        close=MagicMock(),
+    )
+    connect = MagicMock(
+        side_effect=[RuntimeError("CDP unavailable"), attached_browser]
+    )
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(connect_over_cdp=connect)
+    )
+
+    with pytest.raises(RuntimeError, match="CDP unavailable"):
+        launch_chromium_context(
+            playwright,
+            descriptor,
+            headless=False,
+            clone_profile_first=True,
+            prefer_initialized_debug_profile=True,
+        )
+
+    with launch_chromium_context(
+        playwright,
+        descriptor,
+        headless=False,
+        clone_profile_first=True,
+        prefer_initialized_debug_profile=True,
+    ) as context:
+        assert context.pages == []
+
+    assert connect.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("windows_host", "prefer_initialized"),
+    ((True, False), (False, True)),
+)
+def test_initialized_debug_browser_requires_windows_and_explicit_preference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    windows_host: bool,
+    prefer_initialized: bool,
+) -> None:
+    """Normal Cache launches and macOS never adopt the persistent Agent profile."""
+    import app.core.agent_debug_browser as agent_debug_browser
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "missing-daily-profile",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    initialized = MagicMock(return_value=True)
+    ensure = MagicMock(
+        side_effect=AssertionError("The persistent Agent profile must not be attached")
+    )
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: windows_host)
+    monkeypatch.setattr(
+        agent_debug_browser,
+        "debug_browser_profile_initialized",
+        initialized,
+    )
+    monkeypatch.setattr(agent_debug_browser, "ensure_debug_browser", ensure)
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(connect_over_cdp=MagicMock())
+    )
+
+    with pytest.raises(RuntimeError, match="user data directory was not found"):
+        launch_chromium_context(
+            playwright,
+            descriptor,
+            headless=False,
+            clone_profile_first=True,
+            prefer_initialized_debug_profile=prefer_initialized,
+        )
+
+    initialized.assert_not_called()
+    ensure.assert_not_called()
+
+
+def test_launch_chromium_context_restarts_initialized_debug_browser_before_clone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A login handoff's initialized profile remains authoritative after its window closes."""
+    import app.core.browser_sessions as browser_sessions
+    from app.core.agent_debug_browser import DebugBrowserHandle
 
     descriptor = BrowserDescriptor(
         browser_id="edge",
@@ -1088,9 +1281,17 @@ def test_launch_chromium_context_reuses_running_debug_browser_before_clone(
 
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
     monkeypatch.setattr(
-        "app.core.agent_debug_browser.debug_browser_login_url",
-        lambda browser_id: "http://127.0.0.1:42421" if browser_id == "edge" else None,
+        "app.core.agent_debug_browser.debug_browser_profile_initialized",
+        lambda browser_id: browser_id == "edge",
     )
+    ensure = MagicMock(
+        return_value=DebugBrowserHandle(
+            browser_id="edge",
+            cdp_endpoint="http://127.0.0.1:42421",
+            user_data_dir=tmp_path / "debug-profile",
+        )
+    )
+    monkeypatch.setattr("app.core.agent_debug_browser.ensure_debug_browser", ensure)
     clone = MagicMock(side_effect=AssertionError("A running debug profile must be reused"))
     monkeypatch.setattr(browser_sessions, "clone_browser_profile", clone)
 
@@ -1099,10 +1300,12 @@ def test_launch_chromium_context_reuses_running_debug_browser_before_clone(
         descriptor,
         headless=False,
         clone_profile_first=True,
+        prefer_initialized_debug_profile=True,
     ) as context:
         assert context.pages == [attached_page]
 
     clone.assert_not_called()
+    ensure.assert_called_once_with("edge")
     connect.assert_called_once_with("http://127.0.0.1:42421")
     browser_close.assert_called_once_with()
 
@@ -1263,6 +1466,51 @@ def test_ensure_debug_browser_launches_when_no_recorded_port(
     assert launched.get("called") is True
     assert launched.get("terminated") is None
     assert handle.cdp_endpoint == "http://127.0.0.1:50123"
+
+
+def test_debug_browser_profile_initialized_requires_a_recorded_successful_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+    monkeypatch.setattr(adb, "is_windows_host", lambda: True)
+    profile_root = tmp_path / "agent_browser_profile" / "edge"
+    profile_root.mkdir(parents=True)
+
+    assert adb.debug_browser_profile_initialized("edge") is False
+    (profile_root / "debug_port").write_text("42421", encoding="utf-8")
+    assert adb.debug_browser_profile_initialized("edge") is True
+    assert adb.debug_browser_profile_initialized("chrome") is False
+
+
+def test_debug_browser_lock_fails_in_bounded_time_when_another_caller_owns_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with adb.debug_browser_lock("timeout-test"):
+            acquired.set()
+            release.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert acquired.wait(timeout=5)
+    monkeypatch.setattr(adb, "CDP_CALLER_LOCK_TIMEOUT_SECONDS", 0.01)
+    try:
+        with pytest.raises(RuntimeError, match="busy with another operation"):
+            with adb.debug_browser_lock("timeout-test"):
+                pass
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert not holder.is_alive()
 
 
 def test_safari_profile_link_detection_uses_the_rendered_navigation() -> None:

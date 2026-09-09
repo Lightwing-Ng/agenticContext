@@ -1,6 +1,6 @@
 """Read ChatGPT Web sessions, projects, and conversation history for the local Agent.
 
-Code version: v1.6.3-codex.1
+Code version: v1.6.4-codex.1
 """
 
 from __future__ import annotations
@@ -181,6 +181,7 @@ def probe_and_collect_chatgpt_sources(
                 clone_profile_first=True,
                 background_window=True,
                 silent=silent,
+                prefer_initialized_debug_profile=True,
             ) as context:
                 page = select_provider_tab(
                     context,
@@ -241,6 +242,7 @@ def list_chatgpt_agent_sources(
             clone_profile_first=True,
             background_window=True,
             silent=silent,
+            prefer_initialized_debug_profile=True,
         ) as context:
             page = select_provider_tab(
                 context,
@@ -286,6 +288,7 @@ def list_chatgpt_project_sessions(
                 clone_profile_first=True,
                 background_window=True,
                 silent=silent,
+                prefer_initialized_debug_profile=True,
             ) as context:
                 page = select_provider_tab(
                     context,
@@ -342,6 +345,7 @@ def fetch_chatgpt_conversation_history(
             clone_profile_first=True,
             background_window=True,
             silent=silent,
+            prefer_initialized_debug_profile=True,
         ) as context:
             page = select_provider_tab(
                 context,
