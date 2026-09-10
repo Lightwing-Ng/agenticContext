@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.5.1-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.5.1-codex.2."""
 
 from copy import deepcopy
 
@@ -469,6 +469,56 @@ def test_identical_chatgpt_response_after_virtualized_turn_replacement(disposabl
     try:
         response = agent._submit_and_wait(page, "chromium", message, lambda: False, timeout_seconds=1)
         assert agent.parse_agent_action(response) == {"action": "bodycheck"}
+    finally:
+        context.close()
+
+
+def test_chatgpt_receipt_marker_is_scoped_to_the_latest_user_root(
+    disposable_browser,
+):
+    from app.core import computer_use_agent as agent
+
+    context = disposable_browser.new_context()
+    page = context.new_page()
+    marker = "agent-turn-0123456789abcdef0123456789abcdef"
+    other_marker = "agent-turn-fedcba9876543210fedcba9876543210"
+
+    def turn_html(latest_marker: str) -> str:
+        return f"""
+            <div data-message-author-role="user" data-message-id="old-user">
+              Controller turn receipt: {marker}
+            </div>
+            <div data-message-author-role="assistant" data-message-id="old-assistant">
+              Prior response containing {marker}
+            </div>
+            <div data-message-author-role="user" data-message-id="latest-user">
+              Controller turn receipt: {latest_marker}
+            </div>
+            <div data-message-author-role="assistant" data-message-id="latest-assistant">
+              <pre><code>{{"action":"bodycheck"}}</code></pre>
+            </div>
+            <div id="prompt-textarea" contenteditable="true">{marker}</div>
+        """
+
+    try:
+        page.set_content(turn_html(other_marker))
+        stale_snapshot = agent._provider_turn_snapshot(
+            page,
+            "chatgpt",
+            receipt_marker=marker,
+        )
+        assert stale_snapshot["latestUserMessageId"] == "latest-user"
+        assert stale_snapshot["markerEchoed"] is False
+
+        page.set_content(turn_html(marker))
+        current_snapshot = agent._provider_turn_snapshot(
+            page,
+            "chatgpt",
+            receipt_marker=marker,
+        )
+        assert current_snapshot["latestUserMessageId"] == "latest-user"
+        assert current_snapshot["markerEchoed"] is True
+        assert current_snapshot["assistantAfterLatestUser"] is True
     finally:
         context.close()
 

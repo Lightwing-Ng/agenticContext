@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.65.2-codex.2
+Code version: v3.65.2-codex.3
 """
 
 from __future__ import annotations
@@ -8327,6 +8327,138 @@ def test_delivery_checkpoint_hashes_the_exact_provider_message(
     assert prepared["exchange_outbound_sha256"] == hashlib.sha256(
         actual_provider_message.encode("utf-8")
     ).hexdigest()
+
+
+def test_fresh_chatgpt_checkpoints_hash_each_exact_marked_provider_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reuse the fresh transfer marker, then issue a unique marker per later turn."""
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Page:
+        url = "https://chatgpt.com/"
+
+        def title(self) -> str:
+            return "ChatGPT"
+
+        def evaluate(
+            self,
+            _expression: str,
+            argument: dict[str, object],
+        ) -> dict[str, object]:
+            return {
+                "markerEchoed": bool(argument.get("receiptMarker")),
+                "url": self.url,
+            }
+
+    page = _Page()
+    created_url = "https://chatgpt.com/c/fresh-checkpoint"
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    settings = ComputerUseSettings(
+        workspace_path=str(workspace),
+        platform="chatgpt",
+        model=DEFAULT_CHATGPT_MODEL,
+        max_turns=2,
+    )
+    controller = WorkspaceController(
+        workspace,
+        settings,
+        lambda: False,
+        read_only=True,
+    )
+    responses = iter(
+        ('{"action":"bodycheck"}', '{"action":"final","summary":"Done."}')
+    )
+    submitted: list[tuple[str, str, str]] = []
+    checkpoints: list[dict[str, object]] = []
+
+    def submit(
+        _page: object,
+        _browser: str,
+        message: str,
+        _should_stop: object,
+        **kwargs: object,
+    ) -> str:
+        marker = str(kwargs.get("turn_receipt_marker") or "")
+        provider_message = (
+            message
+            if marker.startswith("agent-transfer-")
+            else f"Controller turn receipt: {marker}\n\n{message}"
+        )
+        submitted.append((message, marker, provider_message))
+        if len(submitted) == 1:
+            transfer_match = re.match(
+                r"Controller transfer ID: (agent-transfer-[0-9a-f]{32})\n\n",
+                message,
+            )
+            assert transfer_match is not None
+            assert marker == transfer_match.group(1)
+            assert message.count(marker) == 1
+            page.url = created_url
+            session_check = kwargs.get("session_check")
+            assert callable(session_check)
+            assert session_check(True) == created_url
+        return next(responses)
+
+    monkeypatch.setattr(computer_use_agent, "_verify_agent_page", lambda *_args: True)
+    monkeypatch.setattr(computer_use_agent, "_select_chat_mode", lambda *_args: None)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_select_web_model",
+        _select_verified_chatgpt_model,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_attach_context_file",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(computer_use_agent, "_submit_and_wait", submit)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_detect_browser_interruption",
+        lambda *_args, **_kwargs: (False, ""),
+    )
+
+    result = _run_web_action_loop(
+        page=page,
+        browser_kind="chromium",
+        initial_message="Audit the project.",
+        controller=controller,
+        context_path=tmp_path / "context.md",
+        settings=settings,
+        platform="chatgpt",
+        session_mode="new",
+        selected_target_url="https://chatgpt.com/",
+        should_stop=lambda: False,
+        update=lambda **_changes: None,
+        checkpoint_update=lambda **changes: checkpoints.append(changes),
+    )
+
+    assert result == ("Done.", created_url, 2, True)
+    assert len(submitted) == 2
+    first_marker = submitted[0][1]
+    second_marker = submitted[1][1]
+    assert re.fullmatch(r"agent-transfer-[0-9a-f]{32}", first_marker)
+    assert re.fullmatch(r"agent-turn-[0-9a-f]{32}", second_marker)
+    assert first_marker != second_marker
+    assert second_marker not in submitted[1][0]
+    prepared = [
+        checkpoint
+        for checkpoint in checkpoints
+        if checkpoint.get("delivery_phase") == "prepared"
+    ]
+    assert len(prepared) == len(submitted)
+    for checkpoint, (_message, marker, provider_message) in zip(
+        prepared,
+        submitted,
+        strict=True,
+    ):
+        assert marker in provider_message
+        assert checkpoint["exchange_outbound_sha256"] == hashlib.sha256(
+            provider_message.encode("utf-8")
+        ).hexdigest()
 
 
 def test_project_new_grok_rejects_an_existing_chat_before_any_project_transfer(
@@ -20966,6 +21098,254 @@ def test_chatgpt_first_user_message_id_proves_an_empty_baseline_receipt(
         on_delivered=lambda: delivered.append(True),
     ) == response
     assert delivered == [True]
+
+
+def test_chatgpt_fresh_transfer_marker_is_submitted_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not add a second receipt around an already armed fresh transfer."""
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/fresh-marked-turn"
+    marker = "agent-transfer-0123456789abcdef0123456789abcdef"
+    message = f"Controller transfer ID: {marker}\n\nAudit the project."
+    response = '{"action":"bodycheck"}'
+    snapshots = iter(
+        (
+            {
+                "url": target,
+                "count": 0,
+                "text": "",
+                "generating": False,
+                "userCount": 0,
+                "latestUserText": "",
+                "markerEchoed": False,
+                "assistantAfterLatestUser": False,
+                "assistantMessageId": "",
+                "latestUserMessageId": "",
+            },
+            {
+                "url": target,
+                "count": 1,
+                "text": response,
+                "generating": False,
+                "userCount": 1,
+                "latestUserText": message,
+                "markerEchoed": True,
+                "assistantAfterLatestUser": True,
+                "assistantMessageId": "assistant-after",
+                "latestUserMessageId": "user-after",
+            },
+        )
+    )
+    snapshot_markers: list[str] = []
+    submitted: list[str] = []
+
+    def snapshot(
+        _page: object,
+        _selector: str,
+        receipt_marker: str = "",
+    ) -> dict[str, object]:
+        snapshot_markers.append(receipt_marker)
+        return next(snapshots)
+
+    monkeypatch.setattr(agent, "_chatgpt_response_snapshot", snapshot)
+    monkeypatch.setattr(
+        agent,
+        "_submit_chromium_prompt",
+        lambda _page, value, *_args, **_kwargs: submitted.append(value),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_chatgpt_retry_control",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        },
+    )
+    monkeypatch.setattr(
+        agent,
+        "_is_web_response_complete",
+        lambda value, **_kwargs: value == response,
+    )
+    monkeypatch.setattr(agent, "WEB_RESPONSE_MINIMUM_SECONDS", 0)
+    monkeypatch.setattr(agent, "WEB_RESPONSE_STABLE_SECONDS", 0)
+    monkeypatch.setattr(agent.time, "monotonic", lambda: 0)
+
+    assert agent._submit_and_wait(
+        SimpleNamespace(url=target),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        submission_target_url=target,
+        session_mode="new",
+        turn_receipt_marker=marker,
+    ) == response
+    assert submitted == [message]
+    assert submitted[0].count(marker) == 1
+    assert snapshot_markers == ["", marker]
+
+
+def test_chatgpt_marker_receipt_accepts_transformed_latest_user_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use the latest-row marker when ChatGPT transforms the source text."""
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/marked-turn"
+    message = "Review `prices.py` and [the evidence](https://example.test/evidence)."
+    marker = "agent-turn-0123456789abcdef0123456789abcdef"
+    provider_message = f"Controller turn receipt: {marker}\n\n{message}"
+    response = '{"action":"bodycheck"}'
+    baseline = {
+        "url": target,
+        "count": 2,
+        "text": response,
+        "generating": False,
+        "userCount": 2,
+        "latestUserText": "Previous request",
+        "markerEchoed": False,
+        "assistantAfterLatestUser": True,
+        "assistantMessageId": "assistant-before",
+        "latestUserMessageId": "user-before",
+    }
+    current = {
+        **baseline,
+        "userCount": 3,
+        "latestUserText": "Review prices.py and the evidence (https://example.test/evidence).",
+        "markerEchoed": True,
+        "assistantMessageId": "assistant-after",
+        "latestUserMessageId": "user-after",
+    }
+    snapshots = iter((baseline, current))
+    snapshot_markers: list[str] = []
+    submitted: list[str] = []
+    delivered: list[bool] = []
+
+    def snapshot(
+        _page: object,
+        _selector: str,
+        receipt_marker: str = "",
+    ) -> dict[str, object]:
+        snapshot_markers.append(receipt_marker)
+        return next(snapshots)
+
+    def submit(
+        _page: object,
+        submitted_message: str,
+        *_args: object,
+        **_kwargs: object,
+    ) -> None:
+        submitted.append(submitted_message)
+
+    monkeypatch.setattr(agent, "_chatgpt_response_snapshot", snapshot)
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", submit)
+    monkeypatch.setattr(
+        agent,
+        "_chatgpt_retry_control",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        },
+    )
+    monkeypatch.setattr(
+        agent,
+        "_is_web_response_complete",
+        lambda value, **_kwargs: value == response,
+    )
+    monkeypatch.setattr(agent, "WEB_RESPONSE_MINIMUM_SECONDS", 0)
+    monkeypatch.setattr(agent, "WEB_RESPONSE_STABLE_SECONDS", 0)
+    monkeypatch.setattr(agent.time, "monotonic", lambda: 0)
+
+    assert agent._submit_and_wait(
+        SimpleNamespace(url=target),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        submission_target_url=target,
+        session_mode="recent",
+        turn_receipt_marker=marker,
+        on_delivered=lambda: delivered.append(True),
+    ) == response
+    assert submitted == [provider_message]
+    assert snapshot_markers == ["", marker]
+    assert delivered == [True]
+
+
+def test_chatgpt_latest_row_marker_mismatch_never_marks_turn_delivered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A marker found only outside the latest user row is not a delivery receipt."""
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/marked-turn"
+    message = "Continue the bounded audit."
+    marker = "agent-turn-0123456789abcdef0123456789abcdef"
+    old_marker = "agent-turn-fedcba9876543210fedcba9876543210"
+    baseline = {
+        "url": target,
+        "count": 2,
+        "text": "Previous response",
+        "generating": False,
+        "userCount": 2,
+        "latestUserText": "Previous request",
+        "markerEchoed": False,
+        "assistantAfterLatestUser": True,
+        "assistantMessageId": "assistant-before",
+        "latestUserMessageId": "user-before",
+    }
+    current = {
+        **baseline,
+        "count": 3,
+        "text": '{"action":"bodycheck"}',
+        "userCount": 3,
+        "latestUserText": f"Controller turn receipt: {old_marker}",
+        "markerEchoed": False,
+        "assistantMessageId": "assistant-after",
+        "latestUserMessageId": "user-after",
+    }
+    snapshots = iter((baseline, current))
+    snapshot_markers: list[str] = []
+    stopped = Event()
+    delivered: list[bool] = []
+
+    def snapshot(
+        _page: object,
+        _selector: str,
+        receipt_marker: str = "",
+    ) -> dict[str, object]:
+        snapshot_markers.append(receipt_marker)
+        return next(snapshots)
+
+    monkeypatch.setattr(agent, "_chatgpt_response_snapshot", snapshot)
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent, "_stop_web_generation", lambda *_args: None)
+    monkeypatch.setattr(agent, "_web_wait", lambda *_args: stopped.set())
+    monkeypatch.setattr(agent, "WEB_RESPONSE_MINIMUM_SECONDS", 0)
+    monkeypatch.setattr(agent, "WEB_RESPONSE_STABLE_SECONDS", 0)
+    monkeypatch.setattr(agent.time, "monotonic", lambda: 0)
+
+    result = agent._submit_and_wait(
+        SimpleNamespace(url=target),
+        "chromium",
+        message,
+        stopped.is_set,
+        platform="chatgpt",
+        submission_target_url=target,
+        session_mode="recent",
+        turn_receipt_marker=marker,
+        on_delivered=lambda: delivered.append(True),
+    )
+
+    assert result == ""
+    assert snapshot_markers == ["", marker]
+    assert delivered == []
 
 
 @pytest.mark.parametrize(

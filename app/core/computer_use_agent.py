@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.69.2-codex.2
+Code version: v3.69.2-codex.3
 """
 
 from __future__ import annotations
@@ -10399,15 +10399,25 @@ def _run_web_action_loop(
         nonlocal exchange_sequence
         exchange_sequence += 1
         exchange_id = f"exchange-{secrets.token_hex(16)}"
-        receipt_marker = (
-            f"agent-turn-{exchange_id.removeprefix('exchange-')}"
-            if browser_kind != "safari" and platform != "chatgpt"
-            else ""
+        transfer_marker = str(session_binding.submission_marker or "").strip()
+        reuse_chatgpt_transfer_marker = bool(
+            browser_kind != "safari"
+            and platform == "chatgpt"
+            and kind == "initial_prompt"
+            and re.fullmatch(r"agent-transfer-[0-9a-f]{32}", transfer_marker)
+            and message.startswith(f"Controller transfer ID: {transfer_marker}\n\n")
         )
-        submitted_message = (
-            f"{message}\n\nController turn receipt: {receipt_marker}"
-            if receipt_marker
-            else message
+        receipt_marker = ""
+        if browser_kind != "safari":
+            receipt_marker = (
+                transfer_marker
+                if reuse_chatgpt_transfer_marker
+                else f"agent-turn-{exchange_id.removeprefix('exchange-')}"
+            )
+        submitted_message = _message_with_turn_receipt(
+            message,
+            platform=platform,
+            receipt_marker=receipt_marker,
         )
         outbound_sha256 = hashlib.sha256(
             submitted_message.encode("utf-8")
@@ -16472,6 +16482,30 @@ def _run_recoverable_provider_read(
             raise
 
 
+def _message_with_turn_receipt(
+    message: str,
+    *,
+    platform: str,
+    receipt_marker: str,
+) -> str:
+    """Return the exact provider message carrying one controller receipt."""
+    if not receipt_marker:
+        return message
+    if receipt_marker.startswith("agent-transfer-"):
+        transfer_prefix = f"Controller transfer ID: {receipt_marker}\n\n"
+        if platform == "chatgpt" and message.startswith(transfer_prefix):
+            return message
+        raise RuntimeError("A transfer receipt must already prefix its ChatGPT message.")
+    receipt_line = f"Controller turn receipt: {receipt_marker}"
+    if platform == "chatgpt":
+        # ChatGPT can rewrite Markdown source and collapse long user messages.
+        # Keep the receipt at the visible start instead of comparing the full text.
+        receipt_prefix = f"{receipt_line}\n\n"
+        return message if message.startswith(receipt_prefix) else receipt_prefix + message
+    receipt_suffix = f"\n\n{receipt_line}"
+    return message if message.endswith(receipt_suffix) else message + receipt_suffix
+
+
 def _submit_and_wait(
     page: Any,
     browser_kind: str,
@@ -16496,11 +16530,31 @@ def _submit_and_wait(
         return ""
     read_recovery_budget = _ProviderReadRecoveryBudget()
     submitted_message = message
-    if browser_kind != "safari" and platform != "chatgpt":
+    if browser_kind != "safari" and platform == "chatgpt":
+        valid_transfer_marker = bool(
+            re.fullmatch(r"agent-transfer-[0-9a-f]{32}", turn_receipt_marker)
+            and message.startswith(
+                f"Controller transfer ID: {turn_receipt_marker}\n\n"
+            )
+        )
+        valid_turn_marker = bool(
+            re.fullmatch(r"agent-turn-[0-9a-f]{32}", turn_receipt_marker)
+        )
+        if valid_transfer_marker or valid_turn_marker:
+            submitted_message = _message_with_turn_receipt(
+                message,
+                platform=platform,
+                receipt_marker=turn_receipt_marker,
+            )
+        else:
+            turn_receipt_marker = ""
+    elif browser_kind != "safari":
         if not re.fullmatch(r"agent-turn-[0-9a-f]{32}", turn_receipt_marker):
             turn_receipt_marker = f"agent-turn-{secrets.token_hex(16)}"
-        submitted_message = (
-            f"{message}\n\nController turn receipt: {turn_receipt_marker}"
+        submitted_message = _message_with_turn_receipt(
+            message,
+            platform=platform,
+            receipt_marker=turn_receipt_marker,
         )
     else:
         turn_receipt_marker = ""
@@ -16573,7 +16627,7 @@ def _submit_and_wait(
     elif platform == "chatgpt":
         _submit_chromium_prompt(
             page,
-            message,
+            submitted_message,
             should_stop,
             session_check=session_check,
             expected_target_url=atomic_target_url,
@@ -16625,7 +16679,7 @@ def _submit_and_wait(
                 or (
                     "Reconnecting to the same provider response; the prompt has not been resent."
                     if reconnecting
-                    else "ChatGPT submission attempted; verifying the exact user turn without resending it."
+                    else "ChatGPT submission attempted; verifying the current controller turn without resending it."
                     if verifying_delivery
                     else "Provider is generating; waiting for a complete controller action."
                     if generating
@@ -16736,7 +16790,11 @@ def _submit_and_wait(
             checked_session = confirm_response_session()
             if browser_kind != "safari":
                 snapshot = (
-                    _chatgpt_response_snapshot(page, selector)
+                    _chatgpt_response_snapshot(
+                        page,
+                        selector,
+                        turn_receipt_marker,
+                    )
                     if platform == "chatgpt"
                     else _provider_turn_snapshot(
                         page,
@@ -16922,6 +16980,7 @@ def _submit_and_wait(
                     baseline_snapshot,
                     response_snapshot,
                     submitted_message,
+                    turn_receipt_marker,
                 )
             )
         )
@@ -17097,8 +17156,13 @@ def _submit_and_wait(
             and not current_user_receipt_seen
             and now >= receipt_deadline
         ):
+            receipt_description = (
+                "its unique controller receipt"
+                if turn_receipt_marker
+                else "an exact user-turn receipt"
+            )
             raise AgentConnectionInterrupted(
-                "ChatGPT did not expose an exact user-turn receipt within "
+                f"ChatGPT did not expose {receipt_description} within "
                 f"{receipt_timeout_seconds:g} seconds. The controller turn was not resent."
             )
         if platform != "chatgpt" and user_receipt_contract:
@@ -17118,7 +17182,10 @@ def _submit_and_wait(
             or (
                 platform == "chatgpt"
                 and _chatgpt_has_new_response_pair(
-                    baseline_snapshot, response_snapshot, submitted_message
+                    baseline_snapshot,
+                    response_snapshot,
+                    submitted_message,
+                    turn_receipt_marker,
                 )
             )
         ):
@@ -18782,6 +18849,7 @@ def _chatgpt_has_new_response_pair(
     baseline: dict[str, Any],
     current: dict[str, Any],
     submitted_message: str,
+    receipt_marker: str = "",
 ) -> bool:
     """Identify repeated reply text when virtualization reuses the visible turn count."""
     for message_key in ("assistantMessageId", "latestUserMessageId"):
@@ -18789,18 +18857,30 @@ def _chatgpt_has_new_response_pair(
         after = str(current.get(message_key) or "").strip()
         if not before or not after or before == after:
             return False
-    expected = " ".join(str(submitted_message or "").split())
-    observed = " ".join(str(current.get("latestUserText") or "").split())
+    if receipt_marker:
+        current_user_matches = bool(current.get("markerEchoed"))
+    else:
+        expected = " ".join(str(submitted_message or "").split())
+        observed = " ".join(str(current.get("latestUserText") or "").split())
+        current_user_matches = bool(expected and observed == expected)
     return bool(
-        expected
-        and observed == expected
+        current_user_matches
         and current.get("assistantAfterLatestUser")
     )
 
 
-def _chatgpt_response_snapshot(page: Any, selector: str) -> dict[str, Any]:
+def _chatgpt_response_snapshot(
+    page: Any,
+    selector: str,
+    receipt_marker: str = "",
+) -> dict[str, Any]:
     """Keep the ChatGPT snapshot entry point on the shared provider contract."""
-    return _provider_turn_snapshot(page, "chatgpt", selector)
+    return _provider_turn_snapshot(
+        page,
+        "chatgpt",
+        selector,
+        receipt_marker=receipt_marker,
+    )
 
 
 def _web_is_generating(page: Any, browser_kind: str) -> bool:
