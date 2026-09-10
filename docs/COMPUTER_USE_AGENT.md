@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.66.0-codex.1`
+Documentation version: `v3.69.2-codex.1`
 
 ## Purpose
 
@@ -33,8 +33,24 @@ collector. A cache miss performs one bounded bootstrap check that collects accou
 models, efforts, and sources together. There is no separate effort-refresh button. Subsequent task
 submission verifies its requested model and effort in the task's own browser context. Concurrent
 requests share one browser flight, and response revisions prevent an older response from replacing
-the accepted result. The API retains a prior verified catalog with `cache.status: "stale"` when a
-new check fails.
+the accepted result. Publication is monotonic per cache key: a collector that started before a
+newer bootstrap publication may still finish and release its coalescing slot, but it cannot roll
+the catalog or `cached_at` backward. A direct bootstrap publication wakes readers waiting on an
+older flight, and a superseded failed flight returns that current publication as a cache hit.
+Persisted timestamps more than five minutes ahead of the current clock are rejected, future write
+timestamps are clamped, and expiration arithmetic saturates instead of overflowing. The API retains
+a prior verified catalog with `cache.status: "stale"` when a new check fails.
+ChatGPT Project catalog rows and Project-session cache entries are re-keyed by their stable
+`g-p-...` identifier, so old and current slug aliases cannot appear as different Projects. The
+browser restores remembered selections and local execution rows against that same identity, then
+replaces an old alias with the current catalog URL. A new Project task navigates through the stable
+Project URL returned by the verified catalog; the stable identifier is an identity key, not an
+assumed provider route. Project-session routes reject URLs that fail the provider's exact HTTPS
+origin, default TLS port, path, or userinfo contract before any cache lookup, and the cache applies
+stable-ID aliasing only to the same official ChatGPT origin. An invalid alias therefore cannot reuse
+a previously verified Project entry. Every cache/API read revalidates session and Project rows
+through the current provider URL contract; malformed legacy rows are dropped instead of being
+returned as selectable history.
 
 
 On `/agent`, ChatGPT, Grok, and Claude use an agent-scoped bootstrap request: the selected browser
@@ -135,6 +151,24 @@ within 0.01px of its label. The user-owned service was not restarted.
    then opens in the selected browser profile. When a request switches away from the persisted provider, the service
    resets a stale previous-provider target URL to the new provider's official home before
    validation.
+   If a cold ChatGPT Project URL exposes only one page-level `Try again` boundary, the controller
+   retries it once, then opens ChatGPT Home and resolves the intended Project through the rendered
+   sidebar. It inspects at most 20 Project rows and accepts only the one whose mounted Project data
+   proves exactly one selected stable `g-p-...` identity before clicking that row's `Open project home`
+   control. When mounted identity is unavailable, contained official conversation links remain the
+   fallback proof. Each row gets a bounded, Stop-aware hydration poll before it is judged, so a delayed
+   component or conversation-link render cannot be mistaken for a missing Project.
+   The recovered page must read back the same Project identity and one
+   enabled composer. It never falls back to a root chat, a same-named Project, or an old Project
+   conversation, and no prompt is sent during recovery. Home navigation, sidebar hydration, the
+   at-most-20-row scan, and final Project readiness share one 45-second logical deadline. The scan
+   is a Stop-aware Python state machine whose browser evaluations inspect or operate on at most one
+   row at a time. A transient pre-click evaluation or connection failure can restart once from a
+   fresh stable row snapshot, but only while the page still proves exact ChatGPT Home; a second
+   transient fails before the Project click. The state machine contains no browser-side asynchronous
+   scan that can outlive its budget and click later. Because Playwright's synchronous `evaluate`
+   call has no per-call timeout, that deadline advances only while the in-process browser transport
+   returns control; it cannot preempt a permanently wedged CDP call.
 4. Before attaching project data or submitting a prompt, every provider must expose a compatible
    model control and visibly read back the configured model. ChatGPT resolves `Best available`
    from the rendered catalog, then proves that exact model and a trusted live thinking-effort slider; the controller reads its live ARIA
@@ -229,11 +263,23 @@ within 0.01px of its label. The user-owned service was not restarted.
    Missing-control hydration diagnostics retain enumerated readiness and element counts, but never
    persist the remote page title or arbitrary visible DOM text.
    Chromium composer readiness is polled in 250 ms slices so Stop can terminate the initial page
-   verification before model selection, context attachment, or prompt submission. Its single
-   recovery reload waits only for navigation commit and is capped at five seconds. Stop is checked
-   again before and throughout eligible reused-session context attachment, after attachment state publication, and before
-   prompt submission; Chromium submitters also return before reading or filling a composer when a
-   stop is already pending. Grok's bounded Enter fallback is unavailable for an unbound fresh run;
+   verification before model selection, context attachment, or prompt submission. A visible,
+   enabled exact `Try again` or `Retry` button in one unique page-level ChatGPT provider-error
+   boundary on the same atomically verified target may be clicked once before the single recovery
+   reload. A Project landing whose entire visible body is that one exact control qualifies even
+   when ChatGPT omits its usual error sentence; the stable-ID sidebar recovery above is attempted
+   after the click remains stalled. Historical conversation, tool, file, upload, navigation, menu,
+   dialog, and ordinary `Regenerate` controls are excluded.
+   The recovery reload waits only for navigation commit and is capped at five seconds. Playwright
+   startup, cloned Chromium acquisition, initial tab selection, task navigation, manual-verification
+   window surfacing, chat-mode/model/effort selection, recovery reloads, attachment, and submission
+   mutations share the service's linearized Stop gate. A Stop published during browser acquisition
+   closes the acquired context inside that gate before the accepted Stop returns. Challenge-window
+   bounds restoration and context closure remain cancellation cleanup. Once Stop publishes the
+   `stopping` snapshot, late pause or reconnect callbacks cannot regress that status. Stop is checked
+   again before and throughout eligible reused-session context attachment, after attachment state publication, and
+   before prompt submission; Chromium submitters also return before reading or filling a composer
+   when a stop is already pending. Grok's bounded Enter fallback is unavailable for an unbound fresh run;
    a reused or already bound session rechecks Stop after its last DOM send-button scan and before
    pressing Enter, so a Stop accepted during that scan cannot submit another controller observation.
    Gemini CAPTCHA and Grok Cloudflare or human-verification interstitials are detected separately
@@ -243,9 +289,14 @@ within 0.01px of its label. The user-owned service was not restarted.
    preserves the outstanding submit, and waits for both the challenge to clear and an explicit
    Resume. Stop remains effective, provider deadlines exclude the paused interval, and the clone's
    prior off-screen or minimized bounds are restored after the pause ends.
-   A detected macOS lock screen is also a recoverable interruption. It remains paused without the
-   ordinary five-minute browser-interruption deadline, so unlocking the Mac can resume the same
-   outstanding turn without resubmitting it. Stop remains effective while the screen is locked.
+   A detected macOS lock screen is also a recoverable interruption throughout initial page/model
+   preparation and provider-response waits, including the initial ChatGPT composer verification
+   before any transfer. It remains paused without consuming the ordinary five-minute interruption
+   budget, so unlocking the Mac can resume the same outstanding turn without reloading, retrying,
+   or resubmitting it. If the interruption changes from a lock to a closed, crashed, or displaced
+   tab, a bounded budget begins; if a bounded interruption changes into a lock, its remaining budget
+   freezes until unlock. Stop remains effective while the screen is locked, and lock time is
+   excluded from provider deadlines.
 5. The service builds one owner-readable Markdown context package containing the request,
    repository instruction files, a bounded file index, dirty-worktree status, and project entry
    files. Credential locations, environment files, cookie stores, and private-key formats are
@@ -264,9 +315,21 @@ within 0.01px of its label. The user-owned service was not restarted.
    receipt that must remain in the latest visible user turn through response attribution. A challenge
    or remount before Send can safely refill the still-uncommitted prompt; once a click or Enter may
    have committed, recovery verifies the receipt and never sends that turn again. In the same browser
+   response wait, a transient provider remount that exposes an older user node without increasing the
+   user-row count is treated as incomplete hydration. A later user-row count still proves supersession
+   and fails closed, while a response is accepted only after the current receipt is again the latest
+   visible user turn. In the same browser
    evaluation that clicks Send, the controller first checks the official host and exact selected
    landing or bound conversation identity; a tab switch to an old conversation therefore cannot race
-   the final click. Grok Build may replace its textarea with the exact visible `Ask Grok anything`
+   the final click. The same atomic transaction rereads the live ChatGPT composer and requires the
+   exact filled message before clicking. Contenteditable paragraphs and inline breaks are serialized
+   structurally, rather than through layout-sensitive `innerText`; unsupported atomic content stays
+   ambiguous and blocks Send. If hydration replaces the composer with one new, empty composer, the
+   controller may refill that demonstrably uncommitted draft once and repeat the atomic check; a
+   second empty remount or any non-empty draft change blocks Send. Project-bound Send and Retry
+   controls require both the exact conversation ID and stable
+   `g-p-...` identity, while a root Recent selection retains ChatGPT's root-to-Project canonical
+   redirect compatibility. Grok Build may replace its textarea with the exact visible `Ask Grok anything`
    contenteditable ProseMirror composer. Direct paragraph children are serialized with blank lines
    and inline breaks preserved; non-empty sibling text and unsupported atomic nodes make the
    readback ambiguous and block Send. Grok accepts its known `chat-submit` control or a semantic
@@ -288,6 +351,10 @@ within 0.01px of its label. The user-owned service was not restarted.
    controller action executes before it succeeds. After a fresh ChatGPT conversation is bound, a
    same-tab navigation is given one bounded settle window; the controller may recover only when the
    bound conversation or its transfer receipt is observed, and still rejects an unproved session.
+   A recovery navigation may be redirected from an old Project slug to the current slug only when
+   both URLs prove the same stable Project and conversation IDs; the binding is then updated to the
+   current canonical URL. Project modes reject the same conversation-shaped path in another Project
+   or at root.
    ChatGPT may first expose a client `WEB:` conversation id and then replace it with a
    server-assigned `/c/<id>` in the same root or Project container. The controller may rebind that
    one conversation when the current transfer receipt is observed on the server URL; a different
@@ -328,7 +395,33 @@ within 0.01px of its label. The user-owned service was not restarted.
    Provider submission records `prepared`, `commit_attempted`, `delivered`, `response_received`,
    and `response_consumed` boundaries using only an exchange ID, sequence, and SHA-256 identities.
    ChatGPT delivery in Chromium requires the exact new user turn in the same canonical conversation;
-   an empty composer or generating indicator is not accepted as a delivery receipt. Gemini, Grok,
+   an empty composer or generating indicator is not accepted as a delivery receipt. An ambiguous
+   ChatGPT send, including a transient navigation exception after the atomic Send evaluation begins,
+   remains `commit_attempted` while the controller waits up to 30 seconds for that exact receipt; the
+   controller never refills or resends the turn. Message IDs are authoritative when both baseline
+   and current turns expose them. A first visible current ID may prove a first turn only when the
+   baseline has zero user rows and empty text and the current user count increases; hydrated older rows,
+   repeated text, or a disappearing current user/assistant pair cannot advance delivery or response
+   stability. Provider-error text is acted on only when it belongs to a new assistant after the
+   exact current user turn. ChatGPT receipt comparison reads the source message retained by the mounted message component
+   before falling back to rendered text. This preserves exact Markdown punctuation such as inline-code
+   delimiters that are intentionally absent from the visible bubble without weakening message-ID,
+   ordering, conversation-URL, or no-resend requirements.
+   After exact delivery is proven, one unique current-response `Try again` error boundary is allowed without clicking Send or
+   resending the controller observation. A navigation or connection exception after that Retry click
+   begins is treated as an uncertain commit and never causes a second click. The controller gives the
+   first Retry five seconds for stale DOM to settle, extending the response deadlines across measured
+   connection, navigation, or verification pauses; the read-only Retry probe uses the same recoverable
+   read boundary. All recoverable reads in one exchange share one monotonic transport budget: at most
+   60 connection retries and 20 transient-navigation retries, each with a 0.5-second recovery wait.
+   A later helper cannot replenish that budget. Normal provider inference consumes no recovery budget,
+   and an explicitly measured human-verification pause still extends the relevant deadlines without
+   consuming it. The failed assistant node cannot itself be accepted as a completed controller
+   response after its Retry control disappears. A repeated Retry after that window, or a duplicated
+   or ambiguous retry surface outside that one in-flight settle, interrupts the run without another
+   click. If exact delivery is visible but ChatGPT exposes neither a current assistant nor a
+   generating or Retry state, the controller conservatively waits for the ordinary turn timeout;
+   it does not speculate by reloading or resending. Gemini, Grok,
    and Claude derive their visible receipt marker from the persisted exchange ID, and the outbound
    SHA-256 covers the exact provider message including that marker. The event writer refuses the
    append that would exceed its reloadable line bound. A malformed delivery-checkpoint version or
@@ -571,8 +664,17 @@ actions.
   inspection command, mutating or unbounded flags, file-writing redirection, deletion, moving,
   installation, downloads, publishing, environment enumeration, and Git-history mutation.
   A bounded before-and-after content fingerprint covers up to 12,000 files, 12,000 directories,
-  512 MiB, and 15 seconds per scan while excluding the documented ignored/runtime directories.
-  It re-stats every observed entry before accepting the result, but remains point-in-time evidence;
+   512 MiB, and 15 seconds per scan while excluding the documented ignored/runtime directories and
+   reproducible coverage/browser-report artifacts. File exclusions are exact: macOS Finder
+   `.DS_Store` metadata is excluded at every depth, while `.coverage`, `.coverage.<suffix>`,
+   `.coverage <suffix>`, and `coverage.json` are excluded only at the workspace root. Directory
+   exclusions include `coverage/`, `htmlcov/`, `playwright-report/`, and `test-results/`. A nested
+   source or fixture with one of the root-only verification names remains readable, searchable,
+   and fingerprinted.
+  It re-stats every observed entry before accepting the result. A directory whose metadata changed
+  is accepted only when a fresh scan, using the same exclusions, proves that its included immediate
+  child inventory is unchanged; ignored Finder or runtime churn therefore cannot hide a source
+  entry replacement. The fingerprint remains point-in-time evidence;
   it is not a filesystem transaction against an uncooperative external writer.
   An incomplete initial fingerprint prevents launch; a changed or incomplete final fingerprint
   fails the run, advances the edit generation, and invalidates both verification and bodycheck.

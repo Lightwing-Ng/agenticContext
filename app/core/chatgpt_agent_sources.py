@@ -1,6 +1,6 @@
 """Read ChatGPT Web sessions, projects, and conversation history for the local Agent.
 
-Code version: v1.6.4-codex.1
+Code version: v1.6.5-codex.1
 """
 
 from __future__ import annotations
@@ -446,11 +446,13 @@ def _normalize_chatgpt_url(value: str, path_pattern: re.Pattern[str]) -> str:
     candidate = str(value or "").strip()
     try:
         parsed = urlsplit(candidate)
+        port = parsed.port
     except ValueError:
         return ""
     if (
         parsed.scheme.lower() != "https"
         or (parsed.hostname or "").lower() not in CHATGPT_HOSTS
+        or port not in {None, 443}
         or not path_pattern.fullmatch(parsed.path)
         or parsed.username
         or parsed.password

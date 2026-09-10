@@ -1,6 +1,6 @@
 """Focused tests for the provider-neutral Agent session source adapter.
 
-Code version: v1.7.3-codex.1
+Code version: v1.7.6-codex.1
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from app.core.agent_session_sources import (
     _read_grok_project_links,
     _read_grok_project_session_links,
     _read_project_session_links,
+    chatgpt_project_id,
     claude_project_session_id,
     fetch_grok_conversation_history,
     list_agent_project_sessions,
@@ -116,7 +117,7 @@ def test_cached_gemini_project_rows_are_revalidated_before_replay() -> None:
         },
     )
 
-    assert payload["recent_sessions"] == [{"id": "session-1"}]
+    assert payload["recent_sessions"] == []
     assert payload["projects"] == [
         {
             "id": "notebook-1",
@@ -126,6 +127,42 @@ def test_cached_gemini_project_rows_are_revalidated_before_replay() -> None:
         }
     ]
     assert payload["cache"] == {"status": "hit", "layer": "parquet"}
+
+
+def test_cached_non_chatgpt_project_ids_are_derived_from_validated_urls() -> None:
+    cases = (
+        (
+            "gemini",
+            "https://gemini.google.com/app/notebook-1",
+            "notebook-1",
+        ),
+        (
+            "grok",
+            "https://grok.com/project/project-1?tab=conversations",
+            "project-1",
+        ),
+        (
+            "claude",
+            "https://claude.ai/project/project-1",
+            "project-1",
+        ),
+    )
+
+    for platform, project_url, expected_id in cases:
+        payload = normalize_agent_source_catalog_payload(
+            platform,
+            {
+                "projects": [
+                    {
+                        "id": "foreign-cache-id",
+                        "title": "Validated project",
+                        "url": project_url,
+                    }
+                ]
+            },
+        )
+
+        assert payload["projects"][0]["id"] == expected_id
 
 
 def test_cached_source_catalog_sorts_current_sessions_and_projects() -> None:
@@ -169,10 +206,12 @@ def test_cached_source_catalog_sorts_current_sessions_and_projects() -> None:
         "https://chatgpt.com/g/g-p-new/project",
         "https://chatgpt.com/g/g-p-old/project",
     ]
+    assert [row["id"] for row in payload["projects"]] == ["g-p-new", "g-p-old"]
     assert payload["projects"][0]["title"] == "Renamed project"
 
 
 def test_cached_chatgpt_project_icon_metadata_survives_revalidation() -> None:
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
     payload = normalize_agent_source_catalog_payload(
         "chatgpt",
         {
@@ -181,7 +220,7 @@ def test_cached_chatgpt_project_icon_metadata_survives_revalidation() -> None:
                 {
                     "id": "project",
                     "title": "worthward",
-                    "url": "https://chatgpt.com/g/g-p-worthward/project",
+                    "url": f"https://chatgpt.com/g/{project_id}-worthward/project",
                     "icon": "currency-dollar",
                     "icon_color": "#53B559",
                 }
@@ -191,12 +230,49 @@ def test_cached_chatgpt_project_icon_metadata_survives_revalidation() -> None:
 
     assert payload["projects"] == [
         {
-            "id": "project",
+            "id": project_id,
             "title": "worthward",
-            "url": "https://chatgpt.com/g/g-p-worthward/project",
+            "url": f"https://chatgpt.com/g/{project_id}-worthward/project",
             "updated_at": "",
             "icon": "currency-dollar",
             "icon_color": "#53B559",
+        }
+    ]
+
+
+def test_cached_chatgpt_project_aliases_use_one_stable_identity() -> None:
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    old_url = f"https://chatgpt.com/g/{project_id}-antigravity/project"
+    current_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    payload = normalize_agent_source_catalog_payload(
+        "chatgpt",
+        {
+            "projects": [
+                {
+                    "id": "project",
+                    "title": "Old project name",
+                    "url": old_url,
+                    "updated_at": "2026-09-01T00:00:00Z",
+                },
+                {
+                    "id": "project",
+                    "title": "worthward",
+                    "url": current_url,
+                    "updated_at": "2026-09-08T00:00:00Z",
+                },
+            ]
+        },
+    )
+
+    assert chatgpt_project_id(old_url) == project_id
+    assert chatgpt_project_id(current_url) == project_id
+    assert payload["projects"] == [
+        {
+            "id": project_id,
+            "title": "worthward",
+            "url": current_url,
+            "updated_at": "2026-09-08T00:00:00Z",
         }
     ]
 

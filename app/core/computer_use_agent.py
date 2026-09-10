@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.66.0-codex.1
+Code version: v3.69.2-codex.2
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 import base64
 import binascii
 from collections import deque
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from glob import translate as translate_glob
 import hashlib
@@ -47,6 +47,7 @@ from .agent_model_catalog import (
 from .agent_session_sources import (
     CLAUDE_HOME_URL,
     CLAUDE_HOSTS,
+    chatgpt_project_id,
     claude_project_session_id,
     normalize_agent_conversation_url,
     normalize_agent_project_url,
@@ -171,6 +172,7 @@ GROK_MODEL_CONTROL_WAIT_ATTEMPTS = 121
 MAX_BASE64_DECODED_BYTES = MAX_FILE_READ_CHARS
 BROWSER_INTERRUPTION_TIMEOUT_SECONDS = 300
 BROWSER_INTERRUPTION_POLL_SECONDS = 1.0
+MACOS_SCREEN_LOCK_PROBE_INTERVAL_SECONDS = 1.0
 HUMAN_VERIFICATION_REASON_PREFIX = "Human verification required: "
 SCREEN_LOCK_INTERRUPTION_REASON = "The screen is locked."
 CONTINUE_INTERRUPTED_AGENT_PROMPT = (
@@ -190,6 +192,12 @@ CHATGPT_COMPOSER_TIMEOUT_SECONDS = 60
 CHATGPT_MODEL_COMPOSER_WAIT_SECONDS = 15
 CHATGPT_COMPOSER_RELOAD_ATTEMPTS = 2
 CHATGPT_COMPOSER_RELOAD_TIMEOUT_SECONDS = 5
+CHATGPT_PROVIDER_RETRY_ATTEMPTS = 1
+CHATGPT_PROVIDER_RETRY_SETTLE_SECONDS = 5.0
+CHATGPT_PROJECT_SIDEBAR_RECOVERY_TOTAL_SECONDS = 45
+CHATGPT_PROJECT_SIDEBAR_SCAN_LIMIT = 20
+CHATGPT_PROJECT_ROW_HYDRATION_ATTEMPTS = 12
+CHATGPT_TURN_RECEIPT_TIMEOUT_SECONDS = 30
 SAFARI_SEND_BUTTON_TIMEOUT_SECONDS = 15
 CHROMIUM_SEND_BUTTON_TIMEOUT_SECONDS = 180
 CHROMIUM_SUBMISSION_ACCEPT_TIMEOUT_SECONDS = 15
@@ -543,14 +551,19 @@ _IGNORED_DIRECTORY_NAMES = frozenset(
         "build",
         "coverage",
         "dist",
+        "htmlcov",
         "local_store",
         "logs",
         "node_modules",
+        "playwright-report",
         "test-results",
         "vendor",
         "venv",
     }
 )
+_IGNORED_WORKSPACE_FILE_NAMES = frozenset({".coverage", "coverage.json"})
+_IGNORED_WORKSPACE_FILE_PREFIXES = (".coverage.", ".coverage ")
+_IGNORED_WORKSPACE_METADATA_FILE_NAMES = frozenset({".ds_store"})
 _CONTROLLER_INTERNAL_FILE_PATTERN = re.compile(
     r"\..+\.agent-(?:(?:backup|cleanup|delete)-)?[0-9a-f]{16}\.tmp",
     re.IGNORECASE | re.DOTALL,
@@ -2017,10 +2030,13 @@ def resolve_agent_session_target(
         if not normalized_project_url:
             raise ValueError(f"Choose the {platform_label} Project that owns this session.")
         if selected_platform == "chatgpt":
-            project_path = urlsplit(normalized_project_url).path.rstrip("/")
-            project_path = project_path[: -len("/project")] if project_path.endswith("/project") else project_path
-            conversation_path = urlsplit(normalized_conversation_url).path.rstrip("/")
-            if not conversation_path.startswith(f"{project_path}/c/"):
+            selected_project_id = chatgpt_project_id(normalized_project_url)
+            conversation_project_id = chatgpt_project_id(normalized_conversation_url)
+            if not (
+                selected_project_id
+                and conversation_project_id
+                and selected_project_id == conversation_project_id
+            ):
                 raise ValueError("The selected session does not belong to the selected Project.")
         elif selected_platform == "claude":
             if not claude_project_session_id(
@@ -2785,6 +2801,18 @@ def _markdown_file_section(workspace: Path, path: Path, maximum_chars: int) -> s
 
 def _path_has_ignored_part(relative: Path) -> bool:
     return any(part.casefold() in _IGNORED_DIRECTORY_NAMES for part in relative.parts)
+
+
+def _path_is_ignored_fingerprint_artifact(relative: Path) -> bool:
+    """Exclude inert platform metadata and root verification outputs."""
+    filename = relative.name.casefold()
+    if filename in _IGNORED_WORKSPACE_METADATA_FILE_NAMES:
+        return True
+    if len(relative.parts) != 1:
+        return False
+    return filename in _IGNORED_WORKSPACE_FILE_NAMES or filename.startswith(
+        _IGNORED_WORKSPACE_FILE_PREFIXES
+    )
 
 
 def _path_has_controller_internal_file(relative: Path) -> bool:
@@ -5584,6 +5612,10 @@ def _workspace_mutation_fingerprint(
     inspected_bytes = 0
     pending = deque([workspace])
     observed_entries: list[tuple[Path, tuple[int, int, int, int, int, int]]] = []
+    observed_directory_entries: dict[
+        Path,
+        tuple[tuple[str, int, int, int], ...],
+    ] = {}
     deadline = time.monotonic() + WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS
     stop_requested = should_stop or (lambda: False)
     try:
@@ -5621,6 +5653,7 @@ def _workspace_mutation_fingerprint(
         except OSError:
             return digest.hexdigest(), False
         inspected_directories += 1
+        directory_entries: list[tuple[str, int, int, int]] = []
         for entry in entries:
             if time.monotonic() >= deadline or stop_requested():
                 return digest.hexdigest(), False
@@ -5631,13 +5664,26 @@ def _workspace_mutation_fingerprint(
                 return digest.hexdigest(), False
             if (
                 _path_has_ignored_part(relative)
+                or _path_is_ignored_fingerprint_artifact(relative)
                 or _path_has_controller_internal_file(relative)
             ):
                 continue
             try:
-                initial_stat = entry.stat(follow_symlinks=False)
+                # Query the real file stat instead of the cached scandir stat:
+                # on Windows (Python 3.12+) the cached stat reports placeholder
+                # zeros for st_nlink/st_dev/st_ino, which would fail the hard
+                # link check and the before/after identity comparison below.
+                initial_stat = os.stat(path, follow_symlinks=False)
             except OSError:
                 return digest.hexdigest(), False
+            directory_entries.append(
+                (
+                    entry.name,
+                    int(initial_stat.st_dev),
+                    int(initial_stat.st_ino),
+                    int(initial_stat.st_mode),
+                )
+            )
             relative_bytes = relative.as_posix().encode(
                 "utf-8",
                 errors="replace",
@@ -5727,6 +5773,7 @@ def _workspace_mutation_fingerprint(
             )
             inspected_files += 1
             inspected_bytes += initial_stat.st_size
+        observed_directory_entries[directory] = tuple(directory_entries)
 
     for path, expected_identity in observed_entries:
         if time.monotonic() >= deadline or stop_requested():
@@ -5743,7 +5790,48 @@ def _workspace_mutation_fingerprint(
             int(current_stat.st_mtime_ns),
             int(current_stat.st_ctime_ns),
         )
-        if current_identity != expected_identity:
+        if current_identity == expected_identity:
+            continue
+        if (
+            current_identity[:3] != expected_identity[:3]
+            or not stat_module.S_ISDIR(expected_identity[2])
+        ):
+            return digest.hexdigest(), False
+        try:
+            current_entries = sorted(
+                os.scandir(path),
+                key=lambda entry: entry.name.casefold(),
+            )
+        except OSError:
+            return digest.hexdigest(), False
+        current_directory_entries: list[tuple[str, int, int, int]] = []
+        for entry in current_entries:
+            if time.monotonic() >= deadline or stop_requested():
+                return digest.hexdigest(), False
+            entry_path = Path(entry.path)
+            try:
+                relative = entry_path.relative_to(workspace)
+            except ValueError:
+                return digest.hexdigest(), False
+            if (
+                _path_has_ignored_part(relative)
+                or _path_is_ignored_fingerprint_artifact(relative)
+                or _path_has_controller_internal_file(relative)
+            ):
+                continue
+            try:
+                entry_stat = entry.stat(follow_symlinks=False)
+            except OSError:
+                return digest.hexdigest(), False
+            current_directory_entries.append(
+                (
+                    entry.name,
+                    int(entry_stat.st_dev),
+                    int(entry_stat.st_ino),
+                    int(entry_stat.st_mode),
+                )
+            )
+        if tuple(current_directory_entries) != observed_directory_entries.get(path):
             return digest.hexdigest(), False
 
     digest.update(
@@ -6538,10 +6626,14 @@ class _LinearizedStopSignal:
             self._completion_claimed = False
 
     def set(self) -> bool:
+        # Publish the request before waiting for an in-flight browser-action gate
+        # so cooperative loops inside that gate can stop promptly. The lock still
+        # decides whether Stop or final completion wins the linearization race.
+        self._event.set()
         with self._lock:
             if self._completion_claimed:
+                self._event.clear()
                 return False
-            self._event.set()
             return True
 
     def is_set(self) -> bool:
@@ -7778,6 +7870,47 @@ class ComputerUseAgentService:
             worker.join(timeout=AGENT_EXIT_WORKER_JOIN_SECONDS)
         self._release_sleep_assertion(self._take_sleep_assertion())
 
+    def dismiss_failed_record(
+        self,
+        *,
+        expected_conversation_url: str = "",
+        remote_record_absent: bool = False,
+    ) -> dict[str, Any]:
+        """Remove one inactive failed run from the local session catalog."""
+        with self._lock:
+            snapshot = self._snapshot
+            worker = self._worker
+            if snapshot.running or (worker is not None and worker.is_alive()):
+                raise RuntimeError("A running Agent session cannot be deleted.")
+            if str(snapshot.phase or "").strip().lower() != "failed":
+                raise RuntimeError("Only failed Agent sessions can be deleted.")
+            conversation_url = str(snapshot.conversation_url or "").strip()
+            if conversation_url != str(expected_conversation_url or "").strip():
+                raise RuntimeError("The Agent session changed before it could be deleted.")
+            if not remote_record_absent:
+                raise RuntimeError(
+                    "Confirm that the remote conversation record is absent before deleting this session."
+                )
+            compute_job = self.compute_job_status(snapshot.workspace_path)
+            if compute_job.get("active"):
+                raise RuntimeError(
+                    "This failed Agent session still owns an active compute job and cannot be deleted."
+                )
+            self._require_resolved_context_cleanup_locked()
+            snapshot_path = self._runtime_root.expanduser() / PERSISTED_AGENT_SNAPSHOT_FILENAME
+            if _path_is_unsafe_file_leaf(snapshot_path):
+                raise RuntimeError("The failed Agent session record is not a safe regular file.")
+            try:
+                snapshot_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise RuntimeError("The failed Agent session record could not be deleted safely.") from exc
+            dismissed = {"run_id": snapshot.run_id, "conversation_url": conversation_url}
+            self._snapshot = AgentRunSnapshot()
+            self._event_chain = None
+            self._conversation_histories.clear()
+            self._conversation_titles.clear()
+            return dismissed
+
     def _set_active_process(self, process: subprocess.Popen[str] | None) -> None:
         with self._lock:
             self._active_process = process
@@ -8173,6 +8306,11 @@ class ComputerUseAgentService:
 
     def _update(self, **changes: Any) -> None:
         with self._lock:
+            if (
+                self._stop_requested.is_set()
+                and self._snapshot.phase == "stopping"
+            ):
+                return
             for key, value in changes.items():
                 if hasattr(self._snapshot, key):
                     setattr(self._snapshot, key, value)
@@ -8413,6 +8551,7 @@ def run_web_computer_use(
                 update=update,
                 event_chain=event_chain,
                 checkpoint_update=checkpoint_update,
+                monitor_screen_lock=sys.platform == "darwin",
             )
 
     task_stage_window = settings.browser in {"edge", "chrome"} and sys.platform in {"darwin", "win32"}
@@ -8423,64 +8562,91 @@ def run_web_computer_use(
     task_browser_application = (
         "Google Chrome" if settings.browser == "chrome" else "Microsoft Edge"
     )
-    with sync_playwright_or_error() as playwright:
-        with launch_chromium_context(
-            playwright,
-            descriptor,
-            headless=False,
-            clone_profile_first=True,
-            background_window=True,
-            silent=restore_macos_focus,
-            window_mode=(
-                CHROMIUM_WINDOW_MODE_TASK_STAGE
-                if task_stage_window
-                else CHROMIUM_WINDOW_MODE_OFFSCREEN
-            ),
-            prefer_initialized_debug_profile=True,
-        ) as context:
+    with ExitStack() as browser_resources:
+        def acquire_chromium_context() -> Any:
+            playwright = browser_resources.enter_context(sync_playwright_or_error())
+            context = browser_resources.enter_context(
+                launch_chromium_context(
+                    playwright,
+                    descriptor,
+                    headless=False,
+                    clone_profile_first=True,
+                    background_window=True,
+                    silent=restore_macos_focus,
+                    window_mode=(
+                        CHROMIUM_WINDOW_MODE_TASK_STAGE
+                        if task_stage_window
+                        else CHROMIUM_WINDOW_MODE_OFFSCREEN
+                    ),
+                    prefer_initialized_debug_profile=True,
+                )
+            )
+            if should_stop():
+                browser_resources.close()
+                return None
+            return context
+
+        context_acquired, context = _run_browser_action_unless_stopped(
+            should_stop,
+            acquire_chromium_context,
+        )
+        if not context_acquired or should_stop():
+            return stopped_result
+
+        def select_task_page() -> Any:
             try:
-                if should_stop():
-                    return stopped_result
-                page = select_provider_tab(
+                selected_page = select_provider_tab(
                     context,
                     home_url=selected_target_url,
                     hosts=_platform_hosts(settings.platform),
                 )
                 if task_stage_window:
-                    _keep_task_stage_window_available(page)
+                    _keep_task_stage_window_available(selected_page)
+                return selected_page
             finally:
                 if restore_macos_focus:
                     _restore_macos_frontmost_application_after_task_stage(
                         previous_frontmost_application,
                         task_browser_application,
                     )
-            if should_stop():
-                return stopped_result
-            goto_with_retry(
+
+        page_selected, page = _run_browser_action_unless_stopped(
+            should_stop,
+            select_task_page,
+        )
+        if not page_selected:
+            return stopped_result
+        if should_stop():
+            return stopped_result
+        navigation_started, _result = _run_browser_action_unless_stopped(
+            should_stop,
+            lambda: goto_with_retry(
                 page,
                 selected_target_url,
                 attempts=2,
                 timeout_ms=90_000,
                 should_stop=should_stop,
-            )
-            if should_stop():
-                return stopped_result
-            return _run_web_action_loop(
-                page=page,
-                browser_kind="chromium",
-                initial_message=initial_message,
-                controller=controller,
-                context_path=context_path,
-                settings=settings,
-                platform=settings.platform,
-                session_mode=session_mode,
-                selected_target_url=selected_target_url,
-                should_stop=should_stop,
-                should_resume=should_resume,
-                update=update,
-                event_chain=event_chain,
-                checkpoint_update=checkpoint_update,
-            )
+            ),
+        )
+        if not navigation_started or should_stop():
+            return stopped_result
+        return _run_web_action_loop(
+            page=page,
+            browser_kind="chromium",
+            initial_message=initial_message,
+            controller=controller,
+            context_path=context_path,
+            settings=settings,
+            platform=settings.platform,
+            session_mode=session_mode,
+            selected_target_url=selected_target_url,
+            should_stop=should_stop,
+            should_resume=should_resume,
+            update=update,
+            event_chain=event_chain,
+            checkpoint_update=checkpoint_update,
+            monitor_screen_lock=sys.platform == "darwin",
+        )
 
 
 def _initial_web_agent_message(
@@ -8599,21 +8765,48 @@ def _provider_tab_identity(page: Any) -> tuple[Any, str, str]:
     return tab_id, url, title
 
 
+def _chatgpt_url_has_official_origin(value: str) -> bool:
+    """Require ChatGPT's HTTPS origin without credentials or a custom port."""
+    try:
+        parsed = urlsplit(str(value or "").strip())
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() in CHATGPT_HOSTS
+        and port in {None, 443}
+        and not parsed.username
+        and not parsed.password
+    )
+
+
 def _chatgpt_fresh_navigation_allowed(expected_url: str, current_url: str) -> bool:
     """Permit the normal ChatGPT home-to-conversation transition."""
+    if not (
+        _chatgpt_url_has_official_origin(expected_url)
+        and _chatgpt_url_has_official_origin(current_url)
+    ):
+        return False
     expected = urlsplit(str(expected_url or ""))
     current = urlsplit(str(current_url or ""))
-    if (expected.hostname or "").lower() not in CHATGPT_HOSTS:
-        return False
-    if (current.hostname or "").lower() not in CHATGPT_HOSTS:
-        return False
     expected_path = expected.path.rstrip("/") or "/"
     current_path = current.path.rstrip("/") or "/"
     if expected_path == "/" and re.fullmatch(r"/c/[^/]+/?", current_path, re.IGNORECASE):
         return True
     if expected_path.endswith("/project"):
         project_prefix = expected_path[: -len("/project")]
-        if re.fullmatch(re.escape(project_prefix) + r"/c/[^/]+/?", current_path, re.IGNORECASE):
+        exact_project_conversation = re.fullmatch(
+            re.escape(project_prefix) + r"/c/[^/]+/?",
+            current_path,
+            re.IGNORECASE,
+        )
+        stable_project_alias = bool(
+            normalize_agent_conversation_url("chatgpt", current_url)
+            and chatgpt_project_id(expected_url)
+            and chatgpt_project_id(expected_url) == chatgpt_project_id(current_url)
+        )
+        if exact_project_conversation or stable_project_alias:
             return True
     return False
 
@@ -8627,10 +8820,8 @@ def _chatgpt_is_project_surface(page: Any = None, session_type: str = "") -> boo
         if url:
             parsed = urlsplit(url)
             host = (parsed.hostname or "").lower()
-            if not host or host in CHATGPT_HOSTS:
-                path = (parsed.path or "").lower()
-                if path.startswith("/g/"):
-                    return True
+            if (not host or host in CHATGPT_HOSTS) and chatgpt_project_id(url):
+                return True
     except Exception:
         pass
     return False
@@ -8657,6 +8848,16 @@ def _chatgpt_conversation_ids_match(left_url: str, right_url: str) -> bool:
     _left_container, left_id = _chatgpt_conversation_path_parts(left_url)
     _right_container, right_id = _chatgpt_conversation_path_parts(right_url)
     return bool(left_id) and left_id.casefold() == right_id.casefold()
+
+
+def _chatgpt_same_project_conversation(left_url: str, right_url: str) -> bool:
+    """Match one Project conversation across slug changes without crossing scope."""
+    left_project_id = chatgpt_project_id(left_url)
+    return bool(
+        left_project_id
+        and left_project_id == chatgpt_project_id(right_url)
+        and _chatgpt_conversation_ids_match(left_url, right_url)
+    )
 
 
 def _chatgpt_conversation_id_is_client_placeholder(conversation_id: str) -> bool:
@@ -8845,6 +9046,21 @@ class _ProviderSessionBinding:
             else ""
         )
 
+    def _bound_target_url(self) -> str:
+        """Preserve a root Recent selection while keeping Project modes scoped."""
+        selected_conversation = normalize_agent_conversation_url(
+            self.platform,
+            self.selected_target_url,
+        )
+        if (
+            self.platform == "chatgpt"
+            and self.session_mode == "recent"
+            and selected_conversation
+            and not chatgpt_project_id(selected_conversation)
+        ):
+            return selected_conversation
+        return self.bound_conversation_url
+
     def _initial_chatgpt_landing_recovery_allowed(self, current_url: str) -> bool:
         """Allow one proven fresh ChatGPT conversation to recover from its landing page."""
         return bool(
@@ -8890,9 +9106,18 @@ class _ProviderSessionBinding:
         if (
             current_conversation
             and current_conversation != self.bound_conversation_url
-            and _chatgpt_conversation_ids_match(
-                self.bound_conversation_url,
-                current_conversation,
+            and (
+                _chatgpt_same_project_conversation(
+                    self.bound_conversation_url,
+                    current_conversation,
+                )
+                or (
+                    not chatgpt_project_id(self._bound_target_url())
+                    and _chatgpt_conversation_ids_match(
+                        self._bound_target_url(),
+                        current_conversation,
+                    )
+                )
             )
         ):
             LOGGER.info(
@@ -8909,18 +9134,27 @@ class _ProviderSessionBinding:
 
     def _chatgpt_bound_receipt_is_visible(self, current_url: str) -> bool:
         """Prove that a transient URL mismatch still shows this run's bound turn."""
-        return bool(
+        if not (
             self.platform == "chatgpt"
             and self.session_mode in {"new", "project_new"}
             and self.bound_conversation_url
             and self.submission_marker
-            and (urlsplit(str(current_url or "")).hostname or "").lower()
-            in CHATGPT_HOSTS
-            and normalize_agent_conversation_url(
-                "chatgpt",
-                self._current_submission_receipt_url(),
+            and _chatgpt_url_has_official_origin(current_url)
+        ):
+            return False
+        receipt_url = self._current_submission_receipt_url()
+        receipt_conversation = normalize_agent_conversation_url(
+            "chatgpt",
+            receipt_url,
+        )
+        return bool(
+            (
+                receipt_conversation == self.bound_conversation_url
+                or _chatgpt_same_project_conversation(
+                    receipt_conversation,
+                    self.bound_conversation_url,
+                )
             )
-            == self.bound_conversation_url
         )
 
     def _promote_chatgpt_client_conversation(self, current_url: str) -> str:
@@ -8997,7 +9231,7 @@ class _ProviderSessionBinding:
                 )
             if _web_target_is_open(
                 self.platform,
-                self.bound_conversation_url,
+                self._bound_target_url(),
                 settled_url,
             ):
                 return True
@@ -9100,7 +9334,19 @@ class _ProviderSessionBinding:
             current_url,
         )
         if receipt_conversation or current_conversation:
-            if not receipt_conversation or receipt_conversation != current_conversation:
+            chatgpt_project_alias_match = bool(
+                self.platform == "chatgpt"
+                and receipt_conversation
+                and current_conversation
+                and _chatgpt_same_project_conversation(
+                    receipt_conversation,
+                    current_conversation,
+                )
+            )
+            if not receipt_conversation or (
+                receipt_conversation != current_conversation
+                and not chatgpt_project_alias_match
+            ):
                 if self._chatgpt_receipt_landing_race_allowed(
                     receipt_url,
                     current_url,
@@ -9170,7 +9416,7 @@ class _ProviderSessionBinding:
         if self.bound_conversation_url:
             if not _web_target_is_open(
                 self.platform,
-                self.bound_conversation_url,
+                self._bound_target_url(),
                 current_url,
             ):
                 promoted = self._promote_chatgpt_client_conversation(current_url)
@@ -9190,7 +9436,7 @@ class _ProviderSessionBinding:
                         )
                     if _web_target_is_open(
                         self.platform,
-                        self.bound_conversation_url,
+                        self._bound_target_url(),
                         settled_url,
                     ):
                         return self._canonical_bound_conversation_url(settled_url)
@@ -9335,18 +9581,38 @@ class _ProviderSessionBinding:
                 )
             if _web_target_is_open("chatgpt", conversation, current_url):
                 receipt_url = self._current_submission_receipt_url()
-                if normalize_agent_conversation_url("chatgpt", receipt_url) == conversation:
+                if (
+                    normalize_agent_conversation_url("chatgpt", receipt_url)
+                    == conversation
+                    or _chatgpt_same_project_conversation(receipt_url, conversation)
+                ):
                     validated_url, validated_title, landing_race = (
                         self._revalidated_submission_receipt(receipt_url)
                     )
+                    validated_conversation = normalize_agent_conversation_url(
+                        "chatgpt",
+                        validated_url,
+                    )
                     if (
                         not landing_race
-                        and normalize_agent_conversation_url(
-                            "chatgpt",
-                            validated_url,
+                        and (
+                            validated_conversation == conversation
+                            or _chatgpt_same_project_conversation(
+                                validated_conversation,
+                                conversation,
+                            )
                         )
-                        == conversation
                     ):
+                        if validated_conversation != conversation:
+                            LOGGER.info(
+                                "event=chatgpt_conversation_url_canonicalized "
+                                "session_mode=%s from_url=%s to_url=%s",
+                                self.session_mode,
+                                conversation,
+                                validated_conversation,
+                            )
+                            self.bound_conversation_url = validated_conversation
+                            conversation = validated_conversation
                         self.expected_title = validated_title or current_title
                         self.initial_landing_bounce_detected = False
                         self.initial_receipt_revalidation_required = False
@@ -9723,6 +9989,7 @@ def _detect_browser_interruption(
     session_mode: str = "new",
     expected_tab_id: Any = None,
     expected_title: str = "",
+    monitor_screen_lock: bool = True,
 ) -> tuple[bool, str]:
     """Detect provider-tab closure, crash, identity change, or user takeover.
 
@@ -9765,7 +10032,7 @@ def _detect_browser_interruption(
         ):
             return True, "The selected provider tab title no longer matches the chosen session."
 
-    if callable(is_closed):
+    if monitor_screen_lock:
         locked = _macos_screen_is_locked()
         if locked is True:
             return True, "The screen is locked."
@@ -9785,10 +10052,12 @@ def _wait_for_browser_recovery(
     should_resume: Callable[[], bool] | None,
     update: Callable[..., None],
     reason: str,
+    monitor_screen_lock: bool = True,
 ) -> str:
     """Pause until the provider tab recovers, the user resumes, or the wait expires.
 
-    Returns 'recovered', 'stopped', or 'timeout'. Does not submit a prompt.
+    Returns 'recovered' or 'stopped', and raises with the current reason on timeout.
+    Does not submit a prompt.
     """
     human_verification = _is_human_verification_reason(reason)
     resume_required = human_verification and should_resume is not None
@@ -9797,7 +10066,12 @@ def _wait_for_browser_recovery(
     original_window_state = None
     surface_warning = ""
     if human_verification:
-        original_window_state = _surface_provider_challenge_window(page)
+        surfaced, original_window_state = _run_browser_action_unless_stopped(
+            should_stop,
+            lambda: _surface_provider_challenge_window(page),
+        )
+        if not surfaced or should_stop():
+            return "stopped"
         if original_window_state is None:
             surface_warning = (
                 " The controlled browser window could not be surfaced safely; "
@@ -9810,12 +10084,32 @@ def _wait_for_browser_recovery(
         phase="paused",
         message=initial_message,
     )
-    deadline = None
-    if not _is_screen_lock_interruption(reason):
-        deadline = time.monotonic() + BROWSER_INTERRUPTION_TIMEOUT_SECONDS
+    active_reason = str(reason or "").strip()
+    screen_lock_active = _is_screen_lock_interruption(active_reason)
+    bounded_seconds_remaining = (
+        None if screen_lock_active else float(BROWSER_INTERRUPTION_TIMEOUT_SECONDS)
+    )
+    last_budget_check: float | None = None
     result = "timeout"
     try:
-        while deadline is None or time.monotonic() < deadline:
+        while True:
+            budget_checked_at = time.monotonic()
+            if (
+                last_budget_check is not None
+                and not screen_lock_active
+                and bounded_seconds_remaining is not None
+            ):
+                bounded_seconds_remaining = max(
+                    0.0,
+                    bounded_seconds_remaining
+                    - max(0.0, budget_checked_at - last_budget_check),
+                )
+            last_budget_check = budget_checked_at
+            if (
+                bounded_seconds_remaining is not None
+                and bounded_seconds_remaining <= 0
+            ):
+                break
             if should_stop():
                 result = "stopped"
                 break
@@ -9827,23 +10121,49 @@ def _wait_for_browser_recovery(
                 session_mode=session_mode,
                 expected_tab_id=expected_tab_id,
                 expected_title=expected_title,
+                monitor_screen_lock=monitor_screen_lock,
+            )
+            observed_reason = str(current_reason or active_reason).strip()
+            observed_screen_lock = bool(
+                interrupted and _is_screen_lock_interruption(observed_reason)
+            )
+            if (
+                interrupted
+                and screen_lock_active
+                and not observed_screen_lock
+                and bounded_seconds_remaining is None
+            ):
+                bounded_seconds_remaining = float(
+                    BROWSER_INTERRUPTION_TIMEOUT_SECONDS
+                )
+            screen_lock_active = observed_screen_lock
+            reason_changed = bool(
+                interrupted
+                and observed_reason
+                and observed_reason != active_reason
             )
             current_human_verification = _is_human_verification_reason(
-                current_reason
+                observed_reason
             )
             if current_human_verification and not human_verification:
                 human_verification = True
                 resume_required = should_resume is not None
                 resume_armed = False
                 verification_cleared_notified = False
-                original_window_state = _surface_provider_challenge_window(page)
+                surfaced, original_window_state = _run_browser_action_unless_stopped(
+                    should_stop,
+                    lambda: _surface_provider_challenge_window(page),
+                )
+                if not surfaced or should_stop():
+                    result = "stopped"
+                    break
                 surface_warning = ""
                 if original_window_state is None:
                     surface_warning = (
                         " The controlled browser window could not be surfaced safely; "
                         "bring that window forward manually."
                     )
-                challenge_message = f"{current_reason}{surface_warning}"
+                challenge_message = f"{observed_reason}{surface_warning}"
                 update(
                     paused=True,
                     pause_reason=challenge_message,
@@ -9854,10 +10174,19 @@ def _wait_for_browser_recovery(
                 verification_cleared_notified = False
                 update(
                     paused=True,
-                    pause_reason=current_reason,
+                    pause_reason=observed_reason,
                     phase="paused",
-                    message=current_reason,
+                    message=observed_reason,
                 )
+            elif reason_changed:
+                update(
+                    paused=True,
+                    pause_reason=observed_reason,
+                    phase="paused",
+                    message=observed_reason,
+                )
+            if interrupted and observed_reason:
+                active_reason = observed_reason
             resume_requested = bool(should_resume and should_resume())
             if resume_requested and (not human_verification or not interrupted):
                 resume_armed = True
@@ -9880,11 +10209,11 @@ def _wait_for_browser_recovery(
             if resume_requested:
                 update(
                     paused=True,
-                    pause_reason=current_reason or (reason if interrupted else ""),
+                    pause_reason=active_reason if interrupted else "",
                     phase="paused",
                     message=(
                         "Resume was requested, but the selected provider tab is still interrupted. "
-                        + (current_reason or reason)
+                        + active_reason
                         if interrupted
                         else "Resume requested after human verification cleared."
                     ),
@@ -9895,6 +10224,10 @@ def _wait_for_browser_recovery(
             _restore_provider_challenge_window(page, original_window_state)
         if result != "recovered":
             update(paused=False, pause_reason="")
+    if result == "timeout":
+        raise RuntimeError(
+            f"Browser did not recover after interruption: {active_reason}"
+        )
     return result
 
 
@@ -9914,6 +10247,7 @@ def _run_web_action_loop(
     should_resume: Callable[[], bool] | None = None,
     event_chain: AgentEventChain | None = None,
     checkpoint_update: Callable[..., None] | None = None,
+    monitor_screen_lock: bool = False,
 ) -> tuple[str, str, int, bool]:
     """Exchange JSON actions and compact observations in one Web AI conversation."""
     session_binding = _ProviderSessionBinding(
@@ -9958,10 +10292,31 @@ def _run_web_action_loop(
         )
         return event_payload
 
+    screen_lock_checked_at: float | None = None
+    screen_lock_state: bool | None = None
+
+    def screen_lock_observed() -> bool:
+        nonlocal screen_lock_checked_at, screen_lock_state
+        if not monitor_screen_lock:
+            return False
+        checked_at = time.monotonic()
+        if (
+            screen_lock_checked_at is None
+            or checked_at - screen_lock_checked_at
+            >= MACOS_SCREEN_LOCK_PROBE_INTERVAL_SECONDS
+        ):
+            screen_lock_checked_at = checked_at
+            screen_lock_state = _macos_screen_is_locked()
+        return screen_lock_state is True
+
     def provider_availability_check() -> tuple[bool, float]:
         if should_stop():
             return False, 0.0
-        reason = _provider_human_verification_reason(page, platform)
+        reason = (
+            SCREEN_LOCK_INTERRUPTION_REASON
+            if screen_lock_observed()
+            else _provider_human_verification_reason(page, platform)
+        )
         if not reason:
             return True, 0.0
         paused_at = time.monotonic()
@@ -9977,13 +10332,14 @@ def _run_web_action_loop(
             should_resume=should_resume,
             update=update,
             reason=reason,
+            monitor_screen_lock=monitor_screen_lock,
         )
         paused_seconds = max(0.0, time.monotonic() - paused_at)
         if wait_result == "stopped":
             return False, paused_seconds
         if wait_result != "recovered":
             raise RuntimeError(
-                f"Browser did not recover after human verification: {reason}"
+                f"Browser did not recover after an interruption: {reason}"
             )
         return True, paused_seconds
 
@@ -10140,10 +10496,35 @@ def _run_web_action_loop(
             _current_agent_conversation_url(page, platform, selected_target_url),
             0,
             False,
-        )
-    run_with_provider_availability(session_binding.check)
+    )
     if platform == "chatgpt":
-        _select_chat_mode(page, browser_kind)
+        def select_chat_mode_for_bound_session() -> None:
+            session_binding.check()
+            _select_chat_mode(page, browser_kind)
+
+        def select_bound_chat_mode() -> bool:
+            executed, _result = _run_browser_action_unless_stopped(
+                should_stop,
+                select_chat_mode_for_bound_session,
+            )
+            return executed
+
+        chat_mode_selected = run_with_provider_availability(
+            select_bound_chat_mode,
+        )
+        if chat_mode_selected is False:
+            return (
+                "",
+                _current_agent_conversation_url(
+                    page,
+                    platform,
+                    selected_target_url,
+                ),
+                0,
+                False,
+            )
+    else:
+        run_with_provider_availability(session_binding.check)
     if should_stop():
         return (
             "",
@@ -10312,8 +10693,8 @@ def _run_web_action_loop(
         first_submission,
         kind="initial_prompt",
         submitted_status=(
-            f"Prompt sent to {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; "
-            "waiting for the first controller action."
+            f"Prompt submission attempted in {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; "
+            "verifying delivery before waiting for the first controller action."
         ),
     )
     if should_stop():
@@ -10385,6 +10766,7 @@ def _run_web_action_loop(
             session_mode=session_mode,
             expected_tab_id=expected_tab_id,
             expected_title=expected_title,
+            monitor_screen_lock=monitor_screen_lock,
         )
         if interrupted:
             LOGGER.info("Browser interrupted: %s. Waiting for recovery.", interrupt_reason)
@@ -10406,6 +10788,7 @@ def _run_web_action_loop(
                 should_resume=should_resume,
                 update=update,
                 reason=interrupt_reason,
+                monitor_screen_lock=monitor_screen_lock,
             )
             if wait_result == "stopped":
                 _stop_web_generation(page, browser_kind)
@@ -10511,8 +10894,8 @@ def _run_web_action_loop(
                 _observation_message(turn_index + 1, observation),
                 kind="format_correction",
                 submitted_status=(
-                    f"Correction sent to {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; "
-                    "waiting for a valid controller action."
+                    f"Correction submission attempted in {AGENT_PLATFORM_BY_KEY[platform]['label']} Web; "
+                    "verifying delivery before waiting for a valid controller action."
                 ),
             )
             continue
@@ -10604,8 +10987,8 @@ def _run_web_action_loop(
                     kind="final_schema_correction",
                     source_action_id=action_id,
                     submitted_status=(
-                        "Final schema correction sent; waiting for the next "
-                        f"{AGENT_PLATFORM_BY_KEY[platform]['label']} action."
+                        "Final schema correction submission attempted; verifying delivery "
+                        f"before waiting for the next {AGENT_PLATFORM_BY_KEY[platform]['label']} action."
                     ),
                 )
                 continue
@@ -10679,8 +11062,8 @@ def _run_web_action_loop(
                     kind="final_gate_correction",
                     source_action_id=action_id,
                     submitted_status=(
-                        "Bodycheck requirement sent; waiting for the next "
-                        f"{AGENT_PLATFORM_BY_KEY[platform]['label']} action."
+                        "Bodycheck requirement submission attempted; verifying delivery "
+                        f"before waiting for the next {AGENT_PLATFORM_BY_KEY[platform]['label']} action."
                     ),
                 )
                 continue
@@ -10872,8 +11255,8 @@ def _run_web_action_loop(
             kind="controller_observation",
             source_action_id=action_id,
             submitted_status=(
-                "Controller observation sent; waiting for the next "
-                f"{AGENT_PLATFORM_BY_KEY[platform]['label']} action."
+                "Controller observation submission attempted; verifying delivery "
+                f"before waiting for the next {AGENT_PLATFORM_BY_KEY[platform]['label']} action."
             ),
         )
         if turn_index >= settings.max_turns:
@@ -10924,18 +11307,24 @@ def _verify_chatgpt_page(
     browser_kind: str,
     selected_target_url: str | None = None,
     should_stop: Callable[[], bool] | None = None,
+    availability_check: Callable[[], bool | tuple[bool, float]] | None = None,
 ) -> bool:
     if callable(should_stop) and should_stop():
         return False
     if browser_kind == "safari":
         page.locator("#prompt-textarea").inner_text(timeout=60_000)
     else:
-        if not _wait_for_chromium_composer(page, should_stop=should_stop):
+        if not _wait_for_chromium_composer(
+            page,
+            should_stop=should_stop,
+            expected_target_url=str(selected_target_url or ""),
+            availability_check=availability_check,
+        ):
             return False
     if callable(should_stop) and should_stop():
         return False
     current_url = str(page.url or "")
-    if (urlsplit(current_url).hostname or "").lower() not in CHATGPT_HOSTS:
+    if not _chatgpt_url_has_official_origin(current_url):
         raise RuntimeError("The selected browser did not reach ChatGPT Web.")
     if selected_target_url and not _chatgpt_target_is_open(selected_target_url, current_url):
         raise RuntimeError("The selected ChatGPT session did not finish opening in the browser.")
@@ -11137,6 +11526,8 @@ def _wait_for_web_composer(
     """Wait for a provider's composer without bringing its background window forward."""
     selector = _visible_web_composer_selector(platform)
     last_error: Exception | None = None
+    stop_requested = should_stop or (lambda: False)
+
     def readiness_check() -> float:
         paused_seconds = 0.0
         if callable(availability_check):
@@ -11164,11 +11555,14 @@ def _wait_for_web_composer(
                 return False
             if attempt >= CHATGPT_COMPOSER_RELOAD_ATTEMPTS:
                 break
-            page.reload(
-                wait_until="commit",
-                timeout=CHATGPT_COMPOSER_RELOAD_TIMEOUT_SECONDS * 1_000,
+            reload_started, _result = _run_browser_action_unless_stopped(
+                stop_requested,
+                lambda: page.reload(
+                    wait_until="commit",
+                    timeout=CHATGPT_COMPOSER_RELOAD_TIMEOUT_SECONDS * 1_000,
+                ),
             )
-            if callable(should_stop) and should_stop():
+            if not reload_started or stop_requested():
                 return False
     platform_label = AGENT_PLATFORM_BY_KEY.get(platform, AGENT_PLATFORM_BY_KEY[DEFAULT_AGENT_PLATFORM])["label"]
     raise RuntimeError(
@@ -11191,6 +11585,7 @@ def _verify_agent_page(
             browser_kind,
             selected_target_url,
             should_stop,
+            availability_check,
         )
     if browser_kind == "safari":
         raise RuntimeError(f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome.")
@@ -11266,17 +11661,871 @@ def _verify_agent_page(
     return True
 
 
+def _chatgpt_retry_control(
+    page: Any,
+    expected_target_url: str,
+    *,
+    click: bool,
+    require_composer_absent: bool = False,
+    require_after_latest_user: bool = False,
+) -> dict[str, Any]:
+    """Inspect or click one exact ChatGPT retry control behind an atomic URL guard."""
+    evaluate = getattr(page, "evaluate", None)
+    if not callable(evaluate):
+        return {
+            "url": str(getattr(page, "url", "") or "").strip(),
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        }
+    result = evaluate(
+        r"""({expectedTargetUrl, click, requireComposerAbsent, requireAfterLatestUser}) => {
+            const visible = (element) => {
+                if (!element || element.getClientRects().length === 0) return false;
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return true;
+            };
+            const normalizedPath = (url) => url.pathname.replace(/\/+$/, '') || '/';
+            const conversationId = (path) => {
+                const match = path.match(/\/c\/([^/]+)$/i);
+                return match ? match[1].toLowerCase() : '';
+            };
+            const conversationProjectId = (path) => {
+                const match = path.match(
+                    /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?\/c\/[^/]+$/i
+                );
+                return match ? match[1].toLowerCase() : '';
+            };
+            const projectLandingId = (path) => {
+                const match = path.match(
+                    /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?\/project$/i
+                );
+                return match ? match[1].toLowerCase() : '';
+            };
+            const targetMatches = () => {
+                if (!expectedTargetUrl) return true;
+                let expected;
+                let current;
+                try {
+                    expected = new URL(expectedTargetUrl);
+                    current = new URL(location.href);
+                } catch (_) {
+                    return false;
+                }
+                const allowedHosts = new Set(['chatgpt.com', 'www.chatgpt.com']);
+                if (expected.protocol !== 'https:'
+                    || current.protocol !== 'https:'
+                    || !allowedHosts.has(expected.hostname.toLowerCase())
+                    || !allowedHosts.has(current.hostname.toLowerCase())
+                    || expected.port
+                    || current.port
+                    || expected.username
+                    || expected.password
+                    || current.username
+                    || current.password) return false;
+                const expectedPath = normalizedPath(expected);
+                const currentPath = normalizedPath(current);
+                if (expectedPath === currentPath) return true;
+                const expectedConversation = conversationId(expectedPath);
+                const currentConversation = conversationId(currentPath);
+                if (expectedConversation && expectedConversation === currentConversation) {
+                    const expectedConversationProject = conversationProjectId(expectedPath);
+                    const currentConversationProject = conversationProjectId(currentPath);
+                    return !expectedConversationProject
+                        || expectedConversationProject === currentConversationProject;
+                }
+                const expectedProject = projectLandingId(expectedPath);
+                const currentProject = projectLandingId(currentPath);
+                return Boolean(expectedProject && expectedProject === currentProject);
+            };
+            if (!targetMatches()) {
+                return {
+                    url: location.href,
+                    available: false,
+                    clicked: false,
+                    ambiguous: false,
+                    targetMismatch: true,
+                    label: '',
+                };
+            }
+            const composer = document.querySelector('#prompt-textarea');
+            if (requireComposerAbsent
+                && visible(composer)
+                && !composer.disabled
+                && composer.getAttribute('aria-disabled') !== 'true') {
+                return {
+                    url: location.href,
+                    available: false,
+                    clicked: false,
+                    ambiguous: false,
+                    targetMismatch: false,
+                    label: '',
+                };
+            }
+            const latestUser = Array.from(document.querySelectorAll(
+                '[data-message-author-role="user"], [data-role="user"], '
+                + '[data-testid*="user-message" i]'
+            )).filter(visible).at(-1);
+            const exactLabels = (button) => [
+                button.getAttribute('aria-label') || '',
+                button.innerText || '',
+                button.textContent || '',
+            ].map((value) => String(value).replace(/\s+/g, ' ').trim()).filter(Boolean);
+            const retryLabel = (button) => exactLabels(button).find((label) =>
+                /^(try again|retry)$/i.test(label)
+            ) || '';
+            const responseError = /(?:there was an error (?:generating|streaming) (?:a |the )?response|(?:failed|unable) to (?:generate|stream) (?:a |the )?response|response generation failed)/i;
+            const genericProviderError = /(?:something went wrong|an error occurred|network error)/i;
+            const normalizedText = (element) => String(
+                element?.innerText || element?.textContent || ''
+            ).replace(/\s+/g, ' ').trim();
+            const excludedRetryContext = (button) => Boolean(
+                button.closest(
+                    'nav, header, [role="dialog"], [role="alertdialog"], '
+                    + '[role="menu"], [role="listbox"], [aria-modal="true"], '
+                    + '[data-testid*="tool" i], [data-testid*="file" i], '
+                    + '[data-testid*="upload" i]'
+                )
+            );
+            const providerErrorBoundary = (button) => {
+                if (excludedRetryContext(button)) return false;
+                const turn = button.closest('article, [data-testid^="conversation-turn-"]');
+                const assistantTurn = turn?.querySelector(
+                    '[data-message-author-role="assistant"], [data-role="assistant"]'
+                );
+                if (!requireAfterLatestUser && turn) return false;
+                if (requireAfterLatestUser && turn && !assistantTurn) return false;
+                if (requireComposerAbsent
+                    && !latestUser
+                    && /^(?:try again|retry)$/i.test(normalizedText(document.body))) {
+                    return true;
+                }
+                let depth = 0;
+                for (let scope = button.parentElement;
+                    scope && !['MAIN', 'BODY'].includes(scope.tagName) && depth < 6;
+                    scope = scope.parentElement, depth += 1) {
+                    const scopeText = normalizedText(scope);
+                    const exactRetries = Array.from(scope.querySelectorAll('button')).filter(
+                        (candidate) => visible(candidate) && Boolean(retryLabel(candidate))
+                    );
+                    const ownsOnlyRetry = exactRetries.length === 1
+                        && exactRetries[0] === button;
+                    const structured = scope.matches(
+                        '[role="alert"], [data-testid*="error" i], [data-error]'
+                    );
+                    if (ownsOnlyRetry && responseError.test(scopeText)) return true;
+                    if (ownsOnlyRetry && structured
+                        && genericProviderError.test(scopeText)) return true;
+                    if (scope === turn) break;
+                }
+                return false;
+            };
+            const followsLatestUser = (button) => !requireAfterLatestUser || Boolean(
+                latestUser
+                && !(latestUser.compareDocumentPosition(button)
+                    & Node.DOCUMENT_POSITION_DISCONNECTED)
+                && (latestUser.compareDocumentPosition(button)
+                    & Node.DOCUMENT_POSITION_FOLLOWING)
+            );
+            const retryCandidates = Array.from(document.querySelectorAll('button')).filter((button) =>
+                visible(button)
+                && !button.disabled
+                && button.getAttribute('aria-disabled') !== 'true'
+                && followsLatestUser(button)
+                && Boolean(retryLabel(button))
+                && !excludedRetryContext(button)
+            );
+            const providerRetryCandidates = retryCandidates.filter(providerErrorBoundary);
+            const retryButton = providerRetryCandidates.length === 1
+                ? providerRetryCandidates[0]
+                : null;
+            if (!retryButton) {
+                return {
+                    url: location.href,
+                    available: false,
+                    clicked: false,
+                    ambiguous: retryCandidates.length > 0,
+                    targetMismatch: false,
+                    label: '',
+                };
+            }
+            const label = retryLabel(retryButton);
+            if (click) retryButton.click();
+            return {
+                url: location.href,
+                available: true,
+                clicked: Boolean(click),
+                ambiguous: false,
+                targetMismatch: false,
+                label,
+            };
+        }""",
+        {
+            "expectedTargetUrl": str(expected_target_url or "").strip(),
+            "click": bool(click),
+            "requireComposerAbsent": bool(require_composer_absent),
+            "requireAfterLatestUser": bool(require_after_latest_user),
+        },
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError("ChatGPT returned an invalid retry-control snapshot.")
+    if result.get("targetMismatch"):
+        raise RuntimeError(
+            "The selected ChatGPT tab changed before its provider retry could be handled."
+        )
+    return {
+        "url": str(result.get("url") or "").strip(),
+        "available": bool(result.get("available")),
+        "clicked": bool(result.get("clicked")),
+        "ambiguous": bool(result.get("ambiguous")),
+        "label": str(result.get("label") or "").strip(),
+    }
+
+
+def _recover_chatgpt_project_landing_from_sidebar(
+    page: Any,
+    expected_target_url: str,
+    should_stop: Callable[[], bool] | None = None,
+) -> bool:
+    """Open one exact Project through ChatGPT's hydrated sidebar after a cold-load error."""
+    project_url = normalize_agent_project_url("chatgpt", expected_target_url)
+    project_id = chatgpt_project_id(project_url)
+    current_url = str(getattr(page, "url", "") or "").strip()
+    if not (
+        project_url
+        and project_id
+        and _chatgpt_target_is_open(project_url, current_url)
+    ):
+        return False
+
+    stop_requested = should_stop or (lambda: False)
+    recovery_deadline = (
+        time.monotonic() + CHATGPT_PROJECT_SIDEBAR_RECOVERY_TOTAL_SECONDS
+    )
+
+    def remaining_milliseconds(cap: int | None = None) -> int:
+        remaining = max(0, int((recovery_deadline - time.monotonic()) * 1_000))
+        return min(remaining, cap) if cap is not None else remaining
+
+    def deadline_error() -> RuntimeError:
+        return RuntimeError(
+            "ChatGPT Project sidebar recovery exceeded its total deadline. "
+            "No prompt was sent."
+        )
+
+    def bounded_wait(milliseconds: int) -> bool:
+        remaining = remaining_milliseconds()
+        if remaining <= 0:
+            raise deadline_error()
+        wait_milliseconds = min(max(1, int(milliseconds)), remaining)
+        wait_for_timeout = getattr(page, "wait_for_timeout", None)
+        action = (
+            (lambda: wait_for_timeout(wait_milliseconds))
+            if callable(wait_for_timeout)
+            else (lambda: time.sleep(wait_milliseconds / 1_000))
+        )
+        executed, _result = _run_browser_action_unless_stopped(
+            stop_requested,
+            action,
+        )
+        return bool(executed and not stop_requested())
+
+    last_navigation_error: Exception | None = None
+    home_opened = False
+    for navigation_attempt in range(2):
+        if stop_requested():
+            return False
+        navigation_timeout = remaining_milliseconds(15_000)
+        if navigation_timeout < 1_000:
+            raise deadline_error()
+        try:
+            navigation_started, _result = _run_browser_action_unless_stopped(
+                stop_requested,
+                lambda: goto_with_retry(
+                    page,
+                    CHATGPT_HOME_URL,
+                    attempts=1,
+                    timeout_ms=navigation_timeout,
+                    should_stop=stop_requested,
+                ),
+            )
+        except Exception as exc:
+            last_navigation_error = exc
+            if _chatgpt_target_is_open(
+                CHATGPT_HOME_URL,
+                str(getattr(page, "url", "") or ""),
+            ):
+                home_opened = True
+                break
+            if (
+                navigation_attempt >= 1
+                or not (
+                    _is_transient_browser_navigation_error(exc)
+                    or _is_provider_connection_error(exc)
+                )
+            ):
+                raise RuntimeError(
+                    "ChatGPT Home could not be opened for exact Project recovery. "
+                    "No prompt was sent."
+                ) from exc
+            if not bounded_wait(1_500):
+                return False
+            continue
+        if not navigation_started or stop_requested():
+            return False
+        home_opened = _chatgpt_target_is_open(
+            CHATGPT_HOME_URL,
+            str(getattr(page, "url", "") or ""),
+        )
+        if home_opened:
+            break
+    if not home_opened:
+        raise RuntimeError(
+            "ChatGPT Home did not open for exact Project recovery. No prompt was sent."
+        ) from last_navigation_error
+
+    sidebar_script = r"""({expectedProjectId, scanLimit, expectedRowCount, rowIndex, operation}) => {
+        const visible = (element) => {
+            if (!element || element.getClientRects().length === 0) return false;
+            for (let current = element; current; current = current.parentElement) {
+                const style = getComputedStyle(current);
+                const opacity = Number.parseFloat(style.opacity || '1');
+                if (style.display === 'none'
+                    || style.visibility === 'hidden'
+                    || style.visibility === 'collapse'
+                    || (Number.isFinite(opacity) && opacity <= 0)) return false;
+            }
+            return true;
+        };
+        const officialHosts = new Set(['chatgpt.com', 'www.chatgpt.com']);
+        if (location.protocol !== 'https:'
+            || !officialHosts.has(location.hostname.toLowerCase())
+            || location.port
+            || location.username
+            || location.password
+            || (location.pathname.replace(/\/+$/, '') || '/') !== '/') {
+            return {clicked: false, matched: false, reason: 'target-mismatch', rowCount: 0};
+        }
+        const composers = Array.from(document.querySelectorAll('#prompt-textarea'))
+            .filter((composer) => visible(composer)
+                && !composer.disabled
+                && composer.getAttribute('aria-disabled') !== 'true');
+        if (composers.length !== 1) {
+            return {clicked: false, matched: false, reason: 'home-not-ready', rowCount: 0};
+        }
+        const allRows = Array.from(document.querySelectorAll(
+            'button[aria-label="Open project home"]'
+        )).map((homeButton) => {
+            const row = homeButton.closest('li');
+            const toggle = row?.querySelector(
+                '[role="button"][data-sidebar-item="true"]'
+            );
+            return {row, toggle, homeButton};
+        }).filter((item) => item.row && item.toggle && item.homeButton);
+        if (allRows.length > scanLimit) {
+            return {
+                clicked: false,
+                matched: false,
+                reason: 'row-limit',
+                rowCount: allRows.length,
+            };
+        }
+        if (expectedRowCount >= 0 && allRows.length !== expectedRowCount) {
+            return {
+                clicked: false,
+                matched: false,
+                reason: 'row-set-changed',
+                rowCount: allRows.length,
+            };
+        }
+        if (operation === 'snapshot') {
+            return {
+                clicked: false,
+                matched: false,
+                reason: allRows.length ? '' : 'projects-not-ready',
+                rowCount: allRows.length,
+            };
+        }
+        const item = allRows[rowIndex];
+        if (!item) {
+            return {clicked: false, matched: false, reason: 'row-missing', rowCount: allRows.length};
+        }
+        const expected = String(expectedProjectId || '').toLowerCase();
+        const conversationProjectIds = (row) => Array.from(
+            row.querySelectorAll('a[href]')
+        ).flatMap((anchor) => {
+            let candidate;
+            try {
+                candidate = new URL(anchor.href, location.href);
+            } catch (_) {
+                return [];
+            }
+            if (candidate.protocol !== 'https:'
+                || !officialHosts.has(candidate.hostname.toLowerCase())
+                || candidate.port
+                || candidate.username
+                || candidate.password) return [];
+            const match = candidate.pathname.match(
+                /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?\/c\/[^/]+$/i
+            );
+            return match ? [match[1].toLowerCase()] : [];
+        });
+        const reactProjectIds = (row) => {
+            const reactPropsKey = Object.getOwnPropertyNames(row).find((key) =>
+                key.startsWith('__reactProps$')
+            );
+            if (!reactPropsKey) return [];
+            const ids = new Set();
+            const pending = [{value: row[reactPropsKey], depth: 0}];
+            const visited = new WeakSet();
+            let inspected = 0;
+            while (pending.length && inspected < 2_000) {
+                const {value, depth} = pending.shift();
+                inspected += 1;
+                if (typeof value === 'string') {
+                    for (const match of value.matchAll(/g-p-[0-9a-f]{32}/ig)) {
+                        ids.add(match[0].toLowerCase());
+                    }
+                    continue;
+                }
+                if (!value || typeof value !== 'object' || visited.has(value)) continue;
+                visited.add(value);
+                let entries = [];
+                try {
+                    entries = Object.entries(value).slice(0, 160);
+                } catch (_error) {
+                    continue;
+                }
+                if (depth >= 8) continue;
+                for (const [key, child] of entries) {
+                    if (['_owner', 'ref', 'stateNode'].includes(key)) continue;
+                    pending.push({value: child, depth: depth + 1});
+                }
+            }
+            return [...ids];
+        };
+        const rowProjectIds = (row) => {
+            const mountedIds = reactProjectIds(row);
+            return mountedIds.length ? mountedIds : conversationProjectIds(row);
+        };
+        const rowMatches = (row) => {
+            const projectIds = rowProjectIds(row);
+            return projectIds.length === 1 && projectIds[0] === expected;
+        };
+        if (operation === 'expand') {
+            const expanded = item.toggle.getAttribute('aria-expanded') === 'true';
+            if (!expanded) item.toggle.click();
+            return {
+                clicked: false,
+                matched: false,
+                toggled: !expanded,
+                reason: '',
+                rowCount: allRows.length,
+            };
+        }
+        if (operation === 'inspect') {
+            const projectIds = rowProjectIds(item.row);
+            return {
+                clicked: false,
+                matched: projectIds.length === 1 && projectIds[0] === expected,
+                projectIdentityCount: projectIds.length,
+                reason: '',
+                rowCount: allRows.length,
+            };
+        }
+        if (operation === 'collapse') {
+            const expanded = item.toggle.getAttribute('aria-expanded') === 'true';
+            if (expanded) item.toggle.click();
+            return {
+                clicked: false,
+                matched: false,
+                toggled: expanded,
+                reason: '',
+                rowCount: allRows.length,
+            };
+        }
+        if (operation === 'click') {
+            const matches = allRows.filter((candidate) => rowMatches(candidate.row));
+            if (matches.length !== 1) {
+                return {
+                    clicked: false,
+                    matched: false,
+                    reason: matches.length ? 'ambiguous-project' : 'project-not-found',
+                    rowCount: allRows.length,
+                };
+            }
+            if (matches[0].homeButton.disabled
+                || matches[0].homeButton.getAttribute('aria-disabled') === 'true') {
+                return {
+                    clicked: false,
+                    matched: false,
+                    reason: 'project-home-disabled',
+                    rowCount: allRows.length,
+                };
+            }
+            matches[0].homeButton.click();
+            return {clicked: true, matched: true, reason: '', rowCount: allRows.length};
+        }
+        return {clicked: false, matched: false, reason: 'invalid-operation', rowCount: allRows.length};
+    }"""
+
+    class _RestartProjectSidebarScan(RuntimeError):
+        """Restart from a fresh row snapshot after one safe Home read transient."""
+
+    def sidebar_step(
+        operation: str,
+        *,
+        row_count: int = -1,
+        row_index: int = -1,
+    ) -> dict[str, Any] | None:
+        if remaining_milliseconds() <= 0:
+            raise deadline_error()
+        try:
+            executed, result = _run_browser_action_unless_stopped(
+                stop_requested,
+                lambda: page.evaluate(
+                    sidebar_script,
+                    {
+                        "expectedProjectId": project_id,
+                        "scanLimit": CHATGPT_PROJECT_SIDEBAR_SCAN_LIMIT,
+                        "expectedRowCount": row_count,
+                        "rowIndex": row_index,
+                        "operation": operation,
+                    },
+                ),
+            )
+        except Exception as exc:
+            uncertain_mutation = bool(
+                operation == "click"
+                and (
+                    _provider_mutating_action_may_have_committed(
+                        page,
+                        "chatgpt",
+                        exc,
+                    )
+                    or _is_provider_connection_error(exc)
+                )
+            )
+            if uncertain_mutation:
+                executed = True
+                result = {
+                    "clicked": True,
+                    "matched": True,
+                    "reason": "navigation-commit",
+                    "rowCount": row_count,
+                }
+            elif (
+                operation != "click"
+                and (
+                    _is_transient_browser_navigation_error(exc)
+                    or _is_provider_connection_error(exc)
+                )
+                and _chatgpt_target_is_open(
+                    CHATGPT_HOME_URL,
+                    str(getattr(page, "url", "") or ""),
+                )
+            ):
+                raise _RestartProjectSidebarScan from exc
+            else:
+                raise
+        if not executed or stop_requested():
+            return None
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                "ChatGPT returned an invalid Project sidebar recovery snapshot. "
+                "No prompt was sent."
+            )
+        return result
+
+    def scan_and_open_exact_project() -> bool:
+        stable_row_count = -1
+        repeated_row_count = 0
+        while remaining_milliseconds() > 0:
+            snapshot = sidebar_step("snapshot")
+            if snapshot is None:
+                return False
+            reason = str(snapshot.get("reason") or "")
+            if reason in {"home-not-ready", "projects-not-ready"}:
+                stable_row_count = -1
+                repeated_row_count = 0
+                if not bounded_wait(WEB_SEND_BUTTON_POLL_MILLISECONDS):
+                    return False
+                continue
+            if reason:
+                raise RuntimeError(
+                    f"ChatGPT Project sidebar recovery stopped at {reason}. No prompt was sent."
+                )
+            observed_row_count = int(snapshot.get("rowCount") or 0)
+            if observed_row_count == stable_row_count:
+                repeated_row_count += 1
+            else:
+                stable_row_count = observed_row_count
+                repeated_row_count = 0
+            if repeated_row_count >= 1:
+                break
+            if not bounded_wait(WEB_SEND_BUTTON_POLL_MILLISECONDS):
+                return False
+        if stable_row_count <= 0:
+            raise deadline_error()
+
+        matching_rows: list[int] = []
+        for row_index in range(stable_row_count):
+            expanded = sidebar_step(
+                "expand",
+                row_count=stable_row_count,
+                row_index=row_index,
+            )
+            if expanded is None:
+                return False
+            reason = str(expanded.get("reason") or "")
+            if reason:
+                raise RuntimeError(
+                    f"ChatGPT Project sidebar recovery stopped at {reason}. No prompt was sent."
+                )
+            toggled = bool(expanded.get("toggled"))
+            inspected: dict[str, Any] | None = None
+            for hydration_attempt in range(
+                CHATGPT_PROJECT_ROW_HYDRATION_ATTEMPTS
+            ):
+                inspected = sidebar_step(
+                    "inspect",
+                    row_count=stable_row_count,
+                    row_index=row_index,
+                )
+                if inspected is None:
+                    return False
+                reason = str(inspected.get("reason") or "")
+                if reason:
+                    raise RuntimeError(
+                        "ChatGPT Project sidebar recovery stopped at "
+                        f"{reason}. No prompt was sent."
+                    )
+                try:
+                    project_identity_count = int(
+                        inspected["projectIdentityCount"]
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "ChatGPT returned an invalid Project row hydration snapshot. "
+                        "No prompt was sent."
+                    ) from exc
+                if project_identity_count < 0:
+                    raise RuntimeError(
+                        "ChatGPT returned an invalid Project row hydration snapshot. "
+                        "No prompt was sent."
+                    )
+                if bool(inspected.get("matched")) or project_identity_count > 0:
+                    break
+                if (
+                    hydration_attempt + 1
+                    < CHATGPT_PROJECT_ROW_HYDRATION_ATTEMPTS
+                    and not bounded_wait(WEB_SEND_BUTTON_POLL_MILLISECONDS)
+                ):
+                    return False
+            assert inspected is not None
+            if bool(inspected.get("matched")):
+                matching_rows.append(row_index)
+                continue
+            if toggled:
+                collapsed = sidebar_step(
+                    "collapse",
+                    row_count=stable_row_count,
+                    row_index=row_index,
+                )
+                if collapsed is None:
+                    return False
+                reason = str(collapsed.get("reason") or "")
+                if reason:
+                    raise RuntimeError(
+                        f"ChatGPT Project sidebar recovery stopped at {reason}. No prompt was sent."
+                    )
+                if bool(collapsed.get("toggled")) and not bounded_wait(100):
+                    return False
+
+        if not matching_rows:
+            raise RuntimeError(
+                "ChatGPT Project sidebar recovery stopped at project-not-found. No prompt was sent."
+            )
+        clicked = sidebar_step(
+            "click",
+            row_count=stable_row_count,
+            row_index=matching_rows[0],
+        )
+        if clicked is None:
+            return False
+        if not bool(clicked.get("clicked")):
+            reason = str(clicked.get("reason") or "project-home-not-opened")
+            raise RuntimeError(
+                f"ChatGPT Project sidebar recovery stopped at {reason}. No prompt was sent."
+            )
+        return True
+
+    scan_restarts = 0
+    while True:
+        try:
+            project_opened = scan_and_open_exact_project()
+        except _RestartProjectSidebarScan as exc:
+            if scan_restarts >= 1:
+                raise RuntimeError(
+                    "ChatGPT Project sidebar recovery did not stabilize after one safe "
+                    "scan restart. No prompt was sent."
+                ) from exc
+            scan_restarts += 1
+            if stop_requested():
+                return False
+            if not bounded_wait(WEB_SEND_BUTTON_POLL_MILLISECONDS):
+                return False
+            continue
+        if not project_opened:
+            return False
+        break
+
+    while remaining_milliseconds() > 0:
+        if stop_requested():
+            return False
+        try:
+            executed, snapshot = _run_browser_action_unless_stopped(
+                stop_requested,
+                lambda: page.evaluate(
+                    r"""() => {
+                        const visible = (element) => element
+                            && element.getClientRects().length > 0
+                            && !element.disabled
+                            && element.getAttribute('aria-disabled') !== 'true';
+                        const composers = Array.from(
+                            document.querySelectorAll('#prompt-textarea')
+                        ).filter(visible);
+                        return {
+                            url: location.href,
+                            composerCount: composers.length,
+                            retryOnly: /^(?:try again|retry)$/i.test(
+                                String(document.body?.innerText || '')
+                                    .replace(/\s+/g, ' ').trim()
+                            ),
+                        };
+                    }"""
+                ),
+            )
+        except Exception as exc:
+            if not _is_transient_browser_navigation_error(exc):
+                raise
+            executed = True
+            snapshot = {}
+        if not executed or stop_requested():
+            return False
+        recovered_url = str(
+            snapshot.get("url") if isinstance(snapshot, dict) else ""
+        ).strip()
+        if (
+            isinstance(snapshot, dict)
+            and snapshot.get("composerCount") == 1
+            and _chatgpt_target_is_open(project_url, recovered_url)
+        ):
+            LOGGER.info(
+                "event=chatgpt_project_landing_sidebar_recovered project_id=%s",
+                project_id,
+            )
+            return True
+        if recovered_url and not (
+            _chatgpt_target_is_open(CHATGPT_HOME_URL, recovered_url)
+            or _chatgpt_target_is_open(project_url, recovered_url)
+        ):
+            raise RuntimeError(
+                "The ChatGPT Project sidebar recovery navigated away from the selected Project."
+            )
+        if not bounded_wait(WEB_SEND_BUTTON_POLL_MILLISECONDS):
+            return False
+    raise deadline_error()
+
+
 def _wait_for_chromium_composer(
     page: Any,
     should_stop: Callable[[], bool] | None = None,
+    expected_target_url: str = "",
+    availability_check: Callable[[], bool | tuple[bool, float]] | None = None,
 ) -> bool:
-    """Wait for ChatGPT's composer, reloading a stalled authenticated page once."""
+    """Recover one ChatGPT error surface while waiting for the verified composer."""
     last_error: Exception | None = None
+    provider_retry_attempts = 0
+    readiness_checks = 0
+    provider_retry_clicked_at: float | None = None
+    project_landing_recovery_attempted = False
+    stop_requested = should_stop or (lambda: False)
+
+    def recover_provider_error() -> float:
+        nonlocal provider_retry_attempts, readiness_checks
+        nonlocal provider_retry_clicked_at, project_landing_recovery_attempted
+        readiness_checks += 1
+        paused_seconds = 0.0
+        if callable(availability_check):
+            available, paused_seconds = _run_availability_gate(availability_check)
+            if not available:
+                return paused_seconds
+        if (
+            provider_retry_clicked_at is not None
+            and not project_landing_recovery_attempted
+            and normalize_agent_project_url("chatgpt", expected_target_url)
+            and time.monotonic() - provider_retry_clicked_at
+            >= CHATGPT_PROVIDER_RETRY_SETTLE_SECONDS
+        ):
+            project_landing_recovery_attempted = True
+            recovery_started_at = time.monotonic()
+            recovered = _recover_chatgpt_project_landing_from_sidebar(
+                page,
+                expected_target_url,
+                should_stop=should_stop,
+            )
+            recovery_seconds = max(0.0, time.monotonic() - recovery_started_at)
+            if recovered or stop_requested():
+                return paused_seconds + recovery_seconds
+        if (
+            readiness_checks == 1
+            or (callable(should_stop) and should_stop())
+            or provider_retry_attempts >= CHATGPT_PROVIDER_RETRY_ATTEMPTS
+            or not callable(getattr(page, "evaluate", None))
+        ):
+            return paused_seconds
+        try:
+            executed, retry_state = _run_browser_action_unless_stopped(
+                stop_requested,
+                lambda: _chatgpt_retry_control(
+                    page,
+                    expected_target_url or str(getattr(page, "url", "") or ""),
+                    click=True,
+                    require_composer_absent=True,
+                ),
+            )
+        except Exception as exc:
+            if not (
+                _provider_mutating_action_may_have_committed(
+                    page,
+                    "chatgpt",
+                    exc,
+                )
+                or _is_provider_connection_error(exc)
+            ):
+                raise
+            executed = True
+            retry_state = {"clicked": True}
+        if executed and retry_state["clicked"]:
+            provider_retry_attempts += 1
+            provider_retry_clicked_at = time.monotonic()
+        return paused_seconds
+
     for attempt in range(1, CHATGPT_COMPOSER_RELOAD_ATTEMPTS + 1):
         try:
             if not _wait_for_visible_composer(
                 page.locator("#prompt-textarea"),
                 should_stop=should_stop,
+                readiness_check=recover_provider_error,
             ):
                 return False
             return True
@@ -11286,31 +12535,57 @@ def _wait_for_chromium_composer(
                 return False
             if attempt >= CHATGPT_COMPOSER_RELOAD_ATTEMPTS:
                 break
-            page.reload(
-                wait_until="commit",
-                timeout=CHATGPT_COMPOSER_RELOAD_TIMEOUT_SECONDS * 1_000,
+            reload_started, _result = _run_browser_action_unless_stopped(
+                stop_requested,
+                lambda: page.reload(
+                    wait_until="commit",
+                    timeout=CHATGPT_COMPOSER_RELOAD_TIMEOUT_SECONDS * 1_000,
+                ),
             )
-            if callable(should_stop) and should_stop():
+            if not reload_started or stop_requested():
                 return False
     raise RuntimeError(
-        "The Chromium browser loaded ChatGPT, but the message composer did not become ready after one reload."
+        (
+            "ChatGPT remained on its Try again error surface after one bounded provider retry "
+            "and one page reload."
+            if provider_retry_attempts
+            else "The Chromium browser loaded ChatGPT, but the message composer did not become ready after one reload."
+        )
     ) from last_error
 
 
 def _chatgpt_target_is_open(target_url: str, current_url: str) -> bool:
     """Require the selected ChatGPT conversation while permitting query and project-path aliases."""
-    target = urlsplit(str(target_url or ""))
-    current = urlsplit(str(current_url or ""))
-    if (
-        (target.hostname or "").lower() not in CHATGPT_HOSTS
-        or (current.hostname or "").lower() not in CHATGPT_HOSTS
+    if not (
+        _chatgpt_url_has_official_origin(target_url)
+        and _chatgpt_url_has_official_origin(current_url)
     ):
         return False
+    target = urlsplit(str(target_url or ""))
+    current = urlsplit(str(current_url or ""))
     target_path = target.path.rstrip("/") or "/"
     current_path = current.path.rstrip("/") or "/"
-    return target_path == current_path or _chatgpt_conversation_ids_match(
-        target_url,
-        current_url,
+    project_alias_matches = bool(
+        normalize_agent_project_url("chatgpt", target_url)
+        and normalize_agent_project_url("chatgpt", current_url)
+        and chatgpt_project_id(target_url)
+        and chatgpt_project_id(target_url) == chatgpt_project_id(current_url)
+    )
+    if target_path == current_path or project_alias_matches:
+        return True
+    target_conversation = normalize_agent_conversation_url("chatgpt", target_url)
+    current_conversation = normalize_agent_conversation_url("chatgpt", current_url)
+    if not target_conversation or not current_conversation:
+        return False
+    target_project_id = chatgpt_project_id(target_conversation)
+    if target_project_id:
+        return _chatgpt_same_project_conversation(
+            target_conversation,
+            current_conversation,
+        )
+    return _chatgpt_conversation_ids_match(
+        target_conversation,
+        current_conversation,
     )
 
 
@@ -14336,22 +15611,26 @@ def _select_web_model(
     session_type: str = "",
 ) -> bool:
     """Select a provider model when its page exposes a compatible model menu."""
+    stop_requested = should_stop or (lambda: False)
     if platform == "chatgpt":
-        return _select_chatgpt_model(
-            page,
-            browser_kind,
-            model,
-            observation,
-            should_stop=should_stop,
-            thinking_effort=chatgpt_effort,
-            session_type=session_type,
+        executed, selected = _run_browser_action_unless_stopped(
+            stop_requested,
+            lambda: _select_chatgpt_model(
+                page,
+                browser_kind,
+                model,
+                observation,
+                should_stop=stop_requested,
+                thinking_effort=chatgpt_effort,
+                session_type=session_type,
+            ),
         )
+        return bool(executed and selected)
     options = _platform_model_options(platform)
     option = next((candidate for candidate in options if candidate["key"] == model), None)
     if option is None:
         raise ValueError(f"Choose a supported {AGENT_PLATFORM_BY_KEY[platform]['label']} model.")
     remote_labels = tuple(option.get("remote_labels") or (option.get("label", ""),))
-    stop_requested = should_stop or (lambda: False)
     if stop_requested():
         _record_model_observation(
             observation,
@@ -15092,6 +16371,41 @@ def _is_provider_connection_error(exc: Exception) -> bool:
     )
 
 
+def _chatgpt_response_is_provider_error(value: str) -> bool:
+    """Recognize the response errors eligible for ChatGPT's one bounded Retry."""
+    normalized = " ".join(str(value or "").split())
+    return bool(
+        re.fullmatch(
+            r"(?:there was an error (?:generating|streaming) (?:a |the )?response|"
+            r"(?:failed|unable) to (?:generate|stream) (?:a |the )?response|"
+            r"response generation failed|something went wrong|an error occurred|network error)"
+            r"[.!]?(?:\s+(?:try again|retry)[.!]?)?",
+            normalized,
+            re.IGNORECASE,
+        )
+    )
+
+
+@dataclass
+class _ProviderReadRecoveryBudget:
+    """Bound transport and navigation recovery across one provider exchange."""
+
+    connection_retries_remaining: int = 60
+    navigation_retries_remaining: int = 20
+
+    def consume_connection_retry(self) -> bool:
+        if self.connection_retries_remaining <= 0:
+            return False
+        self.connection_retries_remaining -= 1
+        return True
+
+    def consume_navigation_retry(self) -> bool:
+        if self.navigation_retries_remaining <= 0:
+            return False
+        self.navigation_retries_remaining -= 1
+        return True
+
+
 def _run_recoverable_provider_read(
     action: Callable[[], Any],
     *,
@@ -15100,11 +16414,11 @@ def _run_recoverable_provider_read(
     availability_check: Callable[[], bool | tuple[bool, float]] | None,
     should_stop: Callable[[], bool] | None = None,
     on_reconnecting: Callable[[], None] | None = None,
+    recovery_budget: _ProviderReadRecoveryBudget | None = None,
 ) -> tuple[bool, Any, float]:
     """Retry bounded reads of the same outstanding turn, never its submission."""
     paused_seconds = 0.0
-    navigation_retries = 0
-    connection_retries = 0
+    budget = recovery_budget or _ProviderReadRecoveryBudget()
     while True:
         if callable(should_stop) and should_stop():
             return False, None, paused_seconds
@@ -15115,17 +16429,18 @@ def _run_recoverable_provider_read(
                 return False, None, paused_seconds
             return True, action(), paused_seconds
         except Exception as exc:
+            if callable(should_stop) and should_stop():
+                return False, None, paused_seconds
             if callable(should_stop) and "target page, context or browser has been closed" in str(exc).casefold():
                 raise AgentConnectionInterrupted(
                     "The provider browser connection closed while waiting. Continue the bound conversation to recover."
                 ) from exc
             connection_failure = callable(should_stop) and _is_provider_connection_error(exc)
             if connection_failure:
-                if connection_retries >= 60:
+                if not budget.consume_connection_retry():
                     raise AgentConnectionInterrupted(
                         "The provider connection did not recover. The prompt was not resent; continue the bound conversation."
                     ) from exc
-                connection_retries += 1
                 if callable(on_reconnecting):
                     on_reconnecting()
                 # A browser-backed wait can fail on the same broken transport.
@@ -15141,11 +16456,14 @@ def _run_recoverable_provider_read(
                     if not _is_transient_browser_navigation_error(detection_exc):
                         raise exc from detection_exc
             if challenge_reason:
-                navigation_retries = 0
                 continue
-            if _is_transient_browser_navigation_error(exc) and navigation_retries < 20:
-                navigation_retries += 1
+            if (
+                _is_transient_browser_navigation_error(exc)
+                and budget.consume_navigation_retry()
+            ):
+                started = time.monotonic()
                 time.sleep(0.5)
+                paused_seconds += time.monotonic() - started
                 continue
             if callable(should_stop) and _is_transient_browser_navigation_error(exc):
                 raise AgentConnectionInterrupted(
@@ -15176,6 +16494,7 @@ def _submit_and_wait(
     """Submit one message and wait for one stable provider response."""
     if should_stop():
         return ""
+    read_recovery_budget = _ProviderReadRecoveryBudget()
     submitted_message = message
     if browser_kind != "safari" and platform != "chatgpt":
         if not re.fullmatch(r"agent-turn-[0-9a-f]{32}", turn_receipt_marker):
@@ -15201,6 +16520,8 @@ def _submit_and_wait(
             page=page,
             platform=platform,
             availability_check=availability_check,
+            should_stop=should_stop,
+            recovery_budget=read_recovery_budget,
         )
         if not available:
             return ""
@@ -15218,6 +16539,7 @@ def _submit_and_wait(
         baseline = int(baseline_snapshot.get("count") or 0)
         baseline_response = str(baseline_snapshot.get("text") or "")
         baseline_user_count = int(baseline_snapshot.get("userCount") or 0)
+        baseline_user_text = str(baseline_snapshot.get("latestUserText") or "")
         baseline_user_message_id = str(
             baseline_snapshot.get("latestUserMessageId") or ""
         )
@@ -15237,6 +16559,7 @@ def _submit_and_wait(
         )
         baseline_snapshot = {}
         baseline_user_count = 0
+        baseline_user_text = ""
         baseline_user_message_id = ""
         user_receipt_contract = False
     if should_stop():
@@ -15267,6 +16590,7 @@ def _submit_and_wait(
             availability_check=availability_check,
             baseline_snapshot=baseline_snapshot,
             submission_receipt_marker=turn_receipt_marker,
+            recovery_budget=read_recovery_budget,
         )
         if submission_accepted is False:
             return ""
@@ -15275,20 +16599,38 @@ def _submit_and_wait(
         return ""
     last_connection_state = None
 
-    def report_connection(*, conversation: str = "", reconnecting: bool = False, generating: bool = False) -> None:
+    def report_connection(
+        *,
+        conversation: str = "",
+        reconnecting: bool = False,
+        generating: bool = False,
+        verifying_delivery: bool = False,
+        status_message: str = "",
+    ) -> None:
         nonlocal last_connection_state
-        state = (conversation, reconnecting, generating)
+        state = (
+            conversation,
+            reconnecting,
+            generating,
+            verifying_delivery,
+            status_message,
+        )
         if state == last_connection_state or not callable(on_response_state):
             return
         last_connection_state = state
         changes = {
             "phase": "reconnecting" if reconnecting else "running",
             "message": (
-                "Reconnecting to the same provider response; the prompt has not been resent."
-                if reconnecting else
-                "Provider is generating; waiting for a complete controller action."
-                if generating else
-                "Connected to the provider conversation; waiting for a complete controller action."
+                status_message
+                or (
+                    "Reconnecting to the same provider response; the prompt has not been resent."
+                    if reconnecting
+                    else "ChatGPT submission attempted; verifying the exact user turn without resending it."
+                    if verifying_delivery
+                    else "Provider is generating; waiting for a complete controller action."
+                    if generating
+                    else "Connected to the provider conversation; waiting for a complete controller action."
+                )
             ),
         }
         if conversation:
@@ -15309,6 +16651,7 @@ def _submit_and_wait(
         availability_check=availability_check,
         should_stop=should_stop,
         on_reconnecting=lambda: report_connection(reconnecting=True),
+        recovery_budget=read_recovery_budget,
     )
     if not available:
         _stop_web_generation(page, browser_kind)
@@ -15323,7 +16666,10 @@ def _submit_and_wait(
         on_delivered()
         delivery_reported = True
 
-    report_connection(conversation=str(_confirmed_session or ""))
+    report_connection(
+        conversation=str(_confirmed_session or ""),
+        verifying_delivery=bool(user_receipt_contract and not delivery_reported),
+    )
     submitted_at = time.monotonic()
     session_bind_timeout_seconds = (
         CHATGPT_SESSION_BIND_TIMEOUT_SECONDS
@@ -15335,14 +16681,41 @@ def _submit_and_wait(
     previous = ""
     response = ""
     current_user_receipt_seen = not user_receipt_contract
+    current_user_receipt_count = 0
     response_timeout_seconds = (
         WEB_TURN_TIMEOUT_SECONDS
         if timeout_seconds is None
         else max(1.0, float(timeout_seconds))
     )
     deadline = submitted_at + response_timeout_seconds
+    receipt_timeout_seconds = min(
+        response_timeout_seconds,
+        float(CHATGPT_TURN_RECEIPT_TIMEOUT_SECONDS),
+    )
+    receipt_deadline = submitted_at + receipt_timeout_seconds
+    provider_retry_attempts = 0
+    provider_retry_error_deadline = 0.0
+    provider_retry_settle_deadline = 0.0
+    provider_retry_failed_assistant_id = ""
+    provider_retry_failed_count = 0
+    provider_retry_failed_response = ""
+
+    def extend_response_deadlines(paused: float) -> None:
+        nonlocal deadline, provider_retry_error_deadline, provider_retry_settle_deadline
+        nonlocal receipt_deadline, session_bind_deadline, submitted_at, stable_since
+        if paused <= 0:
+            return
+        deadline += paused
+        receipt_deadline += paused
+        session_bind_deadline += paused
+        if provider_retry_error_deadline:
+            provider_retry_error_deadline += paused
+        if provider_retry_settle_deadline:
+            provider_retry_settle_deadline += paused
+        submitted_at += paused
+        stable_since = time.monotonic()
+
     def wait_for_response_poll() -> None:
-        nonlocal deadline, session_bind_deadline, submitted_at, stable_since
         _available, _result, paused = _run_recoverable_provider_read(
             lambda: _web_wait(page, browser_kind, 500),
             page=page,
@@ -15350,12 +16723,9 @@ def _submit_and_wait(
             availability_check=None,
             should_stop=should_stop,
             on_reconnecting=lambda: report_connection(reconnecting=True),
+            recovery_budget=read_recovery_budget,
         )
-        if paused:
-            deadline += paused
-            session_bind_deadline += paused
-            submitted_at += paused
-            stable_since = time.monotonic()
+        extend_response_deadlines(paused)
 
     while time.monotonic() < deadline:
         if should_stop():
@@ -15401,15 +16771,12 @@ def _submit_and_wait(
             availability_check=availability_check,
             should_stop=should_stop,
             on_reconnecting=lambda: report_connection(reconnecting=True),
+            recovery_budget=read_recovery_budget,
         )
         if not available:
             _stop_web_generation(page, browser_kind)
             return response
-        if paused_seconds:
-            submitted_at += paused_seconds
-            session_bind_deadline += paused_seconds
-            deadline += paused_seconds
-            stable_since = time.monotonic()
+        extend_response_deadlines(paused_seconds)
         response_session_url_before_check = str(read_state.get("beforeUrl") or "")
         checked_response_session = str(read_state.get("checkedSession") or "")
         if should_stop():
@@ -15433,10 +16800,6 @@ def _submit_and_wait(
             wait_for_response_poll()
             continue
         response_snapshot = read_state.get("snapshot") or {}
-        report_connection(
-            conversation=checked_response_session,
-            generating=bool(response_snapshot.get("generating")),
-        )
         current_user_receipt_visible = current_user_receipt_seen
         if browser_kind != "safari":
             response_target_url = checked_response_session or atomic_target_url
@@ -15469,10 +16832,16 @@ def _submit_and_wait(
                         current_user_receipt_seen
                         and recognizable_latest_user
                         and not marker_echoed
+                        and latest_user_count > current_user_receipt_count
                     ):
                         raise RuntimeError(
                             f"The latest {AGENT_PLATFORM_BY_KEY[platform]['label']} user turn "
                             "superseded the current controller receipt."
+                        )
+                    if marker_echoed:
+                        current_user_receipt_count = max(
+                            current_user_receipt_count,
+                            latest_user_count,
                         )
                     current_user_receipt_seen = (
                         current_user_receipt_seen or marker_echoed
@@ -15484,14 +16853,26 @@ def _submit_and_wait(
                     )
                     expected_user_text = " ".join(submitted_message.split())
                     observed_user_text = " ".join(latest_user_text.split())
-                    user_identity_advanced = bool(
-                        latest_user_count > baseline_user_count
-                        or (
-                            baseline_user_message_id
-                            and latest_user_message_id
-                            and latest_user_message_id != baseline_user_message_id
-                        )
+                    normalized_baseline_user_text = " ".join(
+                        baseline_user_text.split()
                     )
+                    if baseline_user_message_id and latest_user_message_id:
+                        user_identity_advanced = (
+                            latest_user_message_id != baseline_user_message_id
+                        )
+                    elif latest_user_message_id:
+                        user_identity_advanced = bool(
+                            baseline_user_count == 0
+                            and not normalized_baseline_user_text
+                            and latest_user_count > baseline_user_count
+                        )
+                    elif baseline_user_message_id:
+                        user_identity_advanced = False
+                    else:
+                        user_identity_advanced = bool(
+                            latest_user_count > baseline_user_count
+                            and normalized_baseline_user_text != expected_user_text
+                        )
                     exact_user_receipt = bool(
                         expected_user_text
                         and observed_user_text == expected_user_text
@@ -15520,6 +16901,206 @@ def _submit_and_wait(
             if on_delivered is not None:
                 on_delivered()
             delivery_reported = True
+        report_connection(
+            conversation=checked_response_session,
+            generating=generating,
+            verifying_delivery=bool(user_receipt_contract and not delivery_reported),
+        )
+        now = time.monotonic()
+        assistant_message_id = str(
+            response_snapshot.get("assistantMessageId") or ""
+        )
+        current_chatgpt_response_pair_visible = bool(
+            platform == "chatgpt"
+            and user_receipt_contract
+            and current_user_receipt_visible
+            and assistant_after_latest_user
+            and (
+                count > baseline
+                or (latest_response and latest_response != baseline_response)
+                or _chatgpt_has_new_response_pair(
+                    baseline_snapshot,
+                    response_snapshot,
+                    submitted_message,
+                )
+            )
+        )
+        same_failed_retry_identity = bool(
+            provider_retry_attempts
+            and (
+                (
+                    provider_retry_failed_assistant_id
+                    and assistant_message_id
+                    and provider_retry_failed_assistant_id == assistant_message_id
+                )
+                or (
+                    count == provider_retry_failed_count
+                    and (
+                        latest_response == provider_retry_failed_response
+                        or (
+                            _chatgpt_response_is_provider_error(latest_response)
+                            and _chatgpt_response_is_provider_error(
+                                provider_retry_failed_response
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        if provider_retry_attempts and generating:
+            same_failed_retry_identity = False
+        if (
+            platform == "chatgpt"
+            and browser_kind != "safari"
+            and current_user_receipt_visible
+            and not generating
+        ):
+            retry_allowed = provider_retry_attempts < CHATGPT_PROVIDER_RETRY_ATTEMPTS
+            if retry_allowed:
+                try:
+                    retry_executed, retry_state = _run_browser_action_unless_stopped(
+                        should_stop,
+                        lambda: _chatgpt_retry_control(
+                            page,
+                            checked_response_session or atomic_target_url,
+                            click=True,
+                            require_after_latest_user=True,
+                        ),
+                    )
+                except Exception as exc:
+                    if not (
+                        _provider_mutating_action_may_have_committed(
+                            page,
+                            "chatgpt",
+                            exc,
+                        )
+                        or _is_provider_connection_error(exc)
+                    ):
+                        raise
+                    retry_executed = True
+                    retry_state = {
+                        "available": True,
+                        "clicked": True,
+                        "label": "Try again",
+                    }
+                if not retry_executed:
+                    _stop_web_generation(page, browser_kind)
+                    return response
+            else:
+                retry_probe_available, retry_state, retry_probe_pause = (
+                    _run_recoverable_provider_read(
+                        lambda: _chatgpt_retry_control(
+                            page,
+                            checked_response_session or atomic_target_url,
+                            click=False,
+                            require_after_latest_user=True,
+                        ),
+                        page=page,
+                        platform=platform,
+                        availability_check=availability_check,
+                        should_stop=should_stop,
+                        on_reconnecting=lambda: report_connection(reconnecting=True),
+                        recovery_budget=read_recovery_budget,
+                    )
+                )
+                extend_response_deadlines(retry_probe_pause)
+                now = time.monotonic()
+                if not retry_probe_available:
+                    _stop_web_generation(page, browser_kind)
+                    return response
+            if retry_state["clicked"]:
+                provider_retry_attempts += 1
+                provider_retry_error_deadline = 0.0
+                provider_retry_failed_assistant_id = assistant_message_id
+                provider_retry_failed_count = count
+                provider_retry_failed_response = latest_response
+                provider_retry_settle_deadline = (
+                    time.monotonic() + CHATGPT_PROVIDER_RETRY_SETTLE_SECONDS
+                )
+                response = ""
+                previous = ""
+                stable_since = now
+                report_connection(
+                    conversation=checked_response_session,
+                    status_message=(
+                        "ChatGPT returned Try again; retrying the same provider response "
+                        "without resending the controller turn."
+                    ),
+                )
+                wait_for_response_poll()
+                continue
+            if retry_state.get("ambiguous"):
+                if (
+                    provider_retry_attempts > 0
+                    and now < provider_retry_settle_deadline
+                ):
+                    wait_for_response_poll()
+                    continue
+                raise AgentConnectionInterrupted(
+                    "ChatGPT exposed Retry outside a verified provider-response error boundary. "
+                    "It was not clicked and the controller turn was not resent."
+                )
+            if retry_state["available"]:
+                if now < provider_retry_settle_deadline:
+                    wait_for_response_poll()
+                    continue
+                raise AgentConnectionInterrupted(
+                    "ChatGPT kept showing Try again after one bounded response retry. "
+                    "The controller turn was not resent."
+                )
+            if (
+                current_chatgpt_response_pair_visible
+                and _chatgpt_response_is_provider_error(latest_response)
+            ):
+                retry_error_deadline = provider_retry_settle_deadline
+                if not provider_retry_attempts:
+                    if not provider_retry_error_deadline:
+                        provider_retry_error_deadline = (
+                            now + CHATGPT_PROVIDER_RETRY_SETTLE_SECONDS
+                        )
+                    retry_error_deadline = provider_retry_error_deadline
+                if now < retry_error_deadline:
+                    response = ""
+                    previous = ""
+                    stable_since = now
+                    wait_for_response_poll()
+                    continue
+                if provider_retry_attempts:
+                    raise AgentConnectionInterrupted(
+                        "ChatGPT kept returning a provider-error response after one bounded Retry. "
+                        "The controller turn was not resent."
+                    )
+                raise AgentConnectionInterrupted(
+                    "ChatGPT returned a provider-error response without exposing one verified "
+                    "Try again control. The controller turn was not resent."
+                )
+            if not provider_retry_attempts:
+                provider_retry_error_deadline = 0.0
+            if same_failed_retry_identity:
+                if now < provider_retry_settle_deadline:
+                    response = ""
+                    previous = ""
+                    stable_since = now
+                    wait_for_response_poll()
+                    continue
+                if (
+                    not latest_response
+                    or latest_response == provider_retry_failed_response
+                ):
+                    raise AgentConnectionInterrupted(
+                        "ChatGPT kept the failed assistant response after one bounded Retry. "
+                        "The controller turn was not resent."
+                    )
+        if (
+            platform == "chatgpt"
+            and user_receipt_contract
+            and not current_user_receipt_seen
+            and now >= receipt_deadline
+        ):
+            raise AgentConnectionInterrupted(
+                "ChatGPT did not expose an exact user-turn receipt within "
+                f"{receipt_timeout_seconds:g} seconds. The controller turn was not resent."
+            )
         if platform != "chatgpt" and user_receipt_contract:
             if (
                 current_user_receipt_visible
@@ -15542,7 +17123,12 @@ def _submit_and_wait(
             )
         ):
             response = latest_response
-        now = time.monotonic()
+        elif platform == "chatgpt" and user_receipt_contract:
+            # A candidate is stable only while the current user/assistant pair remains
+            # atomically visible. DOM rollback must restart the stability window.
+            response = ""
+            previous = ""
+            stable_since = now
         if response != previous:
             previous = response
             stable_since = now
@@ -15594,10 +17180,12 @@ def _submit_chromium_web_prompt(
     availability_check: Callable[[], bool | tuple[bool, float]] | None = None,
     baseline_snapshot: dict[str, Any] | None = None,
     submission_receipt_marker: str = "",
+    recovery_budget: _ProviderReadRecoveryBudget | None = None,
 ) -> bool:
     """Fill a non-ChatGPT Chromium composer and click its enabled semantic send control."""
     if should_stop():
         return False
+    read_recovery_budget = recovery_budget or _ProviderReadRecoveryBudget()
     if not str(expected_target_url or "").strip():
         raise RuntimeError("Provider submission requires a verified target URL.")
     available, _paused_seconds = _run_availability_gate(availability_check)
@@ -15609,6 +17197,8 @@ def _submit_chromium_web_prompt(
             page=page,
             platform=platform,
             availability_check=availability_check,
+            should_stop=should_stop,
+            recovery_budget=read_recovery_budget,
         )
         if not available:
             return False
@@ -15645,6 +17235,8 @@ def _submit_chromium_web_prompt(
                     page=page,
                     platform=platform,
                     availability_check=availability_check,
+                    should_stop=should_stop,
+                    recovery_budget=read_recovery_budget,
                 )
                 if not available:
                     return False
@@ -15725,6 +17317,8 @@ def _submit_chromium_web_prompt(
                 page=page,
                 platform=platform,
                 availability_check=availability_check,
+                should_stop=should_stop,
+                recovery_budget=read_recovery_budget,
             )
             if not available:
                 return False
@@ -15785,6 +17379,8 @@ def _submit_chromium_web_prompt(
                     page=page,
                     platform=platform,
                     availability_check=availability_check,
+                    should_stop=should_stop,
+                    recovery_budget=read_recovery_budget,
                 )
                 if not available:
                     return False
@@ -15905,6 +17501,8 @@ def _submit_chromium_web_prompt(
                 page=page,
                 platform=platform,
                 availability_check=availability_check,
+                should_stop=should_stop,
+                recovery_budget=read_recovery_budget,
             )
             if not available:
                 return False
@@ -15969,6 +17567,8 @@ def _submit_chromium_web_prompt(
                 page=page,
                 platform=platform,
                 availability_check=availability_check,
+                should_stop=should_stop,
+                recovery_budget=read_recovery_budget,
             )
             if not available:
                 return False
@@ -15984,6 +17584,8 @@ def _submit_chromium_web_prompt(
                     page=page,
                     platform=platform,
                     availability_check=availability_check,
+                    should_stop=should_stop,
+                    recovery_budget=read_recovery_budget,
                 )
             )
             if not available:
@@ -16007,6 +17609,8 @@ def _submit_chromium_web_prompt(
                         page=page,
                         platform=platform,
                         availability_check=availability_check,
+                        should_stop=should_stop,
+                        recovery_budget=read_recovery_budget,
                     )
                 )
                 if not available:
@@ -16404,6 +18008,8 @@ def _submit_chromium_web_prompt(
             page=page,
             platform=platform,
             availability_check=availability_check,
+            should_stop=should_stop,
+            recovery_budget=read_recovery_budget,
         )
         if not available:
             return False
@@ -16544,8 +18150,6 @@ def _submit_chromium_prompt(
         raise RuntimeError("ChatGPT submission requires a verified target URL.")
     if session_check is not None:
         session_check(False)
-    user_selector = _web_user_selector("chatgpt")
-    baseline_user_count = _web_count(page, "chromium", user_selector)
     if should_stop():
         return
     composer = page.locator("#prompt-textarea")
@@ -16566,14 +18170,19 @@ def _submit_chromium_prompt(
 
     deadline = time.monotonic() + CHROMIUM_SEND_BUTTON_TIMEOUT_SECONDS
     last_state: dict[str, Any] = {}
+    empty_composer_refilled = False
     while time.monotonic() < deadline:
         if should_stop():
             return
+        send_mutation_started = False
+
         def scan_and_submit() -> Any:
+            nonlocal send_mutation_started
             if session_check is not None:
                 session_check(False)
+            send_mutation_started = True
             return page.evaluate(
-                r"""({expectedTargetUrl}) => {
+                r"""({expectedTargetUrl, expectedMessage}) => {
                 const isVisible = (element) => {
                     const style = window.getComputedStyle(element);
                     return element.getClientRects().length > 0
@@ -16592,16 +18201,143 @@ def _submit_chromium_prompt(
                     }
                     const allowedHosts = new Set(['chatgpt.com', 'www.chatgpt.com']);
                     const normalizedPath = (url) => url.pathname.replace(/\/+$/, '') || '/';
-                    return expected.protocol === 'https:'
-                        && current.protocol === 'https:'
-                        && allowedHosts.has(expected.hostname.toLowerCase())
-                        && allowedHosts.has(current.hostname.toLowerCase())
-                        && normalizedPath(expected) === normalizedPath(current);
+                    if (expected.protocol !== 'https:'
+                        || current.protocol !== 'https:'
+                        || !allowedHosts.has(expected.hostname.toLowerCase())
+                        || !allowedHosts.has(current.hostname.toLowerCase())
+                        || expected.port
+                        || current.port
+                        || expected.username
+                        || expected.password
+                        || current.username
+                        || current.password) return false;
+                    const expectedPath = normalizedPath(expected);
+                    const currentPath = normalizedPath(current);
+                    if (expectedPath === currentPath) return true;
+                    const conversationId = (path) => {
+                        const match = path.match(/\/c\/([^/]+)$/i);
+                        return match ? match[1].toLowerCase() : '';
+                    };
+                    const conversationProjectId = (path) => {
+                        const match = path.match(
+                            /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?\/c\/[^/]+$/i
+                        );
+                        return match ? match[1].toLowerCase() : '';
+                    };
+                    const expectedConversation = conversationId(expectedPath);
+                    const currentConversation = conversationId(currentPath);
+                    if (expectedConversation && expectedConversation === currentConversation) {
+                        const expectedConversationProject = conversationProjectId(expectedPath);
+                        const currentConversationProject = conversationProjectId(currentPath);
+                        return !expectedConversationProject
+                            || expectedConversationProject === currentConversationProject;
+                    }
+                    const projectLandingId = (path) => {
+                        const match = path.match(
+                            /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?\/project$/i
+                        );
+                        return match ? match[1].toLowerCase() : '';
+                    };
+                    const expectedProject = projectLandingId(expectedPath);
+                    const currentProject = projectLandingId(currentPath);
+                    return Boolean(expectedProject && expectedProject === currentProject);
                 };
                 if (!targetMatches()) {
                     return {
                         clicked: false,
                         targetMismatch: true,
+                    };
+                }
+                const normalize = (value) => String(value || '')
+                    .replace(/\r\n?/g, '\n')
+                    .trim();
+                const composerValue = (element) => {
+                    if (!element) return '';
+                    if ('value' in element) return element.value;
+                    const directNodes = [...element.childNodes];
+                    const directParagraphs = directNodes.filter((node) => (
+                        node.nodeType === Node.ELEMENT_NODE && node.tagName === 'P'
+                    ));
+                    const paragraphOnly = directParagraphs.length
+                        && directNodes.every((node) => (
+                            (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'P')
+                            || (node.nodeType === Node.TEXT_NODE
+                                && !(node.textContent || '').trim())
+                        ));
+                    const serializeParagraph = (paragraph) => {
+                        const paragraphNodes = [...paragraph.childNodes];
+                        if (paragraphNodes.length === 1
+                            && paragraphNodes[0].nodeType === Node.ELEMENT_NODE
+                            && paragraphNodes[0].tagName === 'BR') return '';
+                        let supported = true;
+                        const parts = [];
+                        const visit = (node) => {
+                            if (node.nodeType === Node.TEXT_NODE) {
+                                parts.push(node.nodeValue || '');
+                                return;
+                            }
+                            if (node.nodeType !== Node.ELEMENT_NODE
+                                || node.getAttribute('contenteditable') === 'false'
+                                || /^(?:IMG|AUDIO|VIDEO|IFRAME|OBJECT|EMBED)$/.test(node.tagName)) {
+                                supported = false;
+                                return;
+                            }
+                            if (node.tagName === 'BR') {
+                                parts.push('\n');
+                                return;
+                            }
+                            [...node.childNodes].forEach(visit);
+                        };
+                        paragraphNodes.forEach(visit);
+                        return supported ? parts.join('') : null;
+                    };
+                    if (paragraphOnly) {
+                        const paragraphs = directParagraphs.map(serializeParagraph);
+                        return paragraphs.every((value) => value !== null)
+                            ? paragraphs.join('\n')
+                            : null;
+                    }
+                    const selection = element.ownerDocument.defaultView?.getSelection();
+                    if (!selection) return element.innerText || element.textContent || '';
+                    const savedRanges = [];
+                    for (let index = 0; index < selection.rangeCount; index += 1) {
+                        savedRanges.push(selection.getRangeAt(index).cloneRange());
+                    }
+                    const range = element.ownerDocument.createRange();
+                    range.selectNodeContents(element);
+                    try {
+                        selection.removeAllRanges();
+                        selection.addRange(range);
+                        return selection.toString();
+                    } finally {
+                        selection.removeAllRanges();
+                        savedRanges.forEach((savedRange) => {
+                            try {
+                                selection.addRange(savedRange);
+                            } catch (_) {
+                                // A provider remount invalidates only the stale saved range.
+                            }
+                        });
+                    }
+                };
+                const currentComposer = document.querySelector('#prompt-textarea');
+                const currentComposerValue = composerValue(currentComposer);
+                if (!currentComposer
+                    || currentComposerValue === null
+                    || normalize(currentComposerValue) !== normalize(expectedMessage)) {
+                    return {
+                        clicked: false,
+                        composerMismatch: true,
+                        composerPresent: Boolean(currentComposer),
+                        composerReadable: currentComposerValue !== null,
+                        composerEmpty: Boolean(
+                            currentComposer
+                            && currentComposerValue !== null
+                            && !normalize(currentComposerValue)
+                        ),
+                        composerTagName: currentComposer?.tagName || '',
+                        composerTextLength: normalize(currentComposerValue).length,
+                        expectedTextLength: normalize(expectedMessage).length,
                     };
                 }
                 const labelFor = (button) => `${button.getAttribute('aria-label') || ''} ${button.innerText || button.textContent || ''}`.trim();
@@ -16631,13 +18367,24 @@ def _submit_chromium_prompt(
                     })),
                 };
                 }""",
-                {"expectedTargetUrl": expected_target_url},
+                {
+                    "expectedTargetUrl": expected_target_url,
+                    "expectedMessage": message,
+                },
             )
 
-        executed, result = _run_browser_action_unless_stopped(
-            should_stop,
-            scan_and_submit,
-        )
+        try:
+            executed, result = _run_browser_action_unless_stopped(
+                should_stop,
+                scan_and_submit,
+            )
+        except Exception as exc:
+            if send_mutation_started and (
+                _is_transient_browser_navigation_error(exc)
+                or _is_provider_connection_error(exc)
+            ):
+                return
+            raise
         if not executed:
             return
         if isinstance(result, dict):
@@ -16646,8 +18393,38 @@ def _submit_chromium_prompt(
                 raise RuntimeError(
                     "The selected ChatGPT tab changed before the prompt could be sent."
                 )
+            if result.get("composerMismatch"):
+                LOGGER.info(
+                    "event=chatgpt_composer_mismatch present=%s empty=%s tag=%s "
+                    "readable=%s text_length=%s expected_length=%s refill_attempted=%s",
+                    bool(result.get("composerPresent")),
+                    bool(result.get("composerEmpty")),
+                    str(result.get("composerTagName") or "")[:20],
+                    bool(result.get("composerReadable")),
+                    int(result.get("composerTextLength") or 0),
+                    int(result.get("expectedTextLength") or 0),
+                    empty_composer_refilled,
+                )
+                if (
+                    result.get("composerPresent")
+                    and result.get("composerReadable")
+                    and result.get("composerEmpty")
+                    and not empty_composer_refilled
+                ):
+                    empty_composer_refilled = True
+                    refilled, _result = _run_browser_action_unless_stopped(
+                        should_stop,
+                        fill_checked_composer,
+                    )
+                    if not refilled or should_stop():
+                        return
+                    continue
+                raise RuntimeError(
+                    "The ChatGPT composer changed before Send. Nothing was clicked; "
+                    "automatic refill was not safe or did not stabilize."
+                )
             if result.get("clicked"):
-                break
+                return
         page.wait_for_timeout(WEB_SEND_BUTTON_POLL_MILLISECONDS)
     else:
         details = json.dumps(last_state, ensure_ascii=False, separators=(",", ":"))[:500]
@@ -16655,30 +18432,6 @@ def _submit_chromium_prompt(
             "The Chromium browser did not expose an enabled ChatGPT send button after "
             f"waiting for the context attachment: {details}"
         )
-
-    accepted_deadline = time.monotonic() + CHROMIUM_SUBMISSION_ACCEPT_TIMEOUT_SECONDS
-    while time.monotonic() < accepted_deadline:
-        if should_stop():
-            return
-        if session_check is not None:
-            session_check(True)
-        composer_empty = bool(
-            page.evaluate(
-                """() => {
-                    const composer = document.querySelector('#prompt-textarea');
-                    if (!composer) return true;
-                    return !(composer.innerText || composer.textContent || '').trim();
-                }"""
-            )
-        )
-        if (
-            composer_empty
-            or _web_count(page, "chromium", user_selector) > baseline_user_count
-            or _web_is_generating(page, "chromium")
-        ):
-            return
-        page.wait_for_timeout(WEB_SEND_BUTTON_POLL_MILLISECONDS)
-    raise RuntimeError("The Chromium browser clicked Send, but ChatGPT did not accept the prompt.")
 
 
 def _is_web_response_complete(
@@ -16880,9 +18633,65 @@ def _provider_turn_snapshot(
                     '[data-testid="collapsible-user-message-content"], .whitespace-pre-wrap'
                 ) || latestUser
                 : latestUser;
-            const latestUserText = latestUserBody
+            const renderedLatestUserText = latestUserBody
                 ? (latestUserBody.innerText || latestUserBody.textContent || '').trim()
                 : '';
+            const chatgptSourceText = (element) => {
+                if (!element) return '';
+                const reactPropsKey = Object.getOwnPropertyNames(element).find((key) =>
+                    key.startsWith('__reactProps$')
+                );
+                if (!reactPropsKey) return '';
+                const candidates = [];
+                const pending = [{value: element[reactPropsKey], depth: 0}];
+                const visited = new WeakSet();
+                let inspected = 0;
+                while (pending.length && inspected < 2_000) {
+                    const {value, depth} = pending.shift();
+                    inspected += 1;
+                    if (!value || typeof value !== 'object' || visited.has(value)) continue;
+                    visited.add(value);
+                    let entries = [];
+                    try {
+                        entries = Object.entries(value).slice(0, 160);
+                    } catch (_error) {
+                        continue;
+                    }
+                    for (const [key, child] of entries) {
+                        if (key === 'parts' && Array.isArray(child)) {
+                            const stringParts = child.filter((part) => typeof part === 'string');
+                            if (stringParts.length === child.length && stringParts.length) {
+                                candidates.push(stringParts.join(''));
+                            }
+                        } else if (key === 'displayParts' && Array.isArray(child)) {
+                            const displayParts = child
+                                .map((part) => part && typeof part.text === 'string' ? part.text : null)
+                                .filter((part) => part !== null);
+                            if (displayParts.length === child.length && displayParts.length) {
+                                candidates.push(displayParts.join(''));
+                            }
+                        } else if (key === 'text' && typeof child === 'string') {
+                            candidates.push(child);
+                        }
+                        if (
+                            depth < 8
+                            && child
+                            && typeof child === 'object'
+                            && !['_owner', 'ref', 'stateNode'].includes(key)
+                        ) {
+                            pending.push({value: child, depth: depth + 1});
+                        }
+                    }
+                }
+                return candidates
+                    .filter((candidate) => candidate.trim())
+                    .sort((left, right) => right.length - left.length)[0] || '';
+            };
+            const latestUserText = (
+                platform === 'chatgpt'
+                    ? chatgptSourceText(latestUser) || renderedLatestUserText
+                    : renderedLatestUserText
+            ).trim();
             const markerEchoed = Boolean(
                 receiptMarker
                 && latestUser

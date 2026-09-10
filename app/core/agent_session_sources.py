@@ -1,6 +1,6 @@
 """Provider-neutral Web Agent Project and session discovery.
 
-Code version: v1.9.6-codex.1
+Code version: v1.9.9-codex.1
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from .chatgpt_agent_sources import (
     normalize_chatgpt_conversation_url,
     normalize_chatgpt_project_url,
 )
+from .chatgpt_downloader import _chatgpt_project_id as _extract_chatgpt_project_id
 from .config import CrawlConfig
 from .gemini_downloader import (
     GEMINI_HOME_URL,
@@ -95,6 +96,20 @@ def normalize_agent_project_url(platform: str, value: str) -> str:
     return ""
 
 
+def chatgpt_project_id(value: str) -> str:
+    """Return the stable ChatGPT Project id from a validated Project or chat URL."""
+    normalized = (
+        normalize_chatgpt_project_url(value)
+        or normalize_chatgpt_conversation_url(value)
+    )
+    if not normalized:
+        return ""
+    project_id = _extract_chatgpt_project_id(normalized).casefold()
+    if not re.fullmatch(r"g-p-[0-9a-f]{32}", project_id):
+        return ""
+    return project_id
+
+
 def normalize_gemini_project_url(value: str) -> str:
     """Return a canonical Gemini Notebook URL from the shared Project contract."""
     try:
@@ -128,11 +143,7 @@ def normalize_agent_source_catalog_payload(
     raw_sessions = normalized.get("recent_sessions", [])
     raw_session_rows = raw_sessions if isinstance(raw_sessions, list) else []
     normalized_sessions = _normalize_session_rows(platform_key, raw_session_rows)
-    normalized["recent_sessions"] = (
-        normalized_sessions[:AGENT_SOURCE_LIMIT]
-        if normalized_sessions or not raw_session_rows
-        else raw_session_rows[:AGENT_SOURCE_LIMIT]
-    )
+    normalized["recent_sessions"] = normalized_sessions[:AGENT_SOURCE_LIMIT]
     normalized["projects"] = _normalize_project_rows(
         platform_key,
         normalized.get("projects", []),
@@ -1132,8 +1143,27 @@ def _normalize_project_rows(platform: str, rows: Any) -> list[dict[str, str]]:
         )
         if not normalized_url:
             continue
+        stable_chatgpt_id = (
+            chatgpt_project_id(normalized_url)
+            if platform == "chatgpt"
+            else ""
+        )
+        project_path_segments = [
+            segment
+            for segment in urlsplit(normalized_url).path.rstrip("/").split("/")
+            if segment
+        ]
+        url_project_id = (
+            project_path_segments[-2]
+            if (
+                platform == "chatgpt"
+                and len(project_path_segments) >= 2
+                and project_path_segments[-1].casefold() == "project"
+            )
+            else project_path_segments[-1]
+        )
         candidate = {
-            "id": normalized_url.rstrip("/").split("/")[-1].split("?", 1)[0],
+            "id": stable_chatgpt_id or url_project_id,
             "title": str(row.get("title") or "").strip() or "Untitled project",
             "url": normalized_url,
             "updated_at": str(row.get("updated_at") or "").strip(),
@@ -1144,8 +1174,9 @@ def _normalize_project_rows(platform: str, rows: Any) -> list[dict[str, str]]:
             candidate["icon"] = icon
         if icon_color:
             candidate["icon_color"] = icon_color
-        existing = deduplicated.get(normalized_url)
-        deduplicated[normalized_url] = _prefer_newer_source_row(existing, candidate)
+        identity = stable_chatgpt_id or normalized_url
+        existing = deduplicated.get(identity)
+        deduplicated[identity] = _prefer_newer_source_row(existing, candidate)
     projects.extend(deduplicated.values())
     projects.sort(key=_source_updated_at_key, reverse=True)
     return projects

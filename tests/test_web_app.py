@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.103.1-codex.1
+# Code version: v1.104.0-codex.1
 
 from __future__ import annotations
 
@@ -673,7 +673,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.21.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.111.1-codex.1"
+                expected_style_version = "style-v2.112.0-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1070,12 +1070,12 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.111.1-codex.1', local_body)
+        self.assertIn('style-v2.112.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
-        self.assertIn('agent-sessions.css?v=1.6.0', local_body)
+        self.assertIn('agent-sessions.css?v=1.7.1', local_body)
         self.assertIn('data-agent-new-session', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.42.0-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.43.0-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1119,11 +1119,10 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="agent_error_record"', local_body)
         self.assertIn('data-agent-error-record-content', local_body)
         self.assertIn('class="agent-error-record-scroll"', local_body)
-        self.assertIn('data-agent-llm-settings-link', local_body)
-        self.assertIn('data-agent-provider-settings-label', local_body)
-        self.assertIn('class="secondary-button agent-llm-settings-link"', local_body)
-        self.assertIn('href="/settings#settings-llm"', local_body)
-        self.assertIn(">Open ChatGPT settings</a>", local_body)
+        self.assertNotIn('data-agent-llm-settings-link', local_body)
+        self.assertNotIn('data-agent-provider-settings-label', local_body)
+        self.assertNotIn('class="secondary-button agent-llm-settings-link"', local_body)
+        self.assertNotIn(">Open ChatGPT settings</a>", local_body)
         self.assertNotIn("Open LLM settings", local_body)
 
         self.assertIn('class="agent-response-output"', local_body)
@@ -1591,6 +1590,36 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", history_html)
         self.assertEqual(payload["agent"]["run_revision"], 73)
 
+    def test_agent_failed_session_delete_forwards_remote_absence_guard(self) -> None:
+        app = create_app()
+        pool = app.extensions["agent_session_pool"]
+        with patch.object(
+            pool,
+            "dismiss_failed",
+            return_value={
+                "session_id": "a" * 32,
+                "run_id": "run-" + "b" * 32,
+                "conversation_url": "",
+            },
+        ) as dismiss:
+            with app.test_client() as client:
+                response = client.delete(
+                    "/api/agent/session",
+                    json={
+                        "session_id": "a" * 32,
+                        "conversation_url": "",
+                        "remote_record_absent": True,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["deleted"])
+        dismiss.assert_called_once_with(
+            "a" * 32,
+            expected_conversation_url="",
+            remote_record_absent=True,
+        )
+
     def test_agent_status_isolates_a_foreign_running_snapshot_for_the_requested_route(self) -> None:
         """Keep the polling API on the same privacy boundary as the rendered Agent page."""
         app = create_app()
@@ -1804,10 +1833,11 @@ class WebAppTests(unittest.TestCase):
             body,
         )
         self.assertIn('data-agent-prompt-input required></textarea>', body)
-        self.assertRegex(
+        self.assertIn(
+            '<details class="agent-activity-panel" id="agent_activity_panel" open>',
             body,
-            r'<details class="agent-activity-panel" id="agent_activity_panel"[^>]*\bhidden\b',
         )
+        self.assertIn('<ol class="agent-activity-list" id="agent_activity_list">', body)
         self.assertIn('<details class="agent-error-record" id="agent_error_record" hidden>', body)
         for sentinel in (
             "FOREIGN_ACTIVITY_SENTINEL",
@@ -2142,7 +2172,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.42.0-codex.1',
+            'computer-use-agent-v3.43.0-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -2162,7 +2192,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('syncComboboxTriggerFromOption(combobox, option)', script)
         self.assertIn('window.localStorage.getItem(sessionSelectionCacheKey())', script)
         self.assertIn('function restoreRememberedSessionSelection()', script)
-        self.assertIn('void restoreRememberedProjectSession(remembered, remembered.project_url)', script)
+        self.assertIn('void restoreRememberedProjectSession(remembered, currentProjectUrl)', script)
+        self.assertIn('historyUrlKey(item.url) === historyUrlKey(project)', script)
+        self.assertIn('g-p-[0-9a-f]{32}', script)
         self.assertIn("selectedOption?.dataset.agentComboboxLabel", script)
         self.assertIn('function verifiedChatgptEffortCatalog()', script)
         self.assertIn('const allowedCacheStatuses = CHATGPT_EFFORT_CATALOG_FRESHNESS.get(freshnessKind);', script)
@@ -2472,6 +2504,23 @@ class WebAppTests(unittest.TestCase):
 
         for platform, platform_label, collector_name in providers:
             with self.subTest(platform=platform):
+                conversation_prefix = {
+                    "chatgpt": "https://chatgpt.com/c/",
+                    "grok": "https://grok.com/c/",
+                    "claude": "https://claude.ai/chat/",
+                }[platform]
+                first_session = {
+                    "id": f"{platform}-first",
+                    "title": "First session",
+                    "url": f"{conversation_prefix}{platform}-first",
+                    "updated_at": "",
+                }
+                refreshed_session = {
+                    "id": f"{platform}-refreshed",
+                    "title": "Refreshed session",
+                    "url": f"{conversation_prefix}{platform}-refreshed",
+                    "updated_at": "",
+                }
                 first_status_payload = {
                     "platform": platform,
                     "browser": "edge",
@@ -2488,13 +2537,13 @@ class WebAppTests(unittest.TestCase):
                 first_source_payload = {
                     "platform": platform,
                     "browser_label": "Edge",
-                    "recent_sessions": [{"id": f"{platform}-first"}],
+                    "recent_sessions": [first_session],
                     "projects": [],
                     "limit": 20,
                 }
                 second_source_payload = {
                     **first_source_payload,
-                    "recent_sessions": [{"id": f"{platform}-refreshed"}],
+                    "recent_sessions": [refreshed_session],
                 }
                 with TemporaryDirectory() as raw_root:
                     app = create_app(Path(raw_root) / "local_store")
@@ -2523,7 +2572,7 @@ class WebAppTests(unittest.TestCase):
                 first_payload = first_response.get_json()
                 self.assertEqual(
                     first_payload["agent_sources"]["recent_sessions"],
-                    [{"id": f"{platform}-first"}],
+                    [first_session],
                 )
                 self.assertNotIn("cache", first_payload)
                 self.assertEqual(
@@ -2539,7 +2588,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(cached_payload["message"], "Ready")
                 self.assertEqual(
                     cached_payload["agent_sources"]["recent_sessions"],
-                    [{"id": f"{platform}-first"}],
+                    [first_session],
                 )
                 self.assertEqual(
                     cached_payload["browser_session_freshness"]["kind"],
@@ -2554,7 +2603,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(refreshed_payload["message"], "Refreshed")
                 self.assertEqual(
                     refreshed_payload["agent_sources"]["recent_sessions"],
-                    [{"id": f"{platform}-refreshed"}],
+                    [refreshed_session],
                 )
                 self.assertEqual(
                     refreshed_payload["browser_session_freshness"]["kind"],
@@ -2567,7 +2616,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(catalog_response.status_code, 200)
                 self.assertEqual(
                     catalog_response.get_json()["recent_sessions"],
-                    [{"id": f"{platform}-refreshed"}],
+                    [refreshed_session],
                 )
                 self.assertEqual(catalog_response.get_json()["cache"]["status"], "hit")
                 self.assertEqual(bootstrap.call_count, 2)
@@ -2662,16 +2711,28 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(bootstrap.call_count, 2)
 
     def test_agent_provider_source_route_refreshes_when_requested_explicitly(self) -> None:
+        first_session = {
+            "id": "first-session",
+            "title": "First session",
+            "url": "https://gemini.google.com/app/first-session",
+            "updated_at": "",
+        }
+        refreshed_session = {
+            "id": "refreshed-session",
+            "title": "Refreshed session",
+            "url": "https://gemini.google.com/app/refreshed-session",
+            "updated_at": "",
+        }
         first_payload = {
             "platform": "gemini",
             "browser_label": "Edge",
-            "recent_sessions": [{"id": "first-session"}],
+            "recent_sessions": [first_session],
             "projects": [],
             "limit": 20,
         }
         refreshed_payload = {
             **first_payload,
-            "recent_sessions": [{"id": "refreshed-session"}],
+            "recent_sessions": [refreshed_session],
         }
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
@@ -2692,11 +2753,11 @@ class WebAppTests(unittest.TestCase):
                         "/api/agent/sources?platform=gemini&browser=edge&refresh=1"
                     )
 
-        self.assertEqual(passive_response.get_json()["recent_sessions"], [{"id": "first-session"}])
+        self.assertEqual(passive_response.get_json()["recent_sessions"], [first_session])
         self.assertEqual(passive_response.get_json()["cache"]["status"], "stale")
         self.assertEqual(
             automatic_refresh_response.get_json()["recent_sessions"],
-            [{"id": "refreshed-session"}],
+            [refreshed_session],
         )
         self.assertEqual(automatic_refresh_response.get_json()["cache"]["status"], "refreshed")
         sources.assert_called_once()
@@ -2780,6 +2841,63 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.get_json()["cache"]["status"], "miss")
         sessions.assert_called_once()
         self.assertEqual(sessions.call_args.args[:3], ("grok", "edge", project_url))
+
+    def test_agent_project_routes_reject_invalid_urls_before_cache_lookup(self) -> None:
+        project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+        legal_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+        invalid_urls = (
+            f"http://chatgpt.com/g/{project_id}-forged/project",
+            f"https://attacker@chatgpt.com/g/{project_id}/project",
+            f"https://chatgpt.com:444/g/{project_id}/project",
+        )
+        cached_payload = {
+            "platform": "chatgpt",
+            "project_url": legal_url,
+            "sessions": [{"id": "must-not-leak"}],
+            "limit": 20,
+        }
+
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            app.extensions["agent_source_cache"].store(
+                platform="chatgpt",
+                browser="edge",
+                source_kind="project-sessions",
+                project_url=legal_url,
+                payload=cached_payload,
+            )
+            with patch("app.web.app.list_chatgpt_project_sessions") as chatgpt_sessions, patch(
+                "app.web.app.list_agent_project_sessions"
+            ) as agent_sessions:
+                with app.test_client() as client:
+                    responses = []
+                    for invalid_url in invalid_urls:
+                        responses.append(
+                            client.get(
+                                "/api/agent/chatgpt-project-sessions",
+                                query_string={
+                                    "browser": "edge",
+                                    "project_url": invalid_url,
+                                },
+                            )
+                        )
+                        responses.append(
+                            client.get(
+                                "/api/agent/project-sessions",
+                                query_string={
+                                    "platform": "chatgpt",
+                                    "browser": "edge",
+                                    "project_url": invalid_url,
+                                },
+                            )
+                        )
+
+        self.assertTrue(all(response.status_code == 409 for response in responses))
+        self.assertTrue(
+            all("valid" in response.get_json()["error"] for response in responses)
+        )
+        chatgpt_sessions.assert_not_called()
+        agent_sessions.assert_not_called()
 
     def test_agent_project_route_refreshes_stale_sessions_on_explicit_request(self) -> None:
         project_url = "https://grok.com/project/project-1?tab=conversations"
@@ -2905,8 +3023,6 @@ class WebAppTests(unittest.TestCase):
             'lastBrowserStatus.can_download',
             'requestJson("/api/agent/preferences"',
             'selectedValue(".agent-os-combobox", elements.promptOs?.value || "macos")',
-            'providerSettingsLabel: document.querySelector("[data-agent-provider-settings-label]")',
-            'elements.providerSettingsLabel.textContent = `Open ${selectedPlatformLabel()} settings`;',
             'const sessionSourceChoice = trigger.closest(".agent-session-mode-combobox")',
             'trigger.disabled = !sessionSourceChoice',
             'event.key !== "Enter" || event.shiftKey || event.isComposing',
@@ -2977,7 +3093,7 @@ class WebAppTests(unittest.TestCase):
             "bootstrapSignature !== appliedBootstrapSignature",
             "sourceRequestId += 1",
             'const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"])',
-            "loadSelectedSessionHistory(input.value)",
+            "void loadSelectedSessionHistory(session.conversation_url);",
             '"/api/agent/chatgpt-session-history"',
             "Loading the selected ${selectedPlatformLabel()} session history…",
             'statusMessageCopy: document.querySelector("[data-agent-response-status-copy]")',
@@ -3003,10 +3119,10 @@ class WebAppTests(unittest.TestCase):
             "function renderResponseStatus(agent, readiness)",
             "elements.statusSpinner.hidden = !presentation.loading",
             "setResponseStatusFallback(error.message)",
-            '"transitionend"',
-            '"transitioncancel"',
+            "activityCloseAnimation.onfinish = finish;",
+            "activityCloseAnimation?.cancel();",
             "remoteHistoryMatchesSelection()",
-            "sessionTitleOverride = option.dataset.agentComboboxLabel || \"\"",
+            'sessionTitleOverride = session.session_title || "";',
             "elements.activityList.scrollTop = elements.activityList.scrollHeight",
             "elements.responseOutput.hidden = !entry",
         ):
@@ -3639,7 +3755,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.111.1-codex.1", body)
+            self.assertIn("style-v2.112.0-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.32.0-codex.1', body)

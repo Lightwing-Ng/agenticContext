@@ -1,4 +1,4 @@
-/* Code version: v2.111.1-codex.1 */
+/* Code version: v2.112.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -3770,10 +3770,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     padding-bottom: 8px;
 }
 
-.agent-runtime-form > .agent-llm-settings-link {
-    justify-self: end;
-}
-
 .agent-runtime-form .field > .field-label {
     font-size: var(--font-ui-lg);
 }
@@ -3804,12 +3800,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 .agent-session-source {
     display: grid;
     gap: 12px;
-    padding-top: 2px;
-    border-top: var(--frosted-glass-border);
-}
-
-.agent-session-source > .field:first-child {
-    padding-top: 12px;
 }
 
 .agent-session-detail-field[hidden] {

@@ -1,4 +1,4 @@
-/* Code version: v3.42.0-codex.1 */
+/* Code version: v3.43.0-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -52,7 +52,6 @@
         workspacePath: promptForm.querySelector('input[name="workspace_path"]'),
         promptOs: promptForm.querySelector("[data-agent-prompt-os]"),
         promptPlatform: promptForm.querySelector("[data-agent-prompt-platform]"),
-        providerSettingsLabel: document.querySelector("[data-agent-provider-settings-label]"),
         promptBrowser: promptForm.querySelector("[data-agent-prompt-browser]"),
         modelInput: promptForm.querySelector("[data-agent-model-input]"),
         effortField: promptForm.querySelector("[data-agent-effort-field]"),
@@ -184,6 +183,7 @@
     let agentSources = {recent_sessions: [], projects: []};
     let projectSessions = [];
     let projectSessionsLoading = false;
+    let verifiedProjectSessionsKey = "";
     let selectedRemoteConversationUrl = "";
     let selectedProjectConversationUrl = "new";
     let recentSelectionRequestId = 0;
@@ -293,14 +293,21 @@
 
         selectedProjectConversationUrl = "new";
         if (project) {
-            const known = agentSources.projects?.find((item) => item.url === project);
-            restoreChoice(elements.projectCombobox, project, known?.title || agent.project_title || project);
+            const known = agentSources.projects?.find(
+                (item) => historyUrlKey(item.url) === historyUrlKey(project),
+            );
+            const currentProject = known?.url || project;
+            restoreChoice(
+                elements.projectCombobox,
+                currentProject,
+                known?.title || agent.project_title || currentProject,
+            );
             selectedProjectConversationUrl = conversation || "new";
-        }
-        if (project && project !== previousProject) {
-            projectSessions = [];
-            projectSessionsLoading = true;
-            void loadProjectSessions(project);
+            if (historyUrlKey(currentProject) !== historyUrlKey(previousProject)) {
+                projectSessions = [];
+                projectSessionsLoading = true;
+                void loadProjectSessions(currentProject);
+            }
         }
         updateSessionChoiceInputs();
     }
@@ -377,11 +384,13 @@
         }
         const signature = JSON.stringify([items, executionSessionId, selectedConversationUrl(),
             project, projectSessionsLoading, catalogState, catalogError,
-            [...executionConversationTitles], [...executionConversationUrls]]);
+            verifiedProjectSessionsKey, [...executionConversationTitles], [...executionConversationUrls]]);
         if (executionList.dataset.signature === signature) return;
         executionList.dataset.signature = signature;
         const focusedId = document.activeElement?.dataset?.executionSessionId;
         executionList.replaceChildren(...items.map((session) => {
+            const row = document.createElement("div");
+            row.className = "agent-execution-session-row";
             const button = document.createElement("button");
             button.type = "button";
             button.className = "trade-strategy-dropdown-option agent-execution-session";
@@ -411,7 +420,37 @@
                 if (session.session_id) void selectExecutionSession(session.session_id);
                 else void selectRecentConversation(session);
             });
-            return button;
+            row.append(button);
+            const remoteRecordAbsent = !conversationUrl
+                || !remoteUrls.has(historyUrlKey(conversationUrl));
+            const remoteCatalogVerified = inProjectMode
+                ? Boolean(project && !projectSessionsLoading
+                    && verifiedProjectSessionsKey === historyUrlKey(project))
+                : catalogState === "ready" && !sourcesLoading;
+            const deletable = Boolean(
+                session.session_id
+                && !session.running
+                && String(session.phase || "").toLowerCase() === "failed"
+                && remoteCatalogVerified
+                && remoteRecordAbsent
+            );
+            if (deletable) {
+                row.classList.add("is-deletable");
+                const deleteButton = document.createElement("button");
+                deleteButton.type = "button";
+                deleteButton.className = "agent-execution-session-delete";
+                deleteButton.setAttribute("aria-label", `Delete failed session: ${title.textContent}`);
+                deleteButton.title = "Delete failed session";
+                deleteButton.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    void dismissFailedSession(
+                        {...session, conversation_url: conversationUrl || ""},
+                        deleteButton,
+                    );
+                });
+                row.append(deleteButton);
+            }
+            return row;
         }));
         if (!items.length) {
             const empty = document.createElement("p");
@@ -421,7 +460,36 @@
                 : catalogState === "error" ? catalogError : "No recent sessions.";
             executionList.append(empty);
         }
-        if (focusedId) Array.from(executionList.children).find((node) => node.dataset.executionSessionId === focusedId)?.focus();
+        if (focusedId) executionList.querySelector(
+            `[data-execution-session-id="${CSS.escape(focusedId)}"]`,
+        )?.focus();
+    }
+
+    async function dismissFailedSession(session, deleteButton) {
+        if (!session?.session_id || deleteButton.disabled) return;
+        deleteButton.disabled = true;
+        try {
+            await requestJson("/api/agent/session", {
+                method: "DELETE",
+                body: JSON.stringify({
+                    session_id: session.session_id,
+                    conversation_url: session.conversation_url || "",
+                    remote_record_absent: true,
+                }),
+            });
+            executionSessions = executionSessions.filter(
+                (item) => item.session_id !== session.session_id,
+            );
+            executionConversationUrls.delete(session.session_id);
+            if (executionSessionId === session.session_id) {
+                await selectExecutionSession("new", {preserveSourceSelection: true});
+            } else {
+                renderRecentSessionList();
+            }
+        } catch (error) {
+            deleteButton.disabled = false;
+            setResponseStatusFallback(error.message);
+        }
     }
 
     async function selectRecentConversation(session) {
@@ -731,7 +799,10 @@
         if (!candidate || candidate.length > MAX_AGENT_SESSION_CACHE_VALUE_LENGTH) return false;
         try {
             const parsed = new URL(candidate);
-            if (parsed.protocol !== "https:") return false;
+            if (parsed.protocol !== "https:"
+                || parsed.port
+                || parsed.username
+                || parsed.password) return false;
             const allowedHosts = {
                 chatgpt: new Set(["chatgpt.com", "www.chatgpt.com"]),
                 gemini: new Set(["gemini.google.com"]),
@@ -806,7 +877,30 @@
     }
 
     function historyUrlKey(value) {
-        return String(value || "").trim().replace(/\/+$/, "").toLowerCase();
+        const normalized = String(value || "").trim().replace(/\/+$/, "").toLowerCase();
+        try {
+            const parsed = new URL(normalized);
+            const allowedHost = ["chatgpt.com", "www.chatgpt.com"].includes(parsed.hostname);
+            const projectPath = parsed.pathname.match(
+                /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?(\/(?:project|c\/[^/]+))\/?$/i,
+            );
+            const rootConversationPath = parsed.pathname.match(/^\/c\/([^/]+)\/?$/i);
+            if (parsed.protocol === "https:"
+                && allowedHost
+                && !parsed.port
+                && !parsed.username
+                && !parsed.password) {
+                if (projectPath) {
+                    return `https://chatgpt.com/g/${projectPath[1]}${projectPath[2]}`;
+                }
+                if (rootConversationPath) {
+                    return `https://chatgpt.com/c/${rootConversationPath[1]}`;
+                }
+            }
+        } catch (_error) {
+            // Non-URL selection sentinels retain their existing string identity.
+        }
+        return normalized;
     }
 
     function resetRemoteSessionHistory() {
@@ -1043,9 +1137,6 @@
     function syncPlatformState(agent = {}) {
         const platform = selectedPlatform();
         if (elements.promptPlatform instanceof HTMLInputElement) elements.promptPlatform.value = platform;
-        if (elements.providerSettingsLabel) {
-            elements.providerSettingsLabel.textContent = `Open ${selectedPlatformLabel()} settings`;
-        }
         if (elements.browserSession) {
             elements.browserSession.dataset.browserSessionPlatform = platform;
             elements.browserSession.dataset.browserSessionAccountLabel = selectedPlatformLabel();
@@ -1352,6 +1443,7 @@
     function resetProjectSessions(loading = false) {
         projectSessions = [];
         projectSessionsLoading = loading;
+        verifiedProjectSessionsKey = "";
         selectedProjectConversationUrl = "new";
         updateSessionChoiceInputs();
     }
@@ -1375,6 +1467,7 @@
 
     function populateProjectSessions(items) {
         projectSessionsLoading = false;
+        verifiedProjectSessionsKey = historyUrlKey(selectedProjectUrl());
         projectSessions = Array.isArray(items) ? items : [];
         rememberExecutionTitles(projectSessions);
         updateSessionChoiceInputs();
@@ -1424,32 +1517,35 @@
         applySessionModeSelection(remembered.mode);
 
         if (!remembered.project_url) return;
-        const projectOption = elements.projectCombobox?.querySelector(
-            `[data-agent-combobox-option="${CSS.escape(remembered.project_url)}"]`,
-        );
+        const projectOption = Array.from(
+            elements.projectCombobox?.querySelectorAll("[data-agent-combobox-option]") || [],
+        ).find((option) => historyUrlKey(option.dataset.agentComboboxOption)
+            === historyUrlKey(remembered.project_url));
         if (!projectOption) return;
+        const currentProjectUrl = projectOption.dataset.agentComboboxOption;
         selectSessionListValue(
             elements.projectCombobox,
-            remembered.project_url,
+            currentProjectUrl,
             projectOption.dataset.agentComboboxLabel || "",
         );
-        if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = remembered.project_url;
+        if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = currentProjectUrl;
         resetProjectSessions(true);
         updateSessionChoiceInputs();
-        void restoreRememberedProjectSession(remembered, remembered.project_url);
+        void restoreRememberedProjectSession(remembered, currentProjectUrl);
     }
 
     async function restoreRememberedProjectSession(remembered, projectUrl) {
         const loaded = await loadProjectSessions(projectUrl);
-        if (loaded !== true || selectedProjectUrl() !== projectUrl) return;
+        if (loaded !== true
+            || historyUrlKey(selectedProjectUrl()) !== historyUrlKey(projectUrl)) return;
         const sessionUrl = remembered.project_session_url;
         if (sessionUrl && sessionUrl !== "new") {
             const session = projectSessions.find((item) => historyUrlKey(item.url) === historyUrlKey(sessionUrl));
             if (session) {
-                selectedProjectConversationUrl = sessionUrl;
+                selectedProjectConversationUrl = session.url;
                 sessionTitleOverride = session.title || "";
                 updateSessionChoiceInputs();
-                void loadSelectedSessionHistory(sessionUrl);
+                void loadSelectedSessionHistory(session.url);
             }
         }
         rememberSessionSelection();
@@ -1626,6 +1722,7 @@
     async function loadProjectSessions(projectUrl, options = {}) {
         if (!projectUrl) return false;
         const requestId = ++projectSessionRequestId;
+        const projectKey = historyUrlKey(projectUrl);
         try {
             const query = new URLSearchParams({
                 platform: selectedPlatform(),
@@ -1634,7 +1731,8 @@
             });
             if (options.forceRefresh) query.set("refresh", "1");
             const payload = await requestJson(`/api/agent/project-sessions?${query.toString()}`);
-            if (requestId !== projectSessionRequestId || projectUrl !== selectedProjectUrl()) return false;
+            if (requestId !== projectSessionRequestId
+                || projectKey !== historyUrlKey(selectedProjectUrl())) return false;
             populateProjectSessions(payload.sessions || []);
             // Show durable cached choices immediately, then revalidate only an expired catalog.
             if (payload.cache?.status === "stale" && !options.forceRefresh) {
@@ -1642,7 +1740,8 @@
             }
             return true;
         } catch (_error) {
-            if (requestId !== projectSessionRequestId) return false;
+            if (requestId !== projectSessionRequestId
+                || projectKey !== historyUrlKey(selectedProjectUrl())) return false;
             resetProjectSessions();
             return false;
         }

@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.4.0-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.5.1-codex.1."""
 
 from copy import deepcopy
 
@@ -169,6 +169,83 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
         context.close()
 
 
+def test_failed_local_session_without_remote_record_has_centered_hover_delete(
+    disposable_browser, sidebar_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1026, "height": 1090})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    remote_url = "https://chatgpt.com/c/remote-failure"
+    sessions = [
+        {"session_id": "orphan", "session_title": "Failed before remote record",
+         "running": False, "phase": "failed", "conversation_url": ""},
+        {"session_id": "remote", "session_title": "Failed with remote record",
+         "running": False, "phase": "failed", "conversation_url": remote_url},
+        {"session_id": "complete", "session_title": "Completed local task",
+         "running": False, "phase": "finished", "conversation_url": ""},
+    ]
+    base.update(agent={"session_id": "new"}, sessions=sessions, active_count=0)
+    deleted = []
+
+    def delete_session(route):
+        deleted.append(route.request.post_data_json)
+        route.fulfill(json={"deleted": True, "session_id": "orphan"})
+
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
+    page.route("**/api/agent/session", delete_session)
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True,
+        "browser": "edge",
+        "platform": "chatgpt",
+        "agent_sources": {
+            "projects": [],
+            "recent_sessions": [{"url": remote_url, "title": "Remote failure"}],
+        },
+    }))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        summary = page.locator("[data-agent-execution-sessions] > summary")
+        assert summary.bounding_box()["height"] == pytest.approx(36, abs=0.1)
+        expect(page.locator("[data-agent-new-session]")).to_be_visible()
+        assert page.locator("[data-agent-execution-sessions]").evaluate(
+            "(rail) => rail.contains(document.querySelector('[data-agent-new-session]'))",
+        )
+
+        orphan = page.locator("[data-execution-session-id=orphan]")
+        remote = page.locator("[data-execution-session-id=remote]")
+        complete = page.locator("[data-execution-session-id=complete]")
+        expect(orphan.locator("xpath=..").locator(".agent-execution-session-delete")).to_have_count(1)
+        expect(remote.locator("xpath=..").locator(".agent-execution-session-delete")).to_have_count(0)
+        expect(complete.locator("xpath=..").locator(".agent-execution-session-delete")).to_have_count(0)
+
+        orphan.hover()
+        delete_button = orphan.locator("xpath=..").locator(".agent-execution-session-delete")
+        expect(delete_button).to_be_visible()
+        expect(orphan.locator(".agent-execution-session-state")).to_have_css("opacity", "0")
+        centers = orphan.locator("xpath=..").evaluate("""row => {
+            const pill = row.querySelector('.agent-execution-session').getBoundingClientRect();
+            const action = row.querySelector('.agent-execution-session-delete').getBoundingClientRect();
+            return {
+                pillRightCenterX: pill.right - pill.height / 2,
+                pillCenterY: pill.top + pill.height / 2,
+                actionCenterX: action.left + action.width / 2,
+                actionCenterY: action.top + action.height / 2,
+            };
+        }""")
+        assert centers["actionCenterX"] == pytest.approx(centers["pillRightCenterX"], abs=0.1)
+        assert centers["actionCenterY"] == pytest.approx(centers["pillCenterY"], abs=0.1)
+
+        delete_button.click()
+        expect(page.locator("[data-execution-session-id=orphan]")).to_have_count(0)
+        assert deleted == [{
+            "session_id": "orphan",
+            "conversation_url": "",
+            "remote_record_absent": True,
+        }]
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize(("width", "color_scheme"), [(1024, "light"), (390, "dark")])
 def test_new_session_inherits_selected_project_without_stopping_existing_task(
     disposable_browser, sidebar_server_url, width, color_scheme,
@@ -259,15 +336,27 @@ def test_new_session_inherits_selected_project_without_stopping_existing_task(
         expect(new_session).to_have_class("secondary-button agent-new-session-button")
         placement = new_session.evaluate("""button => {
             const form = document.querySelector('#agent_runtime_form');
-            const project = document.querySelector('[data-agent-project-field]');
             const recent = document.querySelector('[data-agent-execution-sessions]');
             return {
                 inForm: form.contains(button),
-                afterProject: Boolean(project.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING),
-                beforeRecent: Boolean(button.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING),
+                inRecent: recent.contains(button),
+                beforeList: Boolean(button.compareDocumentPosition(
+                    document.querySelector('[data-agent-execution-session-list]'),
+                ) & Node.DOCUMENT_POSITION_FOLLOWING),
             };
         }""")
-        assert placement == {"inForm": True, "afterProject": True, "beforeRecent": True}
+        assert placement == {"inForm": False, "inRecent": True, "beforeList": True}
+        alignment = new_session.evaluate("""button => {
+            const body = button.closest('.ui-collapse-body');
+            const buttonRect = button.getBoundingClientRect();
+            const bodyRect = body.getBoundingClientRect();
+            return {
+                display: getComputedStyle(body).display,
+                rightDelta: Math.abs(bodyRect.right - buttonRect.right),
+            };
+        }""")
+        assert alignment["display"] == "grid"
+        assert alignment["rightDelta"] <= 1
         new_session.click()
 
         expect(page.locator('input[name="session_mode"]')).to_have_value("project_new")
@@ -596,6 +685,12 @@ def test_restored_session_loads_bound_history_and_ignores_late_reply(
     page = context.new_page()
     base = fixtures._finished_chatgpt_agent_payload()
     base.pop("can_start", None)
+    page.add_init_script(
+        """(() => {
+            const key = 'cachelikes:agent-execution-session:edge:chatgpt';
+            if (!sessionStorage.getItem(key)) sessionStorage.setItem(key, 'primary');
+        })()"""
+    )
     held = []
     requested = []
     sessions = [

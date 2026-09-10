@@ -1,6 +1,6 @@
 """Bounded, independently controlled Web Agent sessions.
 
-Code version: v1.7.2-codex.1
+Code version: v1.8.0-codex.1
 """
 
 from contextlib import contextmanager
@@ -452,6 +452,28 @@ class AgentSessionPool:
                     service.snapshot() for service in self._services.values()
                 )
             )
+
+    def dismiss_failed(
+        self,
+        session_id,
+        *,
+        expected_conversation_url="",
+        remote_record_absent=False,
+    ):
+        """Dismiss one failed local session after the remote absence check."""
+        normalized_id = str(session_id or "").strip()
+        if normalized_id != "primary" and not re.fullmatch(r"[0-9a-f]{32}", normalized_id):
+            raise ValueError("The selected Agent session is unavailable. Choose a session from the sidebar.")
+        with self._lock:
+            service = self.get(normalized_id)
+            dismissed = service.dismiss_failed_record(
+                expected_conversation_url=expected_conversation_url,
+                remote_record_absent=bool(remote_record_absent),
+            )
+            self._workspace_leases.pop(service, None)
+            if normalized_id != "primary":
+                self._services.pop(normalized_id, None)
+            return {"session_id": normalized_id, **dismissed}
 
     def stop_at_exit(self):
         with self._lock:

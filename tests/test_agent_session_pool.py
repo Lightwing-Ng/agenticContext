@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Code version: v1.5.1-codex.1."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.0-codex.1."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -206,6 +206,39 @@ def test_failure_frees_capacity_and_shutdown_rejects_new_work(sessions, monkeypa
     pool.stop_at_exit()
     with pytest.raises(RuntimeError, match="shutting down"):
         start(pool, workspace, "late")
+
+
+def test_failed_session_can_be_dismissed_only_after_remote_absence_confirmation(sessions):
+    pool, workspace, _ = sessions
+
+    def failing_runner(**_kwargs):
+        raise RuntimeError("provider rejected the task before creating a record")
+
+    pool.get()._runner = failing_runner
+    session_id = start(pool, workspace, "failed-before-bind")
+    wait_until(lambda: pool.get(session_id).snapshot()["phase"] == "failed")
+    conversation_url = pool.get(session_id).snapshot()["conversation_url"]
+    record_path = pool.get(session_id)._runtime_root / "last-run.json"
+    assert record_path.is_file()
+
+    with pytest.raises(RuntimeError, match="Confirm that the remote conversation record is absent"):
+        pool.dismiss_failed(
+            session_id,
+            expected_conversation_url=conversation_url,
+            remote_record_absent=False,
+        )
+
+    dismissed = pool.dismiss_failed(
+        session_id,
+        expected_conversation_url=conversation_url,
+        remote_record_absent=True,
+    )
+    assert dismissed["session_id"] == session_id
+    assert dismissed["conversation_url"] == conversation_url
+    assert not record_path.exists()
+    with pytest.raises(ValueError, match="unavailable"):
+        pool.get(session_id)
+    assert pool.catalog("edge", "chatgpt", str(workspace))["sessions"] == []
 
 
 def test_completed_sessions_restore_as_independent_metadata(sessions):

@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.68.0-codex.1
+# Code version: v1.69.0-codex.1
 
 from __future__ import annotations
 
@@ -1761,15 +1761,19 @@ def create_app(
         project_url = request.args.get("project_url", "").strip()
         try:
             normalized_project_url = normalize_agent_project_url("chatgpt", project_url)
+            if not normalized_project_url:
+                raise ValueError(
+                    "Choose a valid ChatGPT Project before loading its sessions."
+                )
             payload = load_agent_source_catalog(
                 platform="chatgpt",
                 browser=browser_name,
                 source_kind="project-sessions",
-                project_url=normalized_project_url or project_url,
+                project_url=normalized_project_url,
                 collector=lambda: {
                     **list_chatgpt_project_sessions(
                         browser_name,
-                        project_url,
+                        normalized_project_url,
                         saved_config,
                         silent=True,
                     ),
@@ -1791,15 +1795,19 @@ def create_app(
         project_url = request.args.get("project_url", "").strip()
         try:
             normalized_project_url = normalize_agent_project_url(platform, project_url)
+            if not normalized_project_url:
+                raise ValueError(
+                    "Choose a valid Agent Project before loading its sessions."
+                )
             payload = load_agent_source_catalog(
                 platform=platform,
                 browser=browser_name,
                 source_kind="project-sessions",
-                project_url=normalized_project_url or project_url,
+                project_url=normalized_project_url,
                 collector=lambda: list_agent_project_sessions(
                     platform,
                     browser_name,
-                    project_url,
+                    normalized_project_url,
                     saved_config,
                     silent=True,
                 ),
@@ -1945,6 +1953,26 @@ def create_app(
                 "agent": build_agent_snapshot(),
             }
         )
+
+    @app.delete("/api/agent/session")
+    def delete_failed_agent_session():
+        """Dismiss one failed local task only after the UI confirms no remote record."""
+        require_local_agent_request()
+        if not external_agent_operations_enabled():
+            return reject_external_agent_operation()
+        payload = request.get_json(silent=True) or {}
+        session_id = str(payload.get("session_id") or "").strip()
+        try:
+            dismissed = agent_session_pool.dismiss_failed(
+                session_id,
+                expected_conversation_url=str(payload.get("conversation_url") or "").strip(),
+                remote_record_absent=payload.get("remote_record_absent") is True,
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "code": "unknown_agent_session"}), 404
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc), "code": "agent_session_not_deletable"}), 409
+        return jsonify({"deleted": True, **dismissed})
 
     @app.get("/browser")
     def browser():

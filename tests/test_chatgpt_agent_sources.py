@@ -1,6 +1,6 @@
 """Focused tests for the Agent's ChatGPT Web source catalog.
 
-Code version: v1.2.6-codex.1
+Code version: v1.2.7-codex.1
 """
 
 from __future__ import annotations
@@ -91,6 +91,15 @@ def test_chatgpt_source_urls_are_canonical_and_scoped() -> None:
     ) == "https://chatgpt.com/g/g-p-demo/c/session-1"
     assert normalize_chatgpt_project_url("https://chatgpt.com/c/not-a-project") == ""
     assert normalize_chatgpt_conversation_url("https://example.com/c/session-1") == ""
+    assert normalize_chatgpt_project_url(
+        "https://chatgpt.com:444/g/g-p-demo/project"
+    ) == ""
+    assert normalize_chatgpt_conversation_url(
+        "https://chatgpt.com:444/c/session-1"
+    ) == ""
+    assert normalize_chatgpt_project_url(
+        "https://chatgpt.com:443/g/g-p-demo/project"
+    ) == "https://chatgpt.com/g/g-p-demo/project"
 
 
 def test_chatgpt_status_and_sources_share_one_chromium_context() -> None:

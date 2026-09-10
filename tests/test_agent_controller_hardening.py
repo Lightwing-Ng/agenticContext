@@ -1,7 +1,7 @@
 """Focused tests for controller hardening: model verification, action parser,
 directory picker, recent-session catalog, and browser interruption recovery.
 
-Code version: v3.50.0-codex.1
+Code version: v3.50.1-codex.1
 """
 
 from __future__ import annotations
@@ -1241,7 +1241,14 @@ class TestRecentSessionCatalog:
         first_payload = {
             "platform": "gemini",
             "browser_label": "Edge",
-            "recent_sessions": [{"id": "first-session"}],
+            "recent_sessions": [
+                {
+                    "id": "first-session",
+                    "title": "First session",
+                    "url": "https://gemini.google.com/app/first-session",
+                    "updated_at": "",
+                }
+            ],
             "projects": [],
             "limit": 20,
         }
@@ -1258,7 +1265,7 @@ class TestRecentSessionCatalog:
                     )
         assert first_response.get_json()["recent_sessions"] == []
         assert first_response.get_json()["cache"]["status"] == "unprobed"
-        assert query_response.get_json()["recent_sessions"] == [{"id": "first-session"}]
+        assert query_response.get_json()["recent_sessions"] == first_payload["recent_sessions"]
         assert query_response.get_json()["cache"]["status"] == "miss"
         sources.assert_called_once()
 

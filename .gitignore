@@ -6,8 +6,10 @@
 __pycache__/
 .pytest_cache/
 .ruff_cache/
-.coverage
-coverage.json
+/.coverage
+/.coverage.*
+/.coverage *
+/coverage.json
 htmlcov/
 playwright-report/
 test-results/*

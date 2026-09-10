@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.19.3-codex.1`
+Documentation version: `v1.19.4-codex.1`
 
 ## Windows host operating constraints
 
@@ -85,6 +85,10 @@ Documentation version: `v1.19.3-codex.1`
 - Every Gemini and Grok controller turn now carries a unique receipt. Submission and response reads
   require that receipt in the current latest user turn, fail closed if another user turn supersedes
   it, and treat a navigation-time Send exception as an uncertain commit that must never be retried.
+  A provider remount may temporarily expose an older user node after the current receipt was already
+  observed. That same-count regression is treated as incomplete hydration rather than a new user turn;
+  supersession still requires a later user-row count, and no response can be accepted without the
+  current receipt returning to the latest visible turn.
   Before Send, exactly one semantic chat composer must preserve the full prompt; a challenge reload
   may safely refill it, while feedback, search, dialog, menu, navigation, and header textareas are
   excluded. Grok Build's `Ask Grok anything` ProseMirror composer is read from its direct paragraph

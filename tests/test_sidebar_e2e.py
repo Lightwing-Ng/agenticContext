@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.36.1-codex.1
+Code version: v1.37.0-codex.1
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 from threading import Thread
+from urllib.parse import unquote
 
 import pytest
 from PIL import Image, ImageChops
@@ -29,8 +30,10 @@ from werkzeug.serving import BaseWSGIServer, make_server
 
 from app.core.computer_use_agent import (
     _ProviderSessionBinding,
+    _chatgpt_retry_control,
     _provider_turn_snapshot,
     _select_web_model,
+    _submit_chromium_prompt,
     _submit_chromium_web_prompt,
     load_computer_use_settings,
     parse_agent_action,
@@ -1873,14 +1876,12 @@ def test_agent_doctor_actions_keep_spatial_effects_visible(
                     ancestors.push(read(node));
                 }
                 const settingsLink = document.querySelector("[data-agent-llm-settings-link]");
-                const settingsForm = settingsLink?.closest("form") || null;
                 return {
                     panel: read(panel),
                     content: read(content),
                     actions: read(actions),
                     buttons: [...actions.children].map(read),
                     settingsLink: settingsLink ? read(settingsLink) : null,
-                    settingsForm: settingsForm ? read(settingsForm) : null,
                     ancestors,
                     documentOverflow: document.documentElement.scrollWidth
                         - document.documentElement.clientWidth,
@@ -1900,14 +1901,8 @@ def test_agent_doctor_actions_keep_spatial_effects_visible(
             button["rect"]["width"] < contract["actions"]["rect"]["width"] - 8
             for button in contract["buttons"]
         )
-        assert contract["settingsLink"] is not None
-        assert contract["settingsForm"] is not None
-        assert "secondary-button" in contract["settingsLink"]["className"]
+        assert contract["settingsLink"] is None
         assert all("secondary-button" in button["className"] for button in contract["buttons"])
-        assert (
-            contract["settingsLink"]["rect"]["width"]
-            < contract["settingsForm"]["rect"]["width"] - 8
-        )
         assert all(
             ancestor["overflowX"] == "visible" and ancestor["overflowY"] == "visible"
             for ancestor in contract["ancestors"][:4]
@@ -2576,7 +2571,7 @@ def test_shared_dropdown_gel_tracks_and_reduced_motion(
         assert motion["track"] == "rgba(0, 0, 0, 0)"
         assert motion["thumb"] != "rgba(0, 0, 0, 0)"
 
-        menu.get_by_role("option", name="Recent sessions", exact=True).click()
+        menu.get_by_role("option", name="Projects", exact=True).click()
         trigger.click()
         expect(menu).to_be_visible()
         assert menu.evaluate("e => getComputedStyle(e).animationName") == "browser-pagination-range-gel-in"
@@ -6986,6 +6981,601 @@ def test_agent_reenables_loaded_project_selector_after_run_finishes(
 
 @pytest.mark.integration
 @pytest.mark.slow
+def test_agent_restores_chatgpt_project_by_stable_id_after_slug_change(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+) -> None:
+    """Replace remembered Project aliases with the current catalog URL."""
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    old_project_url = f"https://chatgpt.com/g/{project_id}-antigravity/project"
+    current_project_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+    old_conversation_url = f"https://chatgpt.com/g/{project_id}-antigravity/c/session-1"
+    catalog_payload = {
+        **_chatgpt_catalog_sessions(),
+        "projects": [{
+            "id": project_id,
+            "title": "worthward",
+            "url": current_project_url,
+            "updated_at": "2026-09-09T00:00:00Z",
+            "icon": "currency-dollar",
+            "icon_color": "#53B559",
+        }],
+    }
+    status_payload = _finished_chatgpt_agent_payload()
+    status_payload["sessions"] = [{
+        "session_id": "old-project-session",
+        "running": False,
+        "phase": "finished",
+        "workspace_path": load_computer_use_settings().workspace_path,
+        "project_url": old_project_url,
+        "conversation_url": old_conversation_url,
+        "session_title": "Old slug task remains visible",
+        "updated_at": "2026-09-09T00:00:00Z",
+    }]
+    project_session_requests: list[str] = []
+
+    def fulfill_browser_status(route) -> None:
+        route.fulfill(
+            json={
+                "platform": "chatgpt",
+                "browser": "edge",
+                "browser_label": "Edge",
+                "logged_in": True,
+                "can_download": True,
+                "account_name": "ChatGPT account",
+                "message": "Edge is ready for ChatGPT Web.",
+                "agent_sources": catalog_payload,
+            }
+        )
+
+    def fulfill_project_sessions(route) -> None:
+        project_session_requests.append(route.request.url)
+        route.fulfill(
+            json={
+                "platform": "chatgpt",
+                "project_url": current_project_url,
+                "sessions": [],
+            }
+        )
+
+    context = disposable_browser.new_context(
+        viewport={"width": 1_280, "height": 900},
+        has_touch=False,
+        is_mobile=False,
+        reduced_motion="reduce",
+    )
+    remembered_key = "cachelikes:agent-session-selection:v1:chatgpt:edge"
+    remembered_value = {
+        "version": 1,
+        "mode": "project",
+        "project_url": old_project_url,
+        "project_session_url": "new",
+    }
+    context.add_init_script(
+        "window.localStorage.setItem("
+        f"{json.dumps(remembered_key)}, {json.dumps(json.dumps(remembered_value))});"
+    )
+    page = context.new_page()
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=status_payload))
+    page.route("**/api/browser-session**", fulfill_browser_status)
+    page.route("**/api/agent/project-sessions**", fulfill_project_sessions)
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
+        expect(page.locator("input[data-agent-session-mode]")).to_have_value("project")
+        expect(page.locator("[data-agent-project-url]")).to_have_value(current_project_url)
+        expect(
+            page.locator('[data-agent-session-list="projects"] [data-agent-combobox-trigger]')
+        ).to_contain_text("worthward")
+        expect(page.get_by_text("Old slug task remains visible", exact=True)).to_be_visible()
+        page.wait_for_function(
+            """({key, currentProjectUrl}) => {
+                const value = JSON.parse(window.localStorage.getItem(key) || '{}');
+                return value.project_url === currentProjectUrl;
+            }""",
+            arg={
+                "key": remembered_key,
+                "currentProjectUrl": current_project_url,
+            },
+        )
+        assert project_session_requests
+        assert any(
+            current_project_url in unquote(request)
+            for request in project_session_requests
+        )
+        assert page.locator(
+            f'[data-agent-session-list="projects"] '
+            f'[data-agent-combobox-option="{old_project_url}"]'
+        ).count() == 0
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("same_project", "response_status"),
+    ((True, 200), (True, 503), (False, 200), (False, 503)),
+)
+def test_agent_project_session_inflight_response_uses_stable_project_identity(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    same_project: bool,
+    response_status: int,
+) -> None:
+    """Settle an old-slug response only while the same stable Project remains selected."""
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    other_project_id = "g-p-7b089fec06419202b64e3cc224265d21"
+    old_project_url = (
+        f"https://chatgpt.com/g/{project_id}-old-slug/project?view=legacy#old-fragment"
+    )
+    current_project_url = (
+        f"https://chatgpt.com/g/{project_id}-current-slug/project?view=current#new-fragment"
+    )
+    other_project_url = (
+        f"https://chatgpt.com/g/{other_project_id}-other/project?view=current#new-fragment"
+    )
+    selected_project_url = current_project_url if same_project else other_project_url
+    session_url = f"https://chatgpt.com/g/{project_id}-current-slug/c/inflight-session"
+    legacy_session_url = (
+        f"https://chatgpt.com/g/{project_id}-old-slug/c/inflight-session"
+        "?view=legacy#old-fragment"
+    )
+    catalog_payload = {
+        **_chatgpt_catalog_sessions(),
+        "recent_sessions": [{
+            "id": "canonical-session",
+            "title": "Canonical conversation title",
+            "url": session_url,
+            "updated_at": "2026-09-09T00:00:30Z",
+        }],
+        "projects": [{
+            "id": project_id,
+            "title": "Old slug project",
+            "url": old_project_url,
+            "updated_at": "2026-09-09T00:00:00Z",
+        }],
+    }
+    browser_status = {
+        "platform": "chatgpt",
+        "browser": "edge",
+        "browser_label": "Edge",
+        "logged_in": True,
+        "can_download": True,
+        "account_name": "ChatGPT account",
+        "message": "Edge is ready for ChatGPT Web.",
+        "agent_sources": catalog_payload,
+    }
+    status_payload = _finished_chatgpt_agent_payload()
+    status_payload["sessions"] = [{
+        "session_id": "query-drift-local-session",
+        "running": False,
+        "phase": "finished",
+        "workspace_path": load_computer_use_settings().workspace_path,
+        "project_url": "",
+        "conversation_url": legacy_session_url,
+        "session_title": "Legacy conversation title",
+        "updated_at": "2026-09-09T00:00:00Z",
+    }]
+    pending_project_routes = []
+
+    context = disposable_browser.new_context(
+        viewport={"width": 1_280, "height": 900},
+        has_touch=False,
+        is_mobile=False,
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    page.route(
+        "**/api/agent/status",
+        lambda route: route.fulfill(json=status_payload),
+    )
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json=browser_status))
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog_payload))
+    page.route(
+        "**/api/agent/project-sessions**",
+        lambda route: pending_project_routes.append(route),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
+        project_option = page.locator(
+            f'[data-agent-session-list="projects"] '
+            f'[data-agent-combobox-option="{old_project_url}"]'
+        )
+        expect(project_option).to_have_count(1)
+        execution_list = page.locator("[data-agent-execution-session-list]")
+        expect(execution_list.locator("button")).to_have_count(1)
+        expect(
+            execution_list.locator(
+                '[data-execution-session-id="query-drift-local-session"]'
+            )
+        ).to_have_count(1)
+        expect(
+            execution_list.locator(f'[data-recent-conversation-url="{session_url}"]')
+        ).to_have_count(0)
+
+        page.locator(".agent-session-mode-combobox [data-agent-combobox-trigger]").click()
+        page.locator(
+            '.agent-session-mode-combobox [data-agent-combobox-option="project"]'
+        ).click()
+        expect(project_option).to_have_count(1)
+        page.locator(
+            '[data-agent-session-list="projects"] [data-agent-combobox-trigger]'
+        ).click()
+        with page.expect_request(re.compile(r"/api/agent/project-sessions\?")):
+            project_option.click()
+        assert len(pending_project_routes) == 1
+
+        page.locator("[data-agent-project-url]").evaluate(
+            "(input, value) => { input.value = value; }",
+            selected_project_url,
+        )
+        expect(page.locator("[data-agent-project-url]")).to_have_value(selected_project_url)
+
+        if response_status == 200:
+            pending_project_routes[0].fulfill(
+                json={
+                    "platform": "chatgpt",
+                    "project_url": old_project_url,
+                    "sessions": [{
+                        "id": "inflight-session",
+                        "title": "Stable in-flight session",
+                        "url": session_url,
+                        "updated_at": "2026-09-09T00:01:00Z",
+                    }],
+                }
+            )
+        else:
+            pending_project_routes[0].fulfill(
+                status=response_status,
+                json={"error": "Project session lookup failed."},
+            )
+
+        session_option = execution_list.locator(
+            f'[data-recent-conversation-url="{session_url}"]'
+        )
+        if same_project and response_status == 200:
+            expect(session_option).to_have_count(0)
+            expect(execution_list.locator("button")).to_have_count(1)
+            expect(execution_list.locator("button")).to_contain_text(
+                "Stable in-flight session"
+            )
+            expect(execution_list).not_to_contain_text("Loading recent sessions…")
+        elif same_project:
+            expect(session_option).to_have_count(0)
+            expect(execution_list).to_contain_text("No recent sessions.")
+            expect(execution_list).not_to_contain_text("Loading recent sessions…")
+        else:
+            expect(session_option).to_have_count(0)
+            expect(execution_list).to_contain_text("Loading recent sessions…")
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_chatgpt_retry_control_targets_only_provider_error_boundary(
+    disposable_browser: Browser,
+) -> None:
+    """Reject unrelated Retry controls before handling the provider error."""
+    context = disposable_browser.new_context(
+        viewport={"width": 1_024, "height": 768},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    try:
+        page.set_content(
+            """
+            <style>button, #prompt-textarea { display: block; width: 160px; height: 32px; }</style>
+            <nav><button id="nav-retry">Retry</button></nav>
+            <div role="dialog"><p>Something went wrong</p><button id="dialog-retry">Retry</button></div>
+            <article data-testid="conversation-turn-history">
+              <div data-message-author-role="assistant">
+                <section data-testid="response-error-history">
+                  <p>There was an error generating a response.</p>
+                  <button id="history-retry">Try again</button>
+                </section>
+              </div>
+            </article>
+            <section data-testid="tool-error">
+              <p>There was an error generating a response.</p><button id="tool-retry">Retry</button>
+            </section>
+            <section data-testid="page-error">
+              <p>Something went wrong</p><button id="page-retry">Try again</button>
+            </section>
+            <div id="prompt-textarea" contenteditable="true"></div>
+            <script>
+              window.retryClicks = [];
+              for (const button of document.querySelectorAll('button')) {
+                button.onclick = () => window.retryClicks.push(button.id);
+              }
+            </script>
+            """
+        )
+        composer_ready = _chatgpt_retry_control(
+            page,
+            "",
+            click=True,
+            require_composer_absent=True,
+        )
+        assert composer_ready["clicked"] is False
+        assert page.evaluate("window.retryClicks") == []
+
+        page.locator("#prompt-textarea").evaluate("element => element.remove()")
+        pre_submit = _chatgpt_retry_control(
+            page,
+            "",
+            click=True,
+            require_composer_absent=True,
+        )
+        assert pre_submit["clicked"] is True
+        assert pre_submit["label"] == "Try again"
+        assert page.evaluate("window.retryClicks") == ["page-retry"]
+
+        page.set_content(
+            """
+            <style>button { display: block; width: 160px; height: 32px; }</style>
+            <article data-testid="conversation-turn-old">
+              <div data-message-author-role="user">Old request</div>
+              <div data-message-author-role="assistant">
+                <section data-testid="response-error-old">
+                  <p>There was an error generating a response.</p>
+                  <button id="old-response-retry">Try again</button>
+                </section>
+              </div>
+            </article>
+            <article data-testid="conversation-turn-user">
+              <div data-message-author-role="user">Current request</div>
+            </article>
+            <article data-testid="conversation-turn-assistant">
+              <div data-message-author-role="assistant">
+                <section data-testid="tool-error">
+                  <p>There was an error generating a response.</p>
+                  <button id="tool-retry">Retry</button>
+                </section>
+                <section data-testid="response-error-current">
+                  <p>Something went wrong</p>
+                  <button id="current-response-retry">Try again</button>
+                </section>
+              </div>
+            </article>
+            <button id="regenerate">Regenerate</button>
+            <script>
+              window.retryClicks = [];
+              for (const button of document.querySelectorAll('button')) {
+                button.onclick = () => window.retryClicks.push(button.id);
+              }
+            </script>
+            """
+        )
+        response_retry = _chatgpt_retry_control(
+            page,
+            "",
+            click=True,
+            require_after_latest_user=True,
+        )
+        assert response_retry["clicked"] is True
+        assert page.evaluate("window.retryClicks") == ["current-response-retry"]
+
+        page.set_content(
+            """
+            <style>button { display: block; width: 160px; height: 32px; }</style>
+            <article><div data-message-author-role="user">Current request</div></article>
+            <section role="alert">
+              <p>Something went wrong</p><button id="global-response-retry">Try again</button>
+            </section>
+            <script>
+              window.retryClicks = [];
+              document.querySelector('button').onclick = () => window.retryClicks.push('global');
+            </script>
+            """
+        )
+        global_response_retry = _chatgpt_retry_control(
+            page,
+            "",
+            click=True,
+            require_after_latest_user=True,
+        )
+        assert global_response_retry["clicked"] is True
+        assert page.evaluate("window.retryClicks") == ["global"]
+
+        page.set_content(
+            """
+            <style>button { display: block; width: 160px; height: 32px; }</style>
+            <article><div data-message-author-role="user">Current request</div></article>
+            <section role="alert">
+              <p>Something went wrong</p><button id="retry-one">Try again</button>
+            </section>
+            <section role="alert">
+              <p>Something went wrong</p><button id="retry-two">Retry</button>
+            </section>
+            <script>
+              window.retryClicks = [];
+              for (const button of document.querySelectorAll('button')) {
+                button.onclick = () => window.retryClicks.push(button.id);
+              }
+            </script>
+            """
+        )
+        ambiguous_response_retry = _chatgpt_retry_control(
+            page,
+            "",
+            click=True,
+            require_after_latest_user=True,
+        )
+        assert ambiguous_response_retry["clicked"] is False
+        assert ambiguous_response_retry["ambiguous"] is True
+        assert page.evaluate("window.retryClicks") == []
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_chatgpt_atomic_send_accepts_project_slug_redirect_in_browser(
+    disposable_browser: Browser,
+) -> None:
+    """Exercise the stable-ID target guard across two Project slug aliases."""
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    expected_target_url = f"https://chatgpt.com/g/{project_id}/project"
+    current_target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+    context = disposable_browser.new_context(
+        viewport={"width": 1_024, "height": 768},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    page.route(
+        "https://chatgpt.com/**",
+        lambda route: route.fulfill(
+            content_type="text/html",
+            body="""
+                <style>button, #prompt-textarea { display: block; width: 160px; height: 32px; }</style>
+                <div id="prompt-textarea" contenteditable="true"></div>
+                <button data-testid="send-button" aria-label="Send prompt">Send</button>
+                <script>
+                  window.sendClicks = 0;
+                  document.querySelector('button').onclick = () => {
+                    window.sendClicks += 1;
+                    document.querySelector('#prompt-textarea').textContent = '';
+                  };
+                </script>
+            """,
+        ),
+    )
+    try:
+        page.goto(current_target_url, wait_until="domcontentloaded")
+        _submit_chromium_prompt(
+            page,
+            "Inspect the project",
+            lambda: False,
+            expected_target_url=expected_target_url,
+        )
+        assert page.evaluate("window.sendClicks") == 1
+        assert page.url == current_target_url
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "current_target_url",
+    (
+        "https://chatgpt.com/c/project-session",
+        (
+            "https://chatgpt.com/g/"
+            "g-p-11111111111111111111111111111111-other/c/project-session"
+        ),
+    ),
+)
+def test_chatgpt_atomic_controls_reject_project_scope_drift_in_browser(
+    disposable_browser: Browser,
+    current_target_url: str,
+) -> None:
+    """Keep Send and Retry inside the selected stable Project identity."""
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    expected_target_url = (
+        f"https://chatgpt.com/g/{project_id}-worthward/c/project-session"
+    )
+    context = disposable_browser.new_context(
+        viewport={"width": 1_024, "height": 768},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    page.route(
+        "https://chatgpt.com/**",
+        lambda route: route.fulfill(
+            content_type="text/html",
+            body="""
+                <style>button, #prompt-textarea { display: block; width: 160px; height: 32px; }</style>
+                <div id="prompt-textarea" contenteditable="true"></div>
+                <button data-testid="send-button" aria-label="Send prompt">Send</button>
+                <section role="alert">
+                  <p>Something went wrong</p><button id="retry">Try again</button>
+                </section>
+                <script>
+                  window.sendClicks = 0;
+                  window.retryClicks = 0;
+                  document.querySelector('[data-testid="send-button"]').onclick = () => {
+                    window.sendClicks += 1;
+                  };
+                  document.querySelector('#retry').onclick = () => {
+                    window.retryClicks += 1;
+                  };
+                </script>
+            """,
+        ),
+    )
+    try:
+        page.goto(current_target_url, wait_until="domcontentloaded")
+        with pytest.raises(RuntimeError, match="tab changed before the prompt"):
+            _submit_chromium_prompt(
+                page,
+                "Inspect the project",
+                lambda: False,
+                expected_target_url=expected_target_url,
+            )
+        with pytest.raises(RuntimeError, match="tab changed before its provider retry"):
+            _chatgpt_retry_control(
+                page,
+                expected_target_url,
+                click=True,
+            )
+        assert page.evaluate("window.sendClicks") == 0
+        assert page.evaluate("window.retryClicks") == 0
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_chatgpt_atomic_send_rejects_browser_composer_drift(
+    disposable_browser: Browser,
+) -> None:
+    """Never click Send when the live composer no longer holds the filled message."""
+    target_url = "https://chatgpt.com/c/composer-drift"
+    context = disposable_browser.new_context(
+        viewport={"width": 1_024, "height": 768},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    page.route(
+        "https://chatgpt.com/**",
+        lambda route: route.fulfill(
+            content_type="text/html",
+            body="""
+                <style>button, #prompt-textarea { display: block; width: 160px; height: 32px; }</style>
+                <div id="prompt-textarea" contenteditable="true"></div>
+                <button data-testid="send-button" aria-label="Send prompt">Send</button>
+                <script>
+                  window.sendClicks = 0;
+                  const composer = document.querySelector('#prompt-textarea');
+                  composer.addEventListener('input', () => {
+                    composer.textContent = 'tampered in page';
+                  }, {once: true});
+                  document.querySelector('button').onclick = () => {
+                    window.sendClicks += 1;
+                  };
+                </script>
+            """,
+        ),
+    )
+    try:
+        page.goto(target_url, wait_until="domcontentloaded")
+        with pytest.raises(RuntimeError, match="composer changed before Send"):
+            _submit_chromium_prompt(
+                page,
+                "Inspect the project",
+                lambda: False,
+                expected_target_url=target_url,
+            )
+        assert page.evaluate("window.sendClicks") == 0
+        assert page.locator("#prompt-textarea").inner_text() == "tampered in page"
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 def test_foreign_running_agent_poll_keeps_only_neutral_stop_state(
     disposable_browser: Browser,
     sidebar_server_url: str,
@@ -7079,7 +7669,10 @@ def test_foreign_running_agent_poll_keeps_only_neutral_stop_state(
             "An Agent task is running in another project."
         )
         expect(page.locator("#agent_response_output")).to_be_hidden()
-        expect(page.locator("#agent_activity_panel")).to_be_hidden()
+        activity_panel = page.locator("#agent_activity_panel")
+        expect(activity_panel).to_be_visible()
+        expect(activity_panel).to_have_js_property("open", False)
+        expect(page.locator("#agent_activity_list > .agent-activity-item")).to_have_count(0)
         expect(page.locator("#agent_error_record")).to_be_hidden()
         expect(page.locator("[data-agent-workspace-input]")).not_to_have_value(
             foreign_workspace
@@ -7145,7 +7738,6 @@ def test_agent_response_scrollports_keep_actions_and_last_line_inside(
                 composer: '.agent-composer-shell', questionBox: '#agent_response_question_scroll',
                 question: '#agent_response_question', code: '.agent-response-answer-content pre code',
                 pre: '.agent-response-answer-content pre', content: '.agent-response-answer-content',
-                settings: '.agent-llm-settings-link', form: '#agent_runtime_form',
             };
             return Object.fromEntries(Object.entries(selectors).map(([key, selector]) => {
                 const e = document.querySelector(selector), r = e.getBoundingClientRect();
@@ -7156,7 +7748,6 @@ def test_agent_response_scrollports_keep_actions_and_last_line_inside(
         before = page.evaluate(read_layout)
         for action in ("questionToggle", "copy"):
             assert before[action]["center"] == pytest.approx(before["theme"]["center"], abs=1), before
-        assert before["settings"]["right"] == pytest.approx(before["form"]["right"], abs=1)
         assert before["answer"]["bottom"] == pytest.approx(before["output"]["bottom"], abs=1)
         assert before["answer"]["height"] > 100
         assert before["answer"]["bottom"] >= before["composer"]["bottom"] - 1
@@ -7908,7 +8499,8 @@ def test_agent_bootstrap_replaces_ready_cache_without_catalog(
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
         expect(
             page.locator(
-                f'[data-agent-session-list="recent"] [data-agent-combobox-option="{session_url}"]'
+                f'[data-agent-execution-session-list] '
+                f'[data-recent-conversation-url="{session_url}"]'
             )
         ).to_have_count(1)
         assert len(browser_status_requests) == 1
@@ -7993,7 +8585,8 @@ def test_fresh_grok_bootstrap_supersedes_a_stale_cached_catalog_error(
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/grok", wait_until="domcontentloaded")
         fresh_option = page.locator(
-            f'[data-agent-session-list="recent"] [data-agent-combobox-option="{session_url}"]'
+            f'[data-agent-execution-session-list] '
+            f'[data-recent-conversation-url="{session_url}"]'
         )
         expect(fresh_option).to_have_count(1)
         expect(fresh_option).to_contain_text("Fresh Grok session")
@@ -8076,7 +8669,10 @@ def test_stale_chatgpt_probe_failure_cannot_overwrite_grok_ready_state(
         expect(page.locator("[data-agent-response-question]")).to_be_empty()
         expect(page.locator("[data-agent-response-answer-content]")).to_be_empty()
         expect(page.locator("[data-agent-prompt-input]")).to_have_value("")
-        expect(page.locator("#agent_activity_panel")).to_be_hidden()
+        activity_panel = page.locator("#agent_activity_panel")
+        expect(activity_panel).to_be_visible()
+        expect(activity_panel).to_have_js_property("open", False)
+        expect(page.locator("#agent_activity_list > .agent-activity-item")).to_have_count(0)
         assert len(browser_session_requests) == 2
         assert "platform=grok" in browser_session_requests[-1]
 
@@ -8504,11 +9100,13 @@ def test_hydrated_running_agent_handles_the_first_finished_status_without_losing
             f'data-agent-prompt-input required>{completed_prompt}</textarea>',
             1,
         )
-        body = body.replace(
-            '<details class="agent-activity-panel" id="agent_activity_panel" hidden>',
+        body, activity_replacements = re.subn(
+            r'<details class="agent-activity-panel" id="agent_activity_panel">',
             '<details class="agent-activity-panel" id="agent_activity_panel" open>',
-            1,
+            body,
+            count=1,
         )
+        assert activity_replacements == 1
         route.fulfill(response=response, body=body)
 
     context = disposable_browser.new_context(
@@ -8981,16 +9579,16 @@ def test_missing_snapshot_url_is_not_synthesized_into_session_catalog(
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
         expect(page.locator("[data-agent-prompt-session-mode]")).to_have_value("new")
         expect(page.locator("[data-agent-prompt-conversation-url]")).to_have_value("")
-        page.locator(".agent-session-mode-combobox [data-agent-combobox-trigger]").click()
-        page.locator('.agent-session-mode-combobox [data-agent-combobox-option="recent"]').click()
         expect(
             page.locator(
-                f'[data-agent-session-list="recent"] [data-agent-combobox-option="{FINISHED_SNAPSHOT_URL}"]'
+                f'[data-agent-execution-session-list] '
+                f'[data-recent-conversation-url="{FINISHED_SNAPSHOT_URL}"]'
             )
         ).to_have_count(0)
         expect(
             page.locator(
-                f'[data-agent-session-list="recent"] [data-agent-combobox-option="{AGENTIC_TROUBLESHOOTING_URL}"]'
+                f'[data-agent-execution-session-list] '
+                f'[data-recent-conversation-url="{AGENTIC_TROUBLESHOOTING_URL}"]'
             )
         ).to_have_count(1)
         expect(page.locator("[data-agent-prompt-conversation-url]")).to_have_value("")
@@ -9072,10 +9670,9 @@ def test_explicit_agentic_troubleshooting_session_is_the_only_reused_target(
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
         expect(page.locator("[data-agent-prompt-session-mode]")).to_have_value("new")
-        page.locator(".agent-session-mode-combobox [data-agent-combobox-trigger]").click()
-        page.locator('.agent-session-mode-combobox [data-agent-combobox-option="recent"]').click()
         page.locator(
-            f'[data-agent-session-list="recent"] [data-agent-combobox-option="{AGENTIC_TROUBLESHOOTING_URL}"]'
+            f'[data-agent-execution-session-list] '
+            f'[data-recent-conversation-url="{AGENTIC_TROUBLESHOOTING_URL}"]'
         ).click()
         expect(page.locator("[data-agent-prompt-session-mode]")).to_have_value("recent")
         expect(page.locator("[data-agent-prompt-conversation-url]")).to_have_value(

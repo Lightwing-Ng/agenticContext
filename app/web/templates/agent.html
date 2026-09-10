@@ -1,4 +1,4 @@
-<!-- Code version: v3.42.7-codex.1 -->
+<!-- Code version: v3.43.1-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,8 +9,8 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.111.1-codex.1') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.6.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.112.0-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.7.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
 </head>
@@ -161,13 +161,6 @@
                     </label>
                 </div>
 
-                <a
-                    class="secondary-button agent-llm-settings-link"
-                    href="{{ url_for('settings') }}#settings-llm"
-                    data-agent-llm-settings-link
-                    data-agent-provider-settings-label
-                >Open {{ selected_platform.label }} settings</a>
-
                 <div class="agent-session-source" data-agent-session-source>
                     <label class="field">
                         <span class="field-label" data-agent-session-platform-label>Session source</span>
@@ -227,12 +220,6 @@
 
                 </div>
 
-                <button
-                    type="button"
-                    class="secondary-button agent-new-session-button"
-                    data-agent-new-session
-                >New session</button>
-
             </form>
 
             <details class="ui-collapse agent-session-collapse agent-execution-sessions" data-agent-execution-sessions data-collapse="agent-execution-sessions" aria-label="Recent sessions" open>
@@ -240,6 +227,11 @@
                     <span class="agent-recent-sessions-title">Recent sessions <span class="agent-session-count" data-agent-session-capacity role="status" hidden></span></span>
                 </summary>
                 <div class="ui-collapse-body">
+                    <button
+                        type="button"
+                        class="secondary-button agent-new-session-button"
+                        data-agent-new-session
+                    >New session</button>
                     <div class="agent-execution-session-list" data-agent-execution-session-list aria-label="Select an Agent session"></div>
                 </div>
             </details>
@@ -501,6 +493,6 @@
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.42.0-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.43.0-codex.1') }}"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-/* Code version: v1.6.0-codex.1 */
+/* Code version: v1.7.1-codex.1 */
 .agent-execution-sessions {
     margin-top: 18px;
     min-width: 0;
@@ -9,6 +9,10 @@
     gap: 4px;
     max-height: 24vh;
     overflow-y: auto;
+}
+.agent-execution-session-row {
+    position: relative;
+    min-width: 0;
 }
 .agent-execution-session {
     display: grid;
@@ -27,8 +31,54 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.agent-execution-session-state { font-size: var(--font-size-caption, 12px); }
+.agent-execution-session-state {
+    font-size: var(--font-size-caption, 12px);
+    transition: opacity 140ms var(--motion-standard);
+}
 .agent-execution-session[aria-pressed="true"] { color: var(--accent-text); }
+.agent-execution-session-delete {
+    position: absolute;
+    z-index: 1;
+    top: 6px;
+    right: 6px;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--theme-error-translucent);
+    border-radius: var(--radius-pill);
+    color: var(--theme-error-strong);
+    background: var(--frosted-glass-background);
+    box-shadow: none;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms var(--motion-standard), background-color 140ms var(--motion-standard);
+}
+.agent-execution-session-delete::before,
+.agent-execution-session-delete::after {
+    content: "";
+    position: absolute;
+    width: 10px;
+    height: 1.5px;
+    border-radius: var(--radius-pill);
+    background: currentColor;
+}
+.agent-execution-session-delete::before { transform: rotate(45deg); }
+.agent-execution-session-delete::after { transform: rotate(-45deg); }
+.agent-execution-session-delete:hover,
+.agent-execution-session-delete:focus-visible {
+    background: var(--theme-error-translucent);
+}
+.agent-execution-session-row.is-deletable:hover > .agent-execution-session-delete,
+.agent-execution-session-row.is-deletable:focus-within > .agent-execution-session-delete {
+    opacity: 1;
+    pointer-events: auto;
+}
+.agent-execution-session-row.is-deletable:hover > .agent-execution-session > .agent-execution-session-state,
+.agent-execution-session-row.is-deletable:focus-within > .agent-execution-session > .agent-execution-session-state {
+    opacity: 0;
+}
 
 /* Worthward standard disclosure, scoped to the Agent session picker. */
 .agent-session-collapse {
@@ -38,7 +88,7 @@
     --collapse-icon-gap: 8px;
     --collapse-icon-closed: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.41 1.59 6 6.17l4.59-4.58L12 3l-6 5-6-5z' fill='currentColor'/%3E%3C/svg%3E");
     --collapse-icon-open: var(--collapse-icon-closed);
-    --collapse-summary-padding: 10px 0;
+    --collapse-summary-padding: 0;
     --collapse-body-padding: 0 0 10px;
     --collapse-font-size: var(--font-ui-lg);
     --collapse-font-weight: var(--font-weight-regular);
@@ -48,6 +98,9 @@ details.agent-session-collapse > summary {
     grid-template-columns: minmax(0, 1fr) var(--collapse-icon-size);
     column-gap: var(--collapse-icon-gap);
     align-items: center;
+    height: 36px;
+    min-height: 36px;
+    box-sizing: border-box;
     list-style: none;
     cursor: pointer;
 }
@@ -96,12 +149,25 @@ details.agent-session-collapse[open] > summary::after {
     border-radius: var(--radius-soft);
 }
 .agent-session-collapse > .ui-collapse-body {
+    display: grid;
     min-width: 0;
     padding: var(--collapse-body-padding);
 }
 
 @media (prefers-reduced-motion: reduce) {
     details.agent-session-collapse > summary::after { transition: none; }
+    .agent-execution-session-state,
+    .agent-execution-session-delete { transition: none; }
+}
+
+@media (hover: none), (pointer: coarse) {
+    .agent-execution-session-row.is-deletable > .agent-execution-session-delete {
+        opacity: 1;
+        pointer-events: auto;
+    }
+    .agent-execution-session-row.is-deletable > .agent-execution-session > .agent-execution-session-state {
+        opacity: 0;
+    }
 }
 
 .agent-recent-sessions-title {
@@ -126,7 +192,7 @@ details.agent-session-collapse[open] > summary::after {
 .agent-session-count[hidden] { display: none; }
 .agent-new-session-button {
     justify-self: end;
-    margin-block-start: 2px;
+    margin-block-end: 8px;
 }
 .agent-recent-sessions-empty { color: var(--muted); margin: 0; }
 /* These two source options retain the same compact height at every sidebar width. */

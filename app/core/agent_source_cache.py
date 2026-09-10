@@ -1,6 +1,6 @@
 """Read-through Parquet cache for Web Agent source discovery.
 
-Code version: v2.1.1-codex.1
+Code version: v2.1.7-codex.1
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
+import re
 from threading import Condition, RLock, Thread
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -24,6 +25,7 @@ AGENT_SOURCE_CACHE_FILENAME = "agent_source_catalog.parquet"
 AGENT_SOURCE_CACHE_SCHEMA_VERSION = 1
 AGENT_SOURCE_CACHE_TTL_SECONDS = 15 * 60
 AGENT_SOURCE_CACHE_RETRY_COOLDOWN_SECONDS = 60
+AGENT_SOURCE_CACHE_MAX_CLOCK_SKEW_SECONDS = 5 * 60
 
 AGENT_SOURCE_CACHE_SCHEMA = pa.schema(
     [
@@ -39,6 +41,10 @@ AGENT_SOURCE_CACHE_SCHEMA = pa.schema(
 )
 
 LOGGER = logging.getLogger(__name__)
+CHATGPT_PROJECT_PATH_PATTERN = re.compile(
+    r"^/g/(g-p-[0-9a-f]{32})(?:-[^/]*)?/project/?$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +69,7 @@ class AgentSourceCacheKey:
             platform=str(platform or "").strip().lower(),
             browser=str(browser or "").strip().lower(),
             source_kind=str(source_kind or "").strip().lower(),
-            project_url=_canonical_project_url(project_url),
+            project_url=_canonical_project_url(project_url, platform=platform),
         )
 
     @property
@@ -85,7 +91,11 @@ class AgentSourceCacheEntry:
 
     def is_fresh(self, now: datetime, ttl_seconds: int) -> bool:
         """Return whether this entry is still within the reuse window."""
-        return now - self.cached_at <= timedelta(seconds=ttl_seconds)
+        current_time = _as_utc(now)
+        cached_at = _as_utc(self.cached_at)
+        if _cache_timestamp_exceeds_clock_skew(cached_at, current_time):
+            return False
+        return current_time <= _cache_expiration(cached_at, ttl_seconds)
 
 
 class AgentSourceCache:
@@ -110,6 +120,7 @@ class AgentSourceCache:
         self._disk_loaded_keys: set[AgentSourceCacheKey] = set()
         self._refreshing: set[AgentSourceCacheKey] = set()
         self._refresh_failed_at: dict[AgentSourceCacheKey, datetime] = {}
+        self._publication_generation: dict[AgentSourceCacheKey, int] = {}
         self._catalog_loaded = False
 
     def store(
@@ -124,12 +135,25 @@ class AgentSourceCache:
     ) -> None:
         """Publish an already collected catalog into L1 and the Parquet L2 cache."""
         key = AgentSourceCacheKey.from_values(platform, browser, source_kind, project_url)
-        cached_at = _as_utc(now) if now is not None else _utc_now()
+        cached_at = _cache_write_timestamp(now)
         with self._condition:
             self._load_catalog_locked()
+            current = self._entries.get(key)
+            current_is_valid = bool(
+                current is not None
+                and not _cache_timestamp_exceeds_clock_skew(
+                    current.cached_at,
+                    _utc_now(),
+                )
+            )
+            if current_is_valid and current is not None and cached_at < current.cached_at:
+                return
             self._entries[key] = AgentSourceCacheEntry(
                 payload=dict(payload),
                 cached_at=cached_at,
+            )
+            self._publication_generation[key] = (
+                self._publication_generation.get(key, 0) + 1
             )
             self._disk_loaded_keys.discard(key)
             self._refresh_failed_at.pop(key, None)
@@ -137,6 +161,7 @@ class AgentSourceCache:
                 self._persist_catalog_locked()
             except (OSError, RuntimeError, pa.ArrowException) as exc:
                 LOGGER.warning("Could not persist Agent source cache: %s", exc)
+            self._condition.notify_all()
 
     def get_or_collect(
         self,
@@ -153,7 +178,7 @@ class AgentSourceCache:
     ) -> dict[str, Any]:
         """Return a cached catalog or collect it through one coalesced flight."""
         key = AgentSourceCacheKey.from_values(platform, browser, source_kind, project_url)
-        requested_now = _as_utc(now) if now is not None else None
+        requested_now = _cache_write_timestamp(now) if now is not None else None
 
         with self._condition:
             self._load_catalog_locked()
@@ -213,11 +238,13 @@ class AgentSourceCache:
                     )
 
             self._refreshing.add(key)
+            refresh_generation = self._publication_generation.get(key, 0)
 
         return self._collect_and_store(
             key,
             collector,
             cached,
+            refresh_generation=refresh_generation,
             requested_now=requested_now,
         )
 
@@ -227,43 +254,74 @@ class AgentSourceCache:
         collector: Callable[[], dict[str, Any]],
         cached: AgentSourceCacheEntry | None,
         *,
+        refresh_generation: int,
         requested_now: datetime | None,
     ) -> dict[str, Any]:
         """Run one browser collection outside the state lock and publish it atomically."""
         try:
             payload = dict(collector())
         except (RuntimeError, ValueError):
-            self._fail_refresh(key, requested_now=requested_now)
-            if cached:
+            current, superseded = self._fail_refresh(
+                key,
+                refresh_generation=refresh_generation,
+                requested_now=requested_now,
+            )
+            fallback = current or cached
+            if fallback:
                 return _with_cache_metadata(
-                    cached.payload,
-                    status="stale",
+                    fallback.payload,
+                    status="hit" if superseded and current is not None else "stale",
                     layer="memory",
-                    cached_at=cached.cached_at,
+                    cached_at=fallback.cached_at,
                     now=requested_now or _utc_now(),
                     ttl_seconds=self.ttl_seconds,
                 )
             raise
         except Exception:
-            self._fail_refresh(key, requested_now=requested_now)
+            self._fail_refresh(
+                key,
+                refresh_generation=refresh_generation,
+                requested_now=requested_now,
+            )
             raise
 
-        cached_at = requested_now or _utc_now()
+        cached_at = _cache_write_timestamp(requested_now)
         with self._condition:
-            self._entries[key] = AgentSourceCacheEntry(payload=payload, cached_at=cached_at)
-            self._refresh_failed_at.pop(key, None)
-            try:
-                self._persist_catalog_locked()
-            except (OSError, RuntimeError, pa.ArrowException) as exc:
-                LOGGER.warning("Could not persist Agent source cache: %s", exc)
+            current = self._entries.get(key)
+            current_is_valid = bool(
+                current is not None
+                and not _cache_timestamp_exceeds_clock_skew(
+                    current.cached_at,
+                    _utc_now(),
+                )
+            )
+            publish = self._publication_generation.get(key, 0) == refresh_generation
+            if publish:
+                publication_time = (
+                    max(cached_at, current.cached_at)
+                    if current_is_valid and current is not None
+                    else cached_at
+                )
+                current = AgentSourceCacheEntry(
+                    payload=payload,
+                    cached_at=publication_time,
+                )
+                self._entries[key] = current
+                self._publication_generation[key] = refresh_generation + 1
+                self._refresh_failed_at.pop(key, None)
+                try:
+                    self._persist_catalog_locked()
+                except (OSError, RuntimeError, pa.ArrowException) as exc:
+                    LOGGER.warning("Could not persist Agent source cache: %s", exc)
             self._finish_refresh_locked(key)
 
+        selected = current or AgentSourceCacheEntry(payload=payload, cached_at=cached_at)
         return _with_cache_metadata(
-            payload,
-            status="refreshed" if cached else "miss",
+            selected.payload,
+            status=("refreshed" if cached else "miss") if publish else "hit",
             layer="memory",
-            cached_at=cached_at,
-            now=cached_at,
+            cached_at=selected.cached_at,
+            now=requested_now or _utc_now(),
             ttl_seconds=self.ttl_seconds,
         )
 
@@ -276,9 +334,10 @@ class AgentSourceCache:
         if key in self._refreshing:
             return False
         self._refreshing.add(key)
+        refresh_generation = self._publication_generation.get(key, 0)
         Thread(
             target=self._run_background_refresh,
-            args=(key, collector),
+            args=(key, collector, refresh_generation),
             name=f"agent-source-refresh-{key.platform}-{key.browser}",
             daemon=True,
         ).start()
@@ -288,20 +347,39 @@ class AgentSourceCache:
         self,
         key: AgentSourceCacheKey,
         collector: Callable[[], dict[str, Any]],
+        refresh_generation: int,
     ) -> None:
         """Refresh a stale key without delaying the page that served stale data."""
         with self._condition:
             cached = self._entries.get(key)
         try:
-            self._collect_and_store(key, collector, cached, requested_now=None)
+            self._collect_and_store(
+                key,
+                collector,
+                cached,
+                refresh_generation=refresh_generation,
+                requested_now=None,
+            )
         except Exception as exc:
             LOGGER.warning("Background Agent source refresh failed for %s: %s", key.serialized, exc)
 
-    def _fail_refresh(self, key: AgentSourceCacheKey, *, requested_now: datetime | None) -> None:
+    def _fail_refresh(
+        self,
+        key: AgentSourceCacheKey,
+        *,
+        refresh_generation: int,
+        requested_now: datetime | None,
+    ) -> tuple[AgentSourceCacheEntry | None, bool]:
         """Record a short retry cooldown before releasing a failed refresh slot."""
         with self._condition:
-            self._refresh_failed_at[key] = requested_now or _utc_now()
+            superseded = (
+                self._publication_generation.get(key, 0) != refresh_generation
+            )
+            if not superseded:
+                self._refresh_failed_at[key] = requested_now or _utc_now()
+            current = self._entries.get(key)
             self._finish_refresh_locked(key)
+            return current, superseded
 
     def _finish_refresh_locked(self, key: AgentSourceCacheKey) -> None:
         """Release a refresh slot while the state lock is held."""
@@ -327,6 +405,7 @@ class AgentSourceCache:
         if self._catalog_loaded:
             return
         self._catalog_loaded = True
+        loaded_at = _utc_now()
         rows = read_parquet_rows(agent_source_cache_path(self.local_store_root)) or []
         for row in rows:
             if row.get("schema_version") != AGENT_SOURCE_CACHE_SCHEMA_VERSION:
@@ -340,9 +419,18 @@ class AgentSourceCache:
                 )
                 payload = json.loads(str(row["payload_json"]))
                 cached_at = _as_utc(datetime.fromisoformat(str(row["cached_at"])))
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                OverflowError,
+                json.JSONDecodeError,
+            ):
                 continue
-            if not isinstance(payload, dict):
+            if (
+                not isinstance(payload, dict)
+                or _cache_timestamp_exceeds_clock_skew(cached_at, loaded_at)
+            ):
                 continue
             current = self._entries.get(key)
             if current is None or cached_at >= current.cached_at:
@@ -441,15 +529,21 @@ def _with_cache_metadata(
 ) -> dict[str, Any]:
     """Add operational cache metadata without mutating the stored provider payload."""
     result = dict(payload)
-    expires_at = cached_at + timedelta(seconds=ttl_seconds) if cached_at is not None else None
+    normalized_now = _as_utc(now)
+    normalized_cached_at = _as_utc(cached_at) if cached_at is not None else None
+    expires_at = (
+        _cache_expiration(normalized_cached_at, ttl_seconds)
+        if normalized_cached_at is not None
+        else None
+    )
     result["cache"] = {
         "status": status,
         "layer": layer,
-        "cached_at": _as_utc(cached_at).isoformat() if cached_at is not None else "",
+        "cached_at": normalized_cached_at.isoformat() if normalized_cached_at is not None else "",
         "expires_at": _as_utc(expires_at).isoformat() if expires_at is not None else "",
         "age_seconds": (
-            max(0, int((now - cached_at).total_seconds()))
-            if cached_at is not None
+            max(0, int((normalized_now - normalized_cached_at).total_seconds()))
+            if normalized_cached_at is not None
             else 0
         ),
         "browser_check_required": status in {"miss", "refreshed", "stale", "unprobed"},
@@ -459,7 +553,7 @@ def _with_cache_metadata(
     return result
 
 
-def _canonical_project_url(value: str) -> str:
+def _canonical_project_url(value: str, *, platform: str = "") -> str:
     """Normalize equivalent Project URLs into one cache identity."""
     candidate = str(value or "").strip()
     if not candidate:
@@ -468,8 +562,18 @@ def _canonical_project_url(value: str) -> str:
         parsed = urlsplit(candidate)
         if not parsed.scheme or not parsed.netloc:
             return candidate
+        if parsed.username or parsed.password:
+            return candidate
         hostname = (parsed.hostname or "").lower()
         port = f":{parsed.port}" if parsed.port else ""
+        if (
+            str(platform or "").strip().lower() == "chatgpt"
+            and parsed.scheme.lower() == "https"
+            and hostname in {"chatgpt.com", "www.chatgpt.com"}
+            and parsed.port in {None, 443}
+            and (match := CHATGPT_PROJECT_PATH_PATTERN.fullmatch(parsed.path))
+        ):
+            return f"https://chatgpt.com/g/{match.group(1).lower()}/project"
         query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
         return urlunsplit(
             (
@@ -487,6 +591,41 @@ def _canonical_project_url(value: str) -> str:
 def _utc_now() -> datetime:
     """Return one timezone-aware UTC timestamp."""
     return datetime.now(timezone.utc)
+
+
+def _cache_timestamp_exceeds_clock_skew(
+    value: datetime,
+    reference: datetime,
+) -> bool:
+    """Reject timestamps farther ahead than the bounded clock-skew allowance."""
+    candidate = _as_utc(value)
+    current_time = _as_utc(reference)
+    return bool(
+        candidate > current_time
+        and candidate - current_time
+        > timedelta(seconds=AGENT_SOURCE_CACHE_MAX_CLOCK_SKEW_SECONDS)
+    )
+
+
+def _cache_write_timestamp(value: datetime | None) -> datetime:
+    """Clamp an implausibly future publication timestamp to the current UTC clock."""
+    current_time = _utc_now()
+    if value is None:
+        return current_time
+    candidate = _as_utc(value)
+    return (
+        current_time
+        if _cache_timestamp_exceeds_clock_skew(candidate, current_time)
+        else candidate
+    )
+
+
+def _cache_expiration(cached_at: datetime, ttl_seconds: int) -> datetime:
+    """Add one cache TTL without overflowing the datetime range."""
+    try:
+        return _as_utc(cached_at) + timedelta(seconds=max(0, int(ttl_seconds)))
+    except OverflowError:
+        return datetime.max.replace(tzinfo=timezone.utc)
 
 
 def _as_utc(value: datetime) -> datetime:

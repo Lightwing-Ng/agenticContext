@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.63.0-codex.1
+Code version: v3.65.2-codex.2
 """
 
 from __future__ import annotations
@@ -1816,7 +1816,8 @@ def test_chatgpt_is_project_surface_detection() -> None:
     assert _chatgpt_is_project_surface(session_type="fresh") is False
     assert _chatgpt_is_project_surface(session_type="") is False
     assert _chatgpt_is_project_surface("https://chatgpt.com/g/g-p-6a978edb95308191a53d2bb113154c10-worthward/project") is True
-    assert _chatgpt_is_project_surface("https://chatgpt.com/g/g-p-123/c/456") is True
+    assert _chatgpt_is_project_surface("https://chatgpt.com/g/g-p-6a978edb95308191a53d2bb113154c10/c/456") is True
+    assert _chatgpt_is_project_surface("https://chatgpt.com/g/g-custom-assistant") is False
     assert _chatgpt_is_project_surface("https://chatgpt.com/") is False
     assert _chatgpt_is_project_surface("https://chatgpt.com/c/123") is False
 
@@ -3741,12 +3742,16 @@ def test_open_chatgpt_in_default_browser_falls_back_to_chatgpt_home(
 
 
 def test_agent_session_target_resolves_root_and_project_choices() -> None:
-    project_url = "https://chatgpt.com/g/g-p-demo-project/project"
-    project_session_url = "https://chatgpt.com/g/g-p-demo-project/c/session-123"
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    project_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+    project_session_url = f"https://chatgpt.com/g/{project_id}-older-slug/c/session-123"
 
     assert resolve_agent_session_target("new") == "https://chatgpt.com/"
     assert resolve_agent_session_target("recent", "https://chatgpt.com/c/session-123") == "https://chatgpt.com/c/session-123"
-    assert resolve_agent_session_target("project_new", project_url=project_url) == project_url
+    assert resolve_agent_session_target(
+        "project_new",
+        project_url=project_url,
+    ) == project_url
     assert resolve_agent_session_target(
         "project_session",
         conversation_url=project_session_url,
@@ -3773,6 +3778,15 @@ def test_agent_session_target_resolves_root_and_project_choices() -> None:
             conversation_url="https://chatgpt.com/c/root-session",
             project_url=project_url,
         )
+    with pytest.raises(ValueError, match="does not belong"):
+        resolve_agent_session_target(
+            "project_session",
+            conversation_url=(
+                "https://chatgpt.com/g/"
+                "g-p-11111111111111111111111111111111-other/c/session-123"
+            ),
+            project_url=project_url,
+        )
 
 
 def test_chatgpt_target_check_requires_the_selected_conversation_path() -> None:
@@ -3781,7 +3795,7 @@ def test_chatgpt_target_check_requires_the_selected_conversation_path() -> None:
 
     assert _chatgpt_target_is_open(target, "https://chatgpt.com/c/session-123?messageId=abc")
     assert _chatgpt_target_is_open(target, project_alias)
-    assert _chatgpt_target_is_open(project_alias, target)
+    assert not _chatgpt_target_is_open(project_alias, target)
     assert _web_target_is_open("chatgpt", target, project_alias)
     assert not _chatgpt_target_is_open(target, "https://chatgpt.com/")
     assert not _chatgpt_target_is_open(target, "https://chatgpt.com/c/different-session")
@@ -3790,6 +3804,76 @@ def test_chatgpt_target_check_requires_the_selected_conversation_path() -> None:
         "https://chatgpt.com/g/g-p-6a979544dd548191bcc1cc1ce6f110bc/c/different-session",
     )
     assert not _chatgpt_target_is_open(target, "https://example.com/c/session-123")
+    assert not _chatgpt_target_is_open(
+        target,
+        "https://chatgpt.com:444/c/session-123",
+    )
+    assert _chatgpt_target_is_open(
+        target,
+        "https://chatgpt.com:443/c/session-123",
+    )
+    project_id = "g-p-6a979544dd548191bcc1cc1ce6f110bc"
+    assert _chatgpt_target_is_open(
+        f"https://chatgpt.com/g/{project_id}-old-name/project",
+        f"https://chatgpt.com/g/{project_id}-current-name/project",
+    )
+    assert not _chatgpt_target_is_open(
+        f"https://chatgpt.com/g/{project_id}-old-name/project",
+        "https://chatgpt.com/g/g-p-11111111111111111111111111111111-current-name/project",
+    )
+    assert not _chatgpt_target_is_open(
+        project_alias,
+        (
+            "https://chatgpt.com/g/"
+            "g-p-11111111111111111111111111111111-other/c/session-123"
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "current_url",
+    (
+        "https://chatgpt.com/c/session-123",
+        (
+            "https://chatgpt.com/g/"
+            "g-p-11111111111111111111111111111111-other/c/session-123"
+        ),
+    ),
+)
+def test_project_chatgpt_binding_rejects_same_conversation_outside_project(
+    current_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a979544dd548191bcc1cc1ce6f110bc"
+    selected = f"https://chatgpt.com/g/{project_id}-worthward/c/session-123"
+
+    class _Page:
+        url = selected
+
+        def title(self) -> str:
+            return "Project session"
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+    monkeypatch.setattr(
+        computer_use_agent,
+        "PROVIDER_SESSION_BIND_TIMEOUT_SECONDS",
+        0,
+    )
+    binding = _ProviderSessionBinding(
+        page,
+        "chatgpt",
+        selected,
+        "project_session",
+    )
+    page.url = current_url
+
+    with pytest.raises(RuntimeError, match="navigated away"):
+        binding.check()
 
 
 def test_recent_chatgpt_binding_follows_project_path_canonicalization(
@@ -4958,6 +5042,77 @@ def test_request_stop_does_not_release_sleep_assertion_before_completion(
         assert snapshot["running"] is False
         assert snapshot["phase"] == "stopped"
         assert released_assertions == [sleep_assertion]
+
+
+@pytest.mark.parametrize(
+    "late_status",
+    [
+        {
+            "phase": "reconnecting",
+            "message": "Reconnecting to the same provider response.",
+        },
+        {
+            "phase": "paused",
+            "message": "Human verification is required.",
+            "paused": True,
+            "pause_reason": "Human verification is required.",
+        },
+    ],
+    ids=("reconnecting", "paused"),
+)
+def test_accepted_stop_ignores_late_nonterminal_status_updates(
+    tmp_path: Path,
+    late_status: dict[str, object],
+) -> None:
+    """A worker callback cannot regress stopping after Stop has returned."""
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runner_entered = Event()
+    publish_late_status = Event()
+    late_status_returned = Event()
+    release_runner = Event()
+
+    def runner(**kwargs: object) -> tuple[str, str, int, bool]:
+        update = kwargs["update"]
+        assert callable(update)
+        runner_entered.set()
+        assert publish_late_status.wait(timeout=2)
+        update(**late_status)
+        late_status_returned.set()
+        assert release_runner.wait(timeout=2)
+        return "", "https://chatgpt.com/c/example", 0, False
+
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runner=runner,
+        runtime_root=tmp_path / "runtime",
+    )
+    service.start("Inspect the workspace", str(workspace), CrawlConfig())
+    worker = service._worker
+    assert worker is not None
+
+    try:
+        assert runner_entered.wait(timeout=2)
+        assert service.request_stop() is True
+        stopping_snapshot = service.snapshot()
+        assert stopping_snapshot["phase"] == "stopping"
+        stopping_message = stopping_snapshot["message"]
+
+        publish_late_status.set()
+        assert late_status_returned.wait(timeout=2)
+        after_late_status = service.snapshot()
+        assert after_late_status["phase"] == "stopping"
+        assert after_late_status["message"] == stopping_message
+        assert after_late_status["paused"] is False
+        assert after_late_status["pause_reason"] == ""
+    finally:
+        release_runner.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    completed_snapshot = service.snapshot()
+    assert completed_snapshot["running"] is False
+    assert completed_snapshot["phase"] == "stopped"
 
 
 def test_stop_at_exit_claims_sleep_assertion_after_worker_join_timeout(
@@ -8545,6 +8700,62 @@ def test_submission_receipt_url_drift_fails_closed(
         binding.check(allow_transition=True)
 
 
+def test_chatgpt_submission_receipt_accepts_same_project_slug_canonicalization() -> None:
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    receipt_url = f"https://chatgpt.com/g/{project_id}-old-name/c/fresh-session"
+    current_url = f"https://chatgpt.com/g/{project_id}-worthward/c/fresh-session"
+
+    class _Page:
+        url = current_url
+
+        def title(self) -> str:
+            return "Fresh session"
+
+    binding = _ProviderSessionBinding(
+        _Page(),
+        "chatgpt",
+        f"https://chatgpt.com/g/{project_id}-worthward/project",
+        "project_new",
+    )
+
+    assert binding._revalidated_submission_receipt(receipt_url) == (
+        current_url,
+        "Fresh session",
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    "current_url",
+    (
+        "https://chatgpt.com/g/g-p-11111111111111111111111111111111-other/c/fresh-session",
+        "https://chatgpt.com/g/g-p-6a978edb95308191a53d2bb113154c10-worthward/c/different-session",
+        "https://chatgpt.com/c/fresh-session",
+    ),
+)
+def test_chatgpt_submission_receipt_rejects_nonproject_alias_drift(
+    current_url: str,
+) -> None:
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    receipt_url = f"https://chatgpt.com/g/{project_id}-old-name/c/fresh-session"
+
+    class _Page:
+        url = current_url
+
+        def title(self) -> str:
+            return "Fresh session"
+
+    binding = _ProviderSessionBinding(
+        _Page(),
+        "chatgpt",
+        f"https://chatgpt.com/g/{project_id}-worthward/project",
+        "project_new",
+    )
+
+    with pytest.raises(RuntimeError, match="URL changed while"):
+        binding._revalidated_submission_receipt(receipt_url)
+
+
 @pytest.mark.parametrize(
     ("session_mode", "selected_target", "created_url"),
     (
@@ -8670,6 +8881,49 @@ def test_fresh_chatgpt_binding_recovers_receipt_before_first_url_observation(
     assert binding.bound_conversation_url == created_url
     assert binding.initial_receipt_revalidation_required is True
     assert binding.ensure_response_session() == created_url
+    assert page.goto_calls == [created_url]
+
+
+def test_fresh_project_binding_recovers_after_slug_rewrite() -> None:
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    selected_target = f"https://chatgpt.com/g/{project_id}-worthward/project"
+    created_url = f"https://chatgpt.com/g/{project_id}-old-name/c/fresh-session"
+    canonical_url = f"https://chatgpt.com/g/{project_id}-worthward/c/fresh-session"
+
+    class _Page:
+        url = selected_target
+
+        def __init__(self) -> None:
+            self.goto_calls: list[str] = []
+
+        def evaluate(
+            self,
+            _expression: str,
+            _argument: dict[str, str],
+        ) -> dict[str, object]:
+            return {"markerEchoed": True, "url": self.url}
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.goto_calls.append(url)
+            self.url = canonical_url
+
+        def title(self) -> str:
+            return "Fresh project session"
+
+    page = _Page()
+    binding = _ProviderSessionBinding(
+        page,
+        "chatgpt",
+        selected_target,
+        "project_new",
+    )
+    binding.arm_first_submission("Inspect the project")
+    page.url = created_url
+    assert binding.check(allow_transition=True) == created_url
+
+    page.url = selected_target
+    assert binding.ensure_response_session() == canonical_url
+    assert binding.bound_conversation_url == canonical_url
     assert page.goto_calls == [created_url]
 
 
@@ -12480,6 +12734,55 @@ def test_workspace_fingerprint_hashes_content_and_empty_directories(
     assert second_digest != third_digest
 
 
+def test_workspace_fingerprint_uses_real_stat_when_scandir_stat_is_placeholder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "sample.py").write_text("value = 1\n", encoding="utf-8")
+    real_scandir = computer_use_agent.os.scandir
+    entry_stat_calls = 0
+
+    class _WindowsPlaceholderDirEntry:
+        def __init__(self, entry: os.DirEntry[str]) -> None:
+            self.name = entry.name
+            self.path = entry.path
+
+        def stat(self, *, follow_symlinks: bool = True) -> object:
+            nonlocal entry_stat_calls
+            entry_stat_calls += 1
+            metadata = os.stat(self.path, follow_symlinks=follow_symlinks)
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_ino=0,
+                st_dev=0,
+                st_nlink=0,
+                st_size=metadata.st_size,
+                st_mtime_ns=metadata.st_mtime_ns,
+                st_ctime_ns=metadata.st_ctime_ns,
+            )
+
+    def scandir_with_windows_placeholder_stat(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    ) -> list[_WindowsPlaceholderDirEntry]:
+        with real_scandir(path) as entries:
+            return [_WindowsPlaceholderDirEntry(entry) for entry in entries]
+
+    monkeypatch.setattr(
+        computer_use_agent.os,
+        "scandir",
+        scandir_with_windows_placeholder_stat,
+    )
+
+    _digest, complete = computer_use_agent._workspace_mutation_fingerprint(workspace)
+
+    assert complete is True
+    assert entry_stat_calls == 0
+
+
 def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -12503,6 +12806,71 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     )
     assert first_complete and second_complete
     assert first_digest == second_digest
+
+    coverage_json = workspace / "coverage.json"
+    coverage_json.write_text('{"totals": {"percent_covered": 80}}\n', encoding="utf-8")
+    parallel_coverage = workspace / ".coverage.worker-1"
+    parallel_coverage.write_text("first\n", encoding="utf-8")
+    html_coverage = workspace / "htmlcov"
+    html_coverage.mkdir()
+    html_index = html_coverage / "index.html"
+    html_index.write_text("first\n", encoding="utf-8")
+    playwright_report = workspace / "playwright-report"
+    playwright_report.mkdir()
+    browser_report = playwright_report / "index.html"
+    browser_report.write_text("first\n", encoding="utf-8")
+    artifact_digest, artifact_complete = (
+        computer_use_agent._workspace_mutation_fingerprint(workspace)
+    )
+    assert artifact_complete
+    assert artifact_digest == second_digest
+    coverage_json.write_text('{"totals": {"percent_covered": 81}}\n', encoding="utf-8")
+    parallel_coverage.write_text("second\n", encoding="utf-8")
+    html_index.write_text("second\n", encoding="utf-8")
+    browser_report.write_text("second\n", encoding="utf-8")
+    changed_artifact_digest, changed_artifact_complete = (
+        computer_use_agent._workspace_mutation_fingerprint(workspace)
+    )
+    assert changed_artifact_complete
+    assert artifact_digest == changed_artifact_digest
+
+    fixture_directory = workspace / "tests" / "fixtures"
+    fixture_directory.mkdir(parents=True)
+    finder_metadata = fixture_directory / ".DS_Store"
+    finder_metadata.write_text("first\n", encoding="utf-8")
+    finder_before, finder_before_complete = (
+        computer_use_agent._workspace_mutation_fingerprint(workspace)
+    )
+    finder_metadata.write_text("second\n", encoding="utf-8")
+    finder_after, finder_after_complete = (
+        computer_use_agent._workspace_mutation_fingerprint(workspace)
+    )
+    assert finder_before_complete and finder_after_complete
+    assert finder_before == finder_after
+
+    ordinary_hidden = fixture_directory / ".project-contract"
+    ordinary_hidden.write_text("first\n", encoding="utf-8")
+    ordinary_hidden_before, ordinary_hidden_before_complete = (
+        computer_use_agent._workspace_mutation_fingerprint(workspace)
+    )
+    ordinary_hidden.write_text("second\n", encoding="utf-8")
+    ordinary_hidden_after, ordinary_hidden_after_complete = (
+        computer_use_agent._workspace_mutation_fingerprint(workspace)
+    )
+    assert ordinary_hidden_before_complete and ordinary_hidden_after_complete
+    assert ordinary_hidden_before != ordinary_hidden_after
+
+    nested_coverage = fixture_directory / "coverage.json"
+    nested_coverage.write_text('{"contract": "first"}\n', encoding="utf-8")
+    nested_before, nested_before_complete = (
+        computer_use_agent._workspace_mutation_fingerprint(workspace)
+    )
+    nested_coverage.write_text('{"contract": "second"}\n', encoding="utf-8")
+    nested_after, nested_after_complete = (
+        computer_use_agent._workspace_mutation_fingerprint(workspace)
+    )
+    assert nested_before_complete and nested_after_complete
+    assert nested_before != nested_after
 
     link = workspace / "linked.py"
     try:
@@ -12539,6 +12907,50 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
         computer_use_agent._workspace_mutation_fingerprint(workspace)
     )
     assert limited_complete is False
+
+
+@pytest.mark.parametrize(
+    ("replaced_name", "expected_complete"),
+    ((".DS_Store", True), ("sample.py", False)),
+)
+def test_workspace_fingerprint_rechecks_changed_directory_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replaced_name: str,
+    expected_complete: bool,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = workspace / "sample.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    finder_metadata = workspace / ".DS_Store"
+    finder_metadata.write_text("first\n", encoding="utf-8")
+    replacement = tmp_path / "replacement"
+    replacement.write_text("replacement\n", encoding="utf-8")
+    replaced_path = workspace / replaced_name
+    real_stat = computer_use_agent.os.stat
+    workspace_stat_calls = 0
+
+    def stat_with_one_replacement(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *args: object,
+        **kwargs: object,
+    ) -> os.stat_result:
+        nonlocal workspace_stat_calls
+        if Path(path) == workspace:
+            workspace_stat_calls += 1
+            if workspace_stat_calls == 2:
+                os.replace(replacement, replaced_path)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(computer_use_agent.os, "stat", stat_with_one_replacement)
+
+    _digest, complete = computer_use_agent._workspace_mutation_fingerprint(workspace)
+
+    assert workspace_stat_calls >= 2
+    assert complete is expected_complete
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group regression test.")
@@ -14265,10 +14677,22 @@ def test_chatgpt_send_target_check_is_atomic_and_rejects_url_drift(
             argument: dict[str, str] | None = None,
         ) -> object:
             self.evaluate_calls += 1
-            assert argument == {"expectedTargetUrl": expected_target_url}
+            assert argument == {
+                "expectedTargetUrl": expected_target_url,
+                "expectedMessage": "Inspect the project",
+            }
             assert expression.index("if (!targetMatches())") < expression.index(
                 "sendButton.click()"
             )
+            for origin_guard in (
+                "expected.port",
+                "current.port",
+                "expected.username",
+                "expected.password",
+                "current.username",
+                "current.password",
+            ):
+                assert origin_guard in expression
             return {"clicked": False, "targetMismatch": True}
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
@@ -14295,6 +14719,526 @@ def test_chatgpt_send_target_check_is_atomic_and_rejects_url_drift(
     assert page.composer.value == "Inspect the project"
     assert page.evaluate_calls == 1
     assert session_checks == [False, False, False]
+
+
+def test_chatgpt_atomic_send_accepts_same_project_id_after_slug_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    expected_target_url = f"https://chatgpt.com/g/{project_id}/project"
+
+    class _Composer:
+        def fill(self, _value: str) -> None:
+            return None
+
+    class _Page:
+        url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+        def __init__(self) -> None:
+            self.send_attempts = 0
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return _Composer()
+
+        def evaluate(
+            self,
+            expression: str,
+            argument: dict[str, str] | None = None,
+        ) -> object:
+            if "sendButton.click()" not in expression:
+                return True
+            self.send_attempts += 1
+            assert argument == {
+                "expectedTargetUrl": expected_target_url,
+                "expectedMessage": "Inspect the project",
+            }
+            assert "g-p-[0-9a-f]{32}" in expression
+            assert "expectedProject === currentProject" in expression
+            assert expression.index("if (!targetMatches())") < expression.index(
+                "sendButton.click()"
+            )
+            return {"clicked": True, "targetMismatch": False}
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+    monkeypatch.setattr("app.core.computer_use_agent._web_count", lambda *_args: 0)
+    monkeypatch.setattr(
+        "app.core.computer_use_agent._web_is_generating",
+        lambda *_args: False,
+    )
+
+    _submit_chromium_prompt(
+        page,
+        "Inspect the project",
+        lambda: False,
+        session_check=lambda _allow_transition: page.url,
+        expected_target_url=expected_target_url,
+    )
+
+    assert page.send_attempts == 1
+
+
+def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_url = "https://chatgpt.com/c/composer-drift"
+
+    class _Composer:
+        def __init__(self) -> None:
+            self.fills: list[str] = []
+
+        def fill(self, value: str) -> None:
+            self.fills.append(value)
+
+    class _Page:
+        url = target_url
+
+        def __init__(self) -> None:
+            self.composer = _Composer()
+            self.send_scans = 0
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return self.composer
+
+        def evaluate(
+            self,
+            expression: str,
+            argument: dict[str, str] | None = None,
+        ) -> object:
+            self.send_scans += 1
+            assert argument == {
+                "expectedTargetUrl": target_url,
+                "expectedMessage": "Inspect the project",
+            }
+            assert expression.index("composerMismatch") < expression.index(
+                "sendButton.click()"
+            )
+            assert "directParagraphs" in expression
+            assert "selection.toString()" in expression
+            return {"clicked": False, "composerMismatch": True}
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            raise AssertionError("Composer drift must fail before another send scan.")
+
+    page = _Page()
+    monkeypatch.setattr("app.core.computer_use_agent._web_count", lambda *_args: 0)
+
+    with pytest.raises(RuntimeError, match="composer changed before Send"):
+        _submit_chromium_prompt(
+            page,
+            "Inspect the project",
+            lambda: False,
+            expected_target_url=target_url,
+        )
+
+    assert page.composer.fills == ["Inspect the project"]
+    assert page.send_scans == 1
+
+
+def test_chatgpt_atomic_send_refills_one_empty_remounted_composer() -> None:
+    target_url = "https://chatgpt.com/c/empty-composer-remount"
+
+    class _Composer:
+        def __init__(self) -> None:
+            self.fills: list[str] = []
+
+        def fill(self, value: str) -> None:
+            self.fills.append(value)
+
+    class _Page:
+        url = target_url
+
+        def __init__(self) -> None:
+            self.composer = _Composer()
+            self.send_scans = 0
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return self.composer
+
+        def evaluate(
+            self,
+            expression: str,
+            argument: dict[str, str] | None = None,
+        ) -> object:
+            assert "sendButton.click()" in expression
+            assert argument == {
+                "expectedTargetUrl": target_url,
+                "expectedMessage": "Inspect the project",
+            }
+            self.send_scans += 1
+            if self.send_scans == 1:
+                return {
+                    "clicked": False,
+                    "composerMismatch": True,
+                    "composerPresent": True,
+                    "composerReadable": True,
+                    "composerEmpty": True,
+                }
+            return {"clicked": True, "targetMismatch": False}
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            raise AssertionError("An empty remount can be refilled without polling.")
+
+    page = _Page()
+
+    _submit_chromium_prompt(
+        page,
+        "Inspect the project",
+        lambda: False,
+        expected_target_url=target_url,
+    )
+
+    assert page.composer.fills == ["Inspect the project", "Inspect the project"]
+    assert page.send_scans == 2
+
+
+def test_chatgpt_atomic_send_never_refills_a_second_empty_remount() -> None:
+    target_url = "https://chatgpt.com/c/repeated-empty-composer-remount"
+
+    class _Composer:
+        def __init__(self) -> None:
+            self.fills: list[str] = []
+
+        def fill(self, value: str) -> None:
+            self.fills.append(value)
+
+    class _Page:
+        url = target_url
+
+        def __init__(self) -> None:
+            self.composer = _Composer()
+            self.send_scans = 0
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return self.composer
+
+        def evaluate(
+            self,
+            _expression: str,
+            _argument: dict[str, str] | None = None,
+        ) -> object:
+            self.send_scans += 1
+            return {
+                "clicked": False,
+                "composerMismatch": True,
+                "composerPresent": True,
+                "composerReadable": True,
+                "composerEmpty": True,
+            }
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            raise AssertionError("Repeated remount must fail without polling.")
+
+    page = _Page()
+
+    with pytest.raises(RuntimeError, match="composer changed before Send"):
+        _submit_chromium_prompt(
+            page,
+            "Inspect the project",
+            lambda: False,
+            expected_target_url=target_url,
+        )
+
+    assert page.composer.fills == ["Inspect the project", "Inspect the project"]
+    assert page.send_scans == 2
+
+
+def test_chatgpt_navigation_commit_error_waits_for_receipt_without_resending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/navigation-commit"
+    message = "Continue with the controller observation"
+    response = '{"action":"bodycheck"}'
+    snapshots = iter(
+        (
+            {
+                "url": target_url,
+                "count": 1,
+                "userCount": 1,
+                "latestUserText": "Previous turn",
+                "assistantMessageId": "assistant-old",
+                "latestUserMessageId": "user-old",
+                "text": "Previous response",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+            {
+                "url": target_url,
+                "count": 2,
+                "userCount": 2,
+                "latestUserText": message,
+                "assistantMessageId": "assistant-current",
+                "latestUserMessageId": "user-current",
+                "text": response,
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+        )
+    )
+
+    class _Composer:
+        def fill(self, _value: str) -> None:
+            return None
+
+    class _Page:
+        url = target_url
+
+        def __init__(self) -> None:
+            self.send_attempts = 0
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return _Composer()
+
+        def evaluate(self, expression: str, _argument: object = None) -> object:
+            assert "sendButton.click()" in expression
+            self.send_attempts += 1
+            raise RuntimeError(
+                "Execution context was destroyed, most likely because of a navigation"
+            )
+
+    page = _Page()
+    monkeypatch.setattr(computer_use_agent, "_web_count", lambda *_args: 1)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_retry_control",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        },
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        lambda value, **_kwargs: value == response,
+    )
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", lambda: 0)
+
+    assert _submit_and_wait(
+        page,
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        session_check=lambda _allow_transition: target_url,
+        submission_target_url=target_url,
+        session_mode="recent",
+    ) == response
+    assert page.send_attempts == 1
+
+
+def test_chatgpt_clicked_send_defers_acceptance_to_exact_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/exact-acceptance"
+    message = "Continue with the controller observation"
+    response = '{"action":"bodycheck"}'
+    snapshots = iter(
+        (
+            {
+                "url": target_url,
+                "count": 1,
+                "userCount": 1,
+                "latestUserText": "Previous turn",
+                "assistantMessageId": "assistant-old",
+                "latestUserMessageId": "user-old",
+                "text": "Previous response",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+            {
+                "url": target_url,
+                "count": 2,
+                "userCount": 2,
+                "latestUserText": message,
+                "assistantMessageId": "assistant-current",
+                "latestUserMessageId": "user-current",
+                "text": response,
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+        )
+    )
+    delivered: list[bool] = []
+
+    class _Composer:
+        def fill(self, _value: str) -> None:
+            return None
+
+    class _Page:
+        url = target_url
+
+        def __init__(self) -> None:
+            self.evaluate_calls = 0
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return _Composer()
+
+        def evaluate(self, expression: str, _argument: object = None) -> object:
+            self.evaluate_calls += 1
+            assert "sendButton.click()" in expression
+            return {"clicked": True, "targetMismatch": False}
+
+    page = _Page()
+    monkeypatch.setattr(computer_use_agent, "_web_count", lambda *_args: 1)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_retry_control",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        },
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        lambda value, **_kwargs: value == response,
+    )
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", lambda: 0)
+
+    assert _submit_and_wait(
+        page,
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        session_check=lambda _allow_transition: target_url,
+        submission_target_url=target_url,
+        session_mode="recent",
+        on_delivered=lambda: delivered.append(True),
+    ) == response
+    assert page.evaluate_calls == 1
+    assert delivered == [True]
+
+
+def test_chatgpt_navigation_commit_error_without_receipt_times_out_without_resending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/navigation-commit"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    snapshots = iter((baseline, baseline, baseline))
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Composer:
+        def fill(self, _value: str) -> None:
+            return None
+
+    class _Page:
+        url = target_url
+
+        def __init__(self, clock: _Clock) -> None:
+            self.clock = clock
+            self.send_attempts = 0
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return _Composer()
+
+        def evaluate(self, expression: str, _argument: object = None) -> object:
+            assert "sendButton.click()" in expression
+            self.send_attempts += 1
+            raise RuntimeError(
+                "Execution context was destroyed, most likely because of a navigation"
+            )
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            self.clock.value = 2.0
+
+    clock = _Clock()
+    page = _Page(clock)
+    monkeypatch.setattr(computer_use_agent, "CHATGPT_TURN_RECEIPT_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(computer_use_agent, "_web_count", lambda *_args: 1)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+
+    with pytest.raises(
+        computer_use_agent.AgentConnectionInterrupted,
+        match="exact user-turn receipt within 1 seconds",
+    ):
+        _submit_and_wait(
+            page,
+            "chromium",
+            "Continue with the controller observation",
+            lambda: False,
+            platform="chatgpt",
+            session_check=lambda _allow_transition: target_url,
+            submission_target_url=target_url,
+            session_mode="recent",
+        )
+    assert page.send_attempts == 1
+
+
+def test_chatgpt_non_navigation_send_error_is_not_treated_as_committed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Composer:
+        def fill(self, _value: str) -> None:
+            return None
+
+    class _Page:
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return _Composer()
+
+        def evaluate(self, expression: str, _argument: object = None) -> object:
+            assert "sendButton.click()" in expression
+            raise RuntimeError("Unexpected application error")
+
+    monkeypatch.setattr("app.core.computer_use_agent._web_count", lambda *_args: 0)
+
+    with pytest.raises(RuntimeError, match="Unexpected application error"):
+        _submit_chromium_prompt(
+            _Page(),
+            "Inspect the project",
+            lambda: False,
+            expected_target_url="https://chatgpt.com/",
+        )
 
 
 def test_chatgpt_send_click_is_linearized_with_stop_signal(
@@ -14716,7 +15660,19 @@ def test_submit_and_wait_prefers_bound_session_for_atomic_target_guard(
             },
         )
     )
+    read_budgets: list[object] = []
+    run_recoverable_read = computer_use_agent._run_recoverable_provider_read
+
+    def capture_recoverable_read(*args: object, **kwargs: object) -> object:
+        read_budgets.append(kwargs["recovery_budget"])
+        return run_recoverable_read(*args, **kwargs)
+
     monkeypatch.setattr(computer_use_agent, "_submit_chromium_web_prompt", submit)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_run_recoverable_provider_read",
+        capture_recoverable_read,
+    )
     monkeypatch.setattr(
         computer_use_agent,
         "_provider_turn_snapshot",
@@ -14746,7 +15702,12 @@ def test_submit_and_wait_prefers_bound_session_for_atomic_target_guard(
     submitted_kwargs = submitted[0]["kwargs"]
     assert isinstance(submitted_kwargs, dict)
     receipt_marker = str(submitted_kwargs["submission_receipt_marker"])
+    recovery_budget = submitted_kwargs["recovery_budget"]
     assert re.fullmatch(r"agent-turn-[0-9a-f]{32}", receipt_marker)
+    assert isinstance(
+        recovery_budget,
+        computer_use_agent._ProviderReadRecoveryBudget,
+    )
     assert receipt_marker in str(submitted[0]["args"][2])
     assert submitted_kwargs == {
         "session_check": check_session,
@@ -14761,7 +15722,10 @@ def test_submit_and_wait_prefers_bound_session_for_atomic_target_guard(
             "assistantAfterLatestUser": False,
         },
         "submission_receipt_marker": receipt_marker,
+        "recovery_budget": recovery_budget,
     }
+    assert read_budgets
+    assert all(budget is recovery_budget for budget in read_budgets)
     assert session_checks[0] is False
     assert all(session_checks[index] for index in range(1, len(session_checks)))
 
@@ -15316,6 +16280,11 @@ def test_chatgpt_response_snapshot_keeps_url_text_count_and_generation_atomic() 
             assert "text," in expression
             assert "generating," in expression
             assert "assistantAfterLatestUser," in expression
+            assert "key.startsWith('__reactProps$')" in expression
+            assert "key === 'parts'" in expression
+            assert "key === 'displayParts'" in expression
+            assert "inspected < 2_000" in expression
+            assert "['_owner', 'ref', 'stateNode'].includes(key)" in expression
             return {
                 "url": "https://chatgpt.com/c/fresh-session",
                 "count": 2,
@@ -15343,6 +16312,38 @@ def test_chatgpt_response_snapshot_keeps_url_text_count_and_generation_atomic() 
         "composerEmpty": False,
         "assistantAfterLatestUser": True,
     }
+
+
+def test_chatgpt_response_snapshot_preserves_exact_markdown_source_receipt() -> None:
+    """Prefer ChatGPT's source message over Markdown-rendered visible text."""
+    selector = '[data-message-author-role="assistant"]'
+    source = "Controller observation with `inline code` and **literal Markdown**."
+
+    class _Page:
+        def evaluate(
+            self,
+            expression: str,
+            _argument: dict[str, str],
+        ) -> dict[str, object]:
+            assert "chatgptSourceText(latestUser) || renderedLatestUserText" in expression
+            return {
+                "url": "https://chatgpt.com/c/markdown-receipt",
+                "count": 2,
+                "userCount": 2,
+                "latestUserText": source,
+                "assistantMessageId": "reply-id",
+                "latestUserMessageId": "prompt-id",
+                "text": '{"action":"bodycheck"}',
+                "generating": False,
+                "composerPresent": True,
+                "composerEmpty": True,
+                "assistantAfterLatestUser": True,
+            }
+
+    snapshot = _chatgpt_response_snapshot(_Page(), selector)
+
+    assert snapshot["latestUserText"] == source
+    assert "`inline code`" in snapshot["latestUserText"]
 
 
 @pytest.mark.parametrize(
@@ -16020,6 +17021,16 @@ def test_provider_turn_waits_for_history_to_rehydrate_after_challenge(
             },
             {
                 "url": target_url,
+                "count": 1,
+                "userCount": 2,
+                "latestUserText": "old prompt",
+                "markerEchoed": False,
+                "text": "old response",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+            {
+                "url": target_url,
                 "count": 2,
                 "userCount": 2,
                 "latestUserText": receipt_marker,
@@ -16080,6 +17091,47 @@ def test_availability_gate_extends_deadlines_only_for_explicit_recovery_pause() 
     assert computer_use_agent._run_availability_gate(
         lambda: (True, 7.5)
     ) == (True, 7.5)
+
+
+def test_visible_composer_excludes_an_explicit_recovery_pause_from_its_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    clock = {"value": 0.0}
+    readiness_calls = 0
+
+    class _Composer:
+        attempts = 0
+
+        def wait_for(self, **_kwargs: object) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                clock["value"] = 12.0
+                raise TimeoutError("composer still loading")
+
+    def readiness_check() -> float:
+        nonlocal readiness_calls
+        readiness_calls += 1
+        if readiness_calls == 1:
+            clock["value"] = 10.0
+            return 10.0
+        return 0.0
+
+    composer = _Composer()
+    monkeypatch.setattr(computer_use_agent, "CHATGPT_COMPOSER_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(
+        computer_use_agent.time,
+        "monotonic",
+        lambda: clock["value"],
+    )
+
+    assert computer_use_agent._wait_for_visible_composer(
+        composer,
+        readiness_check=readiness_check,
+    )
+    assert composer.attempts == 2
+    assert readiness_calls == 3
 
 
 def test_challenge_marker_in_chat_text_does_not_pause_with_a_visible_composer() -> None:
@@ -16411,6 +17463,34 @@ def test_grok_new_conversation_title_change_does_not_block_recovery(
     ) == (False, "")
 
 
+def test_screen_lock_detection_does_not_require_a_playwright_is_closed_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/session"
+
+    class _SafariPage:
+        url = target_url
+        _guid = "safari-session"
+
+        def title(self) -> str:
+            return "ChatGPT"
+
+    monkeypatch.setattr(computer_use_agent, "_macos_screen_is_locked", lambda: True)
+
+    assert _detect_browser_interruption(
+        _SafariPage(),
+        target_url,
+        "safari",
+        platform="chatgpt",
+        session_mode="recent",
+        expected_tab_id="safari-session",
+        expected_title="ChatGPT",
+        monitor_screen_lock=True,
+    ) == (True, "The screen is locked.")
+
+
 def test_screen_lock_recovery_does_not_expire_after_five_minutes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -16454,6 +17534,211 @@ def test_screen_lock_recovery_does_not_expire_after_five_minutes(
     assert result == "recovered"
     assert any(update.get("phase") == "paused" for update in updates)
     assert any(update.get("phase") == "running" for update in updates)
+
+
+def test_screen_lock_recovery_becomes_bounded_when_the_tab_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    closed_reason = "The selected provider tab was closed."
+    monotonic_values = iter((0.0, 6.0))
+    updates: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_detect_browser_interruption",
+        lambda *_args, **_kwargs: (True, closed_reason),
+    )
+    monkeypatch.setattr(
+        computer_use_agent.time,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+    monkeypatch.setattr(computer_use_agent.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(computer_use_agent, "BROWSER_INTERRUPTION_TIMEOUT_SECONDS", 5)
+
+    with pytest.raises(RuntimeError, match="selected provider tab was closed"):
+        _wait_for_browser_recovery(
+            page=object(),
+            expected_url="https://chatgpt.com/c/session",
+            browser_kind="edge",
+            platform="chatgpt",
+            session_mode="recent",
+            expected_tab_id="tab-1",
+            expected_title="Task",
+            should_stop=lambda: False,
+            should_resume=None,
+            update=lambda **changes: updates.append(changes),
+            reason="The screen is locked.",
+        )
+
+    assert any(update.get("pause_reason") == closed_reason for update in updates)
+    assert updates[-1] == {"paused": False, "pause_reason": ""}
+
+
+def test_browser_recovery_freezes_its_bounded_budget_during_screen_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    bounded_reason = "The selected provider page is temporarily inaccessible."
+    interruptions = iter(
+        (
+            (True, "The screen is locked."),
+            (True, bounded_reason),
+            (False, ""),
+        )
+    )
+    monotonic_values = iter((0.0, 100.0, 104.0))
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_detect_browser_interruption",
+        lambda *_args, **_kwargs: next(interruptions),
+    )
+    monkeypatch.setattr(
+        computer_use_agent.time,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+    monkeypatch.setattr(computer_use_agent.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(computer_use_agent, "BROWSER_INTERRUPTION_TIMEOUT_SECONDS", 5)
+
+    result = _wait_for_browser_recovery(
+        page=object(),
+        expected_url="https://chatgpt.com/c/session",
+        browser_kind="edge",
+        platform="chatgpt",
+        session_mode="recent",
+        expected_tab_id="tab-1",
+        expected_title="Task",
+        should_stop=lambda: False,
+        should_resume=None,
+        update=lambda **_changes: None,
+        reason=bounded_reason,
+    )
+
+    assert result == "recovered"
+
+
+def test_initial_chatgpt_page_verification_pauses_for_screen_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/g/g-p-6a978edb95308191a53d2bb113154c10/project"
+    recovery_reasons: list[str] = []
+    verification_callbacks: list[object] = []
+    stop_signal = _LinearizedStopSignal()
+
+    class _Page:
+        url = target_url
+        _guid = "locked-project-tab"
+
+        def title(self) -> str:
+            return "ChatGPT"
+
+    def wait_for_recovery(*_args: object, **kwargs: object) -> str:
+        recovery_reasons.append(str(kwargs["reason"]))
+        return "recovered"
+
+    def verify_page(*args: object, **_kwargs: object) -> bool:
+        verification_callbacks.append(args[5])
+        return False
+
+    monkeypatch.setattr(computer_use_agent, "_macos_screen_is_locked", lambda: True)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_wait_for_browser_recovery",
+        wait_for_recovery,
+    )
+    monkeypatch.setattr(computer_use_agent, "_verify_agent_page", verify_page)
+
+    result = _run_web_action_loop(
+        page=_Page(),
+        browser_kind="chromium",
+        initial_message="Inspect the project",
+        controller=SimpleNamespace(),
+        context_path=None,
+        settings=ComputerUseSettings(platform="chatgpt", browser="edge"),
+        session_mode="project_new",
+        selected_target_url=target_url,
+        should_stop=stop_signal.is_set,
+        update=lambda **_changes: None,
+        monitor_screen_lock=True,
+    )
+
+    assert result == ("", target_url, 0, False)
+    assert recovery_reasons == ["The screen is locked."]
+    assert len(verification_callbacks) == 1
+    assert callable(verification_callbacks[0])
+
+
+def test_chatgpt_screen_lock_monitoring_remains_active_after_page_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/g/g-p-6a978edb95308191a53d2bb113154c10/project"
+    lock_states = iter((False, True))
+    recovery_reasons: list[str] = []
+    stop_signal = _LinearizedStopSignal()
+
+    class _Page:
+        url = target_url
+        _guid = "locked-after-verification-tab"
+
+        def title(self) -> str:
+            return "ChatGPT"
+
+    def wait_for_recovery(*_args: object, **kwargs: object) -> str:
+        recovery_reasons.append(str(kwargs["reason"]))
+        stop_signal.set()
+        return "stopped"
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_macos_screen_is_locked",
+        lambda: next(lock_states),
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "MACOS_SCREEN_LOCK_PROBE_INTERVAL_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_provider_human_verification_reason",
+        lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_wait_for_browser_recovery",
+        wait_for_recovery,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_verify_agent_page",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = _run_web_action_loop(
+        page=_Page(),
+        browser_kind="chromium",
+        initial_message="Inspect the project",
+        controller=SimpleNamespace(),
+        context_path=None,
+        settings=ComputerUseSettings(platform="chatgpt", browser="edge"),
+        session_mode="project_new",
+        selected_target_url=target_url,
+        should_stop=stop_signal.is_set,
+        update=lambda **_changes: None,
+        monitor_screen_lock=True,
+    )
+
+    assert result == ("", target_url, 0, False)
+    assert recovery_reasons == ["The screen is locked."]
 
 
 def test_human_verification_waits_for_clear_state_and_resume(
@@ -16739,6 +18024,1342 @@ def test_chatgpt_waiter_ignores_assistant_text_before_the_latest_user(
     assert completion_candidates[-1] == "current response"
 
 
+def test_chatgpt_response_retry_does_not_resend_the_controller_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/retry-session"
+    message = "Continue with the controller observation"
+    snapshots = iter(
+        (
+            {
+                "url": target_url,
+                "count": 1,
+                "userCount": 1,
+                "latestUserText": "Previous turn",
+                "assistantMessageId": "assistant-old",
+                "latestUserMessageId": "user-old",
+                "text": "Previous response",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+            {
+                "url": target_url,
+                "count": 2,
+                "userCount": 2,
+                "latestUserText": message,
+                "assistantMessageId": "assistant-error",
+                "latestUserMessageId": "user-current",
+                "text": "There was an error generating a response.",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+            {
+                "url": target_url,
+                "count": 2,
+                "userCount": 2,
+                "latestUserText": message,
+                "assistantMessageId": "assistant-current",
+                "latestUserMessageId": "user-current",
+                "text": '{"action":"final","summary":"Recovered"}',
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+        )
+    )
+    submit_calls = 0
+    retry_clicks: list[bool] = []
+    delivered: list[bool] = []
+
+    class _Page:
+        url = target_url
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    def submit(*_args: object, **_kwargs: object) -> None:
+        nonlocal submit_calls
+        submit_calls += 1
+
+    def retry_control(
+        _page: object,
+        expected_target_url: str,
+        *,
+        click: bool,
+        require_after_latest_user: bool,
+    ) -> dict[str, object]:
+        assert expected_target_url == target_url
+        assert require_after_latest_user is True
+        retry_clicks.append(click)
+        return {
+            "url": target_url,
+            "available": len(retry_clicks) == 1,
+            "clicked": len(retry_clicks) == 1 and click,
+            "label": "Try again" if len(retry_clicks) == 1 else "",
+        }
+
+    monkeypatch.setattr(computer_use_agent, "_submit_chromium_prompt", submit)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        lambda response, **_kwargs: response.endswith('"Recovered"}'),
+    )
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", lambda: 0)
+
+    assert _submit_and_wait(
+        _Page(),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        session_check=lambda _allow_transition: target_url,
+        submission_target_url=target_url,
+        session_mode="recent",
+        on_delivered=lambda: delivered.append(True),
+    ) == '{"action":"final","summary":"Recovered"}'
+    assert submit_calls == 1
+    assert retry_clicks == [True, False]
+    assert delivered == [True]
+
+
+@pytest.mark.parametrize(
+    "retry_error",
+    (
+        "Execution context was destroyed during navigation",
+        "WebSocket is not open: connection closed",
+    ),
+)
+def test_chatgpt_response_retry_uncertain_commit_consumes_the_only_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    retry_error: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/retry-navigation-race"
+    message = "Continue with the controller observation"
+    snapshots = iter(
+        (
+            {
+                "url": target_url,
+                "count": 1,
+                "userCount": 1,
+                "latestUserText": "Previous turn",
+                "assistantMessageId": "assistant-old",
+                "latestUserMessageId": "user-old",
+                "text": "Previous response",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+            {
+                "url": target_url,
+                "count": 2,
+                "userCount": 2,
+                "latestUserText": message,
+                "assistantMessageId": "assistant-error",
+                "latestUserMessageId": "user-current",
+                "text": "There was an error generating a response.",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+            {
+                "url": target_url,
+                "count": 2,
+                "userCount": 2,
+                "latestUserText": message,
+                "assistantMessageId": "assistant-current",
+                "latestUserMessageId": "user-current",
+                "text": '{"action":"final","summary":"Recovered"}',
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+        )
+    )
+    submit_calls = 0
+    retry_clicks: list[bool] = []
+
+    class _Page:
+        url = target_url
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    def submit(*_args: object, **_kwargs: object) -> None:
+        nonlocal submit_calls
+        submit_calls += 1
+
+    def retry_control(
+        _page: object,
+        _expected_target_url: str,
+        *,
+        click: bool,
+        require_after_latest_user: bool,
+    ) -> dict[str, object]:
+        assert require_after_latest_user is True
+        retry_clicks.append(click)
+        if click:
+            raise RuntimeError(retry_error)
+        return {
+            "url": target_url,
+            "available": False,
+            "clicked": False,
+            "label": "",
+        }
+
+    monkeypatch.setattr(computer_use_agent, "_submit_chromium_prompt", submit)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_provider_human_verification_reason",
+        lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        lambda response, **_kwargs: response.endswith('"Recovered"}'),
+    )
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", lambda: 0)
+
+    assert _submit_and_wait(
+        _Page(),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        session_check=lambda _allow_transition: target_url,
+        submission_target_url=target_url,
+        session_mode="recent",
+    ) == '{"action":"final","summary":"Recovered"}'
+    assert submit_calls == 1
+    assert retry_clicks == [True, False]
+
+
+def test_chatgpt_receipt_watchdog_ends_an_ambiguous_submit_without_resending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/ambiguous-submit"
+    snapshots = iter(
+        (
+            {
+                "url": target_url,
+                "count": 1,
+                "userCount": 1,
+                "latestUserText": "Previous turn",
+                "assistantMessageId": "assistant-old",
+                "latestUserMessageId": "user-old",
+                "text": "Previous response",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+            {
+                "url": target_url,
+                "count": 1,
+                "userCount": 1,
+                "latestUserText": "Previous turn",
+                "assistantMessageId": "assistant-old",
+                "latestUserMessageId": "user-old",
+                "text": "Previous response",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+        )
+    )
+    submit_calls = 0
+
+    class _Page:
+        url = target_url
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            raise AssertionError("The receipt watchdog should stop before another poll.")
+
+    def submit(*_args: object, **_kwargs: object) -> None:
+        nonlocal submit_calls
+        submit_calls += 1
+
+    clock = iter((0.0, 0.0, 2.0))
+    monkeypatch.setattr(computer_use_agent, "CHATGPT_TURN_RECEIPT_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(computer_use_agent, "_submit_chromium_prompt", submit)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(
+        computer_use_agent.AgentConnectionInterrupted,
+        match="exact user-turn receipt within 1 seconds",
+    ):
+        _submit_and_wait(
+            _Page(),
+            "chromium",
+            "Continue with the controller observation",
+            lambda: False,
+            platform="chatgpt",
+            session_check=lambda _allow_transition: target_url,
+            submission_target_url=target_url,
+            session_mode="recent",
+        )
+    assert submit_calls == 1
+
+
+def test_chatgpt_exact_receipt_without_response_activity_uses_turn_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep a delivered but inactive response bounded by the turn timeout."""
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/silent-response-stall"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    stalled = {
+        **baseline,
+        "userCount": 2,
+        "latestUserText": message,
+        "latestUserMessageId": "user-current",
+        "assistantAfterLatestUser": False,
+    }
+    snapshot_calls = 0
+    submit_calls = 0
+    delivered: list[bool] = []
+    retry_probes = 0
+    retry_clicks = 0
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target_url
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            clock.value += milliseconds / 1_000
+
+    def response_snapshot(*_args: object) -> dict[str, object]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return baseline if snapshot_calls == 1 else stalled
+
+    def submit(*_args: object, **_kwargs: object) -> None:
+        nonlocal submit_calls
+        submit_calls += 1
+
+    def retry_control(*_args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal retry_clicks, retry_probes
+        retry_probes += 1
+        available = False
+        clicked = bool(available and kwargs["click"])
+        retry_clicks += int(clicked)
+        return {
+            "available": available,
+            "clicked": clicked,
+            "ambiguous": False,
+            "label": "",
+        }
+
+    clock = _Clock()
+    monkeypatch.setattr(computer_use_agent, "_submit_chromium_prompt", submit)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        response_snapshot,
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+
+    with pytest.raises(
+        RuntimeError,
+        match="did not finish the controller turn within 3 seconds",
+    ):
+        _submit_and_wait(
+            _Page(),
+            "chromium",
+            message,
+            lambda: False,
+            platform="chatgpt",
+            session_check=lambda _allow_transition: target_url,
+            submission_target_url=target_url,
+            session_mode="recent",
+            timeout_seconds=3,
+            on_delivered=lambda: delivered.append(True),
+        )
+
+    assert clock.value == 3.0
+    assert submit_calls == 1
+    assert delivered == [True]
+    assert retry_probes > 0
+    assert retry_clicks == 0
+
+
+def test_chatgpt_provider_error_without_retry_hydration_interrupts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/retry-not-hydrated"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    failed = {
+        **baseline,
+        "count": 2,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": "assistant-error",
+        "latestUserMessageId": "user-current",
+        "text": "There was an error generating a response.",
+    }
+    snapshots = iter((baseline, failed, failed))
+    retry_calls: list[bool] = []
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target_url
+
+        def __init__(self, clock: _Clock) -> None:
+            self.clock = clock
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            self.clock.value = 6.0
+
+    def retry_control(*_args: object, **kwargs: object) -> dict[str, object]:
+        retry_calls.append(bool(kwargs["click"]))
+        return {
+            "url": target_url,
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        }
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_submit_chromium_prompt",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+
+    def reject_provider_error(value: str, **_kwargs: object) -> bool:
+        assert value != failed["text"]
+        return False
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        reject_provider_error,
+    )
+    clock = _Clock()
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+
+    with pytest.raises(
+        computer_use_agent.AgentConnectionInterrupted,
+        match="without exposing one verified Try again control",
+    ):
+        _submit_and_wait(
+            _Page(clock),
+            "chromium",
+            message,
+            lambda: False,
+            platform="chatgpt",
+            session_check=lambda _allow_transition: target_url,
+            submission_target_url=target_url,
+            session_mode="recent",
+        )
+    assert retry_calls == [True, True]
+
+
+def test_chatgpt_provider_error_waits_for_delayed_retry_hydration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/retry-delayed-hydration"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    failed = {
+        **baseline,
+        "count": 2,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": "assistant-error",
+        "latestUserMessageId": "user-current",
+        "text": "There was an error generating a response.",
+    }
+    recovered = {
+        **failed,
+        "assistantMessageId": "assistant-recovered",
+        "text": '{"action":"bodycheck"}',
+    }
+    snapshots = iter((baseline, failed, failed, recovered))
+    retry_calls: list[bool] = []
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target_url
+
+        def __init__(self, clock: _Clock) -> None:
+            self.clock = clock
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            self.clock.value = min(1.0, self.clock.value + 0.5)
+
+    def retry_control(*_args: object, **kwargs: object) -> dict[str, object]:
+        click = bool(kwargs["click"])
+        retry_calls.append(click)
+        available = len(retry_calls) == 2
+        return {
+            "url": target_url,
+            "available": available,
+            "clicked": available and click,
+            "ambiguous": False,
+            "label": "Try again" if available else "",
+        }
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_submit_chromium_prompt",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        lambda value, **_kwargs: value == recovered["text"],
+    )
+    clock = _Clock()
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+
+    assert _submit_and_wait(
+        _Page(clock),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        session_check=lambda _allow_transition: target_url,
+        submission_target_url=target_url,
+        session_mode="recent",
+    ) == recovered["text"]
+    assert retry_calls == [True, True, False]
+
+
+def test_chatgpt_old_provider_error_before_current_user_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not attribute an old failed assistant to the newly delivered user turn."""
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/old-error-before-current-user"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old-error",
+        "latestUserMessageId": "user-old",
+        "text": "There was an error generating a response.",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    waiting = {
+        **baseline,
+        "userCount": 2,
+        "latestUserText": message,
+        "latestUserMessageId": "user-current",
+        "assistantAfterLatestUser": False,
+    }
+    recovered = {
+        **waiting,
+        "count": 2,
+        "assistantMessageId": "assistant-current",
+        "text": '{"action":"bodycheck"}',
+        "assistantAfterLatestUser": True,
+    }
+    snapshot_calls = 0
+    retry_states: list[dict[str, object]] = []
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target_url
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            clock.value += 0.6
+
+    def response_snapshot(*_args: object) -> dict[str, object]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 1:
+            return baseline
+        if snapshot_calls < 12:
+            return waiting
+        return recovered
+
+    def retry_control(*_args: object, **kwargs: object) -> dict[str, object]:
+        assert kwargs["require_after_latest_user"] is True
+        state: dict[str, object] = {
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        }
+        retry_states.append(state)
+        return state
+
+    clock = _Clock()
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_submit_chromium_prompt",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        response_snapshot,
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+
+    assert _submit_and_wait(
+        _Page(),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        session_check=lambda _allow_transition: target_url,
+        submission_target_url=target_url,
+        session_mode="recent",
+        timeout_seconds=10,
+    ) == recovered["text"]
+    assert (
+        clock.value
+        > computer_use_agent.CHATGPT_PROVIDER_RETRY_SETTLE_SECONDS
+    )
+    assert retry_states
+    assert not any(state["clicked"] for state in retry_states)
+
+
+@pytest.mark.parametrize(
+    ("repeated_retry_state", "error_pattern"),
+    (
+        ("available", "kept showing Try again after one bounded response retry"),
+        ("ambiguous", "outside a verified provider-response error boundary"),
+    ),
+)
+def test_chatgpt_response_retry_is_bounded_without_resubmission(
+    monkeypatch: pytest.MonkeyPatch,
+    repeated_retry_state: str,
+    error_pattern: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/repeated-retry"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    current = {
+        "url": target_url,
+        "count": 2,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": "assistant-error",
+        "latestUserMessageId": "user-current",
+        "text": "There was an error generating a response.",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    snapshots = iter((baseline, current, current))
+    submit_calls = 0
+    retry_clicks: list[bool] = []
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target_url
+
+        def __init__(self, clock: _Clock) -> None:
+            self.clock = clock
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            self.clock.value = 6.0
+
+    def submit(*_args: object, **_kwargs: object) -> None:
+        nonlocal submit_calls
+        submit_calls += 1
+
+    def retry_control(
+        _page: object,
+        _expected_target_url: str,
+        *,
+        click: bool,
+        require_after_latest_user: bool,
+    ) -> dict[str, object]:
+        assert require_after_latest_user is True
+        retry_clicks.append(click)
+        available = len(retry_clicks) == 1 or repeated_retry_state == "available"
+        return {
+            "url": target_url,
+            "available": available,
+            "clicked": len(retry_clicks) == 1 and click,
+            "ambiguous": (
+                len(retry_clicks) > 1 and repeated_retry_state == "ambiguous"
+            ),
+            "label": "Try again",
+        }
+
+    monkeypatch.setattr(computer_use_agent, "_submit_chromium_prompt", submit)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    clock = _Clock()
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+
+    with pytest.raises(
+        computer_use_agent.AgentConnectionInterrupted,
+        match=error_pattern,
+    ):
+        _submit_and_wait(
+            _Page(clock),
+            "chromium",
+            message,
+            lambda: False,
+            platform="chatgpt",
+            session_check=lambda _allow_transition: target_url,
+            submission_target_url=target_url,
+            session_mode="recent",
+        )
+    assert submit_calls == 1
+    assert retry_clicks == [True, False]
+
+
+@pytest.mark.parametrize(
+    (
+        "failed_assistant_id",
+        "clicked_error_text",
+        "settled_error_text",
+        "settled_count",
+    ),
+    (
+        (
+            "assistant-error",
+            "There was an error generating a response.",
+            "There was an error generating a response.",
+            2,
+        ),
+        (
+            "",
+            "There was an error generating a response. Try again",
+            "There was an error generating a response.",
+            2,
+        ),
+        (
+            "",
+            "There was an error generating a response.",
+            "There was an error generating a response.",
+            3,
+        ),
+    ),
+)
+def test_chatgpt_response_retry_never_accepts_the_stale_failed_assistant(
+    monkeypatch: pytest.MonkeyPatch,
+    failed_assistant_id: str,
+    clicked_error_text: str,
+    settled_error_text: str,
+    settled_count: int,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/retry-stale-assistant"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    failed = {
+        "url": target_url,
+        "count": 2,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": failed_assistant_id,
+        "latestUserMessageId": "user-current",
+        "text": clicked_error_text,
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    settled = {**failed, "count": settled_count, "text": settled_error_text}
+    snapshots = iter((baseline, failed, settled))
+    retry_calls: list[bool] = []
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target_url
+
+        def __init__(self, clock: _Clock) -> None:
+            self.clock = clock
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            self.clock.value = 6.0
+
+    def retry_control(
+        _page: object,
+        _expected_target_url: str,
+        *,
+        click: bool,
+        require_after_latest_user: bool,
+    ) -> dict[str, object]:
+        assert require_after_latest_user is True
+        retry_calls.append(click)
+        return {
+            "url": target_url,
+            "available": len(retry_calls) == 1,
+            "clicked": len(retry_calls) == 1 and click,
+            "ambiguous": False,
+            "label": "Try again" if len(retry_calls) == 1 else "",
+        }
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_submit_chromium_prompt",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+
+    def reject_stale_completion(value: str, **_kwargs: object) -> bool:
+        assert value not in {clicked_error_text, settled_error_text}
+        return False
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        reject_stale_completion,
+    )
+    clock = _Clock()
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+
+    with pytest.raises(
+        computer_use_agent.AgentConnectionInterrupted,
+        match="after one bounded Retry",
+    ):
+        _submit_and_wait(
+            _Page(clock),
+            "chromium",
+            message,
+            lambda: False,
+            platform="chatgpt",
+            session_check=lambda _allow_transition: target_url,
+            submission_target_url=target_url,
+            session_mode="recent",
+        )
+    assert retry_calls == [True, False]
+
+
+def test_chatgpt_response_retry_allows_valid_text_in_the_same_assistant_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/retry-same-assistant"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    failed = {
+        **baseline,
+        "count": 2,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": "assistant-current",
+        "latestUserMessageId": "user-current",
+        "text": "There was an error generating a response.",
+    }
+    generating = {
+        **failed,
+        "text": "Working",
+        "generating": True,
+    }
+    recovered = {
+        **failed,
+        "text": '{"action":"final","summary":"Recovered in place"}',
+    }
+    snapshots = iter((baseline, failed, generating, recovered))
+    retry_calls: list[bool] = []
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target_url
+
+        def __init__(self, clock: _Clock) -> None:
+            self.clock = clock
+            self.waits = 0
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            self.waits += 1
+            if self.waits >= 2:
+                self.clock.value = 6.0
+
+    def retry_control(
+        _page: object,
+        _expected_target_url: str,
+        *,
+        click: bool,
+        require_after_latest_user: bool,
+    ) -> dict[str, object]:
+        assert require_after_latest_user is True
+        retry_calls.append(click)
+        return {
+            "url": target_url,
+            "available": len(retry_calls) == 1,
+            "clicked": len(retry_calls) == 1 and click,
+            "ambiguous": False,
+            "label": "Try again" if len(retry_calls) == 1 else "",
+        }
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_submit_chromium_prompt",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        lambda value, **_kwargs: value == recovered["text"],
+    )
+    clock = _Clock()
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+
+    assert _submit_and_wait(
+        _Page(clock),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        session_check=lambda _allow_transition: target_url,
+        submission_target_url=target_url,
+        session_mode="recent",
+    ) == recovered["text"]
+    assert retry_calls == [True, False]
+
+
+def test_chatgpt_response_retry_probe_recovers_navigation_without_resubmission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/retry-probe-navigation"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    failed = {
+        **baseline,
+        "count": 2,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": "assistant-error",
+        "latestUserMessageId": "user-current",
+        "text": "There was an error generating a response.",
+    }
+    recovered = {
+        **failed,
+        "assistantMessageId": "assistant-recovered",
+        "text": '{"action":"bodycheck"}',
+    }
+    snapshots = iter((baseline, failed, recovered))
+    submit_calls = 0
+    retry_calls: list[bool] = []
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target_url
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    def submit(*_args: object, **_kwargs: object) -> None:
+        nonlocal submit_calls
+        submit_calls += 1
+
+    def retry_control(
+        _page: object,
+        _expected_target_url: str,
+        *,
+        click: bool,
+        require_after_latest_user: bool,
+    ) -> dict[str, object]:
+        assert require_after_latest_user is True
+        retry_calls.append(click)
+        if retry_calls == [True, False]:
+            raise RuntimeError("Execution context was destroyed during navigation")
+        return {
+            "url": target_url,
+            "available": len(retry_calls) == 1,
+            "clicked": len(retry_calls) == 1 and click,
+            "ambiguous": False,
+            "label": "Try again" if len(retry_calls) == 1 else "",
+        }
+
+    clock = _Clock()
+    monkeypatch.setattr(computer_use_agent, "_submit_chromium_prompt", submit)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_provider_human_verification_reason",
+        lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        lambda value, **_kwargs: value == recovered["text"],
+    )
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+    monkeypatch.setattr(
+        computer_use_agent.time,
+        "sleep",
+        lambda seconds: setattr(clock, "value", clock.value + seconds),
+    )
+
+    assert _submit_and_wait(
+        _Page(),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        session_check=lambda _allow_transition: target_url,
+        submission_target_url=target_url,
+        session_mode="recent",
+        availability_check=lambda: True,
+    ) == recovered["text"]
+    assert submit_calls == 1
+    assert retry_calls == [True, False, False]
+
+
+@pytest.mark.parametrize("stale_retry_state", ("available", "ambiguous"))
+def test_chatgpt_response_retry_allows_one_bounded_dom_settle_window(
+    monkeypatch: pytest.MonkeyPatch,
+    stale_retry_state: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/retry-settle"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    error = {
+        "url": target_url,
+        "count": 2,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": "assistant-error",
+        "latestUserMessageId": "user-current",
+        "text": "There was an error generating a response.",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    recovered = {
+        **error,
+        "count": 3,
+        "assistantMessageId": "assistant-recovered",
+        "text": '{"action":"bodycheck"}',
+    }
+    snapshots = iter((baseline, error, error, recovered))
+    retry_clicks: list[bool] = []
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target_url
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    def retry_control(
+        _page: object,
+        _expected_target_url: str,
+        *,
+        click: bool,
+        require_after_latest_user: bool,
+    ) -> dict[str, object]:
+        assert require_after_latest_user is True
+        retry_clicks.append(click)
+        available = len(retry_clicks) == 1 or (
+            len(retry_clicks) == 2 and stale_retry_state == "available"
+        )
+        ambiguous = (
+            len(retry_clicks) == 2 and stale_retry_state == "ambiguous"
+        )
+        return {
+            "url": target_url,
+            "available": available,
+            "clicked": click and available,
+            "ambiguous": ambiguous,
+            "label": "Try again" if available else "",
+        }
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_submit_chromium_prompt",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_is_web_response_complete",
+        lambda value, **_kwargs: value == recovered["text"],
+    )
+    clock = _Clock()
+    availability_calls = 0
+
+    def availability_check() -> tuple[bool, float]:
+        nonlocal availability_calls
+        availability_calls += 1
+        if availability_calls == 4:
+            clock.value = 10.0
+            return True, 10.0
+        return True, 0.0
+
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+
+    assert _submit_and_wait(
+        _Page(),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        session_check=lambda _allow_transition: target_url,
+        submission_target_url=target_url,
+        session_mode="recent",
+        availability_check=availability_check,
+    ) == recovered["text"]
+    assert retry_clicks == [True, False, False]
+    assert availability_calls == 7
+
+
+def test_chatgpt_ambiguous_response_retry_interrupts_without_clicking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/c/ambiguous-retry"
+    message = "Continue with the controller observation"
+    baseline = {
+        "url": target_url,
+        "count": 1,
+        "userCount": 1,
+        "latestUserText": "Previous turn",
+        "assistantMessageId": "assistant-old",
+        "latestUserMessageId": "user-old",
+        "text": "Previous response",
+        "generating": False,
+        "assistantAfterLatestUser": True,
+    }
+    current = {
+        **baseline,
+        "count": 2,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": "assistant-error",
+        "latestUserMessageId": "user-current",
+        "text": "Something went wrong",
+    }
+    snapshots = iter((baseline, current))
+
+    class _Page:
+        url = target_url
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_submit_chromium_prompt",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_chatgpt_retry_control",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "clicked": False,
+            "ambiguous": True,
+            "label": "",
+        },
+    )
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", lambda: 0)
+
+    with pytest.raises(
+        computer_use_agent.AgentConnectionInterrupted,
+        match="outside a verified provider-response error boundary",
+    ):
+        _submit_and_wait(
+            _Page(),
+            "chromium",
+            message,
+            lambda: False,
+            platform="chatgpt",
+            session_check=lambda _allow_transition: target_url,
+            submission_target_url=target_url,
+            session_mode="recent",
+        )
+
+
 def test_chromium_composer_reloads_once_after_a_stalled_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -16780,6 +19401,970 @@ def test_chromium_composer_reloads_once_after_a_stalled_page(
 
     assert page.composer.attempts >= 2
     assert page.reload_calls == [{"wait_until": "commit", "timeout": 5_000}]
+
+
+def test_chromium_composer_retries_exact_chatgpt_error_before_reload() -> None:
+    target_url = (
+        "https://chatgpt.com/g/"
+        "g-p-6a978edb95308191a53d2bb113154c10-worthward/project"
+    )
+
+    class _Composer:
+        def __init__(self, page: object) -> None:
+            self.page = page
+
+        def wait_for(self, **_kwargs: object) -> None:
+            if not self.page.ready:
+                raise TimeoutError("composer still unavailable")
+
+    class _Page:
+        url = target_url
+
+        def __init__(self) -> None:
+            self.ready = False
+            self.retry_clicks = 0
+            self.composer = _Composer(self)
+            self.reload_calls: list[dict[str, object]] = []
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return self.composer
+
+        def evaluate(
+            self,
+            expression: str,
+            argument: dict[str, object],
+        ) -> dict[str, object]:
+            assert argument == {
+                "expectedTargetUrl": target_url,
+                "click": True,
+                "requireComposerAbsent": True,
+                "requireAfterLatestUser": False,
+            }
+            assert "retryButton.click()" in expression
+            assert "/^(try again|retry)$/i" in expression
+            assert "normalizedText(document.body)" in expression
+            assert "!latestUser" in expression
+            assert "regenerate" not in expression.casefold()
+            self.retry_clicks += 1
+            self.ready = True
+            return {
+                "url": target_url,
+                "available": True,
+                "clicked": True,
+                "targetMismatch": False,
+                "label": "Try again",
+            }
+
+        def reload(self, **kwargs: object) -> None:
+            self.reload_calls.append(kwargs)
+
+    page = _Page()
+
+    assert _wait_for_chromium_composer(
+        page,
+        expected_target_url=target_url,
+    ) is True
+    assert page.retry_clicks == 1
+    assert page.reload_calls == []
+
+
+def test_chatgpt_project_landing_recovers_through_one_stable_id_sidebar_row() -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    class _Page:
+        def __init__(self) -> None:
+            self.url = target_url
+            self.goto_calls: list[str] = []
+            self.operations: list[str] = []
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.goto_calls.append(url)
+            self.url = url
+
+        def evaluate(
+            self,
+            expression: str,
+            argument: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            if argument is not None:
+                assert self.url == "https://chatgpt.com/"
+                assert argument["expectedProjectId"] == project_id
+                assert (
+                    argument["scanLimit"]
+                    == computer_use_agent.CHATGPT_PROJECT_SIDEBAR_SCAN_LIMIT
+                )
+                assert "matches.length !== 1" in expression
+                assert "homeButton.click()" in expression
+                assert "create-new-chat-button" not in expression
+                assert "key.startsWith('__reactProps$')" in expression
+                assert "rowProjectIds" in expression
+                assert "projectIds.length === 1" in expression
+                operation = str(argument["operation"])
+                row_index = int(argument["rowIndex"])
+                self.operations.append(operation)
+                if operation == "snapshot":
+                    return {
+                        "clicked": False,
+                        "matched": False,
+                        "reason": "",
+                        "rowCount": 3,
+                    }
+                if operation == "expand":
+                    return {
+                        "clicked": False,
+                        "matched": False,
+                        "toggled": True,
+                        "reason": "",
+                        "rowCount": 3,
+                    }
+                if operation == "inspect":
+                    return {
+                        "clicked": False,
+                        "matched": row_index == 1,
+                        "projectIdentityCount": 1,
+                        "reason": "",
+                        "rowCount": 3,
+                    }
+                if operation == "collapse":
+                    return {
+                        "clicked": False,
+                        "matched": False,
+                        "toggled": True,
+                        "reason": "",
+                        "rowCount": 3,
+                    }
+                assert operation == "click"
+                assert row_index == 1
+                self.url = target_url
+                return {
+                    "clicked": True,
+                    "matched": True,
+                    "reason": "",
+                    "rowCount": 3,
+                }
+            assert argument is None
+            assert "composerCount" in expression
+            return {
+                "url": self.url,
+                "composerCount": 1,
+                "retryOnly": False,
+            }
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+
+    assert computer_use_agent._recover_chatgpt_project_landing_from_sidebar(
+        page,
+        target_url,
+        should_stop=lambda: False,
+    )
+    assert page.goto_calls == ["https://chatgpt.com/"]
+    assert page.operations == [
+        "snapshot",
+        "snapshot",
+        "expand",
+        "inspect",
+        "collapse",
+        "expand",
+        "inspect",
+        "expand",
+        "inspect",
+        "collapse",
+        "click",
+    ]
+    assert page.url == target_url
+
+
+def test_chatgpt_project_sidebar_recovery_waits_for_row_identity_hydration() -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    class _Page:
+        def __init__(self) -> None:
+            self.url = target_url
+            self.inspect_calls = 0
+            self.waits: list[int] = []
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.url = url
+
+        def evaluate(
+            self,
+            _expression: str,
+            argument: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            if argument is None:
+                return {
+                    "url": self.url,
+                    "composerCount": 1,
+                    "retryOnly": False,
+                }
+            operation = str(argument["operation"])
+            if operation == "snapshot":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            if operation == "expand":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "toggled": True,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            if operation == "inspect":
+                self.inspect_calls += 1
+                hydrated = self.inspect_calls >= 5
+                return {
+                    "clicked": False,
+                    "matched": hydrated,
+                    "projectIdentityCount": 1 if hydrated else 0,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            assert operation == "click"
+            self.url = target_url
+            return {
+                "clicked": True,
+                "matched": True,
+                "reason": "",
+                "rowCount": 1,
+            }
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            self.waits.append(milliseconds)
+
+    page = _Page()
+
+    assert computer_use_agent._recover_chatgpt_project_landing_from_sidebar(
+        page,
+        target_url,
+        should_stop=lambda: False,
+    )
+    assert page.inspect_calls == 5
+    assert page.waits == [
+        computer_use_agent.WEB_SEND_BUTTON_POLL_MILLISECONDS
+    ] * 5
+
+
+def test_chatgpt_project_sidebar_recovery_rechecks_unique_id_after_row_reorder() -> None:
+    """Let the atomic click resolve a unique Project after sidebar rows reorder."""
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    class _Page:
+        def __init__(self) -> None:
+            self.url = target_url
+            self.inspect_calls = 0
+            self.click_calls = 0
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.url = url
+
+        def evaluate(
+            self,
+            _expression: str,
+            argument: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            if argument is None:
+                return {
+                    "url": self.url,
+                    "composerCount": 1,
+                    "retryOnly": False,
+                }
+            operation = str(argument["operation"])
+            if operation == "snapshot":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "reason": "",
+                    "rowCount": 2,
+                }
+            if operation == "expand":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "toggled": False,
+                    "reason": "",
+                    "rowCount": 2,
+                }
+            if operation == "inspect":
+                self.inspect_calls += 1
+                return {
+                    "clicked": False,
+                    "matched": True,
+                    "projectIdentityCount": 1,
+                    "reason": "",
+                    "rowCount": 2,
+                }
+            assert operation == "click"
+            self.click_calls += 1
+            self.url = target_url
+            return {
+                "clicked": True,
+                "matched": True,
+                "reason": "",
+                "rowCount": 2,
+            }
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+
+    assert computer_use_agent._recover_chatgpt_project_landing_from_sidebar(
+        page,
+        target_url,
+        should_stop=lambda: False,
+    )
+    assert page.inspect_calls == 2
+    assert page.click_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("scenario", "error_pattern"),
+    (
+        ("ambiguous", "ambiguous-project"),
+        ("not-found", "project-not-found"),
+        ("row-limit", "row-limit"),
+        ("wrong-final-url", "navigated away from the selected Project"),
+    ),
+)
+def test_chatgpt_project_landing_sidebar_recovery_fails_closed(
+    scenario: str,
+    error_pattern: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    class _Page:
+        def __init__(self) -> None:
+            self.url = target_url
+            self.clicks = 0
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.url = url
+
+        def evaluate(
+            self,
+            _expression: str,
+            argument: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            if argument is None:
+                return {
+                    "url": self.url,
+                    "composerCount": 1,
+                    "retryOnly": False,
+                }
+            operation = str(argument["operation"])
+            row_index = int(argument["rowIndex"])
+            if operation == "snapshot":
+                if scenario == "row-limit":
+                    return {
+                        "clicked": False,
+                        "matched": False,
+                        "reason": "row-limit",
+                        "rowCount": 21,
+                    }
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "reason": "",
+                    "rowCount": 2,
+                }
+            if operation == "expand":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "toggled": False,
+                    "reason": "",
+                    "rowCount": 2,
+                }
+            if operation == "inspect":
+                matched = scenario == "ambiguous" or (
+                    scenario == "wrong-final-url" and row_index == 0
+                )
+                return {
+                    "clicked": False,
+                    "matched": matched,
+                    "projectIdentityCount": 1,
+                    "reason": "",
+                    "rowCount": 2,
+                }
+            assert operation == "click"
+            if scenario == "ambiguous":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "reason": "ambiguous-project",
+                    "rowCount": 2,
+                }
+            self.clicks += 1
+            self.url = "https://chatgpt.com/c/different-conversation"
+            return {
+                "clicked": True,
+                "matched": True,
+                "reason": "",
+                "rowCount": 2,
+            }
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+
+    with pytest.raises(RuntimeError, match=error_pattern):
+        computer_use_agent._recover_chatgpt_project_landing_from_sidebar(
+            page,
+            target_url,
+            should_stop=lambda: False,
+        )
+
+    assert page.clicks == (1 if scenario == "wrong-final-url" else 0)
+
+
+def test_chatgpt_project_landing_sidebar_recovery_rejects_nonunique_composer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+    clock = {"value": 0.0}
+
+    class _Page:
+        def __init__(self) -> None:
+            self.url = target_url
+            self.clicks = 0
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.url = url
+
+        def evaluate(
+            self,
+            _expression: str,
+            argument: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            if argument is None:
+                return {
+                    "url": self.url,
+                    "composerCount": 2,
+                    "retryOnly": False,
+                }
+            operation = str(argument["operation"])
+            if operation == "snapshot":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            if operation == "expand":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "toggled": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            if operation == "inspect":
+                return {
+                    "clicked": False,
+                    "matched": True,
+                    "projectIdentityCount": 1,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            assert operation == "click"
+            self.clicks += 1
+            self.url = target_url
+            return {
+                "clicked": True,
+                "matched": True,
+                "reason": "",
+                "rowCount": 1,
+            }
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            clock["value"] += milliseconds / 1_000
+
+    page = _Page()
+    monkeypatch.setattr(
+        computer_use_agent,
+        "CHATGPT_PROJECT_SIDEBAR_RECOVERY_TOTAL_SECONDS",
+        1.0,
+    )
+    monkeypatch.setattr(
+        computer_use_agent.time,
+        "monotonic",
+        lambda: clock["value"],
+    )
+
+    with pytest.raises(RuntimeError, match="exceeded its total deadline"):
+        computer_use_agent._recover_chatgpt_project_landing_from_sidebar(
+            page,
+            target_url,
+            should_stop=lambda: False,
+        )
+
+    assert page.clicks == 1
+
+
+def test_chatgpt_project_landing_sidebar_recovery_honors_stop_mid_scan() -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+    stop_requested = Event()
+
+    class _Page:
+        def __init__(self) -> None:
+            self.url = target_url
+            self.operations: list[str] = []
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.url = url
+
+        def evaluate(
+            self,
+            _expression: str,
+            argument: dict[str, object],
+        ) -> dict[str, object]:
+            operation = str(argument["operation"])
+            self.operations.append(operation)
+            if operation == "snapshot":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            assert operation == "expand"
+            stop_requested.set()
+            return {
+                "clicked": False,
+                "matched": False,
+                "toggled": True,
+                "reason": "",
+                "rowCount": 1,
+            }
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+
+    assert not computer_use_agent._recover_chatgpt_project_landing_from_sidebar(
+        page,
+        target_url,
+        should_stop=stop_requested.is_set,
+    )
+    assert page.operations == ["snapshot", "snapshot", "expand"]
+
+
+def test_chatgpt_project_sidebar_recovery_restarts_one_safe_pre_click_scan() -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    class _Page:
+        def __init__(self) -> None:
+            self.url = target_url
+            self.goto_calls = 0
+            self.inspect_calls = 0
+            self.click_calls = 0
+            self.operations: list[str] = []
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.goto_calls += 1
+            self.url = url
+
+        def evaluate(
+            self,
+            _expression: str,
+            argument: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            if argument is None:
+                return {
+                    "url": self.url,
+                    "composerCount": 1,
+                    "retryOnly": False,
+                }
+            operation = str(argument["operation"])
+            self.operations.append(operation)
+            if operation == "snapshot":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            if operation == "expand":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "toggled": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            if operation == "inspect":
+                self.inspect_calls += 1
+                if self.inspect_calls == 1:
+                    raise RuntimeError(
+                        "Execution context was destroyed during navigation"
+                    )
+                return {
+                    "clicked": False,
+                    "matched": True,
+                    "projectIdentityCount": 1,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            assert operation == "click"
+            self.click_calls += 1
+            self.url = target_url
+            return {
+                "clicked": True,
+                "matched": True,
+                "reason": "",
+                "rowCount": 1,
+            }
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+
+    assert computer_use_agent._recover_chatgpt_project_landing_from_sidebar(
+        page,
+        target_url,
+        should_stop=lambda: False,
+    )
+    assert page.goto_calls == 1
+    assert page.inspect_calls == 2
+    assert page.click_calls == 1
+    assert page.operations == [
+        "snapshot",
+        "snapshot",
+        "expand",
+        "inspect",
+        "snapshot",
+        "snapshot",
+        "expand",
+        "inspect",
+        "click",
+    ]
+
+
+def test_chatgpt_project_sidebar_recovery_rejects_second_pre_click_transient() -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    class _Page:
+        def __init__(self) -> None:
+            self.url = target_url
+            self.inspect_calls = 0
+            self.click_calls = 0
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.url = url
+
+        def evaluate(
+            self,
+            _expression: str,
+            argument: dict[str, object],
+        ) -> dict[str, object]:
+            operation = str(argument["operation"])
+            if operation == "snapshot":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            if operation == "expand":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "toggled": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            assert operation == "inspect"
+            self.inspect_calls += 1
+            raise RuntimeError("Execution context was destroyed during navigation")
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+
+    with pytest.raises(
+        RuntimeError,
+        match="did not stabilize after one safe scan restart",
+    ):
+        computer_use_agent._recover_chatgpt_project_landing_from_sidebar(
+            page,
+            target_url,
+            should_stop=lambda: False,
+        )
+
+    assert page.inspect_calls == 2
+    assert page.click_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "failure"),
+    (
+        ("home", TimeoutError("Home navigation timed out")),
+        ("click", RuntimeError("Execution context was destroyed during navigation")),
+        ("click", TimeoutError("Project navigation timed out after click")),
+    ),
+)
+def test_chatgpt_project_sidebar_recovery_never_repeats_an_uncertain_click(
+    failure_stage: str,
+    failure: Exception,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    class _Page:
+        def __init__(self) -> None:
+            self.url = target_url
+            self.goto_calls = 0
+            self.click_calls = 0
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.goto_calls += 1
+            if failure_stage == "home" and self.goto_calls == 1:
+                raise failure
+            self.url = url
+
+        def evaluate(
+            self,
+            _expression: str,
+            argument: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            if argument is None:
+                return {
+                    "url": self.url,
+                    "composerCount": 1,
+                    "retryOnly": False,
+                }
+            operation = str(argument["operation"])
+            if operation == "snapshot":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            if operation == "expand":
+                return {
+                    "clicked": False,
+                    "matched": False,
+                    "toggled": False,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            if operation == "inspect":
+                return {
+                    "clicked": False,
+                    "matched": True,
+                    "projectIdentityCount": 1,
+                    "reason": "",
+                    "rowCount": 1,
+                }
+            assert operation == "click"
+            self.click_calls += 1
+            self.url = target_url
+            if failure_stage == "click":
+                raise failure
+            return {
+                "clicked": True,
+                "matched": True,
+                "reason": "",
+                "rowCount": 1,
+            }
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+
+    assert computer_use_agent._recover_chatgpt_project_landing_from_sidebar(
+        page,
+        target_url,
+        should_stop=lambda: False,
+    )
+    assert page.goto_calls == (2 if failure_stage == "home" else 1)
+    assert page.click_calls == 1
+
+
+def test_chatgpt_project_landing_sidebar_recovery_is_wired_after_one_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    target_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Composer:
+        def __init__(self, page: object, clock: _Clock) -> None:
+            self.page = page
+            self.clock = clock
+
+        def wait_for(self, **_kwargs: object) -> None:
+            if not self.page.ready:
+                self.clock.value += 3.0
+                raise TimeoutError("composer unavailable")
+
+    class _Page:
+        url = target_url
+
+        def __init__(self, clock: _Clock) -> None:
+            self.ready = False
+            self.composer = _Composer(self, clock)
+            self.reload_calls: list[dict[str, object]] = []
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return self.composer
+
+        def evaluate(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("The mocked helpers own browser evaluation.")
+
+        def reload(self, **kwargs: object) -> None:
+            self.reload_calls.append(kwargs)
+
+    clock = _Clock()
+    page = _Page(clock)
+    retry_calls = 0
+    recovery_calls = 0
+
+    def retry_control(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal retry_calls
+        retry_calls += 1
+        return {
+            "url": target_url,
+            "available": True,
+            "clicked": True,
+            "ambiguous": False,
+            "label": "Try again",
+        }
+
+    def recover(*_args: object, **_kwargs: object) -> bool:
+        nonlocal recovery_calls
+        recovery_calls += 1
+        page.ready = True
+        return True
+
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_recover_chatgpt_project_landing_from_sidebar",
+        recover,
+    )
+
+    assert _wait_for_chromium_composer(
+        page,
+        expected_target_url=target_url,
+    )
+    assert retry_calls == 1
+    assert recovery_calls == 1
+    assert page.reload_calls == []
+
+
+@pytest.mark.parametrize(
+    "retry_error",
+    (
+        "Execution context was destroyed during navigation",
+        "WebSocket is not open: connection closed",
+    ),
+)
+def test_chromium_composer_retry_uncertain_commit_is_not_clicked_twice(
+    monkeypatch: pytest.MonkeyPatch,
+    retry_error: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://chatgpt.com/g/g-p-6a978edb95308191a53d2bb113154c10/project"
+
+    class _Composer:
+        def __init__(self, page: object) -> None:
+            self.page = page
+
+        def wait_for(self, **_kwargs: object) -> None:
+            if not self.page.ready:
+                raise TimeoutError("composer still unavailable")
+
+    class _Page:
+        url = target_url
+
+        def __init__(self) -> None:
+            self.ready = False
+            self.composer = _Composer(self)
+            self.reload_calls: list[dict[str, object]] = []
+
+        def locator(self, selector: str) -> _Composer:
+            assert selector == "#prompt-textarea"
+            return self.composer
+
+        def evaluate(self, _expression: str, _argument: object = None) -> object:
+            raise AssertionError("The mocked retry helper owns this evaluation.")
+
+        def reload(self, **kwargs: object) -> None:
+            self.reload_calls.append(kwargs)
+
+    page = _Page()
+    retry_calls = 0
+
+    def retry_control(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal retry_calls
+        retry_calls += 1
+        page.ready = True
+        raise RuntimeError(retry_error)
+
+    monkeypatch.setattr(computer_use_agent, "_chatgpt_retry_control", retry_control)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_provider_human_verification_reason",
+        lambda *_args, **_kwargs: "",
+    )
+
+    assert _wait_for_chromium_composer(
+        page,
+        expected_target_url=target_url,
+    ) is True
+    assert retry_calls == 1
+    assert page.reload_calls == []
 
 
 def test_stop_interrupts_initial_chromium_composer_verification_before_any_send(
@@ -17314,6 +20899,310 @@ def test_chatgpt_identical_response_requires_a_new_matching_message_pair(monkeyp
     assert result == ("" if mismatch else response)
 
 
+def test_chatgpt_first_user_message_id_proves_an_empty_baseline_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Accept the first exact user/assistant pair when no baseline user ID exists."""
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/first-turn"
+    message = "Start the first controller turn."
+    response = '{"action":"bodycheck"}'
+    baseline = {
+        "url": target,
+        "count": 0,
+        "text": "",
+        "generating": False,
+        "userCount": 0,
+        "latestUserText": "",
+        "assistantAfterLatestUser": False,
+        "assistantMessageId": "",
+        "latestUserMessageId": "",
+    }
+    current = {
+        **baseline,
+        "count": 1,
+        "text": response,
+        "userCount": 1,
+        "latestUserText": message,
+        "assistantAfterLatestUser": True,
+        "assistantMessageId": "assistant-current",
+        "latestUserMessageId": "user-current",
+    }
+    snapshots = iter((baseline, current))
+    delivered: list[bool] = []
+
+    monkeypatch.setattr(
+        agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agent,
+        "_chatgpt_retry_control",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        },
+    )
+    monkeypatch.setattr(
+        agent,
+        "_is_web_response_complete",
+        lambda value, **_kwargs: value == response,
+    )
+    monkeypatch.setattr(agent.time, "monotonic", lambda: 0)
+
+    assert agent._submit_and_wait(
+        SimpleNamespace(url=target),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        submission_target_url=target,
+        session_mode="recent",
+        on_delivered=lambda: delivered.append(True),
+    ) == response
+    assert delivered == [True]
+
+
+@pytest.mark.parametrize(
+    "message_ids",
+    ["both", "neither", "current-only", "current-only-different-baseline"],
+)
+def test_chatgpt_old_row_hydration_does_not_forge_exact_user_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    message_ids: str,
+) -> None:
+    """Do not treat older hydrated DOM rows as proof that a repeated prompt was sent."""
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/old-row-hydration"
+    message = "Repeat this exact audit request."
+    response = "A previously completed response."
+    baseline = {
+        "url": target,
+        "count": 1,
+        "text": response,
+        "generating": False,
+        "userCount": 1,
+        "latestUserText": (
+            "A different previous request."
+            if message_ids == "current-only-different-baseline"
+            else message
+        ),
+        "assistantAfterLatestUser": True,
+        "assistantMessageId": "assistant-current" if message_ids == "both" else "",
+        "latestUserMessageId": "user-current" if message_ids == "both" else "",
+    }
+    hydrated = {
+        **baseline,
+        "count": 2,
+        "userCount": 2,
+        "latestUserText": message,
+        "latestUserMessageId": (
+            "user-current"
+            if message_ids.startswith("current-only")
+            else baseline["latestUserMessageId"]
+        ),
+    }
+    snapshots = iter((baseline, hydrated))
+    stopped = Event()
+    delivered: list[bool] = []
+    monkeypatch.setattr(
+        agent,
+        "_chatgpt_response_snapshot",
+        lambda *_args: next(snapshots),
+    )
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent, "_stop_web_generation", lambda *_args: None)
+    monkeypatch.setattr(agent, "_web_wait", lambda *_args: stopped.set())
+    monkeypatch.setattr(agent, "WEB_RESPONSE_MINIMUM_SECONDS", 0)
+    monkeypatch.setattr(agent, "WEB_RESPONSE_STABLE_SECONDS", 0)
+    monkeypatch.setattr(agent.time, "monotonic", lambda: 0)
+
+    result = agent._submit_and_wait(
+        SimpleNamespace(url=target),
+        "chromium",
+        message,
+        stopped.is_set,
+        submission_target_url=target,
+        session_mode="recent",
+        on_delivered=lambda: delivered.append(True),
+    )
+
+    assert result == ""
+    assert delivered == []
+
+
+def test_chatgpt_single_poll_candidate_is_cleared_after_dom_pair_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never age a response candidate after its exact DOM pair disappears."""
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/receipt-pair-rollback"
+    message = "Continue with the next bounded action."
+    candidate = "stale partial assistant text"
+    baseline = {
+        "url": target,
+        "count": 1,
+        "text": "Previous response",
+        "generating": False,
+        "userCount": 1,
+        "latestUserText": "Previous request",
+        "assistantAfterLatestUser": True,
+        "assistantMessageId": "assistant-before",
+        "latestUserMessageId": "user-before",
+    }
+    current = {
+        **baseline,
+        "count": 2,
+        "text": candidate,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": "assistant-current",
+        "latestUserMessageId": "user-current",
+    }
+    snapshot_calls = 0
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            clock.value += 0.6
+
+    def snapshot(*_args: object) -> dict[str, object]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 1:
+            return baseline
+        if snapshot_calls == 2:
+            return current
+        return baseline
+
+    clock = _Clock()
+    monkeypatch.setattr(agent, "_chatgpt_response_snapshot", snapshot)
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agent,
+        "_chatgpt_retry_control",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        },
+    )
+    monkeypatch.setattr(agent, "_stop_web_generation", lambda *_args: None)
+    monkeypatch.setattr(agent.time, "monotonic", clock)
+
+    result = agent._submit_and_wait(
+        _Page(),
+        "chromium",
+        message,
+        lambda: clock.value >= 2.4,
+        platform="chatgpt",
+        submission_target_url=target,
+        session_mode="recent",
+        timeout_seconds=10,
+    )
+
+    assert result == ""
+    assert snapshot_calls >= 3
+
+
+def test_chatgpt_restored_dom_pair_restarts_response_stability_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Require a fresh stable interval after the exact DOM pair returns."""
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/receipt-pair-restored"
+    message = "Continue with the next bounded action."
+    candidate = '{"action":"bodycheck"}'
+    baseline = {
+        "url": target,
+        "count": 1,
+        "text": "Previous response",
+        "generating": False,
+        "userCount": 1,
+        "latestUserText": "Previous request",
+        "assistantAfterLatestUser": True,
+        "assistantMessageId": "assistant-before",
+        "latestUserMessageId": "user-before",
+    }
+    current = {
+        **baseline,
+        "count": 2,
+        "text": candidate,
+        "userCount": 2,
+        "latestUserText": message,
+        "assistantMessageId": "assistant-current",
+        "latestUserMessageId": "user-current",
+    }
+    snapshot_calls = 0
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _Page:
+        url = target
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            clock.value += 0.6
+
+    def snapshot(*_args: object) -> dict[str, object]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 1:
+            return baseline
+        if snapshot_calls == 3:
+            return baseline
+        return current
+
+    clock = _Clock()
+    monkeypatch.setattr(agent, "_chatgpt_response_snapshot", snapshot)
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        agent,
+        "_chatgpt_retry_control",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "clicked": False,
+            "ambiguous": False,
+            "label": "",
+        },
+    )
+    monkeypatch.setattr(agent.time, "monotonic", clock)
+
+    result = agent._submit_and_wait(
+        _Page(),
+        "chromium",
+        message,
+        lambda: False,
+        platform="chatgpt",
+        submission_target_url=target,
+        session_mode="recent",
+        timeout_seconds=10,
+    )
+
+    assert result == candidate
+    assert clock.value == pytest.approx(2.4)
+    assert snapshot_calls == 6
+
+
 def test_chatgpt_delivery_callbacks_require_exact_new_user_receipt(monkeypatch) -> None:
     import app.core.computer_use_agent as agent
 
@@ -17374,3 +21263,721 @@ def test_chatgpt_delivery_callbacks_require_exact_new_user_receipt(monkeypatch) 
         "delivered",
         f"response_received:{response}",
     ]
+
+
+def test_chatgpt_unrelated_new_user_never_marks_controller_delivered(monkeypatch) -> None:
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/delivery-checkpoint"
+    message = "Continue with the next bounded action."
+    snapshots = iter(
+        (
+            {
+                "url": target,
+                "count": 2,
+                "text": "previous",
+                "generating": False,
+                "userCount": 2,
+                "latestUserText": "previous request",
+                "assistantAfterLatestUser": True,
+                "assistantMessageId": "assistant-before",
+                "latestUserMessageId": "user-before",
+            },
+            {
+                "url": target,
+                "count": 3,
+                "text": '{"action":"bodycheck"}',
+                "generating": False,
+                "userCount": 3,
+                "latestUserText": "A different user request.",
+                "assistantAfterLatestUser": True,
+                "assistantMessageId": "assistant-after",
+                "latestUserMessageId": "user-after",
+            },
+        )
+    )
+    stopped = Event()
+    phases: list[str] = []
+    monkeypatch.setattr(agent, "_chatgpt_response_snapshot", lambda *_args: next(snapshots))
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent, "_stop_web_generation", lambda *_args: None)
+    monkeypatch.setattr(agent, "_web_wait", lambda *_args: stopped.set())
+    monkeypatch.setattr(agent, "WEB_RESPONSE_MINIMUM_SECONDS", 0)
+    monkeypatch.setattr(agent, "WEB_RESPONSE_STABLE_SECONDS", 0)
+    monkeypatch.setattr(agent.time, "monotonic", lambda: 0)
+
+    result = agent._submit_and_wait(
+        SimpleNamespace(url=target),
+        "chromium",
+        message,
+        stopped.is_set,
+        platform="chatgpt",
+        submission_target_url=target,
+        session_mode="recent",
+        on_commit_attempted=lambda: phases.append("commit_attempted"),
+        on_delivered=lambda: phases.append("delivered"),
+        on_response_received=lambda value: phases.append(
+            f"response_received:{value}"
+        ),
+    )
+
+    assert result == ""
+    assert phases == ["commit_attempted"]
+
+
+@pytest.mark.parametrize("platform", ["chatgpt", "grok"])
+def test_composer_reload_linearizes_stop_at_the_final_action_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+) -> None:
+    """An accepted Stop must win immediately before either composer reload."""
+    import app.core.computer_use_agent as agent
+
+    stop_requested = _LinearizedStopSignal()
+    original_gate = stop_requested.run_unless_set
+
+    class _Composer:
+        @property
+        def first(self) -> "_Composer":
+            return self
+
+        def wait_for(self, **_kwargs: object) -> None:
+            raise TimeoutError("composer stalled")
+
+    class _Page:
+        def __init__(self) -> None:
+            self.reload_calls = 0
+
+        def locator(self, _selector: str) -> _Composer:
+            return _Composer()
+
+        def reload(self, **_kwargs: object) -> None:
+            self.reload_calls += 1
+
+    gate_calls = 0
+
+    def stop_at_reload(action: object) -> tuple[bool, object]:
+        nonlocal gate_calls
+        gate_calls += 1
+        stop_requested.set()
+        assert callable(action)
+        return original_gate(action)
+
+    page = _Page()
+    stop_requested.run_unless_set = stop_at_reload  # type: ignore[method-assign]
+    monkeypatch.setattr(agent, "CHATGPT_COMPOSER_TIMEOUT_SECONDS", 0.001)
+
+    result = (
+        agent._wait_for_chromium_composer(
+            page,
+            should_stop=stop_requested.is_set,
+            expected_target_url="https://chatgpt.com/",
+        )
+        if platform == "chatgpt"
+        else agent._wait_for_web_composer(
+            page,
+            platform,
+            should_stop=stop_requested.is_set,
+        )
+    )
+
+    assert result is False
+    assert gate_calls == 1
+    assert page.reload_calls == 0
+
+
+def test_chat_mode_linearizes_stop_at_the_final_action_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not change Chat/Work mode after Stop has been accepted."""
+    import app.core.computer_use_agent as agent
+
+    target = "https://chatgpt.com/c/chat-mode-stop"
+    stop_requested = _LinearizedStopSignal()
+    original_gate = stop_requested.run_unless_set
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    settings = ComputerUseSettings(workspace_path=str(workspace))
+    controller = WorkspaceController(workspace, settings, stop_requested.is_set)
+
+    def stop_at_chat_mode(action: object) -> tuple[bool, object]:
+        stop_requested.set()
+        assert callable(action)
+        return original_gate(action)
+
+    stop_requested.run_unless_set = stop_at_chat_mode  # type: ignore[method-assign]
+    monkeypatch.setattr(agent, "_provider_human_verification_reason", lambda *_args: "")
+    monkeypatch.setattr(agent, "_verify_agent_page", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        agent,
+        "_select_chat_mode",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("Stop must win before the Chat-mode click.")
+        ),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_select_web_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Stop must return before model selection.")
+        ),
+    )
+
+    result = _run_web_action_loop(
+        page=SimpleNamespace(url=target),
+        browser_kind="chromium",
+        initial_message="Inspect the project.",
+        controller=controller,
+        context_path=None,
+        settings=settings,
+        session_mode="recent",
+        selected_target_url=target,
+        should_stop=stop_requested.is_set,
+        update=lambda **_changes: None,
+    )
+
+    assert result == ("", target, 0, False)
+    assert stop_requested.is_set()
+
+
+def test_chatgpt_model_transaction_linearizes_stop_at_the_final_action_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Block every ChatGPT model and effort mutation when Stop wins the gate."""
+    import app.core.computer_use_agent as agent
+
+    stop_requested = _LinearizedStopSignal()
+    original_gate = stop_requested.run_unless_set
+
+    def stop_at_model_transaction(action: object) -> tuple[bool, object]:
+        stop_requested.set()
+        assert callable(action)
+        return original_gate(action)
+
+    stop_requested.run_unless_set = stop_at_model_transaction  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        agent,
+        "_select_chatgpt_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Stop must win before model or effort controls mutate.")
+        ),
+    )
+
+    assert (
+        _select_web_model(
+            SimpleNamespace(),
+            "chromium",
+            "chatgpt",
+            DEFAULT_CHATGPT_MODEL,
+            should_stop=stop_requested.is_set,
+        )
+        is False
+    )
+    assert stop_requested.is_set()
+
+
+@pytest.mark.parametrize("stop_gate", [1, 2, 3])
+def test_initial_chromium_setup_linearizes_stop_before_tab_or_navigation_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stop_gate: int,
+) -> None:
+    """Stop can win before browser acquisition, tab selection/new-page, or initial goto."""
+    import app.core.computer_use_agent as agent
+
+    class _Descriptor:
+        engine = "chromium"
+
+    class _Page:
+        url = "about:blank"
+
+    page = _Page()
+
+    class _BrowserContext:
+        def __enter__(self) -> "_BrowserContext":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class _PlaywrightContext:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    stop_requested = _LinearizedStopSignal()
+    original_gate = stop_requested.run_unless_set
+    gate_calls = 0
+    selected = 0
+    navigated = 0
+    focus_restores = 0
+
+    def stop_at_selected_gate(action: object) -> tuple[bool, object]:
+        nonlocal gate_calls
+        gate_calls += 1
+        if gate_calls == stop_gate:
+            stop_requested.set()
+        assert callable(action)
+        return original_gate(action)
+
+    def select_page(*_args: object, **_kwargs: object) -> _Page:
+        nonlocal selected
+        selected += 1
+        return page
+
+    def navigate(*_args: object, **_kwargs: object) -> None:
+        nonlocal navigated
+        navigated += 1
+
+    def restore_focus(*_args: object) -> None:
+        nonlocal focus_restores
+        focus_restores += 1
+
+    stop_requested.run_unless_set = stop_at_selected_gate  # type: ignore[method-assign]
+    monkeypatch.setattr(agent.sys, "platform", "darwin")
+    monkeypatch.setattr(agent, "browser_descriptors", lambda _config: {"edge": _Descriptor()})
+    monkeypatch.setattr(agent, "sync_playwright_or_error", lambda: _PlaywrightContext())
+    monkeypatch.setattr(
+        agent,
+        "launch_chromium_context",
+        lambda *_args, **_kwargs: _BrowserContext(),
+    )
+    monkeypatch.setattr(agent, "select_provider_tab", select_page)
+    monkeypatch.setattr(agent, "goto_with_retry", navigate)
+    monkeypatch.setattr(agent, "_capture_macos_frontmost_application", lambda: "Finder")
+    monkeypatch.setattr(
+        agent,
+        "_restore_macos_frontmost_application_after_task_stage",
+        restore_focus,
+    )
+    monkeypatch.setattr(agent, "_keep_task_stage_window_available", lambda *_args: None)
+    monkeypatch.setattr(
+        agent,
+        "_run_web_action_loop",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Stop must return before the action loop.")
+        ),
+    )
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = "https://chatgpt.com/"
+
+    result = run_web_computer_use(
+        prompt="Inspect the project.",
+        workspace=workspace,
+        context_path=None,
+        config=CrawlConfig(),
+        settings=ComputerUseSettings(workspace_path=str(workspace)),
+        target_url=target,
+        should_stop=stop_requested.is_set,
+        update=lambda **_changes: None,
+        process_changed=lambda _process: None,
+    )
+
+    assert result == ("", target, 0, False)
+    assert selected == (0 if stop_gate <= 2 else 1)
+    assert navigated == 0
+    assert focus_restores == (1 if stop_gate == 3 else 0)
+    assert gate_calls == stop_gate
+
+
+def test_linearized_stop_is_visible_inside_an_inflight_cooperative_gate() -> None:
+    """Publish Stop early enough for a guarded polling action to release its gate."""
+    stop_requested = _LinearizedStopSignal()
+    action_started = Event()
+    action_observed_stop = Event()
+    gate_result: list[tuple[bool, object]] = []
+    stop_result: list[bool] = []
+
+    def cooperative_action() -> None:
+        action_started.set()
+        assert action_observed_stop.wait(timeout=2)
+
+    def observe_stop() -> None:
+        deadline = time.monotonic() + 2
+        while not stop_requested.is_set() and time.monotonic() < deadline:
+            time.sleep(0.001)
+        if stop_requested.is_set():
+            action_observed_stop.set()
+
+    gate_thread = Thread(
+        target=lambda: gate_result.append(
+            stop_requested.run_unless_set(cooperative_action)
+        )
+    )
+    gate_thread.start()
+    assert action_started.wait(timeout=2)
+    observer_thread = Thread(target=observe_stop)
+    stop_thread = Thread(target=lambda: stop_result.append(stop_requested.set()))
+    observer_thread.start()
+    stop_thread.start()
+    gate_thread.join(timeout=2)
+    stop_thread.join(timeout=2)
+    observer_thread.join(timeout=2)
+
+    assert not gate_thread.is_alive()
+    assert not stop_thread.is_alive()
+    assert not observer_thread.is_alive()
+    assert action_observed_stop.is_set()
+    assert gate_result == [(True, None)]
+    assert stop_result == [True]
+
+
+def test_rejected_stop_after_completion_does_not_leave_a_transient_flag() -> None:
+    stop_requested = _LinearizedStopSignal()
+
+    assert stop_requested.claim_completion() is True
+    assert stop_requested.set() is False
+    assert stop_requested.is_set() is False
+
+
+def test_provider_read_recovery_budget_is_shared_across_helper_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new helper invocation must not replenish the current exchange budget."""
+    import app.core.computer_use_agent as agent
+
+    budget = agent._ProviderReadRecoveryBudget(
+        connection_retries_remaining=1,
+        navigation_retries_remaining=1,
+    )
+    first_calls = 0
+
+    def recover_once() -> str:
+        nonlocal first_calls
+        first_calls += 1
+        if first_calls == 1:
+            raise RuntimeError("connection reset")
+        return "recovered"
+
+    monkeypatch.setattr(agent.time, "sleep", lambda _seconds: None)
+    assert agent._run_recoverable_provider_read(
+        recover_once,
+        page=SimpleNamespace(),
+        platform="chatgpt",
+        availability_check=None,
+        should_stop=lambda: False,
+        recovery_budget=budget,
+    )[:2] == (True, "recovered")
+
+    with pytest.raises(agent.AgentConnectionInterrupted, match="did not recover"):
+        agent._run_recoverable_provider_read(
+            lambda: (_ for _ in ()).throw(RuntimeError("connection closed")),
+            page=SimpleNamespace(),
+            platform="chatgpt",
+            availability_check=None,
+            should_stop=lambda: False,
+            recovery_budget=budget,
+        )
+
+    assert budget.connection_retries_remaining == 0
+    assert budget.navigation_retries_remaining == 1
+
+
+def test_provider_read_recovery_budget_tracks_connection_and_navigation_separately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as agent
+
+    budget = agent._ProviderReadRecoveryBudget(
+        connection_retries_remaining=1,
+        navigation_retries_remaining=1,
+    )
+    failures = iter(
+        (
+            RuntimeError("connection refused"),
+            None,
+            RuntimeError("Execution context was destroyed"),
+            None,
+        )
+    )
+
+    def read() -> str:
+        failure = next(failures)
+        if failure is not None:
+            raise failure
+        return "ok"
+
+    monkeypatch.setattr(agent.time, "sleep", lambda _seconds: None)
+    for _index in range(2):
+        assert agent._run_recoverable_provider_read(
+            read,
+            page=SimpleNamespace(),
+            platform="chatgpt",
+            availability_check=None,
+            should_stop=lambda: False,
+            recovery_budget=budget,
+        )[:2] == (True, "ok")
+
+    assert budget.connection_retries_remaining == 0
+    assert budget.navigation_retries_remaining == 0
+
+
+def test_provider_read_human_pause_does_not_consume_transport_budget() -> None:
+    import app.core.computer_use_agent as agent
+
+    budget = agent._ProviderReadRecoveryBudget(
+        connection_retries_remaining=1,
+        navigation_retries_remaining=1,
+    )
+    available, result, paused = agent._run_recoverable_provider_read(
+        lambda: "ready",
+        page=SimpleNamespace(),
+        platform="chatgpt",
+        availability_check=lambda: (True, 7.5),
+        should_stop=lambda: False,
+        recovery_budget=budget,
+    )
+
+    assert (available, result, paused) == (True, "ready", 7.5)
+    assert budget.connection_retries_remaining == 1
+    assert budget.navigation_retries_remaining == 1
+
+
+def test_zero_provider_read_recovery_budget_does_not_preempt_a_clean_read() -> None:
+    import app.core.computer_use_agent as agent
+
+    budget = agent._ProviderReadRecoveryBudget(
+        connection_retries_remaining=0,
+        navigation_retries_remaining=0,
+    )
+
+    assert agent._run_recoverable_provider_read(
+        lambda: "clean",
+        page=SimpleNamespace(),
+        platform="chatgpt",
+        availability_check=None,
+        should_stop=lambda: False,
+        recovery_budget=budget,
+    )[:2] == (True, "clean")
+
+
+def test_initial_chromium_acquisition_finishes_cleanup_before_stop_is_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Stop racing a blocked Edge launch waits for launch cleanup and skips later mutations."""
+    import app.core.computer_use_agent as agent
+
+    class _Descriptor:
+        engine = "chromium"
+
+    launch_started = Event()
+    release_launch = Event()
+    launch_finished = Event()
+    browser_cleaned = Event()
+    playwright_cleaned = Event()
+
+    class _BrowserContext:
+        def __enter__(self) -> "_BrowserContext":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            browser_cleaned.set()
+
+    class _PlaywrightContext:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, *_args: object) -> None:
+            playwright_cleaned.set()
+
+    def launch(*_args: object, **_kwargs: object) -> _BrowserContext:
+        launch_started.set()
+        assert release_launch.wait(timeout=2)
+        launch_finished.set()
+        return _BrowserContext()
+
+    stop_requested = _LinearizedStopSignal()
+    selected = 0
+    navigated = 0
+    results: list[tuple[str, str, int, bool]] = []
+    failures: list[BaseException] = []
+    stop_results: list[tuple[bool, bool, bool]] = []
+
+    def select_page(*_args: object, **_kwargs: object) -> object:
+        nonlocal selected
+        selected += 1
+        return SimpleNamespace(url="about:blank")
+
+    def navigate(*_args: object, **_kwargs: object) -> None:
+        nonlocal navigated
+        navigated += 1
+
+    monkeypatch.setattr(agent.sys, "platform", "darwin")
+    monkeypatch.setattr(agent, "browser_descriptors", lambda _config: {"edge": _Descriptor()})
+    monkeypatch.setattr(agent, "sync_playwright_or_error", lambda: _PlaywrightContext())
+    monkeypatch.setattr(agent, "launch_chromium_context", launch)
+    monkeypatch.setattr(agent, "select_provider_tab", select_page)
+    monkeypatch.setattr(agent, "goto_with_retry", navigate)
+    monkeypatch.setattr(agent, "_capture_macos_frontmost_application", lambda: "Finder")
+    monkeypatch.setattr(
+        agent,
+        "_restore_macos_frontmost_application_after_task_stage",
+        lambda *_args: None,
+    )
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    target = "https://chatgpt.com/"
+
+    def run() -> None:
+        try:
+            results.append(
+                run_web_computer_use(
+                    prompt="Inspect the project.",
+                    workspace=workspace,
+                    context_path=None,
+                    config=CrawlConfig(),
+                    settings=ComputerUseSettings(workspace_path=str(workspace)),
+                    target_url=target,
+                    should_stop=stop_requested.is_set,
+                    update=lambda **_changes: None,
+                    process_changed=lambda _process: None,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            failures.append(exc)
+
+    worker = Thread(target=run)
+    worker.start()
+    assert launch_started.wait(timeout=2)
+
+    def stop() -> None:
+        accepted = stop_requested.set()
+        stop_results.append(
+            (accepted, launch_finished.is_set(), browser_cleaned.is_set())
+        )
+
+    stopper = Thread(target=stop)
+    stopper.start()
+    deadline = time.monotonic() + 2
+    while not stop_requested.is_set() and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert stop_requested.is_set()
+    assert stopper.is_alive()
+    release_launch.set()
+    worker.join(timeout=2)
+    stopper.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert not stopper.is_alive()
+    assert failures == []
+    assert results == [("", target, 0, False)]
+    assert stop_results == [(True, True, True)]
+    assert browser_cleaned.is_set()
+    assert playwright_cleaned.is_set()
+    assert selected == 0
+    assert navigated == 0
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_human_verification_surface_linearizes_stop_at_its_final_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    dynamic: bool,
+) -> None:
+    """An accepted Stop must win before initial or dynamically discovered challenge UI mutation."""
+    import app.core.computer_use_agent as agent
+
+    stop_requested = _LinearizedStopSignal()
+    original_gate = stop_requested.run_unless_set
+    updates: list[dict[str, object]] = []
+
+    def stop_at_surface(action: object) -> tuple[bool, object]:
+        stop_requested.set()
+        assert callable(action)
+        return original_gate(action)
+
+    stop_requested.run_unless_set = stop_at_surface  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        agent,
+        "_surface_provider_challenge_window",
+        lambda _page: (_ for _ in ()).throw(
+            AssertionError("Stop must win before the challenge window is surfaced.")
+        ),
+    )
+    if dynamic:
+        monkeypatch.setattr(
+            agent,
+            "_detect_browser_interruption",
+            lambda *_args, **_kwargs: (
+                True,
+                "Human verification required: ChatGPT requires security challenge control.",
+            ),
+        )
+
+    result = _wait_for_browser_recovery(
+        page=object(),
+        expected_url="https://chatgpt.com/c/session",
+        browser_kind="edge",
+        platform="chatgpt",
+        session_mode="recent",
+        expected_tab_id="tab-1",
+        expected_title="Task",
+        should_stop=stop_requested.is_set,
+        should_resume=None,
+        update=lambda **changes: updates.append(changes),
+        reason=(
+            "The selected provider page is temporarily inaccessible."
+            if dynamic
+            else "Human verification required: ChatGPT requires security challenge control."
+        ),
+    )
+
+    assert result == "stopped"
+    assert stop_requested.is_set()
+    assert updates == (
+        [
+            {
+                "paused": True,
+                "pause_reason": "The selected provider page is temporarily inaccessible.",
+                "phase": "paused",
+                "message": "The selected provider page is temporarily inaccessible.",
+            },
+            {"paused": False, "pause_reason": ""},
+        ]
+        if dynamic
+        else []
+    )
+
+
+def test_provider_read_stop_wins_over_simultaneous_connection_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not consume recovery budget or regress status after a read observes Stop."""
+    import app.core.computer_use_agent as agent
+
+    stop_requested = Event()
+    reconnecting: list[bool] = []
+    budget = agent._ProviderReadRecoveryBudget(
+        connection_retries_remaining=1,
+        navigation_retries_remaining=1,
+    )
+
+    def fail_after_stop() -> None:
+        stop_requested.set()
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(
+        agent.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(
+            AssertionError("Stop must skip recovery sleep.")
+        ),
+    )
+    available, result, paused = agent._run_recoverable_provider_read(
+        fail_after_stop,
+        page=SimpleNamespace(),
+        platform="chatgpt",
+        availability_check=None,
+        should_stop=stop_requested.is_set,
+        on_reconnecting=lambda: reconnecting.append(True),
+        recovery_budget=budget,
+    )
+
+    assert (available, result, paused) == (False, None, 0.0)
+    assert reconnecting == []
+    assert budget.connection_retries_remaining == 1
+    assert budget.navigation_retries_remaining == 1
