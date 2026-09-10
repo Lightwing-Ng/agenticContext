@@ -1,6 +1,6 @@
 """Route and service tests for Agent doctor recovery UX.
 
-Code version: v1.7.0-codex.1
+Code version: v1.7.2-codex.1
 """
 
 from __future__ import annotations
@@ -378,6 +378,163 @@ def test_doctor_continues_an_interrupted_edge_chatgpt_task_without_context_uploa
         action["id"]: action for action in invalid_service.doctor()["actions"]
     }
     assert invalid_actions["continue"]["enabled"] is False
+
+
+def test_doctor_migrates_and_continues_a_delivered_chatgpt_turn_timeout(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    run_id = "run-abcdef0123456789"
+    _write_valid_event_chain(
+        runtime_root,
+        run_id,
+        workspace=workspace,
+        delivery_phase="delivered",
+        terminal_kind="run.failed",
+    )
+    timeout_message = "ChatGPT did not finish the controller turn within 30 minutes."
+    (runtime_root / "last-run.json").write_text(
+        json.dumps(
+            {
+                "running": False,
+                "phase": "failed",
+                "message": timeout_message,
+                "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
+                "conversation_url": "https://chatgpt.com/c/timed-out-flight",
+                "session_title": "Long audit",
+                "session_mode": "recent",
+                "operating_system": detect_host_operating_system(),
+                "platform": "chatgpt",
+                "browser": "edge",
+                "model": "gpt-5.6-sol",
+                "chatgpt_effort": "highest_available",
+                "read_only": False,
+                "conversation_bound": True,
+                "run_id": run_id,
+                "delivery_checkpoint_version": "1.0.0",
+                "delivery_phase": "delivered",
+                "delivery_kind": "controller_observation",
+                "exchange_id": "exchange-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "exchange_sequence": 1,
+                "exchange_outbound_sha256": "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "app.core.computer_use_agent._start_macos_idle_sleep_assertion",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "app.core.computer_use_agent._stop_macos_idle_sleep_assertion",
+        lambda _process: None,
+    )
+
+    def runner(**kwargs):
+        observed.update(kwargs)
+        return "Verified continuation", "https://chatgpt.com/c/timed-out-flight", 1, True
+
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runner=runner,
+        runtime_root=runtime_root,
+        config_provider=CrawlConfig,
+    )
+
+    snapshot = service.snapshot()
+    doctor = service.doctor()
+    continuation = next(
+        action for action in doctor["actions"] if action["id"] == "continue"
+    )
+    continuation_check = next(
+        check
+        for check in doctor["checks"]
+        if check["id"] == "interrupted_continuation"
+    )
+
+    assert snapshot["phase"] == "interrupted"
+    assert "Open Doctor to continue" in snapshot["message"]
+    assert continuation["enabled"] is True
+    assert continuation["label"] == "Continue timed-out task"
+    assert "exact delivery receipt" in continuation_check["detail"]
+
+    recovery = service.recover("continue")
+    completed = _wait_for_completion(service)
+
+    assert recovery["ok"] is True
+    assert observed["prompt"] == CONTINUE_INTERRUPTED_AGENT_PROMPT
+    assert observed["context_path"] is None
+    assert observed["target_url"] == "https://chatgpt.com/c/timed-out-flight"
+    assert completed["phase"] == "finished"
+
+
+def test_doctor_blocks_a_timed_out_turn_without_a_complete_delivery_receipt(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    run_id = "run-0123456789abcdef"
+    _write_valid_event_chain(
+        runtime_root,
+        run_id,
+        workspace=workspace,
+        terminal_kind="run.failed",
+    )
+    timeout_message = "ChatGPT did not finish the controller turn within 30 minutes."
+    (runtime_root / "last-run.json").write_text(
+        json.dumps(
+            {
+                "running": False,
+                "phase": "failed",
+                "message": timeout_message,
+                "workspace_path": str(workspace),
+                **_workspace_checkpoint(workspace),
+                "conversation_url": "https://chatgpt.com/c/incomplete-receipt",
+                "session_mode": "recent",
+                "operating_system": detect_host_operating_system(),
+                "platform": "chatgpt",
+                "browser": "edge",
+                "model": "gpt-5.6-sol",
+                "chatgpt_effort": "highest_available",
+                "read_only": False,
+                "conversation_bound": True,
+                "run_id": run_id,
+                "delivery_checkpoint_version": "1.0.0",
+                "delivery_phase": "delivered",
+                "delivery_kind": "controller_observation",
+                "exchange_sequence": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    doctor = service.doctor()
+    continuation = next(
+        action for action in doctor["actions"] if action["id"] == "continue"
+    )
+    continuation_check = next(
+        check
+        for check in doctor["checks"]
+        if check["id"] == "interrupted_continuation"
+    )
+
+    assert service.snapshot()["phase"] == "interrupted"
+    assert continuation["enabled"] is False
+    assert "no complete delivery receipt" in continuation_check["detail"]
+    with pytest.raises(RuntimeError, match="no complete delivery receipt"):
+        service.recover("continue")
 
 
 def test_doctor_rejects_continuation_without_confirmed_conversation_binding(

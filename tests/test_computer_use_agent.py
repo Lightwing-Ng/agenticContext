@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.65.3-codex.1
+Code version: v3.65.4-codex.1
 """
 
 from __future__ import annotations
@@ -18726,7 +18726,7 @@ def test_chatgpt_exact_receipt_without_response_activity_uses_turn_timeout(
     monkeypatch.setattr(computer_use_agent.time, "monotonic", clock)
 
     with pytest.raises(
-        RuntimeError,
+        computer_use_agent.AgentConnectionInterrupted,
         match="did not finish the controller turn within 3 seconds",
     ):
         _submit_and_wait(

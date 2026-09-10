@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.69.2-codex.1`
+Documentation version: `v3.69.3-codex.1`
 
 ## Purpose
 
@@ -452,9 +452,12 @@ within 0.01px of its label. The user-owned service was not restarted.
    edits and bodycheck therefore remain unfinished. A legacy persisted turn-limit failure is
    reclassified as an interrupted task after restart so the same bound ChatGPT conversation can be
    continued explicitly when its safety metadata is still valid; the historical failed event remains
-   unchanged and no continuation starts automatically. A non-idle provider-delivery checkpoint or a
-   requested local Action without a durable observation disables continuation until the user
-   reconciles the recorded conversation; the Agent does not guess whether to resend or replay work.
+   unchanged and no continuation starts automatically. A provider turn that exceeds the local wait
+   budget after an exact `delivered` receipt becomes interrupted and may be continued explicitly from
+   Doctor in the same conversation. The continuation sends a new fixed cue; it never resends the
+   delivered controller message or re-uploads context. Every other non-idle provider-delivery
+   checkpoint, or a requested local Action without a durable observation, disables continuation until
+   the user reconciles the recorded conversation.
 10. The local page renders the final Markdown and links to the selected Web conversation in the
    browser encoded by the task, rather than the system default browser. When a
    ChatGPT recent session or project session is selected, the page fetches that conversation's
@@ -595,8 +598,9 @@ path, raw provider URL, or file/page/provider content; ordinary action summaries
 bounded workspace-relative path.
 
 When a run is paused, interrupted, failed, or leaves temporary context cleanup pending, the Agent
-page loads `GET /api/agent/doctor` and opens a Doctor panel with the failed checks, bounded event
-timeline, and safe actions. Completed runs with public event metadata retain that timeline for
+page loads `GET /api/agent/doctor` and exposes a Doctor panel with the failed checks, bounded event
+timeline, and safe actions. Raw traceback text is a collapsed Technical details section inside
+Doctor rather than a separate execution-record panel. Completed runs with public event metadata retain that timeline for
 inspection. Resume continues a paused turn without a duplicate submit. Context cleanup reconciles
 only the app-owned temporary bundle. `Continue interrupted task` is narrower: it is enabled only for
 an interrupted Edge and ChatGPT run whose persisted metadata proves the original conversation was
@@ -605,8 +609,9 @@ checkpoint version, and the workspace device/inode recorded at admission. It rev
 workspace, operating system, local-permission state, conversation URL, and effort policy, then sends
 one fixed generic continuation request in
 that conversation without reconstructing or uploading project context. It never runs automatically
-and never reuses an unbound pre-submission URL. Provider handoff and New task remain explicit UI
-actions.
+and never reuses an unbound pre-submission URL. A timed-out turn is eligible only when the persisted
+checkpoint proves exact delivery and retains its exchange ID and outbound SHA-256. Provider handoff
+and New task remain explicit UI actions.
 
 ## Safety boundary
 

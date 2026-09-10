@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.69.2-codex.4
+Code version: v3.69.3-codex.1
 """
 
 from __future__ import annotations
@@ -225,6 +225,15 @@ def _is_legacy_turn_limit_failure(message: object) -> bool:
     return (
         "reached the configured " in normalized
         and "turn limit before returning final" in normalized
+    )
+
+
+def _is_provider_turn_timeout_failure(message: object) -> bool:
+    """Recognize a delivered provider turn that exceeded the local wait budget."""
+    normalized = " ".join(str(message or "").split()).casefold()
+    return (
+        "did not finish the controller turn within " in normalized
+        and (" minute" in normalized or " second" in normalized)
     )
 
 
@@ -6841,6 +6850,16 @@ class ComputerUseAgentService:
                 "explicit continuation."
             )
             snapshot.bodycheck_passed = False
+        elif snapshot.phase == "failed" and _is_provider_turn_timeout_failure(
+            snapshot.last_error or snapshot.message
+        ):
+            timeout_message = str(snapshot.last_error or snapshot.message).splitlines()[0]
+            snapshot.phase = "interrupted"
+            snapshot.message = (
+                f"{timeout_message.strip().rstrip('.')}. Open Doctor to continue this task "
+                "in the same provider conversation."
+            )
+            snapshot.bodycheck_passed = False
         return snapshot
 
     def _persist_snapshot_locked(self, *, required: bool = False) -> bool:
@@ -7462,7 +7481,27 @@ class ComputerUseAgentService:
                 "inspect the local runtime record before sending another provider message."
             )
         delivery_phase = str(snapshot.delivery_phase or "idle")
-        if delivery_phase in _UNSAFE_AUTOMATIC_CONTINUATION_PHASES:
+        delivered_timeout = bool(
+            delivery_phase == "delivered"
+            and _is_provider_turn_timeout_failure(
+                snapshot.last_error or snapshot.message
+            )
+        )
+        if delivered_timeout and (
+            not _EXCHANGE_ID_PATTERN.fullmatch(str(snapshot.exchange_id or ""))
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(snapshot.exchange_outbound_sha256 or "").casefold(),
+            )
+        ):
+            return None, (
+                "The timed-out provider turn has no complete delivery receipt. Open the "
+                "recorded conversation to reconcile it before starting another task."
+            )
+        if (
+            delivery_phase in _UNSAFE_AUTOMATIC_CONTINUATION_PHASES
+            and not delivered_timeout
+        ):
             reconciliation = (
                 "The provider exchange reached a final result, but local completion did not "
                 "finish durably. Open the recorded conversation to recover that result; the "
@@ -7529,6 +7568,9 @@ class ComputerUseAgentService:
             "conversation_url": conversation_url,
             "session_title": snapshot.session_title,
             "read_only": snapshot.read_only,
+            "continuation_kind": (
+                "delivered_timeout" if delivered_timeout else "interrupted"
+            ),
         }, ""
 
     def doctor(self) -> dict[str, Any]:
@@ -7581,7 +7623,15 @@ class ComputerUseAgentService:
                         "label": "Interrupted task continuation",
                         "status": "pass" if continuation_details else "warn",
                         "detail": (
-                            "The same ChatGPT conversation can continue without re-uploading project context."
+                            (
+                                "The timed-out provider turn has an exact delivery receipt. "
+                                "The same ChatGPT conversation can continue without resending "
+                                "the prior controller message or re-uploading project context."
+                                if continuation_details
+                                and continuation_details.get("continuation_kind")
+                                == "delivered_timeout"
+                                else "The same ChatGPT conversation can continue without re-uploading project context."
+                            )
                             if continuation_details
                             else continuation_reason
                         ),
@@ -7733,10 +7783,17 @@ class ComputerUseAgentService:
                 },
                 {
                     "id": "continue",
-                    "label": "Continue interrupted task",
+                    "label": (
+                        "Continue timed-out task"
+                        if continuation_details
+                        and continuation_details.get("continuation_kind")
+                        == "delivered_timeout"
+                        else "Continue interrupted task"
+                    ),
                     "description": (
                         "Start a fresh local controller worker in the recorded ChatGPT "
-                        "conversation without re-uploading project context."
+                        "conversation without resending the prior controller message or "
+                        "re-uploading project context."
                     ),
                     "enabled": bool(continuation_details),
                 },
@@ -7808,8 +7865,20 @@ class ComputerUseAgentService:
                         status="requested",
                         detail=(
                             "An explicit user request will continue the interrupted ChatGPT "
-                            "conversation without a new context upload."
+                            "conversation without resending the prior controller message or "
+                            "uploading project context again."
                         ),
+                        data={
+                            "continuation_kind": str(
+                                details.get("continuation_kind") or "interrupted"
+                            ),
+                            "prior_delivery_phase": str(
+                                self._snapshot.delivery_phase or "idle"
+                            ),
+                            "prior_exchange_id": str(
+                                self._snapshot.exchange_id or ""
+                            ),
+                        },
                     )
                     self._sync_event_chain_summary_locked()
                 self._persist_snapshot_locked()
@@ -17235,7 +17304,7 @@ def _submit_and_wait(
         timeout_copy = "30 minutes"
     else:
         timeout_copy = f"{response_timeout_seconds:g} seconds"
-    raise RuntimeError(
+    raise AgentConnectionInterrupted(
         f"{AGENT_PLATFORM_BY_KEY[platform]['label']} did not finish the controller turn "
         f"within {timeout_copy}."
     )

@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.61.1-codex.1
+Code version: v1.61.2-codex.1
 """
 
 import hashlib
@@ -2818,19 +2818,19 @@ def test_agent_response_header_and_answer_pin_the_composer() -> None:
     assert "grid-area: 2 / 1;" in composer_rule
 
 
-def test_agent_error_record_is_collapsible_and_vertically_scrollable() -> None:
-    """Keep long Agent tracebacks inside a bounded accessible record."""
+def test_agent_doctor_technical_details_are_subtle_and_vertically_scrollable() -> None:
+    """Keep long Agent tracebacks inside Doctor without a separate alarm panel."""
     stylesheet = _stylesheet()
 
-    record_start = stylesheet.index(".agent-error-record {")
+    record_start = stylesheet.index(".agent-doctor-technical {")
     record_rule = stylesheet[record_start:stylesheet.index("\n}", record_start)]
-    scroll_start = stylesheet.index(".agent-error-record-scroll {")
+    scroll_start = stylesheet.index(".agent-doctor-technical-scroll {")
     scroll_rule = stylesheet[scroll_start:stylesheet.index("\n}", scroll_start)]
-    content_start = stylesheet.index(".agent-error-record-content {")
+    content_start = stylesheet.index(".agent-doctor-technical-content {")
     content_rule = stylesheet[content_start:stylesheet.index("\n}", content_start)]
 
-    assert "overflow: hidden;" in record_rule
-    assert "max-height: min(22rem, 38svh);" in scroll_rule
+    assert "border-top:" in record_rule
+    assert "max-height: min(16rem, 32svh);" in scroll_rule
     assert "overflow-y: auto;" in scroll_rule
     assert "overscroll-behavior: contain;" in scroll_rule
     assert "white-space: pre-wrap;" in content_rule

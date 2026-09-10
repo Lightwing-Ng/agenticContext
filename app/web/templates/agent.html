@@ -1,4 +1,4 @@
-<!-- Code version: v3.43.2-codex.1 -->
+<!-- Code version: v3.44.0-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,8 +9,8 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.112.0-codex.1') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.7.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.112.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.8.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
 </head>
@@ -49,7 +49,7 @@
                         >
                         <button
                             type="button"
-                            class="secondary-button settings-directory-choose-button"
+                            class="secondary-button settings-directory-choose-button agent-sidebar-trailing-control"
                             id="agent_project_path_choose"
                             data-settings-directory-picker
                             data-directory-field="agent_allowed_root"
@@ -231,7 +231,7 @@
                         type="button"
                         class="secondary-button agent-new-session-button"
                         data-agent-new-session
-                    >New session</button>
+                    ><span class="agent-new-session-icon" aria-hidden="true"></span><span>New session</span></button>
                     <div class="agent-execution-session-list" data-agent-execution-session-list aria-label="Select an Agent session"></div>
                 </div>
             </details>
@@ -322,7 +322,7 @@
                         </section>
                         {% set initial_history_item = agent_snapshot.history[-1] if agent_snapshot.history else none %}
                         {% set initial_finished_answer = not agent_snapshot.running and agent_snapshot.phase == 'finished' and (initial_history_item or agent_snapshot.response) %}
-                        <details class="agent-doctor-panel" id="agent_doctor_panel" hidden>
+                        <details class="agent-doctor-panel" id="agent_doctor_panel"{% if not (agent_snapshot.error_traceback or agent_snapshot.last_error) %} hidden{% endif %}>
                             <summary>
                                 <span>Doctor</span>
                                 <span class="agent-doctor-status" id="agent_doctor_status">Checking</span>
@@ -332,6 +332,15 @@
                                 <ol class="agent-doctor-checks" id="agent_doctor_checks"></ol>
                                 <ol class="agent-doctor-events" id="agent_doctor_events"></ol>
                                 <div class="agent-doctor-actions" id="agent_doctor_actions"></div>
+                                <details class="agent-doctor-technical" id="agent_error_record"{% if not (agent_snapshot.error_traceback or agent_snapshot.last_error) %} hidden{% endif %}>
+                                    <summary>
+                                        <span>Technical details</span>
+                                        <span class="agent-doctor-technical-label">For diagnosis</span>
+                                    </summary>
+                                    <div class="agent-doctor-technical-scroll" role="region" aria-label="Doctor technical details">
+                                        <pre class="agent-doctor-technical-content" id="agent_error_record_content" data-agent-error-record-content>{{ agent_snapshot.error_traceback or agent_snapshot.last_error }}</pre>
+                                    </div>
+                                </details>
                             </div>
                         </details>
                         <div class="agent-response-output" id="agent_response_output" lang="zh-CN"{% if not initial_history_item and not agent_snapshot.response %} hidden{% endif %}>
@@ -369,16 +378,6 @@
                                 <nav class="browser-pagination local-store-pagination agent-response-pagination" id="agent_response_pagination" data-layout-role="pagination" aria-label="Agent conversation pages" aria-controls="agent_response_answer" data-agent-response-pagination hidden></nav>
                             </div>
                         </div>
-                        <details class="agent-error-record" id="agent_error_record"{% if agent_snapshot.error_traceback or agent_snapshot.last_error %} open{% endif %}{% if not (agent_snapshot.error_traceback or agent_snapshot.last_error) %} hidden{% endif %}>
-                            <summary>
-                                <span>Execution record</span>
-                                <span class="agent-error-record-label">Error details</span>
-                            </summary>
-                            <div class="agent-error-record-scroll" role="region" aria-label="Agent error record">
-                                <pre class="agent-error-record-content" id="agent_error_record_content" data-agent-error-record-content>{{ agent_snapshot.error_traceback or agent_snapshot.last_error }}</pre>
-                            </div>
-                        </details>
-
                     </article>
 
                     <form id="agent_prompt_form" class="agent-prompt-form">
@@ -493,6 +492,6 @@
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.43.1-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.43.2-codex.1') }}"></script>
 </body>
 </html>

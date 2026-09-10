@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.5.2-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.6.0-codex.1."""
 
 from copy import deepcopy
 
@@ -330,6 +330,88 @@ def test_failed_local_session_without_remote_record_has_centered_hover_delete(
             "conversation_url": "",
             "remote_record_absent": True,
         }]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(("width", "color_scheme"), [(1024, "light"), (390, "dark")])
+def test_agent_sidebar_trailing_controls_share_the_toggle_centerline(
+    disposable_browser, sidebar_server_url, width, color_scheme,
+):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 1_164},
+        color_scheme=color_scheme,
+    )
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    project_url = "https://chatgpt.com/g/g-p-demo/project"
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True,
+        "logged_in": True,
+        "browser": "edge",
+        "platform": "chatgpt",
+        "agent_sources": {
+            "recent_sessions": [],
+            "projects": [{"url": project_url, "title": "Demo project"}],
+        },
+    }))
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json={
+        "recent_sessions": [],
+        "projects": [{"url": project_url, "title": "Demo project"}],
+    }))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        source = page.locator(".agent-session-mode-combobox")
+        source.locator("[data-agent-combobox-trigger]").click()
+        source.locator('[data-agent-combobox-option="project"]').click()
+        expect(page.locator("[data-agent-project-field]")).to_be_visible()
+
+        sidebar_geometry = page.evaluate("""() => {
+            const bounds = selector => document.querySelector(selector).getBoundingClientRect();
+            const centerX = rect => rect.left + rect.width / 2;
+            const centerY = rect => rect.top + rect.height / 2;
+            const sidebar = bounds('#agent_sidebar');
+            const toggle = bounds('#sidebar_toggle');
+            const chooser = bounds('#agent_project_path_choose');
+            const summary = document.querySelector('[data-agent-execution-sessions] > summary');
+            const summaryRect = summary.getBoundingClientRect();
+            const summaryStyle = getComputedStyle(summary);
+            const trailingTrackWidth = Number.parseFloat(
+                summaryStyle.gridTemplateColumns.split(' ').at(-1),
+            );
+            const newSession = bounds('[data-agent-new-session]');
+            const newSessionIcon = bounds('.agent-new-session-icon');
+            return {
+                chooserCenterDelta: Math.abs(centerX(chooser) - centerX(toggle)),
+                collapseCenterDelta: Math.abs(
+                    summaryRect.right - trailingTrackWidth / 2 - centerX(toggle),
+                ),
+                iconLeftCircleDelta: Math.abs(
+                    centerX(newSessionIcon) - (newSession.left + newSession.height / 2),
+                ),
+                pillChevronCenters: Array.from(
+                    document.querySelectorAll('#agent_runtime_form .browser-picker-trigger-chevron'),
+                    chevron => centerX(chevron.getBoundingClientRect()),
+                ),
+                toggleEdgeDelta: Math.abs(
+                    centerY(toggle) - sidebar.top - (sidebar.right - centerX(toggle)),
+                ),
+                newSessionIconMask: getComputedStyle(
+                    document.querySelector('.agent-new-session-icon'),
+                ).maskImage,
+            };
+        }""")
+        assert sidebar_geometry["toggleEdgeDelta"] <= 1
+        assert sidebar_geometry["chooserCenterDelta"] <= 1
+        assert sidebar_geometry["collapseCenterDelta"] <= 1
+        assert sidebar_geometry["iconLeftCircleDelta"] <= 1
+        assert "plus.svg" in sidebar_geometry["newSessionIconMask"]
+        assert max(sidebar_geometry["pillChevronCenters"]) - min(
+            sidebar_geometry["pillChevronCenters"]
+        ) <= 1
     finally:
         context.close()
 
@@ -1002,7 +1084,11 @@ def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_
     agent = base["agent"]
     agent.update(session_id="primary", run_id="selected-run", phase=phase, running=False,
         context_file="/tmp/already-cleaned-context.md", event_chain_state="valid",
-        last_error="", error_traceback="", response="Final answer", response_html="<p>Final answer</p>",
+        last_error="ChatGPT turn timed out." if phase == "failed" else "",
+        error_traceback=(
+            "Traceback (most recent call last):\nRuntimeError: ChatGPT turn timed out."
+            if phase == "failed" else ""
+        ), response="Final answer", response_html="<p>Final answer</p>",
         history=[{"prompt": f"Question {i}", "response": f"Answer {i}",
                   "response_html": f"<p>Answer {i}</p>"} for i in range(1, 57)])
     base.update(sessions=[dict(agent)], active_count=0, can_start=True)
@@ -1011,7 +1097,10 @@ def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_
     def doctor(route):
         requests.append(route.request.url)
         route.fulfill(json={"run_id": "selected-run", "status": "attention", "checks": [],
-            "events": [{"kind": "page.observation", "detail": "Internal diagnostic"}] * 80})
+            "events": [{"kind": "page.observation", "detail": "Internal diagnostic"}] * 80,
+            "actions": ([{"id": "continue", "label": "Continue timed-out task",
+                          "description": "Continue in the same conversation.", "enabled": True}]
+                        if phase == "failed" else [])})
 
     page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
     page.route("**/api/agent/doctor", doctor)
@@ -1029,6 +1118,11 @@ def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_
         else:
             expect(panel).to_be_visible()
             expect(panel).to_have_js_property("open", False)
+            expect(page.locator("#agent_doctor_status")).to_have_text("Can continue")
+            technical = page.locator("#agent_error_record")
+            expect(technical).not_to_have_attribute("hidden", "")
+            expect(technical).to_have_js_property("open", False)
+            expect(page.locator(".agent-workspace-content > #agent_error_record")).to_have_count(0)
             warning_style = panel.evaluate('''element => {
                 const panelStyle = getComputedStyle(element);
                 const summary = element.querySelector("summary");
@@ -1049,14 +1143,21 @@ def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_
             expected_summary_color = "rgb(244, 197, 66)" if color_scheme == "dark" else "rgb(107, 82, 0)"
             assert warning_style["summaryColor"] == expected_summary_color
             assert warning_style["maskImage"] != "none"
-            panel.locator("summary").click()
+            panel.locator(":scope > summary").click()
             expect(panel).to_have_js_property("open", True)
+            expect(page.get_by_role("button", name="Continue timed-out task")).to_be_visible()
+            expect(technical).to_be_visible()
+            technical.locator(":scope > summary").click()
+            expect(technical).to_have_js_property("open", True)
+            expect(page.locator("#agent_error_record_content")).to_contain_text(
+                "RuntimeError: ChatGPT turn timed out."
+            )
             page.wait_for_timeout(220)
-            open_transform = panel.locator("summary").evaluate(
+            open_transform = panel.locator(":scope > summary").evaluate(
                 'summary => getComputedStyle(summary, "::after").transform',
             )
             assert open_transform != warning_style["transform"]
-            panel.locator("summary").click()
+            panel.locator(":scope > summary").click()
             expect(panel).to_have_js_property("open", False)
         bounds = page.evaluate('''() => {
             const pager = document.querySelector('#agent_response_pagination').getBoundingClientRect();

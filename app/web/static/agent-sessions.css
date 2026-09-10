@@ -1,4 +1,29 @@
-/* Code version: v1.7.1-codex.1 */
+/* Code version: v1.8.0-codex.1 */
+.agent-sidebar {
+    --agent-sidebar-inline-padding-end: var(--layout-edge-gap);
+    --agent-sidebar-border-inline-width: 1px;
+    --agent-sidebar-trailing-margin-end: calc(
+        var(--layout-edge-gap)
+        - var(--agent-sidebar-inline-padding-end)
+        - var(--agent-sidebar-border-inline-width)
+    );
+    --agent-sidebar-trailing-track-size: calc(
+        var(--settings-round-icon-button-size)
+        + var(--layout-edge-gap)
+        + var(--layout-edge-gap)
+        - var(--agent-sidebar-inline-padding-end)
+        - var(--agent-sidebar-inline-padding-end)
+        - var(--agent-sidebar-border-inline-width)
+        - var(--agent-sidebar-border-inline-width)
+    );
+}
+.agent-sidebar-trailing-control {
+    margin-inline-end: var(--agent-sidebar-trailing-margin-end);
+}
+@media (max-width: 900px) {
+    .agent-sidebar { --agent-sidebar-inline-padding-end: 18px; }
+}
+
 .agent-execution-sessions {
     margin-top: 18px;
     min-width: 0;
@@ -95,7 +120,7 @@
 }
 details.agent-session-collapse > summary {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--collapse-icon-size);
+    grid-template-columns: minmax(0, 1fr) var(--agent-sidebar-trailing-track-size);
     column-gap: var(--collapse-icon-gap);
     align-items: center;
     height: 36px;
@@ -115,6 +140,7 @@ details.agent-session-collapse > summary::after {
     grid-row: 1;
     width: var(--collapse-icon-size);
     height: var(--collapse-icon-height);
+    justify-self: center;
     background-color: currentColor;
     mask: var(--collapse-icon-closed) center/contain no-repeat;
     -webkit-mask: var(--collapse-icon-closed) center/contain no-repeat;
@@ -191,8 +217,21 @@ details.agent-session-collapse[open] > summary::after {
 }
 .agent-session-count[hidden] { display: none; }
 .agent-new-session-button {
+    --agent-new-session-icon-size: 14px;
+    position: relative;
     justify-self: end;
     margin-block-end: 8px;
+    padding-inline-start: var(--secondary-button-min-height);
+}
+.agent-new-session-icon {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: 0;
+    width: var(--secondary-button-min-height);
+    background-color: currentColor;
+    mask: url("/static/images/plus.svg") center / var(--agent-new-session-icon-size) var(--agent-new-session-icon-size) no-repeat;
+    -webkit-mask: url("/static/images/plus.svg") center / var(--agent-new-session-icon-size) var(--agent-new-session-icon-size) no-repeat;
+    pointer-events: none;
 }
 .agent-recent-sessions-empty { color: var(--muted); margin: 0; }
 /* These two source options retain the same compact height at every sidebar width. */

@@ -1,4 +1,4 @@
-/* Code version: v2.112.0-codex.1 */
+/* Code version: v2.112.1-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -3534,50 +3534,50 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     --loading-spinner-size: 16px;
 }
 
-.agent-error-record {
-    margin-top: 12px;
-    border: var(--frosted-glass-border);
-    border-radius: var(--radius-soft);
-    background: var(--glass-surface-background-soft);
-    overflow: hidden;
+.agent-doctor-technical {
+    min-width: 0;
+    padding-top: 4px;
+    border-top: 1px solid color-mix(in srgb, var(--theme-warning) 34%, transparent);
 }
 
-.agent-error-record > summary {
+.agent-doctor-technical > summary {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    min-height: 40px;
-    padding: 0 12px;
-    color: var(--text);
-    font-size: var(--font-table-body);
+    min-height: 32px;
+    color: var(--theme-warning-text);
+    font-size: var(--font-ui-sm);
     cursor: pointer;
-    list-style: none;
 }
 
-.agent-error-record > summary::-webkit-details-marker {
-    display: none;
+.agent-doctor-technical > summary:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+    border-radius: var(--radius-subtle);
 }
 
-.agent-error-record-label {
-    color: var(--theme-error);
+.agent-doctor-technical-label {
+    color: var(--muted);
     font-size: var(--font-ui-sm);
 }
 
-.agent-error-record-scroll {
-    max-height: min(22rem, 38svh);
-    padding: 12px;
-    border-top: var(--frosted-glass-border);
+.agent-doctor-technical-scroll {
+    max-height: min(16rem, 32svh);
+    margin-top: 6px;
+    padding: 10px 12px;
+    border-radius: var(--radius-subtle);
+    background: color-mix(in srgb, var(--glass-surface-background-strong) 76%, transparent);
     overflow-x: auto;
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
 }
 
-.agent-error-record-content {
+.agent-doctor-technical-content {
     min-width: 0;
     margin: 0;
-    color: var(--text);
+    color: var(--muted);
     font-family: var(--font-family-mono);
     font-size: var(--font-ui-sm);
     line-height: 1.45;

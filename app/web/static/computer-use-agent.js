@@ -1,4 +1,4 @@
-/* Code version: v3.43.1-codex.1 */
+/* Code version: v3.43.2-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -30,6 +30,7 @@
         errorRecord: document.getElementById("agent_error_record"),
         errorRecordContent: document.querySelector("[data-agent-error-record-content]"),
         doctorPanel: document.getElementById("agent_doctor_panel"),
+        doctorContent: document.querySelector(".agent-doctor-content"),
         doctorStatus: document.getElementById("agent_doctor_status"),
         doctorSummary: document.getElementById("agent_doctor_summary"),
         doctorChecks: document.getElementById("agent_doctor_checks"),
@@ -88,6 +89,33 @@
         newSessionButton: document.querySelector("[data-agent-new-session]"),
         comboboxTriggers: Array.from(document.querySelectorAll("[data-agent-combobox-trigger]")),
     };
+
+    // Adopt the integrated Doctor layout even while a running server still serves
+    // the previous template generation.
+    if (elements.errorRecord && elements.doctorContent) {
+        elements.errorRecord.classList.remove("agent-error-record");
+        elements.errorRecord.classList.add("agent-doctor-technical");
+        const errorLabel = elements.errorRecord.querySelector(".agent-error-record-label");
+        if (errorLabel) {
+            errorLabel.className = "agent-doctor-technical-label";
+            errorLabel.textContent = "For diagnosis";
+        }
+        const errorScroll = elements.errorRecord.querySelector(".agent-error-record-scroll");
+        errorScroll?.classList.replace(
+            "agent-error-record-scroll",
+            "agent-doctor-technical-scroll",
+        );
+        elements.errorRecordContent?.classList.replace(
+            "agent-error-record-content",
+            "agent-doctor-technical-content",
+        );
+        const summaryTitle = elements.errorRecord.querySelector("summary > :first-child");
+        if (summaryTitle) summaryTitle.textContent = "Technical details";
+        if (!elements.doctorContent.contains(elements.errorRecord)) {
+            elements.doctorContent.append(elements.errorRecord);
+        }
+        elements.errorRecord.open = false;
+    }
 
     let lastPayload = {};
     let lastBrowserStatus = null;
@@ -2304,11 +2332,9 @@
         if (!elements.errorRecord || !elements.errorRecordContent) return;
         const errorText = String(agent?.error_traceback || agent?.last_error || "");
         const changed = elements.errorRecordContent.textContent !== errorText;
-        if (changed) {
-            elements.errorRecordContent.textContent = errorText;
-            if (errorText) elements.errorRecord.open = true;
-        }
+        if (changed) elements.errorRecordContent.textContent = errorText;
         elements.errorRecord.hidden = !errorText;
+        if (errorText && elements.doctorPanel) elements.doctorPanel.hidden = false;
     }
 
     function renderDoctor(payload = doctorPayload) {
@@ -2318,13 +2344,24 @@
             return;
         }
         const status = String(payload.status || "attention");
-        const statusLabel = status === "healthy"
+        const actions = Array.isArray(payload.actions)
+            ? payload.actions.filter((action) => action && action.enabled)
+            : [];
+        const canContinue = actions.some((action) => action.id === "continue");
+        const statusLabel = canContinue
+            ? "Can continue"
+            : status === "healthy"
             ? "Healthy"
             : status === "blocked"
                 ? "Blocked"
                 : "Needs attention";
         const events = Array.isArray(payload.events) ? payload.events : [];
-        elements.doctorPanel.hidden = status === "healthy" && events.length === 0;
+        const hasTechnicalDetails = Boolean(
+            elements.errorRecordContent?.textContent.trim(),
+        );
+        elements.doctorPanel.hidden = status === "healthy"
+            && events.length === 0
+            && !hasTechnicalDetails;
         elements.doctorPanel.dataset.status = status;
         if (elements.doctorStatus) elements.doctorStatus.textContent = statusLabel;
         if (elements.doctorSummary) {
@@ -2363,9 +2400,6 @@
             }));
         }
         if (elements.doctorActions) {
-            const actions = Array.isArray(payload.actions)
-                ? payload.actions.filter((action) => action && action.enabled)
-                : [];
             elements.doctorActions.replaceChildren(...actions.map((action) => {
                 const button = document.createElement("button");
                 button.type = "button";
@@ -3218,7 +3252,11 @@
             if (elements.errorRecord && elements.errorRecordContent) {
                 elements.errorRecordContent.textContent = error.message;
                 elements.errorRecord.hidden = false;
-                elements.errorRecord.open = true;
+                elements.errorRecord.open = false;
+                if (elements.doctorPanel) {
+                    elements.doctorPanel.hidden = false;
+                    elements.doctorPanel.open = true;
+                }
             }
             if (elements.responseOutput && !responseHistory.length) elements.responseOutput.hidden = true;
         }

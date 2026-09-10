@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.21.1-codex.1`
+Documentation version: `v1.21.2-codex.1`
 
 ## Runtime flow
 
@@ -466,8 +466,11 @@ conversation binding in addition to a valid Edge and ChatGPT target, workspace, 
 permission state, and effort policy. A process failure before the first confirmed binding therefore
 cannot cause Doctor to send a continuation message to a merely selected recent-session URL.
 Any non-idle delivery checkpoint or `action.requested` event without a durable observation disables
-continuation. The user can inspect the recorded conversation, but the service does not guess whether
-to resend a provider message, consume an unseen response, or replay a local Action.
+continuation, except an explicitly selected provider-turn timeout with an exact `delivered` receipt,
+exchange ID, and outbound SHA-256. That narrow recovery starts a new local worker in the recorded
+conversation and sends a fixed continuation cue without resending the prior controller message or
+re-uploading context. Raw tracebacks remain available only as collapsed Technical details inside
+Doctor. The service never replays a local Action or continues automatically.
 
 ## Data ownership
 

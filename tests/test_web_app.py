@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.104.1-codex.1
+# Code version: v1.104.3-codex.1
 
 from __future__ import annotations
 
@@ -673,7 +673,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.21.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.112.0-codex.1"
+                expected_style_version = "style-v2.112.1-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1070,12 +1070,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.112.0-codex.1', local_body)
+        self.assertIn('style-v2.112.1-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
-        self.assertIn('agent-sessions.css?v=1.7.1', local_body)
+        self.assertIn('agent-sessions.css?v=1.8.0', local_body)
         self.assertIn('data-agent-new-session', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.43.1-codex.1', local_body)
+        self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
+        self.assertIn('agent-sidebar-trailing-control', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.43.2-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1118,7 +1120,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="agent_activity_panel"', local_body)
         self.assertIn('id="agent_error_record"', local_body)
         self.assertIn('data-agent-error-record-content', local_body)
-        self.assertIn('class="agent-error-record-scroll"', local_body)
+        self.assertIn('class="agent-doctor-technical-scroll"', local_body)
         self.assertNotIn('data-agent-llm-settings-link', local_body)
         self.assertNotIn('data-agent-provider-settings-label', local_body)
         self.assertNotIn('class="secondary-button agent-llm-settings-link"', local_body)
@@ -1690,8 +1692,12 @@ class WebAppTests(unittest.TestCase):
             with app.test_client() as client:
                 body = client.get("/agent/edge/chatgpt").get_data(as_text=True)
 
-        self.assertIn('<details class="agent-error-record" id="agent_error_record" open>', body)
-        self.assertIn('class="agent-error-record-scroll"', body)
+        self.assertIn('<details class="agent-doctor-panel" id="agent_doctor_panel">', body)
+        self.assertIn('<details class="agent-doctor-technical" id="agent_error_record">', body)
+        self.assertIn('class="agent-doctor-technical-scroll"', body)
+        self.assertIn('aria-label="Doctor technical details"', body)
+        self.assertNotIn("Execution record", body)
+        self.assertNotIn("Error details", body)
         self.assertIn('data-agent-error-record-content', body)
         self.assertIn("Traceback (most recent call last):", body)
         self.assertIn("RuntimeError: &lt;unsafe&gt;", body)
@@ -1838,7 +1844,7 @@ class WebAppTests(unittest.TestCase):
             body,
         )
         self.assertIn('<ol class="agent-activity-list" id="agent_activity_list">', body)
-        self.assertIn('<details class="agent-error-record" id="agent_error_record" hidden>', body)
+        self.assertIn('<details class="agent-doctor-technical" id="agent_error_record" hidden>', body)
         for sentinel in (
             "FOREIGN_ACTIVITY_SENTINEL",
             "FOREIGN_ACTIVITY_DETAIL_SENTINEL",
@@ -2172,7 +2178,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.43.1-codex.1',
+            'computer-use-agent-v3.43.2-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -3755,7 +3761,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.112.0-codex.1", body)
+            self.assertIn("style-v2.112.1-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.32.0-codex.1', body)
