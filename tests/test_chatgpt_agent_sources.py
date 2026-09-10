@@ -1,6 +1,6 @@
 """Focused tests for the Agent's ChatGPT Web source catalog.
 
-Code version: v1.2.7-codex.1
+Code version: v1.2.8-codex.1
 """
 
 from __future__ import annotations
@@ -56,6 +56,33 @@ class _Context:
 class _Page:
     def evaluate(self, _script: str):
         return []
+
+
+class _InPageFetchPage:
+    """Simulate a browser page whose in-page requests bypass a dead proxy."""
+
+    def __init__(self, payloads: dict[str, dict[str, object]]) -> None:
+        self._payloads = payloads
+        self.fetched_urls: list[str] = []
+
+    def evaluate(self, _script: str, argument: dict[str, object]):
+        url = str(argument.get("url") or "")
+        self.fetched_urls.append(url)
+        for marker, payload in self._payloads.items():
+            if marker in url:
+                return {"status": 200, "payload": payload}
+        return {"status": 404, "payload": None}
+
+
+class _ProxyDeadContext:
+    """Fail if production falls back to the Node request context."""
+
+    def __init__(self) -> None:
+        class _Request:
+            def get(self, _url: str, **_kwargs):
+                raise TimeoutError("Proxy connection timed out.")
+
+        self.request = _Request()
 
 
 class _BootstrapPage:
@@ -321,7 +348,7 @@ def test_project_api_parser_supports_sidebar_resource_records() -> None:
         }
     )
 
-    projects = _collect_projects(context, _Page(), {"authorization": "Bearer test"})
+    projects = _collect_projects(context, None, {"authorization": "Bearer test"})
 
     assert projects == [
         {
@@ -465,3 +492,90 @@ def test_bootstrap_network_failure_does_not_claim_signed_out() -> None:
     assert status["probe_error"] is True
     assert "ERR_CONNECTION_CLOSED" in status["message"]
     assert sources is None
+
+
+def test_fetch_conversation_history_uses_in_page_fetch_when_page_supplied() -> None:
+    page = _InPageFetchPage(
+        {
+            "/api/auth/session": {"accessToken": "fixture-token"},
+            "/backend-api/conversation/fixture-session": {
+                "title": "Fixture session",
+                "current_node": "assistant-node",
+                "mapping": {
+                    "root": {"message": None, "parent": None},
+                    "user-node": {
+                        "parent": "root",
+                        "message": {
+                            "author": {"role": "user"},
+                            "content": {"parts": ["Check the fonts"]},
+                            "create_time": "2026-08-14T01:01:00Z",
+                        },
+                    },
+                    "assistant-node": {
+                        "parent": "user-node",
+                        "message": {
+                            "author": {"role": "assistant"},
+                            "channel": "final",
+                            "content": {"parts": ["The font stack is configured"]},
+                            "create_time": "2026-08-14T01:02:00Z",
+                        },
+                    },
+                },
+            },
+        }
+    )
+
+    payload = _fetch_conversation_history(
+        _ProxyDeadContext(),
+        "https://chatgpt.com/c/fixture-session",
+        page,
+    )
+
+    assert payload["title"] == "Fixture session"
+    assert payload["history"] == [
+        {
+            "prompt": "Check the fonts",
+            "response": "The font stack is configured",
+            "started_at": "2026-08-14T01:01:00Z",
+            "finished_at": "2026-08-14T01:02:00Z",
+        }
+    ]
+    assert page.fetched_urls == [
+        "https://chatgpt.com/api/auth/session",
+        "https://chatgpt.com/backend-api/conversation/fixture-session",
+    ]
+
+
+def test_collect_root_sessions_uses_in_page_fetch_when_page_supplied() -> None:
+    page = _InPageFetchPage(
+        {
+            "/backend-api/conversations": {
+                "items": [
+                    {
+                        "id": "root-1",
+                        "title": "Root session",
+                        "update_time": "2026-08-13T10:00:00Z",
+                    }
+                ]
+            },
+        }
+    )
+
+    sessions = _collect_root_sessions(
+        _ProxyDeadContext(),
+        {"authorization": "Bearer test"},
+        page=page,
+    )
+
+    assert sessions == [
+        {
+            "id": "root-1",
+            "title": "Root session",
+            "url": "https://chatgpt.com/c/root-1",
+            "updated_at": "2026-08-13T10:00:00Z",
+        }
+    ]
+    assert len(page.fetched_urls) == 1
+    assert page.fetched_urls[0].startswith(
+        "https://chatgpt.com/backend-api/conversations?"
+    )

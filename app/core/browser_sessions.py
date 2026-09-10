@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.22.0-codex.1
+# Code version: v1.22.1-codex.1
 
 from __future__ import annotations
 
@@ -30,6 +30,42 @@ try:  # pragma: no cover - depends on local runtime
 except ImportError:  # pragma: no cover
     PlaywrightError = RuntimeError
     sync_playwright = None
+
+
+class _CdpAttachCleanupNoiseFilter(logging.Filter):
+    """Silence known benign Playwright CDP-detach cleanup records."""
+
+    _NOISE_FRAGMENTS = (
+        "task was destroyed but it is pending",
+        "future exception was never retrieved",
+    )
+    _PLAYWRIGHT_TRANSPORT_MARKERS = (
+        "connection.run",
+        "targetclosederror",
+        "target page, context or browser has been closed",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage().casefold()
+        except Exception:
+            message = str(getattr(record, "msg", "") or "").casefold()
+        if not any(fragment in message for fragment in self._NOISE_FRAGMENTS):
+            return True
+        combined = " ".join(
+            str(item).casefold()
+            for item in (
+                message,
+                getattr(record, "args", "") or "",
+                str(getattr(record, "exc_info", None) or "") or "",
+            )
+            if item
+        )
+        return not any(marker in combined for marker in self._PLAYWRIGHT_TRANSPORT_MARKERS)
+
+
+if is_windows_host():
+    logging.getLogger("asyncio").addFilter(_CdpAttachCleanupNoiseFilter())
 
 
 X_HOME_URL = "https://x.com/home"

@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.104.0-codex.1
+# Code version: v1.104.1-codex.1
 
 from __future__ import annotations
 
@@ -1075,7 +1075,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.7.1', local_body)
         self.assertIn('data-agent-new-session', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.43.0-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.43.1-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -2172,7 +2172,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.43.0-codex.1',
+            'computer-use-agent-v3.43.1-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',

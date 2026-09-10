@@ -1,4 +1,4 @@
-/* Code version: v3.43.0-codex.1 */
+/* Code version: v3.43.1-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -253,6 +253,7 @@
     let executionSessions = [];
     let executionActiveCount = 0;
     let executionCanStart = false;
+    let executionStartBlockedReason = "";
     let executionSelectionRestored = false;
     const executionDrafts = new Map();
     let restoredExecutionConfiguration = "";
@@ -347,12 +348,18 @@
             }
         }
         if (Number.isInteger(payload.active_count)) executionActiveCount = payload.active_count;
-        if (typeof payload.can_start === "boolean") executionCanStart = payload.can_start;
+        if (typeof payload.can_start === "boolean") {
+            executionCanStart = payload.can_start;
+            executionStartBlockedReason = typeof payload.start_blocked_reason === "string"
+                ? payload.start_blocked_reason.trim()
+                : "";
+        }
         else if (Array.isArray(payload.sessions)) {
             executionCanStart = executionActiveCount === 0 || (
                 enabled && executionActiveCount < 2
                 && executionSessions.filter((item) => item.running).length === executionActiveCount
             );
+            executionStartBlockedReason = "";
         }
         renderRecentSessionList();
     }
@@ -709,6 +716,7 @@
             executionSessions = [];
             executionSelectionRestored = false;
             executionCanStart = false;
+            executionStartBlockedReason = "";
             lastPayload = {...lastPayload, can_start: false};
             delete lastPayload.sessions;
             void selectExecutionSession(rememberedExecutionSession() || "new", {routeChanged: true, previousScope});
@@ -2032,12 +2040,16 @@
         const sessionMessage = remoteSessionHistoryLoading
             ? `Loading the selected ${selectedPlatformLabel()} session history…`
             : remoteSessionHistoryError;
+        const startBlockedMessage = !hasAgentRun && readiness.ready && !executionCanStart
+            ? (executionStartBlockedReason || "A new Agent task cannot start yet.")
+            : "";
         const pauseCopy = agent?.paused
             ? (agent.pause_reason || agent.message || "The Web Agent is paused.")
             : "";
         const message = sessionMessage
             || pauseCopy
             || (hasAgentRun ? String(agent?.message || "").trim() : "")
+            || startBlockedMessage
             || String(readiness.message || "").trim()
             || "Ready to use a signed-in Web AI session.";
         let status = "ready";
@@ -2069,6 +2081,9 @@
         } else if (phase === "interrupted") {
             status = "interrupted";
             phaseLabel = "Interrupted";
+        } else if (startBlockedMessage) {
+            status = "loading";
+            phaseLabel = "Waiting";
         } else if (!readiness.ready) {
             const verificationPending = browserVerificationPending();
             status = verificationPending ? "loading" : "failed";
@@ -3129,7 +3144,16 @@
             elements.ask.dataset.agentAction = running ? "stop" : "ask";
             const label = running ? "Stop Agent task" : `Ask ${platformLabel} Web`;
             elements.ask.setAttribute("aria-label", label);
-            elements.ask.setAttribute("title", label);
+            if (!running && !executionCanStart) {
+                elements.ask.setAttribute(
+                    "title",
+                    executionStartBlockedReason || "A new Agent task cannot start yet.",
+                );
+                elements.ask.setAttribute("aria-describedby", "agent_response_status");
+            } else {
+                elements.ask.setAttribute("title", label);
+                elements.ask.removeAttribute("aria-describedby");
+            }
         }
         if (elements.projectChoose) elements.projectChoose.disabled = running;
         elements.comboboxTriggers.forEach((trigger) => {

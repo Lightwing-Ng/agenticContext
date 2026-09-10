@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.69.0-codex.1
+# Code version: v1.69.1-codex.1
 
 from __future__ import annotations
 
@@ -2675,6 +2675,8 @@ def create_app(
                 )
             except ValueError as exc:
                 return browser_session_response({"error": str(exc)}, 400)
+            except RuntimeError as exc:
+                return browser_session_response({"error": str(exc)}, 409)
             cache = payload.pop("cache", {})
             cache_status = str(cache.get("status", "")).strip().lower() if isinstance(cache, dict) else ""
             freshness_kind = {
@@ -2707,6 +2709,8 @@ def create_app(
             )
         except ValueError as exc:
             return browser_session_response({"error": str(exc)}, 400)
+        except RuntimeError as exc:
+            return browser_session_response({"error": str(exc)}, 409)
         return browser_session_response(payload)
 
     @app.post("/api/browser-session/open-login")

@@ -1,10 +1,11 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.9.0-codex.1
+Code version: v1.9.1-codex.1
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import threading
@@ -17,6 +18,7 @@ import pytest
 
 from app.core.browser_sessions import (
     CHROMIUM_WINDOW_MODE_TASK_STAGE,
+    _CdpAttachCleanupNoiseFilter,
     BrowserDescriptor,
     build_chromium_launch_args,
     clone_browser_profile,
@@ -210,6 +212,41 @@ def test_browser_probe_preserves_playwright_exception_class_in_status_message(ma
     assert result["message"] == (
         "TargetClosedError: Target page, context or browser has been closed"
     )
+
+
+def test_cdp_attach_cleanup_filter_keeps_unrelated_asyncio_errors() -> None:
+    noise_filter = _CdpAttachCleanupNoiseFilter()
+    cdp_record = logging.LogRecord(
+        "asyncio",
+        logging.ERROR,
+        __file__,
+        1,
+        "Task was destroyed but it is pending: Connection.run.<locals>.init()",
+        (),
+        None,
+    )
+    unrelated_record = logging.LogRecord(
+        "asyncio",
+        logging.ERROR,
+        __file__,
+        1,
+        "Task was destroyed but it is pending: application.worker()",
+        (),
+        None,
+    )
+    target_closed_record = logging.LogRecord(
+        "asyncio",
+        logging.ERROR,
+        __file__,
+        1,
+        "Future exception was never retrieved: TargetClosedError",
+        (),
+        None,
+    )
+
+    assert noise_filter.filter(cdp_record) is False
+    assert noise_filter.filter(target_closed_record) is False
+    assert noise_filter.filter(unrelated_record) is True
 
 
 def test_sync_playwright_probe_lifecycle_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:

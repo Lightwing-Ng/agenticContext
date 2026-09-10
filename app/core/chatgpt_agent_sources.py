@@ -1,6 +1,6 @@
 """Read ChatGPT Web sessions, projects, and conversation history for the local Agent.
 
-Code version: v1.6.5-codex.1
+Code version: v1.6.6-codex.1
 """
 
 from __future__ import annotations
@@ -28,7 +28,9 @@ from .chatgpt_downloader import (
     _chatgpt_project_id,
     _extract_chatgpt_conversation_messages,
     _get_chatgpt_api_json,
+    _get_chatgpt_api_json_via_page,
     _load_chatgpt_session_request_headers,
+    _load_chatgpt_session_request_headers_via_page,
     _project_conversation_prefix,
 )
 from .config import CrawlConfig
@@ -278,7 +280,11 @@ def list_chatgpt_project_sessions(
             page = context.primary_page
             page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
             page.wait_for_timeout(500)
-            sessions = _collect_project_sessions(context, normalized_project_url)
+            sessions = _collect_project_sessions(
+                context,
+                normalized_project_url,
+                page=page,
+            )
     elif descriptor.engine == "chromium":
         with sync_playwright_or_error() as playwright:
             with launch_chromium_context(
@@ -300,7 +306,11 @@ def list_chatgpt_project_sessions(
                 if current_url != CHATGPT_HOME_URL.rstrip("/"):
                     goto_with_retry(page, CHATGPT_HOME_URL, attempts=2, timeout_ms=90_000)
                 page.wait_for_timeout(500)
-                sessions = _collect_project_sessions(context, normalized_project_url)
+                sessions = _collect_project_sessions(
+                    context,
+                    normalized_project_url,
+                    page=page,
+                )
     else:
         raise ValueError(f"ChatGPT Agent sources do not support {descriptor.label}.")
 
@@ -332,7 +342,11 @@ def fetch_chatgpt_conversation_history(
             page = context.primary_page
             page.goto(normalized_conversation_url, wait_until="domcontentloaded", timeout=90_000)
             page.wait_for_timeout(500)
-            return _fetch_conversation_history(context, normalized_conversation_url)
+            return _fetch_conversation_history(
+                context,
+                normalized_conversation_url,
+                page,
+            )
 
     if descriptor.engine != "chromium":
         raise ValueError(f"ChatGPT Agent history does not support {descriptor.label}.")
@@ -356,17 +370,29 @@ def fetch_chatgpt_conversation_history(
             if current_url != normalized_conversation_url.rstrip("/"):
                 goto_with_retry(page, normalized_conversation_url, attempts=2, timeout_ms=90_000)
             page.wait_for_timeout(500)
-            return _fetch_conversation_history(context, normalized_conversation_url)
+            return _fetch_conversation_history(
+                context,
+                normalized_conversation_url,
+                page,
+            )
 
 
-def _fetch_conversation_history(context: Any, conversation_url: str) -> dict[str, Any]:
+def _fetch_conversation_history(
+    context: Any,
+    conversation_url: str,
+    page: Any = None,
+) -> dict[str, Any]:
     """Fetch and pair the selected conversation's user and assistant messages."""
-    request_headers = _load_chatgpt_session_request_headers(context, conversation_url)
+    request_headers = (
+        _load_chatgpt_session_request_headers_via_page(page, conversation_url)
+        if page is not None
+        else _load_chatgpt_session_request_headers(context, conversation_url)
+    )
     api_headers = _chatgpt_api_request_headers(request_headers, conversation_url)
     api_url = _chatgpt_conversation_api_url(conversation_url)
     if not api_url:
         raise ValueError("The selected ChatGPT conversation URL is not valid.")
-    payload = _get_chatgpt_api_json(context, api_url, api_headers)
+    payload = _chatgpt_api_json_for(context, page, api_url, api_headers)
     messages = _extract_chatgpt_conversation_messages(payload, conversation_url, utc_now())
     active_node_ids = _active_conversation_node_ids(payload)
     if active_node_ids:
@@ -463,17 +489,26 @@ def _normalize_chatgpt_url(value: str, path_pattern: re.Pattern[str]) -> str:
 
 
 def _collect_sources(context: Any, page: Any, browser_label: str) -> dict[str, Any]:
-    request_headers = _load_chatgpt_session_request_headers(context, CHATGPT_HOME_URL)
+    request_headers = (
+        _load_chatgpt_session_request_headers_via_page(page, CHATGPT_HOME_URL)
+        if page is not None
+        else _load_chatgpt_session_request_headers(context, CHATGPT_HOME_URL)
+    )
     api_headers = _chatgpt_api_request_headers(request_headers, CHATGPT_HOME_URL)
     return {
         "browser_label": browser_label,
-        "recent_sessions": _collect_root_sessions(context, api_headers),
+        "recent_sessions": _collect_root_sessions(context, api_headers, page=page),
         "projects": _collect_projects(context, page, api_headers),
         "limit": AGENT_SOURCE_LIMIT,
     }
 
 
-def _collect_root_sessions(context: Any, api_headers: dict[str, str]) -> list[dict[str, str]]:
+def _collect_root_sessions(
+    context: Any,
+    api_headers: dict[str, str],
+    *,
+    page: Any = None,
+) -> list[dict[str, str]]:
     query = urlencode(
         {
             "offset": 0,
@@ -481,8 +516,9 @@ def _collect_root_sessions(context: Any, api_headers: dict[str, str]) -> list[di
             "order": "updated",
         }
     )
-    payload = _get_chatgpt_api_json(
+    payload = _chatgpt_api_json_for(
         context,
+        page,
         f"https://chatgpt.com/backend-api/conversations?{query}",
         api_headers,
     )
@@ -500,12 +536,24 @@ def _collect_root_sessions(context: Any, api_headers: dict[str, str]) -> list[di
     return sessions[:AGENT_SOURCE_LIMIT]
 
 
+def _chatgpt_api_json_for(
+    context: Any,
+    page: Any,
+    url: str,
+    api_headers: dict[str, str],
+) -> dict[str, object]:
+    """Use the page network stack when available, with the context as fallback."""
+    if page is not None:
+        return _get_chatgpt_api_json_via_page(page, url, api_headers)
+    return _get_chatgpt_api_json(context, url, api_headers)
+
+
 def _collect_projects(
     context: Any,
     page: Any,
     api_headers: dict[str, str],
 ) -> list[dict[str, str]]:
-    projects = _collect_projects_from_api(context, api_headers)
+    projects = _collect_projects_from_api(context, api_headers, page=page)
     if not projects:
         projects.extend(_collect_projects_from_page(page))
     deduplicated: dict[str, dict[str, str]] = {}
@@ -520,12 +568,18 @@ def _collect_projects(
     return ordered[:AGENT_SOURCE_LIMIT]
 
 
-def _collect_projects_from_api(context: Any, api_headers: dict[str, str]) -> list[dict[str, str]]:
+def _collect_projects_from_api(
+    context: Any,
+    api_headers: dict[str, str],
+    *,
+    page: Any = None,
+) -> list[dict[str, str]]:
     deduplicated: dict[str, dict[str, str]] = {}
     for endpoint in CHATGPT_PROJECT_API_ENDPOINTS:
         try:
-            payload = _get_chatgpt_api_json(
+            payload = _chatgpt_api_json_for(
                 context,
+                page,
                 f"https://chatgpt.com{endpoint}",
                 api_headers,
             )
@@ -539,7 +593,7 @@ def _collect_projects_from_api(context: Any, api_headers: dict[str, str]) -> lis
             existing = deduplicated.get(project_url)
             deduplicated[project_url] = _prefer_newer_source_row(existing, project)
     projects = list(deduplicated.values())
-    _enrich_project_icon_metadata(context, api_headers, projects)
+    _enrich_project_icon_metadata(context, api_headers, projects, page=page)
     projects.sort(key=_source_updated_at_key, reverse=True)
     return projects[:AGENT_SOURCE_LIMIT]
 
@@ -548,6 +602,8 @@ def _enrich_project_icon_metadata(
     context: Any,
     api_headers: dict[str, str],
     projects: list[dict[str, str]],
+    *,
+    page: Any = None,
 ) -> None:
     """Read each Project's live icon metadata without replacing its catalog row."""
     for project in projects[:CHATGPT_PROJECT_API_LIMIT]:
@@ -557,8 +613,9 @@ def _enrich_project_icon_metadata(
         if not project_id:
             continue
         try:
-            detail_payload = _get_chatgpt_api_json(
+            detail_payload = _chatgpt_api_json_for(
                 context,
+                page,
                 "https://chatgpt.com"
                 + CHATGPT_PROJECT_DETAIL_ENDPOINT.format(project_id=project_id),
                 api_headers,
@@ -670,15 +727,25 @@ def _open_project_from_sidebar(page: Any, label: str) -> str:
     return project_url
 
 
-def _collect_project_sessions(context: Any, project_url: str) -> list[dict[str, str]]:
+def _collect_project_sessions(
+    context: Any,
+    project_url: str,
+    *,
+    page: Any = None,
+) -> list[dict[str, str]]:
     project_id = _chatgpt_project_id(project_url)
     if not project_id:
         return []
-    request_headers = _load_chatgpt_session_request_headers(context, project_url)
+    request_headers = (
+        _load_chatgpt_session_request_headers_via_page(page, project_url)
+        if page is not None
+        else _load_chatgpt_session_request_headers(context, project_url)
+    )
     api_headers = _chatgpt_api_request_headers(request_headers, project_url)
     query = urlencode({"cursor": 0, "limit": CHATGPT_PROJECT_API_LIMIT})
-    payload = _get_chatgpt_api_json(
+    payload = _chatgpt_api_json_for(
         context,
+        page,
         f"https://chatgpt.com/backend-api/gizmos/{project_id}/conversations?{query}",
         api_headers,
     )

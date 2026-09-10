@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.65.2-codex.3
+Code version: v3.65.3-codex.1
 """
 
 from __future__ import annotations
@@ -2520,6 +2520,101 @@ def test_chromium_model_selector_returns_false_without_a_visible_power_control()
 
     assert _select_chatgpt_model(page, "chromium", DEFAULT_CHATGPT_MODEL) is False
     assert "#prompt-textarea" in page.locator_calls
+
+
+def test_chromium_model_selector_backs_off_across_power_control_recycles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Page:
+        def __init__(self) -> None:
+            self.waits: list[int] = []
+
+        def get_by_role(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("The stubbed selector must own all control lookups.")
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            self.waits.append(milliseconds)
+
+    attempts: list[int] = []
+
+    def recycled_selector(
+        _page: object,
+        _option: dict[str, object],
+        _remote_labels: tuple[str, ...],
+        observation: dict[str, object] | None = None,
+        **_kwargs: object,
+    ) -> bool:
+        attempts.append(len(attempts) + 1)
+        if isinstance(observation, dict):
+            observation["reason"] = "power-control-recycled"
+        return False
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_select_chatgpt_model_chromium",
+        recycled_selector,
+    )
+    page = _Page()
+    observation: dict[str, object] = {}
+
+    assert (
+        _select_chatgpt_model(page, "chromium", DEFAULT_CHATGPT_MODEL, observation)
+        is False
+    )
+    assert attempts == [1, 2, 3, 4, 5, 6]
+    assert page.waits == [500, 1_000, 1_500, 2_000, 2_500]
+    assert observation["reason"] == "power-control-recycled"
+
+
+def test_chromium_model_selector_stops_retrying_when_the_control_settles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Page:
+        def __init__(self) -> None:
+            self.waits: list[int] = []
+
+        def get_by_role(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("The stubbed selector must own all control lookups.")
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            self.waits.append(milliseconds)
+
+    attempts: list[int] = []
+
+    def settling_selector(
+        _page: object,
+        _option: dict[str, object],
+        _remote_labels: tuple[str, ...],
+        observation: dict[str, object] | None = None,
+        **_kwargs: object,
+    ) -> bool:
+        attempts.append(len(attempts) + 1)
+        if isinstance(observation, dict):
+            observation["reason"] = (
+                "" if len(attempts) >= 3 else "model-menu-unreadable"
+            )
+        return len(attempts) >= 3
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_select_chatgpt_model_chromium",
+        settling_selector,
+    )
+    page = _Page()
+    observation: dict[str, object] = {}
+
+    assert _select_chatgpt_model(
+        page,
+        "chromium",
+        DEFAULT_CHATGPT_MODEL,
+        observation,
+    ) is True
+    assert attempts == [1, 2, 3]
+    assert page.waits == [500, 1_000]
 
 
 def test_non_chatgpt_model_selection_uses_the_provider_menu_when_exposed() -> None:
@@ -9057,6 +9152,112 @@ def test_fresh_project_binding_recovers_after_slug_rewrite() -> None:
     assert binding.ensure_response_session() == canonical_url
     assert binding.bound_conversation_url == canonical_url
     assert page.goto_calls == [created_url]
+
+
+def test_fresh_chatgpt_binding_recovers_after_project_page_bounce() -> None:
+    created_url = "https://chatgpt.com/c/fresh-session"
+    project_landing_url = (
+        "https://chatgpt.com/g/g-p-6a978edb95308191a53d2bb113154c10-worthward/project"
+    )
+
+    class _Page:
+        url = "https://chatgpt.com/"
+
+        def __init__(self) -> None:
+            self.goto_calls: list[str] = []
+
+        def evaluate(
+            self,
+            _expression: str,
+            _argument: dict[str, str],
+        ) -> dict[str, object]:
+            return {"markerEchoed": True, "url": self.url}
+
+        def goto(self, url: str, **_kwargs: object) -> None:
+            self.goto_calls.append(url)
+            self.url = created_url
+
+        def title(self) -> str:
+            return "Fresh session"
+
+    page = _Page()
+    binding = _ProviderSessionBinding(page, "chatgpt", "https://chatgpt.com/", "new")
+    binding.arm_first_submission("Inspect the project")
+    page.url = created_url
+    assert binding.check(allow_transition=True) == created_url
+
+    page.url = project_landing_url
+    assert binding.ensure_response_session() == created_url
+    assert binding.bound_conversation_url == created_url
+    assert page.goto_calls == [created_url]
+
+
+def test_fresh_chatgpt_binding_rejects_repeated_project_page_bounce() -> None:
+    created_url = "https://chatgpt.com/c/fresh-session"
+    project_landing_url = (
+        "https://chatgpt.com/g/g-p-6a978edb95308191a53d2bb113154c10-worthward/project"
+    )
+
+    class _Page:
+        url = created_url
+
+        def evaluate(
+            self,
+            _expression: str,
+            _argument: dict[str, str],
+        ) -> dict[str, object]:
+            return {"markerEchoed": True, "url": self.url}
+
+        def title(self) -> str:
+            return "Fresh session"
+
+    page = _Page()
+    binding = _ProviderSessionBinding(page, "chatgpt", "https://chatgpt.com/", "new")
+    binding.arm_first_submission("Inspect the project")
+    assert binding.check(allow_transition=True) == created_url
+
+    page.url = project_landing_url
+    binding.initial_landing_recovery_attempted = True
+    with pytest.raises(RuntimeError, match="repeatedly returned"):
+        binding.ensure_response_session()
+
+
+def test_chatgpt_project_page_bounce_gate_preserves_project_scope() -> None:
+    project_id = "g-p-6a978edb95308191a53d2bb113154c10"
+    other_project_id = "g-p-11111111111111111111111111111111"
+    current_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+
+    class _Page:
+        url = current_url
+
+        def title(self) -> str:
+            return "Project"
+
+    root_binding = _ProviderSessionBinding(
+        _Page(),
+        "chatgpt",
+        "https://chatgpt.com/",
+        "new",
+    )
+    assert root_binding._chatgpt_project_page_bounce_is_open(current_url) is True
+
+    project_binding = _ProviderSessionBinding(
+        _Page(),
+        "chatgpt",
+        f"https://chatgpt.com/g/{project_id}-worthward/project",
+        "project_new",
+    )
+    assert project_binding._chatgpt_project_page_bounce_is_open(current_url) is True
+    assert project_binding._chatgpt_project_page_bounce_is_open(
+        f"https://chatgpt.com/g/{other_project_id}-other/project"
+    ) is False
+
+    for rejected_url in (
+        "https://evil.example.com/g/g-p-6a978edb95308191a53d2bb113154c10/project",
+        "https://chatgpt.com/c/session-1",
+        "https://chatgpt.com/g/not-a-real-id/project",
+    ):
+        assert root_binding._chatgpt_project_page_bounce_is_open(rejected_url) is False
 
 
 def test_fresh_chatgpt_binding_never_confirms_a_second_landing_after_restore() -> None:

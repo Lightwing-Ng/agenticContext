@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.49.0-codex.1
+# Code version: v1.49.1-codex.1
 
 from __future__ import annotations
 
@@ -1446,6 +1446,24 @@ def _load_chatgpt_session_request_headers(context, referer: str) -> dict[str, st
     if isinstance(context, SafariContext):
         context._chatgpt_request_headers = dict(request_headers)
     return request_headers
+
+
+def _load_chatgpt_session_request_headers_via_page(page, referer: str) -> dict[str, str]:
+    """Read a transient ChatGPT access token through the browser network stack."""
+    page_context = getattr(page, "context", None)
+    if isinstance(page_context, SafariContext):
+        return _load_chatgpt_session_request_headers(page_context, referer)
+    payload = _get_chatgpt_api_json_via_page(
+        page,
+        CHATGPT_AUTH_SESSION_URL,
+        {"Accept": "application/json", "Referer": referer},
+    )
+    access_token = str(payload.get("accessToken") or "").strip()
+    if not access_token:
+        raise RuntimeError(
+            "ChatGPT browser session is not signed in or did not expose an access token."
+        )
+    return {"authorization": f"Bearer {access_token}"}
 
 
 def _get_chatgpt_api_json(

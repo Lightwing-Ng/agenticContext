@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.3-codex.1
+Code version: v1.8.4-codex.1
 """
 
 from __future__ import annotations
@@ -136,6 +136,37 @@ def test_browser_session_api_validates_inputs_and_returns_probe_payload(client) 
     assert valid.status_code == 200
     assert valid.get_json() == {"ready": True, "account_name": "demo"}
     probe.assert_called_once()
+
+
+@pytest.mark.integration
+def test_browser_session_api_returns_409_when_debug_browser_lock_is_busy(client) -> None:
+    with patch(
+        "app.web.app.probe_and_collect_chatgpt_sources",
+        side_effect=RuntimeError(
+            "The project debug edge is busy with another operation. Retry after it finishes."
+        ),
+    ):
+        response = client.get(
+            "/api/browser-session?platform=chatgpt&browser=edge&scope=agent"
+        )
+
+    assert response.status_code == 409
+    assert "busy" in response.get_json()["error"]
+    assert response.headers["Cache-Control"] == (
+        "no-store, no-cache, max-age=0, must-revalidate"
+    )
+
+
+@pytest.mark.integration
+def test_browser_session_api_returns_409_when_probe_raises_runtime_error(client) -> None:
+    with patch(
+        "app.web.app.probe_browser_session",
+        side_effect=RuntimeError("The project debug edge is busy with another operation."),
+    ):
+        response = client.get("/api/browser-session?platform=gemini&browser=edge")
+
+    assert response.status_code == 409
+    assert "busy" in response.get_json()["error"]
 
 
 @pytest.mark.integration

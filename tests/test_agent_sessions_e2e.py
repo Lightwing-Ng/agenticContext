@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.5.1-codex.2."""
+"""Session switching, capacity, and selected controls. Code version: v1.5.2-codex.1."""
 
 from copy import deepcopy
 
@@ -165,6 +165,94 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
         page.locator('.agent-session-mode-combobox [data-agent-combobox-option="new"]').click()
         expect(ask).to_be_enabled()
         assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1138, 390])
+def test_new_session_explains_workspace_block_and_keeps_draft_until_unblocked(
+    disposable_browser, sidebar_server_url, width
+):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 959})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    blocked = [True]
+    blocked_reason = (
+        "This workspace already has an active write-capable Agent task. "
+        "Wait for it to finish or stop it before starting another write-capable task."
+    )
+    completed = {
+        **base["agent"],
+        "session_id": "selected",
+        "run_id": "selected-run",
+        "workspace_path": "/tmp/shared-workspace",
+        "session_title": "Completed task",
+        "running": False,
+        "phase": "finished",
+    }
+    active = {
+        **completed,
+        "session_id": "active",
+        "run_id": "active-run",
+        "session_title": "Active writer",
+        "running": True,
+        "phase": "running",
+    }
+    page.add_init_script(
+        "sessionStorage.setItem('cachelikes:agent-execution-session:edge:chatgpt', 'selected')"
+    )
+
+    def status(route):
+        session_id = route.request.headers.get("x-cachelikes-agent-session", "selected")
+        if not blocked[0]:
+            active.update(running=False, phase="finished")
+        route.fulfill(json={
+            **base,
+            "agent": {"session_id": "new"} if session_id == "new" else completed,
+            "sessions": [completed, active],
+            "active_count": 1 if blocked[0] else 0,
+            "can_start": not blocked[0],
+            "start_blocked_reason": blocked_reason if blocked[0] else "",
+        })
+
+    page.route("**/api/agent/status", status)
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True,
+        "logged_in": True,
+        "browser": "edge",
+        "platform": "chatgpt",
+        "agent_sources": fixtures._chatgpt_catalog_sessions(),
+    }))
+    page.route(
+        "**/api/agent/sources**",
+        lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        expect(page.locator("[data-execution-session-id=selected]")).to_have_attribute(
+            "aria-pressed", "true"
+        )
+        page.locator("[data-agent-new-session]").click()
+
+        status_copy = page.locator("#agent_response_status")
+        ask = page.get_by_role("button", name="Ask ChatGPT Web", exact=True)
+        expect(status_copy).to_have_attribute("data-status", "loading")
+        expect(status_copy).to_contain_text(f"Waiting · {blocked_reason}")
+        expect(ask).to_be_disabled()
+        expect(ask).to_have_attribute("title", blocked_reason)
+        expect(ask).to_have_attribute("aria-describedby", "agent_response_status")
+
+        prompt = page.locator("#agent_prompt_input")
+        prompt.fill("Keep this draft while the active writer finishes.")
+        blocked[0] = False
+        expect(ask).to_be_enabled(timeout=5_000)
+        expect(status_copy).to_have_attribute("data-status", "ready")
+        expect(status_copy).to_contain_text("Ready")
+        expect(prompt).to_have_value("Keep this draft while the active writer finishes.")
+        expect(ask).to_have_attribute("title", "Ask ChatGPT Web")
+        expect(ask).not_to_have_attribute("aria-describedby", "agent_response_status")
     finally:
         context.close()
 

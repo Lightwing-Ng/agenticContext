@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.69.2-codex.3
+Code version: v3.69.2-codex.4
 """
 
 from __future__ import annotations
@@ -144,7 +144,8 @@ _ANCHORED_MUTATION_SUPPORTED = bool(
 MAX_ACTION_JSON_CHARS = 800_000
 MAX_INVALID_ACTION_RETRIES = 3
 CHATGPT_MODEL_VERIFICATION_ATTEMPTS = 3
-CHATGPT_MODEL_CONTROL_RETRY_ATTEMPTS = CHATGPT_MODEL_VERIFICATION_ATTEMPTS
+CHATGPT_MODEL_CONTROL_RETRY_ATTEMPTS = 6
+CHATGPT_MODEL_CONTROL_RETRY_BACKOFF_MILLISECONDS = 500
 CHATGPT_MODEL_LOCATOR_TIMEOUT_MILLISECONDS = 1_000
 CHATGPT_MODEL_CONTROL_WAIT_ATTEMPTS = 61
 CHATGPT_MODEL_CONTROL_POLL_MILLISECONDS = 250
@@ -9072,7 +9073,7 @@ class _ProviderSessionBinding:
         )
 
     def _chatgpt_initial_bounce_target_is_open(self, current_url: str) -> bool:
-        """Accept only the selected landing or ChatGPT root during first-session recovery."""
+        """Accept a bounded fresh-session landing target during recovery."""
         if _provider_pre_submit_target_is_open(
             "chatgpt",
             self.selected_target_url,
@@ -9080,9 +9081,27 @@ class _ProviderSessionBinding:
             self.session_mode,
         ):
             return True
+        if self._chatgpt_project_page_bounce_is_open(current_url):
+            return True
         return bool(
             self.session_mode == "project_new"
             and _chatgpt_target_is_open(CHATGPT_HOME_URL, current_url)
+        )
+
+    def _chatgpt_project_page_bounce_is_open(self, current_url: str) -> bool:
+        """Recognize an official Project landing reached by a fresh ChatGPT session."""
+        if self.platform != "chatgpt" or self.session_mode not in {"new", "project_new"}:
+            return False
+        current_project = normalize_agent_project_url("chatgpt", current_url)
+        current_project_id = chatgpt_project_id(current_project)
+        if not current_project or not current_project_id:
+            return False
+        if self.session_mode == "new":
+            return True
+        selected_project_id = chatgpt_project_id(self.selected_target_url)
+        return bool(
+            selected_project_id
+            and selected_project_id == current_project_id
         )
 
     def _record_initial_chatgpt_landing_bounce(self) -> None:
@@ -14863,7 +14882,9 @@ def _select_chatgpt_model(
             if callable(should_stop) and should_stop():
                 return False
             if attempt + 1 < CHATGPT_MODEL_CONTROL_RETRY_ATTEMPTS:
-                wait_for_timeout(500)
+                wait_for_timeout(
+                    CHATGPT_MODEL_CONTROL_RETRY_BACKOFF_MILLISECONDS * (attempt + 1)
+                )
         return result
     wait_for_timeout = getattr(page, "wait_for_timeout", lambda _milliseconds: None)
     model_control_script = r"""({labels, phase}) => {

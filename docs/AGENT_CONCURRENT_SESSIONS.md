@@ -1,6 +1,6 @@
 # Edge ChatGPT concurrent Agent sessions
 
-Documentation version: v1.3.0-codex.1
+Documentation version: v1.3.1-codex.1
 Date: 9 Sep 2026
 
 ## Behavior
@@ -21,6 +21,11 @@ until lifecycle cleanup completes. An over-capacity submission returns HTTP 409 
 is not queued or retried. Two workers cannot execute the same normalized provider
 conversation concurrently. These are application concurrency limits, not assurances
 about provider account enforcement.
+
+New session remains available as a draft surface when admission is temporarily blocked. The Agent
+status shows the backend `start_blocked_reason`, the disabled Ask control exposes that explanation,
+and polling enables Ask without discarding the draft after the active workspace lease or other
+capacity constraint clears. The UI never bypasses the locked admission check.
 
 Each session owns its worker, stop/resume signals, event chain, context bundle,
 response history, and browser context. macOS Chromium execution retains a unique

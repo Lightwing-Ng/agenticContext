@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.21.0-codex.1`
+Documentation version: `v1.21.1-codex.1`
 
 ## Runtime flow
 
@@ -167,6 +167,9 @@ uses `can_start` to gate Ask, while the locked backend remains authoritative if 
 between polling and submission. A worker with a recorded run cannot be reassigned to a different
 browser or provider. A stale status snapshot can still lead to a legitimate HTTP 409; it is not
 proof that the admission rules differ.
+For an unallocated new session, the frontend presents `start_blocked_reason` as a visible Waiting
+state and exposes the same reason through the disabled Ask control. The draft remains editable and
+the ordinary status poll enables Ask after the admission condition clears.
 Admission also gives overlapping workspace roots one write-capable owner. Directory identity,
 resolved aliases, and conservative lexical parent/child roots participate in that decision. The
 admitted root identity is fixed and handed through the worker to the controller before context or
