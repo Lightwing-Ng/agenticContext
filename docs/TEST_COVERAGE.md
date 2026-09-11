@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.6.1-codex.1`
+Test-suite version: `v1.7.0-codex.1`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -26,11 +26,9 @@ This is a behavior map, not a claim of complete coverage or a current test-count
   session discovery, source selection, and disposable-browser activity interactions.
 - `test_chatgpt_downloader.py`, `test_gemini_downloader.py`, `test_grok_history.py`, and
   `test_claude_history.py`: provider parsing and persistence using isolated fixtures and fakes.
-- `test_zhihu_answers.py`: strict profile URL admission, normalized answer/media fields, bounded
-  cursor validation, oversized-page handling, stable provider-gap and first-page completion proofs,
-  collapsed/null field preservation, ID deduplication, atomic Parquet replacement and capture
-  metadata, previous-snapshot preservation, bounded archive search, exact-ID body readback,
-  browser restrictions, and mocked worker lifecycle.
+- `test_zhihu_answer_collection.py`: strict profile URL admission, normalized answer fields,
+  bounded cursor validation, stable provider-gap proof, ID deduplication, and human-verification
+  rejection for the collector shared by the formal Zhihu cache.
 - `test_chat_history_browser.py`, `test_local_media_browser.py`, `test_prompt_store.py`, and
   `test_shadow_backup.py`: local resource browsing, prompts, recovery, and filesystem boundaries.
 - `test_job_lock.py`: cache job ownership and contention.
@@ -40,10 +38,9 @@ This is a behavior map, not a claim of complete coverage or a current test-count
   and rendered alignment.
 - `test_agent_optimization.py`, `test_agent_optimization_browser.py`, and
   `test_agent_optimization.mjs`: Site tools contracts and disposable-browser registration.
-- `test_beta_routes.py`, `test_beta_e2e.py`, and `test_beta_engines.mjs`: seven-experiment catalog
-  and default route, six browser-only deterministic tools, isolated Zhihu start/status/stop UI,
-  searchable local answer summaries and text-only cached-body readback,
-  module disablement, bounded imports, session drafts, exports, and responsive behavior.
+- `test_beta_routes.py`, `test_beta_e2e.py`, and `test_beta_engines.mjs`: six-experiment catalog,
+  default route, removed-route regression, module disablement, browser-only deterministic tools,
+  bounded imports, session drafts, exports, and responsive behavior.
 - `test_zhihu_history.py` and `test_zhihu_web.py`: signed-in vote-up filtering, optional answerer
   mode, cumulative formal Parquet persistence, link-only rich media, Edge login controls, exact
   single-character logo extraction, and Local resources readback without a live provider.

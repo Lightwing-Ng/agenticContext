@@ -1,4 +1,4 @@
-/* Code version: v0.3.0-codex.1 */
+/* Code version: v0.4.0-codex.1 */
 
 .beta-page .beta-workspace { overflow: visible; }
 .beta-page #workspace_panel .beta-title { box-sizing: border-box; display: flex; flex: 0 0 auto; flex-direction: column; width: min(100%, var(--layout-content-width)); height: auto; min-height: calc(var(--workspace-title-rail-control-height) + var(--workspace-title-rail-pad-block-start)); padding: var(--workspace-title-rail-pad-block-start) var(--workspace-article-pad-inline) 0; }
@@ -9,7 +9,6 @@ html.sidebar-memory-collapsed .beta-page #workspace_panel .beta-title { padding-
 .beta-page .beta-scrollport { padding-block-start: 12px; }
 .beta-page .beta-content { width: min(100%, var(--layout-content-width)); display: grid; gap: 18px; padding-inline: 12px; box-sizing: border-box; }
 .beta-page .beta-nav { --settings-category-icon-tint: var(--accent-text); --settings-category-icon-surface: var(--accent-surface-muted); }
-.beta-page .beta-nav-zhihu-answers-cache { --settings-category-icon-url: url("/static/images/text.bubble.fill.svg"); }
 .beta-page .beta-nav-idea-collision { --settings-category-icon-url: url("/static/images/wand.and.sparkles.inverse.svg"); }
 .beta-page .beta-nav-context-capsule { --settings-category-icon-url: url("/static/images/square.stack.3d.down.forward.fill.svg"); }
 .beta-page .beta-nav-question-radar { --settings-category-icon-url: url("/static/images/text.line.magnify.svg"); }
@@ -59,63 +58,12 @@ html.sidebar-memory-collapsed .beta-page #workspace_panel .beta-title { padding-
 .beta-page .beta-footnote > span { display: block; margin-bottom: 4px; }
 .beta-page .beta-footnote p { margin: 6px 0 0; }
 
-.beta-page .beta-zhihu-input-card,
-.beta-page .beta-zhihu-progress,
-.beta-page .beta-zhihu-archive,
-.beta-page .beta-zhihu-detail { min-width: 0; padding: 16px; display: grid; gap: 16px; overflow: visible; }
-.beta-page .beta-zhihu-profile-field { width: min(100%, var(--layout-control-width)); }
-.beta-page .beta-zhihu-profile-field input { min-width: 0; width: 100%; text-transform: none; }
-.beta-page .beta-zhihu-browser-fieldset { width: min(100%, var(--layout-control-width)); min-width: 0; margin: 0; padding: 0; border: 0; }
-.beta-page .beta-zhihu-browser-fieldset legend { margin: 0 0 8px; padding: 0; color: var(--text); font-size: var(--font-form-label); line-height: 1.4; }
-.beta-page .beta-zhihu-browser-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(118px, 100%), 1fr)); gap: 8px; min-width: 0; }
-.beta-page .beta-zhihu-browser-option { display: grid; grid-template-columns: 16px 22px minmax(0, 1fr); gap: 8px; align-items: center; min-width: 0; min-height: var(--shared-select-option-min-height); padding: 7px 10px; border: var(--frosted-glass-border); border-radius: var(--radius-soft); background: var(--glass-chip-background); box-shadow: var(--glass-chip-shadow); color: var(--text); font-size: var(--font-form-label); cursor: pointer; transition: background var(--motion-duration-fast) var(--motion-standard), box-shadow var(--motion-duration-fast) var(--motion-standard), color var(--motion-duration-fast) var(--motion-standard); }
-.beta-page .beta-zhihu-browser-option:hover { background: var(--glass-chip-background-hover); box-shadow: var(--glass-chip-shadow-hover); }
-.beta-page .beta-zhihu-browser-option:has(input:checked) { background: var(--accent-surface-muted); color: var(--accent-text); }
-.beta-page .beta-zhihu-browser-option:has(input:focus-visible) { outline: 2px solid var(--accent-text); outline-offset: 2px; }
-.beta-page .beta-zhihu-browser-option input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent-fill); }
-.beta-page .beta-zhihu-browser-option img { display: block; width: 22px; height: 22px; object-fit: contain; }
-.beta-page .beta-zhihu-browser-option span { min-width: 0; overflow-wrap: anywhere; }
-.beta-page .beta-zhihu-input-card[aria-busy="true"] .beta-zhihu-profile-field,
-.beta-page .beta-zhihu-input-card[aria-busy="true"] .beta-zhihu-browser-fieldset { opacity: 0.72; }
-.beta-page .beta-zhihu-actions { min-height: 32px; }
-.beta-page .beta-zhihu-progress progress { display: block; width: 100%; height: 8px; overflow: hidden; border: 0; border-radius: var(--radius-pill); appearance: none; background: var(--theme-muted-translucent); }
-.beta-page .beta-zhihu-progress progress::-webkit-progress-bar { border-radius: var(--radius-pill); background: var(--theme-muted-translucent); }
-.beta-page .beta-zhihu-progress progress::-webkit-progress-value { border-radius: var(--radius-pill); background: var(--accent-fill); transition: inline-size var(--motion-duration-spatial) var(--motion-emphasized); }
-.beta-page .beta-zhihu-progress progress::-moz-progress-bar { border-radius: var(--radius-pill); background: var(--accent-fill); }
-.beta-page .beta-zhihu-change-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
-.beta-page .beta-zhihu-change-grid div { min-width: 0; padding: 10px; border-radius: var(--radius-soft); background: var(--theme-muted-translucent); }
-.beta-page .beta-zhihu-change-grid dt { color: var(--muted); font-size: 10px; }
-.beta-page .beta-zhihu-change-grid dd { margin: 4px 0 0; color: var(--text); font-family: var(--font-family-mono); font-size: 14px; overflow-wrap: anywhere; }
-.beta-page .beta-zhihu-output { display: grid; gap: 5px; min-width: 0; margin: 0; color: var(--muted); font-size: 10px; }
-.beta-page .beta-zhihu-output code { color: var(--text); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; word-break: break-word; }
-.beta-page .beta-zhihu-search { display: flex; align-items: end; gap: 10px; min-width: 0; }
-.beta-page .beta-zhihu-search .beta-field { flex: 1 1 var(--layout-control-width); }
-.beta-page .beta-zhihu-search input { width: 100%; min-width: 0; text-transform: none; }
-.beta-page .beta-zhihu-search .secondary-button { flex: 0 0 auto; margin-inline-start: 0; }
-.beta-page .beta-zhihu-answer-list { display: grid; gap: 0; max-height: min(360px, 45svh); min-width: 0; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
-.beta-page .beta-zhihu-answer-item { display: grid; gap: 6px; min-width: 0; padding: 12px 2px; border-top: var(--frosted-glass-border); }
-.beta-page .beta-zhihu-answer-item:first-child { padding-block-start: 0; border-top: 0; }
-.beta-page .beta-zhihu-answer-link { min-width: 0; margin: 0; padding: 0; border: 0; background: transparent; color: var(--accent-text); font: inherit; font-size: var(--font-form-label); line-height: 1.45; text-align: start; text-decoration: none; overflow-wrap: anywhere; cursor: pointer; }
-.beta-page .beta-zhihu-answer-link:hover { text-decoration: underline; }
-.beta-page .beta-zhihu-answer-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; color: var(--muted); font-size: 10px; line-height: 1.4; }
-.beta-page .beta-zhihu-answer-meta span { overflow-wrap: anywhere; }
-.beta-page .beta-zhihu-answer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.beta-page .beta-zhihu-answer-actions .secondary-button { min-height: 30px; margin-inline-start: 0; }
-.beta-page .beta-zhihu-pagination { display: flex; align-items: center; justify-content: center; gap: 10px; }
-.beta-page .beta-zhihu-pagination .secondary-button { margin-inline-start: 0; }
-.beta-page .beta-zhihu-answer-body { min-width: 0; max-height: min(620px, 62svh); padding: 14px; overflow: auto; border: var(--frosted-glass-border); border-radius: var(--radius-soft); background: var(--theme-muted-translucent); color: var(--text); font-family: var(--font-family-mono-cjk); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
-.beta-page .beta-zhihu-detail > .beta-text-link { justify-self: start; }
-
 @media (max-width: 600px) {
     .beta-page .beta-content { gap: 14px; padding-inline: 10px; }
     .beta-page .beta-source-grid { grid-template-columns: minmax(0, 1fr); }
     .beta-page .beta-input-card, .beta-page .beta-result { padding: 12px; }
     .beta-page .beta-intro h2 { font-size: 23px; }
     .beta-page .beta-source-grid textarea { min-height: 124px; }
-    .beta-page .beta-zhihu-input-card, .beta-page .beta-zhihu-progress, .beta-page .beta-zhihu-archive, .beta-page .beta-zhihu-detail { padding: 12px; }
-    .beta-page .beta-zhihu-change-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .beta-page .beta-zhihu-search { align-items: stretch; flex-direction: column; }
-    .beta-page .beta-zhihu-search .secondary-button { align-self: end; }
 }
 
 @media (max-width: 560px) {

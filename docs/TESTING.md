@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.11.3-codex.1`
+Documentation version: `v1.12.0-codex.1`
 
 ## Supported commands
 
@@ -104,17 +104,17 @@ On Windows:
 .\scripts\test.ps1 tests/test_sidebar_e2e.py
 ```
 
-Run the seven-experiment Beta contract and fixture-backed Zhihu archive checks with:
+Run the six-experiment Beta contract and fixture-backed formal Zhihu checks with:
 
 ```bash
-./scripts/test.sh tests/test_beta_routes.py tests/test_beta_e2e.py tests/test_zhihu_answers.py tests/test_zhihu_history.py tests/test_zhihu_web.py
+./scripts/test.sh tests/test_beta_routes.py tests/test_beta_e2e.py tests/test_zhihu_answer_collection.py tests/test_zhihu_history.py tests/test_zhihu_web.py
 node --test tests/test_beta_engines.mjs
 ```
 
 On Windows:
 
 ```powershell
-.\scripts\test.ps1 tests/test_beta_routes.py tests/test_beta_e2e.py tests/test_zhihu_answers.py tests/test_zhihu_history.py tests/test_zhihu_web.py
+.\scripts\test.ps1 tests/test_beta_routes.py tests/test_beta_e2e.py tests/test_zhihu_answer_collection.py tests/test_zhihu_history.py tests/test_zhihu_web.py
 node --test tests/test_beta_engines.mjs
 ```
 
@@ -289,14 +289,10 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   media files, deleted previews, and settings.
 - Flask integration tests use `create_app()` plus `test_client()` and assert route contracts
   without starting a web server.
-- Zhihu Answers Cache tests inject deterministic API pages and a temporary
-  `local_store/beta` namespace.
-  They cover URL/host/cursor rejection, collapsed and nullable provider fields, oversized response
-  pages, answer-ID deduplication, stable duplicate-backed provider-gap verification, first-page
-  verification, atomic Parquet metadata readback, prior-snapshot preservation, cooperative Stop,
-  bounded full-archive search, exact-ID body readback, human-verification errors, browser allowlisting, and shared-lock admission without contacting
-  Zhihu or opening a host profile.
-- Formal Zhihu tests inject current-account, vote-up activity, and author-answer pages into a
+- Formal Zhihu collector tests cover URL, host, and cursor rejection; answer normalization;
+  answer-ID deduplication; stable provider-gap verification; and human-verification errors without
+  contacting Zhihu or opening a host profile. Workflow tests inject current-account, vote-up
+  activity, and author-answer pages into a
   temporary `local_store` root. They verify exact activity filtering, cursor rejection,
   cumulative Parquet writes, unavailable-body retention, source-link extraction, empty provider
   HTML, complete Local resources answer rendering, source-specific Answerer filtering, query-state

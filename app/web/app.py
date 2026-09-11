@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.71.2-codex.1
+# Code version: v1.72.0-codex.1
 
 from __future__ import annotations
 
@@ -71,7 +71,6 @@ from app.core.foundation import (
     MIN_CHATGPT_STARTUP_TIMEOUT_SECONDS,
     MIN_MAX_MEDIA_FILE_SIZE_MIB,
     PRODUCT_NAME,
-    SHARED_CACHE_TASK_LOCK,
     CrawlConfig,
     TaskState,
     build_initial_snapshot,
@@ -561,7 +560,6 @@ def validate_local_directory_path(raw_path: str) -> tuple[bool, str, str]:
 def create_app(
     local_store_root: Path | str | None = None,
     *,
-    beta_store_root: Path | str | None = None,
     computer_use_settings_path: Path | None = None,
     computer_use_runtime_root: Path | None = None,
     agent_external_operations_enabled: bool = True,
@@ -574,11 +572,6 @@ def create_app(
         Path(local_store_root).expanduser()
         if local_store_root is not None
         else LOCAL_STORE_ROOT
-    )
-    effective_beta_store_root = (
-        Path(beta_store_root).expanduser()
-        if beta_store_root is not None
-        else effective_local_store_root / "beta"
     )
     app = Flask(
         __name__,
@@ -600,10 +593,6 @@ def create_app(
         version=APP_VERSION,
         enabled=beta_enabled,
         experiment_ids=beta_experiments,
-        beta_store_root=effective_beta_store_root,
-        cache_store_root=effective_local_store_root,
-        task_lock=SHARED_CACHE_TASK_LOCK,
-        config_provider=lambda: saved_config,
     )
 
     media_catalog = LocalMediaCatalog(effective_local_store_root)

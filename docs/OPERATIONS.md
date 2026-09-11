@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.14.3-codex.1`
+Documentation version: `v1.15.0-codex.1`
 
 ## Launch
 
@@ -217,14 +217,11 @@ interrupt it, so the optimizer must checkpoint frequently enough for the workloa
 | `local_store/.cache_task.lock` | Cross-source advisory task lock |
 | `local_store/.browser-trash/` | Recoverable previews moved by the local-media browser |
 | `local_store/.browser_deleted.json` | Browser deletion tombstones and exclusion identities |
-| `local_store/beta/zhihu/<token>/answers.parquet` | Verified Beta Zhihu answer snapshot; excluded from Local resources indexing and included in the next enabled ShadowBackup pass |
 | `logs/cachelikes.log.jsonl` | Structured local application log |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local saved settings |
 
 All cache and log paths are ignored by Git. Back up local media before using any destructive reset
-operation. The Beta Zhihu archive has its own namespace under `local_store/beta/`; existing
-source-specific Cache reset actions do not remove it. An enabled ShadowBackup includes the archive
-on its next pass, but a Beta capture does not start a backup by itself.
+operation.
 
 ### Zhihu text cache
 
@@ -245,46 +242,6 @@ redundant Source column and answer ID, and removes the inapplicable Projects met
 use the literal answerer name instead of Role and render the complete stored text without the
 generic message-collapse limit. Original answer, question, profile, embedded anchor, and remote
 image URLs remain explicit source links; no provider HTML or image binary is mounted.
-
-### Beta Zhihu Answers Cache
-
-Open `GET /beta/zhihu-answers-cache`, enter a validated Zhihu people or Answers URL, select Chrome
-or Edge, and use the explicit start control. Loading the page or polling
-`GET /api/beta/zhihu-answers-cache/status` never launches a browser or writes data. Search the
-persisted archive through `GET /api/beta/zhihu-answers-cache/answers`, then open one local body
-through `GET /api/beta/zhihu-answers-cache/answers/<answer-id>`. These reads never contact Zhihu.
-Start and Stop are separate POST operations at `/api/beta/zhihu-answers-cache/start` and
-`/api/beta/zhihu-answers-cache/stop`.
-
-Loopback access is direct. From a private-network address, open Agent and pass its six-digit access
-gate in the same browser session before returning to this Beta page. The Zhihu status, archive,
-start, and stop endpoints reject non-local hosts, remote source addresses, and cross-origin requests, and all
-responses are marked `Cache-Control: no-store`.
-
-Status polling projects only the archive metadata columns required for counts and recent items. The
-service caches that bounded summary until the Parquet inode, modification time, or size changes, so
-multiple open Beta pages do not repeatedly decompress stored answer bodies.
-
-The Cached answers panel reads 20 summaries at a time and searches IDs, URLs, questions, excerpts,
-and stored plain text. `View cached copy` performs a second exact-ID read and renders only text;
-`Open on Zhihu` is the separate network destination. A missing body is reported as metadata-only,
-which is distinct from an answer absent from the archive.
-
-The start request competes for the same application-wide cache task lock as every ordinary Cache
-worker. Wait for the current owner or stop it through its own UI; never remove
-`local_store/.cache_task.lock` to force admission. Stop is cooperative. A Stop accepted before
-`commit_pending`, or a failed, verification-blocked, or incomplete pre-commit run, leaves the
-previous Parquet snapshot byte-for-byte available and does not publish collected partial rows.
-After atomic `committing` begins, Stop is not accepted and the already verified snapshot finishes
-publication.
-
-Treat `completed` as valid only after the status reports a committed and read-back archive. A
-terminal API page alone is not completion. The worker also rechecks the first API page before its
-atomic commit. If duplicate-backed pagination exposes fewer unique IDs than the stable reported
-total, it repeats the complete enumeration and commits only when both passes have identical IDs,
-page/raw/duplicate counts, terminal state, and total. Read Reported, Cached, and Not enumerable as
-separate values; the service never invents rows for hidden IDs. The archive stores content and
-public metadata, including media URL references, but does not download image binaries.
 
 ## Concurrency and local compute
 

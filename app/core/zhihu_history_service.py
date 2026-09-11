@@ -1,6 +1,6 @@
 """Background service for the formal Zhihu text cache.
 
-Code version: v1.0.0-codex.1
+Code version: v1.1.0-codex.1
 """
 
 from __future__ import annotations
@@ -15,11 +15,18 @@ from .job_lock import CacheTaskLock, SHARED_CACHE_TASK_LOCK
 from .logging_setup import reset_job_id, set_job_id
 from .shadow_backup import ShadowBackupService
 from .state import TaskState
-from .zhihu_answers_service import summarize_zhihu_answers_error_for_status
 from .zhihu_history import sync_zhihu_history
 
 
 logger = logging.getLogger(__name__)
+
+
+def _summarize_error_for_status(error: Exception) -> str:
+    """Return a concise status error while the full traceback stays in logs."""
+
+    text = str(error).strip()
+    first_line = text.splitlines()[0] if text else error.__class__.__name__
+    return first_line if len(first_line) <= 500 else f"{first_line[:497]}..."
 
 
 class ZhihuHistoryService:
@@ -131,7 +138,7 @@ class ZhihuHistoryService:
                     "Zhihu answer cache stopped. The existing text cache was preserved."
                 )
             else:
-                self._state.finish_error(summarize_zhihu_answers_error_for_status(exc))
+                self._state.finish_error(_summarize_error_for_status(exc))
             logger.exception(
                 "Zhihu history sync failed.",
                 extra={"job_id": job_id, "error": str(exc)},

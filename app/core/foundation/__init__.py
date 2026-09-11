@@ -1,10 +1,9 @@
 """Stable foundation boundary for runtime configuration, identity, and task state."""
 
-# Code version: v1.2.1-codex.1
+# Code version: v1.3.0-codex.1
 
 from ..brand import PRODUCT_NAME
 from ..config import (
-    BETA_STORE_ROOT,
     DEFAULT_HOST,
     DEFAULT_PORT,
     LOCAL_STORE_ROOT,
@@ -30,7 +29,6 @@ from ..version import APP_VERSION
 
 __all__ = [
     "APP_VERSION",
-    "BETA_STORE_ROOT",
     "DEFAULT_HOST",
     "DEFAULT_PORT",
     "LOCAL_STORE_ROOT",

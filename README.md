@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.20.1-codex.1`
+Documentation version: `v1.21.0-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -27,18 +27,15 @@ same-origin navigation while keeping cached records, Cache lifecycle actions, Ag
 terminal authorization, and settings writes outside the v1 tool boundary. Browsers without Site
 tools retain the complete human interface.
 
-The optional Beta Dock section is a research playground with seven experiments. Idea Collision,
+The optional Beta Dock section is a research playground with six experiments. Idea Collision,
 Context Capsule, Question Radar, Memory Diff, Decision Wind Tunnel, and Mission Forge remain
 deterministic browser-only tools that process explicit input and keep drafts in the current tab.
-The original Zhihu Answers Cache remains as a separately isolated network-backed Beta experiment
-for reviewing one answerer's completeness and provider-gap evidence under
-`local_store/beta/`. The
-promoted `/cache/zhihu` source is the everyday text-first workflow: by default it caches every
+The `/cache/zhihu` source is the text-first Zhihu workflow: by default it caches every
 answer found in the signed-in account's vote-up activity, while an optional answerer URL caches all
 answers exposed for that profile. Formal rows are written to `local_store/llm/zhihu/history.parquet`
 and appear in Local resources; remote images and rich-text destinations are retained as hyperlinks,
 not downloaded or mounted. See [Beta experiments](docs/BETA.md) and
-[Cache handoff](docs/CACHE_HANDOFF.md) for the separate persistence contracts.
+[Cache handoff](docs/CACHE_HANDOFF.md) for their respective contracts.
 
 ## Visual Style Reference
 
@@ -50,9 +47,8 @@ making any UI change.
 This project starts a web console on `http://localhost:8666` and listens on all network
 interfaces so devices on the same LAN can use `http://<computer-ip>:8666`. Cache and Local
 resources pages remain trusted-LAN surfaces; the Agent control plane adds a six-digit password
-gate for private-network requests. The Beta Zhihu control API uses that same gate: loopback access
-is direct, while a private-network browser must unlock Agent access in the same session first. Do
-not expose the LAN endpoint through port forwarding or a public reverse proxy.
+gate for private-network requests. Do not expose the LAN endpoint through port forwarding or a
+public reverse proxy.
 
 ## Requirements
 
@@ -151,8 +147,7 @@ Start with the [documentation index](docs/README.md) to distinguish current cont
 - `app/web/`: Flask routes, templates, static assets, and the local-media browser
 - `tests/`: deterministic unit and Flask integration coverage
 - `scripts/`: supported setup, launch, test, and quality-gate commands
-- `local_store/`: ignored user-owned media, formal text caches, and the namespaced Beta archive
-- `local_store/beta/`: Beta-owned persistent outputs, excluded from Local resources indexing
+- `local_store/`: ignored user-owned media and formal text caches
 - `logs/`: ignored structured local logs
 
 ## Notes
