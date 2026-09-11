@@ -15,6 +15,7 @@ playwright-report/
 test-results/*
 !test-results/.gitkeep
 /local_store/
+/beta_store/
 /logs/
 grok_local/
 tools/

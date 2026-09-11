@@ -1,11 +1,12 @@
 # agenticContext
 
-Documentation version: `v1.17.0-codex.1`
+Documentation version: `v1.20.0-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
 media from the currently signed-in X account's Likes timeline, Grok's Files
-library, and configured ChatGPT projects or sessions. It stores media and text
+library, and configured ChatGPT projects or sessions. Its formal text caches also
+cover ChatGPT, Gemini, Grok, Claude, and Zhihu. It stores media and text
 history locally and provides a browser for reviewing, deleting, and restoring
 resources.
 
@@ -26,11 +27,17 @@ same-origin navigation while keeping cached records, Cache lifecycle actions, Ag
 terminal authorization, and settings writes outside the v1 tool boundary. Browsers without Site
 tools retain the complete human interface.
 
-The optional **Beta** Dock section is a local research playground with six experiments: Idea
-Collision, Context Capsule, Question Radar, Memory Diff, Decision Wind Tunnel, and Mission Forge.
-They process explicitly pasted or imported copies with deterministic browser tools, keep drafts
-within the current tab, and export reviewable Markdown. They do not start an Agent or modify
-cached resources. See [Beta experiments](docs/BETA.md) for the module boundary and disable switch.
+The optional Beta Dock section is a research playground with seven experiments. Idea Collision,
+Context Capsule, Question Radar, Memory Diff, Decision Wind Tunnel, and Mission Forge remain
+deterministic browser-only tools that process explicit input and keep drafts in the current tab.
+The original Zhihu Answers Cache remains as a separately isolated network-backed Beta experiment
+for reviewing one answerer's completeness and provider-gap evidence under `beta_store/`. The
+promoted `/cache/zhihu` source is the everyday text-first workflow: by default it caches every
+answer found in the signed-in account's vote-up activity, while an optional answerer URL caches all
+answers exposed for that profile. Formal rows are written to `local_store/llm/zhihu/history.parquet`
+and appear in Local resources; remote images and rich-text destinations are retained as hyperlinks,
+not downloaded or mounted. See [Beta experiments](docs/BETA.md) and
+[Cache handoff](docs/CACHE_HANDOFF.md) for the separate persistence contracts.
 
 ## Visual Style Reference
 
@@ -42,8 +49,9 @@ making any UI change.
 This project starts a web console on `http://localhost:8666` and listens on all network
 interfaces so devices on the same LAN can use `http://<computer-ip>:8666`. Cache and Local
 resources pages remain trusted-LAN surfaces; the Agent control plane adds a six-digit password
-gate for private-network requests. Do not expose the LAN endpoint through port forwarding or a
-public reverse proxy.
+gate for private-network requests. The Beta Zhihu control API uses that same gate: loopback access
+is direct, while a private-network browser must unlock Agent access in the same session first. Do
+not expose the LAN endpoint through port forwarding or a public reverse proxy.
 
 ## Requirements
 
@@ -51,6 +59,8 @@ public reverse proxy.
   host `python3` or the Windows `py -3` launcher when it is supported
 - A signed-in Chrome or Edge session on Windows, or Chrome, Edge, or Safari on macOS, for the
   source you want to cache
+- A signed-in Chrome or Edge session for the Zhihu Cache source or the optional Beta archive;
+  Safari is not supported for either Zhihu workflow
 - Playwright Chromium for Chromium-backed X, Grok, and ChatGPT automation
 - `yt-dlp` for X media downloads
 - An authenticated ChatGPT, Gemini, Grok, or Claude Web account for the optional Computer Use Agent workspace
@@ -111,7 +121,8 @@ The quality gate runs Ruff, local documentation link checks, JavaScript syntax c
 the Python suite with branch coverage, and disposable Chromium browser flows. It is the same command
 executed by GitHub Actions.
 The browser flow uses a clean context against an isolated local server; the suite never opens
-an authenticated profile, downloads media, or writes to user-owned caches, logs, or settings.
+an authenticated profile, downloads media, or writes to user-owned caches, the Beta store, logs,
+or settings.
 The CI portability rules and failure-triage contract are documented in
 [docs/TESTING.md](docs/TESTING.md#ci-portability-contract).
 
@@ -139,7 +150,8 @@ Start with the [documentation index](docs/README.md) to distinguish current cont
 - `app/web/`: Flask routes, templates, static assets, and the local-media browser
 - `tests/`: deterministic unit and Flask integration coverage
 - `scripts/`: supported setup, launch, test, and quality-gate commands
-- `local_store/`: ignored user-owned media cache
+- `local_store/`: ignored user-owned media and formal text cache
+- `beta_store/`: ignored Beta-owned persistent outputs, isolated from Local resources and ShadowBackup
 - `logs/`: ignored structured local logs
 
 ## Notes

@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.8.0-codex.1`
+Documentation version: `v1.11.2-codex.1`
 
 ## Supported commands
 
@@ -103,6 +103,23 @@ On Windows:
 .\scripts\test.ps1 tests/test_responsive_contract.py
 .\scripts\test.ps1 tests/test_sidebar_e2e.py
 ```
+
+Run the seven-experiment Beta contract and fixture-backed Zhihu archive checks with:
+
+```bash
+./scripts/test.sh tests/test_beta_routes.py tests/test_beta_e2e.py tests/test_zhihu_answers.py tests/test_zhihu_history.py tests/test_zhihu_web.py
+node --test tests/test_beta_engines.mjs
+```
+
+On Windows:
+
+```powershell
+.\scripts\test.ps1 tests/test_beta_routes.py tests/test_beta_e2e.py tests/test_zhihu_answers.py tests/test_zhihu_history.py tests/test_zhihu_web.py
+node --test tests/test_beta_engines.mjs
+```
+
+These commands remain offline. They do not establish that a signed-in Chrome or Edge profile can
+currently complete Zhihu's live provider flow.
 
 Run the OpenAI Site tools contract and disposable-browser layers independently with:
 
@@ -272,6 +289,18 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   media files, deleted previews, and settings.
 - Flask integration tests use `create_app()` plus `test_client()` and assert route contracts
   without starting a web server.
+- Zhihu Answers Cache tests inject deterministic API pages and a temporary `beta_store` root.
+  They cover URL/host/cursor rejection, collapsed and nullable provider fields, oversized response
+  pages, answer-ID deduplication, stable duplicate-backed provider-gap verification, first-page
+  verification, atomic Parquet metadata readback, prior-snapshot preservation, cooperative Stop,
+  bounded full-archive search, exact-ID body readback, human-verification errors, browser allowlisting, and shared-lock admission without contacting
+  Zhihu or opening a host profile.
+- Formal Zhihu tests inject current-account, vote-up activity, and author-answer pages into a
+  temporary `local_store` root. They verify exact activity filtering, cursor rejection,
+  cumulative Parquet writes, unavailable-body retention, source-link extraction, empty provider
+  HTML, complete Local resources answer rendering, source-specific Answerer filtering, query-state
+  preservation, removed answer IDs/Projects/Clear filters, literal detail headings, default Edge
+  controls, login-probe routing, and the single-character vector logo.
 - Computer Use Agent tests build context packages in temporary projects, execute the controller
   through deterministic actions, and replace the signed-in browser runner with a fake.
 - Durable compute-job tests construct a temporary approval manifest whose entrypoint SHA-256
@@ -284,6 +313,10 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   `document.elementFromPoint()`, and the shared Chinese language boundary across startup and
   dynamic DOM mutations. The language test checks source-text preservation, `:lang(zh-CN)`
   matching, and the macOS-oriented glyph fixture without converting Unicode text.
+- Beta E2E tests intercept the Zhihu start/status/stop and local archive-read APIs on the isolated
+  local origin. They exercise progress rendering, searchable summaries, exact-ID plain-text body
+  readback, and request payloads, but must abort every external request and must
+  not substitute a live provider response for a fixture.
 - Agent Optimization tests validate manifest bounds, schema closure, read/write annotations,
   same-origin navigation, unsupported-browser fallback, iframe exclusion, registration idempotence,
   partial registration failure, protected-page exclusion, and a real random-port Chromium lifecycle.
@@ -296,20 +329,21 @@ The current detailed module-to-behavior map is maintained in [TEST_COVERAGE.md](
 runtime locations to process-scoped temporary directories:
 
 - `HOME` keeps settings and browser-profile defaults away from the user account.
-- `AGENTIC_CONTEXT_RUNTIME_ROOT` moves default local caches and logs away from the repository.
+- `AGENTIC_CONTEXT_RUNTIME_ROOT` moves default local caches, the Beta store, and logs away from the
+  repository.
 - `AGENTIC_CONTEXT_SETTINGS_PATH` redirects persisted settings.
 
 Default tests must not:
 
 - open an authenticated Chrome, Edge, Safari, or Playwright profile;
-- make X, Grok, ChatGPT, yt-dlp, or general network requests;
-- read, copy, delete, reset, or restore a user-owned cache, log, setting, or browser profile;
+- make X, Zhihu, Grok, ChatGPT, yt-dlp, or general network requests;
+- read, copy, delete, reset, or restore a user-owned cache, Beta store, log, setting, or browser profile;
 - submit a real background cache job.
 
 Mock external boundaries at the module that invokes them. Existing patterns mock
-`sync_playwright`, `launch_chromium_context`, `subprocess.run`, `urlopen`, the scraper, and
-source download functions. Do not replace a lower-level implementation when the route or service
-boundary is the behavior being tested.
+`sync_playwright`, `launch_chromium_context`, `subprocess.run`, `urlopen`, the scraper, injected
+Zhihu page fetches, and source download functions. Do not replace a lower-level implementation
+when the route or service boundary is the behavior being tested.
 
 ## Markers
 

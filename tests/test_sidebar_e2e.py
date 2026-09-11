@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.37.0-codex.1
+Code version: v1.40.0-codex.1
 """
 
 from __future__ import annotations
@@ -39,7 +39,11 @@ from app.core.computer_use_agent import (
     parse_agent_action,
 )
 from app.core.gemini_downloader import inspect_gemini_session
-from app.core.resource_persistence import CHATGPT_HISTORY_SCHEMA, write_parquet_rows_atomic
+from app.core.resource_persistence import (
+    CHATGPT_HISTORY_SCHEMA,
+    ZHIHU_HISTORY_SCHEMA,
+    write_parquet_rows_atomic,
+)
 
 
 OVERLAY_VIEWPORTS = (
@@ -114,6 +118,88 @@ def seeded_chatgpt_browser_server_url(tmp_path: Path) -> Iterator[str]:
             }
         ],
         CHATGPT_HISTORY_SCHEMA,
+    )
+    application = create_app(
+        root,
+        computer_use_settings_path=tmp_path / "settings" / "computer-use-agent.json",
+        computer_use_runtime_root=tmp_path / "computer-use-runtime",
+        agent_external_operations_enabled=False,
+    )
+    application.config.update(TESTING=True)
+    server: BaseWSGIServer = make_server("127.0.0.1", 0, application, threaded=True)
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+
+
+@pytest.fixture()
+def seeded_zhihu_browser_server_url(tmp_path: Path) -> Iterator[str]:
+    """Serve one long Zhihu answer from an isolated formal cache."""
+
+    from app.web.app import create_app
+
+    root = tmp_path / "local-store"
+    paragraphs = [
+        f"Cached paragraph {index}: " + ("complete answer text " * 12)
+        for index in range(1, 14)
+    ]
+    paragraphs[-1] += "Full answer final sentence."
+    write_parquet_rows_atomic(
+        root / "llm" / "zhihu" / "history.parquet",
+        [
+            {
+                "schema_version": 1,
+                "platform": "zhihu",
+                "conversation_id": "2197549311",
+                "conversation_url": (
+                    "https://www.zhihu.com/question/495309288/answer/2197549311"
+                ),
+                "conversation_title": "Fixture Zhihu question",
+                "message_key": "answer:2197549311",
+                "turn_index": 1,
+                "message_index": 0,
+                "role": "answer",
+                "author_label": "肥肥猫",
+                "content_text": "\n\n".join(paragraphs),
+                "content_html": "",
+                "content_sha256": "fixture-zhihu-answer-hash",
+                "source_links": [
+                    "https://www.zhihu.com/question/495309288/answer/2197549311"
+                ],
+                "model_label": "",
+                "first_seen_at": "2021-10-30T11:37:00Z",
+                "last_seen_at": "2021-10-31T05:01:00Z",
+            },
+            {
+                "schema_version": 1,
+                "platform": "zhihu",
+                "conversation_id": "2200000000",
+                "conversation_url": (
+                    "https://www.zhihu.com/question/495309289/answer/2200000000"
+                ),
+                "conversation_title": "Other fixture question",
+                "message_key": "answer:2200000000",
+                "turn_index": 1,
+                "message_index": 0,
+                "role": "answer",
+                "author_label": "Other Author",
+                "content_text": "Other cached answer.",
+                "content_html": "",
+                "content_sha256": "fixture-other-zhihu-answer-hash",
+                "source_links": [
+                    "https://www.zhihu.com/question/495309289/answer/2200000000"
+                ],
+                "model_label": "",
+                "first_seen_at": "2021-10-29T11:37:00Z",
+                "last_seen_at": "2021-10-29T12:01:00Z",
+            },
+        ],
+        ZHIHU_HISTORY_SCHEMA,
     )
     application = create_app(
         root,
@@ -293,7 +379,7 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
     sidebar_server_url: str,
 ) -> None:
     """Verify every cache sidebar exposes the same complete source menu in Chromium."""
-    expected_sources = ["chatgpt", "claude", "gemini", "grok", "x"]
+    expected_sources = ["chatgpt", "claude", "gemini", "grok", "x", "zhihu"]
     page, context = _open_page(
         disposable_browser,
         f"{sidebar_server_url}/cache/chatgpt",
@@ -302,7 +388,7 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
         touch=False,
     )
     try:
-        for page_source in ("chatgpt", "claude", "gemini", "grok"):
+        for page_source in ("chatgpt", "claude", "gemini", "grok", "zhihu"):
             if page_source != "chatgpt":
                 page.goto(f"{sidebar_server_url}/cache/{page_source}", wait_until="domcontentloaded")
 
@@ -319,31 +405,14 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
             assert browser_trigger.evaluate("element => element.getBoundingClientRect().height") == 36
             expect(page.locator('[data-dock-section="cache"]')).to_have_class(re.compile(r"\bis-active\b"))
             expect(page.locator('[data-dock-section="agent"]')).not_to_have_class(re.compile(r"\bis-active\b"))
-            expected_paths = (
-                [
-                    "/cache/chatgpt",
-                    "/cache/claude",
-                    "/cache/gemini",
-                    "/cache/grok",
-                    "/cache/x",
-                ]
-                if page_source == "claude"
-                else [
-                    "/cache/chatgpt",
-                    "/cache/claude",
-                    "/cache/gemini",
-                    "/cache/grok",
-                    "/cache/x",
-                ]
-                if page_source == "gemini"
-                else [
-                    "/cache/chatgpt",
-                    "/cache/claude",
-                    "/cache/gemini",
-                    "/cache/grok",
-                    "/cache/x",
-                ]
-            )
+            expected_paths = [
+                "/cache/chatgpt",
+                "/cache/claude",
+                "/cache/gemini",
+                "/cache/grok",
+                "/cache/x",
+                "/cache/zhihu",
+            ]
             assert options.evaluate_all(
                 "elements => elements.map(element => element.dataset.cacheSourceSwitcherPath)"
             ) == expected_paths
@@ -786,6 +855,128 @@ def test_text_browser_omits_redundant_per_page_metric(
             body_text = page.locator("body").inner_text()
             assert "Sessions shown" not in body_text
             assert "Messages shown" not in body_text
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("width", "height", "touch"),
+    ((992, 1_203, False), (390, 844, True)),
+)
+def test_zhihu_text_browser_shows_answerers_and_complete_answers(
+    disposable_browser: Browser,
+    seeded_zhihu_browser_server_url: str,
+    width: int,
+    height: int,
+    touch: bool,
+) -> None:
+    """Keep Zhihu's one-answer sessions source-specific and fully readable."""
+
+    index_url = (
+        f"{seeded_zhihu_browser_server_url}/browser?view=text&source=zhihu"
+        "&q=&sort=newest&session_view=1"
+    )
+    page, context = _open_page(
+        disposable_browser,
+        index_url,
+        width,
+        height,
+        touch=touch,
+    )
+    try:
+        table = page.locator(".browser-session-index-table")
+        expect(table).to_have_count(1)
+        assert table.locator("thead th").all_inner_texts() == [
+            "No.",
+            "Session name",
+            "Answerer",
+            "Last updated ↓",
+        ]
+        expect(table.locator(".browser-session-table-source")).to_have_count(0)
+        expect(table.locator(".browser-session-table-author")).to_have_count(2)
+        assert table.locator(".browser-session-table-author").all_inner_texts() == [
+            "肥肥猫",
+            "Other Author",
+        ]
+        expect(table.locator(".browser-session-table-id")).to_have_count(0)
+        expect(page.locator(".browser-clear-link")).to_have_count(0)
+        assert page.locator(".browser-text-metric-grid .metric-label").all_inner_texts() == [
+            "Sessions",
+            "Messages",
+        ]
+        answerer_trigger = page.get_by_role(
+            "button",
+            name="Filter by answerer: All answerers",
+        )
+        if not answerer_trigger.is_visible():
+            page.locator("#sidebar_toggle").click()
+            expect(answerer_trigger).to_be_visible()
+        expect(answerer_trigger).to_have_count(1)
+        assert answerer_trigger.evaluate(
+            """element => ({
+                height: element.getBoundingClientRect().height,
+                radius: getComputedStyle(element).borderRadius,
+                overflow: element.scrollWidth - element.clientWidth,
+            })"""
+        ) == {"height": 30, "radius": "999px", "overflow": 0}
+        answerer_trigger.click()
+        answerer_options = page.get_by_role("option")
+        expect(answerer_options).to_have_count(3)
+        assert answerer_options.all_inner_texts() == [
+            "All answerers",
+            "Other Author",
+            "肥肥猫",
+        ]
+        page.get_by_role("option", name="肥肥猫", exact=True).click()
+        page.wait_for_url(
+            re.compile(r"[?&]answerer=%E8%82%A5%E8%82%A5%E7%8C%AB(?:&|$)")
+        )
+        expect(table.locator("tbody tr")).to_have_count(1)
+        expect(table.locator(".browser-session-table-author")).to_have_text("肥肥猫")
+        assert table.evaluate("element => element.scrollWidth - element.clientWidth") == 0
+        assert page.evaluate(
+            "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+        ) == 0
+        if width <= 900 and page.locator("#sidebar_toggle").get_attribute(
+            "aria-expanded"
+        ) == "true":
+            page.locator("#sidebar_toggle").click()
+
+        table.locator(".browser-session-table-title").click()
+        assert page.locator(
+            ".browser-session-detail-table thead th"
+        ).all_inner_texts() == [
+            "No.",
+            "Time",
+            "肥肥猫",
+            "Message",
+        ]
+        message = page.locator("[data-browser-session-message-source]")
+        expect(message).to_contain_text("Full answer final sentence.")
+        layout = message.evaluate(
+            """element => {
+                const scroller = document.querySelector('.browser-content-card');
+                scroller.scrollTop = scroller.scrollHeight;
+                return {
+                    maxHeight: getComputedStyle(element).maxHeight,
+                    clientHeight: element.clientHeight,
+                    scrollHeight: element.scrollHeight,
+                    atBottom: scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1,
+                    toggleCount: document.querySelectorAll('[data-browser-session-message-toggle]').length,
+                    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                };
+            }"""
+        )
+        assert layout == {
+            "maxHeight": "none",
+            "clientHeight": layout["scrollHeight"],
+            "scrollHeight": layout["scrollHeight"],
+            "atBottom": True,
+            "toggleCount": 0,
+            "overflow": 0,
+        }
     finally:
         context.close()
 
@@ -1477,7 +1668,7 @@ def test_shared_segmented_controls_shrink_wrap_and_center(
 
 @pytest.mark.integration
 @pytest.mark.slow
-@pytest.mark.parametrize("page_source", ("chatgpt", "claude", "gemini", "grok", "x"))
+@pytest.mark.parametrize("page_source", ("chatgpt", "claude", "gemini", "grok", "x", "zhihu"))
 def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
     disposable_browser: Browser,
     sidebar_server_url: str,
@@ -1491,6 +1682,7 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
             "gemini": "/cache/gemini",
             "grok": "/cache/grok",
             "x": "/cache/x",
+            "zhihu": "/cache/zhihu",
         },
         "gemini": {
             "chatgpt": "/cache/chatgpt",
@@ -1498,6 +1690,7 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
             "gemini": "/cache/gemini",
             "grok": "/cache/grok",
             "x": "/cache/x",
+            "zhihu": "/cache/zhihu",
         },
         "grok": {
             "chatgpt": "/cache/chatgpt",
@@ -1505,6 +1698,7 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
             "gemini": "/cache/gemini",
             "grok": "/cache/grok",
             "x": "/cache/x",
+            "zhihu": "/cache/zhihu",
         },
         "x": {
             "chatgpt": "/cache/chatgpt",
@@ -1512,6 +1706,7 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
             "gemini": "/cache/gemini",
             "grok": "/cache/grok",
             "x": "/cache/x",
+            "zhihu": "/cache/zhihu",
         },
         "claude": {
             "chatgpt": "/cache/chatgpt",
@@ -1519,6 +1714,15 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
             "gemini": "/cache/gemini",
             "grok": "/cache/grok",
             "x": "/cache/x",
+            "zhihu": "/cache/zhihu",
+        },
+        "zhihu": {
+            "chatgpt": "/cache/chatgpt",
+            "claude": "/cache/claude",
+            "gemini": "/cache/gemini",
+            "grok": "/cache/grok",
+            "x": "/cache/x",
+            "zhihu": "/cache/zhihu",
         },
     }[page_source]
     page, context = _open_page(
@@ -1554,7 +1758,7 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
 
 @pytest.mark.integration
 @pytest.mark.slow
-@pytest.mark.parametrize("page_source", ("chatgpt", "claude", "gemini", "grok", "x"))
+@pytest.mark.parametrize("page_source", ("chatgpt", "claude", "gemini", "grok", "x", "zhihu"))
 def test_cache_dock_click_preserves_the_current_cache_source(
     disposable_browser: Browser,
     sidebar_server_url: str,
@@ -1595,8 +1799,9 @@ def test_cache_sidebars_reuse_the_chatgpt_base_contract(
             "claude": "Claude",
             "gemini": "Gemini",
             "grok": "Grok",
+            "zhihu": "Zhihu",
         }
-        for page_source in ("chatgpt", "claude", "gemini", "grok"):
+        for page_source in ("chatgpt", "claude", "gemini", "grok", "zhihu"):
             if page_source != "chatgpt":
                 page.goto(f"{sidebar_server_url}/cache/{page_source}", wait_until="domcontentloaded")
 
@@ -1605,7 +1810,7 @@ def test_cache_sidebars_reuse_the_chatgpt_base_contract(
             expect(aside.locator(":scope > .hero")).to_have_count(1)
             expect(aside.locator(":scope > .cache-page-content-mode-section")).to_have_count(1)
             expect(aside.locator("[data-cache-source-switcher]")).to_have_count(1)
-            expect(aside.locator("[data-cache-source-switcher-option]")).to_have_count(5)
+            expect(aside.locator("[data-cache-source-switcher-option]")).to_have_count(6)
             expect(aside.locator("[data-browser-session-panel]")).to_have_count(1)
             expect(aside.locator(".browser-session-panel-label")).to_have_text("Authorized browser")
             expect(aside.locator(".cache-settings-link")).to_have_count(1)
@@ -1634,6 +1839,22 @@ def test_cache_sidebars_reuse_the_chatgpt_base_contract(
                 )
             if page_source == "grok":
                 expect(aside.locator(".cache-secondary-action")).to_have_count(0)
+            if page_source == "zhihu":
+                author_input = aside.locator('[name="zhihu_author_url"]')
+                expect(author_input).to_have_count(1)
+                expect(author_input).to_have_class(re.compile(r"\bshared-select-text-input\b"))
+                assert author_input.evaluate(
+                    """element => ({
+                        height: element.getBoundingClientRect().height,
+                        radius: getComputedStyle(element).borderRadius,
+                        overflow: element.scrollWidth - element.clientWidth,
+                    })"""
+                ) == {"height": 30, "radius": "999px", "overflow": 0}
+                expect(aside.locator("#zhihu_author_url_help")).to_have_count(0)
+                expect(aside.locator(".cache-settings-link")).to_have_attribute(
+                    "href",
+                    "/settings#settings-downloads",
+                )
     finally:
         context.close()
 
@@ -2663,7 +2884,7 @@ def test_cache_metric_cards_blend_into_the_overview_in_dark_theme(
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("source_key", "settings_category"),
-    (("x", "downloads"), ("gemini", "llm"), ("claude", "llm")),
+    (("x", "downloads"), ("gemini", "llm"), ("claude", "llm"), ("zhihu", "downloads")),
 )
 def test_cache_shared_settings_link_opens_the_expected_category(
     disposable_browser: Browser,
@@ -4163,7 +4384,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         expect(x_source_option).to_be_hidden()
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "gemini", "grok"]
+        ) == ["chatgpt", "claude", "gemini", "grok", "zhihu"]
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_hidden()
@@ -4182,7 +4403,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         assert x_source_option.evaluate("element => !element.hidden")
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "gemini", "grok", "x"]
+        ) == ["chatgpt", "claude", "gemini", "grok", "x", "zhihu"]
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_visible()

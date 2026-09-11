@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.104.3-codex.1
+# Code version: v1.106.1-codex.1
 
 from __future__ import annotations
 
@@ -163,16 +163,19 @@ class WebAppTests(unittest.TestCase):
         labels = [source.label for source in CACHE_SOURCE_VIEWS]
 
         self.assertEqual(labels, sorted(labels, key=str.casefold))
-        self.assertEqual([source.key for source in CACHE_SOURCE_VIEWS], ["chatgpt", "claude", "gemini", "grok", "x"])
+        self.assertEqual(
+            [source.key for source in CACHE_SOURCE_VIEWS],
+            ["chatgpt", "claude", "gemini", "grok", "x", "zhihu"],
+        )
         self.assertEqual(len({source.template_name for source in CACHE_SOURCE_VIEWS}), len(CACHE_SOURCE_VIEWS))
         self.assertEqual({source.start_button_label for source in CACHE_SOURCE_VIEWS}, {"Start"})
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS if source.show_content_mode},
-            {"chatgpt", "claude", "gemini", "grok"},
+            {"chatgpt", "claude", "gemini", "grok", "zhihu"},
         )
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS if source.browser_panel_label == "Authorized browser"},
-            {"chatgpt", "claude", "gemini", "grok"},
+            {"chatgpt", "claude", "gemini", "grok", "zhihu"},
         )
 
     def test_cache_source_switcher_uses_one_complete_registry_on_gemini(self) -> None:
@@ -183,10 +186,10 @@ class WebAppTests(unittest.TestCase):
 
         option_ids = [
             body.index(f'id="cache_source_switcher_option_{source}"')
-            for source in ("chatgpt", "claude", "gemini", "grok", "x")
+            for source in ("chatgpt", "claude", "gemini", "grok", "x", "zhihu")
         ]
         assert option_ids == sorted(option_ids)
-        for source in ("chatgpt", "claude", "gemini", "grok"):
+        for source in ("chatgpt", "claude", "gemini", "grok", "zhihu"):
             expected_path = f"/cache/{source}"
             self.assertIn(
                 f'data-cache-source-switcher-path="{expected_path}"',
@@ -204,7 +207,10 @@ class WebAppTests(unittest.TestCase):
 
         for source_key, body in bodies.items():
             with self.subTest(source=source_key):
-                self.assertIn("Sessions discovered", body)
+                self.assertIn(
+                    "Answers found" if source_key == "zhihu" else "Sessions discovered",
+                    body,
+                )
                 self.assertNotIn("Posts discovered", body)
                 self.assertNotIn("Assets discovered", body)
 
@@ -216,7 +222,7 @@ class WebAppTests(unittest.TestCase):
 
         option_ids = [
             body.index(f'id="cache_source_switcher_option_{source}"')
-            for source in ("chatgpt", "claude", "gemini", "grok", "x")
+            for source in ("chatgpt", "claude", "gemini", "grok", "x", "zhihu")
         ]
         assert option_ids == sorted(option_ids)
         self.assertIn('data-cache-source-switcher-path="/cache/gemini"', body)
@@ -420,6 +426,7 @@ class WebAppTests(unittest.TestCase):
                 chatgpt_response = client.get("/cache/chatgpt")
                 gemini_response = client.get("/cache/gemini")
                 claude_response = client.get("/cache/claude")
+                zhihu_response = client.get("/cache/zhihu")
                 index_response = client.get("/cache/x")
                 settings_response = client.get("/settings")
                 browser_response = client.get("/browser?view=media")
@@ -429,6 +436,7 @@ class WebAppTests(unittest.TestCase):
         chatgpt_body = chatgpt_response.get_data(as_text=True)
         gemini_body = gemini_response.get_data(as_text=True)
         claude_body = claude_response.get_data(as_text=True)
+        zhihu_body = zhihu_response.get_data(as_text=True)
         index_body = index_response.get_data(as_text=True)
         settings_body = settings_response.get_data(as_text=True)
         browser_body = browser_response.get_data(as_text=True)
@@ -438,6 +446,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(chatgpt_response.status_code, 200)
         self.assertEqual(gemini_response.status_code, 200)
         self.assertEqual(claude_response.status_code, 200)
+        self.assertEqual(zhihu_response.status_code, 200)
         self.assertEqual(settings_response.status_code, 200)
         self.assertEqual(browser_response.status_code, 200)
         self.assertNotIn('<p class="workspace-kicker">Live snapshot</p>', grok_body)
@@ -452,7 +461,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Claude history cache overview", claude_body)
         self.assertIn('name="claude_browser"', claude_body)
         self.assertIn("Browser-rendered history", claude_body)
-        for body in (index_body, grok_body, chatgpt_body, gemini_body, claude_body):
+        for body in (index_body, grok_body, chatgpt_body, gemini_body, claude_body, zhihu_body):
             with self.subTest(cache_summary_removed=True, title=body.split("<title>")[1].split("</title>")[0]):
                 self.assertNotIn('class="summary-list"', body)
                 for field in ("started_at", "finished_at", "output_dir"):
@@ -493,6 +502,17 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn(f'name="{field_name}"', settings_body)
         self.assertIn('href="/settings#settings-llm"', claude_body)
         self.assertIn(">Open Claude settings</a>", claude_body)
+        self.assertIn('href="/settings#settings-downloads"', zhihu_body)
+        self.assertIn(">Open Zhihu settings</a>", zhihu_body)
+        self.assertIn('name="zhihu_author_url"', zhihu_body)
+        self.assertIn('name="zhihu_browser"', zhihu_body)
+        self.assertIn('value="edge"', zhihu_body)
+        self.assertIn('class="shared-select-text-input"', zhihu_body)
+        self.assertNotIn("Leave blank to cache answers upvoted by the signed-in account.", zhihu_body)
+        self.assertIn("Images and rich-text destinations are retained only as source links", zhihu_body)
+        self.assertIn("Zhihu answers cache overview", zhihu_body)
+        self.assertIn("--cache-source-mark: url('/static/images/zhihu.svg')", zhihu_body)
+        self.assertNotIn('data-browser-option="safari"', zhihu_body)
         self.assertIn("ChatGPT cache overview", chatgpt_body)
         self.assertIn("workspace-header cache-workspace-header", chatgpt_body)
         self.assertIn("cache-overview-title-card", chatgpt_body)
@@ -564,7 +584,7 @@ class WebAppTests(unittest.TestCase):
             claude_body,
         )
         self.assertIn('href="/cache/claude"', claude_body)
-        for body in (index_body, grok_body, chatgpt_body, gemini_body, claude_body):
+        for body in (index_body, grok_body, chatgpt_body, gemini_body, claude_body, zhihu_body):
             with self.subTest(cache_action_state=body[:40]):
                 self.assertIn('data-cache-action-row', body)
                 self.assertIn('data-action-running="false"', body)
@@ -621,6 +641,7 @@ class WebAppTests(unittest.TestCase):
             ("grok", grok_body),
             ("chatgpt", chatgpt_body),
             ("gemini", gemini_body),
+            ("zhihu", zhihu_body),
             ("x", index_body),
             ("settings", settings_body),
             ("local-resources", browser_body),
@@ -656,7 +677,11 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('data-dock-section="local-resources"', dock_markup)
                 self.assertIn('data-dock-section="settings"', dock_markup)
                 self.assertEqual(dock_markup.count('aria-current="page"'), 1)
-                expected_cache_source = page_source if page_source in {"x", "grok", "chatgpt", "gemini", "claude"} else "chatgpt"
+                expected_cache_source = (
+                    page_source
+                    if page_source in {"x", "grok", "chatgpt", "gemini", "claude", "zhihu"}
+                    else "chatgpt"
+                )
                 self.assertIn(f'href="/cache/{expected_cache_source}"', dock_markup)
                 self.assertIn('href="/browser?view=text', dock_markup)
                 self.assertIn('aria-label="Cache"', dock_markup)
@@ -671,7 +696,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.21.0-codex.1"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.22.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = "style-v2.112.1-codex.1"
                 self.assertIn(expected_style_version, body)
@@ -694,7 +719,7 @@ class WebAppTests(unittest.TestCase):
             'const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);',
             'const agentRoutePattern = /^\\/agent\\/(?:safari\\/chatgpt|(?:edge|chrome)\\/(?:chatgpt|gemini|grok|claude))$/;',
             'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view"];',
-            'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude"]);',
+            'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/zhihu"]);',
             'if (targetUrl.pathname === "/browser") return "/cache/chatgpt";',
             'const legacyCachePathMap = new Map([',
             'window.sessionStorage.getItem(dockLocationMemoryKey(section))',
@@ -723,6 +748,7 @@ class WebAppTests(unittest.TestCase):
             (chatgpt_body, "Cache"),
             (gemini_body, "Chats"),
             (claude_body, "Chats"),
+            (zhihu_body, "Cache"),
             (browser_body, "Local resources"),
             (settings_body, "Settings"),
             (agent_body, "Agent"),
@@ -730,7 +756,7 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(sidebar_title=sidebar_title):
                 hero_markup = f'<section class="hero" data-layout-role="sidebar-title">\n                <h1>{sidebar_title}</h1>\n            </section>'
                 self.assertIn(hero_markup, body)
-        for body in (index_body, grok_body, chatgpt_body, gemini_body, claude_body):
+        for body in (index_body, grok_body, chatgpt_body, gemini_body, claude_body, zhihu_body):
             with self.subTest(session_page=body[:40]):
                 self.assertIn('data-role="browser-session-spinner"', body)
                 heading_start = body.index('<div class="section-heading">')
@@ -740,14 +766,14 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('data-cache-source-switcher-trigger', heading_markup)
                 self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-session-trigger cache-source-switcher-trigger"', heading_markup)
                 self.assertIn('aria-label="Switch cache source"', heading_markup)
-                expected_source_options = 5
+                expected_source_options = 6
                 self.assertEqual(
                     heading_markup.count('data-cache-source-switcher-option='),
                     expected_source_options,
                 )
                 current_source = next(
                     source
-                    for source in ("x", "grok", "chatgpt", "gemini", "claude")
+                    for source in ("x", "grok", "chatgpt", "gemini", "claude", "zhihu")
                     if f'data-cache-source="{source}"' in body
                 )
                 expected_paths = (
@@ -757,6 +783,7 @@ class WebAppTests(unittest.TestCase):
                         "/cache/gemini",
                         "/cache/grok",
                         "/cache/x",
+                        "/cache/zhihu",
                     )
                     if current_source == "gemini"
                     else (
@@ -765,6 +792,7 @@ class WebAppTests(unittest.TestCase):
                         "/cache/gemini",
                         "/cache/grok",
                         "/cache/x",
+                        "/cache/zhihu",
                     )
                     if current_source == "claude"
                     else (
@@ -773,6 +801,7 @@ class WebAppTests(unittest.TestCase):
                         "/cache/gemini",
                         "/cache/grok",
                         "/cache/x",
+                        "/cache/zhihu",
                     )
                 )
                 for expected_path in expected_paths:
@@ -869,10 +898,10 @@ class WebAppTests(unittest.TestCase):
         with app.test_client() as client:
             bodies = {
                 source: client.get(f"/cache/{source}").get_data(as_text=True)
-                for source in ("chatgpt", "gemini", "grok", "claude")
+                for source in ("chatgpt", "gemini", "grok", "claude", "zhihu")
             }
 
-        expected_options = ("chatgpt", "claude", "gemini", "grok", "x")
+        expected_options = ("chatgpt", "claude", "gemini", "grok", "x", "zhihu")
         expected_paths_by_page = {
             "chatgpt": (
                 "/cache/chatgpt",
@@ -880,6 +909,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/gemini",
                 "/cache/grok",
                 "/cache/x",
+                "/cache/zhihu",
             ),
             "gemini": (
                 "/cache/chatgpt",
@@ -887,6 +917,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/gemini",
                 "/cache/grok",
                 "/cache/x",
+                "/cache/zhihu",
             ),
             "grok": (
                 "/cache/chatgpt",
@@ -894,6 +925,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/gemini",
                 "/cache/grok",
                 "/cache/x",
+                "/cache/zhihu",
             ),
             "claude": (
                 "/cache/chatgpt",
@@ -901,6 +933,15 @@ class WebAppTests(unittest.TestCase):
                 "/cache/gemini",
                 "/cache/grok",
                 "/cache/x",
+                "/cache/zhihu",
+            ),
+            "zhihu": (
+                "/cache/chatgpt",
+                "/cache/claude",
+                "/cache/gemini",
+                "/cache/grok",
+                "/cache/x",
+                "/cache/zhihu",
             ),
         }
         for page_source, body in bodies.items():
@@ -916,7 +957,7 @@ class WebAppTests(unittest.TestCase):
                     ],
                     list(expected_options),
                 )
-                for source in ("chatgpt", "claude", "gemini", "grok"):
+                for source in ("chatgpt", "claude", "gemini", "grok", "zhihu"):
                     option_start = aside.index(f'data-cache-source-switcher-option="{source}"')
                     option = aside[option_start:aside.index("</button>", option_start)]
                     self.assertIn('data-cache-source-text-available="true"', option)
@@ -4419,6 +4460,22 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(normalize_browser_filters(source="all")["view"], "text")
         self.assertEqual(normalize_browser_filters(source="all", view="media")["view"], "media")
+        self.assertEqual(
+            normalize_browser_filters(
+                source="zhihu",
+                view="text",
+                answerer="  肥肥猫  ",
+            )["answerer"],
+            "肥肥猫",
+        )
+        self.assertEqual(
+            normalize_browser_filters(
+                source="chatgpt",
+                view="text",
+                answerer="肥肥猫",
+            )["answerer"],
+            "",
+        )
 
         app = create_app()
         with app.test_client() as client:
@@ -4787,6 +4844,7 @@ def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> Non
         "claude": "app.core.claude_history_service.ClaudeHistoryService.start",
         "gemini": "app.core.gemini_service.GeminiHistoryService.start",
         "grok": "app.core.grok_history_service.GrokHistoryService.start",
+        "zhihu": "app.core.zhihu_history_service.ZhihuHistoryService.start",
     }
     for source, target in services.items():
         with patch(target) as start, patch("app.web.app.save_config"):
@@ -4799,3 +4857,5 @@ def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> Non
         assert getattr(start.call_args.args[0], f"{source}_browser") == "edge"
         if source == "chatgpt":
             assert start.call_args.kwargs == {"content_mode": "text"}
+        elif source == "zhihu":
+            assert start.call_args.kwargs == {"author_url": ""}

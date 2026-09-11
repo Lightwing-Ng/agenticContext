@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.22.1-codex.1
+# Code version: v1.23.0-codex.1
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -74,6 +75,8 @@ CHATGPT_HOME_URL = "https://chatgpt.com/"
 CHATGPT_AUTH_SESSION_URL = "https://chatgpt.com/api/auth/session"
 GEMINI_HOME_URL = "https://gemini.google.com/app"
 CLAUDE_HOME_URL = "https://claude.ai/new"
+ZHIHU_HOME_URL = "https://www.zhihu.com/"
+ZHIHU_AUTH_SESSION_URL = "https://www.zhihu.com/api/v4/me"
 CLAUDE_COMPOSER_SELECTOR = (
     'div.ProseMirror[contenteditable="true"], '
     '[data-testid*="composer" i] [contenteditable="true"], '
@@ -174,6 +177,64 @@ def build_browser_options(config: CrawlConfig) -> list[dict[str, str]]:
     ]
 
 
+def open_zhihu_browser_for_login(
+    browser_name: str,
+    config: CrawlConfig,
+) -> dict[str, Any]:
+    """Open Zhihu in the selected visible Chromium browser for manual sign-in."""
+
+    selected = str(browser_name or "").strip().lower()
+    descriptor = browser_descriptors(config).get(selected)
+    if descriptor is None or descriptor.engine != "chromium":
+        raise ValueError("Zhihu sign-in requires Edge or Chrome.")
+    application = "Microsoft Edge" if selected == "edge" else "Google Chrome"
+    process_options: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if is_macos_host():
+        command = ["/usr/bin/open", "-g", "-a", application, ZHIHU_HOME_URL]
+        process_options["start_new_session"] = True
+    elif is_windows_host():
+        from .computer_use_agent import resolve_windows_browser_executable
+
+        executable = resolve_windows_browser_executable(selected)
+        if executable is None:
+            raise RuntimeError(f"{application} could not be found on this host.")
+        command = [
+            executable,
+            f"--user-data-dir={descriptor.user_data_dir}",
+            f"--profile-directory={descriptor.profile_directory}",
+            ZHIHU_HOME_URL,
+        ]
+        creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+            subprocess,
+            "DETACHED_PROCESS",
+            0,
+        )
+        if creation_flags:
+            process_options["creationflags"] = creation_flags
+    else:
+        executable = shutil.which("microsoft-edge" if selected == "edge" else "google-chrome")
+        if not executable:
+            raise RuntimeError(f"{application} could not be found on this host.")
+        command = [executable, ZHIHU_HOME_URL]
+        process_options["start_new_session"] = True
+    try:
+        subprocess.Popen(command, **process_options)
+    except OSError as exc:
+        raise RuntimeError(f"Could not open Zhihu in {application}: {exc}") from exc
+    return {
+        "opened": True,
+        "platform": "zhihu",
+        "browser": selected,
+        "application": application,
+        "url": ZHIHU_HOME_URL,
+        "message": f"Opened Zhihu in {application}. Sign in, then choose Recheck.",
+    }
+
+
 def browser_descriptors(config: CrawlConfig) -> dict[str, BrowserDescriptor]:
     """Return runtime-aware browser descriptors."""
     descriptors = {
@@ -221,7 +282,7 @@ def probe_browser_session(
         raise ValueError(f"Unsupported browser: {browser_name}")
 
     platform_key = (platform_name or "").strip().lower()
-    if platform_key not in {"x", "grok", "chatgpt", "gemini", "claude"}:
+    if platform_key not in {"x", "grok", "chatgpt", "gemini", "claude", "zhihu"}:
         raise ValueError(f"Unsupported platform: {platform_name}")
 
     result = {
@@ -257,6 +318,14 @@ def probe_browser_session(
         elif platform_key == "claude":
             result.update(
                 _probe_claude_session(
+                    descriptor,
+                    silent=silent,
+                    prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+                )
+            )
+        elif platform_key == "zhihu":
+            result.update(
+                _probe_zhihu_session(
                     descriptor,
                     silent=silent,
                     prefer_initialized_debug_profile=prefer_initialized_debug_profile,
@@ -625,6 +694,89 @@ def _probe_chatgpt_session(
         }
 
     return _chatgpt_status_payload(descriptor.label, payload)
+
+
+def _zhihu_status_payload(browser_label: str, payload: object) -> dict[str, Any]:
+    """Convert Zhihu's current-account JSON into browser readiness."""
+
+    account = payload if isinstance(payload, dict) else {}
+    author_token = str(account.get("url_token") or "").strip()
+    account_id = str(account.get("id") or "").strip()
+    if not account_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", author_token):
+        return {
+            "logged_in": False,
+            "can_download": False,
+            "account_name": "",
+            "message": f"{browser_label} is not signed in to Zhihu.",
+        }
+    display_name = str(account.get("name") or author_token).replace("\x00", "").strip()
+    return {
+        "logged_in": True,
+        "can_download": True,
+        "account_name": display_name or author_token,
+        "account_handle": author_token,
+        "message": f"The Zhihu account @{author_token} is ready in {browser_label}.",
+    }
+
+
+def _probe_zhihu_session(
+    descriptor: BrowserDescriptor,
+    *,
+    silent: bool = False,
+    prefer_initialized_debug_profile: bool = False,
+) -> dict[str, Any]:
+    """Verify Zhihu sign-in without reading credentials or changing account state."""
+
+    if descriptor.engine != "chromium":
+        return {
+            "logged_in": False,
+            "can_download": False,
+            "account_name": "",
+            "message": f"Zhihu answer caching requires Edge or Chrome, not {descriptor.label}.",
+        }
+    with _serialized_sync_playwright() as playwright:
+        with launch_chromium_context(
+            playwright,
+            descriptor,
+            headless=False,
+            clone_profile_first=True,
+            background_window=True,
+            silent=silent,
+            prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+        ) as context:
+            page = context.pages[0] if context.pages else context.new_page()
+            goto_with_retry(page, ZHIHU_HOME_URL, attempts=2, timeout_ms=60_000)
+            result = page.evaluate(
+                """
+                async ({url}) => {
+                  try {
+                    const response = await fetch(url, {
+                      method: "GET",
+                      credentials: "include",
+                      headers: {Accept: "application/json"},
+                    });
+                    const text = await response.text();
+                    return {status: response.status, text: text.slice(0, 1_000_001)};
+                  } catch (error) {
+                    return {status: 0, text: "", error: String(error)};
+                  }
+                }
+                """,
+                {"url": ZHIHU_AUTH_SESSION_URL},
+            )
+    if not isinstance(result, dict):
+        return _zhihu_status_payload(descriptor.label, {})
+    try:
+        status = int(result.get("status") or 0)
+    except (TypeError, ValueError):
+        status = 0
+    try:
+        payload = json.loads(str(result.get("text") or "{}"))
+    except json.JSONDecodeError:
+        payload = {}
+    if status < 200 or status >= 300:
+        payload = {}
+    return _zhihu_status_payload(descriptor.label, payload)
 
 
 def _probe_safari_x_session(descriptor: BrowserDescriptor) -> dict[str, Any]:

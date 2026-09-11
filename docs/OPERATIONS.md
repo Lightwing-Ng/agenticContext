@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.11.0-codex.1`
+Documentation version: `v1.14.2-codex.1`
 
 ## Launch
 
@@ -42,6 +42,9 @@ to override it. A successful unlock is stored in the signed Flask session for th
 
 - X caching begins from the currently signed-in Likes page in a supported host browser.
 - Grok and ChatGPT syncing use their existing authenticated browser sessions.
+- Both Zhihu workflows support only Chrome and Edge. They use an isolated temporary clone of the
+  selected signed-in profile and perform credentialed same-origin API reads; Safari and an
+  unauthenticated standalone HTTP client are not supported.
 - A Safari-backed Cache task is macOS-only, opt-in, and owns one standard, visible background window
   with native window controls. It restores the user's previous frontmost application after
   every window-affecting operation, then closes and verifies that exact window at task end;
@@ -207,16 +210,80 @@ interrupt it, so the optimizer must checkpoint frequently enough for the workloa
 | `local_store/llm/chatgpt/history.parquet` | ChatGPT typed text history |
 | `local_store/llm/gemini/history.parquet` | Gemini typed text history |
 | `local_store/llm/grok/history.parquet` | Grok typed text history |
+| `local_store/llm/claude/history.parquet` | Claude typed text history |
+| `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text and source links |
 | `local_store/prompt/prompts.parquet` | Saved prompt content snapshots and source pointers; prompts remain available if source history disappears |
 | `local_store/agent/agent_source_catalog.parquet` | Provider-neutral Agent session and Project discovery cache |
 | `local_store/.cache_task.lock` | Cross-source advisory task lock |
 | `local_store/.browser-trash/` | Recoverable previews moved by the local-media browser |
 | `local_store/.browser_deleted.json` | Browser deletion tombstones and exclusion identities |
+| `beta_store/zhihu/<token>/answers.parquet` | Verified Beta Zhihu answer snapshot; not a Local resources or ShadowBackup input |
 | `logs/cachelikes.log.jsonl` | Structured local application log |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local saved settings |
 
 All cache and log paths are ignored by Git. Back up local media before using any destructive reset
-operation.
+operation. The Beta Zhihu archive remains outside `local_store/`; existing Cache reset actions do
+not remove it, and ShadowBackup does not copy it.
+
+### Zhihu text cache
+
+Open `GET /cache/zhihu`. Edge is selected by default; Chrome is the only alternative. The account
+card calls the ordinary browser-session probe and enables Start only after
+`https://www.zhihu.com/api/v4/me` identifies a signed-in account.
+
+Leave `Answerer URL` blank to cache every unique answer found while paging that account's
+`MEMBER_VOTEUP_ANSWER` activity. Enter a validated Zhihu people or Answers URL to cache every
+answer exposed by that answerer's paginated API instead. Both modes recheck the newest page before
+an atomic cumulative merge into `local_store/llm/zhihu/history.parquet`; a later run never removes
+answers collected by an earlier mode. An activity target whose body is unavailable is retained as
+an excerpt-plus-source-link record instead of aborting the complete liked-answer run. Review the
+answers under Local resources with source `Zhihu`; the source-specific sidebar removes Clear
+filters and adds a standard Answerer select populated from cached names. Its selection scopes the
+metrics, sessions, search, ordering, and pagination. The list shows the literal answerer, omits its
+redundant Source column and answer ID, and removes the inapplicable Projects metric. Detail tables
+use the literal answerer name instead of Role and render the complete stored text without the
+generic message-collapse limit. Original answer, question, profile, embedded anchor, and remote
+image URLs remain explicit source links; no provider HTML or image binary is mounted.
+
+### Beta Zhihu Answers Cache
+
+Open `GET /beta/zhihu-answers-cache`, enter a validated Zhihu people or Answers URL, select Chrome
+or Edge, and use the explicit start control. Loading the page or polling
+`GET /api/beta/zhihu-answers-cache/status` never launches a browser or writes data. Search the
+persisted archive through `GET /api/beta/zhihu-answers-cache/answers`, then open one local body
+through `GET /api/beta/zhihu-answers-cache/answers/<answer-id>`. These reads never contact Zhihu.
+Start and Stop are separate POST operations at `/api/beta/zhihu-answers-cache/start` and
+`/api/beta/zhihu-answers-cache/stop`.
+
+Loopback access is direct. From a private-network address, open Agent and pass its six-digit access
+gate in the same browser session before returning to this Beta page. The Zhihu status, archive,
+start, and stop endpoints reject non-local hosts, remote source addresses, and cross-origin requests, and all
+responses are marked `Cache-Control: no-store`.
+
+Status polling projects only the archive metadata columns required for counts and recent items. The
+service caches that bounded summary until the Parquet inode, modification time, or size changes, so
+multiple open Beta pages do not repeatedly decompress stored answer bodies.
+
+The Cached answers panel reads 20 summaries at a time and searches IDs, URLs, questions, excerpts,
+and stored plain text. `View cached copy` performs a second exact-ID read and renders only text;
+`Open on Zhihu` is the separate network destination. A missing body is reported as metadata-only,
+which is distinct from an answer absent from the archive.
+
+The start request competes for the same application-wide cache task lock as every ordinary Cache
+worker. Wait for the current owner or stop it through its own UI; never remove
+`local_store/.cache_task.lock` to force admission. Stop is cooperative. A Stop accepted before
+`commit_pending`, or a failed, verification-blocked, or incomplete pre-commit run, leaves the
+previous Parquet snapshot byte-for-byte available and does not publish collected partial rows.
+After atomic `committing` begins, Stop is not accepted and the already verified snapshot finishes
+publication.
+
+Treat `completed` as valid only after the status reports a committed and read-back archive. A
+terminal API page alone is not completion. The worker also rechecks the first API page before its
+atomic commit. If duplicate-backed pagination exposes fewer unique IDs than the stable reported
+total, it repeats the complete enumeration and commits only when both passes have identical IDs,
+page/raw/duplicate counts, terminal state, and total. Read Reported, Cached, and Not enumerable as
+separate values; the service never invents rows for hidden IDs. The archive stores content and
+public metadata, including media URL references, but does not download image binaries.
 
 ## Concurrency and local compute
 
@@ -311,6 +378,15 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   IDs. The current verified run exposed `740` sessions and cached `736` text-bearing sessions
   with `4,045` messages. A no-text session is an expected skip; a Google human-verification
   challenge must stop the task and be reported to the operator.
+- Zhihu verification: HTTP 401/403, error code `40352`, `need_login`, or a visible human-check page
+  is a terminal result for that run. Keep the existing archive, open the profile in the selected
+  host browser, complete the provider's check manually, and explicitly retry. Do not copy cookies,
+  add a CAPTCHA solver, switch to a raw HTTP scraper, or loop retries around the challenge.
+- Zhihu count mismatch: do not edit the Parquet file or invent missing IDs. A short terminal result
+  whose raw count is also below the reported total fails closed. A duplicate-backed provider gap is
+  accepted only after two full enumerations reproduce the same ordered unique IDs and pagination
+  counts; the gap is then persisted and shown as Not enumerable. Any drift preserves the earlier
+  archive until a later explicit run succeeds.
 - Cache inconsistency: use the local-media browser to inspect the affected source before choosing a
   source-specific reset. Avoid deleting catalog or manifest files by hand.
 
@@ -319,4 +395,4 @@ you intend to discard that cache. Do not use reset operations as a routine troub
 Run `./scripts/test.sh` or `./scripts/check.sh` (macOS/Linux) or `.\scripts\test.ps1` or
 `.\scripts\check.ps1` (Windows) for offline validation. Pytest redirects all
 default runtime paths into temporary directories; tests must never be pointed at the production
-cache, log, settings, or browser-profile locations.
+cache, Beta store, log, settings, or browser-profile locations.

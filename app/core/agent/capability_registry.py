@@ -1,6 +1,6 @@
 """One registry for Agent actions, page observations, and WebMCP tools.
 
-Code version: v1.4.1-codex.1
+Code version: v1.5.0-codex.1
 """
 
 from __future__ import annotations
@@ -792,6 +792,12 @@ NAVIGATION_TARGETS: tuple[NavigationTarget, ...] = (
         "Claude cache",
         "Open the Claude history cache overview without starting or stopping a cache job.",
         "/cache/claude",
+    ),
+    NavigationTarget(
+        "zhihu_cache",
+        "Zhihu cache",
+        "Open the Zhihu answer cache overview without starting or stopping a cache job.",
+        "/cache/zhihu",
     ),
     NavigationTarget(
         "local_resources",

@@ -1,4 +1,4 @@
-/* Code version: v1.21.0-codex.1 */
+/* Code version: v1.22.0-codex.1 */
 
 (function initializeSidebar() {
     "use strict";
@@ -14,7 +14,7 @@
     const sidebarMemoryKey = "cachelikes:sidebar-open";
     const dockLocationMemoryPrefix = "cachelikes:dock-location:v1:";
     const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);
-    const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude"]);
+    const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/zhihu"]);
     const reducedMotionMedia = window.matchMedia("(prefers-reduced-motion: reduce)");
     const sidebarGelAnimationNames = new Set([
         "workspace-sidebar-gel-open",
@@ -34,6 +34,7 @@
         ["/chatgpt", "/cache/chatgpt"],
         ["/gemini", "/cache/gemini"],
         ["/claude", "/cache/claude"],
+        ["/zhihu", "/cache/zhihu"],
     ]);
     const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view"];
     const agentRoutePattern = /^\/agent\/(?:safari\/chatgpt|(?:edge|chrome)\/(?:chatgpt|gemini|grok|claude))$/;

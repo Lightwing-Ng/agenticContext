@@ -1,4 +1,4 @@
-{# Code version: v1.29.10-codex.1 #}
+{# Code version: v1.30.4-codex.1 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.112.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.113.1-codex.1') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.2-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -126,7 +126,7 @@
                                 id="cache_source_switcher_option_{{ source.key }}"
                                 class="trade-strategy-dropdown-option browser-source-filter-option{% if source.key == cache_source.key %} is-selected is-active{% endif %}"
                                 data-cache-source-switcher-option="{{ source.key }}"
-                                data-cache-source-text-available="{{ 'true' if source.show_content_mode else 'false' }}"
+                                data-cache-source-text-available="{{ 'true' if source.show_content_mode or source.include_in_llm_switcher or source.group_key == 'llm' else 'false' }}"
                                 data-cache-source-switcher-path="{{ cache_source_switcher_path(cache_source.key, source.key) }}"
                                 role="option"
                                 aria-selected="{{ 'true' if source.key == cache_source.key else 'false' }}"
@@ -173,12 +173,10 @@
                     {% block source_fields %}{% endblock %}
                 </form>
                 {% if cache_source.show_shared_settings_link %}
-                {% set settings_category = "llm" if cache_source.key in ("chatgpt", "claude", "grok", "gemini") else "downloads" %}
-                {% set settings_label = "Open " ~ cache_source.label ~ " settings" if settings_category == "llm" else "Open shared cache settings" %}
                 <a
                     class="secondary-button cache-settings-link"
-                    href="{{ url_for('settings') }}#settings-{{ settings_category }}"
-                >{{ settings_label }}</a>
+                    href="{{ url_for('settings') }}#settings-{{ cache_source.resolved_settings_category }}"
+                >{{ cache_source.resolved_settings_link_label }}</a>
                 {% endif %}
                 <div
                     class="sidebar-action-row cache-action-row"
@@ -258,7 +256,7 @@
 </main>
 
 {% include "_waiting_modal.html" %}
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.21.0-codex.1') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.22.0-codex.1') }}"></script>
 {% block tail %}{% endblock %}
 </body>
 </html>

@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.5.0-codex.1
+# Code version: v1.6.0-codex.1
 
 from __future__ import annotations
 
@@ -42,6 +42,9 @@ class CacheSourceView:
     show_progress_audit: bool = False
     show_progress_value: bool = False
     show_progress_detail: bool = False
+    settings_category: str = ""
+    settings_link_label: str = ""
+    supported_browsers: tuple[str, ...] = ()
 
     @property
     def dock_label(self) -> str:
@@ -57,6 +60,26 @@ class CacheSourceView:
     def browser_storage_key(self) -> str:
         """Return the session-scoped browser selection key."""
         return f"cachelikes:browser-selection:{self.key}"
+
+    @property
+    def resolved_settings_category(self) -> str:
+        """Return the existing Settings category owned by this source."""
+
+        if self.settings_category:
+            return self.settings_category
+        if self.group_key == "llm" or self.include_in_llm_switcher:
+            return "llm"
+        return "downloads"
+
+    @property
+    def resolved_settings_link_label(self) -> str:
+        """Return source-specific Settings copy without template conditionals."""
+
+        if self.settings_link_label:
+            return self.settings_link_label
+        if self.resolved_settings_category == "llm":
+            return f"Open {self.label} settings"
+        return "Open shared cache settings"
 
 
 _CACHE_SOURCE_VIEWS = (
@@ -184,6 +207,37 @@ _CACHE_SOURCE_VIEWS = (
         show_progress_audit=True,
         show_progress_value=True,
         show_progress_detail=True,
+    ),
+    CacheSourceView(
+        key="zhihu",
+        label="Zhihu",
+        view_endpoint="zhihu",
+        template_name="zhihu.html",
+        icon_filename="images/zhihu.svg",
+        document_title=f"{PRODUCT_NAME} Zhihu",
+        overview_title="Zhihu answers cache overview",
+        browser_panel_label="Authorized browser",
+        browser_empty_message="No signed-in Zhihu account detected",
+        browser_config_field="zhihu_browser",
+        require_browser_ready=True,
+        start_form_id="start_form_zhihu",
+        start_button_label="Start",
+        start_wait_title="Starting Zhihu answer cache",
+        start_wait_copy="Preparing the authenticated browser and reading Zhihu answer text.",
+        stop_wait_title="Stopping Zhihu answer cache",
+        stop_wait_copy="Requesting a safe stop before the next activity page or final write.",
+        progress_strategy="queue",
+        progress_aria_label="Zhihu answer cache progress",
+        group_key="llm",
+        group_label="Cache",
+        include_in_llm_switcher=True,
+        preserve_icon_color=True,
+        show_content_mode=True,
+        show_progress_value=True,
+        show_progress_detail=True,
+        settings_category="downloads",
+        settings_link_label="Open Zhihu settings",
+        supported_browsers=("edge", "chrome"),
     ),
 )
 

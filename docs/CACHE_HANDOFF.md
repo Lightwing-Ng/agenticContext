@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.7.1-codex.1`
+Documentation version: `v1.9.2-codex.1`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -26,14 +26,19 @@ Cache is the execution surface. Its canonical source pages are:
 | ChatGPT | `/cache/chatgpt` | ChatGPT images | ChatGPT sessions and messages |
 | Gemini | `/cache/gemini` | Gemini sessions and messages | Gemini sessions and messages |
 | Claude | `/cache/claude` | Claude sessions and messages | Claude sessions and messages |
+| Zhihu | `/cache/zhihu` | Upvoted answers or one answerer's answers | One text session per answer plus source links |
 
-The historical top-level paths `/grok`, `/chatgpt`, `/gemini`, and `/claude` are compatibility
+The historical top-level paths `/grok`, `/chatgpt`, `/gemini`, `/claude`, and `/zhihu` are compatibility
 redirects. Do not introduce new links to them. The legacy `/chatgpt` plan is not a
 separate Agent route; it resolves into the Cache namespace.
 
 `Local resources` owns `/browser`. It is the review and export surface, not the place
 where a source sync is started. Its text source filter accepts `all`, `chatgpt`,
-`claude`, `gemini`, and `grok`.
+`claude`, `gemini`, `grok`, and `zhihu`.
+
+The original `/beta/zhihu-answers-cache` remains a separate completeness-research surface. Its
+verified per-answerer snapshots stay under `beta_store/` and are not indexed by Local resources.
+Both Zhihu workflows acquire the same cross-process cache task lock as every Cache worker.
 
 ## 2. Shared Text/Media contract
 
@@ -54,8 +59,8 @@ the top of the Cache sidebar:
   Grok Text displays session/message counts from its history worker and Parquet file,
   independently of Media asset counters. Responses for a previously selected mode
   are discarded after a mode change.
-- The `all` source view is an aggregate view. It must include the ChatGPT, Gemini, and
-  Grok and Claude history files.
+- The `all` source view is an aggregate view. It must include the ChatGPT, Gemini, Grok,
+  Claude, and Zhihu history files.
 
 The control is shared markup in `app/web/templates/_cache_page.html`, behavior in
 `app/web/static/cache-page.js`, and styling in `app/web/static/style.css`. Changes to
@@ -124,6 +129,20 @@ not call private Claude endpoints, send prompts, or mutate the provider page. Th
 uses `POST /cache/claude/start`, `POST /cache/claude/stop`, and
 `GET /api/cache/claude/status` (with compatibility alias `GET /api/claude/status`).
 
+Zhihu is a text-only Cache runtime and defaults to Edge. A blank `Answerer URL` first verifies the
+selected browser through `GET https://www.zhihu.com/api/v4/me`, then follows the signed-in
+account's paginated activity feed and retains only `MEMBER_VOTEUP_ANSWER` targets. An optional
+validated `https://www.zhihu.com/people/<token>` URL switches to complete answerer pagination.
+Both modes deduplicate by answer ID and recheck the newest page before committing. Rows are merged
+cumulatively, so caching another answerer does not remove earlier answers. Local resources renders
+the complete normalized answer text without its generic message-collapse limit. A Zhihu-only
+session list omits the redundant Source column, answer IDs, Projects metric, and Clear filters
+action. Its standard Answerer select is populated from the cached author labels and scopes metrics,
+sessions, search, ordering, and pagination to the selected name. The index shows each literal
+answerer in its Answerer column, while a one-answer detail table uses that name instead of the
+generic Role heading. The original answer, question, answerer, embedded anchor, and remote image
+URLs are stored in `source_links`. Provider HTML is empty and remote media is never mounted.
+
 ## 4. Local compute boundary
 
 ChatGPT visual signatures and decoded dimensions are pure local work. Startup catalog hydration
@@ -138,7 +157,7 @@ partial or failed GPU batch and recompute the complete batch on CPU before the c
 
 ## 5. Durable local data
 
-The current local store layout is:
+The current persistent cache layout is:
 
 | Path | Owner | Meaning |
 | --- | --- | --- |
@@ -147,11 +166,13 @@ The current local store layout is:
 | `local_store/llm/gemini/history.parquet` | Gemini Text runtime | Typed Gemini messages |
 | `local_store/llm/grok/history.parquet` | Grok Text runtime | Typed Grok messages |
 | `local_store/llm/claude/history.parquet` | Claude Text runtime | Typed Claude messages |
+| `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; provider HTML omitted and source links retained |
 | `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers |
-| `local_store/.cache_task.lock` | All cache runtimes | Cross-process advisory task lock |
+| `local_store/.cache_task.lock` | Cache and Beta Zhihu runtimes | Cross-process advisory task lock |
+| `beta_store/zhihu/<token>/answers.parquet` | Beta Zhihu runtime | Verified provider-exposed unique answer snapshot plus reported-gap metadata, excluded from Local resources and ShadowBackup |
 | `logs/cachelikes.log.jsonl` | All runtimes | Structured diagnostics |
 
-The four LLM history files use the same logical fields, while each provider runtime has
+The five formal text-history files use the same logical fields, while each provider runtime has
 its own source-specific schema constant in `app/core/resource_persistence.py`. Do not
 silently point one provider at another provider's file merely because all filenames
 are `history.parquet`.
@@ -271,6 +292,9 @@ curl -sS 'http://localhost:8666/api/cache/grok/text/status'
 The Edge session probe must report `logged_in: true`. The media and Text runtimes must
 be idle before starting another task. Only one cache task may hold
 `local_store/.cache_task.lock` across the entire application.
+The Beta Zhihu status endpoint is
+`GET /api/beta/zhihu-answers-cache/status`; check it too when diagnosing a busy lock. A status GET
+does not launch its browser worker or write the Beta store.
 
 ### Legacy Grok Text runtime
 

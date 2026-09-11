@@ -1,0 +1,40 @@
+{# Code version: v1.1.0-codex.1 #}
+{% extends "_cache_page.html" %}
+{% from "_cache_page_components.html" import render_metric, render_progress_metric %}
+
+{% block source_fields %}
+<label class="field" for="zhihu_author_url">
+    <span>Answerer URL <span class="field-optional">Optional</span></span>
+    <input
+        class="shared-select-text-input"
+        id="zhihu_author_url"
+        name="zhihu_author_url"
+        type="url"
+        inputmode="url"
+        autocomplete="off"
+        placeholder="https://www.zhihu.com/people/..."
+    >
+</label>
+{% endblock %}
+
+{% block primary_metrics %}
+{{ render_metric("Answers cached", "downloaded_posts", snapshot.downloaded_posts, "downloaded_posts") }}
+{{ render_metric("Answers found", "discovered_tweets", snapshot.discovered_tweets, "discovered_tweets") }}
+{% endblock %}
+
+{% block progress_metrics %}
+{{ render_progress_metric("Answers queued", "queued_tweets", snapshot.queued_tweets, "progress_queued_tweets") }}
+{{ render_progress_metric("Answers processed", "processed_tweets", snapshot.processed_tweets, "progress_processed_tweets") }}
+{% endblock %}
+
+{% block source_notice %}
+<div class="metric-card foundation-metric-card metric-card-accent notice-floating notice-floating-banner notice-inline-banner" role="note" aria-label="Zhihu text cache notice">
+    <div class="notice-floating-copy">
+        <p class="metric-label notice-floating-label">Text-first answer archive</p>
+        <p class="notice-floating-title">
+            Answer text is stored in <code>local_store/llm/zhihu/history.parquet</code>. Images and rich-text destinations are retained only as source links; no remote media is downloaded or mounted into Local resources.
+        </p>
+    </div>
+    <span class="status-chip status-collecting">Parquet v1</span>
+</div>
+{% endblock %}

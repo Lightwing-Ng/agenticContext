@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.61.2-codex.1
+Code version: v1.61.5-codex.1
 """
 
 import hashlib
@@ -1322,6 +1322,10 @@ def test_shared_select_reuses_regular_labels_pill_options_and_browser_height() -
     agent_browser_rule = stylesheet[
         agent_browser_start:stylesheet.index("\n}", agent_browser_start)
     ]
+    text_input_start = stylesheet.index(".shared-select-text-input {")
+    text_input_rule = stylesheet[
+        text_input_start:stylesheet.index("\n}", text_input_start)
+    ]
 
     assert "font-weight: var(--font-weight-regular);" in label_rule
     assert "border-radius: var(--shared-select-option-radius);" in option_rule
@@ -1331,6 +1335,15 @@ def test_shared_select_reuses_regular_labels_pill_options_and_browser_height() -
     assert "--shared-select-option-min-height: 36px;" in stylesheet
     assert "min-height: var(--control-form-height);" in agent_browser_rule
     assert "padding-block: 3px;" in agent_browser_rule
+    for declaration in (
+        "height: var(--shared-select-control-height);",
+        "min-height: var(--shared-select-control-height);",
+        "border: var(--frosted-glass-border);",
+        "border-radius: var(--radius-control);",
+        "background: var(--shared-select-trigger-material);",
+        "box-shadow: var(--frosted-glass-shadow);",
+    ):
+        assert declaration in text_input_rule
 
 
 def test_browser_grid_filename_wraps_without_hiding_its_extension() -> None:
@@ -2064,6 +2077,31 @@ def test_browser_picker_icon_shells_are_perfect_circles() -> None:
         assert "border-radius: var(--radius-pill);" in selector_rule
 
 
+def test_browser_picker_icon_plate_is_dark_theme_only() -> None:
+    """Keep selected logos bare in Light mode and protected in every Dark mode."""
+    stylesheet = _stylesheet()
+    root_start = stylesheet.index(":root {")
+    root_rule = stylesheet[root_start:stylesheet.index("\n}", root_start)]
+    shell_start = stylesheet.index("\n.browser-picker-selected-icon-shell {") + 1
+    shell_rule = stylesheet[shell_start:stylesheet.index("\n}", shell_start)]
+
+    assert "--browser-picker-selected-icon-background: transparent;" in root_rule
+    assert "--browser-picker-selected-icon-shadow: none;" in root_rule
+    assert "background: var(--browser-picker-selected-icon-background);" in shell_rule
+    assert "box-shadow: var(--browser-picker-selected-icon-shadow);" in shell_rule
+
+    dark_background = (
+        "--browser-picker-selected-icon-background: color-mix(in srgb, "
+        "var(--theme-color-white-adaptive) 72%, transparent);"
+    )
+    dark_shadow = (
+        "--browser-picker-selected-icon-shadow: inset 0 1px 0 color-mix(in srgb, "
+        "var(--theme-glass-highlight) 100%, transparent);"
+    )
+    assert stylesheet.count(dark_background) == 3
+    assert stylesheet.count(dark_shadow) == 3
+
+
 def test_browser_content_mode_reuses_the_sibling_optimistic_navigation_skeleton() -> None:
     """Keep content-mode navigation on the sibling's skeleton and motion contract."""
     stylesheet = _stylesheet()
@@ -2087,7 +2125,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.111.1-codex.1 */",
+            "/* Code version: v2.113.1-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',

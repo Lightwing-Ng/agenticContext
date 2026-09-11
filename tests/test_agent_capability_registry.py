@@ -1,6 +1,6 @@
 """Contract tests for the unified Agent capability registry.
 
-Code version: v1.4.0-codex.1
+Code version: v1.5.0-codex.1
 """
 
 from __future__ import annotations
@@ -70,6 +70,7 @@ def test_public_manifest_is_derived_from_the_registry_and_stays_bounded() -> Non
         "/cache/chatgpt",
         "/cache/gemini",
         "/cache/claude",
+        "/cache/zhihu",
         "/browser",
         "/agent",
         "/settings",

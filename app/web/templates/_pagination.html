@@ -1,4 +1,4 @@
-{# Code version: v1.3.0-codex.2 #}
+{# Code version: v1.3.1-codex.1 #}
 {% macro render_browser_pagination(page, aria_label, view, filters, range_unit="pages") %}
 {% set pagination_items = page.pagination_items %}
 {% if pagination_items %}
@@ -40,7 +40,7 @@
                 {% if view == "text" %}
                 <a
                     class="browser-pagination-range-option"
-                    href="{{ url_for('browser', view='text', source=filters.source, q=filters.q, sort=filters.sort, session_view=('1' if filters.session_view else '0'), session=(filters.session if page.session_detail else ''), session_page=(filters.session_page if page.session_detail else none), page=range_start) }}"
+                    href="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view=('1' if filters.session_view else '0'), session=(filters.session if page.session_detail else ''), session_page=(filters.session_page if page.session_detail else none), page=range_start) }}"
                     role="menuitem"
                     aria-label="{{ 'Messages' if page.session_detail else ('Sessions' if page.session_view else 'Text pages') }} {{ range_start }} through {{ range_end }}"
                 >{{ range_start }}-{{ range_end }}</a>
@@ -73,7 +73,7 @@
     </span>
     {% else %}
     {% if view == "text" %}
-    {% set item_href = url_for('browser', view='text', source=filters.source, q=filters.q, sort=filters.sort, session_view=('1' if filters.session_view else '0'), session=(filters.session if page.session_detail else ''), session_page=(filters.session_page if page.session_detail else none), page=pagination_item.page) %}
+    {% set item_href = url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view=('1' if filters.session_view else '0'), session=(filters.session if page.session_detail else ''), session_page=(filters.session_page if page.session_detail else none), page=pagination_item.page) %}
     {% elif view == "prompts" %}
     {% set item_href = url_for('browser', view='prompts', source=filters.source, q=filters.q, sort=filters.sort, page=pagination_item.page) %}
     {% else %}

@@ -1,6 +1,6 @@
 """Configuration helpers."""
 
-# Code version: v1.17.0-codex.1
+# Code version: v1.19.0-codex.1
 
 from __future__ import annotations
 
@@ -96,6 +96,7 @@ def runtime_root_is_overridden() -> bool:
 
 RUNTIME_ROOT = resolve_runtime_root()
 LOCAL_STORE_ROOT = RUNTIME_ROOT / "local_store"
+BETA_STORE_ROOT = RUNTIME_ROOT / "beta_store"
 MEDIA_STORE_DIRNAME = "media"
 MEDIA_STORE_ROOT = LOCAL_STORE_ROOT / MEDIA_STORE_DIRNAME
 X_LOCAL_STORE_DIRNAME = "x"
@@ -189,6 +190,7 @@ class CrawlConfig:
     chatgpt_browser: str = "edge"
     gemini_browser: str = DEFAULT_GEMINI_BROWSER
     claude_browser: str = "edge"
+    zhihu_browser: str = "edge"
     gemini_max_conversations: int = DEFAULT_GEMINI_MAX_CONVERSATIONS
     gemini_scroll_pause_seconds: float = DEFAULT_GEMINI_SCROLL_PAUSE_SECONDS
     gemini_stale_round_limit: int = DEFAULT_GEMINI_STALE_ROUND_LIMIT
@@ -283,6 +285,10 @@ def load_saved_config(settings_path: Path | None = None) -> CrawlConfig:
             payload.get("claude_browser", defaults.claude_browser),
             defaults.claude_browser,
         ),
+        zhihu_browser=normalize_host_browser(
+            payload.get("zhihu_browser", defaults.zhihu_browser),
+            defaults.zhihu_browser,
+        ),
         gemini_max_conversations=max(
             1,
             int(payload.get("gemini_max_conversations", defaults.gemini_max_conversations)),
@@ -371,6 +377,7 @@ def save_config(config: CrawlConfig, settings_path: Path | None = None) -> None:
     payload["chatgpt_browser"] = config.chatgpt_browser
     payload["gemini_browser"] = config.gemini_browser
     payload["claude_browser"] = config.claude_browser
+    payload["zhihu_browser"] = config.zhihu_browser
     payload["chatgpt_project_url"] = config.chatgpt_project_url
     payload["chatgpt_project_name"] = config.chatgpt_project_name
     payload["chrome_user_data_dir"] = str(config.chrome_user_data_dir)

@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.9.1-codex.1
+Code version: v1.10.0-codex.1
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import pytest
 from app.core.browser_sessions import (
     CHROMIUM_WINDOW_MODE_TASK_STAGE,
     _CdpAttachCleanupNoiseFilter,
+    _zhihu_status_payload,
     BrowserDescriptor,
     build_chromium_launch_args,
     clone_browser_profile,
@@ -44,6 +45,25 @@ from app.core.scraper import (
     collect_liked_tweet_urls,
 )
 from app.core.state import TaskState
+
+
+def test_zhihu_status_requires_a_verified_account_token() -> None:
+    ready = _zhihu_status_payload(
+        "Edge",
+        {"id": "account-id", "url_token": "MayukoSF", "name": "Fixture Account"},
+    )
+    signed_out = _zhihu_status_payload("Edge", {"id": "account-id"})
+
+    assert ready == {
+        "logged_in": True,
+        "can_download": True,
+        "account_name": "Fixture Account",
+        "account_handle": "MayukoSF",
+        "message": "The Zhihu account @MayukoSF is ready in Edge.",
+    }
+    assert signed_out["logged_in"] is False
+    assert signed_out["can_download"] is False
+    assert signed_out["message"] == "Edge is not signed in to Zhihu."
 
 
 @pytest.mark.parametrize("stop_stage", ("before_navigation", "after_error", "during_retry_wait"))

@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.14.0-codex.1
+# Code version: v1.16.0-codex.1
 
 from __future__ import annotations
 
@@ -24,13 +24,16 @@ from .resource_persistence import (
     CLAUDE_HISTORY_FILENAME,
     GEMINI_HISTORY_FILENAME,
     GROK_HISTORY_FILENAME,
+    ZHIHU_HISTORY_FILENAME,
     read_parquet_rows,
 )
 
 
 CHAT_HISTORY_PAGE_SIZE = 100
 CHAT_HISTORY_SESSION_PAGE_SIZE = 100
-CHAT_HISTORY_SOURCE_VALUES = frozenset({"all", "chatgpt", "claude", "gemini", "grok"})
+CHAT_HISTORY_SOURCE_VALUES = frozenset(
+    {"all", "chatgpt", "claude", "gemini", "grok", "zhihu"}
+)
 CHAT_HISTORY_SORT_VALUES = frozenset({"newest", "oldest", "name"})
 
 
@@ -105,6 +108,8 @@ class ChatHistoryPage:
     previous_session: ChatHistorySession | None = None
     next_session: ChatHistorySession | None = None
     project_count: int = 0
+    answerer_options: tuple[str, ...] = ()
+    selected_answerer: str = ""
 
     @property
     def session_detail(self) -> bool:
@@ -138,6 +143,7 @@ def chat_history_path(local_store_root: Path | str, source: str = "gemini") -> P
         "claude": CLAUDE_HISTORY_FILENAME,
         "gemini": GEMINI_HISTORY_FILENAME,
         "grok": GROK_HISTORY_FILENAME,
+        "zhihu": ZHIHU_HISTORY_FILENAME,
     }.get(normalized_source, GEMINI_HISTORY_FILENAME)
     return Path(local_store_root).expanduser() / "llm" / normalized_source / filename
 
@@ -249,6 +255,7 @@ def load_chat_history_messages(
             ("claude", chat_history_path(local_store_root, "claude")),
             ("gemini", chat_history_path(local_store_root, "gemini")),
             ("grok", chat_history_path(local_store_root, "grok")),
+            ("zhihu", chat_history_path(local_store_root, "zhihu")),
         )
     )
     messages = tuple(
@@ -489,6 +496,7 @@ def query_chat_history(
     page_size: int = CHAT_HISTORY_PAGE_SIZE,
     session_view: bool = False,
     session: str = "",
+    answerer: str = "",
 ) -> ChatHistoryPage:
     """Read cached text sessions, global search results, or one session's complete history."""
     normalized_source = normalize_chat_history_source(source)
@@ -496,6 +504,24 @@ def query_chat_history(
     query_terms = tuple(normalized_query.split())
     project_count = count_cached_projects(local_store_root, normalized_source)
     all_messages = load_chat_history_messages(local_store_root, normalized_source)
+    answerer_options = (
+        tuple(
+            sorted(
+                {item.author_label for item in all_messages if item.author_label},
+                key=str.casefold,
+            )
+        )
+        if normalized_source == "zhihu"
+        else ()
+    )
+    requested_answerer = str(answerer or "").replace("\x00", "").strip()[:160]
+    selected_answerer = (
+        requested_answerer if requested_answerer in answerer_options else ""
+    )
+    if selected_answerer:
+        all_messages = tuple(
+            item for item in all_messages if item.author_label == selected_answerer
+        )
     requested_session = str(session or "").strip()[:160]
     all_sessions = _sort_chat_history_sessions(_build_chat_history_sessions(all_messages), sort)
     selected_session = None
@@ -555,6 +581,8 @@ def query_chat_history(
             current_session=selected_session,
             previous_session=all_sessions[selected_index - 1] if selected_index > 0 else None,
             next_session=all_sessions[selected_index + 1] if 0 <= selected_index < len(all_sessions) - 1 else None,
+            answerer_options=answerer_options,
+            selected_answerer=selected_answerer,
         )
 
     messages = all_messages
@@ -608,6 +636,8 @@ def query_chat_history(
         page_size=safe_page_size,
         session_view=bool(session_view),
         sessions=tuple(page_sessions),
+        answerer_options=answerer_options,
+        selected_answerer=selected_answerer,
     )
 
 

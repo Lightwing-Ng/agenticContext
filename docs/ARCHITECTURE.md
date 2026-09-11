@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.21.2-codex.1`
+Documentation version: `v1.24.2-codex.1`
 
 ## Runtime flow
 
@@ -62,6 +62,11 @@ export only the symbols needed by its caller and should not become a second impl
   stop signaling, and shared cache-task exclusion.
 - `app/core/grok_history.py` and `app/core/grok_history_service.py`: authenticated Grok Text
   API traversal, normalized message persistence, and the independent Grok Text worker.
+- `app/core/zhihu_answers.py`: strict Zhihu profile normalization, authenticated same-origin API
+  traversal, stable-snapshot verification, and Beta-owned Parquet persistence.
+- `app/core/zhihu_history.py` and `app/core/zhihu_history_service.py`: signed-in vote-up activity
+  traversal, optional answerer collection, cumulative formal text-history persistence, and the
+  ordinary Zhihu Cache worker.
 - `app/core/scraper.py` and `app/core/browser_sessions.py`: X timeline discovery and browser
   session probing for Chrome, Edge, and Safari.
 - `app/core/downloader.py`, `app/core/grok_downloader.py`, and
@@ -94,18 +99,24 @@ transport boundary, while durable cache and state rules stay in core modules.
 
 ## Optional Beta experiments
 
-`app/web/beta.py` registers an optional GET-only Blueprint and an immutable experiment catalog.
+`app/web/beta.py` registers optional experiment pages from an immutable catalog.
 `create_app(beta_enabled=False)` or `AGENTIC_CONTEXT_BETA_ENABLED=0` removes its routes and Dock
-entry. `beta_experiments` selects a subset by ID; an empty subset removes the module. Beta has no
-production service, storage, thread, or browser-controller dependency. The only shared template
-change is its conditional Dock entry before Settings, including the fifth-slot active indicator.
+entry. `beta_experiments` selects a subset by ID; an empty subset removes the module. The default
+catalog has seven entries and `/beta` still renders the first, Idea Collision. The only shared
+template change is its conditional Dock entry before Settings, including the fifth-slot active
+indicator.
 
 `beta.html` reuses the application shell and Settings navigation styles. Its CSS is scoped under
-`.beta-page`; its script runs only on Beta pages and lazily imports pure `beta/engines.mjs` when
-the user runs an experiment. Pasted text and explicit file imports are processed in the browser.
-Draft fields use `agenticcontext:beta:v1:draft:<experiment-id>` in `sessionStorage`; results use
-plain-text DOM rendering and user-triggered Markdown copy/export. Beta does not read existing
-storage keys or call Cache, Agent, or Settings APIs. Full details are in [BETA.md](BETA.md).
+`.beta-page`. The original six experiments remain pure browser tools: their script lazily imports
+`beta/engines.mjs`, processes only pasted text or explicit file imports, and stores draft fields
+under `agenticcontext:beta:v1:draft:<experiment-id>` in `sessionStorage`. Their page routes remain
+GET-only and have no service or durable-storage dependency.
+
+Zhihu Answers Cache is the seventh experiment and the only network-backed exception. Its page
+`GET /beta/zhihu-answers-cache` is side-effect free. A dedicated same-origin API owns explicit
+start/status/stop operations, bounded local archive reads, and a single background worker. The API is registered only when that
+experiment is enabled, calls no Cache, Agent, Settings, Local resources, or ShadowBackup route,
+and publishes only beneath `beta_store/`. Full details are in [BETA.md](BETA.md).
 
 ## OpenAI Site tools and Agent Optimization boundary
 
@@ -310,6 +321,76 @@ store uses `<conversation-id>:<response-id>` as the message key and atomically r
 one conversation at a time. See [CACHE_HANDOFF.md](CACHE_HANDOFF.md) for the operator
 workflow and recovery rules.
 
+### Formal Zhihu text cache
+
+```text
+selected Edge or Chrome profile cloned into an isolated Chromium context
+  -> authenticated /api/v4/me identity check
+  -> blank input: paginated MEMBER_VOTEUP_ANSWER activity targets
+  -> answerer URL: paginated /api/v4/members/<token>/answers records
+  -> normalized text plus allowlisted source links
+  -> cumulative atomic local_store/llm/zhihu/history.parquet merge
+  -> Local resources source=zhihu
+```
+
+The current-account endpoint is the authority for default-mode identity; no profile token is
+hardcoded. Activity entries are filtered by exact verb and target type, then deduplicated by stable
+answer ID. The collector validates every next cursor, bounds response/page/content volume, and
+rechecks the first activity page before publication. Author mode reuses the stricter complete-list
+pagination and provider-gap verification from the Beta collector.
+
+The formal liked-answer collector retains an excerpt and source link when an individual activity
+target does not expose a body; one unavailable historical answer cannot discard an otherwise
+complete cumulative run. The formal store uses the shared text-history logical columns with one answer per conversation.
+`content_text` is normalized answer text and `content_html` is always empty. Original answer,
+question, answerer, embedded HTTP(S) anchors, and remote Zhihu image URLs are retained only in
+`source_links`; Local resources never mounts provider markup or downloads those image binaries.
+Zhihu-only session indexes replace the generic message count with the literal answerer and omit the
+redundant Source column, answer ID, Projects metric, and Clear filters action. The sidebar's
+Answerer select is derived from unique cached author labels. The validated `answerer` query value
+filters the message set before session aggregation, metrics, search, sorting, neighbor selection,
+and pagination; non-Zhihu requests discard it. Each one-answer detail uses its literal author label
+instead of Role and renders without the generic collapsed-message cap. Merges are cumulative across
+default and answerer modes.
+
+### Beta Zhihu Answers Cache
+
+```text
+explicit POST with validated Zhihu people URL and Chrome or Edge
+  -> isolated temporary clone of the selected authenticated Chromium profile
+  -> credentialed same-origin /api/v4/members/<token>/answers offset reads
+  -> validated paging.next cursor plus answer-ID deduplication and stability checks
+  -> atomic beta_store/zhihu/<token>/answers.parquet replacement and readback
+  -> bounded summary search -> exact-ID plain-text body read
+```
+
+The browser page number is not an API cursor. Collection always starts at offset 0 and requests a
+20-answer limit ordered by creation time. Because Zhihu can return 38 or 39 records while advancing
+its cursor by 20, the worker validates `paging.next` and reconstructs an HTTPS request from its
+offset rather than advancing by response length or fetching the provider's HTTP URL. The worker
+treats `paging.is_end` as only one completion signal and re-fetches offset 0 to verify the original
+ordered IDs and total. When duplicate-backed pagination yields fewer unique IDs than the stable
+reported total, publication requires a second complete pass with exactly the same enumeration
+fingerprint. The missing count is persisted as provider metadata; no unknown IDs are invented.
+Repeated or malformed pages, data drift, authentication or human verification, and a cooperative
+Stop accepted before `commit_pending` leave the prior archive unchanged. Once atomic `committing`
+begins, Stop is not accepted and the already verified snapshot is allowed to finish publication.
+
+The worker uses the existing application-wide `CacheTaskLock`, despite storing data outside
+`local_store/`. Its clone performs `credentials: include` fetches inside the Zhihu origin; cookies
+are neither exported nor persisted in the archive. Chrome and Edge are supported, Safari is not.
+Stored rows include answer content and public metadata plus allowlisted HTTPS media URLs. An
+explicitly collapsed provider record may have empty body fields and `content_available=false`;
+absent normal-state and counter values remain null. This version does not download media binaries.
+The archive is deliberately absent from the Local
+resources catalog and ShadowBackup inputs.
+
+Status polling projects metadata columns only. Archive search reads the verified local Parquet and
+returns bounded summaries; it never includes bodies in list responses. An exact numeric Answer ID
+selects one stored record whose plain text and record digest are rendered with text-only DOM APIs.
+The status, list, and detail GETs share the local-origin gate and never launch a browser or contact
+Zhihu.
+
 ### ChatGPT image cache
 
 ```text
@@ -478,17 +559,21 @@ Doctor. The service never replays a local Action or continues automatically.
 | --- | --- | --- |
 | `local_store/` | User media, source catalogs, queues, manifests, and deletion previews | Ignored except `.gitkeep` |
 | `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability | Ignored except `.gitkeep` |
+| `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text and source links indexed by Local resources | Ignored |
+| `beta_store/zhihu/<token>/answers.parquet` | Beta-owned verified Zhihu answer snapshots; excluded from Local resources and ShadowBackup | Ignored |
 | `logs/` | Local structured JSON-line logs | Ignored except `.gitkeep` |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local configuration | Outside the repository |
 | `app/`, `tests/`, `docs/`, `scripts/` | Versioned source, contracts, and checks | Committed |
 
-`AGENTIC_CONTEXT_RUNTIME_ROOT` and `AGENTIC_CONTEXT_SETTINGS_PATH` are the current runtime-injection inputs. The legacy `CACHELIKES_RUNTIME_ROOT` and `CACHELIKES_SETTINGS_PATH` aliases remain accepted for existing launchers and test environments.
+`AGENTIC_CONTEXT_RUNTIME_ROOT` and `AGENTIC_CONTEXT_SETTINGS_PATH` are the current runtime-injection inputs. The runtime root owns both `local_store/` and `beta_store/`. The legacy `CACHELIKES_RUNTIME_ROOT` and `CACHELIKES_SETTINGS_PATH` aliases remain accepted for existing launchers and test environments.
 Production startup leaves them unset. Pytest sets both before imports so tests cannot resolve the
 user-owned locations above.
 
 ## Cross-workflow and safety invariants
 
 - Only one cache job may own the shared `CacheTaskLock` at once, regardless of source.
+- Both formal and Beta Zhihu answer caching share that lock; status reads and page GETs do not
+  acquire it or start work.
 - The shared `download_workers` setting is normalized to `1` through `8` at load, save, and direct
   configuration construction. Provider-specific browser limits remain stricter where required.
 - Local compute process workers and in-flight image payload bytes are independently bounded; compute
@@ -512,7 +597,8 @@ user-owned locations above.
 Tests use pure functions, temporary directories, fakes, mocks, and Flask's `test_client()`.
 They do not launch an authenticated browser, invoke yt-dlp, touch external services, or access
 production cache, logs, settings, or browser profiles. See [TESTING.md](TESTING.md) for the
-enforced quality gate and writing guidance.
+enforced quality gate and writing guidance. Zhihu fixtures inject the page-fetch boundary and a
+  temporary Beta or formal local store; default tests never contact Zhihu or open a signed-in profile.
 
 ### Execution session selection and admission
 

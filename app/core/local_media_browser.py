@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.23.0-codex.1
+# Code version: v1.24.1-codex.1
 
 from __future__ import annotations
 
@@ -41,10 +41,12 @@ IMAGE_SUFFIXES = frozenset({".avif", ".gif", ".heic", ".jpeg", ".jpg", ".png", "
 VIDEO_SUFFIXES = frozenset({".m4v", ".mkv", ".mov", ".mp4", ".webm"})
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt"})
-TEXT_SOURCE_VALUES = frozenset({"all", "chatgpt", "claude", "gemini", "grok"})
+TEXT_SOURCE_VALUES = frozenset(
+    {"all", "chatgpt", "claude", "gemini", "grok", "zhihu"}
+)
 # Gemini has no media cache source. Treat a legacy URL that names Gemini in
 # Media mode as the ChatGPT media view instead of silently showing all media.
-TEXT_ONLY_SOURCE_VALUES = frozenset({"claude", "gemini"})
+TEXT_ONLY_SOURCE_VALUES = frozenset({"claude", "gemini", "zhihu"})
 MEDIA_KIND_VALUES = frozenset({"all", "image", "video"})
 SORT_VALUES = frozenset({"newest", "oldest", "name"})
 VIEW_VALUES = frozenset({"media", "text", "prompts"})
@@ -616,6 +618,7 @@ def normalize_browser_filters(
     view: str | None = None,
     media_id: str | None = None,
     session_page: object = 1,
+    answerer: str | None = None,
 ) -> dict[str, Any]:
     """Normalize user-controlled browser filters to safe allowlisted values."""
     normalized_source = str(source or "").strip().lower()
@@ -631,8 +634,12 @@ def normalize_browser_filters(
     source_values = SOURCE_VALUES if normalized_view == "media" else TEXT_SOURCE_VALUES
     if normalized_view == "media" and normalized_source in TEXT_ONLY_SOURCE_VALUES:
         normalized_source = "chatgpt"
+    safe_source = normalized_source if normalized_source in source_values else "all"
+    normalized_answerer = str(answerer or "").replace("\x00", "").strip()[:160]
+    if normalized_view != "text" or safe_source != "zhihu":
+        normalized_answerer = ""
     return {
-        "source": normalized_source if normalized_source in source_values else "all",
+        "source": safe_source,
         "kind": normalized_kind if normalized_kind in MEDIA_KIND_VALUES else "all",
         "q": normalized_query,
         "sort": normalized_sort if normalized_sort in SORT_VALUES else "newest",
@@ -642,6 +649,7 @@ def normalize_browser_filters(
         "session_page": _coerce_positive_page(session_page),
         "view": normalized_view,
         "media_id": str(media_id or "").strip()[:96],
+        "answerer": normalized_answerer,
     }
 
 

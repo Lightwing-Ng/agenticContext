@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.3.4-codex.1`
+Test-suite version: `v1.6.0-codex.1`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -26,6 +26,11 @@ This is a behavior map, not a claim of complete coverage or a current test-count
   session discovery, source selection, and disposable-browser activity interactions.
 - `test_chatgpt_downloader.py`, `test_gemini_downloader.py`, `test_grok_history.py`, and
   `test_claude_history.py`: provider parsing and persistence using isolated fixtures and fakes.
+- `test_zhihu_answers.py`: strict profile URL admission, normalized answer/media fields, bounded
+  cursor validation, oversized-page handling, stable provider-gap and first-page completion proofs,
+  collapsed/null field preservation, ID deduplication, atomic Parquet replacement and capture
+  metadata, previous-snapshot preservation, bounded archive search, exact-ID body readback,
+  browser restrictions, and mocked worker lifecycle.
 - `test_chat_history_browser.py`, `test_local_media_browser.py`, `test_prompt_store.py`, and
   `test_shadow_backup.py`: local resource browsing, prompts, recovery, and filesystem boundaries.
 - `test_job_lock.py`: cache job ownership and contention.
@@ -35,6 +40,13 @@ This is a behavior map, not a claim of complete coverage or a current test-count
   and rendered alignment.
 - `test_agent_optimization.py`, `test_agent_optimization_browser.py`, and
   `test_agent_optimization.mjs`: Site tools contracts and disposable-browser registration.
+- `test_beta_routes.py`, `test_beta_e2e.py`, and `test_beta_engines.mjs`: seven-experiment catalog
+  and default route, six browser-only deterministic tools, isolated Zhihu start/status/stop UI,
+  searchable local answer summaries and text-only cached-body readback,
+  module disablement, bounded imports, session drafts, exports, and responsive behavior.
+- `test_zhihu_history.py` and `test_zhihu_web.py`: signed-in vote-up filtering, optional answerer
+  mode, cumulative formal Parquet persistence, link-only rich media, Edge login controls, exact
+  single-character logo extraction, and Local resources readback without a live provider.
 - `test_demo_flight_agentic_crud.py`: controller CRUD in an ephemeral copy of an allowlisted
   local demo fixture; source snapshots are read-only and the original is verified afterward.
 
@@ -76,7 +88,7 @@ This is a behavior map, not a claim of complete coverage or a current test-count
 `conftest.py` changes `HOME`, `AGENTIC_CONTEXT_RUNTIME_ROOT`, and `AGENTIC_CONTEXT_SETTINGS_PATH` before
 application modules load. Filesystem tests use pytest temporary paths. The sidebar E2E suite uses
 a clean disposable browser context against a local isolated Flask server. Authenticated browser
-profiles, yt-dlp, X, Grok, remote network transport, and user-owned local media remain outside the
-test boundary.
+profiles, yt-dlp, X, Zhihu, Grok, remote network transport, user-owned local media, and the
+user-owned Beta store remain outside the test boundary.
 
 Run the full suite with `./scripts/test.sh` on macOS/Linux or `.\scripts\test.ps1` on Windows.

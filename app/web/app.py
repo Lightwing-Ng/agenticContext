@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.69.1-codex.1
+# Code version: v1.71.1-codex.1
 
 from __future__ import annotations
 
@@ -52,9 +52,15 @@ from app.core.agent import (
     validate_agent_access_password,
 )
 from app.core.agent.session_pool import AgentSessionPool
-from app.core.browser import browser_descriptors, build_browser_options, probe_browser_session
+from app.core.browser import (
+    browser_descriptors,
+    build_browser_options,
+    open_zhihu_browser_for_login,
+    probe_browser_session,
+)
 from app.core.foundation import (
     APP_VERSION,
+    BETA_STORE_ROOT,
     DEFAULT_HOST,
     DEFAULT_PORT,
     LOCAL_STORE_ROOT,
@@ -66,6 +72,7 @@ from app.core.foundation import (
     MIN_CHATGPT_STARTUP_TIMEOUT_SECONDS,
     MIN_MAX_MEDIA_FILE_SIZE_MIB,
     PRODUCT_NAME,
+    SHARED_CACHE_TASK_LOCK,
     CrawlConfig,
     TaskState,
     build_initial_snapshot,
@@ -83,6 +90,7 @@ from app.core.providers import (
     GeminiHistoryService,
     GrokDownloadService,
     GrokHistoryService,
+    ZhihuHistoryService,
     build_chatgpt_initial_snapshot,
     build_chatgpt_text_snapshot,
     chatgpt_history_counts,
@@ -90,6 +98,7 @@ from app.core.providers import (
     build_gemini_initial_snapshot,
     build_grok_history_snapshot,
     build_grok_initial_snapshot,
+    build_zhihu_history_initial_snapshot,
     chatgpt_conversation_id,
     fetch_chatgpt_conversation_history,
     is_chatgpt_conversation_url,
@@ -553,6 +562,7 @@ def validate_local_directory_path(raw_path: str) -> tuple[bool, str, str]:
 def create_app(
     local_store_root: Path | str | None = None,
     *,
+    beta_store_root: Path | str | None = None,
     computer_use_settings_path: Path | None = None,
     computer_use_runtime_root: Path | None = None,
     agent_external_operations_enabled: bool = True,
@@ -561,6 +571,20 @@ def create_app(
 ) -> Flask:
     """Build and configure the Flask app."""
     configure_logging(APP_VERSION)
+    effective_local_store_root = (
+        Path(local_store_root).expanduser()
+        if local_store_root is not None
+        else LOCAL_STORE_ROOT
+    )
+    effective_beta_store_root = (
+        Path(beta_store_root).expanduser()
+        if beta_store_root is not None
+        else (
+            effective_local_store_root.parent / "beta_store"
+            if local_store_root is not None
+            else BETA_STORE_ROOT
+        )
+    )
     app = Flask(
         __name__,
         template_folder=str(Path(__file__).resolve().parent / "templates"),
@@ -581,9 +605,13 @@ def create_app(
         version=APP_VERSION,
         enabled=beta_enabled,
         experiment_ids=beta_experiments,
+        beta_store_root=effective_beta_store_root,
+        cache_store_root=effective_local_store_root,
+        task_lock=SHARED_CACHE_TASK_LOCK,
+        config_provider=lambda: saved_config,
     )
 
-    media_catalog = LocalMediaCatalog(local_store_root or LOCAL_STORE_ROOT)
+    media_catalog = LocalMediaCatalog(effective_local_store_root)
     app.extensions["local_media_catalog"] = media_catalog
     prompt_store = PromptStore(media_catalog.local_store_root)
     app.extensions["prompt_store"] = prompt_store
@@ -634,6 +662,19 @@ def create_app(
         shadow_backup_service=shadow_backup_service,
     )
     app.extensions["claude_history_service"] = claude_service
+    zhihu_state = TaskState(
+        version=APP_VERSION,
+        snapshot_factory=lambda version: build_zhihu_history_initial_snapshot(
+            version,
+            media_catalog.local_store_root,
+        ),
+    )
+    zhihu_service = ZhihuHistoryService(
+        zhihu_state,
+        media_catalog.local_store_root,
+        shadow_backup_service=shadow_backup_service,
+    )
+    app.extensions["zhihu_history_service"] = zhihu_service
     saved_config = load_saved_config()
     computer_use_settings = ComputerUseSettingsStore(computer_use_settings_path)
     agent_service_kwargs: dict[str, Any] = {
@@ -735,6 +776,14 @@ def create_app(
             state=claude_state,
             service=claude_service,
             hydrate_snapshot=lambda: build_claude_initial_snapshot(
+                APP_VERSION,
+                media_catalog.local_store_root,
+            ),
+        ),
+        "zhihu": CacheRuntimeAdapter(
+            state=zhihu_state,
+            service=zhihu_service,
+            hydrate_snapshot=lambda: build_zhihu_history_initial_snapshot(
                 APP_VERSION,
                 media_catalog.local_store_root,
             ),
@@ -928,6 +977,9 @@ def create_app(
             claude_browser=(request.form.get("claude_browser", source.claude_browser) or source.claude_browser)
             .strip()
             .lower(),
+            zhihu_browser=(request.form.get("zhihu_browser", source.zhihu_browser) or source.zhihu_browser)
+            .strip()
+            .lower(),
             gemini_max_conversations=parse_int_field(
                 "gemini_max_conversations",
                 source.gemini_max_conversations,
@@ -1011,6 +1063,12 @@ def create_app(
         if cache_source is None or source_key not in cache_runtimes:
             abort(404)
         browser_options = build_browser_options(saved_config)
+        if cache_source.supported_browsers:
+            browser_options = [
+                option
+                for option in browser_options
+                if option["id"] in cache_source.supported_browsers
+            ]
         selected_browser_id = str(
             getattr(saved_config, cache_source.browser_config_field, "") or ""
         )
@@ -1081,6 +1139,10 @@ def create_app(
     @app.get("/claude")
     def claude():
         return legacy_cache_source_redirect("claude")
+
+    @app.get("/zhihu")
+    def zhihu():
+        return legacy_cache_source_redirect("zhihu")
 
     @app.get("/settings")
     def settings():
@@ -1987,6 +2049,7 @@ def create_app(
             view=request.args.get("view"),
             media_id=request.args.get("media_id"),
             session_page=request.args.get("session_page"),
+            answerer=request.args.get("answerer"),
         )
         force_refresh = request.args.get("refresh") == "1"
         prompt_page = None
@@ -2001,7 +2064,9 @@ def create_app(
                 page=filters["page"],
                 session_view=filters["session_view"],
                 session=filters["session"],
+                answerer=filters["answerer"],
             )
+            filters["answerer"] = text_page.selected_answerer
             text_page = attach_media_references(
                 text_page,
                 media_items,
@@ -2302,6 +2367,11 @@ def create_app(
                     else "text"
                 )
                 runtime.service.start(runtime_config, content_mode=content_mode)
+            elif source_key == "zhihu":
+                runtime.service.start(
+                    runtime_config,
+                    author_url=request.form.get("zhihu_author_url", "").strip(),
+                )
             else:
                 runtime.service.start(runtime_config)
         except RuntimeError as exc:
@@ -2627,6 +2697,10 @@ def create_app(
     def api_claude_status():
         return jsonify(build_reconciled_cache_snapshot("claude"))
 
+    @app.get("/api/zhihu/status")
+    def api_zhihu_status():
+        return jsonify(build_reconciled_cache_snapshot("zhihu"))
+
     @app.get("/api/cache/<source_key>/status")
     def api_cache_status(source_key: str):
         if get_cache_source_view(source_key) is None or source_key not in cache_runtimes:
@@ -2722,7 +2796,12 @@ def create_app(
             payload = {}
         platform_name = str(payload.get("platform", "")).strip().lower()
         browser_name = str(payload.get("browser", "")).strip().lower()
-        if (
+        is_zhihu_selection = (
+            platform_name == "zhihu"
+            and browser_name in {"edge", "chrome"}
+            and browser_name in available_agent_browser_keys()
+        )
+        if not is_zhihu_selection and (
             not is_supported_agent_selection(browser_name, platform_name)
             or browser_name not in available_agent_browser_keys()
         ):
@@ -2730,7 +2809,11 @@ def create_app(
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
         try:
-            result = open_browser_for_login(platform_name, browser_name, config=saved_config)
+            result = (
+                open_zhihu_browser_for_login(browser_name, saved_config)
+                if is_zhihu_selection
+                else open_browser_for_login(platform_name, browser_name, config=saved_config)
+            )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:

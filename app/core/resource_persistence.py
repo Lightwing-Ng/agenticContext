@@ -1,6 +1,6 @@
 """Shared Parquet schemas and atomic persistence for cached resource state."""
 
-# Code version: v1.9.0-codex.1
+# Code version: v1.10.0-codex.1
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ GEMINI_HISTORY_FILENAME = "history.parquet"
 CHATGPT_HISTORY_FILENAME = "history.parquet"
 GROK_HISTORY_FILENAME = "history.parquet"
 CLAUDE_HISTORY_FILENAME = "history.parquet"
+ZHIHU_HISTORY_FILENAME = "history.parquet"
 PROMPT_FILENAME = "prompts.parquet"
 PROMPT_REMARKS_FILENAME = "remarks.parquet"
 
@@ -42,6 +43,7 @@ GEMINI_HISTORY_SCHEMA_VERSION = 1
 CHATGPT_HISTORY_SCHEMA_VERSION = 3
 GROK_HISTORY_SCHEMA_VERSION = 1
 CLAUDE_HISTORY_SCHEMA_VERSION = 1
+ZHIHU_HISTORY_SCHEMA_VERSION = 1
 PROMPT_SCHEMA_VERSION = 2
 PROMPT_REMARKS_SCHEMA_VERSION = 1
 
@@ -271,6 +273,28 @@ GROK_HISTORY_SCHEMA = pa.schema(
 )
 
 CLAUDE_HISTORY_SCHEMA = pa.schema(
+    [
+        pa.field("schema_version", pa.int16(), nullable=False),
+        pa.field("platform", pa.string(), nullable=False),
+        pa.field("conversation_id", pa.string(), nullable=False),
+        pa.field("conversation_url", pa.string(), nullable=False),
+        pa.field("conversation_title", pa.string(), nullable=False),
+        pa.field("message_key", pa.string(), nullable=False),
+        pa.field("turn_index", pa.int32(), nullable=False),
+        pa.field("message_index", pa.int32(), nullable=False),
+        pa.field("role", pa.string(), nullable=False),
+        pa.field("author_label", pa.string(), nullable=False),
+        pa.field("content_text", pa.string(), nullable=False),
+        pa.field("content_html", pa.string(), nullable=False),
+        pa.field("content_sha256", pa.string(), nullable=False),
+        pa.field("source_links", pa.list_(pa.string()), nullable=False),
+        pa.field("model_label", pa.string(), nullable=False),
+        pa.field("first_seen_at", pa.string(), nullable=False),
+        pa.field("last_seen_at", pa.string(), nullable=False),
+    ]
+)
+
+ZHIHU_HISTORY_SCHEMA = pa.schema(
     [
         pa.field("schema_version", pa.int16(), nullable=False),
         pa.field("platform", pa.string(), nullable=False),

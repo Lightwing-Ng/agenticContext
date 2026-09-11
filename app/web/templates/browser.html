@@ -1,4 +1,4 @@
-<!-- Code version: v1.66.10-codex.1 -->
+<!-- Code version: v1.69.0-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.2-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.112.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.113.1-codex.1') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.1-codex.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -207,6 +207,22 @@
                             </div>
                         </div>
                     </label>
+                    {% if filters.view == "text" and filters.source == "zhihu" %}
+                    <label class="field browser-filter-field" for="browser_answerer_filter">
+                        <span>Answerer</span>
+                        <select
+                            id="browser_answerer_filter"
+                            name="answerer"
+                            class="form-select"
+                            aria-label="Filter by answerer"
+                        >
+                            <option value="">All answerers</option>
+                            {% for answerer in text_page.answerer_options %}
+                            <option value="{{ answerer }}" {% if filters.answerer == answerer %}selected{% endif %}>{{ answerer }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    {% endif %}
                     {% if filters.view == "media" %}
                     <label class="field browser-filter-field">
                         <span>Media type</span>
@@ -226,12 +242,14 @@
                         </select>
                     </label>
                     <div class="browser-filter-actions">
+                        {% if not (filters.view == "text" and filters.source == "zhihu") %}
                         <a
                             href="{{ url_for('browser', view=filters.view) }}"
                             class="secondary-button browser-clear-link"
                             data-wait-title="Clearing filters"
                             data-wait-copy="Restoring the complete local cache view."
                         >Clear filters</a>
+                        {% endif %}
                         <button
                             type="submit"
                             name="refresh"
@@ -262,12 +280,12 @@
                     <div class="browser-content-toolbar">
                         <div class="browser-session-detail-actions browser-local-resources-header-actions{% if filters.view == 'text' and text_page.session_detail %} browser-session-detail-actions--session{% endif %}" data-browser-local-resources-header-actions>
                             {% if filters.view == "text" and text_page.session_detail %}
-                            <a class="secondary-button browser-session-back-link" href="{{ url_for('browser', view='text', source=filters.source, q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">Back to all sessions</a>
+                            <a class="secondary-button browser-session-back-link" href="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">Back to all sessions</a>
                             <nav class="browser-session-neighbor-nav" aria-label="Session navigation">
                                 {% if text_page.previous_session %}
                                 <a
                                     class="browser-session-control-button browser-session-neighbor-button"
-                                    href="{{ url_for('browser', view='text', source=filters.source, q=filters.q, sort=filters.sort, session_view='1', session=text_page.previous_session.stable_id, session_page=filters.session_page, page=1) }}"
+                                    href="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view='1', session=text_page.previous_session.stable_id, session_page=filters.session_page, page=1) }}"
                                     aria-label="Previous session"
                                     title="Previous session: {{ text_page.previous_session.conversation_title }}"
                                 ><span class="icon browser-session-neighbor-prev-icon" aria-hidden="true"></span></a>
@@ -277,7 +295,7 @@
                                 {% if text_page.next_session %}
                                 <a
                                     class="browser-session-control-button browser-session-neighbor-button"
-                                    href="{{ url_for('browser', view='text', source=filters.source, q=filters.q, sort=filters.sort, session_view='1', session=text_page.next_session.stable_id, session_page=filters.session_page, page=1) }}"
+                                    href="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view='1', session=text_page.next_session.stable_id, session_page=filters.session_page, page=1) }}"
                                     aria-label="Next session"
                                     title="Next session: {{ text_page.next_session.conversation_title }}"
                                 ><span class="icon browser-session-neighbor-next-icon" aria-hidden="true"></span></a>
@@ -306,7 +324,7 @@
                                 <button
                                     type="button"
                                     class="browser-session-action-button browser-session-refresh-button"
-                                    data-browser-session-refresh-url="{{ url_for('browser', view='text', source=filters.source, q=filters.q, sort=filters.sort, session_view='1', session=text_page.current_session.stable_id, session_page=filters.session_page, page=filters.page, refresh='1') }}"
+                                    data-browser-session-refresh-url="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view='1', session=text_page.current_session.stable_id, session_page=filters.session_page, page=filters.page, refresh='1') }}"
                                     data-wait-title="Refreshing page"
                                     data-wait-copy="Reloading the current cached session page."
                                     aria-label="Refresh current page"
@@ -413,7 +431,7 @@
                         </div>
                     </div>
                     {% else %}
-                    <div class="metric-grid browser-metric-grid browser-text-metric-grid" aria-label="Cached text totals">
+                    <div class="metric-grid browser-metric-grid browser-text-metric-grid{% if filters.source == 'zhihu' %} browser-zhihu-metric-grid{% endif %}" aria-label="Cached text totals">
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Sessions</span>
                             <strong>{{ "{:,}".format(1 if text_page.session_detail else text_page.conversation_count) }}</strong>
@@ -422,10 +440,12 @@
                             <span class="metric-label">Messages</span>
                             <strong>{{ "{:,}".format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}</strong>
                         </div>
+                        {% if filters.source != "zhihu" %}
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Projects</span>
                             <strong>{{ "{:,}".format(text_page.project_count) }}</strong>
                         </div>
+                        {% endif %}
                     </div>
                     {% endif %}
 
@@ -785,7 +805,7 @@
                                     <tr>
                                         <th scope="col" class="browser-session-col-number">No.</th>
                                         <th scope="col" class="browser-session-col-time">Time</th>
-                                        <th scope="col" class="browser-session-col-role">Role</th>
+                                        <th scope="col" class="browser-session-col-role">{{ text_page.current_session.latest_author_label if filters.source == "zhihu" and text_page.session_detail else "Role" }}</th>
                                         <th scope="col" class="browser-session-col-message">Message</th>
                                     </tr>
                                 </thead>
@@ -794,7 +814,7 @@
                                     {% set is_media_response = message.role == "assistant" and message.media_refs and message.content_text.lstrip().startswith("{") %}
                                     {% set show_media_previews = is_media_response and ('"size"' in message.content_text or '"n"' in message.content_text) %}
                                     {% set role_icon = namespace(filename="") %}
-                                    {% if message.role == "assistant" %}
+                                    {% if message.role == "assistant" or message.source == "zhihu" %}
                                         {% for source in chat_history_sources %}
                                             {% if message.source == source.key %}{% set role_icon.filename = source.icon_filename %}{% endif %}
                                         {% endfor %}
@@ -810,7 +830,7 @@
                                             {% endif %}
                                         </td>
                                         <td>
-                                            <div class="browser-session-table-message-shell">
+                                            <div class="browser-session-table-message-shell{% if message.source == 'zhihu' %} is-expanded{% endif %}">
                                                 {% if not is_media_response %}
                                                 <div
                                                     class="browser-session-table-message"
@@ -819,6 +839,7 @@
                                                     data-browser-session-message-source
                                                 >{{ render_cached_message(message.content_text, message.content_html) }}</div>
                                                 {% endif %}
+                                                {% if message.source != "zhihu" %}
                                                 <button
                                                     type="button"
                                                     class="browser-session-message-toggle"
@@ -830,6 +851,7 @@
                                                     title="Expand message"
                                                     hidden
                                                 ><span class="icon browser-session-message-toggle-icon" aria-hidden="true"></span></button>
+                                                {% endif %}
                                                 {% if message.role == "user" %}
                                                     {% set message_prompt_key = prompt_pointer_key(message.source, message.conversation_id, message.message_key) %}
                                                     <div class="browser-session-message-actions">
@@ -870,11 +892,12 @@
                     {% elif filters.view == "text" and filters.session_view and text_page.sessions %}
                     <div class="events-table-shell browser-session-table-shell browser-session-index-shell">
                         <div class="events-table-scroll browser-session-table-scroll">
-                            <table class="events-table browser-session-table browser-session-index-table" aria-label="Cached {{ filters.source|capitalize if filters.source != 'all' else 'chat' }} sessions">
+                            <table class="events-table browser-session-table browser-session-index-table{% if filters.source == 'zhihu' %} is-zhihu-source{% endif %}" aria-label="Cached {{ filters.source|capitalize if filters.source != 'all' else 'chat' }} sessions">
                                 <thead>
                                     <tr>
                                         <th scope="col" class="browser-session-col-number">No.</th>
                                         <th scope="col" class="browser-session-col-title">Session name</th>
+                                        {% if filters.source != "zhihu" %}
                                         <th scope="col" class="browser-session-col-source scrollable-data-table-filter-header">
                                             <span class="scrollable-data-table-filter-default-label">Source</span>
                                             <form method="get" action="{{ url_for('browser') }}" class="browser-header-filter-form">
@@ -951,9 +974,10 @@
                         </div>
                                             </form>
                                         </th>
-                                        <th scope="col" class="browser-session-col-count">Messages</th>
+                                        {% endif %}
+                                        <th scope="col" class="browser-session-col-count{% if filters.source == 'zhihu' %} browser-session-col-author{% endif %}">{{ "Answerer" if filters.source == "zhihu" else "Messages" }}</th>
                                         <th scope="col" class="browser-session-col-updated" aria-sort="{{ 'ascending' if filters.sort == 'oldest' else ('descending' if filters.sort == 'newest' else 'none') }}">
-                                            <a class="browser-session-sort-link" href="{{ url_for('browser', view='text', source=filters.source, q=filters.q, sort='newest' if filters.sort == 'oldest' else 'oldest', session_view='1', page=1) }}" aria-label="Last updated: sort {{ 'newest first' if filters.sort == 'oldest' else 'oldest first' }}">Last updated <span aria-hidden="true">{{ '↑' if filters.sort == 'oldest' else '↓' }}</span></a>
+                                            <a class="browser-session-sort-link" href="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort='newest' if filters.sort == 'oldest' else 'oldest', session_view='1', page=1) }}" aria-label="Last updated: sort {{ 'newest first' if filters.sort == 'oldest' else 'oldest first' }}">Last updated <span aria-hidden="true">{{ '↑' if filters.sort == 'oldest' else '↓' }}</span></a>
                                         </th>
                                     </tr>
                                 </thead>
@@ -962,9 +986,12 @@
                                     <tr data-chat-session-id="{{ session.stable_id }}">
                                         <td class="browser-session-table-number">{{ ((text_page.current_page - 1) * text_page.page_size) + loop.index }}</td>
                                         <td>
-                                            <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('browser', view='text', source=filters.source, q='', sort=filters.sort, session_view='1', session=session.stable_id, session_page=filters.page, page=1) }}">{{ session.conversation_title }}</a>
+                                            <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q='', sort=filters.sort, session_view='1', session=session.stable_id, session_page=filters.page, page=1) }}">{{ session.conversation_title }}</a>
+                                            {% if filters.source != "zhihu" %}
                                             <span class="browser-session-table-id">{{ session.conversation_id }}</span>
+                                            {% endif %}
                                         </td>
+                                        {% if filters.source != "zhihu" %}
                                         <td class="browser-session-table-source">
                                             {% set session_source = namespace(icon="images/arrow.down.message.fill.svg", label=session.source|capitalize) %}
                                             {% for source in chat_history_sources %}
@@ -981,7 +1008,12 @@
                                                 ></span>
                                             </span>
                                         </td>
+                                        {% endif %}
+                                        {% if filters.source == "zhihu" %}
+                                        <td class="browser-session-table-author">{{ session.latest_author_label }}</td>
+                                        {% else %}
                                         <td class="browser-session-table-count">{{ "{:,}".format(session.message_count) }}</td>
+                                        {% endif %}
                                         <td>
                                             {% if session.conversation_url %}
                                             <a
@@ -1116,6 +1148,6 @@
 
 {% include "_waiting_modal.html" %}
 <script type="application/json" id="browser_media_data">{{ media_payload|tojson }}</script>
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.21.0-codex.1') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.22.0-codex.1') }}"></script>
 </body>
 </html>
