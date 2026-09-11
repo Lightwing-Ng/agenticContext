@@ -1,4 +1,4 @@
-/* Code version: v2.113.1-codex.1 */
+/* Code version: v2.114.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -6348,6 +6348,12 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.browser-zhihu-answerer-metric strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .browser-metric-grid:not(.browser-session-metric-grid) > .metric-card {
     width: 192px;
 }
@@ -6952,13 +6958,45 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     width: 132px;
 }
 
-.browser-session-index-table.is-zhihu-source .browser-session-col-author {
-    width: 120px;
+.browser-session-index-table.is-zhihu-source .browser-session-col-count {
+    width: 88px;
 }
 
-.browser-session-index-table .browser-session-table-author {
-    color: var(--theme-text);
+.browser-session-detail-table.is-zhihu-source .browser-session-col-number {
+    width: 6%;
+}
+
+.browser-session-detail-table.is-zhihu-source .browser-session-col-time {
+    width: 17%;
+}
+
+.browser-session-detail-table.is-zhihu-source .browser-session-col-role {
+    width: 29%;
+}
+
+.browser-session-detail-table.is-zhihu-source .browser-session-col-message {
+    width: 48%;
+}
+
+.events-table.browser-session-detail-table.is-zhihu-source thead th.browser-session-col-role,
+.browser-session-detail-table.is-zhihu-source .browser-session-table-role {
+    text-align: left;
+}
+
+.browser-session-question-link {
+    display: block;
+    color: var(--accent-text);
+    font-size: var(--font-ui-lg);
+    line-height: 1.35;
     overflow-wrap: anywhere;
+    text-decoration: none;
+}
+
+.browser-session-question-link:hover,
+.browser-session-question-link:focus-visible {
+    color: var(--accent-text-hover);
+    text-decoration: underline;
+    text-underline-offset: 2px;
 }
 
 .browser-prompt-table {
@@ -12129,5 +12167,76 @@ main[data-cache-page] .cache-training-progress .is-unavailable .status-progress-
 @media (prefers-reduced-motion: reduce) {
     main[data-cache-page] .cache-training-progress .is-indeterminate .status-progress-fill {
         animation: none;
+    }
+}
+
+@media (max-width: 767px) {
+    .browser-session-detail-table.is-zhihu-source,
+    .browser-session-detail-table.is-zhihu-source tbody {
+        display: block;
+        width: 100%;
+    }
+
+    .browser-session-detail-table.is-zhihu-source thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
+    .browser-session-detail-table.is-zhihu-source tbody > tr {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px 12px;
+        padding: 12px 14px 18px;
+    }
+
+    .browser-session-detail-table.is-zhihu-source tbody > tr + tr {
+        border-top: 1px solid var(--theme-glass-border);
+    }
+
+    .browser-session-detail-table.is-zhihu-source tbody > tr > td {
+        display: block;
+        width: auto;
+        padding: 0;
+        border: 0;
+    }
+
+    .browser-session-detail-table.is-zhihu-source .browser-session-table-number {
+        grid-column: 1;
+        text-align: left;
+    }
+
+    .browser-session-detail-table.is-zhihu-source .browser-session-table-number::before {
+        content: "#";
+    }
+
+    .browser-session-detail-table.is-zhihu-source tbody > tr > td:nth-child(2) {
+        grid-column: 2;
+    }
+
+    .browser-session-detail-table.is-zhihu-source .browser-session-table-role,
+    .browser-session-detail-table.is-zhihu-source tbody > tr > td:last-child {
+        grid-column: 1 / -1;
+    }
+
+    .browser-session-detail-table.is-zhihu-source .browser-session-table-role::before,
+    .browser-session-detail-table.is-zhihu-source tbody > tr > td:last-child::before {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--theme-muted);
+        font-size: var(--font-ui-sm);
+        line-height: 1.2;
+    }
+
+    .browser-session-detail-table.is-zhihu-source .browser-session-table-role::before {
+        content: "Question";
+    }
+
+    .browser-session-detail-table.is-zhihu-source tbody > tr > td:last-child::before {
+        content: "Answer";
+        margin-top: 4px;
     }
 }

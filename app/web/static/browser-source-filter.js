@@ -1,4 +1,4 @@
-/* Code version: v1.4.0-codex.1 */
+/* Code version: v1.5.0-codex.1 */
 
 (() => {
     const controllerUrl = new URL("select-controller.js?v=select-controller-v1.0.0", document.currentScript.src);
@@ -56,6 +56,7 @@
 
         function selectOption(option) {
             const value = option.dataset.browserSourceFilterOption || "all";
+            const sourceChanged = value !== input.value;
             input.value = value;
             selectedLabel.textContent = option.dataset.browserSourceFilterLabel || "All sources";
             const iconUrl = option.dataset.browserSourceFilterIcon || "";
@@ -68,6 +69,12 @@
                 candidate.setAttribute("aria-selected", String(isSelected));
             });
             setMenuOpen(false);
+            if (sourceChanged) {
+                for (const name of ["session", "session_page", "answerer"]) {
+                    const field = form.querySelector(`[name="${name}"]`);
+                    if (field) field.disabled = true;
+                }
+            }
             form.requestSubmit();
         }
 

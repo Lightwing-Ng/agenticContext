@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.16.0-codex.1
+# Code version: v1.17.0-codex.1
 
 from __future__ import annotations
 
@@ -119,6 +119,10 @@ class ChatHistoryPage:
     @property
     def pagination_unit(self) -> str:
         """Return the user-visible unit represented by one page."""
+        if self.current_session is not None and self.current_session.source == "zhihu":
+            return "answer"
+        if self.session_view and self.sessions and all(item.source == "zhihu" for item in self.sessions):
+            return "answerer"
         return "message" if self.session_detail else ("session" if self.session_view else "message")
 
     @property
@@ -404,6 +408,81 @@ def _build_chat_history_sessions(messages: Iterable[ChatHistoryMessage]) -> tupl
     return tuple(sessions)
 
 
+def _zhihu_profile_url(messages: Iterable[ChatHistoryMessage]) -> str:
+    """Return the first canonical Zhihu profile URL attached to an answer."""
+    for message in messages:
+        for link in message.source_links:
+            parsed = urlsplit(link)
+            if parsed.hostname in {"zhihu.com", "www.zhihu.com"} and parsed.path.startswith("/people/"):
+                return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    return ""
+
+
+def _build_zhihu_answerer_sessions(
+    messages: Iterable[ChatHistoryMessage],
+) -> tuple[ChatHistorySession, ...]:
+    """Aggregate Zhihu answers into one deterministic row per literal answerer."""
+    grouped: dict[tuple[str, str], list[ChatHistoryMessage]] = {}
+    for message in messages:
+        answerer = message.author_label.strip() or "Unknown answerer"
+        profile_url = _zhihu_profile_url((message,))
+        grouped.setdefault((answerer, profile_url), []).append(message)
+
+    sessions: list[ChatHistorySession] = []
+    for (answerer, profile_url), answer_messages in grouped.items():
+        ordered_messages = _sort_messages(answer_messages, "oldest")
+        latest = ordered_messages[-1]
+        source_links = tuple(dict.fromkeys(link for item in ordered_messages for link in item.source_links))
+        first_seen_at = min(
+            (item.first_seen_at for item in ordered_messages),
+            key=_timestamp_value,
+            default="",
+        )
+        conversation_id = f"answerer:{profile_url or answerer}"
+        sessions.append(
+            ChatHistorySession(
+                stable_id=f"session-{hashlib.sha256(f'zhihu:{conversation_id}'.encode('utf-8')).hexdigest()[:24]}",
+                source="zhihu",
+                conversation_id=conversation_id,
+                conversation_url=profile_url,
+                conversation_title=answerer,
+                message_count=len(ordered_messages),
+                first_seen_at=first_seen_at,
+                last_seen_at=latest.last_seen_at,
+                latest_message=latest.content_text,
+                latest_role="answerer",
+                latest_author_label=answerer,
+                model_label="",
+                source_links=source_links,
+            )
+        )
+    return tuple(sessions)
+
+
+def _build_resource_groups(
+    messages: Iterable[ChatHistoryMessage], source: str,
+) -> tuple[ChatHistorySession, ...]:
+    """Build the source-specific hierarchy used by the text browser."""
+    if source == "zhihu":
+        return _build_zhihu_answerer_sessions(messages)
+    return _build_chat_history_sessions(messages)
+
+
+def _message_belongs_to_session(
+    message: ChatHistoryMessage, session: ChatHistorySession,
+) -> bool:
+    """Return whether a message belongs to one source-specific resource group."""
+    if session.source == "zhihu":
+        if message.source != "zhihu" or message.author_label != session.latest_author_label:
+            return False
+        return (
+            _zhihu_profile_url((message,)) == session.conversation_url
+            if session.conversation_url
+            else True
+        )
+    return (message.source, message.conversation_id) == (session.source, session.conversation_id)
+
+
 def _sort_chat_history_sessions(
     sessions: Iterable[ChatHistorySession],
     sort: str,
@@ -502,7 +581,9 @@ def query_chat_history(
     normalized_source = normalize_chat_history_source(source)
     normalized_query = str(query or "").strip()[:120].casefold()
     query_terms = tuple(normalized_query.split())
-    project_count = count_cached_projects(local_store_root, normalized_source)
+    project_count = 0 if normalized_source == "zhihu" else count_cached_projects(
+        local_store_root, normalized_source,
+    )
     all_messages = load_chat_history_messages(local_store_root, normalized_source)
     answerer_options = (
         tuple(
@@ -518,12 +599,10 @@ def query_chat_history(
     selected_answerer = (
         requested_answerer if requested_answerer in answerer_options else ""
     )
-    if selected_answerer:
-        all_messages = tuple(
-            item for item in all_messages if item.author_label == selected_answerer
-        )
     requested_session = str(session or "").strip()[:160]
-    all_sessions = _sort_chat_history_sessions(_build_chat_history_sessions(all_messages), sort)
+    all_sessions = _sort_chat_history_sessions(
+        _build_resource_groups(all_messages, normalized_source), sort,
+    )
     selected_session = None
     if requested_session:
         selected_session = next(
@@ -535,26 +614,52 @@ def query_chat_history(
             ),
             None,
         )
+    if selected_session is None and requested_session and normalized_source == "zhihu":
+        legacy_answer = next(
+            (
+                item
+                for item in _build_chat_history_sessions(all_messages)
+                if item.stable_id == requested_session
+                or f"{item.source}:{item.conversation_id}" == requested_session
+            ),
+            None,
+        )
+        if legacy_answer is not None:
+            selected_session = next(
+                (
+                    group
+                    for group in all_sessions
+                    if any(
+                        message.conversation_id == legacy_answer.conversation_id
+                        and _message_belongs_to_session(message, group)
+                        for message in all_messages
+                    )
+                ),
+                None,
+            )
     if selected_session is not None:
         selected_index = next(
             (index for index, item in enumerate(all_sessions) if item.stable_id == selected_session.stable_id),
             -1,
         )
         session_messages = tuple(
-            sorted(
-                (
-                    message
-                    for message in all_messages
-                    if (message.source, message.conversation_id)
-                    == (selected_session.source, selected_session.conversation_id)
-                ),
-                key=lambda item: (
-                    item.message_index,
-                    _timestamp_value(item.last_seen_at),
-                    item.stable_id,
-                ),
-            )
+            message
+            for message in all_messages
+            if _message_belongs_to_session(message, selected_session)
         )
+        if selected_session.source == "zhihu":
+            session_messages = _sort_messages(session_messages, sort)
+        else:
+            session_messages = tuple(
+                sorted(
+                    session_messages,
+                    key=lambda item: (
+                        item.message_index,
+                        _timestamp_value(item.last_seen_at),
+                        item.stable_id,
+                    ),
+                )
+            )
         if query_terms:
             session_messages = tuple(
                 message for message in session_messages if _message_matches_query(message, query_terms)
@@ -582,10 +687,18 @@ def query_chat_history(
             previous_session=all_sessions[selected_index - 1] if selected_index > 0 else None,
             next_session=all_sessions[selected_index + 1] if 0 <= selected_index < len(all_sessions) - 1 else None,
             answerer_options=answerer_options,
-            selected_answerer=selected_answerer,
+            selected_answerer=(
+                selected_session.latest_author_label
+                if selected_session.source == "zhihu"
+                else selected_answerer
+            ),
         )
 
-    messages = all_messages
+    messages = (
+        tuple(item for item in all_messages if item.author_label == selected_answerer)
+        if selected_answerer
+        else all_messages
+    )
     if query_terms:
         messages = tuple(item for item in messages if _message_matches_query(item, query_terms))
 
@@ -595,20 +708,36 @@ def query_chat_history(
     except (TypeError, ValueError):
         requested_page = 1
     total_count = len(messages)
-    sessions = _sort_chat_history_sessions(_build_chat_history_sessions(messages), sort)
+    sessions = _sort_chat_history_sessions(
+        _build_resource_groups(messages, normalized_source), sort,
+    )
     if session_view:
         safe_page_size = max(1, int(page_size))
         total_pages = max(1, (len(sessions) + safe_page_size - 1) // safe_page_size)
         current_page = min(total_pages, requested_page)
         start = (current_page - 1) * safe_page_size
         page_sessions = sessions[start : start + safe_page_size]
-        selected_ids = {(session.source, session.conversation_id) for session in page_sessions}
+        selected_conversations = {
+            (group.source, group.conversation_id) for group in page_sessions
+        }
+        selected_answerers = {
+            (group.latest_author_label, group.conversation_url)
+            for group in page_sessions
+            if group.source == "zhihu"
+        }
         page_items = tuple(
             sorted(
                 (
                     message
                     for message in messages
-                    if (message.source, message.conversation_id) in selected_ids
+                    if (
+                        (
+                            message.author_label,
+                            _zhihu_profile_url((message,)),
+                        ) in selected_answerers
+                        if message.source == "zhihu"
+                        else (message.source, message.conversation_id) in selected_conversations
+                    )
                 ),
                 key=lambda item: (
                     item.source,
@@ -629,7 +758,11 @@ def query_chat_history(
     return ChatHistoryPage(
         items=tuple(page_items),
         total_count=total_count,
-        conversation_count=len({(item.source, item.conversation_id) for item in messages}),
+        conversation_count=(
+            len(sessions)
+            if normalized_source == "zhihu"
+            else len({(item.source, item.conversation_id) for item in messages})
+        ),
         project_count=project_count,
         current_page=current_page,
         total_pages=total_pages,
@@ -648,18 +781,21 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
 
     session = page.current_session
     title = " ".join(session.conversation_title.split()) or "Untitled session"
-    lines = [
-        f"# {title}",
-        "",
-        f"- Source: {session.source.title()}",
-        f"- Messages: {(session.message_count if message_count is None else message_count):,}",
-    ]
+    exported_count = session.message_count if message_count is None else message_count
+    lines = [f"# {title}", "", f"- Source: {session.source.title()}"]
+    lines.append(
+        f"- {'Answers' if session.source == 'zhihu' else 'Messages'}: {exported_count:,}"
+    )
     if session.conversation_url:
         lines.append(f"- Original: {session.conversation_url}")
-    lines.extend(("", "## Messages", ""))
+    lines.extend(("", "## Answers" if session.source == "zhihu" else "## Messages", ""))
 
     for index, message in enumerate(page.items, start=1):
-        role = " ".join(message.author_label.split()) or message.role.title() or "Message"
+        role = (
+            " ".join(message.conversation_title.split()) or "Untitled question"
+            if session.source == "zhihu"
+            else " ".join(message.author_label.split()) or message.role.title() or "Message"
+        )
         timestamp = format_chat_message_timestamp_label(message.last_seen_at)
         content = message.content_text.strip() or "(empty message)"
         lines.extend((f"### {index}. {role} · {timestamp}", "", content, ""))

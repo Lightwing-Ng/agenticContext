@@ -1,6 +1,6 @@
 """Route and asset coverage for the formal Zhihu cache source.
 
-Code version: v1.2.0-codex.1
+Code version: v1.3.0-codex.1
 """
 
 from __future__ import annotations
@@ -160,7 +160,9 @@ def test_local_resources_renders_zhihu_text_and_links_without_remote_media(tmp_p
         source="zhihu",
         session_view=True,
     )
-    session = session_page.sessions[0]
+    session = next(
+        item for item in session_page.sessions if item.conversation_title == "Fixture Author"
+    )
     index_body = client.get(
         "/browser?view=text&source=zhihu&session_view=1"
     ).get_data(as_text=True)
@@ -172,24 +174,20 @@ def test_local_resources_renders_zhihu_text_and_links_without_remote_media(tmp_p
         f"&answerer=Fixture+Author&session={session.stable_id}"
     ).get_data(as_text=True)
 
-    assert "Cached answer body" in body
-    assert "Full answer final sentence." in body
-    assert 'src="/static/images/zhihu.svg"' in body
-    assert 'href="https://example.com/reference"' in body
-    assert 'href="https://pic1.zhimg.com/example.png"' in body
-    assert 'src="https://pic1.zhimg.com/example.png"' not in body
-    assert (
-        '<th scope="col" class="browser-session-col-count '
-        'browser-session-col-author">Answerer</th>'
-    ) in index_body
-    assert '<td class="browser-session-table-author">Fixture Author</td>' in index_body
+    assert "Zhihu answerers" in body
+    assert "Cached answer body" not in body
+    assert "--cache-source-mark: url('/static/images/zhihu.svg')" in body
+    assert '<th scope="col" class="browser-session-col-title">Answerer</th>' in index_body
+    assert '<th scope="col" class="browser-session-col-count">Answers</th>' in index_body
+    assert '>Fixture Author</a>' in index_body
+    assert '<td class="browser-session-table-count">1</td>' in index_body
     assert '<option value="">All answerers</option>' in index_body
     assert '<option value="Fixture Author"' in index_body
     assert '<option value="Other Author"' in index_body
     assert 'class="secondary-button browser-clear-link"' not in index_body
-    assert "Other fixture question" in index_body
-    assert "Fixture question" in filtered_index_body
-    assert "Other fixture question" not in filtered_index_body
+    assert ">Other Author</a>" in index_body
+    assert ">Fixture Author</a>" in filtered_index_body
+    assert ">Other Author</a>" not in filtered_index_body
     assert (
         '<option value="Fixture Author" selected>Fixture Author</option>'
         in filtered_index_body
@@ -202,12 +200,16 @@ def test_local_resources_renders_zhihu_text_and_links_without_remote_media(tmp_p
     )
     assert 'class="browser-session-table-source"' not in index_body
     assert "Full answer final sentence." in detail_body
+    assert 'href="https://example.com/reference"' in detail_body
+    assert 'href="https://pic1.zhimg.com/example.png"' in detail_body
+    assert 'src="https://pic1.zhimg.com/example.png"' not in detail_body
     assert "browser-session-table-message-shell is-expanded" in detail_body
     assert "data-browser-session-message-toggle" not in detail_body
-    assert (
-        '<th scope="col" class="browser-session-col-role">Fixture Author</th>'
-        in detail_body
-    )
+    assert '<th scope="col" class="browser-session-col-role">Question</th>' in detail_body
+    assert '<th scope="col" class="browser-session-col-message">Answer</th>' in detail_body
+    assert '>Fixture question</a>' in detail_body
+    assert '<span class="metric-label">Answerer</span>' in detail_body
+    assert '<span class="metric-label">Answers</span>' in detail_body
     assert '<span class="metric-label">Projects</span>' not in detail_body
 
 

@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.24.1-codex.1
+# Code version: v1.25.0-codex.1
 
 from __future__ import annotations
 
@@ -645,7 +645,11 @@ def normalize_browser_filters(
         "sort": normalized_sort if normalized_sort in SORT_VALUES else "newest",
         "page": _coerce_positive_page(page),
         "session": str(session or "").strip()[:160],
-        "session_view": normalized_session_view not in {"0", "false", "off"},
+        "session_view": (
+            True
+            if normalized_view == "text" and safe_source == "zhihu"
+            else normalized_session_view not in {"0", "false", "off"}
+        ),
         "session_page": _coerce_positive_page(session_page),
         "view": normalized_view,
         "media_id": str(media_id or "").strip()[:96],

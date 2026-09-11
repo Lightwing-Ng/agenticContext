@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.40.0-codex.1
+Code version: v1.41.0-codex.1
 """
 
 from __future__ import annotations
@@ -169,7 +169,8 @@ def seeded_zhihu_browser_server_url(tmp_path: Path) -> Iterator[str]:
                 "content_html": "",
                 "content_sha256": "fixture-zhihu-answer-hash",
                 "source_links": [
-                    "https://www.zhihu.com/question/495309288/answer/2197549311"
+                    "https://www.zhihu.com/question/495309288/answer/2197549311",
+                    "https://www.zhihu.com/people/feifeimao",
                 ],
                 "model_label": "",
                 "first_seen_at": "2021-10-30T11:37:00Z",
@@ -192,11 +193,36 @@ def seeded_zhihu_browser_server_url(tmp_path: Path) -> Iterator[str]:
                 "content_html": "",
                 "content_sha256": "fixture-other-zhihu-answer-hash",
                 "source_links": [
-                    "https://www.zhihu.com/question/495309289/answer/2200000000"
+                    "https://www.zhihu.com/question/495309289/answer/2200000000",
+                    "https://www.zhihu.com/people/other-author",
                 ],
                 "model_label": "",
                 "first_seen_at": "2021-10-29T11:37:00Z",
                 "last_seen_at": "2021-10-29T12:01:00Z",
+            },
+            {
+                "schema_version": 1,
+                "platform": "zhihu",
+                "conversation_id": "2180000000",
+                "conversation_url": (
+                    "https://www.zhihu.com/question/495309290/answer/2180000000"
+                ),
+                "conversation_title": "Earlier fixture question",
+                "message_key": "answer:2180000000",
+                "turn_index": 1,
+                "message_index": 0,
+                "role": "answer",
+                "author_label": "肥肥猫",
+                "content_text": "Earlier complete cached answer.",
+                "content_html": "",
+                "content_sha256": "fixture-earlier-zhihu-answer-hash",
+                "source_links": [
+                    "https://www.zhihu.com/question/495309290/answer/2180000000",
+                    "https://www.zhihu.com/people/feifeimao",
+                ],
+                "model_label": "",
+                "first_seen_at": "2021-10-28T11:37:00Z",
+                "last_seen_at": "2021-10-28T12:01:00Z",
             },
         ],
         ZHIHU_HISTORY_SCHEMA,
@@ -872,11 +898,11 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
     height: int,
     touch: bool,
 ) -> None:
-    """Keep Zhihu's one-answer sessions source-specific and fully readable."""
+    """Render Zhihu as answerers whose detail pages contain complete answers."""
 
     index_url = (
         f"{seeded_zhihu_browser_server_url}/browser?view=text&source=zhihu"
-        "&q=&sort=newest&session_view=1"
+        "&q=&sort=newest"
     )
     page, context = _open_page(
         disposable_browser,
@@ -890,22 +916,26 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
         expect(table).to_have_count(1)
         assert table.locator("thead th").all_inner_texts() == [
             "No.",
-            "Session name",
             "Answerer",
+            "Answers",
             "Last updated ↓",
         ]
         expect(table.locator(".browser-session-table-source")).to_have_count(0)
-        expect(table.locator(".browser-session-table-author")).to_have_count(2)
-        assert table.locator(".browser-session-table-author").all_inner_texts() == [
+        assert table.locator(".browser-session-table-title").all_inner_texts() == [
             "肥肥猫",
             "Other Author",
         ]
+        assert table.locator(".browser-session-table-count").all_inner_texts() == ["2", "1"]
         expect(table.locator(".browser-session-table-id")).to_have_count(0)
         expect(page.locator(".browser-clear-link")).to_have_count(0)
         assert page.locator(".browser-text-metric-grid .metric-label").all_inner_texts() == [
-            "Sessions",
-            "Messages",
+            "Answerers",
+            "Answers",
         ]
+        assert page.locator(".browser-text-metric-grid strong").all_inner_texts() == ["2", "3"]
+        expect(page.get_by_role("heading", name="Zhihu answerers", exact=True)).to_be_visible()
+        expect(page.locator('[name="session_view"]')).to_have_value("1")
+        expect(page.locator('[name="sort"]')).to_have_value("newest")
         answerer_trigger = page.get_by_role(
             "button",
             name="Filter by answerer: All answerers",
@@ -934,7 +964,8 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
             re.compile(r"[?&]answerer=%E8%82%A5%E8%82%A5%E7%8C%AB(?:&|$)")
         )
         expect(table.locator("tbody tr")).to_have_count(1)
-        expect(table.locator(".browser-session-table-author")).to_have_text("肥肥猫")
+        expect(table.locator(".browser-session-table-title")).to_have_text("肥肥猫")
+        expect(table.locator(".browser-session-table-count")).to_have_text("2")
         assert table.evaluate("element => element.scrollWidth - element.clientWidth") == 0
         assert page.evaluate(
             "document.documentElement.scrollWidth - document.documentElement.clientWidth"
@@ -950,12 +981,27 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
         ).all_inner_texts() == [
             "No.",
             "Time",
+            "Question",
+            "Answer",
+        ]
+        assert page.locator(".browser-text-metric-grid .metric-label").all_inner_texts() == [
+            "Answerer",
+            "Answers",
+        ]
+        assert page.locator(".browser-text-metric-grid strong").all_inner_texts() == [
             "肥肥猫",
-            "Message",
+            "2",
+        ]
+        expect(page.locator('[data-browser-session-tag]')).to_have_text("肥肥猫 ×")
+        expect(page.get_by_role("link", name="Back to all answerers", exact=True)).to_be_visible()
+        assert page.locator(".browser-session-question-link").all_inner_texts() == [
+            "Fixture Zhihu question",
+            "Earlier fixture question",
         ]
         message = page.locator("[data-browser-session-message-source]")
-        expect(message).to_contain_text("Full answer final sentence.")
-        layout = message.evaluate(
+        expect(message.first).to_contain_text("Full answer final sentence.")
+        expect(message.nth(1)).to_contain_text("Earlier complete cached answer.")
+        layout = message.first.evaluate(
             """element => {
                 const scroller = document.querySelector('.browser-content-card');
                 scroller.scrollTop = scroller.scrollHeight;
@@ -977,6 +1023,28 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
             "toggleCount": 0,
             "overflow": 0,
         }
+        page.locator("[data-browser-session-scope-remove]").click()
+        page.wait_for_function(
+            "!new URLSearchParams(window.location.search).has('session')"
+        )
+        search_scope = page.evaluate(
+            """() => {
+                const params = new URLSearchParams(window.location.search);
+                return {
+                    source: params.get('source'),
+                    sessionView: params.get('session_view'),
+                    session: params.get('session'),
+                    answerer: params.get('answerer'),
+                };
+            }"""
+        )
+        assert search_scope == {
+            "source": "zhihu",
+            "sessionView": "1",
+            "session": None,
+            "answerer": "",
+        }
+        expect(page.get_by_role("heading", name="Zhihu answerers", exact=True)).to_be_visible()
     finally:
         context.close()
 

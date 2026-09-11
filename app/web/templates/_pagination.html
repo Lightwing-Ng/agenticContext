@@ -1,5 +1,8 @@
-{# Code version: v1.3.1-codex.1 #}
+{# Code version: v1.4.0-codex.1 #}
 {% macro render_browser_pagination(page, aria_label, view, filters, range_unit="pages") %}
+{% set is_zhihu_text = view == "text" and filters.source == "zhihu" %}
+{% set text_detail_label = "Answer" if is_zhihu_text else "Message" %}
+{% set text_group_label = "Answerer" if is_zhihu_text else "Session" %}
 {% set pagination_items = page.pagination_items %}
 {% if pagination_items %}
 <nav
@@ -42,7 +45,7 @@
                     class="browser-pagination-range-option"
                     href="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view=('1' if filters.session_view else '0'), session=(filters.session if page.session_detail else ''), session_page=(filters.session_page if page.session_detail else none), page=range_start) }}"
                     role="menuitem"
-                    aria-label="{{ 'Messages' if page.session_detail else ('Sessions' if page.session_view else 'Text pages') }} {{ range_start }} through {{ range_end }}"
+                    aria-label="{{ (text_detail_label ~ 's') if page.session_detail else ((text_group_label ~ 's') if page.session_view else 'Text pages') }} {{ range_start }} through {{ range_end }}"
                 >{{ range_start }}-{{ range_end }}</a>
                 {% elif view == "prompts" %}
                 <a
@@ -91,7 +94,7 @@
         data-wait-title="Loading saved prompts"
         data-wait-copy="Opening the requested saved prompt page."
         {% endif %}
-        aria-label="{% if view == 'text' and page.session_detail %}{% if pagination_item.kind == 'previous' %}Previous message page{% elif pagination_item.kind == 'next' %}Next message page{% else %}Message page {{ pagination_item.page }}{% endif %}{% elif view == 'text' and page.session_view %}{% if pagination_item.kind == 'previous' %}Previous session page{% elif pagination_item.kind == 'next' %}Next session page{% else %}Session page {{ pagination_item.page }}{% endif %}{% elif view == 'text' %}{% if pagination_item.kind == 'previous' %}Previous text page{% elif pagination_item.kind == 'next' %}Next text page{% else %}Text page {{ pagination_item.page }}{% endif %}{% elif view == 'prompts' %}{% if pagination_item.kind == 'previous' %}Previous saved prompt page{% elif pagination_item.kind == 'next' %}Next saved prompt page{% else %}Saved prompt page {{ pagination_item.page }}{% endif %}{% elif page.pagination_unit == 'session' %}{% if pagination_item.kind == 'previous' %}Previous session group{% elif pagination_item.kind == 'next' %}Next session group{% else %}Session {{ pagination_item.page }}{% endif %}{% elif pagination_item.kind == 'previous' %}Previous page{% elif pagination_item.kind == 'next' %}Next page{% else %}Page {{ pagination_item.page }}{% endif %}"
+        aria-label="{% if view == 'text' and page.session_detail %}{% if pagination_item.kind == 'previous' %}Previous {{ text_detail_label|lower }} page{% elif pagination_item.kind == 'next' %}Next {{ text_detail_label|lower }} page{% else %}{{ text_detail_label }} page {{ pagination_item.page }}{% endif %}{% elif view == 'text' and page.session_view %}{% if pagination_item.kind == 'previous' %}Previous {{ text_group_label|lower }} page{% elif pagination_item.kind == 'next' %}Next {{ text_group_label|lower }} page{% else %}{{ text_group_label }} page {{ pagination_item.page }}{% endif %}{% elif view == 'text' %}{% if pagination_item.kind == 'previous' %}Previous text page{% elif pagination_item.kind == 'next' %}Next text page{% else %}Text page {{ pagination_item.page }}{% endif %}{% elif view == 'prompts' %}{% if pagination_item.kind == 'previous' %}Previous saved prompt page{% elif pagination_item.kind == 'next' %}Next saved prompt page{% else %}Saved prompt page {{ pagination_item.page }}{% endif %}{% elif page.pagination_unit == 'session' %}{% if pagination_item.kind == 'previous' %}Previous session group{% elif pagination_item.kind == 'next' %}Next session group{% else %}Session {{ pagination_item.page }}{% endif %}{% elif pagination_item.kind == 'previous' %}Previous page{% elif pagination_item.kind == 'next' %}Next page{% else %}Page {{ pagination_item.page }}{% endif %}"
         {% if pagination_item.is_active %}aria-current="page"{% endif %}
     >
         {% if pagination_item.kind == "previous" %}

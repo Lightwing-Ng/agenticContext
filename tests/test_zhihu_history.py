@@ -1,6 +1,6 @@
 """Fixture-only coverage for the formal Zhihu text cache.
 
-Code version: v1.1.0-codex.1
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
@@ -258,7 +258,8 @@ def test_liked_mode_sync_is_visible_in_local_resources(tmp_path: Path) -> None:
     assert result["collection_mode"] == "liked"
     assert result["cached_answers"] == 1
     assert page.conversation_count == 1
-    assert page.sessions[0].conversation_id == "2197549311"
+    assert page.sessions[0].conversation_title == "Fixture Author"
+    assert page.sessions[0].message_count == 1
     assert page.items[0].source == "zhihu"
     assert page.items[0].content_html == ""
 

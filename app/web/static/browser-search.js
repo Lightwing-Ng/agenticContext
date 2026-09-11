@@ -1,4 +1,4 @@
-/* Code version: v2.1.3-codex.1 */
+/* Code version: v2.2.0-codex.1 */
 
 import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
 
@@ -219,6 +219,13 @@ import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
             const field = form.querySelector(`input[name="${name}"]`);
             if (field) field.disabled = true;
         }
+        if (input.dataset.browserSearchScope === "answerer") {
+            const answererField = form.querySelector('[name="answerer"]');
+            if (answererField) answererField.value = "";
+            const viewField = form.querySelector('[name="session_view"]');
+            if (viewField) viewField.value = "1";
+            return;
+        }
         const sourceField = form.querySelector('[name="source"]');
         if (sourceField) sourceField.value = "all";
         const viewField = form.querySelector('[name="session_view"]');
@@ -230,7 +237,8 @@ import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
     searchRoot.querySelector("[data-browser-session-scope-remove]")?.addEventListener("click", () => {
         searchRoot.querySelector("[data-browser-session-tag]")?.remove();
         input.dataset.browserSearchGlobalScope = "true";
-        input.dataset.browserSearchSubmitCopy = "Press Enter to search all cached text.";
+        input.dataset.browserSearchSubmitCopy = input.dataset.browserSearchGlobalSubmitCopy
+            || "Press Enter to search all cached text.";
         input.focus();
         submitSearch();
     });

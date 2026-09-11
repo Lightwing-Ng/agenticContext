@@ -1,7 +1,7 @@
 # Beta experiments
 
-Documentation version: `v0.5.2`
-Application version: `v1.10.2`
+Documentation version: `v0.5.3`
+Application version: `v1.11.0`
 
 Beta is an optional research workspace in the Dock immediately before Settings. Its seven
 experiments reuse the existing sidebar, theme, typography, controls, and local assets. Open
@@ -12,6 +12,11 @@ As of application `v1.10.0`, the everyday text-first Zhihu workflow is promoted 
 `/cache/zhihu` and `local_store/llm/zhihu/history.parquet`. This document continues to govern the
 separate Beta snapshot and its provider-gap research evidence; the Beta archive stays isolated
 unless its rows are explicitly migrated through the formal text-history schema.
+
+As of application `v1.11.0`, Local resources presents the promoted archive as an answerer-first
+hierarchy: the Zhihu index groups cached answers under each literal answerer name, and opening an
+answerer shows that person's complete cached answer collection. The optional Beta experiment below
+continues to describe capture research rather than the everyday browsing interface.
 
 ## Experiments
 

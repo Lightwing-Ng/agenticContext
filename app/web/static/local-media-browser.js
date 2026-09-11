@@ -1,4 +1,4 @@
-/* Code version: v1.32.0-codex.1 */
+/* Code version: v1.33.0-codex.1 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -154,6 +154,12 @@
                 rememberContentMode(event.target.value);
                 navigateToContentMode(event.target.value);
                 return;
+            }
+            if (event.target.matches("select[name='answerer']")) {
+                for (const name of ["session", "session_page"]) {
+                    const field = filterForm.querySelector(`[name="${name}"]`);
+                    if (field) field.disabled = true;
+                }
             }
             if (event.target.matches("select")) submitFilters();
         });

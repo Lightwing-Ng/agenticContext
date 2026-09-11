@@ -1,8 +1,9 @@
 """Focused tests for the local text-history browser."""
 
-# Code version: v1.6.0-codex.1
+# Code version: v1.7.1-codex.1
 
 from datetime import datetime
+import hashlib
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -13,7 +14,11 @@ from app.core.chat_history_browser import (
     query_chat_history,
 )
 from app.core.local_media_browser import LocalMediaItem
-from app.core.resource_persistence import GEMINI_HISTORY_SCHEMA, write_parquet_rows_atomic
+from app.core.resource_persistence import (
+    GEMINI_HISTORY_SCHEMA,
+    ZHIHU_HISTORY_SCHEMA,
+    write_parquet_rows_atomic,
+)
 
 
 def _history_row(
@@ -46,6 +51,106 @@ def _history_row(
         "first_seen_at": first_seen_at,
         "last_seen_at": last_seen_at,
     }
+
+
+def _zhihu_history_row(
+    answer_id: str,
+    question_title: str,
+    answerer: str,
+    content_text: str,
+    *,
+    profile_slug: str,
+    last_seen_at: str,
+) -> dict[str, object]:
+    answer_url = f"https://www.zhihu.com/question/495309288/answer/{answer_id}"
+    return {
+        **_history_row(
+            answer_id,
+            f"answer:{answer_id}",
+            content_text,
+            role="answer",
+            conversation_title=question_title,
+            last_seen_at=last_seen_at,
+        ),
+        "platform": "zhihu",
+        "conversation_url": answer_url,
+        "author_label": answerer,
+        "source_links": [answer_url, f"https://www.zhihu.com/people/{profile_slug}"],
+    }
+
+
+def test_query_zhihu_history_groups_answerers_and_opens_all_their_answers(
+    tmp_path: Path,
+) -> None:
+    history_path = tmp_path / "llm" / "zhihu" / "history.parquet"
+    write_parquet_rows_atomic(
+        history_path,
+        [
+            _zhihu_history_row(
+                "3", "Newest question", "肥肥猫", "Newest answer",
+                profile_slug="feifeimao", last_seen_at="2026-08-12T08:00:00Z",
+            ),
+            _zhihu_history_row(
+                "2", "Older question", "肥肥猫", "Older answer",
+                profile_slug="feifeimao", last_seen_at="2026-08-11T08:00:00Z",
+            ),
+            _zhihu_history_row(
+                "1", "Other question", "Other Author", "Other answer",
+                profile_slug="other-author", last_seen_at="2026-08-10T08:00:00Z",
+            ),
+        ],
+        ZHIHU_HISTORY_SCHEMA,
+    )
+
+    index_page = query_chat_history(tmp_path, source="zhihu", session_view=True)
+
+    assert index_page.pagination_unit == "answerer"
+    assert index_page.total_count == 3
+    assert index_page.conversation_count == 2
+    assert index_page.project_count == 0
+    assert [(item.conversation_title, item.message_count) for item in index_page.sessions] == [
+        ("肥肥猫", 2),
+        ("Other Author", 1),
+    ]
+    assert index_page.sessions[0].conversation_url == "https://www.zhihu.com/people/feifeimao"
+
+    detail_page = query_chat_history(
+        tmp_path,
+        source="zhihu",
+        session=index_page.sessions[0].stable_id,
+        session_view=True,
+    )
+
+    assert detail_page.session_detail
+    assert detail_page.pagination_unit == "answer"
+    assert detail_page.selected_answerer == "肥肥猫"
+    assert detail_page.current_session is not None
+    assert detail_page.current_session.conversation_title == "肥肥猫"
+    assert detail_page.current_session.message_count == 2
+    assert [item.conversation_title for item in detail_page.items] == [
+        "Newest question",
+        "Older question",
+    ]
+    legacy_answer_session_id = "session-" + hashlib.sha256(b"zhihu:3").hexdigest()[:24]
+    legacy_detail_page = query_chat_history(
+        tmp_path,
+        source="zhihu",
+        session=legacy_answer_session_id,
+        session_view=True,
+    )
+    assert legacy_detail_page.current_session == detail_page.current_session
+
+    filtered_page = query_chat_history(
+        tmp_path, source="zhihu", session_view=True, answerer="Other Author",
+    )
+    assert [item.conversation_title for item in filtered_page.sessions] == ["Other Author"]
+    assert filtered_page.total_count == 1
+
+    markdown = build_chat_history_markdown(detail_page)
+    assert markdown.startswith("# 肥肥猫\n")
+    assert "- Answers: 2" in markdown
+    assert "## Answers" in markdown
+    assert "Newest question" in markdown
 
 
 def test_query_chat_history_reads_and_filters_typed_messages(tmp_path: Path) -> None:
