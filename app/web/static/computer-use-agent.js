@@ -1,4 +1,4 @@
-/* Code version: v3.43.2-codex.1 */
+/* Code version: v3.44.0-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -392,6 +392,136 @@
         renderRecentSessionList();
     }
 
+    function recentSessionConversationUrl(session) {
+        return session.conversation_url
+            || executionConversationUrls.get(session.session_id)
+            || "";
+    }
+
+    function recentSessionRowKey(session, index, conversationCounts) {
+        const conversationKey = historyUrlKey(recentSessionConversationUrl(session));
+        if (conversationKey && conversationCounts.get(conversationKey) === 1) {
+            return `conversation:${conversationKey}`;
+        }
+        if (session.session_id) return `session:${session.session_id}`;
+        return `fallback:${index}:${session.session_title || ""}`;
+    }
+
+    function createRecentSessionRow(key) {
+        const row = document.createElement("div");
+        row.className = "agent-execution-session-row";
+        row.dataset.agentExecutionSessionKey = key;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "trade-strategy-dropdown-option agent-execution-session";
+        const title = document.createElement("span");
+        title.className = "agent-execution-session-title";
+        const state = document.createElement("span");
+        state.className = "agent-execution-session-state";
+        button.append(title, state);
+        row.append(button);
+        return row;
+    }
+
+    function updateRecentSessionRow(row, session, {remoteUrls, remoteCatalogVerified}) {
+        const button = row.querySelector(".agent-execution-session");
+        const title = button.querySelector(".agent-execution-session-title");
+        const state = button.querySelector(".agent-execution-session-state");
+        const conversationUrl = recentSessionConversationUrl(session);
+        if (session.session_id) {
+            button.dataset.executionSessionId = session.session_id;
+            delete button.dataset.recentConversationUrl;
+        } else {
+            delete button.dataset.executionSessionId;
+            button.dataset.recentConversationUrl = session.conversation_url;
+        }
+        const selected = session.session_id
+            ? session.session_id === executionSessionId
+            : historyUrlKey(selectedConversationUrl()) === historyUrlKey(session.conversation_url);
+        button.setAttribute("aria-pressed", String(selected));
+        button.classList.toggle("is-selected", selected);
+        const titleText = executionConversationTitles.get(historyUrlKey(conversationUrl))
+            || session.session_title || "Untitled session";
+        if (title.textContent !== titleText) title.textContent = titleText;
+        const stateLabel = session.paused ? "Paused" : session.running ? "Running"
+            : session.phase === "finished" ? "Completed" : session.phase || "";
+        const loading = Boolean(session.running && !session.paused);
+        state.classList.toggle("suggestion-loading-spinner", loading);
+        if (loading) {
+            if (state.textContent) state.textContent = "";
+            state.setAttribute("role", "img");
+            state.setAttribute("aria-label", stateLabel);
+        } else {
+            state.removeAttribute("role");
+            state.removeAttribute("aria-label");
+            if (state.textContent !== stateLabel) state.textContent = stateLabel;
+        }
+        button.title = [title.textContent, session.workspace_path, stateLabel]
+            .filter(Boolean).join(" · ");
+        button.onclick = () => {
+            if (session.session_id) void selectExecutionSession(session.session_id);
+            else void selectRecentConversation(session);
+        };
+
+        const remoteRecordAbsent = !conversationUrl
+            || !remoteUrls.has(historyUrlKey(conversationUrl));
+        const deletable = Boolean(
+            session.session_id
+            && !session.running
+            && String(session.phase || "").toLowerCase() === "failed"
+            && remoteCatalogVerified
+            && remoteRecordAbsent
+        );
+        row.classList.toggle("is-deletable", deletable);
+        let deleteButton = row.querySelector(".agent-execution-session-delete");
+        if (!deletable) {
+            deleteButton?.remove();
+            return;
+        }
+        if (!deleteButton) {
+            deleteButton = document.createElement("button");
+            deleteButton.type = "button";
+            deleteButton.className = "agent-execution-session-delete";
+            row.append(deleteButton);
+        }
+        deleteButton.setAttribute("aria-label", `Delete failed session: ${title.textContent}`);
+        deleteButton.title = "Delete failed session";
+        deleteButton.onclick = (event) => {
+            event.stopPropagation();
+            void dismissFailedSession(
+                {...session, conversation_url: conversationUrl},
+                deleteButton,
+            );
+        };
+    }
+
+    function reconcileRecentSessionRows(items, options) {
+        const conversationCounts = new Map();
+        items.forEach((session) => {
+            const key = historyUrlKey(recentSessionConversationUrl(session));
+            if (key) conversationCounts.set(key, (conversationCounts.get(key) || 0) + 1);
+        });
+        const existingRows = new Map();
+        for (const row of executionList.querySelectorAll(":scope > [data-agent-execution-session-key]")) {
+            existingRows.set(row.dataset.agentExecutionSessionKey, row);
+        }
+        const desiredRows = items.map((session, index) => {
+            const key = recentSessionRowKey(session, index, conversationCounts);
+            const row = existingRows.get(key) || createRecentSessionRow(key);
+            existingRows.delete(key);
+            updateRecentSessionRow(row, session, options);
+            return row;
+        });
+        const desiredRowSet = new Set(desiredRows);
+        Array.from(executionList.children).forEach((row) => {
+            if (!desiredRowSet.has(row)) row.remove();
+        });
+        desiredRows.forEach((row, index) => {
+            const current = executionList.children[index];
+            if (current !== row) executionList.insertBefore(row, current || null);
+        });
+    }
+
     function renderRecentSessionList() {
         if (!executionList) return;
         const project = selectedSessionMode() === "project" ? selectedProjectUrl() : "";
@@ -422,71 +552,11 @@
             verifiedProjectSessionsKey, [...executionConversationTitles], [...executionConversationUrls]]);
         if (executionList.dataset.signature === signature) return;
         executionList.dataset.signature = signature;
-        const focusedId = document.activeElement?.dataset?.executionSessionId;
-        executionList.replaceChildren(...items.map((session) => {
-            const row = document.createElement("div");
-            row.className = "agent-execution-session-row";
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "trade-strategy-dropdown-option agent-execution-session";
-            if (session.session_id) button.dataset.executionSessionId = session.session_id;
-            else button.dataset.recentConversationUrl = session.conversation_url;
-            button.setAttribute("aria-pressed", String(session.session_id ? session.session_id === executionSessionId : historyUrlKey(selectedConversationUrl()) === historyUrlKey(session.conversation_url)));
-            button.classList.toggle("is-selected", button.getAttribute("aria-pressed") === "true");
-            const title = document.createElement("span");
-            title.className = "agent-execution-session-title";
-            const conversationUrl = session.conversation_url || executionConversationUrls.get(session.session_id);
-            title.textContent = executionConversationTitles.get(historyUrlKey(conversationUrl))
-                || session.session_title || "Untitled session";
-            const state = document.createElement("span");
-            state.className = "agent-execution-session-state";
-            const stateLabel = session.paused ? "Paused" : session.running ? "Running"
-                : session.phase === "finished" ? "Completed" : session.phase || "";
-            if (session.running && !session.paused) {
-                state.classList.add("suggestion-loading-spinner");
-                state.setAttribute("role", "img");
-                state.setAttribute("aria-label", stateLabel);
-            } else {
-                state.textContent = stateLabel;
-            }
-            button.title = [title.textContent, session.workspace_path, stateLabel].filter(Boolean).join(" · ");
-            button.append(title, state);
-            button.addEventListener("click", () => {
-                if (session.session_id) void selectExecutionSession(session.session_id);
-                else void selectRecentConversation(session);
-            });
-            row.append(button);
-            const remoteRecordAbsent = !conversationUrl
-                || !remoteUrls.has(historyUrlKey(conversationUrl));
-            const remoteCatalogVerified = inProjectMode
-                ? Boolean(project && !projectSessionsLoading
-                    && verifiedProjectSessionsKey === historyUrlKey(project))
-                : catalogState === "ready" && !sourcesLoading;
-            const deletable = Boolean(
-                session.session_id
-                && !session.running
-                && String(session.phase || "").toLowerCase() === "failed"
-                && remoteCatalogVerified
-                && remoteRecordAbsent
-            );
-            if (deletable) {
-                row.classList.add("is-deletable");
-                const deleteButton = document.createElement("button");
-                deleteButton.type = "button";
-                deleteButton.className = "agent-execution-session-delete";
-                deleteButton.setAttribute("aria-label", `Delete failed session: ${title.textContent}`);
-                deleteButton.title = "Delete failed session";
-                deleteButton.addEventListener("click", (event) => {
-                    event.stopPropagation();
-                    void dismissFailedSession(
-                        {...session, conversation_url: conversationUrl || ""},
-                        deleteButton,
-                    );
-                });
-                row.append(deleteButton);
-            }
-            return row;
-        }));
+        const remoteCatalogVerified = inProjectMode
+            ? Boolean(project && !projectSessionsLoading
+                && verifiedProjectSessionsKey === historyUrlKey(project))
+            : catalogState === "ready" && !sourcesLoading;
+        reconcileRecentSessionRows(items, {remoteUrls, remoteCatalogVerified});
         if (!items.length) {
             const empty = document.createElement("p");
             empty.className = "agent-recent-sessions-empty";
@@ -495,9 +565,6 @@
                 : catalogState === "error" ? catalogError : "No recent sessions.";
             executionList.append(empty);
         }
-        if (focusedId) executionList.querySelector(
-            `[data-execution-session-id="${CSS.escape(focusedId)}"]`,
-        )?.focus();
     }
 
     async function dismissFailedSession(session, deleteButton) {

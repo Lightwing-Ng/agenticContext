@@ -1,4 +1,4 @@
-/* Code version: v2.114.0-codex.1 */
+/* Code version: v2.114.1-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -312,7 +312,6 @@
     --settings-form-control-max-width: var(--layout-control-width);
     --cache-phase-live-marker-size: 6px;
     --cache-phase-live-marker-color: var(--theme-accent-positive);
-    --cache-phase-live-marker-duration: 1.8s;
     --workspace-title-rail-control-height: var(--settings-round-icon-button-size);
     --workspace-title-rail-pad-block-start: var(--page-edge-pad);
     --workspace-title-rail-height: calc(var(--workspace-title-rail-pad-block-start) + var(--workspace-title-rail-control-height));
@@ -1028,29 +1027,6 @@ h2 {
         0 0 10px color-mix(in srgb, var(--cache-phase-live-marker-color) 42%, transparent);
 }
 
-.cache-phase-live-marker::before,
-.cache-phase-live-marker::after {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 20px;
-    height: 20px;
-    border: 1.6px solid color-mix(in srgb, var(--cache-phase-live-marker-color) 72%, transparent);
-    border-radius: 50%;
-    content: "";
-    opacity: 0.46;
-    transform: translate(-50%, -50%) scale(0.36);
-    animation: cachePhaseLiveBreath var(--cache-phase-live-marker-duration) var(--motion-emphasized) infinite;
-}
-
-.cache-phase-live-marker::after {
-    width: 14px;
-    height: 14px;
-    animation-name: agentActivityLiveBreathInner;
-    opacity: 0.28;
-    animation-delay: 0.9s;
-}
-
 .cache-phase-live-marker:is([data-phase="running"], [data-phase="collecting"]) {
     --cache-phase-live-marker-color: var(--theme-accent-positive);
 }
@@ -1061,18 +1037,6 @@ h2 {
 
 .cache-phase-live-marker:is([data-phase="failed"], [data-phase="error"]) {
     --cache-phase-live-marker-color: var(--theme-accent-negative);
-}
-
-@keyframes cachePhaseLiveBreath {
-    0% {
-        opacity: 0.44;
-        transform: translate(-50%, -50%) scale(0.36);
-    }
-
-    100% {
-        opacity: 0;
-        transform: translate(-50%, -50%) scale(1);
-    }
 }
 
 .sidebar-form {
@@ -2074,8 +2038,6 @@ input[type="url"].text-input-control {
     color: var(--theme-success-strong);
     background: color-mix(in srgb, var(--theme-success) 12%, rgba(255, 255, 255, 0.64));
     border-color: color-mix(in srgb, var(--theme-success) 18%, transparent);
-    animation: statusChipHeartbeat 1.8s cubic-bezier(0.33, 0, 0.2, 1) infinite;
-    will-change: transform, box-shadow;
 }
 
 .status-finished,
@@ -2091,33 +2053,6 @@ input[type="url"].text-input-control {
     color: var(--theme-error-strong);
     background: color-mix(in srgb, var(--theme-error-strong) 12%, rgba(255, 255, 255, 0.64));
     border-color: color-mix(in srgb, var(--theme-error-strong) 18%, transparent);
-}
-
-@keyframes statusChipHeartbeat {
-    0% {
-        transform: scale(1);
-        box-shadow: 0 0 0 0 color-mix(in srgb, var(--theme-success) 0%, transparent);
-    }
-
-    24% {
-        transform: scale(1.02);
-        box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-success) 10%, transparent);
-    }
-
-    50% {
-        transform: scale(1.035);
-        box-shadow: 0 0 0 6px color-mix(in srgb, var(--theme-success) 8%, transparent);
-    }
-
-    72% {
-        transform: scale(1.01);
-        box-shadow: 0 0 0 4px color-mix(in srgb, var(--theme-success) 6%, transparent);
-    }
-
-    100% {
-        transform: scale(1);
-        box-shadow: 0 0 0 0 color-mix(in srgb, var(--theme-success) 0%, transparent);
-    }
 }
 
 .metric-card,
@@ -2358,17 +2293,6 @@ html.sidebar-memory-collapsed .app-shell .cache-overview-title-card {
     width: 36% !important;
     background: color-mix(in srgb, var(--theme-muted) 44%, rgba(255, 255, 255, 0.92));
     box-shadow: none;
-    animation: statusProgressIndeterminate 1.4s var(--motion-inertial) infinite;
-}
-
-@keyframes statusProgressIndeterminate {
-    0% {
-        transform: translateX(-125%);
-    }
-
-    100% {
-        transform: translateX(310%);
-    }
 }
 
 .workspace-header > .report-card:not(.workspace-summary-card) > .report-heading-row {
@@ -4986,7 +4910,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     --settings-action-package-max-width: var(--layout-content-width);
     --settings-action-package-live-marker-size: 8px;
     --settings-action-package-live-marker-color: var(--theme-accent-positive);
-    --settings-action-package-live-marker-duration: 1.8s;
     --settings-action-button-radius: var(--radius-pill);
     --settings-action-button-pad-block: 0px;
     --settings-action-button-pad-inline: 18px;
@@ -9770,40 +9693,6 @@ dialog.browser-dialog:not([open]) {
     transform: translateY(-50%);
 }
 
-.settings-action-package-live-marker::before,
-.settings-action-package-live-marker::after {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 16px;
-    height: 16px;
-    border: 1.6px solid color-mix(in srgb, var(--settings-action-package-live-marker-color) 72%, transparent);
-    border-radius: 50%;
-    content: "";
-    opacity: 0.46;
-    transform: translate(-50%, -50%) scale(0.36);
-    animation: settings-action-package-live-breath var(--settings-action-package-live-marker-duration) var(--motion-emphasized) infinite;
-}
-
-.settings-action-package-live-marker::after {
-    width: 12px;
-    height: 12px;
-    opacity: 0.28;
-    animation-delay: 0.9s;
-}
-
-@keyframes settings-action-package-live-breath {
-    0% {
-        opacity: 0.44;
-        transform: translate(-50%, -50%) scale(0.36);
-    }
-
-    100% {
-        opacity: 0;
-        transform: translate(-50%, -50%) scale(1);
-    }
-}
-
 .settings-service-name {
     color: var(--text);
     font-size: var(--font-ui-lg);
@@ -9864,14 +9753,6 @@ dialog.browser-dialog:not([open]) {
     grid-column: 2;
     grid-row: 3;
     justify-self: end;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .settings-action-package-live-marker::before,
-    .settings-action-package-live-marker::after {
-        animation: none;
-        opacity: 0;
-    }
 }
 
 .settings-action-package.shadow-backup-actions {
@@ -11813,7 +11694,7 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
     gap: 10px;
 }
 
-/* Match Worthward's Investment live-marker core and two staggered rings. */
+/* Keep Agent status on the same static core geometry as Cache. */
 .agent-response-card .cache-phase-live-marker {
     --cache-phase-live-marker-color: var(--theme-accent-positive);
     width: 6px;
@@ -11824,30 +11705,8 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
         0 0 10px color-mix(in srgb, var(--theme-accent-positive) 42%, transparent);
 }
 
-.agent-response-card .cache-phase-live-marker::before {
-    width: 20px;
-    height: 20px;
-}
-
-.agent-response-card .cache-phase-live-marker::after {
-    width: 14px;
-    height: 14px;
-    animation-name: agentActivityLiveBreathInner;
-}
-
 .agent-activity-panel {
     overflow: visible;
-}
-
-@keyframes agentActivityLiveBreathInner {
-    0% {
-        opacity: 0.26;
-        transform: translate(-50%, -50%) scale(0.48);
-    }
-    100% {
-        opacity: 0;
-        transform: translate(-50%, -50%) scale(1);
-    }
 }
 
 /* Agent composer and lifecycle use their owning text and status tokens. */
@@ -12129,7 +11988,7 @@ main[data-cache-page] .progress-metric-card strong {
 }
 .browser-header-filter-form .browser-source-filter-trigger .trade-strategy-trigger-label { font: inherit; }
 
-/* Cache adapts Worthward's LSTM training progress track and pending motion. */
+/* Cache keeps a static progress track until its future motion system is designed. */
 main[data-cache-page] .cache-training-progress {
     display: grid;
     gap: 6px;
@@ -12155,21 +12014,10 @@ main[data-cache-page] .cache-training-progress .status-progress-audit {
 }
 main[data-cache-page] .cache-training-progress .is-indeterminate .status-progress-fill {
     width: 40% !important;
-    animation: cacheTrainingProgressPending 1.6s ease-in-out infinite alternate;
 }
 main[data-cache-page] .cache-training-progress .is-unavailable .status-progress-fill {
     width: 0;
 }
-@keyframes cacheTrainingProgressPending {
-    from { transform: translateX(0); }
-    to { transform: translateX(150%); }
-}
-@media (prefers-reduced-motion: reduce) {
-    main[data-cache-page] .cache-training-progress .is-indeterminate .status-progress-fill {
-        animation: none;
-    }
-}
-
 @media (max-width: 767px) {
     .browser-session-detail-table.is-zhihu-source,
     .browser-session-detail-table.is-zhihu-source tbody {

@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer collection and isolated local persistence.
 
-Code version: v0.9.0-codex.1
+Code version: v0.9.1-codex.1
 """
 
 from __future__ import annotations
@@ -638,7 +638,13 @@ def _parse_api_page(
     for item in data:
         if not isinstance(item, Mapping):
             raise ZhihuArchiveError("Zhihu returned an invalid answer entry.")
-        answers.append(normalize_zhihu_answer_payload(item, profile))
+        answers.append(
+            normalize_zhihu_answer_payload(
+                item,
+                profile,
+                allow_unavailable_content=True,
+            )
+        )
     totals_value = paging.get("totals")
     if totals_value is None or totals_value == "":
         expected_total = None

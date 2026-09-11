@@ -1,6 +1,6 @@
 """Fixture-only coverage for the formal Zhihu text cache.
 
-Code version: v1.1.1-codex.1
+Code version: v1.1.2-codex.1
 """
 
 from __future__ import annotations
@@ -281,6 +281,39 @@ def test_optional_author_mode_uses_the_answerer_url_and_merges_history(tmp_path:
     assert result["collection_mode"] == "author"
     assert result["processed_answers"] == 1
     assert ZhihuHistoryStore(zhihu_history_path(tmp_path)).rows[0]["author_label"] == "Fixture Author"
+
+
+def test_optional_author_mode_keeps_an_unavailable_answer_as_a_source_record(
+    tmp_path: Path,
+) -> None:
+    payload = _answer_payload(2_225_904_820)
+    payload.update(
+        {
+            "content": "",
+            "excerpt": "",
+            "is_collapsed": False,
+        }
+    )
+    answer_page = {"data": [payload], "paging": {"totals": 1, "is_end": True}}
+
+    result = sync_zhihu_history(
+        RecordingState(),
+        CrawlConfig(zhihu_browser="edge"),
+        lambda: False,
+        tmp_path,
+        author_url="https://www.zhihu.com/people/fixture-author",
+        fetch_page=lambda _url: answer_page,
+        account_payload=_account_payload(),
+    )
+    page = query_chat_history(tmp_path, source="zhihu", session_view=True)
+
+    assert result["processed_answers"] == 1
+    assert result["cached_answers"] == 1
+    assert page.conversation_count == 1
+    assert page.items[0].content_text == (
+        "Answer body unavailable on Zhihu. Open the source link."
+    )
+    assert page.items[0].source_links[0].endswith("/answer/2225904820")
 
 
 def test_initial_snapshot_reads_the_formal_history_count(tmp_path: Path) -> None:

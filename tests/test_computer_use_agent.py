@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.65.4-codex.1
+Code version: v3.65.5-codex.1
 """
 
 from __future__ import annotations
@@ -4696,6 +4696,134 @@ def test_pre_requested_stop_never_opens_a_web_browser_context(
     )
 
     assert result == ("", "https://chatgpt.com/", 0, False)
+
+
+def test_transient_initial_workspace_evidence_is_retried_before_browser_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Descriptor:
+        engine = "chromium"
+
+    class _BrowserStartupReached(RuntimeError):
+        pass
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    scans = iter((("partial", False), ("stable", True)))
+    scan_timeouts: list[float] = []
+
+    def fingerprint(
+        _workspace: Path,
+        *,
+        should_stop: object = None,
+        timeout_seconds: float,
+    ) -> tuple[str, bool]:
+        assert callable(should_stop)
+        scan_timeouts.append(timeout_seconds)
+        return next(scans)
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_workspace_mutation_fingerprint",
+        fingerprint,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "browser_descriptors",
+        lambda _config: {"edge": _Descriptor()},
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_capture_macos_frontmost_application",
+        lambda: "",
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "sync_playwright_or_error",
+        lambda: (_ for _ in ()).throw(_BrowserStartupReached()),
+    )
+
+    with pytest.raises(_BrowserStartupReached):
+        run_web_computer_use(
+            prompt="Inspect the project.",
+            workspace=workspace,
+            context_path=None,
+            config=CrawlConfig(),
+            settings=ComputerUseSettings(workspace_path=str(workspace)),
+            target_url="https://chatgpt.com/",
+            should_stop=lambda: False,
+            update=lambda **_changes: None,
+            process_changed=lambda _process: None,
+        )
+
+    assert scan_timeouts == [
+        computer_use_agent.WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS,
+        computer_use_agent.INITIAL_WORKSPACE_EVIDENCE_RETRY_TIMEOUT_SECONDS,
+    ]
+
+
+def test_persistently_incomplete_initial_workspace_evidence_still_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Descriptor:
+        engine = "chromium"
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    scan_timeouts: list[float] = []
+
+    def fingerprint(
+        _workspace: Path,
+        *,
+        should_stop: object = None,
+        timeout_seconds: float,
+    ) -> tuple[str, bool]:
+        assert callable(should_stop)
+        scan_timeouts.append(timeout_seconds)
+        return "partial", False
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_workspace_mutation_fingerprint",
+        fingerprint,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "browser_descriptors",
+        lambda _config: {"edge": _Descriptor()},
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "sync_playwright_or_error",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("An incomplete baseline must not open the browser.")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="complete bounded workspace evidence baseline"):
+        run_web_computer_use(
+            prompt="Inspect the project.",
+            workspace=workspace,
+            context_path=None,
+            config=CrawlConfig(),
+            settings=ComputerUseSettings(workspace_path=str(workspace)),
+            target_url="https://chatgpt.com/",
+            should_stop=lambda: False,
+            update=lambda **_changes: None,
+            process_changed=lambda _process: None,
+        )
+
+    assert scan_timeouts == [
+        computer_use_agent.WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS,
+        computer_use_agent.INITIAL_WORKSPACE_EVIDENCE_RETRY_TIMEOUT_SECONDS,
+        computer_use_agent.INITIAL_WORKSPACE_EVIDENCE_RETRY_TIMEOUT_SECONDS,
+    ]
 
 
 def test_context_bundle_drift_blocks_before_browser_startup(

@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.61.6-codex.1
+Code version: v1.61.7-codex.1
 """
 
 import hashlib
@@ -435,7 +435,6 @@ def test_settings_action_packages_reuse_the_sibling_composite_card() -> None:
         ".settings-action-package-copy {",
         "display: contents;",
         ".settings-action-package-live-marker {",
-        "@keyframes settings-action-package-live-breath",
         ".settings-action-package-form {",
         "justify-self: end;",
         ".settings-action-package:has(.settings-service-name) {",
@@ -447,6 +446,8 @@ def test_settings_action_packages_reuse_the_sibling_composite_card() -> None:
     )
     for fragment in expected_fragments:
         assert fragment in stylesheet
+
+    assert "settings-action-package-live-breath" not in stylesheet
 
     inline_button_start = stylesheet.index(".settings-inline-button-primary {")
     inline_button_rule = stylesheet[
@@ -680,27 +681,32 @@ def test_sidebar_titles_reuse_sibling_hero_tokens() -> None:
     assert ".hero::after" not in stylesheet
 
 
-def test_cache_source_heading_uses_the_shared_picker_and_live_marker() -> None:
-    """Keep the cache heading aligned with the sibling picker and breathing marker."""
+def test_cache_source_heading_uses_the_shared_picker_and_static_status_marker() -> None:
+    """Keep the cache heading aligned while status decoration remains static."""
     stylesheet = _stylesheet()
 
     expected_tokens = (
         "--cache-phase-live-marker-size: 6px;",
         "--cache-phase-live-marker-color: var(--theme-accent-positive);",
-        "--cache-phase-live-marker-duration: 1.8s;",
         ".section-heading > .cache-source-switcher-combobox {",
         "flex: 1 1 auto;",
         ".cache-source-switcher-combobox.is-cache-source-menu-open .cache-source-switcher-dropdown {",
         ".cache-phase-live-marker {",
         "0 0 0 4px color-mix(in srgb, var(--cache-phase-live-marker-color) 18%, transparent),",
-        ".cache-phase-live-marker::before,",
-        "animation: cachePhaseLiveBreath var(--cache-phase-live-marker-duration) var(--motion-emphasized) infinite;",
-        "animation-delay: 0.9s;",
-        "@keyframes cachePhaseLiveBreath {",
     )
 
     for token in expected_tokens:
         assert token in stylesheet
+
+    for retired_motion in (
+        "cachePhaseLiveBreath",
+        "agentActivityLiveBreathInner",
+        "statusChipHeartbeat",
+        "statusProgressIndeterminate",
+        "settings-action-package-live-breath",
+        "cacheTrainingProgressPending",
+    ):
+        assert retired_motion not in stylesheet
 
 
 def test_events_table_consumes_shared_scrollable_table_tokens() -> None:

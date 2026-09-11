@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.6.0-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.7.0-codex.1."""
 
 from copy import deepcopy
 
@@ -164,6 +164,100 @@ def test_switch_sessions_and_stop_only_selected(disposable_browser, sidebar_serv
         page.locator('.agent-session-mode-combobox [data-agent-combobox-trigger]').click()
         page.locator('.agent-session-mode-combobox [data-agent-combobox-option="new"]').click()
         expect(ask).to_be_enabled()
+        assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1138, 390])
+def test_recent_session_switch_preserves_stable_row_nodes(
+    disposable_browser, sidebar_server_url, width,
+):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 959})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    agents = {}
+    for key, revision in (("primary", 102), ("second", 101)):
+        agents[key] = deepcopy(base["agent"])
+        agents[key].update(
+            session_id=key,
+            conversation_url=f"https://chatgpt.com/c/{key}",
+            running=False,
+            phase="finished",
+            run_id=key,
+            run_revision=revision,
+            session_title=f"Task {key}",
+            prompt=f"Prompt {key}",
+            response=f"Answer {key}",
+            response_html=f"<p>Answer {key}</p>",
+            history=[],
+            activity=[],
+        )
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def status(route):
+        key = route.request.headers.get("x-cachelikes-agent-session", "primary")
+        route.fulfill(json={
+            **base,
+            "agent": agents.get(key, {"session_id": "new"}),
+            "sessions": [dict(agent) for agent in agents.values()],
+            "active_count": 0,
+            "concurrency_limit": 2,
+        })
+
+    page.route("**/api/agent/status", status)
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True,
+        "logged_in": True,
+        "browser": "edge",
+        "platform": "chatgpt",
+        "agent_sources": {"recent_sessions": [], "projects": []},
+    }))
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json={
+        "recent_sessions": [],
+        "projects": [],
+    }))
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        session_list = page.locator("[data-agent-execution-session-list]")
+        rows = session_list.locator(":scope > .agent-execution-session-row")
+        expect(rows).to_have_count(2)
+        initial_height = session_list.evaluate("element => element.getBoundingClientRect().height")
+        page.evaluate("""
+            () => {
+                const list = document.querySelector('[data-agent-execution-session-list]');
+                [...list.children].forEach((row, index) => {
+                    row.dataset.identityProbe = `stable-${index}`;
+                });
+                window.__recentSessionChildMutations = [];
+                new MutationObserver((records) => {
+                    records.forEach((record) => {
+                        window.__recentSessionChildMutations.push({
+                            added: record.addedNodes.length,
+                            removed: record.removedNodes.length,
+                        });
+                    });
+                }).observe(list, {childList: true});
+            }
+        """)
+
+        second = page.locator("[data-execution-session-id=second]")
+        second.click()
+        expect(page.locator("#agent_response_question")).to_have_text("Prompt second")
+        expect(second).to_have_attribute("aria-pressed", "true")
+        assert page.evaluate(
+            "document.activeElement === document.querySelector('[data-execution-session-id=second]')"
+        )
+        assert rows.evaluate_all("elements => elements.map(row => row.dataset.identityProbe)") == [
+            "stable-0",
+            "stable-1",
+        ]
+        assert page.evaluate("window.__recentSessionChildMutations") == []
+        final_height = session_list.evaluate("element => element.getBoundingClientRect().height")
+        assert abs(final_height - initial_height) < 0.1
         assert not errors
     finally:
         context.close()

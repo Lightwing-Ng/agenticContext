@@ -1,6 +1,6 @@
 """Pure-fixture coverage for the isolated Zhihu answer archive.
 
-Code version: v0.7.0-codex.1
+Code version: v0.7.1-codex.1
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from app.core.zhihu_answers import (
     ZhihuVerificationRequiredError,
     _browser_fetch_json,
     collect_zhihu_answers,
+    normalize_zhihu_answer_payload,
     normalize_zhihu_profile_url,
     sync_zhihu_answers,
     zhihu_archive_path,
@@ -1162,9 +1163,28 @@ def test_explicitly_collapsed_answer_is_cached_without_fabricating_body_text(
     assert row["voteup_count"] is None
 
 
-def test_unmarked_empty_answer_still_rejects_the_complete_snapshot() -> None:
+def test_author_collection_retains_one_provider_unavailable_body() -> None:
+    payload = _answer_payload(2_225_904_820)
+    payload.update(
+        {
+            "content": "",
+            "excerpt": "This answer remains available from its source link.",
+            "is_collapsed": False,
+        }
+    )
+    profile, answers = _complete_answers(payload)
+
+    assert len(answers) == 1
+    assert answers[0].content_available is False
+    assert answers[0].content_html == ""
+    assert answers[0].content_text == ""
+    assert answers[0].excerpt.startswith("This answer remains available")
+
+
+def test_strict_normalizer_rejects_an_unmarked_empty_answer() -> None:
     payload = _answer_payload(11)
     payload.update({"content": "", "excerpt": "", "is_collapsed": False})
+    profile = normalize_zhihu_profile_url(ZHIHU_EXAMPLE_PROFILE_URL)
 
     with pytest.raises(ZhihuArchiveError, match="does not expose complete cacheable content"):
-        _complete_answers(payload)
+        normalize_zhihu_answer_payload(payload, profile)

@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.69.3-codex.1
+Code version: v3.69.4-codex.1
 """
 
 from __future__ import annotations
@@ -590,6 +590,8 @@ WORKSPACE_FINGERPRINT_MAX_FILES = 12_000
 WORKSPACE_FINGERPRINT_MAX_DIRECTORIES = 12_000
 WORKSPACE_FINGERPRINT_MAX_BYTES = 512 * 1_024 * 1_024
 WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS = 15
+INITIAL_WORKSPACE_EVIDENCE_MAX_ATTEMPTS = 3
+INITIAL_WORKSPACE_EVIDENCE_RETRY_TIMEOUT_SECONDS = 2
 _STREAM_READ_FAILED = object()
 _CONTEXT_PRIORITY_NAMES = (
     "AGENTS.md",
@@ -4598,12 +4600,17 @@ class WorkspaceController:
         self.state.evidence_complete = True
         return changed
 
-    def refresh_workspace_evidence(self) -> dict[str, Any]:
+    def refresh_workspace_evidence(
+        self,
+        *,
+        timeout_seconds: float = WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
         """Refresh the point-in-time content evidence used by finalization gates."""
         self._require_workspace_identity()
         snapshot_id, complete = _workspace_mutation_fingerprint(
             self.workspace,
             should_stop=self.should_stop,
+            timeout_seconds=timeout_seconds,
         )
         self._require_workspace_identity()
         changed = self._record_workspace_snapshot(
@@ -5614,6 +5621,7 @@ def _workspace_mutation_fingerprint(
     workspace: Path,
     *,
     should_stop: Callable[[], bool] | None = None,
+    timeout_seconds: float = WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS,
 ) -> tuple[str, bool]:
     """Return a bounded content fingerprint and whether its scan was complete."""
     digest = hashlib.sha256()
@@ -5626,7 +5634,7 @@ def _workspace_mutation_fingerprint(
         Path,
         tuple[tuple[str, int, int, int], ...],
     ] = {}
-    deadline = time.monotonic() + WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS
+    deadline = time.monotonic() + max(0.001, float(timeout_seconds))
     stop_requested = should_stop or (lambda: False)
     try:
         resolved_workspace = workspace.resolve(strict=True)
@@ -5851,6 +5859,37 @@ def _workspace_mutation_fingerprint(
         ).encode()
     )
     return digest.hexdigest(), True
+
+
+def _capture_initial_workspace_evidence(
+    controller: WorkspaceController,
+    should_stop: Callable[[], bool],
+) -> dict[str, Any]:
+    """Retry a transiently incomplete startup scan before opening the browser."""
+    evidence = {
+        **controller.evidence_metadata(),
+        "workspace_changed": False,
+    }
+    for attempt in range(1, INITIAL_WORKSPACE_EVIDENCE_MAX_ATTEMPTS + 1):
+        timeout_seconds = (
+            WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS
+            if attempt == 1
+            else INITIAL_WORKSPACE_EVIDENCE_RETRY_TIMEOUT_SECONDS
+        )
+        started = time.monotonic()
+        evidence = controller.refresh_workspace_evidence(
+            timeout_seconds=timeout_seconds,
+        )
+        if evidence["evidence_complete"] or should_stop():
+            return evidence
+        LOGGER.info(
+            "Initial workspace evidence scan %s of %s was incomplete after %.2f seconds; "
+            "retrying before browser startup.",
+            attempt,
+            INITIAL_WORKSPACE_EVIDENCE_MAX_ATTEMPTS,
+            time.monotonic() - started,
+        )
+    return evidence
 
 
 def _inspection_argument_path_value(argument: str) -> str:
@@ -8536,7 +8575,12 @@ def run_web_computer_use(
         action_checkpoint=action_checkpoint,
         expected_workspace_identity=expected_workspace_identity,
     )
-    initial_evidence = controller.refresh_workspace_evidence()
+    initial_evidence = _capture_initial_workspace_evidence(
+        controller,
+        should_stop,
+    )
+    if should_stop():
+        return stopped_result
     if not initial_evidence["evidence_complete"]:
         raise RuntimeError(
             "The Agent browser was not opened because the controller could not create a "

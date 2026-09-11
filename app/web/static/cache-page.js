@@ -1,4 +1,4 @@
-/* Code version: v1.14.0-codex.1 */
+/* Code version: v1.14.2-codex.1 */
 
 (() => {
     "use strict";
@@ -12,6 +12,9 @@
     const progressStrategyName = page.dataset.cacheProgressStrategy || "queue";
     const statusPollIntervalMs = 3_000;
     const terminalPhases = new Set(["finished", "completed", "success", "stopped"]);
+    const runningMaximumFields = Object.freeze({
+        "zhihu:downloaded_posts": "processed_tweets",
+    });
     const numberFormatter = new Intl.NumberFormat("en-US");
     const datetimeFormatter = new Intl.DateTimeFormat("en-US", {
         day: "numeric",
@@ -350,11 +353,23 @@
         });
     }
 
+    function resolveStatusFieldValue(element, data, fieldName) {
+        const persistedValue = data[fieldName];
+        const runningMaxField = runningMaximumFields[`${sourceKey}:${fieldName}`];
+        if (!data.running || !runningMaxField) return persistedValue;
+
+        const persistedNumber = Number(persistedValue);
+        const runningNumber = Number(data[runningMaxField]);
+        if (!Number.isFinite(runningNumber)) return persistedValue;
+        if (!Number.isFinite(persistedNumber)) return runningNumber;
+        return Math.max(persistedNumber, runningNumber);
+    }
+
     function updateStatusFields(data) {
         statusFields.forEach((element) => {
             const fieldName = element.dataset.statusField;
             if (!fieldName) return;
-            const rawValue = data[fieldName];
+            const rawValue = resolveStatusFieldValue(element, data, fieldName);
             if (element.dataset.statusFormat === "number") {
                 setStatusValueIfChanged(element, formatMetricNumber(rawValue));
                 return;
@@ -485,6 +500,11 @@
         if (isIndeterminate) {
             label = "Scanning";
             detail = `Scanning ${sourceLabel}. The final work-item total is not known yet.`;
+        } else if (data.phase === "failed" && hasMeasuredProgress) {
+            const notProcessed = Math.max(queued - processed, 0);
+            const percent = clampPercent(completePercent);
+            label = `Failed at ${percent}%`;
+            detail = `${formatMetricNumber(processed)} / ${formatMetricNumber(queued)} ${progressUnit} processed before failure (${percent}%); ${formatMetricNumber(notProcessed)} not processed.`;
         } else if (hasMeasuredProgress) {
             const pending = Math.max(queued - processed, 0);
             const percent = clampPercent(completePercent);

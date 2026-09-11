@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.41.0-codex.1
+Code version: v1.41.2-codex.1
 """
 
 from __future__ import annotations
@@ -10696,15 +10696,63 @@ def test_cache_progress_reuses_training_track_and_lifecycle(disposable_browser, 
         assert page.locator('#status_progress_value').evaluate('(node) => node.getBoundingClientRect().bottom <= document.querySelector("#status_progress").getBoundingClientRect().top')
         state.update(phase='collecting', running=True)
         expect(track).to_have_class(re.compile('is-indeterminate'), timeout=6000)
-        expect(fill).to_have_css('animation-name', 'none' if motion == 'reduce' else 'cacheTrainingProgressPending')
+        expect(fill).to_have_css('animation-name', 'none')
         state.update(queued_tweets=10, processed_tweets=4)
         expect(track).to_have_attribute('aria-valuenow', '40', timeout=6000)
         expect(page.locator('#status_progress_value')).to_have_text('40%')
         state.update(phase='failed', running=False)
         expect(page.locator('#phase_value')).to_have_attribute('data-phase', 'failed', timeout=6000)
         expect(track).to_have_attribute('aria-valuenow', '40')
+        expect(page.locator('#status_progress_value')).to_have_text('Failed at 40%')
+        expect(page.locator('#status_progress_detail')).to_have_text(
+            '4 / 10 sessions processed before failure (40%); 6 not processed.'
+        )
         state.update(phase='completed', processed_tweets=10)
         expect(track).to_have_attribute('aria-valuenow', '100', timeout=6000)
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1012, 390])
+def test_zhihu_cached_answer_metric_tracks_live_progress_without_overstating_failure(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    width: int,
+) -> None:
+    context = disposable_browser.new_context(viewport={"width": width, "height": 959})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    state = {
+        "phase": "downloading",
+        "running": True,
+        "message": "Reading Zhihu answers.",
+        "downloaded_posts": 328,
+        "discovered_tweets": 1_177,
+        "queued_tweets": 1_177,
+        "processed_tweets": 120,
+        "progress_unit": "answers",
+    }
+    page.route("**/api/cache/zhihu/status?*", lambda route: route.fulfill(json=state))
+    try:
+        page.goto(f"{sidebar_server_url}/cache/zhihu", wait_until="networkidle")
+        cached_answers = page.locator("#downloaded_posts")
+        expect(cached_answers).to_have_text("328")
+
+        state.update(processed_tweets=820)
+        expect(cached_answers).to_have_text("820", timeout=6_000)
+        state.update(processed_tweets=873)
+        expect(cached_answers).to_have_text("873", timeout=6_000)
+
+        state.update(phase="failed", running=False, message="Previous archive preserved.")
+        expect(cached_answers).to_have_text("328", timeout=6_000)
+        expect(page.locator("#phase_value")).to_have_attribute("data-phase", "failed")
+        expect(page.locator("#status_progress_value")).to_have_text("Failed at 74%")
+        expect(page.locator("#status_progress_detail")).to_have_text(
+            "873 / 1,177 items processed before failure (74%); 304 not processed."
+        )
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert errors == []
     finally:
         context.close()
