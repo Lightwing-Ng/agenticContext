@@ -1,4 +1,4 @@
-/* Code version: v2.117.0-codex.1 */
+/* Code version: v2.117.4-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -137,6 +137,7 @@
     --control-compact-height: 28px;
     --control-form-height: 36px;
     --agent-composer-control-height: 32px;
+    --agent-response-toolbar-padding: 4px;
     --local-store-pagination-slot-size: 30px;
     --sidebar-action-primary-background: var(--theme-accent-primary);
     --sidebar-action-primary-background-hover: color-mix(in srgb, var(--theme-accent-primary) 88%, var(--color-white-adaptive));
@@ -5844,14 +5845,6 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     box-shadow: var(--control-liquid-shadow-focus);
 }
 
-.browser-filter-actions {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-    align-items: center;
-    margin-top: 4px;
-}
-
 .ghost-link--compact {
     min-height: var(--control-compact-height);
     height: var(--control-compact-height);
@@ -5863,20 +5856,7 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     white-space: nowrap;
 }
 
-.browser-filter-actions .secondary-button {
-    width: fit-content;
-    max-width: 100%;
-    justify-self: end;
-}
-
-.browser-filter-actions .primary-button {
-    grid-column: 1 / -1;
-    width: 100%;
-    min-height: 38px;
-}
-
 .cache-settings-link,
-.browser-clear-link,
 .browser-session-back-link,
 .browser-refresh-button {
     font-size: var(--font-size-3);
@@ -6071,6 +6051,11 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     max-height: none;
     overflow: visible;
     padding: var(--workspace-article-pad-block-start) var(--workspace-article-pad-inline) 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
 }
 
 .workspace > .workspace-header:first-child > .browser-summary-card {
@@ -6085,6 +6070,15 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     width: 100%;
     min-height: var(--workspace-title-rail-control-height);
     margin-bottom: 0;
+}
+
+.browser-summary-card .report-heading {
+    margin: 0;
+    color: var(--text);
+    font-size: var(--font-card-title);
+    font-weight: var(--font-weight-medium);
+    line-height: 1;
+    letter-spacing: 0;
 }
 
 .browser-summary-card .workspace-kicker {
@@ -6134,7 +6128,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-heading-row {
     margin-bottom: 0;
-    align-items: flex-start;
+    align-items: center;
 }
 
 .browser-session-actions {
@@ -11682,6 +11676,8 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
 #agent_runtime_form {
     --agent-sidebar-icon-slot: 28px;
     --agent-sidebar-control-inset: 10px;
+    --agent-status-card-padding-block: 4px;
+    --agent-status-row-gap: 2px;
 }
 
 #agent_runtime_form .browser-picker-selected-icon-shell {
@@ -11694,9 +11690,13 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
     border-inline: var(--control-liquid-border);
 }
 
+#agent_runtime_form .browser-session-status-card-compact {
+    padding-block: var(--agent-status-card-padding-block);
+}
+
 #agent_runtime_form .browser-session-status-copy {
     --browser-session-status-checkmark-size: var(--agent-sidebar-icon-slot);
-    --browser-session-status-item-gap: 10px;
+    --browser-session-status-item-gap: var(--agent-status-row-gap);
 }
 
 #agent_runtime_form .browser-session-status-spinner {
@@ -11711,9 +11711,13 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
     -webkit-mask-size: 18px 18px;
 }
 
-#agent_runtime_form .browser-session-status-item,
-#agent_runtime_form .agent-terminal-execution-status {
-    gap: 10px;
+#agent_runtime_form .browser-session-status-card-compact .browser-session-status-item,
+#agent_runtime_form .browser-session-status-card-compact .agent-terminal-execution-status {
+    gap: var(--agent-status-row-gap);
+}
+
+#agent_runtime_form .browser-session-status-card-compact .agent-terminal-execution-status {
+    min-height: var(--agent-sidebar-icon-slot);
 }
 
 /* Keep Agent status on the same static core geometry as Cache. */
@@ -11898,6 +11902,7 @@ main[data-cache-page] .progress-metric-card strong {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: start;
+    padding: var(--agent-response-toolbar-padding);
     border: var(--sidebar-shell-border);
     border-radius: var(--sidebar-shell-radius);
     background: var(--sidebar-shell-background);

@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.69.4-codex.1`
+Documentation version: `v3.69.5-codex.1`
 
 ## Purpose
 
@@ -612,6 +612,14 @@ that conversation without reconstructing or uploading project context. It never 
 and never reuses an unbound pre-submission URL. A timed-out turn is eligible only when the persisted
 checkpoint proves exact delivery and retains its exchange ID and outbound SHA-256. Provider handoff
 and New task remain explicit UI actions.
+
+Doctor derives verification debt from the same persisted `action_checkpoint` generations as the
+controller completion gate. A read-only run, or a write-capable run with no recorded local workspace
+change, reports verification as informational instead of requiring evidence that was never owed.
+A write-capable run with an edit or workspace generation still reports missing current verification
+as attention. When the response pane displays a provider-only historical session, Doctor is hidden
+with its Technical details, and any pending diagnostic request is invalidated because the local
+worker snapshot does not own that selected history.
 
 ## Safety boundary
 

@@ -1,4 +1,4 @@
-{# Code version: v1.9.1-codex.1 #}
+{# Code version: v1.9.2-codex.1 #}
 {% set cache_source_keys = cache_sources | map(attribute="key") | list %}
 {% set llm_cache_source_keys = llm_cache_sources | map(attribute="key") | list %}
 {% set cache_dock_source_key = dock_section if dock_section in cache_source_keys or dock_section in llm_cache_source_keys else "chatgpt" %}
@@ -28,7 +28,7 @@
         <span class="sidebar-dock-label" aria-hidden="true">Cache</span>
     </a>
     <a
-        href="{{ url_for('browser', view='text', source='all', kind='all', q='', sort='newest', session_view='1') }}"
+        href="{{ url_for('browser', view='text', source='chatgpt', kind='all', q='', sort='newest', session_view='1') }}"
         class="sidebar-dock-item{% if dock_section == 'local-resources' %} is-active{% endif %}"
         data-dock-section="local-resources"
         data-section-link="local-resources"

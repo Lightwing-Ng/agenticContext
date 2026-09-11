@@ -1,6 +1,6 @@
 """Route and service tests for Agent doctor recovery UX.
 
-Code version: v1.7.2-codex.1
+Code version: v1.7.3-codex.1
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import pytest
 
 from app.core.agent.event_chain import AgentEventChain
 from app.core.computer_use_agent import (
+    ActionState,
     CONTINUE_INTERRUPTED_AGENT_PROMPT,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
@@ -118,6 +119,65 @@ def test_doctor_does_not_call_active_context_a_cleanup_failure(tmp_path) -> None
 
     assert checks["context_cleanup"]["status"] == "pass"
     assert "active Agent run" in checks["context_cleanup"]["detail"]
+
+
+@pytest.mark.parametrize(
+    (
+        "read_only",
+        "edit_generation",
+        "workspace_generation",
+        "expected_status",
+        "detail",
+    ),
+    (
+        (True, 2, 3, "healthy", "read-only Agent run"),
+        (False, 0, 0, "healthy", "no local workspace change"),
+        (False, 1, 1, "attention", "after the latest edit"),
+        ("false", 1, 1, "attention", "after the latest edit"),
+    ),
+)
+def test_doctor_requires_verification_only_for_write_capable_workspace_changes(
+    tmp_path,
+    read_only,
+    edit_generation,
+    workspace_generation,
+    expected_status,
+    detail,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    run_id = "run-0123456789abcdef"
+    chain = _write_valid_event_chain(
+        runtime_root,
+        run_id,
+        delivery_phase="completed",
+        terminal_kind="run.completed",
+    )
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runtime_root=runtime_root,
+    )
+    service._event_chain = chain
+    service._snapshot.run_id = run_id
+    service._snapshot.phase = "finished"
+    service._snapshot.read_only = read_only
+    service._snapshot.bodycheck_passed = True
+    service._snapshot.delivery_phase = "completed"
+    service._snapshot.action_checkpoint = ActionState(
+        edit_generation=edit_generation,
+        workspace_generation=workspace_generation,
+    ).checkpoint()
+
+    doctor = service.doctor()
+    verification = next(
+        check for check in doctor["checks"] if check["id"] == "verification"
+    )
+
+    assert doctor["status"] == expected_status
+    assert verification["status"] == (
+        "warn" if expected_status == "attention" else "info"
+    )
+    assert detail in verification["detail"]
 
 
 def test_completed_run_persists_event_chain_and_doctor_can_report_healthy(

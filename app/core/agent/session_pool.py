@@ -1,6 +1,6 @@
 """Bounded, independently controlled Web Agent sessions.
 
-Code version: v1.8.0-codex.1
+Code version: v1.8.1-codex.1
 """
 
 from contextlib import contextmanager
@@ -427,15 +427,12 @@ class AgentSessionPool:
                     read_only=bool(read_only),
                 )
         active_count = len(active)
-        selected_workspace_identity = self._workspace_identity(workspace)
         fields = ("workspace_path", "project_url", "conversation_url", "session_title", "running", "paused", "phase", "message", "started_at", "finished_at", "run_id", "read_only")
         sessions = [
             {"session_id": key, **{field: item.get(field) for field in fields}}
             for key, item in snapshots
             if item.get("run_id") and (item.get("browser"), item.get("platform"))
             == (browser, platform)
-            and self._workspace_identity(item.get("workspace_path"))
-            == selected_workspace_identity
         ]
         sessions.sort(key=lambda item: (not item["running"], str(item["started_at"] or "")))
         return {"sessions": sessions, "active_count": active_count, "concurrency_limit": self._concurrency_limit(browser),

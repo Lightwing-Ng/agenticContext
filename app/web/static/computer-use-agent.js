@@ -1,4 +1,4 @@
-/* Code version: v3.44.0-codex.1 */
+/* Code version: v3.44.2-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -376,6 +376,9 @@
             }
         }
         if (Number.isInteger(payload.active_count)) executionActiveCount = payload.active_count;
+        else if (Array.isArray(payload.sessions)) {
+            executionActiveCount = executionSessions.filter((item) => item.running).length;
+        }
         if (typeof payload.can_start === "boolean") {
             executionCanStart = payload.can_start;
             executionStartBlockedReason = typeof payload.start_blocked_reason === "string"
@@ -528,10 +531,11 @@
         const inProjectMode = selectedSessionMode() === "project";
         const remote = inProjectMode ? projectSessions : (agentSources.recent_sessions || []);
         const remoteUrls = new Set(remote.map((item) => historyUrlKey(item.url)));
-        const local = executionSessions.filter((item) => !inProjectMode || (project && (
-            historyUrlKey(item.project_url) === historyUrlKey(project)
-            || remoteUrls.has(historyUrlKey(item.conversation_url))
-        )));
+        const local = executionSessions.filter((item) => !inProjectMode || item.running
+            || (project && (
+                historyUrlKey(item.project_url) === historyUrlKey(project)
+                || remoteUrls.has(historyUrlKey(item.conversation_url))
+            )));
         const seen = new Set(local.map((item) => historyUrlKey(item.conversation_url)).filter(Boolean));
         const items = [...local];
         for (const item of remote) {
@@ -542,10 +546,13 @@
         }
         const capacity = document.querySelector("[data-agent-session-capacity]");
         if (capacity) {
-            const count = local.filter((item) => item.running).length;
+            const count = executionActiveCount;
             capacity.hidden = count === 0;
             capacity.textContent = count ? count.toLocaleString("en-US") : "";
-            capacity.setAttribute("aria-label", `${count.toLocaleString("en-US")} active sessions`);
+            capacity.setAttribute(
+                "aria-label",
+                `${count.toLocaleString("en-US")} active ${count === 1 ? "session" : "sessions"}`,
+            );
         }
         const signature = JSON.stringify([items, executionSessionId, selectedConversationUrl(),
             project, projectSessionsLoading, catalogState, catalogError,
@@ -2395,9 +2402,18 @@
         syncActivityCurrent();
     }
 
+    function localRunOwnsSelectedView() {
+        const selectedUrl = selectedHistoryConversationUrl();
+        return !selectedUrl || executionSessions.some(
+            (item) => item.session_id === executionSessionId,
+        );
+    }
+
     function renderErrorRecord(agent) {
         if (!elements.errorRecord || !elements.errorRecordContent) return;
-        const errorText = String(agent?.error_traceback || agent?.last_error || "");
+        const errorText = localRunOwnsSelectedView()
+            ? String(agent?.error_traceback || agent?.last_error || "")
+            : "";
         const changed = elements.errorRecordContent.textContent !== errorText;
         if (changed) elements.errorRecordContent.textContent = errorText;
         elements.errorRecord.hidden = !errorText;
@@ -2508,6 +2524,7 @@
     }
 
     function agentNeedsDoctor(agent) {
+        if (!localRunOwnsSelectedView()) return false;
         return ["failed", "interrupted"].includes(String(agent?.phase || ""))
             || Boolean(agent?.paused)
             || ["invalid", "degraded"].includes(String(agent?.event_chain_state || ""))
@@ -3218,9 +3235,10 @@
         if (agentNeedsDoctor(agent)) {
             if (!doctorPayload) loadDoctor();
             else renderDoctor();
-        } else if (doctorPayload) {
+        } else {
+            if (doctorPayload || doctorLoading) doctorRequestId += 1;
             doctorPayload = null;
-            doctorRequestId += 1;
+            if (elements.doctorPanel) elements.doctorPanel.open = false;
             renderDoctor(null);
         }
         renderResponseStatus(agent, readiness);

@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.0-codex.1."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.2-codex.1."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -147,9 +147,16 @@ def test_same_conversation_rejected_and_paused_slot_counted(sessions):
     catalog = pool.catalog("edge", "chatgpt", str(workspace))
     assert catalog["active_count"] == 2
     assert catalog["can_start"] is False
-    assert len(catalog["sessions"]) == 1
-    assert pool.catalog("edge", "chatgpt", "/unrelated")["sessions"] == []
-    assert {item["workspace_path"] for item in catalog["sessions"]} == {str(workspace)}
+    assert len(catalog["sessions"]) == 2
+    assert {
+        item["workspace_path"] for item in catalog["sessions"]
+    } == {str(workspace), str(second_workspace)}
+    assert {
+        item["session_id"]
+        for item in pool.catalog("edge", "chatgpt", "/unrelated")["sessions"]
+    } == {
+        item["session_id"] for item in catalog["sessions"]
+    }
     assert pool.catalog("edge", "gemini", str(workspace))["sessions"] == []
 
 
@@ -295,8 +302,10 @@ def test_api_targets_only_selected_session_and_rejects_unknown(tmp_path, monkeyp
             }).json
             assert payload["agent"]["prompt"] == prompt
             assert payload["active_count"] == 2
-            assert len(payload["sessions"]) == 1
-            assert payload["sessions"][0]["session_id"] == key
+            assert {item["session_id"] for item in payload["sessions"]} == set(ids)
+            assert {
+                item["workspace_path"] for item in payload["sessions"]
+            } == {str(item) for item in workspaces[:2]}
         assert client.post("/api/agent/stop", headers={**headers, "X-CacheLikes-Agent-Session": ids[0]}).json["stop_requested"]
         wait_until(lambda: not pool.get(ids[0]).snapshot()["running"])
         assert pool.get(ids[1]).snapshot()["running"]

@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.25.0-codex.1
+# Code version: v1.25.1-codex.1
 
 from __future__ import annotations
 
@@ -632,9 +632,12 @@ def normalize_browser_filters(
     elif normalized_view not in VIEW_VALUES:
         normalized_view = "media"
     source_values = SOURCE_VALUES if normalized_view == "media" else TEXT_SOURCE_VALUES
+    default_source = "chatgpt" if normalized_view == "text" else "all"
     if normalized_view == "media" and normalized_source in TEXT_ONLY_SOURCE_VALUES:
         normalized_source = "chatgpt"
-    safe_source = normalized_source if normalized_source in source_values else "all"
+    if normalized_view == "text" and normalized_source == "all":
+        normalized_source = default_source
+    safe_source = normalized_source if normalized_source in source_values else default_source
     normalized_answerer = str(answerer or "").replace("\x00", "").strip()[:160]
     if normalized_view != "text" or safe_source != "zhihu":
         normalized_answerer = ""

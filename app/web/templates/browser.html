@@ -1,4 +1,4 @@
-<!-- Code version: v1.71.1-codex.1 -->
+<!-- Code version: v1.71.6-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,15 +9,15 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.2-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.117.0-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.117.4-codex.1') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.1-codex.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.33.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.33.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
-    <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.0-codex.1') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.5.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.1.0-codex.1') }}"></script>
@@ -131,9 +131,13 @@
                     <label class="field browser-filter-field">
                         <span>{{ "Source" if filters.view == "media" else "Chat source" }}</span>
                         {% set source_options = cache_sources if filters.view == "media" else chat_history_sources %}
-                        {% set all_source_label = "All chats" if filters.view == "text" else "All sources" %}
-                        {% set all_source_icon = "images/photo.stack.svg" if filters.view == "media" else "images/arrow.down.message.fill.svg" %}
-                        {% set selected_source = namespace(label=all_source_label, icon=all_source_icon) %}
+                        {% set all_source_label = "All sources" %}
+                        {% set all_source_icon = "images/photo.stack.svg" %}
+                        {% set selected_source = namespace(label="ChatGPT", icon="images/ChatGPT-Logo.svg") %}
+                        {% if filters.view != "text" %}
+                            {% set selected_source.label = all_source_label %}
+                            {% set selected_source.icon = all_source_icon %}
+                        {% endif %}
                         {% for source in source_options %}
                             {% if filters.source == source.key %}
                                 {% set selected_source.label = source.label %}
@@ -173,6 +177,7 @@
                                 aria-label="Filter by source"
                                 hidden
                             >
+                                {% if filters.view != "text" %}
                                 <button
                                     type="button"
                                     id="browser_source_filter_option_all"
@@ -188,6 +193,7 @@
                                     <span class="cache-source-mark browser-source-filter-mark{% if filters.view == 'text' %} is-full-color{% endif %}" style="--cache-source-mark: url('{{ url_for('static', filename=all_source_icon) }}');" aria-hidden="true"></span>
                                     <span class="trade-strategy-dropdown-text">{{ all_source_label }}</span>
                                 </button>
+                                {% endif %}
                                 {% for source in source_options %}
                                 <button
                                     type="button"
@@ -242,24 +248,6 @@
                             <option value="name" {% if filters.sort == "name" %}selected{% endif %}>{{ "File name" if filters.view == "media" else ("Prompt title" if filters.view == "prompts" else ("Question title" if is_zhihu_text and text_page.session_detail else ("Answerer name" if is_zhihu_text else "Session title"))) }}</option>
                         </select>
                     </label>
-                    <div class="browser-filter-actions">
-                        {% if not is_zhihu_text %}
-                        <a
-                            href="{{ url_for('browser', view=filters.view) }}"
-                            class="secondary-button browser-clear-link"
-                            data-wait-title="Clearing filters"
-                            data-wait-copy="Restoring the complete local cache view."
-                        >Clear filters</a>
-                        {% endif %}
-                        <button
-                            type="submit"
-                            name="refresh"
-                            value="1"
-                            class="secondary-button browser-refresh-button"
-                            data-wait-title="Refreshing cache"
-                            data-wait-copy="Scanning the local cache for newly available resources."
-                        >Refresh cache</button>
-                    </div>
                 </form>
             </section>
         </aside>
@@ -270,11 +258,11 @@
                     <div class="report-heading-row browser-heading-row" data-layout-role="title-heading">
                         <div class="browser-heading-copy">
                             {% if filters.view == "text" and text_page.session_detail %}
-                            <h2 lang="zh-CN">{{ text_page.current_session.conversation_title }}</h2>
+                            <h2 class="report-heading" lang="zh-CN">{{ text_page.current_session.conversation_title }}</h2>
                             {% elif is_zhihu_text %}
-                            <h2>Zhihu answerers</h2>
+                            <h2 class="report-heading">Zhihu answerers</h2>
                             {% else %}
-                            <h2>{{ "Cached media browser" if filters.view == "media" else ("Saved prompts" if filters.view == "prompts" else "Cached text browser") }}</h2>
+                            <h2 class="report-heading">{{ "Cached media browser" if filters.view == "media" else ("Saved prompts" if filters.view == "prompts" else "Cached text browser") }}</h2>
                             {% endif %}
                         </div>
                     </div>
@@ -958,21 +946,6 @@
                                 aria-label="Filter by source"
                                 hidden
                             >
-                                <button
-                                    type="button"
-                                    id="browser_header_source_filter_option_all"
-                                    class="trade-strategy-dropdown-option browser-source-filter-option{% if filters.source == 'all' %} is-selected is-active{% endif %}"
-                                    data-browser-source-filter-option="all"
-                                    data-browser-source-filter-label="{{ all_source_label }}"
-                                    data-browser-source-filter-icon="{{ url_for('static', filename=all_source_icon) }}"
-                                    role="option"
-                                    aria-selected="{{ 'true' if filters.source == 'all' else 'false' }}"
-                                    tabindex="-1"
-                                >
-                                    <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
-                                    <span class="cache-source-mark browser-source-filter-mark{% if filters.view == 'text' %} is-full-color{% endif %}" style="--cache-source-mark: url('{{ url_for('static', filename=all_source_icon) }}');" aria-hidden="true"></span>
-                                    <span class="trade-strategy-dropdown-text">{{ all_source_label }}</span>
-                                </button>
                                 {% for source in source_options %}
                                 <button
                                     type="button"

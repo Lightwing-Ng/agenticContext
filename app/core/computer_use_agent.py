@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.69.4-codex.1
+Code version: v3.69.5-codex.1
 """
 
 from __future__ import annotations
@@ -7742,9 +7742,21 @@ class ComputerUseAgentService:
                 }
             )
 
-            verification_applicable = bool(snapshot.get("run_id"))
+            run_recorded = bool(snapshot.get("run_id"))
             verification_passed = bool(snapshot.get("verification_passed"))
             bodycheck_passed = bool(snapshot.get("bodycheck_passed"))
+            read_only_run = snapshot.get("read_only") is True
+            action_state = ActionState.from_checkpoint(
+                snapshot.get("action_checkpoint")
+            )
+            verification_required = bool(
+                run_recorded
+                and not read_only_run
+                and (
+                    action_state.edit_generation > 0
+                    or action_state.workspace_generation > 0
+                )
+            )
             checks.append(
                 {
                     "id": "verification",
@@ -7753,14 +7765,18 @@ class ComputerUseAgentService:
                         "pass"
                         if verification_passed
                         else "warn"
-                        if verification_applicable
+                        if verification_required
                         else "info"
                     ),
                     "detail": (
                         "The latest approved verification is current."
                         if verification_passed
                         else "Not applicable until an Agent run starts."
-                        if not verification_applicable
+                        if not run_recorded
+                        else "Verification is not required for a read-only Agent run."
+                        if read_only_run
+                        else "Verification is not required because no local workspace change was recorded."
+                        if not verification_required
                         else "No current approved verification is recorded after the latest edit."
                     ),
                 }
@@ -7773,14 +7789,14 @@ class ComputerUseAgentService:
                         "pass"
                         if bodycheck_passed
                         else "warn"
-                        if verification_applicable
+                        if run_recorded
                         else "info"
                     ),
                     "detail": (
                         "The latest bodycheck is current."
                         if bodycheck_passed
                         else "Not applicable until an Agent run starts."
-                        if not verification_applicable
+                        if not run_recorded
                         else "Bodycheck is pending or stale after the latest workspace change."
                     ),
                 }

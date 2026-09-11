@@ -1,4 +1,4 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.0.7-codex.1."""
+"""Activity disclosure and status glyph regressions. Code version: v1.0.9-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -9,7 +9,7 @@ disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
 
 
-@pytest.mark.parametrize("width", [994, 390])
+@pytest.mark.parametrize("width", [1042, 994, 390])
 def test_response_toolbar_reuses_sidebar_frosted_material(
     disposable_browser, sidebar_server_url, width
 ):
@@ -18,6 +18,20 @@ def test_response_toolbar_reuses_sidebar_frosted_material(
     )
     page = context.new_page()
     payload = fixtures._finished_chatgpt_agent_payload()
+    payload["agent"].update(
+        running=True,
+        phase="running",
+        finished_at="",
+        run_id="toolbar-padding-test",
+        activity=[
+            {
+                "status": "running",
+                "label": "Search",
+                "detail": "app/web/app.py",
+                "meta": "Turn 30",
+            }
+        ],
+    )
     page.route("**/api/agent/status", lambda route: route.fulfill(json=payload))
     page.route(
         "**/api/browser-session**",
@@ -51,6 +65,12 @@ def test_response_toolbar_reuses_sidebar_frosted_material(
                         style: Object.fromEntries(properties.map(name => [name, style[name]])),
                         radius: style.borderRadius,
                         marginRight: style.marginRight,
+                        padding: {
+                            top: style.paddingTop,
+                            right: style.paddingRight,
+                            bottom: style.paddingBottom,
+                            left: style.paddingLeft,
+                        },
                         borderTopWidth: style.borderTopWidth,
                         right: rect.right,
                     };
@@ -77,6 +97,12 @@ def test_response_toolbar_reuses_sidebar_frosted_material(
         assert material["toolbar"]["style"] == material["sidebar"]["style"]
         assert material["toolbar"]["radius"] == "10px"
         assert material["toolbar"]["marginRight"] == "0px"
+        assert material["toolbar"]["padding"] == {
+            "top": "4px",
+            "right": "4px",
+            "bottom": "4px",
+            "left": "4px",
+        }
         assert material["toolbar"]["borderTopWidth"] == "1px"
         assert material["toolbar"]["right"] <= material["cardRight"] + 0.1
         assert material["activity"] == {

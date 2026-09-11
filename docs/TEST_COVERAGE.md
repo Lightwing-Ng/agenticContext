@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.7.0-codex.1`
+Test-suite version: `v1.7.1-codex.1`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -19,11 +19,13 @@ This is a behavior map, not a claim of complete coverage or a current test-count
 - `test_config_and_state.py`, `test_state.py`, and `test_notice_banner.py`: configuration,
   state transitions, and notice behavior.
 - `test_compute_jobs.py`, `test_agent_capability_registry.py`, `test_agent_event_chain.py`, and
-  `test_agent_doctor.py`: durable jobs, capability contracts, event persistence, and recovery.
+  `test_agent_doctor.py`: durable jobs, capability contracts, event persistence, verification-debt
+  diagnostics, and recovery.
 - `test_agent_controller_hardening.py` and `test_agent_live_capabilities.py`: deterministic
   controller safety and capability behavior; a filename containing "live" is not a pytest marker.
-- `test_agent_session_sources.py`, `test_chatgpt_agent_sources.py`, and `test_agent_activity_e2e.py`:
-  session discovery, source selection, and disposable-browser activity interactions.
+- `test_agent_session_sources.py`, `test_chatgpt_agent_sources.py`, `test_agent_activity_e2e.py`, and
+  `test_agent_sessions_e2e.py`: session discovery, source selection, Doctor ownership, and
+  disposable-browser activity interactions.
 - `test_chatgpt_downloader.py`, `test_gemini_downloader.py`, `test_grok_history.py`, and
   `test_claude_history.py`: provider parsing and persistence using isolated fixtures and fakes.
 - `test_zhihu_answer_collection.py`: strict profile URL admission, normalized answer fields,

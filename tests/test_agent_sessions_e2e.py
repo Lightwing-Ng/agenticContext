@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.7.0-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.7.3-codex.1."""
 
 from copy import deepcopy
 
@@ -806,8 +806,126 @@ def test_session_catalog_titles_and_global_capacity(disposable_browser, sidebar_
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
-        expect(page.locator("[data-agent-session-capacity]")).to_be_hidden()
+        capacity = page.locator("[data-agent-session-capacity]")
+        expect(capacity).to_have_text("1")
+        expect(capacity).to_have_attribute("aria-label", "1 active session")
         expect(page.locator(".agent-execution-session-title")).to_have_text("Official conversation title")
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1042, 390])
+def test_project_filter_keeps_same_title_cross_workspace_active_sessions(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 863},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    project_urls = {
+        "primary": "https://chatgpt.com/g/g-p-primary/project",
+        "second": "https://chatgpt.com/g/g-p-second/project",
+    }
+    workspaces = {
+        "primary": "/tmp/project-alpha",
+        "second": "/tmp/project-beta",
+    }
+    shared_title = "审计这个项目的代码复用状况"
+    agents = {
+        key: {
+            **base["agent"],
+            "session_id": key,
+            "run_id": key,
+            "run_revision": 100,
+            "workspace_path": workspaces[key],
+            "project_url": project_urls[key],
+            "conversation_url": f"https://chatgpt.com/c/{key}",
+            "session_mode": "project_session",
+            "session_title": shared_title,
+            "prompt": shared_title,
+            "running": True,
+            "phase": "running",
+            "finished_at": "",
+            "history": [],
+        }
+        for key in ("primary", "second")
+    }
+    finished_elsewhere = {
+        **agents["second"],
+        "session_id": "finished",
+        "run_id": "finished",
+        "conversation_url": "https://chatgpt.com/c/finished",
+        "session_title": "Finished elsewhere",
+        "running": False,
+        "phase": "finished",
+    }
+    page.add_init_script(
+        "sessionStorage.setItem("
+        "'cachelikes:agent-execution-session:edge:chatgpt', 'primary')"
+    )
+
+    def status(route):
+        key = route.request.headers.get("x-cachelikes-agent-session", "primary")
+        route.fulfill(
+            json={
+                **base,
+                "agent": agents.get(key, agents["primary"]),
+                "sessions": [*agents.values(), finished_elsewhere],
+                "active_count": 2,
+                "can_start": False,
+                "concurrency_limit": 2,
+            }
+        )
+
+    catalog = {
+        "recent_sessions": [],
+        "projects": [
+            {"url": project_urls[key], "title": f"Project {key}"}
+            for key in ("primary", "second")
+        ],
+    }
+    page.route("**/api/agent/status", status)
+    page.route(
+        "**/api/browser-session**",
+        lambda route: route.fulfill(
+            json={
+                "can_download": True,
+                "logged_in": True,
+                "browser": "edge",
+                "platform": "chatgpt",
+                "agent_sources": catalog,
+            }
+        ),
+    )
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
+    page.route(
+        "**/api/agent/project-sessions**",
+        lambda route: route.fulfill(json={"sessions": []}),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        capacity = page.locator("[data-agent-session-capacity]")
+        expect(capacity).to_have_text("2")
+        expect(capacity).to_have_attribute("aria-label", "2 active sessions")
+        expect(page.locator(".agent-execution-session-title")).to_have_text(
+            [shared_title, shared_title]
+        )
+        expect(page.locator("[data-execution-session-id=primary]")).to_be_visible()
+        expect(page.locator("[data-execution-session-id=second]")).to_be_visible()
+        expect(page.locator("[data-execution-session-id=finished]")).to_have_count(0)
+
+        page.locator("[data-execution-session-id=second]").click()
+        expect(page.locator("[data-agent-project-name]")).to_have_text("project-beta")
+        expect(page.locator('input[name="workspace_path"]')).to_have_value(
+            workspaces["second"]
+        )
+        expect(capacity).to_have_text("2")
     finally:
         context.close()
 
@@ -1260,6 +1378,105 @@ def test_session_diagnostics_stay_collapsed_and_pager_above_composer(disposable_
         }''')
         assert bounds["bottom"] <= bounds["top"]
         assert bounds["top"] - bounds["bottom"] < 100
+    finally:
+        context.close()
+
+
+def test_remote_history_does_not_inherit_local_session_doctor(
+    disposable_browser,
+    sidebar_server_url,
+) -> None:
+    context = disposable_browser.new_context(viewport={"width": 1024, "height": 1164})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    local_url = "https://chatgpt.com/c/local-failed-session"
+    remote_url = "https://chatgpt.com/c/remote-audit-session"
+    local_agent = {
+        **base["agent"],
+        "session_id": "primary",
+        "run_id": "local-failed-run",
+        "phase": "failed",
+        "running": False,
+        "conversation_url": local_url,
+        "conversation_bound": True,
+        "last_error": "Local task failed.",
+    }
+    doctor_requests = []
+
+    page.route(
+        "**/api/agent/status",
+        lambda route: route.fulfill(
+            json={
+                **base,
+                "agent": local_agent,
+                "sessions": [local_agent],
+                "active_count": 0,
+                "can_start": True,
+            }
+        ),
+    )
+
+    def doctor(route):
+        doctor_requests.append(route.request.url)
+        route.fulfill(
+            json={
+                "run_id": "local-failed-run",
+                "status": "attention",
+                "checks": [],
+                "events": [],
+                "actions": [],
+            }
+        )
+
+    page.route("**/api/agent/doctor", doctor)
+    page.route(
+        "**/api/browser-session**",
+        lambda route: route.fulfill(
+            json={
+                "can_download": True,
+                "browser": "edge",
+                "platform": "chatgpt",
+                "agent_sources": {
+                    "recent_sessions": [
+                        {"url": remote_url, "title": "Remote audit"},
+                    ],
+                    "projects": [],
+                },
+            }
+        ),
+    )
+    page.route(
+        "**/api/agent/chatgpt-session-history**",
+        lambda route: route.fulfill(
+            json={
+                "title": "Remote audit",
+                "history": [
+                    {
+                        "prompt": "Review the project architecture.",
+                        "response": "Audit completed without local changes.",
+                        "response_html": "<p>Audit completed without local changes.</p>",
+                    }
+                ],
+            }
+        ),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        panel = page.locator("#agent_doctor_panel")
+        expect(panel).to_be_visible()
+        assert len(doctor_requests) == 1
+
+        page.locator(
+            f'[data-recent-conversation-url="{remote_url}"]'
+        ).click()
+
+        expect(page.locator("#agent_response_question")).to_have_text(
+            "Review the project architecture."
+        )
+        expect(panel).to_be_hidden()
+        expect(page.locator("#agent_error_record")).to_be_hidden()
+        page.wait_for_timeout(250)
+        assert len(doctor_requests) == 1
     finally:
         context.close()
 

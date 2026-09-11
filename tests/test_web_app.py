@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.108.1-codex.1
+# Code version: v1.108.7-codex.1
 
 from __future__ import annotations
 
@@ -709,6 +709,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="dock-brand-icon"', dock_markup)
                 self.assertIn('data-dock-section="cache"', dock_markup)
                 self.assertIn('data-dock-section="local-resources"', dock_markup)
+                self.assertIn('source=chatgpt', dock_markup)
                 self.assertIn('data-dock-section="settings"', dock_markup)
                 self.assertEqual(dock_markup.count('aria-current="page"'), 1)
                 expected_cache_source = (
@@ -732,7 +733,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.22.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.117.0-codex.1"
+                expected_style_version = "style-v2.117.4-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1145,14 +1146,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.117.0-codex.1', local_body)
+        self.assertIn('style-v2.117.4-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.8.0', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.44.0-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.44.2-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -2253,7 +2254,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.44.0-codex.1',
+            'computer-use-agent-v3.44.2-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -3614,7 +3615,7 @@ class WebAppTests(unittest.TestCase):
         self.assertGreater(body.index("data-browser-search"), body.index("</aside>"))
         self.assertIn("browser-search.css?v=browser-search-v1.4.1-codex.1", body)
         self.assertIn('type="module"', body)
-        self.assertIn("browser-search.js?v=browser-search-v2.2.0-codex.1", body)
+        self.assertIn("browser-search.js?v=browser-search-v2.2.1-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
         self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.1.0-codex.1", body)
         self.assertLess(
@@ -3657,6 +3658,7 @@ class WebAppTests(unittest.TestCase):
             '".browser-media-card-title, .browser-session-table-title, .browser-chat-message-title"',
             search_script,
         )
+        self.assertNotIn('sourceField.value = "all"', search_script)
 
         source_filter_script = BROWSER_SOURCE_FILTER_SCRIPT_PATH.read_text(encoding="utf-8")
         for fragment in (
@@ -3804,7 +3806,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('data-browser-session-tag', scoped_body)
                 self.assertIn('browser-session-detail-actions--session', scoped_body)
                 self.assertNotIn('data-chat-message-id=', scoped_body)
-                response = client.get("/browser?view=text&source=all&session_view=1&q=亚朵")
+                response = client.get("/browser?view=text&source=gemini&session_view=1&q=亚朵")
 
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
@@ -3857,10 +3859,10 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.117.0-codex.1", body)
+            self.assertIn("style-v2.117.4-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.0-codex.1', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -4502,6 +4504,9 @@ class WebAppTests(unittest.TestCase):
             'function renderOptimisticContentModeNavigation(mode) {',
             'const formData = new FormData(filterForm);',
             'formData.set("view", mode);',
+            'const selectedSource = String(formData.get("source") || "").trim().toLowerCase();',
+            '["chatgpt", "claude", "gemini", "grok", "zhihu"].includes(selectedSource)',
+            'formData.set("source", "chatgpt");',
             'workspace.dataset.browserNavigationSkeleton = "1";',
             'document.documentElement.setAttribute("aria-busy", "true");',
             'event.target.matches("select[name=\'answerer\']")',
@@ -4516,7 +4521,11 @@ class WebAppTests(unittest.TestCase):
         from app.core.local_media_browser import normalize_browser_filters
 
         self.assertEqual(normalize_browser_filters(source="all")["view"], "text")
+        self.assertEqual(normalize_browser_filters(source="all")["source"], "chatgpt")
+        self.assertEqual(normalize_browser_filters()["source"], "chatgpt")
         self.assertEqual(normalize_browser_filters(source="all", view="media")["view"], "media")
+        self.assertEqual(normalize_browser_filters(source="all", view="media")["source"], "all")
+        self.assertEqual(normalize_browser_filters(source="all", view="prompts")["source"], "all")
         self.assertEqual(
             normalize_browser_filters(
                 source="zhihu",
@@ -4550,6 +4559,11 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(body.index('id="browser_view_media"'), body.index('id="browser_view_prompts"'))
         self.assertIn('data-option-count="3"', body)
         self.assertIn('data-segmented-active-index="0"', body)
+        self.assertIn('name="source" value="chatgpt"', body)
+        self.assertIn('aria-label="Source: ChatGPT"', body)
+        self.assertNotIn('data-browser-source-filter-option="all"', body)
+        self.assertNotIn("All chats", body)
+        self.assertIn('/browser?view=text&amp;source=chatgpt', body)
 
     def test_segmented_control_script_exposes_the_shared_layout_contract(self) -> None:
         script = SEGMENTED_CONTROL_SCRIPT_PATH.read_text(encoding="utf-8")

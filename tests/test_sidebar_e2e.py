@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.42.0-codex.1
+Code version: v1.42.5-codex.1
 """
 
 from __future__ import annotations
@@ -788,16 +788,22 @@ def test_agent_title_rail_stays_aligned_with_global_anchors_across_viewports(
 
 @pytest.mark.integration
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    ("view", "expected_title"),
+    (("text", "Cached text browser"), ("prompts", "Saved prompts")),
+)
 def test_browser_title_rail_stays_aligned_with_global_anchors_across_viewports(
     disposable_browser: Browser,
     sidebar_server_url: str,
+    view: str,
+    expected_title: str,
 ) -> None:
-    """Keep the Cached text browser heading on the shared top anchor rail."""
+    """Keep Local resources headings on Worthward's shared top anchor rail."""
     page, context = _open_page(
         disposable_browser,
-        f"{sidebar_server_url}/browser?view=text&source=all&kind=all&q=&sort=newest&session_view=1",
-        1_280,
-        900,
+        f"{sidebar_server_url}/browser?view={view}&source=chatgpt&kind=all&q=&sort=newest&session_view=1",
+        1_042,
+        863,
         touch=False,
     )
 
@@ -811,8 +817,10 @@ def test_browser_title_rail_stays_aligned_with_global_anchors_across_viewports(
                     return rect.top + (rect.height / 2);
                 };
                 const summary = document.querySelector(".browser-summary-card");
-                if (!(summary instanceof HTMLElement)) return null;
+                const heading = document.querySelector(".browser-summary-card .report-heading");
+                if (!(summary instanceof HTMLElement) || !(heading instanceof HTMLElement)) return null;
                 const summaryStyle = getComputedStyle(summary);
+                const headingStyle = getComputedStyle(heading);
                 return {
                     titleCenterY: centerY(".browser-heading-copy"),
                     sidebarCenterY: centerY("#browser_sidebar .hero h1"),
@@ -821,6 +829,14 @@ def test_browser_title_rail_stays_aligned_with_global_anchors_across_viewports(
                     summaryWidth: summary.getBoundingClientRect().width,
                     summaryPaddingTop: summaryStyle.paddingTop,
                     summaryOverflow: summaryStyle.overflow,
+                    summaryBackgroundColor: summaryStyle.backgroundColor,
+                    summaryBorderWidth: summaryStyle.borderTopWidth,
+                    summaryBoxShadow: summaryStyle.boxShadow,
+                    summaryBackdropFilter: summaryStyle.backdropFilter,
+                    headingFontSize: headingStyle.fontSize,
+                    headingFontWeight: headingStyle.fontWeight,
+                    headingLineHeight: headingStyle.lineHeight,
+                    headingLetterSpacing: headingStyle.letterSpacing,
                     horizontalOverflow: Math.max(
                         document.documentElement.scrollWidth,
                         document.body.scrollWidth,
@@ -831,6 +847,7 @@ def test_browser_title_rail_stays_aligned_with_global_anchors_across_viewports(
 
     try:
         _wait_for_global_title_rail(page, ".browser-heading-copy")
+        expect(page.locator(".browser-summary-card .report-heading")).to_have_text(expected_title)
         desktop = read_geometry()
         assert desktop is not None
         assert abs(desktop["titleCenterY"] - desktop["sidebarCenterY"]) <= 1
@@ -839,6 +856,14 @@ def test_browser_title_rail_stays_aligned_with_global_anchors_across_viewports(
         assert abs(desktop["summaryWidth"] - 640) <= 1
         assert desktop["summaryPaddingTop"] == "10px"
         assert desktop["summaryOverflow"] == "visible"
+        assert desktop["summaryBackgroundColor"] == "rgba(0, 0, 0, 0)"
+        assert desktop["summaryBorderWidth"] == "0px"
+        assert desktop["summaryBoxShadow"] == "none"
+        assert desktop["summaryBackdropFilter"] == "none"
+        assert desktop["headingFontSize"] == "24px"
+        assert desktop["headingFontWeight"] == "500"
+        assert desktop["headingLineHeight"] == "24px"
+        assert desktop["headingLetterSpacing"] in {"0px", "normal"}
         assert not desktop["horizontalOverflow"]
 
         page.set_viewport_size({"width": 390, "height": 844})
@@ -1051,47 +1076,33 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_browser_filter_actions_stack_standard_buttons_across_viewports(
+def test_browser_filters_omit_page_reset_and_refresh_actions_across_viewports(
     disposable_browser: Browser,
     sidebar_server_url: str,
 ) -> None:
-    """Keep the browser filter actions on separate rows at desktop and narrow widths."""
-    route = f"{sidebar_server_url}/browser?view=text&session_view=1&source=all&sort=newest&q="
+    """Keep reset and refresh controls absent from every Local resources view."""
     page, context = _open_page(
         disposable_browser,
-        route,
+        f"{sidebar_server_url}/browser?view=text&session_view=1&source=chatgpt&sort=newest&q=",
         1_280,
         900,
         touch=False,
     )
     try:
-        for width, height in ((1_280, 900), (390, 844)):
-            page.set_viewport_size({"width": width, "height": height})
-            page.goto(route, wait_until="domcontentloaded")
-            actions = page.locator(".browser-filter-actions > :is(a, button)")
-            expect(actions).to_have_count(2)
-            expect(page.locator(".browser-chatgpt-media-link")).to_have_count(0)
-            geometry = actions.evaluate_all(
-                "elements => {"
-                "  const containerRect = elements[0].parentElement.getBoundingClientRect();"
-                "  return {"
-                "    containerRight: containerRect.right,"
-                "    buttons: elements.map(element => {"
-                "      const rect = element.getBoundingClientRect();"
-                "      return {top: rect.top, height: rect.height, right: rect.right};"
-                "    }),"
-                "  };"
-                "}"
+        for view in ("text", "media", "prompts"):
+            route = (
+                f"{sidebar_server_url}/browser?view={view}&session_view=1"
+                "&source=chatgpt&sort=newest&q="
             )
-            assert geometry["buttons"][1]["top"] >= geometry["buttons"][0]["top"] + geometry["buttons"][0]["height"] - 1, (
-                width,
-                geometry,
-            )
-            for button in geometry["buttons"]:
-                assert abs(button["right"] - geometry["containerRight"]) <= 1, (
-                    width,
-                    geometry,
-                )
+            for width, height in ((1_280, 900), (390, 844)):
+                page.set_viewport_size({"width": width, "height": height})
+                page.goto(route, wait_until="domcontentloaded")
+                form = page.locator("#browser_filter_form")
+                expect(form).to_have_count(1)
+                expect(form.locator(".browser-filter-field")).not_to_have_count(0)
+                expect(form.locator(".browser-filter-actions")).to_have_count(0)
+                expect(form.locator(".browser-clear-link")).to_have_count(0)
+                expect(form.locator(".browser-refresh-button")).to_have_count(0)
     finally:
         context.close()
 
@@ -2702,6 +2713,69 @@ def test_browser_session_status_reuses_account_typography_for_terminal_and_cache
             "element => { const style = getComputedStyle(element); return {fontFamily: style.fontFamily, fontSize: style.fontSize, fontWeight: style.fontWeight, lineHeight: style.lineHeight, textAlign: style.textAlign}; }"
         )
         assert cache_typography == agent_typography[0]
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(("width", "height"), ((994, 863), (390, 844)))
+def test_agent_compact_browser_status_uses_annotated_spacing(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    width: int,
+    height: int,
+) -> None:
+    """Measure the compact Agent status card at desktop and narrow viewports."""
+    page, context = _open_page(
+        disposable_browser,
+        f"{sidebar_server_url}/agent/edge/chatgpt",
+        width,
+        height,
+        touch=False,
+    )
+    try:
+        geometry = page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    '#agent_runtime_form .browser-session-status-card-compact'
+                );
+                const accountRow = card?.querySelector('.browser-session-status-item');
+                const accountCheck = accountRow?.querySelector(
+                    '.browser-session-status-checkmark'
+                );
+                const terminalRow = card?.querySelector(
+                    '.agent-terminal-execution-status'
+                );
+                if (!(card instanceof HTMLElement)
+                        || !(accountRow instanceof HTMLElement)
+                        || !(accountCheck instanceof HTMLElement)
+                        || !(terminalRow instanceof HTMLElement)) return null;
+                card.hidden = false;
+                accountCheck.hidden = false;
+                const cardStyle = getComputedStyle(card);
+                const accountStyle = getComputedStyle(accountRow);
+                const terminalStyle = getComputedStyle(terminalRow);
+                return {
+                    paddingTop: cardStyle.paddingTop,
+                    paddingBottom: cardStyle.paddingBottom,
+                    accountRowGap: accountStyle.rowGap,
+                    terminalRowGap: terminalStyle.rowGap,
+                    terminalHeight: terminalRow.getBoundingClientRect().height,
+                    horizontalOverflow: Math.max(
+                        document.documentElement.scrollWidth,
+                        document.body.scrollWidth,
+                    ) > document.documentElement.clientWidth,
+                };
+            }"""
+        )
+        assert geometry is not None
+        assert geometry["paddingTop"] == "4px"
+        assert geometry["paddingBottom"] == "4px"
+        assert geometry["accountRowGap"] == "2px"
+        assert geometry["terminalRowGap"] == "2px"
+        assert abs(geometry["terminalHeight"] - 28) <= 1
+        assert not geometry["horizontalOverflow"]
     finally:
         context.close()
 
@@ -10340,8 +10414,8 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
         assert "page=2" not in page.url
         page.locator('[data-browser-session-scope-remove]').click()
         expect(page.locator('[data-browser-session-tag]')).to_have_count(0)
-        expect(page.locator('[data-chat-message-id]')).to_have_count(2)
-        assert "source=all" in page.url and "session=" not in page.url
+        expect(page.locator('[data-chat-message-id]')).to_have_count(1)
+        assert "source=chatgpt" in page.url and "session=" not in page.url
         page.goto(annotated_resources_server_url + "/browser?view=text&session_view=1")
         expect(page.locator('.browser-session-table tbody tr').first.locator('td').nth(4).locator('.browser-session-message-time-date')).to_be_visible()
         expect(page.locator('.browser-session-table tbody tr').first.locator('td').nth(4).locator('.browser-session-message-time-clock')).to_be_visible()
@@ -10615,7 +10689,7 @@ def test_all_cached_messages_reuse_the_numbered_frosted_table(
 def test_text_source_selection_survives_global_search_form_submission(
     disposable_browser: Browser, seeded_chatgpt_browser_server_url: str, width: int,
 ) -> None:
-    """Only explicit global searches may reset the selected chat source."""
+    """Keep Text source choices explicit and preserve them across global searches."""
     page, context = _open_page(
         disposable_browser,
         seeded_chatgpt_browser_server_url + "/browser?view=text&session_view=0&source=all&sort=newest&q=",
@@ -10627,6 +10701,12 @@ def test_text_source_selection_survives_global_search_form_submission(
         page.locator("[data-browser-source-filter-trigger]").click()
         menu = page.locator("#browser_source_filter_options")
         expect(menu).to_be_visible()
+        expect(page.locator("[data-browser-source-filter-trigger]")).to_have_attribute(
+            "aria-label",
+            "Source: ChatGPT",
+        )
+        expect(menu.locator('[data-browser-source-filter-option="all"]')).to_have_count(0)
+        expect(menu).not_to_contain_text("All chats")
         option_geometry = menu.locator("[data-browser-source-filter-option]").evaluate_all("""options =>
             options.map(option => {
                 const label = option.querySelector('.trade-strategy-dropdown-text');
@@ -10650,9 +10730,14 @@ def test_text_source_selection_survives_global_search_form_submission(
             page.locator(f'[data-browser-source-filter-option="{source}"]').click()
             expect(page).to_have_url(re.compile(rf"[?&]source={source}(?:&|$)"))
             expect(page.locator("[data-browser-source-filter-trigger]")).to_have_attribute("aria-label", f"Source: {label}")
+        page.locator("[data-browser-source-filter-trigger]").click()
+        page.locator('[data-browser-source-filter-option="gemini"]').click()
         page.locator("#browser_search_input").fill("timestamp")
         page.locator("#browser_search_input").press("Enter")
-        expect(page).to_have_url(re.compile(r"[?&]source=all(?:&|$)"))
+        expect(page).to_have_url(re.compile(r"[?&]source=gemini(?:&|$)"))
+        page.locator("[data-browser-source-filter-trigger]").click()
+        page.locator('[data-browser-source-filter-option="chatgpt"]').click()
+        expect(page).to_have_url(re.compile(r"[?&]source=chatgpt(?:&|$)"))
         expect(page.get_by_role("table", name="Cached messages", exact=True)).to_contain_text("timestamp layout")
     finally:
         context.close()
@@ -10669,7 +10754,12 @@ def test_returning_to_text_restores_session_table(
         page.goto(annotated_resources_server_url + f"/browser?view={mode}&session_view=0&source=all&sort=oldest")
         page.locator('label[for="browser_view_text"]').click()
         expect(page.locator('#browser_view_text')).to_be_checked()
+        expect(page.locator('[data-browser-source-filter-trigger]').first).to_have_attribute(
+            "aria-label",
+            "Source: ChatGPT",
+        )
         expect(page.locator('.browser-session-table:not(.browser-session-detail-table)')).to_be_visible()
+        assert "source=chatgpt" in page.url
         assert "session_view=1" in page.url
         assert "sort=oldest" in page.url
         expect(page.locator('.browser-session-detail-table')).to_have_count(0)

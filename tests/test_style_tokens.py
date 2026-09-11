@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.63.0-codex.1
+Code version: v1.63.5-codex.1
 """
 
 import hashlib
@@ -1060,8 +1060,8 @@ def test_browser_cached_media_previews_preserve_full_image_ratio() -> None:
     assert "object-fit: cover;" not in media_rule
 
 
-def test_browser_filter_actions_reuse_the_standard_secondary_button() -> None:
-    """Keep both filter actions on the shared secondary-button surface."""
+def test_browser_filters_omit_page_reset_and_refresh_actions() -> None:
+    """Keep Local resources focused on filters that change the current view."""
     stylesheet = _stylesheet()
     for token in (
         "--control-compact-height: 28px;",
@@ -1099,31 +1099,20 @@ def test_browser_filter_actions_reuse_the_standard_secondary_button() -> None:
     browser_template = (
         STYLE_PATH.parents[1] / "templates/browser.html"
     ).read_text(encoding="utf-8")
-    assert ".browser-filter-actions .ghost-link--compact {" not in stylesheet
-    assert ".browser-filter-actions .secondary-button {" in stylesheet
-    actions_start = stylesheet.index(".browser-filter-actions {")
-    actions_rule = stylesheet[actions_start:stylesheet.index("\n}", actions_start)]
-    assert "grid-template-columns: minmax(0, 1fr);" in actions_rule
-    refresh_container_start = stylesheet.index(".browser-filter-actions .secondary-button {")
-    refresh_container_rule = stylesheet[
-        refresh_container_start:stylesheet.index("\n}", refresh_container_start)
-    ]
-    for token in (
-        "width: fit-content;",
-        "max-width: 100%;",
-        "justify-self: end;",
-    ):
-        assert token in refresh_container_rule
-    assert "\n    width: 100%;" not in refresh_container_rule
-    for markup in (
-        'class="secondary-button browser-session-back-link"',
-        'class="secondary-button browser-clear-link"',
-    ):
-        assert markup in browser_template
+    assert ".browser-filter-actions" not in stylesheet
+    assert ".browser-clear-link" not in stylesheet
+    assert 'class="secondary-button browser-session-back-link"' in browser_template
     assert 'class="ghost-link ghost-link--compact browser-session-back-link"' not in browser_template
     assert "ChatGPT Media cache" not in browser_template
     assert "browser-chatgpt-media-link" not in browser_template
-    assert 'class="secondary-button browser-refresh-button"' in browser_template
+    for removed_markup in (
+        "browser-filter-actions",
+        "browser-clear-link",
+        "browser-refresh-button",
+        ">Clear filters<",
+        ">Refresh cache<",
+    ):
+        assert removed_markup not in browser_template
 
 
 def test_style_token_secondary_button_preview_stays_intrinsic_and_reserves_svg_icon() -> None:
@@ -1278,9 +1267,12 @@ def test_strategy_tuning_catalog_uses_the_shared_button_panel_contract() -> None
     assert 'panel.hidden = !open;' in controller
 
 
-def test_browser_refresh_action_uses_the_13px_annotation_size() -> None:
-    """Keep the remaining Local resources refresh action on the shared text-size token."""
+def test_style_token_refresh_preview_uses_the_13px_annotation_size() -> None:
+    """Keep the catalog-only refresh specimen on the shared text-size token."""
     stylesheet = _stylesheet()
+    template = (
+        STYLE_PATH.parents[1] / "templates/settings_style_tokens.html"
+    ).read_text(encoding="utf-8")
     compact_start = stylesheet.index(".ghost-link--compact {")
     compact_rule = stylesheet[compact_start:stylesheet.index("\n}", compact_start)]
     refresh_start = stylesheet.index(".browser-refresh-button {")
@@ -1288,6 +1280,7 @@ def test_browser_refresh_action_uses_the_13px_annotation_size() -> None:
 
     assert "font-size: var(--font-size-3);" in compact_rule
     assert "font-size: var(--font-size-3);" in refresh_rule
+    assert 'data-style-token-secondary-button' in template
 
 
 def test_browser_filter_select_uses_one_shared_frosted_surface() -> None:
@@ -2028,6 +2021,8 @@ def test_browser_workspace_reuses_the_shared_title_rail_and_content_card() -> No
     content_rule = stylesheet[content_start:stylesheet.index("\n}", content_start)]
     text_card_start = stylesheet.index(".browser-text-summary-card {")
     text_card_rule = stylesheet[text_card_start:stylesheet.index("\n}", text_card_start)]
+    heading_start = stylesheet.index(".browser-summary-card .report-heading {")
+    heading_rule = stylesheet[heading_start:stylesheet.index("\n}", heading_start)]
 
     assert "display: flex;" in summary_rule
     assert "flex: 0 0 auto;" in summary_rule
@@ -2035,6 +2030,14 @@ def test_browser_workspace_reuses_the_shared_title_rail_and_content_card() -> No
     assert "max-width: var(--layout-content-width);" in summary_rule
     assert "min-height: calc(var(--workspace-title-rail-control-height) + var(--workspace-article-pad-block-start));" in summary_rule
     assert "padding: var(--workspace-article-pad-block-start) var(--workspace-article-pad-inline) 0;" in summary_rule
+    assert "border: 0;" in summary_rule
+    assert "background: transparent;" in summary_rule
+    assert "box-shadow: none;" in summary_rule
+    assert "backdrop-filter: none;" in summary_rule
+    assert "font-size: var(--font-card-title);" in heading_rule
+    assert "font-weight: var(--font-weight-medium);" in heading_rule
+    assert "line-height: 1;" in heading_rule
+    assert "letter-spacing: 0;" in heading_rule
     assert "display: flex;" in content_rule
     assert "flex: 1 1 0;" in content_rule
     assert "padding: 0 var(--workspace-article-pad-inline) var(--sidebar-dock-bottom-gap);" in content_rule
@@ -2188,7 +2191,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-            "/* Code version: v2.117.0-codex.1 */",
+            "/* Code version: v2.117.4-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2672,6 +2675,46 @@ def test_agent_compact_status_card_has_no_border() -> None:
     assert "border-width: 0;" in card_rule
 
 
+def test_agent_compact_status_card_uses_annotated_spacing_tokens() -> None:
+    """Keep compact Agent account and terminal rows on their scoped spacing geometry."""
+    stylesheet = _stylesheet()
+
+    root_start = stylesheet.index("#agent_runtime_form {")
+    root_rule = stylesheet[root_start:stylesheet.index("\n}", root_start)]
+    assert "--agent-status-card-padding-block: 4px;" in root_rule
+    assert "--agent-status-row-gap: 2px;" in root_rule
+
+    card_start = stylesheet.index(
+        "#agent_runtime_form .browser-session-status-card-compact {"
+    )
+    card_rule = stylesheet[card_start:stylesheet.index("\n}", card_start)]
+    assert "padding-block: var(--agent-status-card-padding-block);" in card_rule
+
+    copy_start = stylesheet.index("#agent_runtime_form .browser-session-status-copy {")
+    copy_rule = stylesheet[copy_start:stylesheet.index("\n}", copy_start)]
+    assert (
+        "--browser-session-status-item-gap: var(--agent-status-row-gap);"
+        in copy_rule
+    )
+
+    rows_start = stylesheet.index(
+        "#agent_runtime_form .browser-session-status-card-compact "
+        ".browser-session-status-item,"
+    )
+    rows_rule = stylesheet[rows_start:stylesheet.index("\n}", rows_start)]
+    assert "gap: var(--agent-status-row-gap);" in rows_rule
+
+    terminal_start = stylesheet.index(
+        "#agent_runtime_form .browser-session-status-card-compact "
+        ".agent-terminal-execution-status {",
+        stylesheet.index("\n}", rows_start) + 2,
+    )
+    terminal_rule = stylesheet[
+        terminal_start:stylesheet.index("\n}", terminal_start)
+    ]
+    assert "min-height: var(--agent-sidebar-icon-slot);" in terminal_rule
+
+
 def test_cache_browser_session_status_card_has_no_border() -> None:
     """Keep the Cache browser-session status card borderless without changing its surface."""
     stylesheet = _stylesheet()
@@ -2830,12 +2873,15 @@ def test_agent_response_toolbar_reuses_the_sidebar_frosted_material() -> None:
     stylesheet = _stylesheet()
     toolbar_start = stylesheet.rindex(".agent-response-toolbar {")
     toolbar_rule = stylesheet[toolbar_start:stylesheet.index("\n}", toolbar_start)]
+    root_start = stylesheet.index(":root {")
+    root_rule = stylesheet[root_start:stylesheet.index("\n}", root_start)]
     activity_start = stylesheet.rindex(
         ".agent-response-toolbar > .agent-activity-panel {"
     )
     activity_rule = stylesheet[activity_start:stylesheet.index("\n}", activity_start)]
 
     for declaration in (
+        "padding: var(--agent-response-toolbar-padding);",
         "border: var(--sidebar-shell-border);",
         "border-radius: var(--sidebar-shell-radius);",
         "background: var(--sidebar-shell-background);",
@@ -2844,6 +2890,7 @@ def test_agent_response_toolbar_reuses_the_sidebar_frosted_material() -> None:
         "-webkit-backdrop-filter: var(--sidebar-shell-blur);",
     ):
         assert declaration in toolbar_rule
+    assert "--agent-response-toolbar-padding: 4px;" in root_rule
     for declaration in (
         "border: 0;",
         "border-radius: 0;",

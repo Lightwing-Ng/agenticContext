@@ -1,4 +1,4 @@
-/* Code version: v2.2.0-codex.1 */
+/* Code version: v2.2.1-codex.1 */
 
 import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
 
@@ -226,8 +226,6 @@ import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
             if (viewField) viewField.value = "1";
             return;
         }
-        const sourceField = form.querySelector('[name="source"]');
-        if (sourceField) sourceField.value = "all";
         const viewField = form.querySelector('[name="session_view"]');
         if (viewField) viewField.value = "0";
     }

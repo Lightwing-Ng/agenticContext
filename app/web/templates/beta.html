@@ -1,4 +1,4 @@
-{# Code version: v0.5.1-codex.1 #}
+{# Code version: v0.5.6-codex.1 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.117.0-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.117.4-codex.1') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='beta/beta.css', v=beta_version) }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script type="module" src="{{ url_for('static', filename='beta/beta.js', v=beta_version) }}"></script>
@@ -72,7 +72,7 @@
                             <div class="beta-material-tools">
                                 <button type="button" class="secondary-button settings-inline-button" data-beta-import>Import {{ fields.source|lower }}</button>
                                 <input type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json" data-beta-file hidden>
-                                <a class="beta-text-link" href="{{ url_for('browser', view='text', source='all', kind='all', q='', sort='newest', session_view='1') }}" target="_blank" rel="noopener">Browse Local resources <span aria-hidden="true">↗</span></a>
+                                <a class="beta-text-link" href="{{ url_for('browser', view='text', source='chatgpt', kind='all', q='', sort='newest', session_view='1') }}" target="_blank" rel="noopener">Browse Local resources <span aria-hidden="true">↗</span></a>
                             </div>
                             <p class="beta-help" id="beta_material_help">Paste a copy, or import a text, Markdown, or JSON file up to 240 KB. Original resources stay in place.</p>
                             {% if beta_experiment.id == 'context-capsule' %}
