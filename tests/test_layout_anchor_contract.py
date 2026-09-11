@@ -1,6 +1,6 @@
 """Static checks for the cross-project spatial layout contract.
 
-Code version: v0.1.0-codex.1
+Code version: v0.2.0-codex.1
 """
 
 from pathlib import Path
@@ -22,6 +22,7 @@ def test_shared_dimensions_and_safe_area_anchors_are_tokenized() -> None:
         "--layout-content-width: 640px;",
         "--layout-control-width: 384px;",
         "--layout-physical-effect-bleed: 48px;",
+        "--layout-glass-border-width: 1px;",
         "--page-edge-pad: 10px;",
         "--layout-edge-gap: var(--page-edge-pad);",
         "--layout-page-inset-top: max(var(--page-edge-pad), env(safe-area-inset-top, 0px));",
@@ -38,6 +39,14 @@ def test_shared_dimensions_and_safe_area_anchors_are_tokenized() -> None:
         "--settings-general-option-max-width: var(--layout-content-width);",
         "--settings-form-control-max-width: var(--layout-control-width);",
         "--style-token-demo-width: var(--layout-control-width);",
+        "--sidebar-shell-width: 312px;",
+        "--sidebar-width: var(--sidebar-shell-width);",
+        "--sidebar-shell-padding:",
+        "--sidebar-shell-overlay-padding:",
+        "--sidebar-shell-background:",
+        "--sidebar-shell-border:",
+        "--sidebar-shell-shadow:",
+        "--sidebar-shell-blur: saturate(160%) blur(18px);",
     ):
         assert fragment in stylesheet
 
@@ -97,12 +106,14 @@ def test_production_templates_publish_shared_layout_roles() -> None:
     for template_name in (
         "_cache_page.html",
         "agent.html",
+        "beta.html",
         "browser.html",
         "settings.html",
         "settings_style_tokens.html",
     ):
         template = _read(TEMPLATE_ROOT / template_name)
         for fragment in (
+            'data-layout-role="sidebar-shell"',
             'data-layout-role="sidebar-toggle"',
             'data-layout-role="sidebar-title"',
             'data-layout-role="title-rail"',

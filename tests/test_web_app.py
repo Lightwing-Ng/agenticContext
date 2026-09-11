@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.106.6-codex.1
+# Code version: v1.108.1-codex.1
 
 from __future__ import annotations
 
@@ -157,6 +157,39 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(restarted["cache"]["status"], "stale")
         self.assertEqual(restarted["history"][0]["response"], source)
         self.assertIn("<strong>Restored</strong>", restarted["history"][0]["response_html"])
+
+    def test_agent_history_humanizes_cached_controller_transport_prompt(self) -> None:
+        conversation_url = "https://chatgpt.com/c/cached-controller-history"
+        raw_prompt = (
+            "Controller observation for turn 303:\n"
+            '{"ok":false,"action":"final","error":"limitations must be an array"}\n'
+            "Return exactly one strict JSON controller action."
+        )
+        cached_payload = {
+            "conversation_url": conversation_url,
+            "title": "Read Project Instructions",
+            "history": [{"prompt": raw_prompt, "response": "Finished"}],
+            "limit": 100,
+        }
+        url = (
+            "/api/agent/chatgpt-session-history?browser=edge&conversation_url="
+            f"{conversation_url}"
+        )
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            app.extensions["agent_source_cache"].store(
+                platform="chatgpt",
+                browser="edge",
+                source_kind="session-history",
+                project_url=conversation_url,
+                payload=cached_payload,
+            )
+            with patch("app.web.app.fetch_chatgpt_conversation_history") as fetch:
+                response = app.test_client().get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["history"][0]["prompt"], "Read Project Instructions")
+        fetch.assert_not_called()
 
     """Validate the index page renders live progress metrics."""
 
@@ -699,7 +732,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.22.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.114.1-codex.1"
+                expected_style_version = "style-v2.117.0-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1112,7 +1145,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.114.1-codex.1', local_body)
+        self.assertIn('style-v2.117.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.8.0', local_body)
@@ -3305,6 +3338,13 @@ class WebAppTests(unittest.TestCase):
         script = SETTINGS_NAVIGATION_SCRIPT_PATH.read_text(encoding="utf-8")
         self.assertIn('new Map([["chatgpt", "llm"]])', script)
         self.assertIn('<span class="settings-category-nav-label">LLM settings</span>', body)
+        self.assertIn('<span class="settings-category-nav-label">Browser &amp; accounts</span>', body)
+        self.assertIn('<span class="settings-category-nav-label">Cache</span>', body)
+        self.assertNotIn('<span class="settings-category-nav-label">Browser &amp; account</span>', body)
+        self.assertNotIn('<span class="settings-category-nav-label">Downloads</span>', body)
+        self.assertNotIn("Configure one category at a time.", body)
+        self.assertNotIn("Control concurrency, file limits,", body)
+        self.assertEqual(body.count("settings-agent-system-prompt"), 2)
         self.assertIn('id="settings_llm_heading">LLM cache settings</h3>', body)
         for field_name in (
             "gemini_max_conversations",
@@ -3817,7 +3857,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.114.1-codex.1", body)
+            self.assertIn("style-v2.117.0-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.0-codex.1', body)

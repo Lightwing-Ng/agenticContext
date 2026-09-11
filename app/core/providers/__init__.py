@@ -1,9 +1,10 @@
 """Provider workflows exposed to the application layer."""
 
-# Code version: v1.4.0-codex.1
+# Code version: v1.4.1-codex.1
 
 from ..chatgpt_agent_sources import (
     fetch_chatgpt_conversation_history,
+    humanize_agent_history_prompts,
     list_chatgpt_agent_sources,
     list_chatgpt_project_sessions,
     normalize_chatgpt_conversation_url,
@@ -48,6 +49,7 @@ __all__ = [
     "chatgpt_conversation_id",
     "chatgpt_history_counts",
     "fetch_chatgpt_conversation_history",
+    "humanize_agent_history_prompts",
     "is_chatgpt_conversation_url",
     "list_chatgpt_agent_sources",
     "list_chatgpt_project_sessions",

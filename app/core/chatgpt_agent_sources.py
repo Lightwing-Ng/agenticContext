@@ -1,6 +1,6 @@
 """Read ChatGPT Web sessions, projects, and conversation history for the local Agent.
 
-Code version: v1.6.6-codex.1
+Code version: v1.6.7-codex.1
 """
 
 from __future__ import annotations
@@ -56,6 +56,22 @@ CHATGPT_PROJECT_PATH_PATTERN = re.compile(r"^/g/[^/]+/project/?$", re.IGNORECASE
 CHATGPT_CONVERSATION_PATH_PATTERN = re.compile(
     r"^/(?:g/[^/]+/)?c/[^/]+/?$",
     re.IGNORECASE,
+)
+_AGENT_TURN_RECEIPT_PREFIX_PATTERN = re.compile(
+    r"^Controller turn receipt: agent-turn-[0-9a-f]{32}\s*",
+    re.IGNORECASE,
+)
+_AGENT_OBSERVATION_PROMPT_PATTERN = re.compile(
+    r"^Controller observation for turn [0-9][0-9,]*:\s*",
+    re.IGNORECASE,
+)
+_AGENT_USER_REQUEST_PATTERN = re.compile(
+    r"(?:^|\n)User request: (?P<request>.*?)\n\n"
+    r"Begin with the smallest useful read, search, or list JSON action\.\s*$",
+    re.DOTALL,
+)
+_AGENT_CONTINUATION_PROMPT = (
+    "Continue the unfinished Agent task in this existing conversation."
 )
 
 
@@ -401,10 +417,14 @@ def _fetch_conversation_history(
             for message in messages
             if str(message.get("message_key") or "").rsplit(":", 1)[-1] in active_node_ids
         ]
-    history = _conversation_history_items(messages)
+    title = str(payload.get("title") or "Untitled session").strip() or "Untitled session"
+    history = humanize_agent_history_prompts(
+        _conversation_history_items(messages),
+        session_title=title,
+    )
     return {
         "conversation_url": conversation_url,
-        "title": str(payload.get("title") or "Untitled session").strip() or "Untitled session",
+        "title": title,
         "history": history[-CHATGPT_HISTORY_TURN_LIMIT:],
         "limit": CHATGPT_HISTORY_TURN_LIMIT,
     }
@@ -438,6 +458,45 @@ def _conversation_history_items(messages: Iterable[dict[str, Any]]) -> list[dict
         )
         pending_prompt = None
     return history
+
+
+def humanize_agent_history_prompts(
+    history: Iterable[dict[str, Any]],
+    *,
+    session_title: str = "",
+) -> list[dict[str, Any]]:
+    """Replace Agent transport prompts with the user request or readable session title."""
+    title = str(session_title or "").strip()
+    fallback = title if title.casefold() not in {"", "untitled session", "new chat"} else "Agent task"
+    task_prompt = ""
+    normalized: list[dict[str, Any]] = []
+    for raw_item in history:
+        if not isinstance(raw_item, dict):
+            continue
+        item = dict(raw_item)
+        is_transport_prompt, extracted_request = _agent_history_prompt(
+            str(item.get("prompt") or "")
+        )
+        if extracted_request:
+            task_prompt = extracted_request
+        if is_transport_prompt:
+            item["prompt"] = task_prompt or fallback
+        normalized.append(item)
+    return normalized
+
+
+def _agent_history_prompt(value: str) -> tuple[bool, str]:
+    """Identify one local Agent wire prompt and recover its original user request."""
+    source = str(value or "").strip()
+    request_match = _AGENT_USER_REQUEST_PATTERN.search(source)
+    if request_match:
+        return True, request_match.group("request").strip()
+    without_receipt = _AGENT_TURN_RECEIPT_PREFIX_PATTERN.sub("", source, count=1).lstrip()
+    if _AGENT_OBSERVATION_PROMPT_PATTERN.match(without_receipt):
+        return True, ""
+    if without_receipt.startswith(_AGENT_CONTINUATION_PROMPT):
+        return True, ""
+    return False, ""
 
 
 def _active_conversation_node_ids(payload: dict[str, object]) -> set[str]:

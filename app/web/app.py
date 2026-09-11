@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.72.0-codex.1
+# Code version: v1.72.1-codex.1
 
 from __future__ import annotations
 
@@ -99,6 +99,7 @@ from app.core.providers import (
     build_zhihu_history_initial_snapshot,
     chatgpt_conversation_id,
     fetch_chatgpt_conversation_history,
+    humanize_agent_history_prompts,
     is_chatgpt_conversation_url,
     list_chatgpt_agent_sources,
     list_chatgpt_project_sessions,
@@ -1907,8 +1908,12 @@ def create_app(
                     )
                 }
             ), 409
+        title = str(payload.get("title") or "Untitled session")
         rendered_history: list[dict[str, Any]] = []
-        for raw_item in payload.get("history", []):
+        for raw_item in humanize_agent_history_prompts(
+            payload.get("history", []),
+            session_title=title,
+        ):
             if not isinstance(raw_item, dict):
                 continue
             item = dict(raw_item)
@@ -1917,7 +1922,7 @@ def create_app(
         return jsonify(
             {
                 "conversation_url": conversation_url,
-                "title": str(payload.get("title") or "Untitled session"),
+                "title": title,
                 "history": rendered_history,
                 "limit": int(payload.get("limit") or len(rendered_history)),
                 "cache": payload.get("cache", {}),

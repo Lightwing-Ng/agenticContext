@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.61.7-codex.1
+Code version: v1.63.0-codex.1
 """
 
 import hashlib
@@ -626,16 +626,16 @@ def test_cache_stop_button_is_borderless_in_every_interactive_state() -> None:
     assert "border-color: transparent;" in stop_hover_rule
 
 
-def test_sidebar_shell_and_dock_consume_frosted_glass_tokens() -> None:
-    """Keep the sidebar shell and dock on the sibling frosted-glass surface system."""
+def test_sidebar_shell_and_dock_consume_shared_material_tokens() -> None:
+    """Keep every sidebar on the Agent reference shell and the Dock on shared glass."""
     stylesheet = _stylesheet()
+    sidebar_start = stylesheet.index(
+        "\n.sidebar {\n    flex: 0 0 var(--sidebar-shell-width);"
+    ) + 1
+    sidebar_rule = stylesheet[sidebar_start:stylesheet.index("\n}", sidebar_start)]
 
     expected_tokens = (
         ".sidebar {",
-        "background: var(--frosted-glass-background);",
-        "border: var(--frosted-glass-border);",
-        "box-shadow: var(--frosted-glass-shadow);",
-        "backdrop-filter: var(--frosted-glass-blur);",
         ".sidebar-dock {",
         ".sidebar-dock-item.is-active {",
         "color: var(--accent-text);",
@@ -657,6 +657,24 @@ def test_sidebar_shell_and_dock_consume_frosted_glass_tokens() -> None:
 
     for token in expected_tokens:
         assert token in stylesheet
+
+    for declaration in (
+        "flex: 0 0 var(--sidebar-shell-width);",
+        "padding: var(--sidebar-shell-padding);",
+        "border: var(--sidebar-shell-border);",
+        "border-radius: var(--sidebar-shell-radius);",
+        "background: var(--sidebar-shell-background);",
+        "box-shadow: var(--sidebar-shell-shadow);",
+        "backdrop-filter: var(--sidebar-shell-blur);",
+        "-webkit-backdrop-filter: var(--sidebar-shell-blur);",
+    ):
+        assert declaration in sidebar_rule
+    overlay_start = stylesheet.index("@media (max-width: 900px) {", sidebar_start)
+    overlay_sidebar_start = stylesheet.index("    .sidebar {", overlay_start)
+    overlay_sidebar_rule = stylesheet[
+        overlay_sidebar_start:stylesheet.index("\n    }", overlay_sidebar_start)
+    ]
+    assert "padding: var(--sidebar-shell-overlay-padding);" in overlay_sidebar_rule
 
 
 def test_sidebar_titles_reuse_sibling_hero_tokens() -> None:
@@ -1691,8 +1709,47 @@ def test_style_tokens_sidebar_matches_the_canonical_worthward_icon_rail() -> Non
     assert "border-radius: 0;" in shell_rule
     assert "background: transparent;" in shell_rule
     assert "box-shadow: none;" in shell_rule
-    assert "padding: var(--layout-edge-gap) var(--layout-edge-gap) var(--sidebar-bottom-pad);" in sidebar_rule
-    assert "color-mix(in srgb, var(--theme-background) 62%, transparent);" in sidebar_rule
+    for declaration in (
+        "border: var(--sidebar-shell-border);",
+        "border-radius: var(--sidebar-shell-radius);",
+        "background: var(--sidebar-shell-background);",
+        "box-shadow: var(--sidebar-shell-shadow);",
+        "backdrop-filter: var(--sidebar-shell-blur);",
+        "-webkit-backdrop-filter: var(--sidebar-shell-blur);",
+    ):
+        assert declaration in sidebar_rule
+    assert "padding:" not in sidebar_rule
+    assert "color-mix(in srgb, var(--theme-background) 62%, transparent);" not in sidebar_rule
+
+
+def test_settings_category_navigation_uses_compact_shared_geometry() -> None:
+    """Keep every Settings category row and its active pill on the 36px contract."""
+    stylesheet = _stylesheet()
+    nav_start = stylesheet.index(".settings-category-nav {")
+    nav_rule = stylesheet[nav_start:stylesheet.index("\n}", nav_start)]
+    pill_start = stylesheet.index(".settings-category-nav::before {")
+    pill_rule = stylesheet[pill_start:stylesheet.index("\n}", pill_start)]
+    item_start = stylesheet.index(".settings-category-nav-item {")
+    item_rule = stylesheet[item_start:stylesheet.index("\n}", item_start)]
+
+    assert "--settings-category-nav-item-block-size: 36px;" in nav_rule
+    assert "--settings-category-nav-item-padding-block: 4px;" in nav_rule
+    assert "--settings-category-nav-item-gap: 8px;" in nav_rule
+    assert "gap: var(--settings-category-nav-item-gap);" in nav_rule
+    assert "height: var(--settings-category-nav-item-block-size);" in pill_rule
+    assert "var(--settings-category-nav-item-block-size) + var(--settings-category-nav-item-gap)" in pill_rule
+    assert "min-height: var(--settings-category-nav-item-block-size);" in item_rule
+    assert "padding: var(--settings-category-nav-item-padding-block) 12px;" in item_rule
+
+
+def test_settings_agent_system_prompts_use_monospace_type() -> None:
+    """Keep both operating-system prompts on a real monospace font family."""
+    stylesheet = _stylesheet()
+    prompt_start = stylesheet.index(".settings-agent-system-prompt {")
+    prompt_rule = stylesheet[prompt_start:stylesheet.index("\n}", prompt_start)]
+
+    assert "font-family: monospace;" in prompt_rule
+    assert "font-family: var(--font-mono);" not in prompt_rule
 
 
 def test_beta_dock_uses_the_shared_sparkles_asset() -> None:
@@ -2131,7 +2188,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-            "/* Code version: v2.114.0-codex.1 */",
+            "/* Code version: v2.117.0-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2749,11 +2806,13 @@ def test_agent_response_copy_uses_the_global_action_rail_without_consuming_scrol
     assert ".agent-response-copy.is-copied .agent-response-copy-icon {" in stylesheet
 
 
-def test_agent_response_actions_align_to_the_global_action_rail() -> None:
-    """Keep the response action rows on the same horizontal rail as the theme control."""
+def test_agent_response_toolbar_stays_inside_the_content_edge() -> None:
+    """Keep the frosted response toolbar inside the workspace content edge."""
     stylesheet = _stylesheet()
 
-    toolbar_start = stylesheet.rindex(".agent-response-toolbar {")
+    toolbar_start = stylesheet.index(
+        ".agent-response-toolbar {\n    justify-content: space-between;"
+    )
     toolbar_rule = stylesheet[toolbar_start:stylesheet.index("\n}", toolbar_start)]
     question_header_start = stylesheet.index(".agent-response-question-header.browser-session-table-message-shell {")
     question_header_rule = stylesheet[
@@ -2761,8 +2820,39 @@ def test_agent_response_actions_align_to_the_global_action_rail() -> None:
     ]
     rail_bleed = "margin-inline-end: calc(-1 * var(--agent-action-rail-bleed));"
 
-    assert rail_bleed in toolbar_rule
+    assert "margin-inline-end: 0;" in toolbar_rule
+    assert rail_bleed not in toolbar_rule
     assert rail_bleed in question_header_rule
+
+
+def test_agent_response_toolbar_reuses_the_sidebar_frosted_material() -> None:
+    """Keep one canonical frosted material owner around Agent lifecycle activity."""
+    stylesheet = _stylesheet()
+    toolbar_start = stylesheet.rindex(".agent-response-toolbar {")
+    toolbar_rule = stylesheet[toolbar_start:stylesheet.index("\n}", toolbar_start)]
+    activity_start = stylesheet.rindex(
+        ".agent-response-toolbar > .agent-activity-panel {"
+    )
+    activity_rule = stylesheet[activity_start:stylesheet.index("\n}", activity_start)]
+
+    for declaration in (
+        "border: var(--sidebar-shell-border);",
+        "border-radius: var(--sidebar-shell-radius);",
+        "background: var(--sidebar-shell-background);",
+        "box-shadow: var(--sidebar-shell-shadow);",
+        "backdrop-filter: var(--sidebar-shell-blur);",
+        "-webkit-backdrop-filter: var(--sidebar-shell-blur);",
+    ):
+        assert declaration in toolbar_rule
+    for declaration in (
+        "border: 0;",
+        "border-radius: 0;",
+        "background: transparent;",
+        "box-shadow: none;",
+        "backdrop-filter: none;",
+        "-webkit-backdrop-filter: none;",
+    ):
+        assert declaration in activity_rule
 
 
 def test_agent_current_project_name_uses_requested_type_size() -> None:
@@ -2832,7 +2922,9 @@ def test_agent_response_header_and_answer_pin_the_composer() -> None:
     """Keep both response regions independently scrollable without moving the composer."""
     stylesheet = _stylesheet()
 
-    toolbar_start = stylesheet.rfind(".agent-response-toolbar {")
+    toolbar_start = stylesheet.index(
+        ".agent-response-toolbar {\n    justify-content: space-between;"
+    )
     toolbar_rule = stylesheet[toolbar_start:stylesheet.index("\n}", toolbar_start)]
     header_start = stylesheet.index(".agent-response-question-header.browser-session-table-message-shell {")
     header_rule = stylesheet[header_start:stylesheet.index("\n}", header_start)]

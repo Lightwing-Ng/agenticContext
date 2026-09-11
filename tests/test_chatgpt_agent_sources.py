@@ -1,6 +1,6 @@
 """Focused tests for the Agent's ChatGPT Web source catalog.
 
-Code version: v1.2.8-codex.1
+Code version: v1.2.9-codex.1
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from app.core.chatgpt_agent_sources import (
     _conversation_history_items,
     _conversation_item,
     _fetch_conversation_history,
+    humanize_agent_history_prompts,
     normalize_chatgpt_conversation_url,
     normalize_chatgpt_project_url,
     probe_and_collect_chatgpt_sources,
@@ -411,6 +412,50 @@ def test_conversation_history_pairs_ordered_user_and_assistant_messages() -> Non
             "finished_at": "2026-08-14T01:04:00Z",
         },
     ]
+
+
+def test_agent_history_prompts_recover_the_user_request_and_hide_transport_text() -> None:
+    marker = "agent-turn-0123456789abcdef0123456789abcdef"
+    initial_prompt = (
+        "Controller transfer ID: agent-transfer-0123456789abcdef0123456789abcdef\n\n"
+        "You are the reasoning component of a local Computer Use coding agent.\n\n"
+        "User request: Explain why the history question is unreadable.\n\n"
+        "Begin with the smallest useful read, search, or list JSON action."
+    )
+    observation_prompt = (
+        f"Controller turn receipt: {marker}\n\n"
+        "Controller observation for turn 303:\n"
+        '{"ok":false,"action":"final","error":"limitations must be an array"}\n'
+        "Return exactly one strict JSON controller action."
+    )
+
+    history = humanize_agent_history_prompts(
+        [
+            {"prompt": initial_prompt, "response": "First action"},
+            {"prompt": observation_prompt, "response": "Final action"},
+        ],
+        session_title="Provider-generated title",
+    )
+
+    assert [item["prompt"] for item in history] == [
+        "Explain why the history question is unreadable.",
+        "Explain why the history question is unreadable.",
+    ]
+    assert [item["response"] for item in history] == ["First action", "Final action"]
+
+
+def test_agent_history_prompt_uses_readable_title_when_cached_slice_omits_initial_turn() -> None:
+    history = humanize_agent_history_prompts(
+        [
+            {
+                "prompt": "Controller observation for turn 303:\n{}\nProtocol text",
+                "response": "Final action",
+            }
+        ],
+        session_title="Read Project Instructions",
+    )
+
+    assert history[0]["prompt"] == "Read Project Instructions"
 
 
 def test_fetch_conversation_history_reads_authenticated_mapping_without_persistence() -> None:

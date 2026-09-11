@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.41.3-codex.1
+Code version: v1.42.0-codex.1
 """
 
 from __future__ import annotations
@@ -1528,10 +1528,26 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
             "element => getComputedStyle(element).backgroundColor"
         ) == "rgba(0, 0, 0, 0)"
         sidebar_style = page.locator("#app_sidebar").evaluate(
-            "element => { const style = getComputedStyle(element); return { backgroundColor: style.backgroundColor, paddingTop: style.paddingTop }; }"
+            """element => {
+                const style = getComputedStyle(element);
+                return {
+                    backgroundColor: style.backgroundColor,
+                    backgroundImage: style.backgroundImage,
+                    borderRadius: style.borderRadius,
+                    borderTopWidth: style.borderTopWidth,
+                    boxShadow: style.boxShadow,
+                    backdropFilter: style.backdropFilter,
+                    padding: style.padding,
+                };
+            }"""
         )
-        assert sidebar_style["paddingTop"] == "10px"
-        assert "0.62" in sidebar_style["backgroundColor"]
+        assert sidebar_style["padding"] == "9px 10px 96px"
+        assert sidebar_style["backgroundColor"] == "rgba(255, 255, 255, 0.08)"
+        assert "rgba(255, 255, 255, 0.24)" in sidebar_style["backgroundImage"]
+        assert sidebar_style["borderRadius"] == "10px"
+        assert sidebar_style["borderTopWidth"] == "1px"
+        assert "rgba(10, 14, 25, 0.12)" in sidebar_style["boxShadow"]
+        assert "blur(18px)" in sidebar_style["backdropFilter"]
 
         beta_icon = page.locator('[data-dock-section="beta"] .dock-icon')
         if beta_icon.count():
@@ -1633,6 +1649,30 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
         assert narrow_page.evaluate(
             "document.documentElement.scrollWidth === document.documentElement.clientWidth"
         )
+        narrow_toggle = narrow_page.locator("#sidebar_toggle")
+        if narrow_toggle.get_attribute("aria-expanded") != "true":
+            narrow_toggle.click()
+            expect(narrow_toggle).to_have_attribute("aria-expanded", "true")
+        narrow_sidebar_style = narrow_page.locator("#app_sidebar").evaluate(
+            """element => {
+                const style = getComputedStyle(element);
+                return {
+                    padding: style.padding,
+                    backgroundColor: style.backgroundColor,
+                    borderTopWidth: style.borderTopWidth,
+                    backdropFilter: style.backdropFilter,
+                };
+            }"""
+        )
+        assert narrow_sidebar_style == {
+            "padding": "9px 18px 84px",
+            "backgroundColor": "rgba(255, 255, 255, 0.08)",
+            "borderTopWidth": "1px",
+            "backdropFilter": "saturate(1.6) blur(18px)",
+        }
+        if narrow_toggle.get_attribute("aria-expanded") == "true":
+            narrow_toggle.click()
+            expect(narrow_toggle).to_have_attribute("aria-expanded", "false")
         assert narrow_page.locator("[data-style-token-card]").first.evaluate(
             "element => getComputedStyle(element).gridTemplateColumns.split(' ').length"
         ) == 1

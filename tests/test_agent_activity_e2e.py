@@ -1,4 +1,4 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.0.6-codex.1."""
+"""Activity disclosure and status glyph regressions. Code version: v1.0.7-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -7,6 +7,89 @@ from tests import test_sidebar_e2e as fixtures
 
 disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
+
+
+@pytest.mark.parametrize("width", [994, 390])
+def test_response_toolbar_reuses_sidebar_frosted_material(
+    disposable_browser, sidebar_server_url, width
+):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 863}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    payload = fixtures._finished_chatgpt_agent_payload()
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=payload))
+    page.route(
+        "**/api/browser-session**",
+        lambda route: route.fulfill(
+            json={
+                "can_download": True,
+                "logged_in": True,
+                "browser": "edge",
+                "platform": "chatgpt",
+                "agent_sources": fixtures._chatgpt_catalog_sessions(),
+            }
+        ),
+    )
+    page.route(
+        "**/api/agent/sources**",
+        lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        material = page.evaluate(
+            """() => {
+                const properties = [
+                    'backgroundColor', 'backgroundImage', 'borderTopColor',
+                    'borderTopStyle', 'boxShadow', 'backdropFilter',
+                ];
+                const snapshot = selector => {
+                    const element = document.querySelector(selector);
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return {
+                        style: Object.fromEntries(properties.map(name => [name, style[name]])),
+                        radius: style.borderRadius,
+                        marginRight: style.marginRight,
+                        borderTopWidth: style.borderTopWidth,
+                        right: rect.right,
+                    };
+                };
+                const activity = document.querySelector('.agent-activity-panel');
+                const activityStyle = getComputedStyle(activity);
+                return {
+                    sidebar: snapshot('.sidebar'),
+                    toolbar: snapshot('.agent-response-toolbar'),
+                    activity: {
+                        backgroundColor: activityStyle.backgroundColor,
+                        backgroundImage: activityStyle.backgroundImage,
+                        borderTopWidth: activityStyle.borderTopWidth,
+                        borderRadius: activityStyle.borderRadius,
+                        boxShadow: activityStyle.boxShadow,
+                        backdropFilter: activityStyle.backdropFilter,
+                    },
+                    cardRight: document.querySelector('.agent-response-card')
+                        .getBoundingClientRect().right,
+                    viewportOverflow: document.documentElement.scrollWidth - innerWidth,
+                };
+            }"""
+        )
+        assert material["toolbar"]["style"] == material["sidebar"]["style"]
+        assert material["toolbar"]["radius"] == "10px"
+        assert material["toolbar"]["marginRight"] == "0px"
+        assert material["toolbar"]["borderTopWidth"] == "1px"
+        assert material["toolbar"]["right"] <= material["cardRight"] + 0.1
+        assert material["activity"] == {
+            "backgroundColor": "rgba(0, 0, 0, 0)",
+            "backgroundImage": "none",
+            "borderTopWidth": "0px",
+            "borderRadius": "0px",
+            "boxShadow": "none",
+            "backdropFilter": "none",
+        }
+        assert material["viewportOverflow"] <= 0
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize("width", [1138, 390])

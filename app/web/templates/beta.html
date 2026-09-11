@@ -1,4 +1,4 @@
-{# Code version: v0.4.0-codex.1 #}
+{# Code version: v0.5.1-codex.1 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.114.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.117.0-codex.1') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='beta/beta.css', v=beta_version) }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script type="module" src="{{ url_for('static', filename='beta/beta.js', v=beta_version) }}"></script>
@@ -31,7 +31,7 @@
     <div class="app-shell is-sidebar-open" id="app_shell">
         {% include "_theme_toggle.html" %}
         <button type="button" class="sidebar-backdrop" id="sidebar_backdrop" aria-label="Close sidebar" aria-hidden="true" tabindex="-1" hidden></button>
-        <aside class="panel sidebar" id="app_sidebar">
+        <aside class="panel sidebar" id="app_sidebar" data-layout-role="sidebar-shell">
             <section class="hero" data-layout-role="sidebar-title"><h1>Beta</h1></section>
             <nav class="settings-category-nav beta-nav" aria-label="Beta experiments">
                 {% for experiment in beta_experiments %}

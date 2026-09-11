@@ -1,4 +1,4 @@
-<!-- Code version: v1.31.17-codex.1 -->
+<!-- Code version: v1.33.0-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.114.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.117.0-codex.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
@@ -46,7 +46,7 @@
             hidden
         ></button>
 
-        <aside class="panel sidebar settings-category-sidebar" id="settings_sidebar">
+        <aside class="panel sidebar settings-category-sidebar" id="settings_sidebar" data-layout-role="sidebar-shell">
             <section class="hero" data-layout-role="sidebar-title">
                 <h1>Settings</h1>
             </section>
@@ -63,9 +63,6 @@
                         </div>
                     </div>
                     <div class="settings-content-scrollport" data-layout-role="content-scrollport" data-settings-content-scrollport>
-                    <p class="status-copy settings-intro-copy">
-                        Configure one category at a time. Changes apply immediately to future cache tasks on this computer.
-                    </p>
                     <div class="settings-category-shell" data-settings-category-shell data-active-category="browser">
                         <form
                             action="{{ url_for('save_settings') }}"
@@ -143,7 +140,6 @@
                             >
                                 <div class="settings-category-heading">
                                     <h3 id="settings_downloads_heading">Cache limits &amp; pacing</h3>
-                                    <p>Control concurrency, file limits, and the crawl stopping conditions shared by cache tasks.</p>
                                 </div>
                                 {{ render_cache_common_config(saved_config, "settings") }}
                                 <div class="field-grid compact-config-grid settings-download-limit-grid">
