@@ -1,6 +1,6 @@
 """Controller integration coverage against a copied Global Flight Atlas workspace.
 
-Code version: v1.1.0-codex.3
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import hashlib
 from pathlib import Path
 import re
 import shutil
+import sys
 from tempfile import TemporaryDirectory
 
 import pytest
@@ -16,7 +17,10 @@ import pytest
 from app.core.computer_use_agent import ComputerUseSettings, WorkspaceController
 
 
-DEMO_FLIGHT_ROOT = Path("/Users/lightwing/Desktop/demo_flight")
+DEMO_FLIGHT_ROOT_CANDIDATES = (
+    Path.home() / "Desktop" / "demo" / "_flight",
+    Path.home() / "Desktop" / "demo_flight",
+)
 DEMO_FLIGHT_FILES = (
     "README.md",
     "app.js",
@@ -40,13 +44,28 @@ def _demo_flight_hashes(root: Path) -> dict[str, str]:
     }
 
 
+def _demo_flight_root() -> Path | None:
+    """Return the first host demo with the complete immutable manifest."""
+    return next(
+        (
+            root
+            for root in DEMO_FLIGHT_ROOT_CANDIDATES
+            if root.is_dir() and all(
+                (root / name).is_file() for name in DEMO_FLIGHT_FILES
+            )
+        ),
+        None,
+    )
+
+
 @pytest.mark.integration
 def test_copied_demo_flight_supports_safe_agentic_crud_and_cold_verification() -> None:
     """Use the real demo as immutable input and exercise the controller end-to-end."""
-    if not DEMO_FLIGHT_ROOT.is_dir():
-        pytest.skip("The local demo_flight acceptance project is unavailable.")
+    demo_flight_root = _demo_flight_root()
+    if demo_flight_root is None:
+        pytest.skip("A complete local demo flight acceptance project is unavailable.")
 
-    source_hashes = _demo_flight_hashes(DEMO_FLIGHT_ROOT)
+    source_hashes = _demo_flight_hashes(demo_flight_root)
 
     with TemporaryDirectory(prefix="demo-flight-agentic-") as raw_workspace:
         workspace = Path(raw_workspace) / "demo_flight"
@@ -54,7 +73,7 @@ def test_copied_demo_flight_supports_safe_agentic_crud_and_cold_verification() -
         for name in DEMO_FLIGHT_FILES:
             target = workspace / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(DEMO_FLIGHT_ROOT / name, target)
+            shutil.copy2(demo_flight_root / name, target)
         assert _demo_flight_hashes(workspace) == source_hashes
 
         controller = WorkspaceController(
@@ -150,10 +169,15 @@ def test_copied_demo_flight_supports_safe_agentic_crud_and_cold_verification() -
         }
         assert not (workspace / "agentic-evidence.txt").exists()
 
+        verification_command = (
+            "py -3 -m unittest -v test_verify.py"
+            if sys.platform == "win32"
+            else "python3 -m unittest -v test_verify.py"
+        )
         verification = controller.execute(
             {
                 "action": "run",
-                "command": "python3.13 -m unittest -v test_verify.py",
+                "command": verification_command,
             }
         )
         assert verification["ok"], verification["output"]
@@ -166,4 +190,4 @@ def test_copied_demo_flight_supports_safe_agentic_crud_and_cold_verification() -
         assert bodycheck["verification_current"]
         assert bodycheck["bodycheck_current"]
 
-    assert _demo_flight_hashes(DEMO_FLIGHT_ROOT) == source_hashes
+    assert _demo_flight_hashes(demo_flight_root) == source_hashes

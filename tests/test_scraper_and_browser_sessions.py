@@ -1,10 +1,11 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.10.0-codex.1
+Code version: v1.11.0-codex.1
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -1473,15 +1474,46 @@ def test_ensure_debug_browser_reuses_recorded_port_when_alive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A recorded port whose CDP endpoint answers is reused without relaunching."""
+    """A recorded endpoint is reused only when its Edge instance still matches."""
     import app.core.agent_debug_browser as adb
 
     profile_root = tmp_path / "agent_browser_profile" / "edge"
     profile_root.mkdir(parents=True)
-    (profile_root / "debug_port").write_text("42421", encoding="utf-8")
+    (profile_root / "debug_port").write_text(
+        json.dumps(
+            {
+                "port": 42421,
+                "instance": "edge-guid-aaa",
+                "browser": "Edg/119.0",
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
     monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
-    monkeypatch.setattr(adb, "_cdp_endpoint_alive", lambda port: port == 42421)
+    identity = adb.CdpIdentity(
+        port=42421,
+        browser_brand="Edg/119.0",
+        instance_guid="edge-guid-aaa",
+    )
+
+    def wait_for_identity(
+        port: int,
+        timeout: float,
+        *,
+        expected_guid: str | None = None,
+    ) -> adb.CdpIdentity | None:
+        assert port == 42421
+        assert timeout == adb.CDP_PROBE_TIMEOUT_SECONDS
+        assert expected_guid == "edge-guid-aaa"
+        return identity
+
+    monkeypatch.setattr(adb, "_wait_for_cdp_ready", wait_for_identity)
+    monkeypatch.setattr(
+        adb,
+        "_resolve_browser_executable",
+        lambda _browser_id: (_ for _ in ()).throw(AssertionError("must not relaunch")),
+    )
 
     handle = adb.ensure_debug_browser("edge")
     assert handle.browser_id == "edge"
@@ -1489,22 +1521,86 @@ def test_ensure_debug_browser_reuses_recorded_port_when_alive(
     assert handle.user_data_dir == profile_root
 
 
-def test_ensure_debug_browser_launches_when_no_recorded_port(
+def test_probe_cdp_identity_uses_edge_product_token_and_browser_guid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CDP probe parses Microsoft's documented Edg product token."""
+    import app.core.agent_debug_browser as adb
+
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps(
+        {
+            "Browser": "Edg/119.0.2151.72",
+            "webSocketDebuggerUrl": (
+                "ws://127.0.0.1:42421/devtools/browser/edge-guid-aaa"
+            ),
+        }
+    ).encode("utf-8")
+    monkeypatch.setattr(adb.urllib.request, "urlopen", lambda *_args, **_kwargs: response)
+
+    assert adb._probe_cdp_identity(42421) == adb.CdpIdentity(
+        port=42421,
+        browser_brand="Edg/119.0.2151.72",
+        instance_guid="edge-guid-aaa",
+    )
+
+
+def test_devtools_active_target_binds_launch_port_to_profile_instance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A missing or dead recorded port triggers a fresh detached launch."""
+    """Chromium's profile marker provides both the selected port and instance."""
     import app.core.agent_debug_browser as adb
 
+    profile_root = tmp_path / "agent_browser_profile" / "edge"
+    profile_root.mkdir(parents=True)
+    (profile_root / "DevToolsActivePort").write_text(
+        "50123\n/devtools/browser/edge-guid-ccc\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+
+    assert adb._read_devtools_active_target("edge") == adb.RecordedTarget(
+        port=50123,
+        instance="edge-guid-ccc",
+    )
+
+
+def test_ensure_debug_browser_relaunches_when_recorded_port_has_wrong_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A port takeover cannot be mistaken for the recorded browser process."""
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "agent_browser_profile" / "edge"
+    profile_root.mkdir(parents=True)
+    (profile_root / "debug_port").write_text(
+        json.dumps(
+            {
+                "port": 42421,
+                "instance": "edge-guid-aaa",
+                "browser": "Edg/119.0",
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
     monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
-    monkeypatch.setattr(adb, "_read_recorded_port", lambda _browser_id: None)
     monkeypatch.setattr(
         adb,
         "_resolve_browser_executable",
         lambda _browser_id: str(tmp_path / "msedge.exe"),
     )
-    monkeypatch.setattr(adb, "_pick_free_port", lambda: 50123)
+    monkeypatch.setattr(adb, "_wait_for_cdp_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(adb, "_clear_devtools_active_port", lambda _browser_id: None)
+
+    fresh = adb.CdpIdentity(
+        port=50123,
+        browser_brand="Edg/119.0",
+        instance_guid="edge-guid-ccc",
+    )
+    monkeypatch.setattr(adb, "_wait_for_launched_cdp", lambda _browser_id, _timeout: fresh)
 
     launched: dict[str, object] = {}
 
@@ -1515,14 +1611,154 @@ def test_ensure_debug_browser_launches_when_no_recorded_port(
         def terminate(self) -> None:
             launched["terminated"] = True
 
-    monkeypatch.setattr(adb, "_launch_debug_browser", lambda _bid, _exe, _port: FakeProcess())
-    monkeypatch.setattr(adb, "_wait_for_cdp_ready", lambda _port, _timeout: True)
-    monkeypatch.setattr(adb, "_record_port", lambda _bid, _port: None)
+    def launch(_browser_id: str, _executable: str, port: int) -> FakeProcess:
+        launched["port"] = port
+        return FakeProcess()
+
+    monkeypatch.setattr(adb, "_launch_debug_browser", launch)
+    recorded: list[adb.CdpIdentity] = []
+    monkeypatch.setattr(
+        adb,
+        "_record_debug_target",
+        lambda _browser_id, item: recorded.append(item),
+    )
 
     handle = adb.ensure_debug_browser("edge")
     assert launched.get("called") is True
     assert launched.get("terminated") is None
+    assert launched.get("port") == 0
     assert handle.cdp_endpoint == "http://127.0.0.1:50123"
+    assert recorded == [fresh]
+
+
+def test_ensure_debug_browser_fails_closed_when_launch_reports_wrong_brand(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Chrome endpoint is never returned for a requested Edge profile."""
+    import app.core.agent_debug_browser as adb
+
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr(adb, "_read_recorded_target", lambda _browser_id: None)
+    monkeypatch.setattr(
+        adb,
+        "_resolve_browser_executable",
+        lambda _browser_id: str(tmp_path / "msedge.exe"),
+    )
+    monkeypatch.setattr(adb, "_clear_devtools_active_port", lambda _browser_id: None)
+
+    terminated = {"called": False}
+
+    class FakeProcess:
+        def terminate(self) -> None:
+            terminated["called"] = True
+
+    monkeypatch.setattr(adb, "_launch_debug_browser", lambda *_args: FakeProcess())
+    monkeypatch.setattr(
+        adb,
+        "_wait_for_launched_cdp",
+        lambda _browser_id, _timeout: adb.CdpIdentity(
+            port=50123,
+            browser_brand="Chrome/119.0",
+            instance_guid="chrome-guid",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="does not match the requested"):
+        adb.ensure_debug_browser("edge")
+    assert terminated["called"] is True
+
+
+def test_recorded_target_backward_compat_upgrades_bare_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy bare-port record is accepted once and upgraded with identity."""
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "agent_browser_profile" / "edge"
+    profile_root.mkdir(parents=True)
+    (profile_root / "debug_port").write_text("42421", encoding="utf-8")
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    identity = adb.CdpIdentity(
+        port=42421,
+        browser_brand="Edg/119.0",
+        instance_guid="edge-guid-aaa",
+    )
+    monkeypatch.setattr(adb, "_wait_for_cdp_ready", lambda *_args, **_kwargs: identity)
+    upgraded: list[adb.CdpIdentity] = []
+    monkeypatch.setattr(
+        adb,
+        "_record_debug_target",
+        lambda _browser_id, item: upgraded.append(item),
+    )
+
+    handle = adb.ensure_debug_browser("edge")
+    assert handle.cdp_endpoint == "http://127.0.0.1:42421"
+    assert upgraded == [identity]
+
+
+def test_debug_browser_launch_records_instance_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh launch persists the port, product, and browser-process identity."""
+    import app.core.agent_debug_browser as adb
+
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr(adb, "_read_recorded_target", lambda _browser_id: None)
+    monkeypatch.setattr(
+        adb,
+        "_resolve_browser_executable",
+        lambda _browser_id: str(tmp_path / "msedge.exe"),
+    )
+    monkeypatch.setattr(adb, "_clear_devtools_active_port", lambda _browser_id: None)
+    monkeypatch.setattr(
+        adb,
+        "_launch_debug_browser",
+        lambda *_args: SimpleNamespace(terminate=lambda: None),
+    )
+    identity = adb.CdpIdentity(
+        port=50123,
+        browser_brand="Edg/119.0",
+        instance_guid="edge-guid-aaa",
+    )
+    monkeypatch.setattr(adb, "_wait_for_launched_cdp", lambda _browser_id, _timeout: identity)
+
+    adb.ensure_debug_browser("edge")
+
+    record = json.loads(
+        (tmp_path / "agent_browser_profile" / "edge" / "debug_port").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record == {
+        "port": 50123,
+        "instance": "edge-guid-aaa",
+        "browser": "Edg/119.0",
+    }
+
+
+def test_debug_browser_identity_launch_stays_windows_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS never probes, launches, or exposes the Windows debug browser."""
+    import app.core.agent_debug_browser as adb
+
+    monkeypatch.setattr(adb, "is_windows_host", lambda: False)
+    monkeypatch.setattr(
+        adb,
+        "_read_recorded_target",
+        lambda _browser_id: (_ for _ in ()).throw(AssertionError("must not read")),
+    )
+
+    with pytest.raises(RuntimeError, match="only supported on Windows"):
+        adb.ensure_debug_browser("edge")
+    assert adb.debug_browser_login_url("edge") is None
+    assert adb.debug_browser_profile_initialized("edge") is False
 
 
 def test_debug_browser_profile_initialized_requires_a_recorded_successful_port(

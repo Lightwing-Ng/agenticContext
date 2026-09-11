@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.69.3-codex.1`
+Documentation version: `v3.69.4-codex.1`
 
 ## Purpose
 
@@ -807,8 +807,15 @@ macOS-only. The selected operating system must match the host running the local 
 On macOS, Edge and Chrome run through an isolated clone of the selected signed-in profile. On
 Windows, that clone remains the pre-initialization fallback; after the project debug profile is
 initialized, Agent readiness, source, Project, and history probes and Agent tasks restart or reuse
-that persistent profile over CDP and operate the selected provider's DOM directly. Ordinary Cache
-probes and sync workers remain clone-first. Passive Agent source checks use a quiet,
+that persistent profile over CDP and operate the selected provider's DOM directly. A fresh debug
+browser asks Chromium to choose the port with `--remote-debugging-port=0`, then accepts the launch
+only when the profile-owned `DevToolsActivePort` marker and `/json/version` identify the same
+browser process. The durable `debug_port` record stores the selected port, browser-process GUID,
+and product token. Reuse and login handoff require the live GUID and product token (`Edg/` for
+Edge or `Chrome/` for Chrome) to match; legacy bare-port records are upgraded after one successful
+matching probe. This prevents a recycled port or a different Chromium product from being treated
+as the project browser. Ordinary Cache probes and sync workers remain clone-first. Passive Agent
+source checks use a quiet,
 task-independent context only when no Windows Agent worker owns that browser.
 ChatGPT source checks use a non-headless context because ChatGPT's Cloudflare challenge rejects
 headless clones with HTTP 403. Pre-initialization Windows clone probes retain the

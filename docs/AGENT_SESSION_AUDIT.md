@@ -1,7 +1,7 @@
 # Agent session audit challenge
 
-Documentation version: `v1.0.0-codex.1`
-Reviewed: 7 Sep 2026
+Documentation version: `v1.1.0-codex.1`
+Reviewed: 11 Sep 2026
 Baseline commit: `0911288d80c85ac29595f8748c53ef3a50c52924`
 Draft fix version: `v3.36.4-codex.1`; integrated working-tree version: `v3.36.5-codex.1`
 
@@ -68,3 +68,29 @@ Future reports should record a commit and dirty-tree boundary, link each finding
 function, distinguish verified defects from concurrency possibilities, and inspect existing
 regression tests before claiming a coverage gap. Verification must separate static inspection,
 focused tests, complete gates, authenticated-provider checks, and platform-specific execution.
+
+## CDP instance identity verification
+
+A later review confirmed that the Windows debug-browser reuse path treated any Chromium CDP
+endpoint answering on the saved port as the project browser. Because the launcher also released a
+transient free-port socket before Edge bound it, a recycled or concurrently claimed port could
+attach the Agent to the wrong profile. The existing reuse test replaced the probe with a bare port
+comparison and therefore did not exercise browser-process identity.
+
+The `v1.23.0-codex.1` implementation records the browser GUID from
+`webSocketDebuggerUrl` together with the product token and port. Reuse now requires the live GUID
+and expected product to match. Fresh launches use Chromium's OS-selected port mode and accept only
+a `DevToolsActivePort` marker whose GUID agrees with the live endpoint, closing the earlier
+free-port selection race. Legacy bare-port records remain readable and are upgraded after a
+successful matching probe. Login URL discovery applies the same identity checks.
+
+The supplied patch was not applied verbatim. Microsoft documents the Edge product token as
+`Edg/`, not `Edge/`; the latter would have rejected every valid Edge endpoint. Its proposed
+`*.agent-backup-*.tmp` ignore rule was also excluded because recovery copies must remain visible
+for manual review under the shared static-file housekeeping contract. Internal plan material and
+the related ignore recommendation were not added to the repository.
+
+Regression coverage verifies real `/json/version` parsing, matching-instance reuse,
+wrong-instance relaunch, wrong-product failure, `DevToolsActivePort` parsing, legacy migration,
+and durable identity recording. These source and macOS-hosted tests do not establish native
+Windows browser or authenticated-provider acceptance; that boundary remains open.

@@ -1,4 +1,4 @@
-"""Native Windows launcher and fail-closed gate tests. Code version: v1.1.0-codex.1."""
+"""Native Windows launcher and fail-closed gate tests. Code version: v1.2.0-codex.1."""
 
 import os
 from pathlib import Path
@@ -13,6 +13,15 @@ pytestmark = pytest.mark.skipif(
     sys.platform != "win32", reason="Exercises the native Windows py launcher and PowerShell."
 )
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _powershell() -> str:
+    """Resolve PowerShell 7 first, then the Windows 5.1 host."""
+    for name in ("pwsh", "powershell"):
+        executable = shutil.which(name)
+        if executable:
+            return executable
+    pytest.skip("Neither pwsh nor powershell is available on PATH.")
 
 
 def _windows_environment() -> dict[str, str]:
@@ -32,8 +41,19 @@ def test_windows_test_entrypoint_executes_pytest_and_preserves_exit_code(tmp_pat
     probe = tmp_path / "test_probe.py"
     probe.write_text(f"def test_probe():\n    assert {passes}\n", encoding="utf-8")
     result = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", str(PROJECT_ROOT / "scripts/test.ps1"), str(probe), "-q"],
-        env=_windows_environment(), capture_output=True, text=True, timeout=60,
+        [
+            _powershell(),
+            "-NoProfile",
+            "-File",
+            str(PROJECT_ROOT / "scripts/test.ps1"),
+            str(probe),
+        ],
+        env=_windows_environment(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        encoding="utf-8",
+        errors="replace",
     )
     assert result.returncode == (0 if passes else 1), result.stdout + result.stderr
     assert ("1 passed" if passes else "1 failed") in result.stdout, result.stdout + result.stderr
@@ -51,9 +71,15 @@ def test_windows_gate_rejects_success_without_fresh_coverage(tmp_path, stale_rep
     (static / "probe.js").write_text("void 0;\n", encoding="utf-8")
     tests = tmp_path / "tests"
     tests.mkdir()
-    (tests / "test_agent_optimization.mjs").write_text(
-        "import test from 'node:test';\ntest('probe', () => {});\n", encoding="utf-8"
-    )
+    for name in (
+        "test_agent_optimization.mjs",
+        "test_beta_engines.mjs",
+        "test_select_controller.mjs",
+    ):
+        (tests / name).write_text(
+            "import test from 'node:test';\ntest('probe', () => {});\n",
+            encoding="utf-8",
+        )
     fake_python = tmp_path / "fake-python.cmd"
     fake_python.write_text('@echo off\nif "%~1"=="-c" echo 3.13\nexit /b 0\n', encoding="utf-8")
     if stale_report:
@@ -64,8 +90,13 @@ def test_windows_gate_rejects_success_without_fresh_coverage(tmp_path, stale_rep
     environment = _windows_environment()
     environment["AGENTIC_CONTEXT_PYTHON"] = str(fake_python)
     result = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", str(scripts / "check.ps1")],
-        env=environment, capture_output=True, text=True, timeout=60,
+        [_powershell(), "-NoProfile", "-File", str(scripts / "check.ps1")],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        encoding="utf-8",
+        errors="replace",
     )
     assert result.returncode != 0, result.stdout + result.stderr
     assert "Pytest did not produce a fresh coverage report." in result.stdout + result.stderr
@@ -92,8 +123,19 @@ def test_windows_test_selection_and_stale_launcher_arguments(tmp_path, marker, e
     if marker:
         environment["AGENTIC_CONTEXT_TEST_MARK_EXPRESSION"] = marker
     result = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", str(scripts / "test.ps1"), "test_probe.py"],
-        env=environment, capture_output=True, text=True, timeout=60,
+        [
+            _powershell(),
+            "-NoProfile",
+            "-File",
+            str(scripts / "test.ps1"),
+            "test_probe.py",
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        encoding="utf-8",
+        errors="replace",
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed, 1 deselected" in result.stdout
@@ -117,8 +159,18 @@ def test_windows_setup_stops_at_the_first_failed_install(tmp_path, stage):
     environment["AGENTIC_CONTEXT_PYTHON"] = str(interpreter)
     environment["AGENTIC_CONTEXT_SKIP_PLAYWRIGHT_INSTALL"] = "0"
     result = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", str(PROJECT_ROOT / "scripts/setup_python.ps1")],
-        env=environment, capture_output=True, text=True, timeout=60,
+        [
+            _powershell(),
+            "-NoProfile",
+            "-File",
+            str(PROJECT_ROOT / "scripts/setup_python.ps1"),
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        encoding="utf-8",
+        errors="replace",
     )
     assert result.returncode == 23, result.stdout + result.stderr
     assert "Environment is ready." not in result.stdout
@@ -134,7 +186,17 @@ def test_windows_resolver_minimum_version(tmp_path, version, accepted):
     environment = _windows_environment()
     environment["AGENTIC_CONTEXT_PYTHON"] = str(interpreter)
     result = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", str(PROJECT_ROOT / "scripts/resolve_python.ps1")],
-        env=environment, capture_output=True, text=True, timeout=30,
+        [
+            _powershell(),
+            "-NoProfile",
+            "-File",
+            str(PROJECT_ROOT / "scripts/resolve_python.ps1"),
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        encoding="utf-8",
+        errors="replace",
     )
     assert (result.returncode == 0) == accepted, result.stdout + result.stderr
