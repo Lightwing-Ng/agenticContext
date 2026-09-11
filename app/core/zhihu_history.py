@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer history for the formal text cache.
 
-Code version: v1.1.0-codex.1
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
@@ -604,7 +604,7 @@ def sync_zhihu_history(
         raise RuntimeError("Zhihu history readback did not match the committed answer count.")
     state.update(
         discovered_tweets=collection.expected_total or len(collection.answers),
-        queued_tweets=collection.expected_total or len(collection.answers),
+        queued_tweets=len(collection.answers),
         processed_tweets=len(collection.answers),
         downloaded_posts=write_result.cached_answers,
         downloaded_tweets=write_result.cached_answers,

@@ -1,4 +1,4 @@
-/* Code version: v1.14.2-codex.1 */
+/* Code version: v1.14.3-codex.1 */
 
 (() => {
     "use strict";
@@ -12,6 +12,7 @@
     const progressStrategyName = page.dataset.cacheProgressStrategy || "queue";
     const statusPollIntervalMs = 3_000;
     const terminalPhases = new Set(["finished", "completed", "success", "stopped"]);
+    const successfulTerminalPhases = new Set(["finished", "completed", "success"]);
     const runningMaximumFields = Object.freeze({
         "zhihu:downloaded_posts": "processed_tweets",
     });
@@ -485,6 +486,7 @@
         const queued = Math.max(Number(data.queued_tweets) || 0, 0);
         const processed = Math.min(Math.max(Number(data.processed_tweets) || 0, 0), queued);
         const progressUnits = {
+            answers: "answers",
             images: "image assets",
             conversations: "sessions",
             sessions: "sessions",
@@ -505,6 +507,15 @@
             const percent = clampPercent(completePercent);
             label = `Failed at ${percent}%`;
             detail = `${formatMetricNumber(processed)} / ${formatMetricNumber(queued)} ${progressUnit} processed before failure (${percent}%); ${formatMetricNumber(notProcessed)} not processed.`;
+        } else if (sourceKey === "zhihu" && successfulTerminalPhases.has(data.phase) && hasMeasuredProgress) {
+            const reported = Math.max(Number(data.discovered_tweets) || 0, processed);
+            const providerGap = Math.max(reported - processed, 0);
+            completePercent = 100;
+            label = "100%";
+            detail = `${formatMetricNumber(processed)} / ${formatMetricNumber(processed)} available answers processed (100%).`;
+            if (providerGap > 0) {
+                detail += ` Zhihu reported ${formatMetricNumber(reported)} total, but ${formatMetricNumber(providerGap)} were not exposed by either verified pagination pass.`;
+            }
         } else if (hasMeasuredProgress) {
             const pending = Math.max(queued - processed, 0);
             const percent = clampPercent(completePercent);

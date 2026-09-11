@@ -1,7 +1,7 @@
 # Beta experiments
 
-Documentation version: `v0.5.3`
-Application version: `v1.11.0`
+Documentation version: `v0.5.4`
+Application version: `v1.12.0`
 
 Beta is an optional research workspace in the Dock immediately before Settings. Its seven
 experiments reuse the existing sidebar, theme, typography, controls, and local assets. Open
@@ -17,6 +17,11 @@ As of application `v1.11.0`, Local resources presents the promoted archive as an
 hierarchy: the Zhihu index groups cached answers under each literal answerer name, and opening an
 answerer shows that person's complete cached answer collection. The optional Beta experiment below
 continues to describe capture research rather than the everyday browsing interface.
+
+As of application `v1.12.0`, the Beta snapshot is namespaced under
+`local_store/beta/zhihu/<token>/answers.parquet`. It retains its richer completeness-research
+schema and remains excluded from Local resources indexing, while sharing the canonical
+`local_store/` root and its next enabled ShadowBackup pass.
 
 ## Experiments
 
@@ -39,7 +44,7 @@ engine, or automatic research agent.
 
 Zhihu Answers Cache is the one network-backed Beta experiment. It runs only after an explicit
 start request, uses a selected authenticated host browser, and persists one verified snapshot in
-the dedicated Beta store. It does not call a model or feed the collected content to an Agent.
+the namespaced Beta archive. It does not call a model or feed the collected content to an Agent.
 
 ## Resource and execution boundary
 
@@ -49,7 +54,7 @@ text file. Imported `.txt`, `.md`, and `.json` files are treated as literal text
 file size of 240,000 bytes and a maximum decoded length of 60,000 UTF-16 code units. These local
 experiment runtimes never read cached messages, source catalogs, Agent sessions, settings,
 cookies, or local files automatically. They never start a cache task, submit an Agent prompt,
-execute a command, schedule a job, or write to `local_store/` or `beta_store/`.
+execute a command, schedule a job, or write to `local_store/`.
 
 Experiment inputs, drafts, and results stay in the browser. Only input fields are saved in
 `sessionStorage`, under `agenticcontext:beta:v1:draft:<experiment-id>`. Reloading or revisiting an
@@ -135,10 +140,11 @@ sufficient for completion. Before publication, all of these conditions must hold
 5. The atomically written Parquet file can be read back with the same row count and capture metadata.
 
 Only a snapshot that passes all five checks replaces
-`beta_store/zhihu/<token>/answers.parquet`. The path is rooted beneath the configured runtime root,
-the token is validated before it becomes a directory name, and the archive remains outside
-`local_store/`. It is not indexed by Local resources, copied by ShadowBackup, or included in any
-existing Cache reset. The worker still acquires the application-wide cache task lock, whose
+`local_store/beta/zhihu/<token>/answers.parquet`. The path is rooted beneath the configured
+Local resources store, the token is validated before it becomes a directory name, and the archive
+remains in a dedicated Beta namespace. It is not indexed by Local resources or included in any
+source-specific Cache reset. An enabled ShadowBackup copies it on the next backup pass, although
+the Beta capture itself does not start that backup. The worker still acquires the application-wide cache task lock, whose
 advisory metadata remains at `local_store/.cache_task.lock`, so a Zhihu capture cannot overlap an
 X, Grok, ChatGPT, Gemini, or Claude cache job.
 
@@ -263,7 +269,8 @@ Application `v1.9.0`, Beta `v0.2.0`:
 - Independent Parquet readback verified 328 unique rows, canonical answer URLs, every content
   hash, and 583 HTTPS Zhihu/Zhimg media references. One provider-collapsed answer was retained as
   metadata with `content_available=false`; the other 327 records include provider body content.
-  The verified archive is `beta_store/zhihu/feifeimao/answers.parquet`. No candidate temporary
+  The verified archive was originally captured at `beta_store/zhihu/feifeimao/answers.parquet`
+  and now resides at `local_store/beta/zhihu/feifeimao/answers.parquet`. No candidate temporary
   archive remains.
 - The complete repository gate finished with 2,074 passed, 29 failed, 18 skipped, and 457 passing
   subtests; branch coverage was 70.16%. All then-collected Beta and Zhihu cases passed. The gate is

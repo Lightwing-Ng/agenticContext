@@ -1,6 +1,6 @@
 """Route and asset coverage for the formal Zhihu cache source.
 
-Code version: v1.3.2-codex.1
+Code version: v1.3.3-codex.1
 """
 
 from __future__ import annotations
@@ -53,7 +53,9 @@ def test_zhihu_cache_page_uses_edge_login_and_text_first_controls(tmp_path: Path
     assert 'href="/settings#settings-downloads"' in body
     assert "Images and rich-text destinations are retained only as source links" in body
     assert "--cache-source-mark: url('/static/images/zhihu.svg')" in body
-    assert 'cache-page.js?v=cache-page-v1.14.2-codex.1' in body
+    assert "Answers reported" in body
+    assert "Answers found" not in body
+    assert 'cache-page.js?v=cache-page-v1.14.3-codex.1' in body
 
 
 def test_zhihu_routes_probe_and_dispatch_the_selected_edge_session(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.14.2-codex.1`
+Documentation version: `v1.14.3-codex.1`
 
 ## Launch
 
@@ -217,13 +217,14 @@ interrupt it, so the optimizer must checkpoint frequently enough for the workloa
 | `local_store/.cache_task.lock` | Cross-source advisory task lock |
 | `local_store/.browser-trash/` | Recoverable previews moved by the local-media browser |
 | `local_store/.browser_deleted.json` | Browser deletion tombstones and exclusion identities |
-| `beta_store/zhihu/<token>/answers.parquet` | Verified Beta Zhihu answer snapshot; not a Local resources or ShadowBackup input |
+| `local_store/beta/zhihu/<token>/answers.parquet` | Verified Beta Zhihu answer snapshot; excluded from Local resources indexing and included in the next enabled ShadowBackup pass |
 | `logs/cachelikes.log.jsonl` | Structured local application log |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local saved settings |
 
 All cache and log paths are ignored by Git. Back up local media before using any destructive reset
-operation. The Beta Zhihu archive remains outside `local_store/`; existing Cache reset actions do
-not remove it, and ShadowBackup does not copy it.
+operation. The Beta Zhihu archive has its own namespace under `local_store/beta/`; existing
+source-specific Cache reset actions do not remove it. An enabled ShadowBackup includes the archive
+on its next pass, but a Beta capture does not start a backup by itself.
 
 ### Zhihu text cache
 
@@ -395,4 +396,4 @@ you intend to discard that cache. Do not use reset operations as a routine troub
 Run `./scripts/test.sh` or `./scripts/check.sh` (macOS/Linux) or `.\scripts\test.ps1` or
 `.\scripts\check.ps1` (Windows) for offline validation. Pytest redirects all
 default runtime paths into temporary directories; tests must never be pointed at the production
-cache, Beta store, log, settings, or browser-profile locations.
+cache, Beta archive, log, settings, or browser-profile locations.

@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.6.0-codex.1`
+Test-suite version: `v1.6.1-codex.1`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -89,6 +89,6 @@ This is a behavior map, not a claim of complete coverage or a current test-count
 application modules load. Filesystem tests use pytest temporary paths. The sidebar E2E suite uses
 a clean disposable browser context against a local isolated Flask server. Authenticated browser
 profiles, yt-dlp, X, Zhihu, Grok, remote network transport, user-owned local media, and the
-user-owned Beta store remain outside the test boundary.
+user-owned Beta archive remains outside the test boundary.
 
 Run the full suite with `./scripts/test.sh` on macOS/Linux or `.\scripts\test.ps1` on Windows.

@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.11.2-codex.1`
+Documentation version: `v1.11.3-codex.1`
 
 ## Supported commands
 
@@ -289,7 +289,8 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   media files, deleted previews, and settings.
 - Flask integration tests use `create_app()` plus `test_client()` and assert route contracts
   without starting a web server.
-- Zhihu Answers Cache tests inject deterministic API pages and a temporary `beta_store` root.
+- Zhihu Answers Cache tests inject deterministic API pages and a temporary
+  `local_store/beta` namespace.
   They cover URL/host/cursor rejection, collapsed and nullable provider fields, oversized response
   pages, answer-ID deduplication, stable duplicate-backed provider-gap verification, first-page
   verification, atomic Parquet metadata readback, prior-snapshot preservation, cooperative Stop,
@@ -329,7 +330,7 @@ The current detailed module-to-behavior map is maintained in [TEST_COVERAGE.md](
 runtime locations to process-scoped temporary directories:
 
 - `HOME` keeps settings and browser-profile defaults away from the user account.
-- `AGENTIC_CONTEXT_RUNTIME_ROOT` moves default local caches, the Beta store, and logs away from the
+- `AGENTIC_CONTEXT_RUNTIME_ROOT` moves default local caches, the Beta archive, and logs away from the
   repository.
 - `AGENTIC_CONTEXT_SETTINGS_PATH` redirects persisted settings.
 
@@ -337,7 +338,7 @@ Default tests must not:
 
 - open an authenticated Chrome, Edge, Safari, or Playwright profile;
 - make X, Zhihu, Grok, ChatGPT, yt-dlp, or general network requests;
-- read, copy, delete, reset, or restore a user-owned cache, Beta store, log, setting, or browser profile;
+- read, copy, delete, reset, or restore a user-owned cache, Beta archive, log, setting, or browser profile;
 - submit a real background cache job.
 
 Mock external boundaries at the module that invokes them. Existing patterns mock

@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.71.1-codex.1
+# Code version: v1.71.2-codex.1
 
 from __future__ import annotations
 
@@ -60,7 +60,6 @@ from app.core.browser import (
 )
 from app.core.foundation import (
     APP_VERSION,
-    BETA_STORE_ROOT,
     DEFAULT_HOST,
     DEFAULT_PORT,
     LOCAL_STORE_ROOT,
@@ -579,11 +578,7 @@ def create_app(
     effective_beta_store_root = (
         Path(beta_store_root).expanduser()
         if beta_store_root is not None
-        else (
-            effective_local_store_root.parent / "beta_store"
-            if local_store_root is not None
-            else BETA_STORE_ROOT
-        )
+        else effective_local_store_root / "beta"
     )
     app = Flask(
         __name__,

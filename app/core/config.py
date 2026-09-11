@@ -1,6 +1,6 @@
 """Configuration helpers."""
 
-# Code version: v1.19.0-codex.1
+# Code version: v1.19.1-codex.1
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def runtime_root_is_overridden() -> bool:
 
 RUNTIME_ROOT = resolve_runtime_root()
 LOCAL_STORE_ROOT = RUNTIME_ROOT / "local_store"
-BETA_STORE_ROOT = RUNTIME_ROOT / "beta_store"
+BETA_STORE_ROOT = LOCAL_STORE_ROOT / "beta"
 MEDIA_STORE_DIRNAME = "media"
 MEDIA_STORE_ROOT = LOCAL_STORE_ROOT / MEDIA_STORE_DIRNAME
 X_LOCAL_STORE_DIRNAME = "x"

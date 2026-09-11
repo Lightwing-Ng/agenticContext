@@ -1,6 +1,6 @@
 """Background service for one complete Zhihu answer-cache run.
 
-Code version: v0.4.0-codex.1
+Code version: v0.4.2-codex.1
 """
 
 from __future__ import annotations
@@ -32,8 +32,10 @@ class ZhihuTaskBusyError(RuntimeError):
     """A cache worker already owns the task slot requested by this service."""
 
 
-def _paths_overlap(first: Path, second: Path) -> bool:
-    return first == second or first in second.parents or second in first.parents
+def _beta_store_owns_cache_store(beta_store: Path, cache_store: Path) -> bool:
+    """Reject a Beta root that could address the complete Local resources store."""
+
+    return beta_store == cache_store or beta_store in cache_store.parents
 
 
 def build_zhihu_answers_initial_snapshot(
@@ -76,8 +78,10 @@ class ZhihuAnswersService:
         resolved_cache_store = self._configured_cache_store_root.resolve(strict=False)
         self._cache_store_root = resolved_cache_store
         production_cache_store = LOCAL_STORE_ROOT.expanduser().resolve(strict=False)
-        if _paths_overlap(self._beta_store_root, resolved_cache_store):
-            raise ValueError("The Beta store and Local resources store must not overlap.")
+        if _beta_store_owns_cache_store(self._beta_store_root, resolved_cache_store):
+            raise ValueError(
+                "The Beta archive root must not own or equal the Local resources store."
+            )
         self._task_lock = task_lock or (
             SHARED_CACHE_TASK_LOCK
             if resolved_cache_store == production_cache_store
@@ -111,7 +115,7 @@ class ZhihuAnswersService:
             self._configured_beta_store_root.is_symlink()
             or current_beta_store != self._beta_store_root
             or current_cache_store != self._cache_store_root
-            or _paths_overlap(current_beta_store, current_cache_store)
+            or _beta_store_owns_cache_store(current_beta_store, current_cache_store)
         ):
             raise ZhihuArchiveError(
                 "Zhihu answer storage roots changed after service initialization."
@@ -268,7 +272,7 @@ class ZhihuAnswersService:
             metrics[key] = result.get(key)
         self._state.update(
             discovered_tweets=int(result.get("expected_answers") or result.get("processed_answers") or 0),
-            queued_tweets=int(result.get("expected_answers") or result.get("processed_answers") or 0),
+            queued_tweets=int(result.get("processed_answers") or 0),
             processed_tweets=int(result.get("processed_answers") or 0),
             downloaded_posts=int(result.get("cached_answers") or 0),
             downloaded_tweets=int(result.get("cached_answers") or 0),

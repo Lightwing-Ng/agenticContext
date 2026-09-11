@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.24.2-codex.1`
+Documentation version: `v1.24.3-codex.1`
 
 ## Runtime flow
 
@@ -116,7 +116,7 @@ Zhihu Answers Cache is the seventh experiment and the only network-backed except
 `GET /beta/zhihu-answers-cache` is side-effect free. A dedicated same-origin API owns explicit
 start/status/stop operations, bounded local archive reads, and a single background worker. The API is registered only when that
 experiment is enabled, calls no Cache, Agent, Settings, Local resources, or ShadowBackup route,
-and publishes only beneath `beta_store/`. Full details are in [BETA.md](BETA.md).
+and publishes only beneath `local_store/beta/`. Full details are in [BETA.md](BETA.md).
 
 ## OpenAI Site tools and Agent Optimization boundary
 
@@ -360,7 +360,7 @@ explicit POST with validated Zhihu people URL and Chrome or Edge
   -> isolated temporary clone of the selected authenticated Chromium profile
   -> credentialed same-origin /api/v4/members/<token>/answers offset reads
   -> validated paging.next cursor plus answer-ID deduplication and stability checks
-  -> atomic beta_store/zhihu/<token>/answers.parquet replacement and readback
+  -> atomic local_store/beta/zhihu/<token>/answers.parquet replacement and readback
   -> bounded summary search -> exact-ID plain-text body read
 ```
 
@@ -560,12 +560,12 @@ Doctor. The service never replays a local Action or continues automatically.
 | `local_store/` | User media, source catalogs, queues, manifests, and deletion previews | Ignored except `.gitkeep` |
 | `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability | Ignored except `.gitkeep` |
 | `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text and source links indexed by Local resources | Ignored |
-| `beta_store/zhihu/<token>/answers.parquet` | Beta-owned verified Zhihu answer snapshots; excluded from Local resources and ShadowBackup | Ignored |
+| `local_store/beta/zhihu/<token>/answers.parquet` | Beta-owned verified Zhihu answer snapshots; excluded from Local resources indexing and included in ShadowBackup | Ignored |
 | `logs/` | Local structured JSON-line logs | Ignored except `.gitkeep` |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local configuration | Outside the repository |
 | `app/`, `tests/`, `docs/`, `scripts/` | Versioned source, contracts, and checks | Committed |
 
-`AGENTIC_CONTEXT_RUNTIME_ROOT` and `AGENTIC_CONTEXT_SETTINGS_PATH` are the current runtime-injection inputs. The runtime root owns both `local_store/` and `beta_store/`. The legacy `CACHELIKES_RUNTIME_ROOT` and `CACHELIKES_SETTINGS_PATH` aliases remain accepted for existing launchers and test environments.
+`AGENTIC_CONTEXT_RUNTIME_ROOT` and `AGENTIC_CONTEXT_SETTINGS_PATH` are the current runtime-injection inputs. The runtime root owns `local_store/`, including its `beta/` namespace. The legacy `CACHELIKES_RUNTIME_ROOT` and `CACHELIKES_SETTINGS_PATH` aliases remain accepted for existing launchers and test environments.
 Production startup leaves them unset. Pytest sets both before imports so tests cannot resolve the
 user-owned locations above.
 

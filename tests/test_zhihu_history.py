@@ -1,6 +1,6 @@
 """Fixture-only coverage for the formal Zhihu text cache.
 
-Code version: v1.1.2-codex.1
+Code version: v1.1.3-codex.1
 """
 
 from __future__ import annotations
@@ -281,6 +281,33 @@ def test_optional_author_mode_uses_the_answerer_url_and_merges_history(tmp_path:
     assert result["collection_mode"] == "author"
     assert result["processed_answers"] == 1
     assert ZhihuHistoryStore(zhihu_history_path(tmp_path)).rows[0]["author_label"] == "Fixture Author"
+
+
+def test_completed_author_sync_queues_only_answers_exposed_by_stable_pagination(
+    tmp_path: Path,
+) -> None:
+    payload = _answer_payload(33)
+    answer_page = {
+        "data": [payload, payload],
+        "paging": {"totals": 2, "is_end": True},
+    }
+    state = RecordingState()
+
+    result = sync_zhihu_history(
+        state,
+        CrawlConfig(zhihu_browser="edge"),
+        lambda: False,
+        tmp_path,
+        author_url="https://www.zhihu.com/people/fixture-author",
+        fetch_page=lambda _url: answer_page,
+        account_payload=_account_payload(),
+    )
+
+    assert result["processed_answers"] == 1
+    assert state.values["discovered_tweets"] == 2
+    assert state.values["queued_tweets"] == 1
+    assert state.values["processed_tweets"] == 1
+    assert state.values["performance_metrics"]["expected_answers"] == 2
 
 
 def test_optional_author_mode_keeps_an_unavailable_answer_as_a_source_record(

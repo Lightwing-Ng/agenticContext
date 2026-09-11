@@ -1,6 +1,6 @@
 """Behavioral checks for the optional, isolated Beta navigation boundary.
 
-Code version: v0.4.0-codex.1
+Code version: v0.4.1-codex.1
 """
 
 from __future__ import annotations
@@ -86,10 +86,14 @@ def test_zhihu_cache_shares_the_injected_cache_task_lock(
     beta_app_factory: Callable[..., Flask],
 ) -> None:
     application = beta_app_factory()
+    service = application.extensions["beta_zhihu_answers_service"]
 
     assert (
-        application.extensions["beta_zhihu_answers_service"]._task_lock
+        service._task_lock
         is application.extensions["shadow_backup_service"]._task_lock
+    )
+    assert service._configured_beta_store_root == (
+        application.extensions["local_media_catalog"].local_store_root / "beta"
     )
 
 

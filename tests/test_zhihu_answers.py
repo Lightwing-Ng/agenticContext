@@ -1,6 +1,6 @@
 """Pure-fixture coverage for the isolated Zhihu answer archive.
 
-Code version: v0.7.1-codex.1
+Code version: v0.7.3-codex.1
 """
 
 from __future__ import annotations
@@ -327,6 +327,30 @@ def test_collect_accepts_only_a_reproducible_duplicate_backed_provider_gap() -> 
     assert requested_offsets == [0, 20, 0, 0, 20]
 
 
+def test_completed_sync_does_not_leave_a_verified_provider_gap_pending(tmp_path: Path) -> None:
+    state = RecordingState()
+
+    def fetch_page(url: str) -> dict[str, Any]:
+        if _offset(url) == 0:
+            return _page([1, 2], total=3, is_end=False, next_offset=20)
+        return _page([2], total=3, is_end=True)
+
+    result = sync_zhihu_answers(
+        state,
+        CrawlConfig(),
+        ZHIHU_EXAMPLE_PROFILE_URL,
+        "edge",
+        lambda: False,
+        tmp_path,
+        fetch_page=fetch_page,
+    )
+
+    assert result["processed_answers"] == 2
+    assert state.values["discovered_tweets"] == 3
+    assert state.values["queued_tweets"] == 2
+    assert state.values["processed_tweets"] == 2
+
+
 def test_collect_rejects_an_untrusted_next_cursor() -> None:
     profile = normalize_zhihu_profile_url(ZHIHU_EXAMPLE_PROFILE_URL)
     payload = _page([1], total=2, is_end=False)
@@ -515,15 +539,35 @@ def test_service_commit_gate_honors_an_already_accepted_stop(tmp_path: Path) -> 
     assert state.snapshot()["phase"] == "stopping"
 
 
+def test_service_completion_metrics_count_provider_total_as_reported_not_queued(
+    tmp_path: Path,
+) -> None:
+    state = TaskState(
+        "v-test",
+        snapshot_factory=lambda version: TaskSnapshot(version=version),
+    )
+    service = ZhihuAnswersService(
+        state,
+        beta_store_root=tmp_path / "beta_store",
+        cache_store_root=tmp_path / "local_store",
+    )
+
+    service._apply_result_metrics({"expected_answers": 3, "processed_answers": 2})
+    snapshot = state.snapshot()
+
+    assert snapshot["discovered_tweets"] == 3
+    assert snapshot["queued_tweets"] == 2
+    assert snapshot["processed_tweets"] == 2
+
+
 @pytest.mark.parametrize(
     ("beta_suffix", "cache_suffix"),
     [
         ("shared", "shared"),
-        ("shared/beta", "shared"),
         ("shared", "shared/local_store"),
     ],
 )
-def test_service_rejects_overlapping_beta_and_local_store_roots(
+def test_service_rejects_a_beta_root_that_owns_the_local_store(
     tmp_path: Path,
     beta_suffix: str,
     cache_suffix: str,
@@ -533,12 +577,30 @@ def test_service_rejects_overlapping_beta_and_local_store_roots(
         snapshot_factory=lambda version: TaskSnapshot(version=version),
     )
 
-    with pytest.raises(ValueError, match="must not overlap"):
+    with pytest.raises(ValueError, match="must not own or equal"):
         ZhihuAnswersService(
             state,
             beta_store_root=tmp_path / beta_suffix,
             cache_store_root=tmp_path / cache_suffix,
         )
+
+
+def test_service_accepts_a_namespaced_beta_root_inside_local_store(
+    tmp_path: Path,
+) -> None:
+    state = TaskState(
+        "v-test",
+        snapshot_factory=lambda version: TaskSnapshot(version=version),
+    )
+    local_store_root = tmp_path / "local_store"
+
+    service = ZhihuAnswersService(
+        state,
+        beta_store_root=local_store_root / "beta",
+        cache_store_root=local_store_root,
+    )
+
+    assert service._configured_beta_store_root == local_store_root / "beta"
 
 
 def test_service_rejects_symlink_aliases_between_store_roots(tmp_path: Path) -> None:
@@ -551,7 +613,7 @@ def test_service_rejects_symlink_aliases_between_store_roots(tmp_path: Path) -> 
         snapshot_factory=lambda version: TaskSnapshot(version=version),
     )
 
-    with pytest.raises(ValueError, match="must not overlap"):
+    with pytest.raises(ValueError, match="must not own or equal"):
         ZhihuAnswersService(
             state,
             beta_store_root=beta_alias,
@@ -932,7 +994,7 @@ def test_store_rejects_beta_root_rebound_before_archive_publication(tmp_path: Pa
     beta_root.rmdir()
     beta_root.symlink_to(local_root, target_is_directory=True)
 
-    with pytest.raises(ZhihuArchiveError, match="symlinked Beta store root"):
+    with pytest.raises(ZhihuArchiveError, match="symlinked Beta archive root"):
         store.replace_complete(answers, "2026-09-10T00:00:00Z")
 
     assert not (local_root / "zhihu").exists()

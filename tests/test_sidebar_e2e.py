@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.41.2-codex.1
+Code version: v1.41.3-codex.1
 """
 
 from __future__ import annotations
@@ -10750,8 +10750,25 @@ def test_zhihu_cached_answer_metric_tracks_live_progress_without_overstating_fai
         expect(page.locator("#phase_value")).to_have_attribute("data-phase", "failed")
         expect(page.locator("#status_progress_value")).to_have_text("Failed at 74%")
         expect(page.locator("#status_progress_detail")).to_have_text(
-            "873 / 1,177 items processed before failure (74%); 304 not processed."
+            "873 / 1,177 answers processed before failure (74%); 304 not processed."
         )
+
+        state.update(
+            phase="finished",
+            message="Finished Zhihu answer cache.",
+            downloaded_posts=1_334,
+            queued_tweets=1_006,
+            processed_tweets=1_006,
+        )
+        expect(cached_answers).to_have_text("1,334", timeout=6_000)
+        expect(page.locator("#phase_value")).to_have_attribute("data-phase", "finished")
+        expect(page.locator("#status_progress_value")).to_have_text("100%")
+        expect(page.locator("#status_progress_detail")).to_have_text(
+            "1,006 / 1,006 available answers processed (100%). "
+            "Zhihu reported 1,177 total, but 171 were not exposed by either verified pagination pass."
+        )
+        expect(page.locator("#progress_queued_tweets")).to_have_text("1,006")
+        expect(page.locator("#progress_processed_tweets")).to_have_text("1,006")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []
     finally:

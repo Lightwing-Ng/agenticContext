@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.9.2-codex.1`
+Documentation version: `v1.9.3-codex.1`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -37,7 +37,7 @@ where a source sync is started. Its text source filter accepts `all`, `chatgpt`,
 `claude`, `gemini`, `grok`, and `zhihu`.
 
 The original `/beta/zhihu-answers-cache` remains a separate completeness-research surface. Its
-verified per-answerer snapshots stay under `beta_store/` and are not indexed by Local resources.
+verified per-answerer snapshots stay under `local_store/beta/` and are not indexed by Local resources.
 Both Zhihu workflows acquire the same cross-process cache task lock as every Cache worker.
 
 ## 2. Shared Text/Media contract
@@ -169,7 +169,7 @@ The current persistent cache layout is:
 | `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; provider HTML omitted and source links retained |
 | `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers |
 | `local_store/.cache_task.lock` | Cache and Beta Zhihu runtimes | Cross-process advisory task lock |
-| `beta_store/zhihu/<token>/answers.parquet` | Beta Zhihu runtime | Verified provider-exposed unique answer snapshot plus reported-gap metadata, excluded from Local resources and ShadowBackup |
+| `local_store/beta/zhihu/<token>/answers.parquet` | Beta Zhihu runtime | Verified provider-exposed unique answer snapshot plus reported-gap metadata, excluded from Local resources indexing and included in the next enabled ShadowBackup pass |
 | `logs/cachelikes.log.jsonl` | All runtimes | Structured diagnostics |
 
 The five formal text-history files use the same logical fields, while each provider runtime has
@@ -294,7 +294,7 @@ be idle before starting another task. Only one cache task may hold
 `local_store/.cache_task.lock` across the entire application.
 The Beta Zhihu status endpoint is
 `GET /api/beta/zhihu-answers-cache/status`; check it too when diagnosing a busy lock. A status GET
-does not launch its browser worker or write the Beta store.
+does not launch its browser worker or write the Beta archive.
 
 ### Legacy Grok Text runtime
 

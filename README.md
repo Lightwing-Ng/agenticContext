@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.20.0-codex.1`
+Documentation version: `v1.20.1-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -31,7 +31,8 @@ The optional Beta Dock section is a research playground with seven experiments. 
 Context Capsule, Question Radar, Memory Diff, Decision Wind Tunnel, and Mission Forge remain
 deterministic browser-only tools that process explicit input and keep drafts in the current tab.
 The original Zhihu Answers Cache remains as a separately isolated network-backed Beta experiment
-for reviewing one answerer's completeness and provider-gap evidence under `beta_store/`. The
+for reviewing one answerer's completeness and provider-gap evidence under
+`local_store/beta/`. The
 promoted `/cache/zhihu` source is the everyday text-first workflow: by default it caches every
 answer found in the signed-in account's vote-up activity, while an optional answerer URL caches all
 answers exposed for that profile. Formal rows are written to `local_store/llm/zhihu/history.parquet`
@@ -121,7 +122,7 @@ The quality gate runs Ruff, local documentation link checks, JavaScript syntax c
 the Python suite with branch coverage, and disposable Chromium browser flows. It is the same command
 executed by GitHub Actions.
 The browser flow uses a clean context against an isolated local server; the suite never opens
-an authenticated profile, downloads media, or writes to user-owned caches, the Beta store, logs,
+an authenticated profile, downloads media, or writes to user-owned caches, the Beta archive, logs,
 or settings.
 The CI portability rules and failure-triage contract are documented in
 [docs/TESTING.md](docs/TESTING.md#ci-portability-contract).
@@ -150,8 +151,8 @@ Start with the [documentation index](docs/README.md) to distinguish current cont
 - `app/web/`: Flask routes, templates, static assets, and the local-media browser
 - `tests/`: deterministic unit and Flask integration coverage
 - `scripts/`: supported setup, launch, test, and quality-gate commands
-- `local_store/`: ignored user-owned media and formal text cache
-- `beta_store/`: ignored Beta-owned persistent outputs, isolated from Local resources and ShadowBackup
+- `local_store/`: ignored user-owned media, formal text caches, and the namespaced Beta archive
+- `local_store/beta/`: Beta-owned persistent outputs, excluded from Local resources indexing
 - `logs/`: ignored structured local logs
 
 ## Notes

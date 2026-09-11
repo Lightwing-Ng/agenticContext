@@ -1,4 +1,4 @@
-{# Code version: v1.1.0-codex.1 #}
+{# Code version: v1.1.1-codex.1 #}
 {% extends "_cache_page.html" %}
 {% from "_cache_page_components.html" import render_metric, render_progress_metric %}
 
@@ -19,7 +19,7 @@
 
 {% block primary_metrics %}
 {{ render_metric("Answers cached", "downloaded_posts", snapshot.downloaded_posts, "downloaded_posts") }}
-{{ render_metric("Answers found", "discovered_tweets", snapshot.discovered_tweets, "discovered_tweets") }}
+{{ render_metric("Answers reported", "discovered_tweets", snapshot.discovered_tweets, "discovered_tweets") }}
 {% endblock %}
 
 {% block progress_metrics %}

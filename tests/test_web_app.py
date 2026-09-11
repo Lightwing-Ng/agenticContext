@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.106.5-codex.1
+# Code version: v1.106.6-codex.1
 
 from __future__ import annotations
 
@@ -197,7 +197,7 @@ class WebAppTests(unittest.TestCase):
                 body,
             )
 
-    def test_cache_pages_use_sessions_discovered_metric_label(self) -> None:
+    def test_cache_pages_use_source_specific_reported_metric_label(self) -> None:
         app = create_app()
 
         with app.test_client() as client:
@@ -209,7 +209,7 @@ class WebAppTests(unittest.TestCase):
         for source_key, body in bodies.items():
             with self.subTest(source=source_key):
                 self.assertIn(
-                    "Answers found" if source_key == "zhihu" else "Sessions discovered",
+                    "Answers reported" if source_key == "zhihu" else "Sessions discovered",
                     body,
                 )
                 self.assertNotIn("Posts discovered", body)
@@ -560,7 +560,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.14.2-codex.1', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.14.3-codex.1', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.2-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt"', chatgpt_body)

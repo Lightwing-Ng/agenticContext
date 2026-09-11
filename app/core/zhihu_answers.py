@@ -1,6 +1,6 @@
-"""Authenticated Zhihu answer collection and isolated local persistence.
+"""Authenticated Zhihu answer collection and namespaced local persistence.
 
-Code version: v0.9.1-codex.1
+Code version: v0.9.3-codex.1
 """
 
 from __future__ import annotations
@@ -388,7 +388,7 @@ def zhihu_archive_path(
         raise ValueError("The Zhihu profile name is not valid.")
     configured_root = Path(beta_store_root).expanduser().absolute()
     if configured_root.is_symlink():
-        raise ZhihuArchiveError("Zhihu answer storage refused a symlinked Beta store root.")
+        raise ZhihuArchiveError("Zhihu answer storage refused a symlinked Beta archive root.")
     resolved_root = configured_root.resolve(strict=False)
     if expected_beta_store_root is not None:
         expected_root = Path(expected_beta_store_root).expanduser().absolute()
@@ -406,7 +406,7 @@ def zhihu_archive_path(
         resolved_author_directory != resolved_root
         and resolved_root not in resolved_author_directory.parents
     ):
-        raise ZhihuArchiveError("Zhihu answer storage escaped the configured Beta store.")
+        raise ZhihuArchiveError("Zhihu answer storage escaped the configured Beta archive root.")
     return archive_path
 
 
@@ -1702,7 +1702,7 @@ def sync_zhihu_answers(
         )
     state.update(
         discovered_tweets=collection.expected_total or write_result.cached_answers,
-        queued_tweets=collection.expected_total or write_result.cached_answers,
+        queued_tweets=len(collection.answers),
         processed_tweets=len(collection.answers),
         downloaded_posts=write_result.cached_answers,
         downloaded_tweets=write_result.cached_answers,
