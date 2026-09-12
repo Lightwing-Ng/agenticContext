@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.63.7-codex.1
+Code version: v1.63.9-codex.1
 """
 
 import hashlib
@@ -2198,7 +2198,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.117.5-codex.1 */",
+        "/* Code version: v2.117.7-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2875,8 +2875,8 @@ def test_agent_response_toolbar_stays_inside_the_content_edge() -> None:
     assert rail_bleed in question_header_rule
 
 
-def test_agent_response_toolbar_reuses_the_sidebar_frosted_material() -> None:
-    """Keep one canonical frosted material owner around Agent lifecycle activity."""
+def test_agent_response_toolbar_has_no_frosted_base_material() -> None:
+    """Keep Agent lifecycle activity integrated with the workspace background."""
     stylesheet = _stylesheet()
     toolbar_start = stylesheet.rindex(".agent-response-toolbar {")
     toolbar_rule = stylesheet[toolbar_start:stylesheet.index("\n}", toolbar_start)]
@@ -2889,15 +2889,15 @@ def test_agent_response_toolbar_reuses_the_sidebar_frosted_material() -> None:
 
     for declaration in (
         "padding: var(--agent-response-toolbar-padding);",
-        "border: var(--sidebar-shell-border);",
-        "border-radius: var(--sidebar-shell-radius);",
-        "background: var(--sidebar-shell-background);",
-        "box-shadow: var(--sidebar-shell-shadow);",
-        "backdrop-filter: var(--sidebar-shell-blur);",
-        "-webkit-backdrop-filter: var(--sidebar-shell-blur);",
+        "border: 0;",
+        "border-radius: 0;",
+        "background: transparent;",
+        "box-shadow: none;",
+        "backdrop-filter: none;",
+        "-webkit-backdrop-filter: none;",
     ):
         assert declaration in toolbar_rule
-    assert "--agent-response-toolbar-padding: 4px;" in root_rule
+    assert "--agent-response-toolbar-padding: 0px;" in root_rule
     for declaration in (
         "border: 0;",
         "border-radius: 0;",
@@ -2907,6 +2907,23 @@ def test_agent_response_toolbar_reuses_the_sidebar_frosted_material() -> None:
         "-webkit-backdrop-filter: none;",
     ):
         assert declaration in activity_rule
+
+    action_start = stylesheet.index(
+        ".agent-response-toolbar > .agent-conversation-link {", toolbar_start
+    )
+    action_rule = stylesheet[action_start:stylesheet.index("\n}", action_start)]
+    assert "inset-inline-end: calc(0px - var(--layout-glass-border-width));" in action_rule
+    assert (
+        "0px - var(--agent-response-toolbar-padding) - var(--layout-glass-border-width)"
+        in action_rule
+    )
+    responsive_action = (
+        "@media (max-width: 600px) {\n"
+        "    .agent-response-toolbar > .agent-conversation-link {\n"
+        "        inset-inline-end: 0;\n"
+        "        margin-inline-end: 0;"
+    )
+    assert responsive_action in stylesheet
 
 
 def test_agent_current_project_name_uses_requested_type_size() -> None:

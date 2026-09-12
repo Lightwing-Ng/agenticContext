@@ -1,7 +1,7 @@
 # Agent session audit challenge
 
-Documentation version: `v1.1.0-codex.1`
-Reviewed: 11 Sep 2026
+Documentation version: `v1.1.1-codex.1`
+Reviewed: 12 Sep 2026
 Baseline commit: `0911288d80c85ac29595f8748c53ef3a50c52924`
 Draft fix version: `v3.36.4-codex.1`; integrated working-tree version: `v3.36.5-codex.1`
 
@@ -85,10 +85,13 @@ free-port selection race. Legacy bare-port records remain readable and are upgra
 successful matching probe. Login URL discovery applies the same identity checks.
 
 The supplied patch was not applied verbatim. Microsoft documents the Edge product token as
-`Edg/`, not `Edge/`; the latter would have rejected every valid Edge endpoint. Its proposed
-`*.agent-backup-*.tmp` ignore rule was also excluded because recovery copies must remain visible
-for manual review under the shared static-file housekeeping contract. Internal plan material and
-the related ignore recommendation were not added to the repository.
+`Edg/`, not `Edge/`; the latter would have rejected every valid Edge endpoint. At the time of this
+review, its proposed `*.agent-backup-*.tmp` ignore rule was excluded so recovery copies remained
+visible in Git for manual review. On 12 Sep 2026, the user explicitly changed the repository policy:
+same-directory recovery copies remain preserved on disk for direct review, but
+`.*.agent-backup-*.tmp` now keeps them out of Git change counts. This changes Git visibility only;
+it does not weaken the recovery, protected-path, or evidence-based cleanup contracts. Internal plan
+material was not added to the repository.
 
 Regression coverage verifies real `/json/version` parsing, matching-instance reuse,
 wrong-instance relaunch, wrong-product failure, `DevToolsActivePort` parsing, legacy migration,

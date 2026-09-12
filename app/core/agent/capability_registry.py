@@ -1,6 +1,6 @@
 """One registry for Agent actions, page observations, and WebMCP tools.
 
-Code version: v1.5.0-codex.1
+Code version: v1.6.0-codex.1
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Any
 from ..brand import PRODUCT_DESCRIPTION, PRODUCT_NAME, SITE_ID
 
 
-CAPABILITY_REGISTRY_VERSION = "1.4.0"
+CAPABILITY_REGISTRY_VERSION = "1.5.0"
 AGENT_OPTIMIZATION_CONTRACT_VERSION = "1.1.0"
 AGENT_OPTIMIZATION_PROFILE = "openai-site-tools-2026-08-28"
 
@@ -566,6 +566,44 @@ CAPABILITY_REGISTRY: tuple[CapabilityDefinition, ...] = (
         ),
     ),
     _action(
+        "browser_acceptance",
+        "Run browser acceptance",
+        "Serve one workspace directory on an owned loopback preview process and run clean Chromium acceptance at desktop and narrow viewports with local-only requests.",
+        read_only=True,
+        handler_name="_browser_acceptance",
+        prompt_example='{"action":"browser_acceptance","root":".","target":"/","expected_text":["Ready"],"expected_selectors":["main"]}',
+        input_schema=_action_schema(
+            "browser_acceptance",
+            {
+                "root": _string_property(
+                    "Workspace-relative directory served by the isolated preview.",
+                    maximum=1_000,
+                    minimum=1,
+                ),
+                "target": _string_property(
+                    "Loopback URL or root-relative path; any explicit URL must use the owned preview port.",
+                    maximum=2_000,
+                    minimum=1,
+                ),
+                "port": _integer_property(
+                    "Optional preview port; use 0 for controller-selected free port.",
+                    minimum=0,
+                    maximum=65_535,
+                ),
+                "expected_text": {
+                    "type": "array",
+                    "items": _string_property("Expected visible body text.", maximum=2_000, minimum=1),
+                    "maxItems": 20,
+                },
+                "expected_selectors": {
+                    "type": "array",
+                    "items": _string_property("Expected CSS selector.", maximum=1_000, minimum=1),
+                    "maxItems": 20,
+                },
+            },
+        ),
+    ),
+    _action(
         "job_start",
         "Start compute job",
         "Start one approved durable optimization worker outside the provider-turn and verification timeout lifecycles.",
@@ -844,7 +882,7 @@ def public_manifest_capabilities() -> list[dict[str, str]]:
                 "label": "Agent actions",
                 "description": (
                     f"The bounded local Agent Action protocol ({len(AGENT_ACTIONS)} registered actions) "
-                    "for reading, editing, verification, durable compute jobs, bodycheck, and final publication."
+                    "for reading, editing, command and browser acceptance verification, durable compute jobs, bodycheck, and final publication."
                 ),
             },
             {

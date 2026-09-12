@@ -148,11 +148,9 @@ On Windows:
 ```
 
 It snapshots the SHA-256 digest of every `DEMO_FLIGHT_FILES` member from the local `demo_flight`
-source, copies only that allowlist into an ephemeral workspace, exercises CRUD, cold verification,
-and the registered clean-Chromium `browser_acceptance` Action at desktop and narrow viewports there,
-then rechecks the complete original allowlist after teardown. The original Demo is read-only test
-input. Hosts without that complete local fixture skip this integration case rather than inventing
-browser evidence.
+source, copies only that allowlist into an ephemeral workspace, exercises CRUD and cold verification
+there, then rechecks the complete original allowlist after teardown. The original Demo is read-only
+test input.
 
 Run the complete project gate with:
 

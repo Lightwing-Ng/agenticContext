@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT_DIR/scripts/resolve_python.sh"
 COVERAGE_MINIMUM="${AGENTIC_CONTEXT_COVERAGE_MINIMUM:-${CACHELIKES_COVERAGE_MINIMUM:-55}}"
 
-if ! PYTHON_BIN="$(resolve_python_bin)"; then
+if ! PYTHON_BIN="$(resolve_python_bin quality)"; then
 	echo "Supported Python 3.13 or newer interpreter not found: ${AGENTIC_CONTEXT_PYTHON:-${CACHELIKES_PYTHON:-host python3}}" >&2
 	exit 1
 fi

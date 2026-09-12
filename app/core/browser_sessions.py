@@ -857,7 +857,7 @@ def sync_playwright_or_error():
         setup_command = ".\\scripts\\setup_python.ps1" if is_windows_host() else "./scripts/setup_python.sh"
         raise RuntimeError(
             "Playwright is not installed for the current interpreter. "
-            f"Run `{setup_command}` with a supported Python 3.13 or 3.14 interpreter."
+            f"Run `{setup_command}` with a supported Python 3.13 or newer interpreter."
         )
     return sync_playwright()
 

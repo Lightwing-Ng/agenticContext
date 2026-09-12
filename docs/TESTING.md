@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.12.0-codex.1`
+Documentation version: `v1.13.0-codex.1`
 
 ## Supported commands
 
@@ -211,6 +211,13 @@ Tests must follow these rules:
 - Browser E2E tests must use a clean context and local Flask server only. Disable or stub unrelated
   background polling when the test injects a DOM fixture; otherwise the application may replace
   the fixture during the assertion.
+- Agent `browser_acceptance` coverage must pin the stronger controller boundary: an owned loopback
+  preview process, an unauthenticated Chromium context with no user profile, fixed desktop and narrow
+  viewports, blocked external/file/credentialed/unowned-port requests, protected/occupied-port
+  rejection, bounded assertion/console/page-error evidence, bounded screenshot/trace artifacts, and
+  deterministic cleanup on success, assertion failure, timeout/Stop, launch failure, and controller
+  exceptions. Portable tests may exercise the real disposable Chromium installed by the quality gate;
+  host-specific process assertions must not claim native Windows evidence when run on macOS.
 - For responsive geometry and hit testing, wait for the relevant rectangle to become stable before
   asserting `document.elementFromPoint()`. Reduced motion shortens transitions but is not a promise
   that a DOM update is synchronous.

@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.70.0-codex.1`
+Documentation version: `v3.71.0-codex.1`
 
 ## Purpose
 
@@ -364,7 +364,7 @@ within 0.01px of its label. The user-owned service was not restarted.
 7. The selected Web provider returns exactly one JSON action at a time inside a fenced `json` code block so
    rendered Markdown cannot consume action quotes, backslashes, asterisks, or source-code delimiters. The
    controller prefers that code block's literal text and supports `list`, `read`, `search`, `replace`,
-   `replace_base64`, `write`, `write_base64`, `delete`, `run`, `bodycheck`, and `final`. Multiple exact
+   `replace_base64`, `write`, `write_base64`, `delete`, `run`, `browser_acceptance`, `job_start`, `job_status`, `job_stop`, `bodycheck`, and `final`. Multiple exact
    copies of one action are harmlessly de-duplicated;
    any distinct second candidate is rejected as ambiguous, even when both use the same action name.
    `search` uses project-confined `rg` when available, with structured UTF-8 JSON output, a 2 MiB
@@ -694,6 +694,7 @@ worker snapshot does not own that selected history.
   Verification output is decoded with replacement for invalid UTF-8, retained to 48,000 characters,
   and drained through a bounded queue. Stop, timeout, stream failure, and normal completion all
   perform a process-group cleanup before the final fingerprint on POSIX.
+- Browser-facing acceptance is a separate `browser_acceptance` Action rather than an exception to `run` network policy. It serves one safe workspace-relative static directory from a task-owned `127.0.0.1` preview process, defaults to an OS-assigned free port, rejects port 8666 plus project-declared protected ports, and fails closed if an explicitly requested port is occupied. The browser is a new unauthenticated non-persistent Chromium context; no signed-in provider profile, cookies, user-data directory, or login state is opened. Chromium background networking is disabled or forced through a non-routable loopback proxy, Playwright routing permits only the owned loopback port plus local `about`/`blob`/`data` resources, and external, `file://`, credentialed, or unowned-port requests are aborted. The preview refuses hidden, ignored, sensitive, linked, and directory-listing paths. Every invocation checks fixed 1440×900 desktop and 390×844 narrow viewports and returns bounded assertion booleans, content-free error fingerprints, blocked-origin metadata, viewport dimensions, and size-capped screenshot/trace references below the Agent runtime root. The browser/context and preview process tree are cleaned deterministically on success, assertion failure, Stop, timeout, launch/controller exceptions, and process-registration failure; incomplete evidence directories are removed. Successful acceptance participates in the same workspace fingerprint and verification-generation gate as `run`. If a task explicitly requests real browser, responsive, visual, or interaction acceptance, passing unit tests alone is not completion evidence and the provider must use this Action before `final`.
 - This controller is not an operating-system sandbox. Pytest, package scripts, Make targets, and
   approved workspace scripts execute code from the selected repository and can have side effects
   that a path parser or after-the-fact fingerprint cannot prevent outside that repository. Production

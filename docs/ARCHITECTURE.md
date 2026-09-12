@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.26.0-codex.1`
+Documentation version: `v1.27.0-codex.1`
 
 ## Runtime flow
 
@@ -145,6 +145,8 @@ tools, and human-page navigation. Core execution resolves controller actions and
 through that registry, while the manifest adapter derives both public groups and WebMCP definitions
 from it. This keeps browser discovery, local controller dispatch, and page-observation naming from
 drifting into separate lists without granting WebMCP direct access to the Agent control plane.
+
+`app/core/agent/browser_acceptance.py` owns the local Web-UI acceptance boundary. It starts a task-owned loopback-only static preview process on an OS-selected free port (or one explicitly requested non-protected port), rejects non-loopback, credentialed, file, and unowned-port targets, serves no sensitive/ignored path or symlink, launches a clean unauthenticated Chromium context with no user-data directory, blocks non-local browser requests, and verifies fixed desktop and narrow viewports. Evidence is bounded to declarative assertion results, bounded console/page errors, viewport metadata, and size-capped task-runtime screenshot/trace references. The controller closes only the owned browser/context/process tree and deletes incomplete task artifacts on Stop, timeout, assertion setup failure, or controller exception. The ordinary signed-in provider browser/profile path is intentionally not reused for this capability.
 
 `app/core/agent/event_chain.py` owns the durable run-local event chain. The Agent service creates a
 new `run_id`, persists `run.started`, and appends ordered action, observation, verification,

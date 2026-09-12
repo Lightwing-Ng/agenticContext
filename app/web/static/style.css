@@ -1,4 +1,4 @@
-/* Code version: v2.117.5-codex.1 */
+/* Code version: v2.117.7-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -137,7 +137,7 @@
     --control-compact-height: 28px;
     --control-form-height: 36px;
     --agent-composer-control-height: 32px;
-    --agent-response-toolbar-padding: 4px;
+    --agent-response-toolbar-padding: 0px;
     --local-store-pagination-slot-size: 30px;
     --sidebar-action-primary-background: var(--theme-accent-primary);
     --sidebar-action-primary-background-hover: color-mix(in srgb, var(--theme-accent-primary) 88%, var(--color-white-adaptive));
@@ -11897,18 +11897,18 @@ main[data-cache-page] .progress-metric-card strong {
     color: var(--text);
 }
 
-/* The status summary owns the activity disclosure and its latest-item preview. */
+/* The transparent status summary owns the activity disclosure and its latest-item preview. */
 .agent-response-toolbar {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: start;
     padding: var(--agent-response-toolbar-padding);
-    border: var(--sidebar-shell-border);
-    border-radius: var(--sidebar-shell-radius);
-    background: var(--sidebar-shell-background);
-    box-shadow: var(--sidebar-shell-shadow);
-    backdrop-filter: var(--sidebar-shell-blur);
-    -webkit-backdrop-filter: var(--sidebar-shell-blur);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
 }
 .agent-response-toolbar > .agent-activity-panel {
     grid-column: 1;
@@ -11941,6 +11941,13 @@ main[data-cache-page] .progress-metric-card strong {
     margin-inline-end: calc(
         0px - var(--agent-response-toolbar-padding) - var(--layout-glass-border-width)
     );
+}
+
+@media (max-width: 600px) {
+    .agent-response-toolbar > .agent-conversation-link {
+        inset-inline-end: 0;
+        margin-inline-end: 0;
+    }
 }
 
 /* Compact filter headers are a shared scrollable-table contract. */

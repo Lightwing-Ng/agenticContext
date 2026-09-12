@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.16.0-codex.1`
+Documentation version: `v1.17.0-codex.1`
 
 ## Launch
 
@@ -134,6 +134,19 @@ publish it through a public tunnel or reverse proxy.
   cleanup uses `taskkill /T /F` where applicable. That mechanism is not an OS-level sandbox.
   Stop requests do not stop a detached durable compute job; use its dedicated `Stop job` control
   or `job_stop` with the exact `job_id`.
+- Local Web UI acceptance uses the `browser_acceptance` controller action rather than a provider
+  browser profile or an arbitrary `run` command. The controller serves only the selected safe
+  workspace directory from a task-owned process bound to `127.0.0.1`, refuses port 8666 and any
+  occupied requested port, launches clean unauthenticated Chromium with no user-data directory,
+  blocks non-loopback/file/credentialed requests, and checks fixed desktop and narrow viewports.
+  Screenshot and trace evidence is retained only below the Agent runtime root with size caps;
+  incomplete task artifacts are removed. Projects may additionally reserve up to 64 ports in a
+  workspace-root `.agenticContext-browser-acceptance.json` file using schema version 1 and a
+  `protected_ports` integer array; malformed, linked, oversized, or invalid configuration fails
+  closed. Stop, timeout, launch failure, assertion setup failure, and controller exceptions close
+  only that task's context, browser, preview process tree, and temporary artifacts. The Action and
+  bounded observation are recorded in the normal Agent event chain, and Activity labels the
+  workspace root/target plus desktop+narrow Chromium coverage.
 - Agent source discovery is cached in `local_store/agent/agent_source_catalog.parquet` for 15
   minutes per provider/browser/Project key. Fresh reads use process memory; the first read after a
   restart hydrates memory from Parquet. Expired passive reads retain the previous catalog and never

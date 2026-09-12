@@ -1,6 +1,6 @@
 # OpenAI Site tools and Agent Optimization
 
-Documentation version: `v1.4.0-codex.1`
+Documentation version: `v1.3.3-codex.1`
 
 This project implements the shared Agent Optimization contract at
 `/Users/lightwing/Desktop/SHARED_AGENT_OPTIMIZATION.md`. That file owns the cross-project naming,
@@ -43,12 +43,10 @@ non-final Action against its registry-owned schema before dispatch, including th
 required fields, types, bounds, and undeclared fields. The Web loop validates `final` against the
 same schema before verification or bodycheck gates, rendering, and publication.
 
-The internal registry now also owns `browser_acceptance`, `job_start`, `job_status`, and `job_stop`.
-`browser_acceptance` is a controller-only clean-Chromium verification boundary for an owned
-loopback static preview; it is included in the public aggregate action count but is not exposed as a
-WebMCP tool. The durable local compute actions remain behind the Agent controller and password
-boundary as well. Site tools therefore cannot launch local browser acceptance, approve an optimizer,
-start paid compute, inspect job logs, resume a checkpoint, or stop a process.
+The internal registry now also owns `job_start`, `job_status`, and `job_stop`. These durable local
+compute actions remain behind the Agent controller and password boundary; they are summarized in
+the public aggregate count but are not registered as WebMCP tools. Site tools therefore cannot
+approve an optimizer, start paid compute, inspect job logs, resume a checkpoint, or stop a process.
 
 ## v1 tools
 
@@ -148,11 +146,9 @@ On Windows:
 ```
 
 It snapshots the SHA-256 digest of every `DEMO_FLIGHT_FILES` member from the local `demo_flight`
-source, copies only that allowlist into an ephemeral workspace, exercises CRUD, cold verification,
-and the registered clean-Chromium `browser_acceptance` Action at desktop and narrow viewports there,
-then rechecks the complete original allowlist after teardown. The original Demo is read-only test
-input. Hosts without that complete local fixture skip this integration case rather than inventing
-browser evidence.
+source, copies only that allowlist into an ephemeral workspace, exercises CRUD and cold verification
+there, then rechecks the complete original allowlist after teardown. The original Demo is read-only
+test input.
 
 Run the complete project gate with:
 

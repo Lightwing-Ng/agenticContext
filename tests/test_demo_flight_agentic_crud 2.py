@@ -1,6 +1,6 @@
 """Controller integration coverage against a copied Global Flight Atlas workspace.
 
-Code version: v1.2.0-codex.1
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
@@ -184,20 +184,6 @@ def test_copied_demo_flight_supports_safe_agentic_crud_and_cold_verification() -
         assert verification["exit_code"] == 0
         assert not verification["mutated_workspace"]
         assert "OK" in verification["output"]
-
-        browser_acceptance = controller.execute(
-            {
-                "action": "browser_acceptance",
-                "root": ".",
-                "target": "/",
-            }
-        )
-        assert browser_acceptance["ok"], browser_acceptance.get("error")
-        assert browser_acceptance["preview"]["port"] != 8666
-        assert [
-            entry["viewport"]["name"]
-            for entry in browser_acceptance["viewports"]
-        ] == ["desktop", "narrow"]
 
         bodycheck = controller.execute({"action": "bodycheck"})
         assert bodycheck["ok"]

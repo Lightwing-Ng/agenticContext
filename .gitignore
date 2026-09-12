@@ -3,6 +3,7 @@
 .agenticContext-settings.json
 .cachelikes-settings.json
 .idea/*
+.*.agent-backup-*.tmp
 __pycache__/
 .pytest_cache/
 .ruff_cache/

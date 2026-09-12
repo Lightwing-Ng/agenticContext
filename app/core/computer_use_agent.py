@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.69.5-codex.1
+Code version: v3.70.0-codex.1
 """
 
 from __future__ import annotations
@@ -69,6 +69,7 @@ from .browser_sessions import (
 )
 from .config import (
     CrawlConfig,
+    DEFAULT_PORT,
     PROJECT_ROOT,
     default_settings_path,
     is_windows_host,
@@ -500,8 +501,9 @@ _CONTROLLER_PROTOCOL_INSTRUCTIONS = """Controller protocol rules:
 - `replace` and `replace_base64` require an existing file and the old text exactly once. Use the base64 form for quote-heavy or multiline content. `write` and `write_base64` create new files only; if a file exists, use replace instead.
 - `delete` requires a current controller `read` of the same file after the latest edit and the exact lowercase 64-character SHA-256 from that read receipt. Any edit invalidates the receipt; read again rather than guessing.
 - `run` is one direct, bounded verification command only. Allowed families are filtered `git status`; `pytest`, `ruff check`, `mypy`, `pyright`, `eslint`, `tsc --noEmit`; the controller Python runtime with approved verification modules or a project check/test script; `node --check`; package-manager `test` or existing check/lint/test/verify scripts; `go test`/`go vet`; `cargo check`/`cargo clippy`/`cargo test`; and `make` check/lint/test/verify targets. No nested shell, shell operators, redirection, network, environment enumeration, package installation, arbitrary Python entry point, Git mutation, or command that writes project files.
+- `browser_acceptance` is the dedicated real-browser verification boundary for local Web UI work. It owns a temporary loopback-only static preview process, launches a clean unauthenticated Chromium context with no user profile, blocks non-loopback requests, and checks fixed desktop and narrow viewports. Use it when the user requests browser, responsive, visual, or interaction acceptance; do not substitute passing unit tests or an early `final`. It may serve only a workspace-relative directory, may not use the protected application port, and returns bounded assertion/error evidence plus task-owned screenshot/trace references.
 - `job_start` is separate from `run`. It accepts only an entrypoint pinned by `.agenticContext-compute.json`, one workspace-relative JSON config, a stable idempotency key, and an optional explicit resume job. It never accepts shell text or arbitrary arguments. `job_status` returns bounded progress and log-tail data. `job_stop` terminates only the identity-verified job process group. Never start a duplicate job after a provider retry, and never auto-resume after interruption.
-- `bodycheck` must be requested after edits and after the latest successful verification. `final` is valid only when verification and bodycheck are current after the latest edit. A running compute job does not block final; report its job id and current state. For a read-only task, use only `list`, `read`, `search`, `job_status`, or `bodycheck`, then one `final` action for a local summary; do not edit, run, start, or stop a job. `final` does not mutate the workspace.
+- `bodycheck` must be requested after edits and after the latest successful verification. `final` is valid only when verification and bodycheck are current after the latest edit. When the task explicitly requires browser acceptance, obtain current successful `browser_acceptance` evidence after the latest edit before `final`. A running compute job does not block final; report its job id and current state. For a read-only task, use only `list`, `read`, `search`, `job_status`, or `bodycheck`, then one `final` action for a local summary; do not edit, run, start, stop a job, or launch browser acceptance. `final` does not mutate the workspace.
 - The controller may reject an action even if this prompt appears to allow it. On rejection, return one corrected action only; do not explain the rejection or repeat the invalid payload. Never claim success until the controller reports `ok: true`."""
 _CONTROLLER_PROTOCOL_LINES = tuple(_CONTROLLER_PROTOCOL_INSTRUCTIONS.splitlines())
 _CONTROLLER_TURN_REMINDER = (
@@ -3671,6 +3673,7 @@ class WorkspaceController:
                 "write_base64",
                 "delete",
                 "run",
+                "browser_acceptance",
             }:
                 compute_status = self._compute_job_manager().status()
                 if bool(compute_status.get("active")):
@@ -5377,6 +5380,66 @@ class WorkspaceController:
                 )
             ),
         }
+
+    def _browser_acceptance(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Run clean local Chromium acceptance without using any signed-in browser profile."""
+        from .agent.browser_acceptance import (
+            BrowserAcceptanceRequest,
+            load_project_protected_ports,
+            run_browser_acceptance,
+        )
+
+        root = self._resolve_path(payload.get("root") or ".")
+        if not root.is_dir():
+            raise ValueError("Browser acceptance root must be a workspace directory.")
+        before_fingerprint, before_scan_complete = _workspace_mutation_fingerprint(
+            self.workspace,
+            should_stop=self.should_stop,
+        )
+        artifact_root = self._compute_job_runtime_root / "browser-acceptance"
+        result = run_browser_acceptance(
+            BrowserAcceptanceRequest(
+                root=root,
+                target=str(payload.get("target") or "/"),
+                port=int(payload.get("port") or 0),
+                expected_text=tuple(str(item) for item in (payload.get("expected_text") or [])),
+                expected_selectors=tuple(
+                    str(item) for item in (payload.get("expected_selectors") or [])
+                ),
+                protected_ports=frozenset({DEFAULT_PORT}) | load_project_protected_ports(self.workspace),
+                timeout_seconds=float(self.settings.command_timeout_seconds),
+                artifact_root=artifact_root,
+            ),
+            playwright_context=sync_playwright_or_error,
+            process_group_options=_process_group_options,
+            stop_process=_stop_process,
+            process_changed=self.process_changed,
+            should_stop=self.should_stop,
+        )
+        after_fingerprint, after_scan_complete = _workspace_mutation_fingerprint(
+            self.workspace,
+            should_stop=self.should_stop,
+        )
+        workspace_scan_complete = before_scan_complete and after_scan_complete
+        mutated_workspace = after_fingerprint != before_fingerprint
+        if mutated_workspace or not workspace_scan_complete:
+            self._mark_edit()
+            result["ok"] = False
+            result["error"] = (
+                "Browser acceptance changed project files; verification evidence is stale."
+                if mutated_workspace
+                else "Browser acceptance could not prove the project stayed unchanged."
+            )
+        elif bool(result.get("ok")):
+            self._record_workspace_snapshot(after_fingerprint, complete=True)
+            self.state.verification_generation = self.state.edit_generation
+            self.state.verification_workspace_generation = self.state.workspace_generation
+            self.state.verification_snapshot_id = after_fingerprint
+            self.state.successful_checks.append("browser_acceptance")
+        result["mutated_workspace"] = mutated_workspace
+        result["workspace_scan_complete"] = workspace_scan_complete
+        result.update(self.evidence_metadata())
+        return result
 
     def _job_start(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Start one approved worker without borrowing verification-run semantics."""
@@ -8681,7 +8744,7 @@ def run_web_computer_use(
                 update=update,
                 event_chain=event_chain,
                 checkpoint_update=checkpoint_update,
-                monitor_screen_lock=sys.platform == "darwin",
+                monitor_screen_lock=(descriptor.engine == "safari" and sys.platform == "darwin"),
             )
 
     task_stage_window = settings.browser in {"edge", "chrome"} and sys.platform in {"darwin", "win32"}
@@ -8775,7 +8838,9 @@ def run_web_computer_use(
             update=update,
             event_chain=event_chain,
             checkpoint_update=checkpoint_update,
-            monitor_screen_lock=sys.platform == "darwin",
+            monitor_screen_lock=(
+                descriptor.engine == "safari" and sys.platform == "darwin"
+            ),
         )
 
 
@@ -11453,6 +11518,10 @@ def _observation_message(turn_index: int, observation: dict[str, Any]) -> str:
 
 
 def _activity_detail(action: dict[str, Any]) -> str:
+    if str(action.get("action") or "").strip().lower() == "browser_acceptance":
+        root = str(action.get("root") or ".").strip() or "."
+        target = str(action.get("target") or "/").strip() or "/"
+        return _truncate_text(f"{root} → {target} (desktop + narrow Chromium)", 180)
     for key in ("path", "query", "command"):
         value = str(action.get(key) or "").strip()
         if value:

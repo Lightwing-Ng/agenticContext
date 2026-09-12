@@ -1,8 +1,8 @@
 # Beta experiments
 
-Documentation version: `v1.0.0-codex.1`
+Documentation version: `v1.0.1-codex.1`
 
-Application version: `v1.13.0`
+Application version: `v1.14.0`
 
 Beta is an optional browser-local research playground. Its tools transform only the text the user
 pastes or explicitly imports. They do not invoke a model, start a provider browser, call a server

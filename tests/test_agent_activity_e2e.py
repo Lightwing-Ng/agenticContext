@@ -1,4 +1,4 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.0.10-codex.1."""
+"""Activity disclosure and status glyph regressions. Code version: v1.0.12-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -9,8 +9,8 @@ disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
 
 
-@pytest.mark.parametrize("width", [1042, 994, 390])
-def test_response_toolbar_reuses_sidebar_frosted_material(
+@pytest.mark.parametrize("width", [1042, 994, 962, 820, 390])
+def test_response_toolbar_has_no_frosted_base_material(
     disposable_browser, sidebar_server_url, width
 ):
     context = disposable_browser.new_context(
@@ -53,10 +53,10 @@ def test_response_toolbar_reuses_sidebar_frosted_material(
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
         material = page.evaluate(
             """() => {
-                const properties = [
-                    'backgroundColor', 'backgroundImage', 'borderTopColor',
-                    'borderTopStyle', 'boxShadow', 'backdropFilter',
-                ];
+                    const properties = [
+                        'backgroundColor', 'backgroundImage', 'borderTopStyle',
+                        'boxShadow', 'backdropFilter',
+                    ];
                 const snapshot = selector => {
                     const element = document.querySelector(selector);
                     const style = getComputedStyle(element);
@@ -78,8 +78,11 @@ def test_response_toolbar_reuses_sidebar_frosted_material(
                 const activity = document.querySelector('.agent-activity-panel');
                 const activityStyle = getComputedStyle(activity);
                 return {
-                    sidebar: snapshot('.sidebar'),
                     toolbar: snapshot('.agent-response-toolbar'),
+                    conversationRight: document.querySelector('.agent-conversation-link')
+                        .getBoundingClientRect().right,
+                    themeRight: document.querySelector('#global_theme_toggle')
+                        .getBoundingClientRect().right,
                     activity: {
                         backgroundColor: activityStyle.backgroundColor,
                         backgroundImage: activityStyle.backgroundImage,
@@ -94,17 +97,26 @@ def test_response_toolbar_reuses_sidebar_frosted_material(
                 };
             }"""
         )
-        assert material["toolbar"]["style"] == material["sidebar"]["style"]
-        assert material["toolbar"]["radius"] == "10px"
+        assert material["toolbar"]["style"] == {
+            "backgroundColor": "rgba(0, 0, 0, 0)",
+            "backgroundImage": "none",
+            "borderTopStyle": "none",
+            "boxShadow": "none",
+            "backdropFilter": "none",
+        }
+        assert material["toolbar"]["radius"] == "0px"
         assert material["toolbar"]["marginRight"] == "0px"
         assert material["toolbar"]["padding"] == {
-            "top": "4px",
-            "right": "4px",
-            "bottom": "4px",
-            "left": "4px",
+            "top": "0px",
+            "right": "0px",
+            "bottom": "0px",
+            "left": "0px",
         }
-        assert material["toolbar"]["borderTopWidth"] == "1px"
+        assert material["toolbar"]["borderTopWidth"] == "0px"
         assert material["toolbar"]["right"] <= material["cardRight"] + 0.1
+        assert material["conversationRight"] == pytest.approx(
+            material["themeRight"], abs=1
+        )
         assert material["activity"] == {
             "backgroundColor": "rgba(0, 0, 0, 0)",
             "backgroundImage": "none",

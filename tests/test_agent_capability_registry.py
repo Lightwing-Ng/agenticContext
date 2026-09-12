@@ -1,6 +1,6 @@
 """Contract tests for the unified Agent capability registry.
 
-Code version: v1.5.0-codex.1
+Code version: v1.6.0-codex.1
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ def test_registry_covers_agent_actions_page_observations_and_webmcp_tools() -> N
         "write_base64",
         "delete",
         "run",
+        "browser_acceptance",
         "job_start",
         "job_status",
         "job_stop",
@@ -61,7 +62,7 @@ def test_public_manifest_is_derived_from_the_registry_and_stays_bounded() -> Non
         "page_observation",
         "webmcp_tools",
     ]
-    assert "14 registered actions" in manifest["capabilities"][4]["description"]
+    assert "15 registered actions" in manifest["capabilities"][4]["description"]
     assert "5 registered observations" in manifest["capabilities"][5]["description"]
     assert "3 registered tools" in manifest["capabilities"][6]["description"]
     assert {target["path"] for target in manifest["navigation"]} == {
@@ -80,7 +81,7 @@ def test_public_manifest_is_derived_from_the_registry_and_stays_bounded() -> Non
 
 def test_internal_snapshot_contains_transport_schemas_but_no_runtime_content() -> None:
     snapshot = capability_registry_snapshot()
-    assert snapshot["version"] == "1.4.0"
+    assert snapshot["version"] == "1.5.0"
     records = {record["key"]: record for record in snapshot["capabilities"]}
     assert records["agent.action.replace"]["read_only"] is False
     assert records["agent.action.delete"]["handler_name"] == "_delete"
@@ -92,6 +93,8 @@ def test_internal_snapshot_contains_transport_schemas_but_no_runtime_content() -
     assert records["agent.action.run"]["read_only"] is True
     assert records["agent.action.run"]["handler_name"] == "_run"
     assert records["agent.action.run"]["input_schema"]["required"] == ["action", "command"]
+    assert records["agent.action.browser_acceptance"]["read_only"] is True
+    assert records["agent.action.browser_acceptance"]["handler_name"] == "_browser_acceptance"
     assert records["agent.action.job_start"]["input_schema"]["required"] == [
         "action",
         "entrypoint",
@@ -141,6 +144,26 @@ def test_controller_action_payload_validation_uses_the_registry_owned_schema() -
         AGENT_ACTIONS["read"],
         {"action": "read", "path": "README.md", "start_line": 1},
     )
+    validate_controller_action_payload(
+        AGENT_ACTIONS["browser_acceptance"],
+        {
+            "action": "browser_acceptance",
+            "root": ".",
+            "target": "/",
+            "expected_text": ["Ready"],
+            "expected_selectors": ["main"],
+        },
+    )
+    with pytest.raises(ValueError, match="unsupported field"):
+        validate_controller_action_payload(
+            AGENT_ACTIONS["browser_acceptance"],
+            {
+                "action": "browser_acceptance",
+                "root": ".",
+                "target": "/",
+                "user_data_dir": "browser-profile",
+            },
+        )
     validate_controller_action_payload(
         AGENT_ACTIONS["final"],
         {

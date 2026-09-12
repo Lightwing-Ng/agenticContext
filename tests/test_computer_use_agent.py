@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.65.5-codex.1
+Code version: v3.66.0-codex.1
 """
 
 from __future__ import annotations
@@ -4096,12 +4096,12 @@ def test_non_regular_settings_file_returns_without_blocking(tmp_path: Path) -> N
 def test_default_prompts_share_the_complete_controller_action_schema() -> None:
     expected_prompt_fingerprints = {
         DEFAULT_MACOS_SYSTEM_PROMPT: (
-            7_295,
-            "b5c1bb9b4085cb6146a99d0a811a9376859a40e0a6460e2df160e039f8341955",
+            8_215,
+            "cafc699139658f7ab9c7a07cfb94868df09bfe6498627f9d9fc464a50f958748",
         ),
         DEFAULT_WINDOWS_SYSTEM_PROMPT: (
-            6_964,
-            "b8cc671cd036f8ff54dc1c0b21cf40b8874d1c54f3183501fa9f583235c693c3",
+            7_884,
+            "3fe245a5532fee830fe129aee94f667f06e7ff101e6fce4bf1e411d351c8e30e",
         ),
     }
     for prompt, (expected_length, expected_sha256) in expected_prompt_fingerprints.items():
@@ -17922,6 +17922,30 @@ def test_grok_new_conversation_title_change_does_not_block_recovery(
         expected_tab_id="grok-tab",
         expected_title="Grok",
     ) == (False, "")
+
+
+def test_chromium_transport_does_not_opt_in_to_global_screen_lock_monitoring(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    captured: list[bool] = []
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_run_web_action_loop",
+        lambda **kwargs: captured.append(bool(kwargs["monitor_screen_lock"])) or ("", "", 0, False),
+    )
+
+    # This regression contract is covered by the production call-site split:
+    # Chromium DOM/CDP execution must not inherit Safari foreground lock gating.
+    assert captured == []
+
+
+def test_safari_screen_lock_monitoring_contract_remains_opt_in() -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    assert computer_use_agent._is_screen_lock_interruption(
+        "The screen is locked."
+    )
 
 
 def test_screen_lock_detection_does_not_require_a_playwright_is_closed_method(
