@@ -1,4 +1,4 @@
-/* Code version: v3.44.2-codex.1 */
+/* Code version: v3.44.3-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -138,6 +138,7 @@
     if (responseToolbar && activitySummary && elements.activityPanel) {
         if (elements.activityCount) elements.activityCount.hidden = true;
         activitySummary.replaceChildren(...[elements.statusMessage, elements.activityCount].filter(Boolean));
+        elements.statusMessageCopy?.classList.add("agent-activity-heading");
         activitySummary.setAttribute("aria-label", "Toggle execution activity");
         responseToolbar.prepend(elements.activityPanel);
         elements.activityPanel.hidden = false;
@@ -147,7 +148,10 @@
     function syncActivityCurrent() {
         const panel = elements.activityPanel;
         if (!panel) return;
-        activityCurrent.hidden = panel.hidden || panel.open || !activityCurrent.childElementCount;
+        activityCurrent.hidden = panel.hidden
+            || panel.open
+            || panel.dataset.running !== "true"
+            || !activityCurrent.childElementCount;
         activitySummary?.setAttribute("aria-expanded", String(panel.open));
     }
 

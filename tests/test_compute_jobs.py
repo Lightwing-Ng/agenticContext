@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.0-codex.1
+Code version: v1.6.1-codex.1
 """
 
 from __future__ import annotations
@@ -34,6 +34,31 @@ from app.core.computer_use_agent import (
     _workspace_mutation_fingerprint,
 )
 from app.web.app import create_app
+
+
+def test_ps_process_identity_forces_a_stable_locale_and_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_environment: dict[str, str] = {}
+
+    def run_probe(*_args, **kwargs):
+        observed_environment.update(kwargs["env"])
+        return subprocess.CompletedProcess(
+            args=["ps"],
+            returncode=0,
+            stdout="Sat Sep 12 07:00:00 2026\n",
+            stderr="",
+        )
+
+    monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    monkeypatch.setattr(compute_jobs.subprocess, "run", run_probe)
+
+    identity = compute_jobs._ps_process_identity(123)
+
+    assert identity.startswith("ps:123:")
+    assert observed_environment["LC_ALL"] == "C"
+    assert observed_environment["TZ"] == "UTC"
 
 
 def _probe_linux_cgroup_execution() -> bool:

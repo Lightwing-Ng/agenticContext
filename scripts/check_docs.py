@@ -1,6 +1,6 @@
 """Validate local Markdown navigation without network access or sibling dependencies.
 
-Code version: v1.0.0-codex.1
+Code version: v1.1.0-codex.1
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ def document_anchors(tokens) -> set[str]:
 def check_documents(root: Path) -> tuple[list[str], list[str], int]:
     """Check repository links and report optional cross-repository references separately."""
     root = root.resolve()
+    shared_root = (root.parent / "shared_docs").resolve()
     paths = sorted({*root.glob("*.md"), *(root / "docs").rglob("*.md")})
     parser = MarkdownIt()
     parsed = {path: parser.parse(path.read_text(encoding="utf-8")) for path in paths}
@@ -56,6 +57,13 @@ def check_documents(root: Path) -> tuple[list[str], list[str], int]:
                 location = f"{source.relative_to(root)}:{(block.map or [0])[0] + 1}"
                 if not target.is_relative_to(root):
                     shared.add(f"{location}: {href}")
+                    if shared_root.exists() and target.is_relative_to(shared_root):
+                        if not target.exists():
+                            errors.append(f"{location}: missing shared target {href}")
+                        elif url.fragment and target.suffix.lower() == ".md":
+                            shared_tokens = parser.parse(target.read_text(encoding="utf-8"))
+                            if unquote(url.fragment) not in document_anchors(shared_tokens):
+                                errors.append(f"{location}: missing shared Markdown heading {href}")
                     continue
                 if not target.exists():
                     errors.append(f"{location}: missing local target {href}")

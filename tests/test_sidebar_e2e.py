@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.42.5-codex.1
+Code version: v1.42.7-codex.1
 """
 
 from __future__ import annotations
@@ -1122,7 +1122,7 @@ def test_browser_message_timestamps_keep_two_rows_across_viewports(
         touch=False,
     )
     try:
-        session = page.locator(".browser-session-index-table a").first
+        session = page.locator(".browser-session-index-table .browser-session-table-title").first
         expect(session).to_be_visible()
         detail_url = session.get_attribute("href")
         assert detail_url
@@ -4001,9 +4001,7 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
             f'.agent-platform-combobox [data-agent-combobox-option="{platform}"]'
         ).click()
         expect(page.get_by_role("button", name=f"Web service: {platform_label}", exact=True)).to_be_visible()
-        expect(page.locator("[data-agent-provider-settings-label]")).to_have_text(
-            f"Open {platform_label} settings"
-        )
+        expect(page.locator("[data-agent-provider-settings-label]")).to_have_count(0)
 
         recent_option = page.locator(
             f'[data-recent-conversation-url="{session_url}"]'
@@ -10257,7 +10255,7 @@ def test_modal_reuses_the_unmodified_frosted_material(disposable_browser, sideba
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("width", (1138, 390))
-def test_cache_annotations_keep_motion_icons_and_remaining_space(
+def test_cache_annotations_keep_static_icons_and_remaining_space(
     disposable_browser: Browser, sidebar_server_url: str, width: int,
 ) -> None:
     """Measure the annotated marks, loading gap, and responsive event scrollport."""
@@ -10278,12 +10276,11 @@ def test_cache_annotations_keep_motion_icons_and_remaining_space(
                 duration: outer.animationDuration, delay: inner.animationDelay,
                 start: outer.transform, shadow: core.boxShadow};
         }""")
-        assert (rings["core"], rings["outer"], rings["inner"]) == ("6px", "20px", "14px")
-        assert rings["duration"] == "1.8s"
-        assert rings["delay"] == "0.9s"
+        assert (rings["core"], rings["outer"], rings["inner"]) == ("6px", "auto", "auto")
+        assert rings["duration"] == "0s"
+        assert rings["delay"] == "0s"
         assert rings["shadow"] != "none"
-        page.wait_for_timeout(250)
-        assert marker.evaluate("el => getComputedStyle(el, '::before').transform") != rings["start"]
+        assert rings["start"] == "none"
         assert page.locator(".cache-settings-link").evaluate(
             "el => getComputedStyle(el).marginBottom"
         ) == "8px"
@@ -10307,12 +10304,22 @@ def test_cache_annotations_keep_motion_icons_and_remaining_space(
         page.locator('.agent-session-mode-combobox [data-agent-combobox-trigger]').click()
         option = page.locator('.agent-session-mode-combobox [data-agent-combobox-option="new"]')
         expect(option).to_be_visible()
-        delta = option.evaluate("""el => {
-            const a = el.querySelector('img').getBoundingClientRect();
+        geometry = option.evaluate("""el => {
+            const a = el.getBoundingClientRect();
             const b = el.querySelector('.trade-strategy-dropdown-check').getBoundingClientRect();
-            return Math.abs(a.y + a.height / 2 - b.y - b.height / 2);
+            const icon = getComputedStyle(el, '::after');
+            return {
+                delta: Math.abs(a.y + a.height / 2 - b.y - b.height / 2),
+                iconWidth: icon.width,
+                iconHeight: icon.height,
+                iconAnimation: icon.animationName,
+                sourceImageDisplay: getComputedStyle(el.querySelector('img')).display,
+            };
         }""")
-        assert delta <= 1
+        assert geometry["delta"] <= 1, geometry
+        assert (geometry["iconWidth"], geometry["iconHeight"]) == ("20px", "20px")
+        assert geometry["iconAnimation"] == "none"
+        assert geometry["sourceImageDisplay"] == "none"
         status = page.locator('#agent_response_status')
         status.evaluate("el => el.dataset.status = 'finished'")
         assert status.locator('.agent-response-status-dot').evaluate(
@@ -10527,9 +10534,13 @@ def test_agent_activity_completion_icon_contract(disposable_browser, sidebar_ser
         if panel.evaluate('e => e.open'):
             panel.locator('summary').click()
         expect(panel).to_have_js_property('open', False)
-        expect(page.locator('.agent-response-toolbar #agent_activity_current')).to_be_visible()
-        expect(page.locator('#agent_activity_current')).to_contain_text('AGENTS.md')
-        expect(page.locator('#agent_activity_current > li')).to_have_count(1)
+        current_activity = page.locator('.agent-response-toolbar #agent_activity_current')
+        if phase == 'running':
+            expect(current_activity).to_be_visible()
+            expect(current_activity).to_contain_text('AGENTS.md')
+            expect(current_activity.locator(':scope > li')).to_have_count(1)
+        else:
+            expect(current_activity).to_be_hidden()
         panel.locator('summary').click()
         expect(panel).to_have_js_property('open', True)
         expect(page.locator('#agent_activity_list')).to_be_visible()

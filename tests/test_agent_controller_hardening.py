@@ -1,7 +1,7 @@
 """Focused tests for controller hardening: model verification, action parser,
 directory picker, recent-session catalog, and browser interruption recovery.
 
-Code version: v3.50.1-codex.1
+Code version: v3.50.2-codex.1
 """
 
 from __future__ import annotations
@@ -721,12 +721,19 @@ class TestAriaDescribedbyRegression:
 
         def snapshot(*_args: object) -> dict[str, object]:
             generating = len(submitted) == 2 and clock - submitted_at < correction_delay
+            receipt_marker = str(_args[2] if len(_args) > 2 else "")
+            latest_user_text = submitted[-1] if submitted else ""
             return {
                 "url": _Page.url,
                 "count": len(submitted),
                 "text": "" if not submitted or generating else replies[len(submitted) - 1],
                 "generating": generating,
                 "assistantAfterLatestUser": bool(submitted),
+                "assistantMessageId": f"assistant-{len(submitted)}" if submitted else "",
+                "userCount": len(submitted),
+                "latestUserText": latest_user_text,
+                "latestUserMessageId": f"user-{len(submitted)}" if submitted else "",
+                "markerEchoed": bool(receipt_marker and receipt_marker in latest_user_text),
             }
 
         def wait(*_args: object) -> None:

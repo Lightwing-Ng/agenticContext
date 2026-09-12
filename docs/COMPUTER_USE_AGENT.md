@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.69.5-codex.1`
+Documentation version: `v3.70.0-codex.1`
 
 ## Purpose
 
@@ -723,10 +723,12 @@ worker snapshot does not own that selected history.
   Safari composer/send polling avoid later work where possible and still prevent context attachment
   or prompt submission. A synchronous browser error observed after an accepted Stop is published as
   `stopped`, not as a task failure.
-- The Flask control routes accept host-loopback traffic directly. Private-network requests must
-  first unlock `/agent` with the six-digit password gate; the successful signed session also
-  authorizes same-origin `/api/agent/*` requests. Public and host-rebinding requests are rejected.
-  The default password is `195135`, and `AGENTIC_CONTEXT_AGENT_PASSWORD` overrides it before launch.
+- The Flask application accepts host-loopback traffic directly. LAN binding is disabled unless
+  `AGENTIC_CONTEXT_HOST` explicitly selects a non-loopback interface. Private-network requests then
+  must first unlock `/agent` with the configured six-ASCII-digit
+  `AGENTIC_CONTEXT_AGENT_PASSWORD`; no password is built in. The signed session authorizes
+  same-origin application pages and APIs. Public, cross-site, and host-rebinding requests are
+  rejected, and repeated failed unlocks are throttled per client.
 - `/api/browser-session?...&scope=agent` uses that same network, Host, Origin, and password gate.
   Responses produced after admission carry `Cache-Control: no-store`, `Pragma: no-cache`, and an
   expired `Expires` value so Agent account-readiness data is not retained by browser caches.

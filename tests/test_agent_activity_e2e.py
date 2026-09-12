@@ -1,4 +1,4 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.0.9-codex.1."""
+"""Activity disclosure and status glyph regressions. Code version: v1.0.10-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -161,7 +161,9 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
         assert geometry["axis"] <= 0.1
         assert geometry["hanging"] <= 0.1
         expect(done).to_have_css("background-color", "rgb(22, 163, 74)")
-        running = panel.locator('[data-status="running"] .cache-phase-live-marker')
+        running = panel.locator(
+            '.agent-activity-item[data-status="running"] .cache-phase-live-marker'
+        )
         expect(running).to_be_visible()
         assert running.evaluate("e => getComputedStyle(e, '::before').animationName") == "none"
         assert running.evaluate("e => getComputedStyle(e, '::after').animationName") == "none"
@@ -175,10 +177,10 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
         current = page.locator("#agent_activity_current")
         expect(current).to_be_visible()
         expect(current.locator('li')).to_have_count(1)
-        expect(summary.locator('.agent-activity-live')).to_be_visible()
+        expect(status_light).to_be_visible()
         rails = current.evaluate("""e => {
             const anchor = document.querySelector('.agent-response-status-indicator').getBoundingClientRect();
-            return [document.querySelector('.agent-activity-live'), e.querySelector('.agent-activity-status')].map(icon => {
+            return [document.querySelector('.agent-response-status-indicator'), e.querySelector('.agent-activity-status')].map(icon => {
                 const r = icon.getBoundingClientRect();
                 return Math.abs((r.left + r.right - anchor.left - anchor.right) / 2);
             });
@@ -204,10 +206,9 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
             const text = getComputedStyle(e), placeholder = getComputedStyle(e, '::placeholder');
             return ['fontSize','fontFamily','fontWeight','fontStyle','lineHeight'].every(k => text[k] === placeholder[k]);
         }""")
-        expect(summary.locator('.agent-activity-live')).to_be_visible()
-        expect(summary.locator('.agent-activity-live')).to_have_css(
-            'mask-image', f'url("{sidebar_server_url}/static/images/checkmark.circle.fill.green.svg")'
-        )
+        status_dot = summary.locator('[data-agent-response-status-dot]')
+        expect(status_dot).to_be_visible()
+        expect(status_dot).to_have_css('background-color', 'rgb(22, 163, 74)')
         summary.click()
         if motion == "no-preference":
             movement = panel.evaluate("""e => {

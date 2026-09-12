@@ -1,15 +1,17 @@
 """Focused regression tests for persisted crawler settings.
 
-Code version: v1.5.0-codex.1
+Code version: v1.5.1-codex.1
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from app.core.config import CrawlConfig, load_saved_config, save_config
+from app.core.config import CrawlConfig, load_saved_config, resolve_listen_host, save_config
 
 
 class ConfigPersistenceTests(unittest.TestCase):
@@ -18,6 +20,28 @@ class ConfigPersistenceTests(unittest.TestCase):
     def test_new_configuration_uses_non_disruptive_gemini_default(self) -> None:
         self.assertEqual(CrawlConfig().gemini_browser, "edge")
         self.assertEqual(CrawlConfig().claude_browser, "edge")
+
+    def test_server_defaults_to_loopback_and_requires_an_explicit_lan_bind(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=False,
+        ):
+            for variable_name in ("AGENTIC_CONTEXT_HOST", "CACHELIKES_HOST"):
+                os.environ.pop(variable_name, None)
+            self.assertEqual(resolve_listen_host(), "127.0.0.1")
+
+        with patch.dict("os.environ", {"AGENTIC_CONTEXT_HOST": "0.0.0.0"}):
+            self.assertEqual(resolve_listen_host(), "0.0.0.0")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AGENTIC_CONTEXT_HOST": "",
+                "CACHELIKES_HOST": "192.168.124.10",
+            },
+        ):
+            self.assertEqual(resolve_listen_host(), "192.168.124.10")
 
     def test_cache_scan_intervals_are_independent_and_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

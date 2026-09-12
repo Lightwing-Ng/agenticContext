@@ -1,13 +1,13 @@
 """Focused tests for the LAN Agent password gate."""
 
-# Code version: v1.0.1-codex.1
+# Code version: v1.1.0-codex.1
 
 from __future__ import annotations
 
 import pytest
 
 from app.core.agent_access_security import (
-    DEFAULT_AGENT_ACCESS_PASSWORD,
+    agent_access_password_is_configured,
     is_allowed_agent_network_request,
     is_loopback_or_private_address,
     resolve_agent_access_password,
@@ -15,15 +15,15 @@ from app.core.agent_access_security import (
 )
 
 
-def test_agent_password_uses_requested_default_and_constant_time_validation(
+def test_agent_password_fails_closed_without_an_explicit_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AGENTIC_CONTEXT_AGENT_PASSWORD", raising=False)
     monkeypatch.delenv("CACHELIKES_AGENT_PASSWORD", raising=False)
 
-    assert resolve_agent_access_password() == DEFAULT_AGENT_ACCESS_PASSWORD
-    assert validate_agent_access_password("195135")
-    assert not validate_agent_access_password("195134")
+    assert resolve_agent_access_password() == ""
+    assert not agent_access_password_is_configured()
+    assert not validate_agent_access_password("195135")
     assert not validate_agent_access_password("")
 
 
@@ -33,6 +33,7 @@ def test_agent_password_can_be_overridden_without_changing_the_ui_contract(
     monkeypatch.setenv("AGENTIC_CONTEXT_AGENT_PASSWORD", "246810")
 
     assert resolve_agent_access_password() == "246810"
+    assert agent_access_password_is_configured()
     assert validate_agent_access_password("246810")
     assert not validate_agent_access_password("195135")
 
@@ -44,6 +45,17 @@ def test_agent_password_keeps_the_legacy_environment_alias(
     monkeypatch.setenv("CACHELIKES_AGENT_PASSWORD", "135790")
 
     assert resolve_agent_access_password() == "135790"
+
+
+@pytest.mark.parametrize("password", ("12345", "1234567", "abcdef", "１２３４５６"))
+def test_agent_password_rejects_invalid_explicit_configurations(
+    monkeypatch: pytest.MonkeyPatch,
+    password: str,
+) -> None:
+    monkeypatch.setenv("AGENTIC_CONTEXT_AGENT_PASSWORD", password)
+
+    assert not agent_access_password_is_configured()
+    assert not validate_agent_access_password(password)
 
 
 @pytest.mark.parametrize(

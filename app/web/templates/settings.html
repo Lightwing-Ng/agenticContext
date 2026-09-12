@@ -1,4 +1,4 @@
-<!-- Code version: v1.33.4-codex.1 -->
+<!-- Code version: v1.33.6-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.117.4-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.117.5-codex.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
@@ -188,7 +188,7 @@
                             >
                                 <div class="settings-category-heading">
                                     <h3 id="settings_agent_heading">Web Computer Use Agent</h3>
-                                    <p>Use an already signed-in ChatGPT, Gemini, or Grok Web account for reasoning while a bounded local controller reads, changes, runs, and verifies the selected project.</p>
+                                    <p>Use an already signed-in ChatGPT, Gemini, Grok, or Claude Web account for reasoning while a bounded local controller reads, changes, runs, and verifies the selected project.</p>
                                 </div>
                                 <div class="settings-category-fields">
                                     <div class="settings-agent-runtime-status" data-ready="{{ 'true' if agent_runtime_snapshot.ready else 'false' }}">

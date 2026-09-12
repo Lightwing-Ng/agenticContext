@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.0-codex.1
+Code version: v1.6.1-codex.1
 """
 
 from __future__ import annotations
@@ -668,6 +668,14 @@ def _process_identity(pid: int) -> str:
             return f"proc:{fields[21]}"
     except (OSError, UnicodeError):
         pass
+    return _ps_process_identity(pid)
+
+
+def _ps_process_identity(pid: int) -> str:
+    """Read one locale- and timezone-stable POSIX process birth identity."""
+    probe_environment = dict(os.environ)
+    probe_environment["LC_ALL"] = "C"
+    probe_environment["TZ"] = "UTC"
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "lstart="],
@@ -679,6 +687,7 @@ def _process_identity(pid: int) -> str:
             errors="replace",
             timeout=2,
             check=False,
+            env=probe_environment,
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""

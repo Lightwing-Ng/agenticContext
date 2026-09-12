@@ -1,6 +1,6 @@
 """Behavioral checks for offline documentation navigation.
 
-Code version: v1.0.0-codex.1
+Code version: v1.1.0-codex.1
 """
 
 from pathlib import Path
@@ -43,3 +43,23 @@ def test_external_and_shared_references_do_not_require_network_or_sibling(tmp_pa
     errors, shared, _ = check_documents(tmp_path)
     assert errors == []
     assert len(shared) == 1
+
+
+def test_installed_shared_docs_are_validated(tmp_path):
+    """Validate the canonical shared-doc tree when it is installed beside the project."""
+    project = tmp_path / "project"
+    project.mkdir()
+    shared_docs = tmp_path / "shared_docs"
+    shared_docs.mkdir()
+    (shared_docs / "CONTRACT.md").write_text("# Contract\n")
+    (project / "README.md").write_text(
+        "[valid](../shared_docs/CONTRACT.md#contract)\n"
+        "[missing](../shared_docs/MISSING.md)\n"
+    )
+
+    errors, shared, count = check_documents(project)
+
+    assert count == 1
+    assert len(shared) == 2
+    assert len(errors) == 1
+    assert "missing shared target" in errors[0]

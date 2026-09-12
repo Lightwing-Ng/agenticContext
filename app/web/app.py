@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.72.3-codex.1
+# Code version: v1.73.1-codex.1
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass, replace
 from html import escape as escape_html
 from html.parser import HTMLParser
 from pathlib import Path
+from threading import Lock
+from time import monotonic
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -32,6 +34,7 @@ from app.core.agent import (
     AgentSourceCache,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
+    agent_access_password_is_configured,
     browser_options_for_host,
     build_agent_optimization_manifest,
     capability_registry_snapshot,
@@ -160,6 +163,9 @@ def format_agent_activity_time(value: str | None) -> str:
 
 
 CACHE_RECONCILE_PHASES = {"idle", "finished", "completed", "success", "stopped"}
+AGENT_UNLOCK_FAILURE_LIMIT = 5
+AGENT_UNLOCK_FAILURE_WINDOW_SECONDS = 300.0
+UNSAFE_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 PROMPT_MARKDOWN_RENDERER = MarkdownIt(
     "default",
     {"html": False, "linkify": False, "typographer": False},
@@ -589,6 +595,8 @@ def create_app(
         SESSION_COOKIE_SAMESITE="Lax",
         AGENT_EXTERNAL_OPERATIONS_ENABLED=bool(agent_external_operations_enabled),
     )
+    agent_unlock_failure_lock = Lock()
+    agent_unlock_failures: dict[str, list[float]] = {}
     register_beta(
         app,
         version=APP_VERSION,
@@ -1162,6 +1170,103 @@ def create_app(
             session.get(AGENT_ACCESS_SESSION_KEY)
         )
 
+    def require_trusted_request_network() -> None:
+        """Reject public clients and Host-header rebinding for every application route."""
+        try:
+            host_parts = urlsplit(f"//{request.host}")
+            host_name, _host_port = host_parts.hostname, host_parts.port
+        except ValueError:
+            abort(403)
+        if not is_allowed_agent_network_request(request.remote_addr, host_name):
+            abort(403)
+
+    def request_origin_matches_host() -> bool:
+        """Return whether the submitted Origin identifies this exact local service."""
+        origin = request.headers.get("Origin", "").strip()
+        if not origin:
+            return False
+        try:
+            origin_parts = urlsplit(origin)
+            expected_parts = urlsplit(request.host_url)
+            origin_identity = (
+                origin_parts.scheme,
+                origin_parts.hostname,
+                origin_parts.port,
+            )
+            expected_identity = (
+                expected_parts.scheme,
+                expected_parts.hostname,
+                expected_parts.port,
+            )
+        except ValueError:
+            return False
+        return (
+            origin_parts.scheme in {"http", "https"}
+            and origin_parts.username is None
+            and origin_parts.password is None
+            and origin_parts.path in {"", "/"}
+            and not origin_parts.query
+            and not origin_parts.fragment
+            and origin_identity == expected_identity
+        )
+
+    def require_safe_request_origin() -> None:
+        """Block browser cross-site writes and require an Origin for LAN writes."""
+        fetch_site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
+        if fetch_site == "cross-site":
+            abort(403)
+        origin = request.headers.get("Origin", "").strip()
+        if origin and not request_origin_matches_host():
+            abort(403)
+        if (
+            request.method in UNSAFE_HTTP_METHODS
+            and not is_loopback_address(request.remote_addr)
+            and not origin
+        ):
+            abort(403)
+
+    @app.before_request
+    def protect_local_application_request():
+        """Apply one network, CSRF, and LAN-session boundary to the whole application."""
+        require_trusted_request_network()
+        require_safe_request_origin()
+        if is_agent_access_unlocked():
+            return None
+        if request.endpoint == "static" or request.path.startswith("/static/"):
+            return None
+        if request.endpoint in {
+            "agent",
+            "agent_browser",
+            "agent_selected",
+            "unlock_agent",
+        }:
+            return None
+        if request.method in {"GET", "HEAD"} and not request.path.startswith("/api/"):
+            return redirect(url_for("agent"))
+        abort(401)
+
+    @app.after_request
+    def apply_local_security_headers(response: Response) -> Response:
+        """Prevent framing, MIME sniffing, and storage of Agent credentials or state."""
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+        )
+        if (
+            request.path.startswith("/agent")
+            or request.path.startswith("/api/agent")
+            or request.path == "/api/browser-session"
+        ):
+            response.headers["Cache-Control"] = (
+                "no-store, no-cache, max-age=0, must-revalidate"
+            )
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     def render_agent_access_unlock(error_message: str = "", status_code: int = 200):
         """Render the no-store Agent password gate."""
         response = make_response(
@@ -1177,25 +1282,64 @@ def create_app(
         response.headers["Expires"] = "0"
         return response
 
+    def render_locked_agent_access():
+        """Fail closed on LAN when no valid password was explicitly configured."""
+        if not agent_access_password_is_configured():
+            return render_agent_access_unlock(
+                (
+                    "LAN access is disabled. Set "
+                    "AGENTIC_CONTEXT_AGENT_PASSWORD to exactly six ASCII digits, then restart."
+                ),
+                status_code=503,
+            )
+        return render_agent_access_unlock()
+
+    def agent_unlock_retry_after_seconds() -> int:
+        """Return the remaining per-client cooldown after repeated failed unlocks."""
+        now = monotonic()
+        threshold = now - AGENT_UNLOCK_FAILURE_WINDOW_SECONDS
+        client_key = str(request.remote_addr or "")
+        with agent_unlock_failure_lock:
+            recent_failures = [
+                attempted_at
+                for attempted_at in agent_unlock_failures.get(client_key, [])
+                if attempted_at > threshold
+            ]
+            if recent_failures:
+                agent_unlock_failures[client_key] = recent_failures
+            else:
+                agent_unlock_failures.pop(client_key, None)
+            if len(recent_failures) < AGENT_UNLOCK_FAILURE_LIMIT:
+                return 0
+            remaining = AGENT_UNLOCK_FAILURE_WINDOW_SECONDS - (
+                now - recent_failures[0]
+            )
+            return max(1, int(remaining) + 1)
+
+    def record_agent_unlock_failure() -> None:
+        """Record one failed password attempt against the network peer."""
+        client_key = str(request.remote_addr or "")
+        now = monotonic()
+        threshold = now - AGENT_UNLOCK_FAILURE_WINDOW_SECONDS
+        with agent_unlock_failure_lock:
+            recent_failures = [
+                attempted_at
+                for attempted_at in agent_unlock_failures.get(client_key, [])
+                if attempted_at > threshold
+            ]
+            recent_failures.append(now)
+            agent_unlock_failures[client_key] = recent_failures
+
+    def clear_agent_unlock_failures() -> None:
+        """Forget the peer's failed attempts after a successful unlock."""
+        client_key = str(request.remote_addr or "")
+        with agent_unlock_failure_lock:
+            agent_unlock_failures.pop(client_key, None)
+
     def require_local_agent_request(*, allow_locked: bool = False) -> None:
         """Keep the Agent control plane on loopback or a private network with a password gate."""
-        host_name = urlsplit(f"//{request.host}").hostname
-        if not is_allowed_agent_network_request(request.remote_addr, host_name):
-            abort(403)
-        origin = request.headers.get("Origin", "").strip()
-        if origin:
-            origin_parts = urlsplit(origin)
-            expected_parts = urlsplit(request.host_url)
-            if (
-                origin_parts.scheme,
-                origin_parts.hostname,
-                origin_parts.port,
-            ) != (
-                expected_parts.scheme,
-                expected_parts.hostname,
-                expected_parts.port,
-            ):
-                abort(403)
+        require_trusted_request_network()
+        require_safe_request_origin()
         if not allow_locked and not is_agent_access_unlocked():
             abort(401)
 
@@ -1493,7 +1637,7 @@ def create_app(
         """Redirect the legacy Agent entrypoint to the canonical selection URL."""
         require_local_agent_request(allow_locked=True)
         if not is_agent_access_unlocked():
-            return render_agent_access_unlock()
+            return render_locked_agent_access()
         settings = computer_use_settings.settings
         browser = settings.browser if settings.browser in available_agent_browser_keys() else "edge"
         return redirect(build_agent_path(browser, settings.platform))
@@ -1525,15 +1669,27 @@ def create_app(
         ):
             abort(404)
         if not is_agent_access_unlocked():
-            return render_agent_access_unlock()
+            return render_locked_agent_access()
         return render_agent_page(browser.strip().lower(), platform.strip().lower())
 
     @app.post("/agent/unlock")
     def unlock_agent():
         """Unlock the Agent control plane for the current private-network session."""
         require_local_agent_request(allow_locked=True)
+        if not agent_access_password_is_configured():
+            return render_locked_agent_access()
+        retry_after_seconds = agent_unlock_retry_after_seconds()
+        if retry_after_seconds:
+            response = render_agent_access_unlock(
+                "Too many failed attempts. Try again later.",
+                status_code=429,
+            )
+            response.headers["Retry-After"] = str(retry_after_seconds)
+            return response
         if not validate_agent_access_password(request.form.get("password")):
+            record_agent_unlock_failure()
             return render_agent_access_unlock("The password is incorrect.", status_code=401)
+        clear_agent_unlock_failures()
         session[AGENT_ACCESS_SESSION_KEY] = True
         settings = computer_use_settings.settings
         browser = settings.browser if settings.browser in available_agent_browser_keys() else "edge"

@@ -1,6 +1,6 @@
 """Configuration helpers."""
 
-# Code version: v1.20.0-codex.1
+# Code version: v1.20.1-codex.1
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ RUNTIME_ROOT_ENV = "AGENTIC_CONTEXT_RUNTIME_ROOT"
 SETTINGS_PATH_ENV = "AGENTIC_CONTEXT_SETTINGS_PATH"
 LEGACY_RUNTIME_ROOT_ENV = "CACHELIKES_RUNTIME_ROOT"
 LEGACY_SETTINGS_PATH_ENV = "CACHELIKES_SETTINGS_PATH"
+LISTEN_HOST_ENV = "AGENTIC_CONTEXT_HOST"
+LEGACY_LISTEN_HOST_ENV = "CACHELIKES_HOST"
 SETTINGS_DIRECTORY_NAME = "agenticContext"
 LEGACY_SETTINGS_DIRECTORY_NAME = "CacheLikesFromTwitter"
 
@@ -94,6 +96,17 @@ def runtime_root_is_overridden() -> bool:
     )
 
 
+def resolve_listen_host() -> str:
+    """Bind to loopback unless LAN exposure is explicitly requested."""
+    return (
+        _configured_environment_value(
+            LISTEN_HOST_ENV,
+            LEGACY_LISTEN_HOST_ENV,
+        )
+        or "127.0.0.1"
+    )
+
+
 RUNTIME_ROOT = resolve_runtime_root()
 LOCAL_STORE_ROOT = RUNTIME_ROOT / "local_store"
 MEDIA_STORE_DIRNAME = "media"
@@ -101,7 +114,7 @@ MEDIA_STORE_ROOT = LOCAL_STORE_ROOT / MEDIA_STORE_DIRNAME
 X_LOCAL_STORE_DIRNAME = "x"
 LOGS_ROOT = RUNTIME_ROOT / "logs"
 LEGACY_SETTINGS_PATH = RUNTIME_ROOT / ".cachelikes-settings.json"
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = resolve_listen_host()
 DEFAULT_PORT = 8666
 DEFAULT_CHROME_USER_DATA_DIR = default_chrome_user_data_dir()
 # Safari is opt-in: its authenticated Apple Events path owns a real Safari

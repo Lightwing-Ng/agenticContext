@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.108.7-codex.1
+# Code version: v1.109.1-codex.1
 
 from __future__ import annotations
 
@@ -592,9 +592,8 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', chatgpt_body)
         self.assertIn('cache-page.js?v=cache-page-v1.14.3-codex.1', chatgpt_body)
-        self.assertIn('segmented-control.js?v=segmented-control-v1.0.2-codex.1', chatgpt_body)
+        self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt"', chatgpt_body)
         self.assertIn('data-cache-content-mode', grok_body)
@@ -733,7 +732,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.22.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.117.4-codex.1"
+                expected_style_version = "style-v2.117.5-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1013,7 +1012,10 @@ class WebAppTests(unittest.TestCase):
             app = create_app()
 
         lan_environ = {"REMOTE_ADDR": "192.168.124.20"}
-        lan_headers = {"Host": "192.168.124.10:8666"}
+        lan_headers = {
+            "Host": "192.168.124.10:8666",
+            "Origin": "http://192.168.124.10:8666",
+        }
         with patch.dict("os.environ", {"AGENTIC_CONTEXT_AGENT_PASSWORD": "195135"}):
             with app.test_client() as client:
                 local_page = client.get("/agent", follow_redirects=True)
@@ -1026,6 +1028,16 @@ class WebAppTests(unittest.TestCase):
                 )
                 lan_status = client.get(
                     "/api/agent/status",
+                    headers=lan_headers,
+                    environ_overrides=lan_environ,
+                )
+                locked_settings = client.get(
+                    "/settings",
+                    headers=lan_headers,
+                    environ_overrides=lan_environ,
+                )
+                locked_cache_status = client.get(
+                    "/api/zhihu/status",
                     headers=lan_headers,
                     environ_overrides=lan_environ,
                 )
@@ -1052,6 +1064,11 @@ class WebAppTests(unittest.TestCase):
                     headers=lan_headers,
                     environ_overrides=lan_environ,
                 )
+                unlocked_settings = client.get(
+                    "/settings",
+                    headers=lan_headers,
+                    environ_overrides=lan_environ,
+                )
                 remote_page = client.get(
                     "/agent",
                     environ_overrides={"REMOTE_ADDR": "192.0.2.1"},
@@ -1070,6 +1087,9 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(removed_reveal.status_code, 404)
         self.assertEqual(lan_page.status_code, 200)
         self.assertEqual(lan_status.status_code, 401)
+        self.assertEqual(locked_settings.status_code, 302)
+        self.assertEqual(locked_settings.headers["Location"], "/agent")
+        self.assertEqual(locked_cache_status.status_code, 401)
         self.assertEqual(wrong_unlock.status_code, 401)
         self.assertEqual(correct_unlock.status_code, 303)
         self.assertEqual(correct_unlock.headers["Location"], "/agent/edge/chatgpt")
@@ -1077,6 +1097,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("SameSite=Lax", correct_unlock.headers["Set-Cookie"])
         self.assertEqual(unlocked_lan_page.status_code, 200)
         self.assertEqual(unlocked_lan_status.status_code, 200)
+        self.assertEqual(unlocked_settings.status_code, 200)
         self.assertEqual(remote_page.status_code, 403)
         self.assertEqual(remote_status.status_code, 403)
         self.assertEqual(rebound_host_page.status_code, 403)
@@ -1086,6 +1107,10 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(locked_body.count('class="agent-access-slot"'), 6)
         self.assertNotIn("195135", locked_body)
         self.assertIn("no-store", lan_page.headers["Cache-Control"])
+        self.assertEqual(lan_page.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(lan_page.headers["X-Frame-Options"], "DENY")
+        self.assertEqual(lan_page.headers["Referrer-Policy"], "same-origin")
+        self.assertIn("frame-ancestors 'none'", lan_page.headers["Content-Security-Policy"])
         self.assertIn("The password is incorrect.", wrong_unlock.get_data(as_text=True))
         local_body = local_page.get_data(as_text=True)
         self.assertIn("ChatGPT Web Agent", local_body)
@@ -1113,6 +1138,7 @@ class WebAppTests(unittest.TestCase):
             '<span class="field-label agent-project-label">Current project: <span data-agent-project-name>',
             local_body,
         )
+
         self.assertNotIn(
             '<span class="field-help" data-agent-project-name>',
             local_body,
@@ -1146,14 +1172,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.117.4-codex.1', local_body)
+        self.assertIn('style-v2.117.5-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.8.0', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.44.2-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.44.3-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1250,6 +1276,105 @@ class WebAppTests(unittest.TestCase):
             '                    <article class="agent-response-card"',
             local_body,
         )
+
+    def test_agent_lan_gate_fails_closed_without_a_configured_password(self) -> None:
+        with patch(
+            "app.core.computer_use_agent.load_computer_use_settings",
+            return_value=ComputerUseSettings(browser="edge", platform="chatgpt"),
+        ):
+            app = create_app()
+
+        headers = {
+            "Host": "192.168.124.10:8666",
+            "Origin": "http://192.168.124.10:8666",
+        }
+        environ = {"REMOTE_ADDR": "192.168.124.21"}
+        with patch.dict(
+            "os.environ",
+            {
+                "AGENTIC_CONTEXT_AGENT_PASSWORD": "",
+                "CACHELIKES_AGENT_PASSWORD": "",
+            },
+        ):
+            with app.test_client() as client:
+                page = client.get("/agent", headers=headers, environ_overrides=environ)
+                unlock = client.post(
+                    "/agent/unlock",
+                    data={"password": "195135"},
+                    headers=headers,
+                    environ_overrides=environ,
+                )
+
+        self.assertEqual(page.status_code, 503)
+        self.assertEqual(unlock.status_code, 503)
+        self.assertIn("LAN access is disabled.", page.get_data(as_text=True))
+
+    def test_agent_lan_unlock_rate_limits_failed_passwords(self) -> None:
+        with patch(
+            "app.core.computer_use_agent.load_computer_use_settings",
+            return_value=ComputerUseSettings(browser="edge", platform="chatgpt"),
+        ):
+            app = create_app()
+
+        headers = {
+            "Host": "192.168.124.10:8666",
+            "Origin": "http://192.168.124.10:8666",
+        }
+        environ = {"REMOTE_ADDR": "192.168.124.22"}
+        with patch.dict("os.environ", {"AGENTIC_CONTEXT_AGENT_PASSWORD": "246810"}):
+            with app.test_client() as client:
+                failures = [
+                    client.post(
+                        "/agent/unlock",
+                        data={"password": "000000"},
+                        headers=headers,
+                        environ_overrides=environ,
+                    )
+                    for _ in range(5)
+                ]
+                limited = client.post(
+                    "/agent/unlock",
+                    data={"password": "246810"},
+                    headers=headers,
+                    environ_overrides=environ,
+                )
+
+        self.assertEqual([response.status_code for response in failures], [401] * 5)
+        self.assertEqual(limited.status_code, 429)
+        self.assertGreaterEqual(int(limited.headers["Retry-After"]), 1)
+
+    def test_local_application_rejects_cross_site_browser_writes(self) -> None:
+        app = create_app()
+
+        with app.test_client() as client:
+            mismatched_origin = client.post(
+                "/settings",
+                headers={"Origin": "https://malicious.example"},
+            )
+            cross_site = client.post(
+                "/settings",
+                headers={"Sec-Fetch-Site": "cross-site"},
+            )
+            malformed_origin = client.post(
+                "/settings",
+                headers={"Origin": "http://127.0.0.1:not-a-port"},
+            )
+            userinfo_origin = client.post(
+                "/settings",
+                headers={"Origin": "http://attacker@localhost"},
+            )
+
+        with app.test_request_context(
+            "/agent",
+            environ_overrides={"HTTP_HOST": "127.0.0.1:not-a-port"},
+        ):
+            malformed_host = app.full_dispatch_request()
+
+        self.assertEqual(mismatched_origin.status_code, 403)
+        self.assertEqual(cross_site.status_code, 403)
+        self.assertEqual(malformed_origin.status_code, 403)
+        self.assertEqual(userinfo_origin.status_code, 403)
+        self.assertEqual(malformed_host.status_code, 403)
 
     def test_agent_browser_session_scope_uses_control_plane_gate_and_no_store(
         self,
@@ -1732,7 +1857,7 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        rendered = json.dumps(payload, sort_keys=True)
+        isolated_agent = json.dumps(payload["agent"], sort_keys=True)
         for sentinel in (
             "FOREIGN_STATUS_PROMPT_SENTINEL",
             "FOREIGN_STATUS_RESPONSE_SENTINEL",
@@ -1742,7 +1867,10 @@ class WebAppTests(unittest.TestCase):
             "FOREIGN_STATUS_RUN_SENTINEL",
             "/tmp/foreign-agent-workspace",
         ):
-            self.assertNotIn(sentinel, rendered)
+            self.assertNotIn(sentinel, isolated_agent)
+        rendered_sessions = json.dumps(payload["sessions"], sort_keys=True)
+        self.assertIn("FOREIGN_STATUS_RUN_SENTINEL", rendered_sessions)
+        self.assertIn("/tmp/foreign-agent-workspace", rendered_sessions)
         self.assertTrue(payload["agent"]["running"])
         self.assertEqual(payload["agent"]["phase"], "running")
         self.assertIn("another project", payload["agent"]["message"])
@@ -2254,7 +2382,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.44.2-codex.1',
+            'computer-use-agent-v3.44.3-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -3534,7 +3662,7 @@ class WebAppTests(unittest.TestCase):
             'const requestKey = `${requestScope}:${platform}:${browserId}`;',
             'if (refresh) query.set("refresh", "1");',
             'async function load(browserId, options = {})',
-            'const forceRefresh = options.force === true;',
+            'const forceRefresh = options.force === true || requiresChatgptCapabilities;',
             'void load(String(browserId || "").trim().toLowerCase());',
             'void load(activeBrowser);',
             'requestBrowserStatus(requestPlatform, activeBrowser, scope, {refresh: forceRefresh})',
@@ -3859,7 +3987,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.117.4-codex.1", body)
+            self.assertIn("style-v2.117.5-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)

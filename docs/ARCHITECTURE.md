@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.25.2-codex.1`
+Documentation version: `v1.26.0-codex.1`
 
 ## Runtime flow
 
@@ -419,7 +419,7 @@ tombstone; restoring it moves the retained preview back to its original safe pat
 ```text
 selected local project
   -> provider-neutral recent session/Project catalog
-  -> new or selected signed-in ChatGPT, Gemini, or Grok Web conversation
+  -> new or selected signed-in ChatGPT, Gemini, Grok, or Claude Web conversation
   -> bounded Markdown context package
   -> one JSON controller action at a time
   -> confined local read/change/check
@@ -546,12 +546,12 @@ user-owned locations above.
   and must never be exercised against production data by the default suite.
 - Browser automation starts from an already authenticated host session. It must not introduce a
   login-repair workflow without explicit product direction.
-- Agent source context is an external data transfer to the selected ChatGPT account. The local UI
+- Agent source context is an external data transfer to the selected Web provider account. The local UI
   discloses that boundary; tests never submit real project data or open authenticated profiles.
-- The Flask server binds to the LAN by design. Cache and Local resources routes remain trusted-LAN
-  surfaces. The Agent control plane accepts loopback directly and requires a signed session after
-  a six-digit password unlock for RFC1918 or IPv6 ULA requests; public and host-rebinding requests
-  are rejected.
+- The Flask server binds to loopback by default. Explicit LAN binding requires an explicitly
+  configured six-ASCII-digit password and a signed unlock session for every application route;
+  unsafe requests also require a matching same-origin `Origin`. Public, cross-site,
+  host-rebinding, and malformed-host requests are rejected, and failed unlocks are rate limited.
 
 ## Testing boundary
 

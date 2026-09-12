@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.15.0-codex.1`
+Documentation version: `v1.16.0-codex.1`
 
 ## Launch
 
@@ -28,15 +28,17 @@ On Windows:
 .\scripts\run_app.ps1
 ```
 
-The normal server address is `http://127.0.0.1:8666`. The application also binds to `0.0.0.0`,
-which permits access from trusted devices on the same LAN at `http://<host-lan-ip>:8666`.
+The normal server address is `http://127.0.0.1:8666`, and the application binds only to loopback by
+default. To opt in to trusted-LAN access, set `AGENTIC_CONTEXT_HOST=0.0.0.0` and set
+`AGENTIC_CONTEXT_AGENT_PASSWORD` to exactly six ASCII digits before launch. There is no built-in
+password. A successful unlock is stored in the signed Flask session for that browser.
 
-Cache and Local resources routes have no login layer, so keep the console on a trusted local
-network, do not expose it through router port forwarding, and do not publish it through a public
-tunnel or reverse proxy. The Agent control plane is the exception: loopback requests continue
-directly, while private-network requests to `/agent` and `/api/agent/*` require the six-digit
-password gate. The default password is `195135`; set `AGENTIC_CONTEXT_AGENT_PASSWORD` before launch
-to override it. A successful unlock is stored in the signed Flask session for that browser.
+When LAN access is enabled, every application route requires that signed session; static assets
+and the unlock flow are the only pre-authentication exceptions. Unsafe private-network requests
+also require a matching same-origin `Origin` header, and repeated failed unlocks are throttled per
+client. Public, cross-site, host-rebinding, and malformed-host requests are rejected. Keep the
+console on a trusted local network, do not expose it through router port forwarding, and do not
+publish it through a public tunnel or reverse proxy.
 
 ## Browser-session preconditions
 
@@ -108,9 +110,9 @@ to override it. A successful unlock is stored in the signed Flask session for th
 
 ## Computer Use Agent
 
-- `/agent` and its `/api/agent/*` control routes accept host-loopback requests directly. Requests
-  from RFC1918 private IPv4 or IPv6 ULA addresses show the password gate before the Agent page or
-  API is served; public and host-rebinding addresses remain rejected.
+- Host-loopback requests continue directly. When trusted-LAN binding is explicitly enabled,
+  RFC1918 private IPv4 and IPv6 ULA clients must unlock before any application page or API is
+  served; public, cross-site, and host-rebinding requests remain rejected.
 - Each task defaults to a new root-level ChatGPT, Gemini, Grok, or Claude Web conversation in the
   selected authenticated browser session. Safari remains available only for ChatGPT; Claude uses
   Edge or Chrome. The Agent sidebar can also join one of the 20 most recent root

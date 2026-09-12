@@ -1,6 +1,6 @@
 """Rendered-page contracts for OpenAI Site tools and Agent Optimization.
 
-Code version: v1.1.1-codex.1
+Code version: v1.1.2-codex.1
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ EXPECTED_PATHS = {
     "/cache/chatgpt",
     "/cache/gemini",
     "/cache/claude",
+    "/cache/zhihu",
     "/browser",
     "/agent",
     "/settings",

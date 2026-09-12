@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.63.5-codex.1
+Code version: v1.63.7-codex.1
 """
 
 import hashlib
@@ -588,7 +588,14 @@ def test_non_pill_corner_radii_use_the_shared_ten_pixel_value() -> None:
     assert "border-radius: 10px;" not in stylesheet
     assert "--radius-soft: 10px;" not in stylesheet
 
-    for non_shared_radius in ("6px", "8px", "9px", "12px", "18px", "20px", "24px", "30px"):
+    filter_trigger_start = stylesheet.index(".scrollable-data-table-filter-trigger {")
+    filter_trigger_rule = stylesheet[
+        filter_trigger_start:stylesheet.index("\n}", filter_trigger_start)
+    ]
+    assert "border-radius: 6px;" in filter_trigger_rule
+    assert stylesheet.count("border-radius: 6px;") == 1
+
+    for non_shared_radius in ("8px", "9px", "12px", "18px", "20px", "24px", "30px"):
         assert f"border-radius: {non_shared_radius};" not in stylesheet
 
 
@@ -1647,14 +1654,14 @@ def test_segmented_control_uses_the_sibling_generic_pill_contract() -> None:
         assert token in style_token_rule
 
 
-def test_browser_session_safari_drawer_icon_uses_two_theme_accents() -> None:
-    """Keep the session drawer's Safari mark in the shared two-tone icon system."""
+def test_browser_session_safari_drawer_icon_inherits_the_action_color() -> None:
+    """Keep the session drawer's Safari mark legible in every action state."""
     stylesheet = _stylesheet()
     icon_start = stylesheet.index(".browser-session-action-button .browser-session-safari-icon {")
     icon_rule = stylesheet[icon_start:stylesheet.index("\n}", icon_start)]
 
     for token in (
-        "background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);",
+        "background: currentColor;",
         'mask: url("/static/images/safari.svg") center/contain no-repeat;',
         '-webkit-mask: url("/static/images/safari.svg") center/contain no-repeat;',
     ):
@@ -2191,7 +2198,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-            "/* Code version: v2.117.4-codex.1 */",
+        "/* Code version: v2.117.5-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',

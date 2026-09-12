@@ -1,4 +1,4 @@
-/* Code version: v2.117.4-codex.1 */
+/* Code version: v2.117.5-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -11936,6 +11936,11 @@ main[data-cache-page] .progress-metric-card strong {
 .agent-response-toolbar > .agent-conversation-link {
     grid-column: 2;
     grid-row: 1;
+    position: relative;
+    inset-inline-end: calc(0px - var(--layout-glass-border-width));
+    margin-inline-end: calc(
+        0px - var(--agent-response-toolbar-padding) - var(--layout-glass-border-width)
+    );
 }
 
 /* Compact filter headers are a shared scrollable-table contract. */

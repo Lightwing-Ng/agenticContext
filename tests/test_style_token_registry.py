@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.6.1-codex.1
+Code version: v1.6.2-codex.1
 """
 
 import re
@@ -254,7 +254,7 @@ def test_every_metric_card_instance_reuses_the_foundation_contract(client) -> No
 
     for markup in template_markups + rendered_markups:
         metric_classes = [
-            set(class_attribute.split())
+            set(re.sub(r"{%.*?%}", "", class_attribute).split())
             for class_attribute in re.findall(r'class="([^"]*)"', markup)
             if "metric-card" in class_attribute.split()
         ]

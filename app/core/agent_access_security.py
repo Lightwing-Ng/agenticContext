@@ -1,6 +1,6 @@
 """Security helpers for exposing the local Agent control plane on a LAN."""
 
-# Code version: v1.0.0-codex.3
+# Code version: v1.1.0-codex.1
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from ipaddress import ip_address, ip_network
 
 AGENT_ACCESS_PASSWORD_ENV = "AGENTIC_CONTEXT_AGENT_PASSWORD"
 LEGACY_AGENT_ACCESS_PASSWORD_ENV = "CACHELIKES_AGENT_PASSWORD"
-DEFAULT_AGENT_ACCESS_PASSWORD = "195135"
 AGENT_ACCESS_SESSION_KEY = "agent_access_granted"
 PRIVATE_NETWORKS = (
     ip_network("10.0.0.0/8"),
@@ -22,19 +21,24 @@ PRIVATE_NETWORKS = (
 
 
 def resolve_agent_access_password() -> str:
-    """Return the configured Agent password, falling back to the requested default."""
+    """Return the explicitly configured six-digit LAN password."""
     return (
         str(os.environ.get(AGENT_ACCESS_PASSWORD_ENV, "")).strip()
         or str(os.environ.get(LEGACY_AGENT_ACCESS_PASSWORD_ENV, "")).strip()
-        or DEFAULT_AGENT_ACCESS_PASSWORD
     )
+
+
+def agent_access_password_is_configured() -> bool:
+    """Return whether LAN access has one valid explicit password."""
+    password = resolve_agent_access_password()
+    return len(password) == 6 and password.isascii() and password.isdigit()
 
 
 def validate_agent_access_password(presented_password: str | None) -> bool:
     """Compare one submitted password without exposing the configured value."""
     configured_password = resolve_agent_access_password()
     normalized_presented_password = str(presented_password or "").strip()
-    return bool(normalized_presented_password) and secrets.compare_digest(
+    return agent_access_password_is_configured() and secrets.compare_digest(
         normalized_presented_password,
         configured_password,
     )

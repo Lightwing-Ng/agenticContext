@@ -1,4 +1,4 @@
-"""Shared component annotation regressions. Code version: v1.2.0-codex.1."""
+"""Shared component annotation regressions. Code version: v1.2.1-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -30,7 +30,7 @@ def test_shared_component_annotations(disposable_browser, sidebar_server_url, wi
             expect(control).to_have_css("height", "30px")
         secondary = page.locator('.style-token-secondary-button-demo .secondary-button')
         expect(secondary).to_have_css("font-size", "13px")
-        expect(secondary).to_have_css("height", "31px")
+        expect(secondary).to_have_css("height", "32px")
         assert secondary.evaluate("e => Math.abs(e.getBoundingClientRect().right - e.closest('.style-token-demo').getBoundingClientRect().right) <= 1")
         assert secondary.evaluate("e => e.getBoundingClientRect().width < e.closest('.style-token-demo').getBoundingClientRect().width")
         closes = page.locator('.style-token-modal-demo > .workspace-modal-close')
@@ -124,7 +124,7 @@ def test_account_probe_failure_can_recheck_without_signing_in(disposable_browser
     requests = []
     def probe(route):
         requests.append(route.request.url)
-        ready = "refresh=1" in route.request.url
+        ready = len(requests) > 1
         route.fulfill(json={
             "platform": "chatgpt", "browser": "edge", "browser_label": "Edge",
             "logged_in": True if ready else logged_in, "can_download": ready,

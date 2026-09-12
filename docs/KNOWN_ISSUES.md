@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.19.4-codex.1`
+Documentation version: `v1.20.0-codex.1`
 
 ## Windows host operating constraints
 
@@ -213,9 +213,9 @@ Documentation version: `v1.19.4-codex.1`
   Python fallback. `run` rejects direct `rg`, network or out-of-project targets,
   and mutating or unbounded flags; a bounded project fingerprint also detects command-side writes,
   fails that verification, and makes the prior bodycheck stale.
-- Agent-scoped `/api/browser-session` requests now pass through the same network, Host, Origin, and
-  password gate as the rest of the control plane. Admitted responses carry `no-store`, `Pragma`,
-  and expired `Expires` headers.
+- Explicit LAN binding now places every application route behind the same private-network, Host,
+  Origin, signed-session, and throttled password gate. Agent-scoped `/api/browser-session`
+  responses additionally carry `no-store`, `Pragma`, and expired `Expires` headers.
 - The service atomically persists only bounded run metadata through a same-directory unique temporary
   file. POSIX runtime directories and snapshots use `0700` and `0600`; Windows additionally depends
   on the configured application-data directory's inherited ACL. Prompt bodies, responses,
@@ -309,10 +309,10 @@ Documentation version: `v1.19.4-codex.1`
 
 - X, Grok, and ChatGPT acquisition depends on already authenticated host browser sessions. Their
   remote pages, APIs, and anti-automation behavior can change independently of this project.
-- The application deliberately binds to the LAN. Cache and Local resources routes do not have a
-  login layer, while the Agent control plane requires its six-digit password for private-network
-  requests. The application remains suitable only for trusted local networks and must not be
-  publicly exposed.
+- The application defaults to loopback-only binding. LAN access requires an explicit host override
+  and an explicitly configured six-ASCII-digit password; all application routes then require the
+  signed unlock session. The application remains suitable only for trusted local networks and must
+  not be publicly exposed.
 - X media acquisition relies on yt-dlp's browser-cookie integration. A browser, cookie-store, or
   yt-dlp compatibility change can block downloads even when the local web console remains healthy.
 - Grok and ChatGPT caches retain local catalog and recovery state. A source-specific reset removes

@@ -1,11 +1,12 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.7.0-codex.1
+# Code version: v1.7.1-codex.1
 
 from typing import TYPE_CHECKING
 
 from ..agent_access_security import (
     AGENT_ACCESS_SESSION_KEY,
+    agent_access_password_is_configured,
     is_allowed_agent_network_request,
     validate_agent_access_password,
 )
@@ -111,6 +112,7 @@ __all__ = [
     "WEBMCP_TOOLS",
     "browser_options_for_host",
     "build_agent_optimization_manifest",
+    "agent_access_password_is_configured",
     "capability_for_action",
     "capability_for_observation",
     "capability_registry_snapshot",
