@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.49.1-codex.1
+# Code version: v1.49.2-codex.1
 
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ from .config import (
     MIN_CHATGPT_STARTUP_TIMEOUT_SECONDS,
     CrawlConfig,
 )
+from .history_rows import partition_conversation_rows, sort_history_rows
 from .local_media_browser import BrowserDeletionCatalog
 from .resource_persistence import (
     CHATGPT_CATALOG_FILENAME,
@@ -468,10 +469,10 @@ class ChatGPTHistoryStore:
     ) -> tuple[int, bool]:
         """Replace one cached conversation and report new-message and unchanged counts."""
         conversation_id = chatgpt_conversation_id(conversation_url)
-        previous = {
-            key: row for key, row in self._rows_by_key.items()
-            if str(row.get("conversation_id") or "") == conversation_id
-        }
+        previous, retained_rows = partition_conversation_rows(
+            self._rows_by_key,
+            conversation_id,
+        )
         next_rows = {
             str(row["message_key"]): row
             for row in _extract_chatgpt_conversation_messages(payload, conversation_url, captured_at)
@@ -482,8 +483,7 @@ class ChatGPTHistoryStore:
             1 for key, row in next_rows.items()
             if str(previous.get(key, {}).get("content_sha256") or "") != str(row["content_sha256"])
         )
-        for key in previous:
-            self._rows_by_key.pop(key, None)
+        self._rows_by_key = retained_rows
         for key, row in next_rows.items():
             row["provider_revision"] = provider_revision
             if key in previous and previous[key].get("content_sha256") == row["content_sha256"]:
@@ -496,7 +496,7 @@ class ChatGPTHistoryStore:
         """Persist all cached ChatGPT messages with schema verification."""
         write_parquet_rows_atomic(
             self.path,
-            sorted(self._rows_by_key.values(), key=lambda row: (str(row.get("conversation_id")), int(row.get("message_index") or 0))),
+            sort_history_rows(self._rows_by_key.values()),
             CHATGPT_HISTORY_SCHEMA,
         )
 

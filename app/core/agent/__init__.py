@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.6.2-codex.1
+# Code version: v1.7.0-codex.1
 
 from typing import TYPE_CHECKING
 
@@ -39,6 +39,8 @@ _COMPUTER_USE_EXPORTS = frozenset(
         "AGENT_MODEL_OPTIONS_BY_PLATFORM",
         "AGENT_PLATFORM_OPTIONS",
         "OPERATING_SYSTEM_OPTIONS",
+        "SUPPORTED_AGENT_PLATFORMS",
+        "SUPPORTED_BROWSERS",
         "ComputerUseAgentService",
         "ComputerUseSettingsStore",
         "browser_options_for_host",
@@ -47,34 +49,47 @@ _COMPUTER_USE_EXPORTS = frozenset(
         "launch_terminal_authorization",
         "open_agent_in_browser",
         "open_browser_for_login",
+        "parse_agent_action",
         "validate_computer_use_settings",
     }
 )
+_COMPUTER_USE_ALIASES = {"render_final_agent_action": "_render_final_action"}
+_SESSION_POOL_EXPORTS = frozenset({"AgentSessionPool"})
 
 if TYPE_CHECKING:
     from ..computer_use_agent import (
         AGENT_MODEL_OPTIONS_BY_PLATFORM,
         AGENT_PLATFORM_OPTIONS,
         OPERATING_SYSTEM_OPTIONS,
+        SUPPORTED_AGENT_PLATFORMS,
+        SUPPORTED_BROWSERS,
         ComputerUseAgentService,
         ComputerUseSettingsStore,
+        _render_final_action as render_final_agent_action,
         browser_options_for_host,
         default_model_for_platform,
         is_loopback_address,
         launch_terminal_authorization,
         open_agent_in_browser,
         open_browser_for_login,
+        parse_agent_action,
         validate_computer_use_settings,
     )
+    from .session_pool import AgentSessionPool
 
 
 def __getattr__(name: str):
     """Load the execution service lazily so core modules can use the registry safely."""
-    if name not in _COMPUTER_USE_EXPORTS:
+    if name in _SESSION_POOL_EXPORTS:
+        from .session_pool import AgentSessionPool
+
+        globals()[name] = AgentSessionPool
+        return AgentSessionPool
+    if name not in _COMPUTER_USE_EXPORTS and name not in _COMPUTER_USE_ALIASES:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     from .. import computer_use_agent
 
-    value = getattr(computer_use_agent, name)
+    value = getattr(computer_use_agent, _COMPUTER_USE_ALIASES.get(name, name))
     globals()[name] = value
     return value
 
@@ -83,6 +98,7 @@ __all__ = [
     "AGENT_ACTIONS",
     "AGENT_MODEL_OPTIONS_BY_PLATFORM",
     "AGENT_PLATFORM_OPTIONS",
+    "AgentSessionPool",
     "AgentSourceCache",
     "CAPABILITY_REGISTRY",
     "CAPABILITY_REGISTRY_VERSION",
@@ -90,6 +106,8 @@ __all__ = [
     "ComputerUseSettingsStore",
     "OPERATING_SYSTEM_OPTIONS",
     "PAGE_OBSERVATIONS",
+    "SUPPORTED_AGENT_PLATFORMS",
+    "SUPPORTED_BROWSERS",
     "WEBMCP_TOOLS",
     "browser_options_for_host",
     "build_agent_optimization_manifest",
@@ -109,8 +127,10 @@ __all__ = [
     "normalize_agent_project_url",
     "open_agent_in_browser",
     "open_browser_for_login",
+    "parse_agent_action",
     "probe_and_collect_claude_sources",
     "probe_and_collect_grok_sources",
+    "render_final_agent_action",
     "validate_agent_access_password",
     "validate_computer_use_settings",
     "webmcp_manifest_definitions",

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.25.0-codex.1`
+Documentation version: `v1.25.2-codex.1`
 
 ## Runtime flow
 
@@ -52,12 +52,17 @@ app.web
 
 Core modules must not import `app.web`, templates, or frontend JavaScript. A domain façade should
 export only the symbols needed by its caller and should not become a second implementation file.
+The architecture regression scans every Python module and nested import in `app/web`; a function-local
+or secondary Web-module import cannot bypass the five domain façades.
 
 ## Application layers
 
 - `app/core/config.py`: runtime defaults, persisted settings, paths, and input normalization.
 - `app/core/state.py`: thread-safe task snapshots and cache-summary hydration.
 - `app/core/service.py`: X Likes collection and yt-dlp orchestration.
+- `app/core/cache_service_support.py`: provider-neutral Cache worker startup, cooperative stop,
+  shared task-lock ownership, logging context, bounded status errors, and post-task shadow-backup
+  completion. Provider services retain their own pipelines, result handling, and user-facing copy.
 - `app/core/grok_service.py` and `app/core/chatgpt_service.py`: background sync lifecycle,
   stop signaling, and shared cache-task exclusion.
 - `app/core/grok_history.py` and `app/core/grok_history_service.py`: authenticated Grok Text
@@ -90,6 +95,9 @@ export only the symbols needed by its caller and should not become a second impl
   interrupted-session continuation, and mandatory bodycheck ordering for the optional Agent workspace.
 - `app/core/cache_catalog.py` and `app/core/local_media_browser.py`: durable local indexes,
   media discovery, secure path resolution, deletion tombstones, and restoration.
+- `app/core/resource_persistence.py` and `app/core/history_rows.py`: ordered provider-specific
+  Parquet schemas, atomic persistence, and pure conversation-row partitioning, comparison, and
+  deterministic ordering. Provider stores retain their distinct replace, merge, and save timing.
 - `app/core/logging_setup.py`: process-wide JSON-line logging.
 - `app/web/`: Flask routes, templates, style tokens, and first-party browser JavaScript.
 

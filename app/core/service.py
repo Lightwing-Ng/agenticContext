@@ -1,18 +1,17 @@
 """Orchestration service for the cache job."""
 
-# Code version: v1.6.0-codex.1
+# Code version: v1.6.1-codex.1
 
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import logging
-from threading import Event, RLock, Thread
-from uuid import uuid4
+from threading import Thread
 
+from .cache_service_support import CooperativeCacheWorker, append_shadow_backup_completion
 from .config import CrawlConfig, LOCAL_STORE_ROOT, X_LOCAL_STORE_DIRNAME
 from .downloader import DownloadResult, LocalTweetCacheIndex, download_tweet_media
-from .job_lock import CacheTaskLock, SHARED_CACHE_TASK_LOCK
-from .logging_setup import reset_job_id, set_job_id
+from .job_lock import CacheTaskLock
 from .scraper import collect_liked_tweet_urls
 from .shadow_backup import ShadowBackupService
 from .state import TaskState
@@ -20,7 +19,7 @@ from .state import TaskState
 logger = logging.getLogger(__name__)
 
 
-class CacheLikesService:
+class CacheLikesService(CooperativeCacheWorker):
     """Manage a single background cache job."""
 
     def __init__(
@@ -29,56 +28,32 @@ class CacheLikesService:
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
     ) -> None:
-        self._state = state
-        self._worker: Thread | None = None
-        self._stop_requested = Event()
-        self._lifecycle_lock = RLock()
-        self._task_lock = task_lock or SHARED_CACHE_TASK_LOCK
-        self._owns_task_lock = False
+        super().__init__(state, task_lock)
         self._shadow_backup_service = shadow_backup_service
-
-    def is_running(self) -> bool:
-        """Return whether a job is active."""
-        snapshot = self._state.snapshot()
-        return bool(snapshot["running"])
 
     def start(self, config: CrawlConfig) -> None:
         """Start a new background job."""
-        with self._lifecycle_lock:
-            if self.is_running():
-                raise RuntimeError("A cache job is already running.")
-            if not self._task_lock.acquire("x-cache"):
-                raise RuntimeError(
-                    "A cache task is already running in another Cache Likes window or browser. Stop it there before starting a new task."
-                )
-
-            self._owns_task_lock = True
-            self._stop_requested.clear()
-            self._state.reset_for_run()
-            try:
-                self._worker = Thread(target=self._run, args=(config,), daemon=True)
-                self._worker.start()
-            except Exception:
-                self._owns_task_lock = False
-                self._task_lock.release()
-                raise
+        self._start_worker(
+            lock_owner="x-cache",
+            already_running_message="A cache job is already running.",
+            lock_busy_message=(
+                "A cache task is already running in another Cache Likes window or browser. "
+                "Stop it there before starting a new task."
+            ),
+            target=self._run,
+            args=(config,),
+            thread_factory=Thread,
+        )
 
     def request_stop(self) -> bool:
         """Request cooperative stop for the active job."""
-        if not self.is_running():
-            return False
-        self._stop_requested.set()
-        self._state.update(phase="stopping")
-        self._state.append_event("Emergency stop requested. Waiting for current task to stop.")
-        return True
-
-    def _is_stop_requested(self) -> bool:
-        return self._stop_requested.is_set()
+        return self._request_stop(
+            "Emergency stop requested. Waiting for current task to stop."
+        )
 
     def _run(self, config: CrawlConfig) -> None:
         """Execute the full job pipeline."""
-        job_id = uuid4().hex[:12]
-        token = set_job_id(job_id)
+        job_id, token = self._begin_worker_job()
         try:
             logger.info(
                 "Cache job started.",
@@ -293,11 +268,12 @@ class CacheLikesService:
                 f"across {downloaded_posts} posts ({downloaded_images} images, {downloaded_videos} videos), "
                 f"skipped {skipped}, exceeded the size limit {oversized_media}, failed {failed}."
             )
-            if self._shadow_backup_service is not None:
-                shadow_backup_message = self._shadow_backup_service.sync_after_cache_task(config)
-                if shadow_backup_message:
-                    self._state.append_event(shadow_backup_message)
-                    completion_message = f"{completion_message} {shadow_backup_message}"
+            completion_message = append_shadow_backup_completion(
+                completion_message,
+                shadow_backup_service=self._shadow_backup_service,
+                state=self._state,
+                config=config,
+            )
             self._state.finish_success(completion_message)
             logger.info(
                 "Cache job finished successfully.",
@@ -323,8 +299,4 @@ class CacheLikesService:
                 },
             )
         finally:
-            reset_job_id(token)
-            with self._lifecycle_lock:
-                if self._owns_task_lock:
-                    self._owns_task_lock = False
-                    self._task_lock.release()
+            self._finish_worker_job(token)

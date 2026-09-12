@@ -1,11 +1,11 @@
 """Canonical local-console navigation helpers.
 
-Code version: v1.1.0-codex.1
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
 
-from app.core.computer_use_agent import SUPPORTED_AGENT_PLATFORMS, SUPPORTED_BROWSERS
+from app.core.agent import SUPPORTED_AGENT_PLATFORMS, SUPPORTED_BROWSERS
 
 
 def is_supported_agent_selection(browser: str | None, platform: str | None) -> bool:

@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer history for the formal text cache.
 
-Code version: v1.1.1-codex.1
+Code version: v1.1.2-codex.1
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from .browser_sessions import (
     sync_playwright_or_error,
 )
 from .config import LOCAL_STORE_ROOT, CrawlConfig
+from .history_rows import history_rows_match
 from .resource_persistence import (
     ZHIHU_HISTORY_FILENAME,
     ZHIHU_HISTORY_SCHEMA,
@@ -408,7 +409,7 @@ class ZhihuHistoryStore:
             }
             if previous is None:
                 added += 1
-            elif all(previous.get(name) == row.get(name) for name in ZHIHU_HISTORY_SCHEMA.names):
+            elif history_rows_match(previous, row, ZHIHU_HISTORY_SCHEMA.names):
                 unchanged += 1
             else:
                 changed += 1

@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.72.1-codex.1
+# Code version: v1.72.3-codex.1
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from app.core.agent import (
     AGENT_PLATFORM_OPTIONS,
     CAPABILITY_REGISTRY_VERSION,
     OPERATING_SYSTEM_OPTIONS as AGENT_OPERATING_SYSTEM_OPTIONS,
+    AgentSessionPool,
     AgentSourceCache,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
@@ -46,12 +47,13 @@ from app.core.agent import (
     normalize_agent_project_url,
     open_agent_in_browser,
     open_browser_for_login,
+    parse_agent_action,
     probe_and_collect_claude_sources,
     probe_and_collect_grok_sources,
+    render_final_agent_action,
     validate_computer_use_settings,
     validate_agent_access_password,
 )
-from app.core.agent.session_pool import AgentSessionPool
 from app.core.browser import (
     browser_descriptors,
     build_browser_options,
@@ -349,8 +351,6 @@ def render_agent_response(value: str) -> Markup:
     controller final envelope is unwrapped; ordinary JSON and malformed data
     retain their original presentation.
     """
-    from app.core.computer_use_agent import _render_final_action, parse_agent_action
-
     source = str(value or "").strip()
     candidate = source
     try:
@@ -379,7 +379,7 @@ def render_agent_response(value: str) -> Markup:
             and isinstance(payload.get("summary"), str)
             and payload["summary"].strip()
         ):
-            source = _render_final_action(payload)
+            source = render_final_agent_action(payload)
     except (ValueError, TypeError):
         pass
     return _render_agent_markdown(source)

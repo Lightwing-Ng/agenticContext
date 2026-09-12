@@ -1,6 +1,6 @@
 """Shared Parquet schemas and atomic persistence for cached resource state."""
 
-# Code version: v1.10.0-codex.1
+# Code version: v1.10.1-codex.1
 
 from __future__ import annotations
 
@@ -205,116 +205,45 @@ X_CACHE_CATALOG_SCHEMA = pa.schema(
     ]
 )
 
-GEMINI_HISTORY_SCHEMA = pa.schema(
-    [
-        pa.field("schema_version", pa.int16(), nullable=False),
-        pa.field("platform", pa.string(), nullable=False),
-        pa.field("conversation_id", pa.string(), nullable=False),
-        pa.field("conversation_url", pa.string(), nullable=False),
-        pa.field("conversation_title", pa.string(), nullable=False),
-        pa.field("message_key", pa.string(), nullable=False),
-        pa.field("turn_index", pa.int32(), nullable=False),
-        pa.field("message_index", pa.int32(), nullable=False),
-        pa.field("role", pa.string(), nullable=False),
-        pa.field("author_label", pa.string(), nullable=False),
-        pa.field("content_text", pa.string(), nullable=False),
-        pa.field("content_html", pa.string(), nullable=False),
-        pa.field("content_sha256", pa.string(), nullable=False),
-        pa.field("source_links", pa.list_(pa.string()), nullable=False),
-        pa.field("model_label", pa.string(), nullable=False),
-        pa.field("first_seen_at", pa.string(), nullable=False),
-        pa.field("last_seen_at", pa.string(), nullable=False),
-    ]
+_HISTORY_MESSAGE_FIELDS = (
+    pa.field("platform", pa.string(), nullable=False),
+    pa.field("conversation_id", pa.string(), nullable=False),
+    pa.field("conversation_url", pa.string(), nullable=False),
+    pa.field("conversation_title", pa.string(), nullable=False),
+    pa.field("message_key", pa.string(), nullable=False),
+    pa.field("turn_index", pa.int32(), nullable=False),
+    pa.field("message_index", pa.int32(), nullable=False),
+    pa.field("role", pa.string(), nullable=False),
+    pa.field("author_label", pa.string(), nullable=False),
+    pa.field("content_text", pa.string(), nullable=False),
+    pa.field("content_html", pa.string(), nullable=False),
+    pa.field("content_sha256", pa.string(), nullable=False),
+    pa.field("source_links", pa.list_(pa.string()), nullable=False),
+    pa.field("model_label", pa.string(), nullable=False),
+    pa.field("first_seen_at", pa.string(), nullable=False),
+    pa.field("last_seen_at", pa.string(), nullable=False),
 )
 
-CHATGPT_HISTORY_SCHEMA = pa.schema(
-    [
-        pa.field("schema_version", pa.int16(), nullable=False),
-        pa.field("provider_revision", pa.string(), nullable=True),
-        pa.field("platform", pa.string(), nullable=False),
-        pa.field("conversation_id", pa.string(), nullable=False),
-        pa.field("conversation_url", pa.string(), nullable=False),
-        pa.field("conversation_title", pa.string(), nullable=False),
-        pa.field("message_key", pa.string(), nullable=False),
-        pa.field("turn_index", pa.int32(), nullable=False),
-        pa.field("message_index", pa.int32(), nullable=False),
-        pa.field("role", pa.string(), nullable=False),
-        pa.field("author_label", pa.string(), nullable=False),
-        pa.field("content_text", pa.string(), nullable=False),
-        pa.field("content_html", pa.string(), nullable=False),
-        pa.field("content_sha256", pa.string(), nullable=False),
-        pa.field("source_links", pa.list_(pa.string()), nullable=False),
-        pa.field("model_label", pa.string(), nullable=False),
-        pa.field("first_seen_at", pa.string(), nullable=False),
-        pa.field("last_seen_at", pa.string(), nullable=False),
-    ]
-)
 
-GROK_HISTORY_SCHEMA = pa.schema(
-    [
-        pa.field("schema_version", pa.int16(), nullable=False),
-        pa.field("platform", pa.string(), nullable=False),
-        pa.field("conversation_id", pa.string(), nullable=False),
-        pa.field("conversation_url", pa.string(), nullable=False),
-        pa.field("conversation_title", pa.string(), nullable=False),
-        pa.field("message_key", pa.string(), nullable=False),
-        pa.field("turn_index", pa.int32(), nullable=False),
-        pa.field("message_index", pa.int32(), nullable=False),
-        pa.field("role", pa.string(), nullable=False),
-        pa.field("author_label", pa.string(), nullable=False),
-        pa.field("content_text", pa.string(), nullable=False),
-        pa.field("content_html", pa.string(), nullable=False),
-        pa.field("content_sha256", pa.string(), nullable=False),
-        pa.field("source_links", pa.list_(pa.string()), nullable=False),
-        pa.field("model_label", pa.string(), nullable=False),
-        pa.field("first_seen_at", pa.string(), nullable=False),
-        pa.field("last_seen_at", pa.string(), nullable=False),
-    ]
-)
+def _history_schema(*provider_fields: pa.Field) -> pa.Schema:
+    """Build one provider schema without duplicating the common message fields."""
 
-CLAUDE_HISTORY_SCHEMA = pa.schema(
-    [
-        pa.field("schema_version", pa.int16(), nullable=False),
-        pa.field("platform", pa.string(), nullable=False),
-        pa.field("conversation_id", pa.string(), nullable=False),
-        pa.field("conversation_url", pa.string(), nullable=False),
-        pa.field("conversation_title", pa.string(), nullable=False),
-        pa.field("message_key", pa.string(), nullable=False),
-        pa.field("turn_index", pa.int32(), nullable=False),
-        pa.field("message_index", pa.int32(), nullable=False),
-        pa.field("role", pa.string(), nullable=False),
-        pa.field("author_label", pa.string(), nullable=False),
-        pa.field("content_text", pa.string(), nullable=False),
-        pa.field("content_html", pa.string(), nullable=False),
-        pa.field("content_sha256", pa.string(), nullable=False),
-        pa.field("source_links", pa.list_(pa.string()), nullable=False),
-        pa.field("model_label", pa.string(), nullable=False),
-        pa.field("first_seen_at", pa.string(), nullable=False),
-        pa.field("last_seen_at", pa.string(), nullable=False),
-    ]
-)
+    return pa.schema(
+        (
+            pa.field("schema_version", pa.int16(), nullable=False),
+            *provider_fields,
+            *_HISTORY_MESSAGE_FIELDS,
+        )
+    )
 
-ZHIHU_HISTORY_SCHEMA = pa.schema(
-    [
-        pa.field("schema_version", pa.int16(), nullable=False),
-        pa.field("platform", pa.string(), nullable=False),
-        pa.field("conversation_id", pa.string(), nullable=False),
-        pa.field("conversation_url", pa.string(), nullable=False),
-        pa.field("conversation_title", pa.string(), nullable=False),
-        pa.field("message_key", pa.string(), nullable=False),
-        pa.field("turn_index", pa.int32(), nullable=False),
-        pa.field("message_index", pa.int32(), nullable=False),
-        pa.field("role", pa.string(), nullable=False),
-        pa.field("author_label", pa.string(), nullable=False),
-        pa.field("content_text", pa.string(), nullable=False),
-        pa.field("content_html", pa.string(), nullable=False),
-        pa.field("content_sha256", pa.string(), nullable=False),
-        pa.field("source_links", pa.list_(pa.string()), nullable=False),
-        pa.field("model_label", pa.string(), nullable=False),
-        pa.field("first_seen_at", pa.string(), nullable=False),
-        pa.field("last_seen_at", pa.string(), nullable=False),
-    ]
+
+GEMINI_HISTORY_SCHEMA = _history_schema()
+CHATGPT_HISTORY_SCHEMA = _history_schema(
+    pa.field("provider_revision", pa.string(), nullable=True)
 )
+GROK_HISTORY_SCHEMA = _history_schema()
+CLAUDE_HISTORY_SCHEMA = _history_schema()
+ZHIHU_HISTORY_SCHEMA = _history_schema()
 
 
 def read_parquet_rows(path: Path) -> list[dict[str, Any]] | None:

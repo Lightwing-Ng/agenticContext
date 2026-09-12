@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.10.0-codex.1`
+Documentation version: `v1.10.1-codex.1`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -167,10 +167,10 @@ The current persistent cache layout is:
 | `local_store/.cache_task.lock` | Cache runtimes | Cross-process advisory task lock |
 | `logs/cachelikes.log.jsonl` | All runtimes | Structured diagnostics |
 
-The five formal text-history files use the same logical fields, while each provider runtime has
-its own source-specific schema constant in `app/core/resource_persistence.py`. Do not
-silently point one provider at another provider's file merely because all filenames
-are `history.parquet`.
+The five formal text-history files derive their ordered message fields from one schema builder in
+`app/core/resource_persistence.py`. ChatGPT adds nullable `provider_revision`; every runtime still
+has its own source-specific schema constant and file. Do not silently point one provider at another
+provider's file merely because all filenames are `history.parquet`.
 
 Grok Text rows contain a stable `message_key` formed as
 `<conversation-id>:<response-id>`. The store replaces one conversation at a time,

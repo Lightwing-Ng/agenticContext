@@ -1,18 +1,21 @@
 """Background service for the formal Zhihu text cache.
 
-Code version: v1.1.0-codex.1
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from threading import Event, RLock, Thread
-from uuid import uuid4
+from threading import Thread
 
+from .cache_service_support import (
+    CooperativeCacheWorker,
+    append_shadow_backup_completion,
+    summarize_status_error,
+)
 from .config import LOCAL_STORE_ROOT, CrawlConfig
-from .job_lock import CacheTaskLock, SHARED_CACHE_TASK_LOCK
-from .logging_setup import reset_job_id, set_job_id
+from .job_lock import CacheTaskLock
 from .shadow_backup import ShadowBackupService
 from .state import TaskState
 from .zhihu_history import sync_zhihu_history
@@ -24,12 +27,10 @@ logger = logging.getLogger(__name__)
 def _summarize_error_for_status(error: Exception) -> str:
     """Return a concise status error while the full traceback stays in logs."""
 
-    text = str(error).strip()
-    first_line = text.splitlines()[0] if text else error.__class__.__name__
-    return first_line if len(first_line) <= 500 else f"{first_line[:497]}..."
+    return summarize_status_error(error)
 
 
-class ZhihuHistoryService:
+class ZhihuHistoryService(CooperativeCacheWorker):
     """Own one cooperative Zhihu history worker."""
 
     def __init__(
@@ -39,62 +40,41 @@ class ZhihuHistoryService:
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
     ) -> None:
-        self._state = state
+        super().__init__(state, task_lock)
         self._local_store_root = Path(local_store_root)
-        self._task_lock = task_lock or SHARED_CACHE_TASK_LOCK
         self._shadow_backup_service = shadow_backup_service
-        self._worker: Thread | None = None
-        self._stop_requested = Event()
-        self._lifecycle_lock = RLock()
-        self._owns_task_lock = False
         self._config = CrawlConfig()
         self._author_url = ""
-
-    def is_running(self) -> bool:
-        """Return whether the Zhihu history worker is active."""
-
-        return bool(self._state.snapshot()["running"])
 
     def start(self, config: CrawlConfig, *, author_url: str = "") -> None:
         """Start one signed-in vote-up or author-answer cache run."""
 
         normalized_author_url = str(author_url or "").strip()
-        with self._lifecycle_lock:
-            if self.is_running():
-                raise RuntimeError("A Zhihu answer cache is already running.")
-            if not self._task_lock.acquire("zhihu-history-sync"):
-                raise RuntimeError(
-                    "A cache task is already running in another window or browser. "
-                    "Stop it there before starting the Zhihu answer cache."
-                )
-            self._owns_task_lock = True
+        def prepare() -> None:
             self._config = config
             self._author_url = normalized_author_url
-            self._stop_requested.clear()
-            self._state.reset_for_run()
-            try:
-                self._worker = Thread(target=self._run, daemon=True)
-                self._worker.start()
-            except Exception:
-                self._owns_task_lock = False
-                self._task_lock.release()
-                raise
+
+        self._start_worker(
+            lock_owner="zhihu-history-sync",
+            already_running_message="A Zhihu answer cache is already running.",
+            lock_busy_message=(
+                "A cache task is already running in another window or browser. "
+                "Stop it there before starting the Zhihu answer cache."
+            ),
+            target=self._run,
+            prepare=prepare,
+            thread_factory=Thread,
+        )
 
     def request_stop(self) -> bool:
         """Request a cooperative stop before the final atomic write."""
 
-        if not self.is_running():
-            return False
-        self._stop_requested.set()
-        self._state.update(phase="stopping")
-        self._state.append_event(
+        return self._request_stop(
             "Stop requested. The existing Zhihu text cache will remain available."
         )
-        return True
 
     def _run(self) -> None:
-        job_id = uuid4().hex[:12]
-        token = set_job_id(job_id)
+        job_id, token = self._begin_worker_job()
         try:
             result = sync_zhihu_history(
                 self._state,
@@ -115,13 +95,12 @@ class ZhihuHistoryService:
                 f"{result['changed']:,}, unchanged {result['unchanged']:,}; cached total "
                 f"{result['cached_answers']:,}."
             )
-            if self._shadow_backup_service is not None:
-                backup_message = self._shadow_backup_service.sync_after_cache_task(
-                    self._config
-                )
-                if backup_message:
-                    self._state.append_event(backup_message)
-                    completion_message = f"{completion_message} {backup_message}"
+            completion_message = append_shadow_backup_completion(
+                completion_message,
+                shadow_backup_service=self._shadow_backup_service,
+                state=self._state,
+                config=self._config,
+            )
             self._state.finish_success(completion_message)
             logger.info(
                 "Zhihu history sync finished successfully.",
@@ -144,8 +123,4 @@ class ZhihuHistoryService:
                 extra={"job_id": job_id, "error": str(exc)},
             )
         finally:
-            reset_job_id(token)
-            with self._lifecycle_lock:
-                if self._owns_task_lock:
-                    self._owns_task_lock = False
-                    self._task_lock.release()
+            self._finish_worker_job(token)

@@ -1,6 +1,6 @@
 """Browser-rendered Claude history collection and local persistence.
 
-Code version: v1.1.0-codex.1
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
@@ -24,6 +24,11 @@ from .browser_sessions import (
     visible_claude_composer_selector,
 )
 from .config import LOCAL_STORE_ROOT, CrawlConfig
+from .history_rows import (
+    history_rows_match,
+    partition_conversation_rows,
+    sort_history_rows,
+)
 from .resource_persistence import (
     CLAUDE_HISTORY_FILENAME,
     CLAUDE_HISTORY_SCHEMA,
@@ -341,13 +346,7 @@ class ClaudeHistoryStore:
     def rows(self) -> list[dict[str, Any]]:
         """Return deterministic rows ordered by session and message position."""
 
-        return sorted(
-            self._rows.values(),
-            key=lambda row: (
-                str(row.get("conversation_id") or ""),
-                int(row.get("message_index") or 0),
-            ),
-        )
+        return sort_history_rows(self._rows.values())
 
     @property
     def cached_conversations(self) -> int:
@@ -369,16 +368,10 @@ class ClaudeHistoryStore:
     ) -> ClaudeConversationSync:
         """Replace one session while preserving first-seen metadata for unchanged rows."""
 
-        previous = {
-            key: row
-            for key, row in self._rows.items()
-            if str(row.get("conversation_id") or "") == conversation.conversation_id
-        }
-        next_rows = {
-            key: row
-            for key, row in self._rows.items()
-            if str(row.get("conversation_id") or "") != conversation.conversation_id
-        }
+        previous, next_rows = partition_conversation_rows(
+            self._rows,
+            conversation.conversation_id,
+        )
         added_or_changed = 0
         unchanged_messages = 0
         for message in messages:
@@ -419,7 +412,7 @@ class ClaudeHistoryStore:
                 ),
                 "last_seen_at": source_timestamp or (str(prior.get("last_seen_at") or "") if same_content else captured_at),
             }
-            if prior is not None and all(prior.get(key) == row.get(key) for key in CLAUDE_HISTORY_SCHEMA.names):
+            if history_rows_match(prior, row, CLAUDE_HISTORY_SCHEMA.names):
                 unchanged_messages += 1
             else:
                 added_or_changed += 1

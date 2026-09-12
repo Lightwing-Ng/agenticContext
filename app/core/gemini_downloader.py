@@ -1,6 +1,6 @@
 """Browser-backed Gemini session history caching."""
 
-# Code version: v1.10.5-codex.1
+# Code version: v1.10.6-codex.1
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from .browser_sessions import (
     sync_playwright_or_error,
 )
 from .config import LOCAL_STORE_ROOT, CrawlConfig
+from .history_rows import partition_conversation_rows, sort_history_rows
 from .resource_persistence import (
     GEMINI_HISTORY_FILENAME,
     GEMINI_HISTORY_SCHEMA,
@@ -255,13 +256,7 @@ class GeminiHistoryStore:
     @property
     def rows(self) -> list[dict[str, Any]]:
         """Return deterministic rows ordered by session and message position."""
-        return sorted(
-            self._rows_by_key.values(),
-            key=lambda row: (
-                str(row.get("conversation_id") or ""),
-                int(row.get("message_index") or 0),
-            ),
-        )
+        return sort_history_rows(self._rows_by_key.values())
 
     @property
     def cached_conversations(self) -> int:
@@ -295,11 +290,10 @@ class GeminiHistoryStore:
         captured_at: str,
     ) -> tuple[int, bool]:
         """Replace one session atomically in memory and report new content."""
-        previous_rows = {
-            key: row
-            for key, row in self._rows_by_key.items()
-            if str(row.get("conversation_id") or "") == conversation.conversation_id
-        }
+        previous_rows, retained_rows = partition_conversation_rows(
+            self._rows_by_key,
+            conversation.conversation_id,
+        )
         next_rows: dict[str, dict[str, Any]] = {}
         new_message_count = 0
         for message in messages:
@@ -358,8 +352,7 @@ class GeminiHistoryStore:
                 for key in next_rows
             )
         )
-        for key in previous_rows:
-            self._rows_by_key.pop(key, None)
+        self._rows_by_key = retained_rows
         self._rows_by_key.update(next_rows)
         return new_message_count, unchanged
 

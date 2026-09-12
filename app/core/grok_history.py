@@ -1,6 +1,6 @@
 """Grok text history collection and local persistence.
 
-Code version: v1.2.1-codex.1
+Code version: v1.2.2-codex.1
 """
 
 from __future__ import annotations
@@ -23,6 +23,11 @@ from .browser_sessions import (
     sync_playwright_or_error,
 )
 from .config import CrawlConfig
+from .history_rows import (
+    history_rows_match,
+    partition_conversation_rows,
+    sort_history_rows,
+)
 from .resource_persistence import (
     GROK_HISTORY_FILENAME,
     GROK_HISTORY_SCHEMA,
@@ -421,16 +426,10 @@ class GrokHistoryStore:
         captured_at: str,
     ) -> GrokConversationSync:
         conversation_id = conversation.conversation_id
-        previous = {
-            key: row
-            for key, row in self._rows.items()
-            if str(row.get("conversation_id")) == conversation_id
-        }
-        next_rows: dict[str, dict[str, Any]] = {
-            key: row
-            for key, row in self._rows.items()
-            if str(row.get("conversation_id")) != conversation_id
-        }
+        previous, next_rows = partition_conversation_rows(
+            self._rows,
+            conversation_id,
+        )
         added_or_changed = 0
         unchanged = 0
         for message in messages:
@@ -454,13 +453,17 @@ class GrokHistoryStore:
                 "content_sha256": message.content_sha256,
             }
             prior = previous.get(message.message_key)
-            if prior is not None and all(prior.get(key) == row.get(key) for key in GROK_HISTORY_SCHEMA.names):
+            if history_rows_match(prior, row, GROK_HISTORY_SCHEMA.names):
                 unchanged += 1
             else:
                 added_or_changed += 1
             next_rows[message.message_key] = row
         self._rows = next_rows
-        write_parquet_rows_atomic(self.path, list(self._rows.values()), GROK_HISTORY_SCHEMA)
+        write_parquet_rows_atomic(
+            self.path,
+            sort_history_rows(self._rows.values()),
+            GROK_HISTORY_SCHEMA,
+        )
         return GrokConversationSync(
             message_count=len(messages),
             added_or_changed=added_or_changed,

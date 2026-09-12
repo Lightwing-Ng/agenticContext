@@ -1,17 +1,20 @@
 """Background service for ChatGPT text and media sync."""
 
-# Code version: v1.4.0-codex.1
+# Code version: v1.4.1-codex.1
 
 from __future__ import annotations
 
 import logging
-from threading import Event, RLock, Thread
-from uuid import uuid4
+from threading import Thread
 
+from .cache_service_support import (
+    CooperativeCacheWorker,
+    append_shadow_backup_completion,
+    summarize_status_error,
+)
 from .chatgpt_downloader import sync_chatgpt_images
 from .config import CrawlConfig
-from .job_lock import CacheTaskLock, SHARED_CACHE_TASK_LOCK
-from .logging_setup import reset_job_id, set_job_id
+from .job_lock import CacheTaskLock
 from .shadow_backup import ShadowBackupService
 from .state import TaskState
 
@@ -21,20 +24,16 @@ logger = logging.getLogger(__name__)
 
 def summarize_chatgpt_error_for_status(error: Exception) -> str:
     """Return a concise ChatGPT status message while retaining full logs."""
-    error_text = str(error).strip()
-    if "BrowserType.launch_persistent_context" in error_text:
-        return (
+    return summarize_status_error(
+        error,
+        launch_message=(
             "ChatGPT browser automation failed while launching the selected Edge profile. "
             "Close any duplicate cache window and check the local log for the full Playwright output."
-        )
-
-    first_line = error_text.splitlines()[0] if error_text else error.__class__.__name__
-    if len(first_line) <= 500:
-        return first_line
-    return f"{first_line[:497]}..."
+        ),
+    )
 
 
-class ChatGPTDownloadService:
+class ChatGPTDownloadService(CooperativeCacheWorker):
     """Manage one mode-specific ChatGPT cache worker."""
 
     def __init__(
@@ -43,61 +42,39 @@ class ChatGPTDownloadService:
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
     ) -> None:
-        self._state = state
-        self._worker: Thread | None = None
-        self._stop_requested = Event()
+        super().__init__(state, task_lock)
         self._config = CrawlConfig()
         self._content_mode = "media"
-        self._lifecycle_lock = RLock()
-        self._task_lock = task_lock or SHARED_CACHE_TASK_LOCK
-        self._owns_task_lock = False
         self._shadow_backup_service = shadow_backup_service
-
-    def is_running(self) -> bool:
-        """Return whether a ChatGPT image sync is active."""
-        snapshot = self._state.snapshot()
-        return bool(snapshot["running"])
 
     def start(self, config: CrawlConfig, content_mode: str = "media") -> None:
         """Start a new ChatGPT text or media cache worker."""
-        with self._lifecycle_lock:
-            if self.is_running():
-                raise RuntimeError("A ChatGPT sync is already running.")
-            if not self._task_lock.acquire("chatgpt-sync"):
-                raise RuntimeError(
-                    "A cache task is already running in another Cache Likes window or browser. "
-                    "Stop it there before starting a ChatGPT sync."
-                )
-
-            self._owns_task_lock = True
-            self._stop_requested.clear()
+        def prepare() -> None:
             self._config = config
             self._content_mode = "media" if content_mode == "media" else "text"
-            self._state.reset_for_run()
-            try:
-                self._worker = Thread(target=self._run, daemon=True)
-                self._worker.start()
-            except Exception:
-                self._owns_task_lock = False
-                self._task_lock.release()
-                raise
+
+        self._start_worker(
+            lock_owner="chatgpt-sync",
+            already_running_message="A ChatGPT sync is already running.",
+            lock_busy_message=(
+                "A cache task is already running in another Cache Likes window or browser. "
+                "Stop it there before starting a ChatGPT sync."
+            ),
+            target=self._run,
+            prepare=prepare,
+            thread_factory=Thread,
+        )
 
     def request_stop(self) -> bool:
         """Request a cooperative stop for the active ChatGPT sync."""
-        if not self.is_running():
-            return False
-        self._stop_requested.set()
-        self._state.update(phase="stopping")
-        self._state.append_event("Emergency stop requested for ChatGPT sync. Waiting for the current task to stop.")
-        return True
-
-    def _is_stop_requested(self) -> bool:
-        return self._stop_requested.is_set()
+        return self._request_stop(
+            "Emergency stop requested for ChatGPT sync. "
+            "Waiting for the current task to stop."
+        )
 
     def _run(self) -> None:
         """Execute the selected ChatGPT cache pipeline."""
-        job_id = uuid4().hex[:12]
-        token = set_job_id(job_id)
+        job_id, token = self._begin_worker_job()
         try:
             logger.info(
                 "ChatGPT sync started.",
@@ -159,11 +136,12 @@ class ChatGPTDownloadService:
                     f"skipped over size limit {result.skipped_size:,}, "
                     f"failed {result.failed_count:,}; cached total {result.cached_count:,} images."
                 )
-            if self._shadow_backup_service is not None:
-                shadow_backup_message = self._shadow_backup_service.sync_after_cache_task(self._config)
-                if shadow_backup_message:
-                    self._state.append_event(shadow_backup_message)
-                    completion_message = f"{completion_message} {shadow_backup_message}"
+            completion_message = append_shadow_backup_completion(
+                completion_message,
+                shadow_backup_service=self._shadow_backup_service,
+                state=self._state,
+                config=self._config,
+            )
             self._state.finish_success(completion_message)
             logger.info(
                 "ChatGPT sync finished successfully.",
@@ -187,8 +165,4 @@ class ChatGPTDownloadService:
                 },
             )
         finally:
-            reset_job_id(token)
-            with self._lifecycle_lock:
-                if self._owns_task_lock:
-                    self._owns_task_lock = False
-                    self._task_lock.release()
+            self._finish_worker_job(token)
