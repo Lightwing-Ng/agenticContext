@@ -1,6 +1,6 @@
 """Behavioral checks for the POSIX test and quality entrypoints.
 
-Code version: v1.2.0-codex.1
+Code version: v1.2.1-codex.1
 """
 
 import os
@@ -197,8 +197,9 @@ def test_runtime_resolver_uses_prepared_platform_fallback(tmp_path):
     shell_bin = tmp_path / "shell-bin"
     shell_bin.mkdir()
     missing = shell_bin / "python3"
+    missing_python = shell_bin / "python"
     ready = tmp_path / "platform-python3"
-    for path, available in ((missing, False), (ready, True)):
+    for path, available in ((missing, False), (missing_python, False), (ready, True)):
         path.write_text(
             f"#!{sys.executable}\nimport sys\n"
             "if sys.argv[1] == '-c' and sys.argv[2].startswith('import sys;'): exec(sys.argv[2])\n"

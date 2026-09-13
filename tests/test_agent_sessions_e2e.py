@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.7.3-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.7.4-codex.1."""
 
 from copy import deepcopy
 
@@ -550,6 +550,7 @@ def test_new_session_inherits_selected_project_without_stopping_existing_task(
         })
 
     page.route("**/api/agent/status", status)
+    page.route("**/api/agent/preferences", lambda route: route.fulfill(json=base))
     page.route("**/api/agent/stop", lambda route: (stopped.append(True), route.fulfill(json=base)))
     page.route("**/api/browser-session**", lambda route: route.fulfill(json={
         "can_download": True,
@@ -640,7 +641,10 @@ def test_new_session_inherits_selected_project_without_stopping_existing_task(
         if width < 900:
             page.locator("#sidebar_toggle").click()
 
-        page.get_by_role("button", name="Ask ChatGPT Web", exact=True).click()
+        ask_button = page.get_by_role("button", name="Ask ChatGPT Web", exact=True)
+        expect(ask_button).to_be_enabled()
+        with page.expect_response("**/api/agent/ask"):
+            ask_button.click()
         expect(page.get_by_role("button", name="Stop Agent task", exact=True)).to_be_visible()
         assert len(submitted) == 1
         assert submitted[0]["session_mode"] == "project_new"

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.29.0-codex.1`
+Documentation version: `v1.29.1-codex.1`
 
 ## Runtime flow
 
@@ -242,7 +242,9 @@ Windows Job Object, a verified Linux cgroup v2, or the macOS no-fork sandbox and
 group. Linux refuses to execute the entrypoint when a writable cgroup v2 with `cgroup.kill` cannot be
 created and verified; macOS refuses when `/usr/bin/sandbox-exec` is unavailable. A bounded scan for
 the exact inherited job marker remains an anomaly detector, but it is not accepted as the
-containment receipt because child code can replace its environment. A portable reader thread drains
+containment receipt because child code can replace its environment. Linux skips process environments
+that the kernel denies permission to read; the verified cgroup and process-group boundaries remain
+mandatory. A portable reader thread drains
 output, and the worker publishes a terminal state only after the platform containment boundary is
 proved empty. Timeout, explicit Stop, and an otherwise successful script that leaves descendants all
 clear that containment first. On macOS, a job-scoped

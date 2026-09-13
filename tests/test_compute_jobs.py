@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.1-codex.1
+Code version: v1.6.2-codex.1
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import subprocess
 import sys
 from threading import Barrier, Event, Lock
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -59,6 +60,60 @@ def test_ps_process_identity_forces_a_stable_locale_and_timezone(
     assert identity.startswith("ps:123:")
     assert observed_environment["LC_ALL"] == "C"
     assert observed_environment["TZ"] == "UTC"
+
+
+def test_linux_marker_scan_skips_permission_protected_environments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cooperative marker scan must tolerate unrelated protected processes."""
+
+    class ProcessEntry:
+        def __init__(self, pid: int) -> None:
+            self.name = str(pid)
+
+        def stat(self, *, follow_symlinks: bool) -> SimpleNamespace:
+            assert follow_symlinks is False
+            return SimpleNamespace(st_uid=501)
+
+    class ProcessEntries:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def __iter__(self):
+            return iter(ProcessEntry(pid) for pid in (101, 102, 103))
+
+    job_id = "1" * 32
+    marker = f"AGENTIC_CONTEXT_COMPUTE_JOB={job_id}".encode("ascii")
+    reads = {103: [marker + b"\0", b""]}
+    closed: list[int] = []
+
+    def open_environment(path: str, _flags: int) -> int:
+        pid = int(Path(path).parent.name)
+        if pid == 101:
+            raise PermissionError(13, "Permission denied", path)
+        return pid
+
+    def read_environment(descriptor: int, _size: int) -> bytes:
+        if descriptor == 102:
+            raise PermissionError(13, "Permission denied")
+        return reads[descriptor].pop(0)
+
+    monkeypatch.setattr(compute_jobs.os, "scandir", lambda _path: ProcessEntries())
+    monkeypatch.setattr(compute_jobs.os, "geteuid", lambda: 501, raising=False)
+    monkeypatch.setattr(compute_jobs, "_process_identity", lambda pid: f"proc:{pid}")
+    monkeypatch.setattr(compute_jobs.os, "open", open_environment)
+    monkeypatch.setattr(compute_jobs.os, "read", read_environment)
+    monkeypatch.setattr(compute_jobs.os, "close", closed.append)
+
+    assert compute_jobs._scan_linux_job_marker_processes(
+        job_id,
+        exclude_pids=frozenset(),
+        timeout=1.0,
+    ) == {103: "proc:103"}
+    assert closed == [102, 103]
 
 
 def _probe_linux_cgroup_execution() -> bool:

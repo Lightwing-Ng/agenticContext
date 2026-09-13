@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.46.1-codex.1
+Code version: v1.46.2-codex.1
 """
 
 from __future__ import annotations
@@ -1022,6 +1022,8 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
             page.locator("#sidebar_toggle").click()
 
         table.locator(".browser-session-table-title").click()
+        page.wait_for_url(re.compile(r"[?&]session=[^&]+(?:&|$)"))
+        expect(page.locator(".browser-session-detail-table")).to_have_count(1)
         assert page.locator(
             ".browser-session-detail-table thead th"
         ).all_inner_texts() == [

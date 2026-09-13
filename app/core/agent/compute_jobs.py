@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.1-codex.1
+Code version: v1.6.2-codex.1
 """
 
 from __future__ import annotations
@@ -953,6 +953,8 @@ def _scan_linux_job_marker_processes(
                 descriptor = os.open(f"/proc/{pid}/environ", flags)
             except FileNotFoundError:
                 continue
+            except PermissionError:
+                continue
             except OSError as exc:
                 raise ComputeJobError(
                     "Linux job-marker environment could not be inspected; writer admission "
@@ -982,7 +984,7 @@ def _scan_linux_job_marker_processes(
                             "Linux job-marker inspection exceeded its byte limit; writer "
                             "admission remains blocked."
                         )
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
                 continue
             except OSError as exc:
                 raise ComputeJobError(

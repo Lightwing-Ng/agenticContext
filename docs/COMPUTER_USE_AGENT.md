@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.71.0-codex.1`
+Documentation version: `v3.71.1-codex.1`
 
 ## Purpose
 
@@ -540,9 +540,11 @@ created cgroup v2 that exposes readable membership and event state plus writable
 that kernel boundary is unavailable, approved code is not executed. macOS instead requires the
 no-fork sandbox and proves the dedicated process group empty. A bounded `/proc` or sanitized absolute
 `ps` scan checks the inherited job marker for anomalies, but never substitutes for those platform
-receipts because child code may replace its environment. Scan timeout, excess output, unreadable
-ownership data, or ambiguous output fails closed. Output uses a bounded reader thread rather than a
-platform-specific pipe selector. The default active-job limit is one per workspace.
+receipts because child code may replace its environment. Linux permission-protected process
+environments are skipped; the verified cgroup and process-group receipts remain authoritative. Scan
+timeout, excess output, unreadable ownership data, unexpected I/O errors, or ambiguous output fails
+closed. Output uses a bounded reader thread rather than a platform-specific pipe selector. The default
+active-job limit is one per workspace.
 Once a controller starts a job, it refuses `replace`, `replace_base64`, `write`, `write_base64`,
 `delete`, and verification `run` until the job becomes terminal. Read-only inspection and
 `bodycheck` remain available, and final may report the durable job ID and current bounded state.
