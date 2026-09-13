@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer normalization and bounded collection.
 
-Code version: v1.0.0-codex.1
+Code version: v1.1.0-codex.1
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from html import escape as escape_html
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
@@ -29,38 +30,84 @@ ZHIHU_FETCH_RETRY_DELAY_MS = 1_500
 ZHIHU_FETCH_TIMEOUT_MS = 45_000
 ZHIHU_PAGE_SETTLE_MS = 650
 _ZHIHU_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
-_BLOCK_TAGS = frozenset(
+_ZHIHU_BODY_ROOT_PRIORITY = (
+    "itemprop-text",
+    "rich-text",
+    "content-id",
+    "rich-content-inner",
+)
+_ZHIHU_CANONICAL_TAGS = frozenset(
     {
-        "address",
-        "article",
-        "aside",
+        "a",
+        "b",
         "blockquote",
         "br",
-        "div",
+        "code",
+        "del",
+        "em",
         "figcaption",
         "figure",
-        "footer",
         "h1",
         "h2",
         "h3",
         "h4",
         "h5",
         "h6",
-        "header",
         "hr",
+        "i",
+        "img",
         "li",
-        "main",
+        "mark",
         "ol",
         "p",
         "pre",
-        "section",
+        "s",
+        "span",
+        "strong",
+        "sub",
+        "sup",
         "table",
+        "tbody",
         "td",
+        "tfoot",
         "th",
+        "thead",
         "tr",
+        "u",
         "ul",
     }
 )
+_ZHIHU_VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+_ZHIHU_SKIPPED_TAGS = frozenset(
+    {"button", "iframe", "object", "script", "style", "svg", "template"}
+)
+_ZHIHU_SKIPPED_CLASSES = frozenset(
+    {
+        "AnswerItem-editButton",
+        "ContentItem-actions",
+        "ContentItem-time",
+        "Reward",
+        "RichContent-actions",
+    }
+)
+_ZHIHU_IMAGE_PLACEHOLDER = "[Image omitted from cached Zhihu answer]"
 
 
 class ZhihuArchiveError(RuntimeError):
@@ -78,6 +125,16 @@ class ZhihuProfile:
     author_token: str
     profile_url: str
     answers_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class ZhihuRichText:
+    """Canonical answer HTML and its portable Markdown translation."""
+
+    content_html: str
+    content_markdown: str
+    media_urls: tuple[str, ...]
+    resource_urls: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,110 +191,443 @@ class ZhihuEnumerationFingerprint:
     stopped: bool
 
 
-class _ZhihuHTMLTextExtractor(HTMLParser):
-    """Convert stored answer HTML to reviewable text without executing markup."""
+def _attrs_map(attrs: list[tuple[str, str | None]]) -> dict[str, str]:
+    """Normalize one HTML attribute list for deterministic provider parsing."""
+
+    return {
+        str(name or "").casefold(): str(value or "")
+        for name, value in attrs
+        if name
+    }
+
+
+def _zhihu_body_root_kind(attrs: Mapping[str, str]) -> str | None:
+    """Classify one provider node that can own the answer body."""
+
+    class_names = {
+        item.casefold()
+        for item in str(attrs.get("class") or "").split()
+        if item
+    }
+    if str(attrs.get("itemprop") or "").casefold() == "text":
+        return "itemprop-text"
+    if {"richtext", "ztext"}.issubset(class_names):
+        return "rich-text"
+    if str(attrs.get("id") or "").casefold() == "content":
+        return "content-id"
+    if "richcontent-inner" in class_names:
+        return "rich-content-inner"
+    return None
+
+
+def _resolve_zhihu_resource_url(value: str | None) -> str:
+    """Resolve one provider link without fetching or accepting active schemes."""
+
+    if not value:
+        return ""
+    try:
+        candidate = urlsplit(urljoin(f"{ZHIHU_HOME_URL}/", value.strip()))
+    except ValueError:
+        return ""
+    if candidate.scheme.casefold() not in {"http", "https"} or not candidate.netloc:
+        return ""
+    return candidate.geturl()
+
+
+def _is_zhihu_media_url(value: str) -> bool:
+    """Return whether one resolved URL is a provider-owned HTTPS media link."""
+
+    try:
+        candidate = urlsplit(value)
+    except ValueError:
+        return False
+    host = (candidate.hostname or "").casefold()
+    return candidate.scheme.casefold() == "https" and (
+        host in {"zhihu.com", "zhimg.com"}
+        or host.endswith(".zhihu.com")
+        or host.endswith(".zhimg.com")
+    )
+
+
+class _ZhihuBodyRootDetector(HTMLParser):
+    """Find the narrowest supported answer-body boundary before conversion."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
+        self.root_kinds: set[str] = set()
+
+    def handle_starttag(self, _tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        root_kind = _zhihu_body_root_kind(_attrs_map(attrs))
+        if root_kind:
+            self.root_kinds.add(root_kind)
+
+    def handle_startendtag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        self.handle_starttag(tag, attrs)
+
+
+class _ZhihuCanonicalHTMLParser(HTMLParser):
+    """Select the answer body and serialize only reviewable semantic HTML."""
+
+    def __init__(self, root_kind: str | None) -> None:
+        super().__init__(convert_charrefs=True)
+        self.root_kind = root_kind
+        self._source_tags: list[str] = []
+        self._body_complete = False
+        self._skipped_tags: list[str] = []
+        self._open_tags: list[str] = []
         self._parts: list[str] = []
         self._media_urls: list[str] = []
         self._resource_urls: list[str] = []
-        self._ignored_depth = 0
+        self._figure_ids: list[int] = []
+        self._next_figure_id = 0
+        self._seen_figure_images: set[tuple[int, str]] = set()
+
+    @property
+    def _active(self) -> bool:
+        return self.root_kind is None or bool(self._source_tags)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        normalized = tag.casefold()
-        if normalized in {"script", "style", "template"}:
-            self._ignored_depth += 1
+        tag = tag.casefold()
+        attrs_by_name = _attrs_map(attrs)
+        if self.root_kind is not None and not self._source_tags:
+            if (
+                not self._body_complete
+                and _zhihu_body_root_kind(attrs_by_name) == self.root_kind
+            ):
+                self._source_tags.append(tag)
             return
-        if self._ignored_depth:
-            return
-        if normalized in _BLOCK_TAGS:
-            self._parts.append("\n")
-        if normalized == "a":
-            href = next((value for key, value in attrs if key.casefold() == "href"), None)
-            self._append_resource_url(href)
-        if normalized == "img":
-            alt = next((value for key, value in attrs if key.casefold() == "alt"), None)
-            if alt:
-                self._parts.append(f"[{alt}]")
-            for key, value in attrs:
-                if key.casefold() not in {"src", "data-original", "data-actualsrc"} or not value:
-                    continue
-                candidate = self._resolve_resource_url(value)
-                if candidate is None:
-                    continue
-                host = (candidate.hostname or "").casefold()
-                if candidate.scheme == "https" and (
-                    host in {"zhihu.com", "zhimg.com"}
-                    or host.endswith(".zhihu.com")
-                    or host.endswith(".zhimg.com")
-                ):
-                    normalized_url = candidate.geturl()
-                    if normalized_url not in self._media_urls:
-                        self._media_urls.append(normalized_url)
-                    if normalized_url not in self._resource_urls:
-                        self._resource_urls.append(normalized_url)
+        if self.root_kind is not None and tag not in _ZHIHU_VOID_TAGS:
+            self._source_tags.append(tag)
+        if self._active:
+            self._emit_starttag(tag, attrs_by_name)
 
-    def _append_resource_url(self, value: str | None) -> None:
-        """Retain one absolute HTTP(S) hyperlink without loading its payload."""
-
-        if not value:
-            return
-        candidate = self._resolve_resource_url(value)
-        if candidate is None:
-            return
-        normalized_url = candidate.geturl()
-        if normalized_url not in self._resource_urls:
-            self._resource_urls.append(normalized_url)
-
-    @staticmethod
-    def _resolve_resource_url(value: str) -> Any | None:
-        """Resolve relative provider links without fetching their targets."""
-
-        try:
-            candidate = urlsplit(urljoin(f"{ZHIHU_HOME_URL}/", value.strip()))
-        except ValueError:
-            return None
-        if candidate.scheme.casefold() not in {"http", "https"} or not candidate.netloc:
-            return None
-        return candidate
+    def handle_startendtag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag.casefold() not in _ZHIHU_VOID_TAGS:
+            self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
-        normalized = tag.casefold()
-        if normalized in {"script", "style", "template"}:
-            self._ignored_depth = max(0, self._ignored_depth - 1)
+        tag = tag.casefold()
+        if self.root_kind is not None and not self._source_tags:
             return
-        if not self._ignored_depth and normalized in _BLOCK_TAGS:
-            self._parts.append("\n")
+        closing_root = (
+            self.root_kind is not None
+            and len(self._source_tags) == 1
+            and self._source_tags[-1] == tag
+        )
+        if not closing_root:
+            self._emit_endtag(tag)
+        if self.root_kind is not None and tag in self._source_tags:
+            while self._source_tags:
+                source_tag = self._source_tags.pop()
+                if source_tag == tag:
+                    break
+            if not self._source_tags:
+                self._body_complete = True
 
     def handle_data(self, data: str) -> None:
-        if not self._ignored_depth:
-            self._parts.append(data)
+        if self._active and not self._skipped_tags:
+            self._parts.append(escape_html(data.replace("\x00", "")))
 
-    def text(self) -> str:
-        normalized_lines = [
-            re.sub(r"[\t\f\v ]+", " ", line).strip()
-            for line in "".join(self._parts).replace("\x00", "").splitlines()
-        ]
-        output: list[str] = []
-        for line in normalized_lines:
-            if line:
-                output.append(line)
-            elif output and output[-1]:
-                output.append("")
-        return "\n".join(output).strip()
+    def handle_comment(self, _data: str) -> None:
+        return
+
+    def _emit_starttag(self, tag: str, attrs: Mapping[str, str]) -> None:
+        if self._skipped_tags:
+            if tag not in _ZHIHU_VOID_TAGS:
+                self._skipped_tags.append(tag)
+            return
+        class_names = set(str(attrs.get("class") or "").split())
+        if tag in _ZHIHU_SKIPPED_TAGS or class_names & _ZHIHU_SKIPPED_CLASSES:
+            if tag not in _ZHIHU_VOID_TAGS:
+                self._skipped_tags.append(tag)
+            return
+        if tag == "figure":
+            self._next_figure_id += 1
+            self._figure_ids.append(self._next_figure_id)
+        if tag == "img":
+            self._emit_image(attrs)
+            return
+        if tag not in _ZHIHU_CANONICAL_TAGS:
+            return
+
+        safe_attrs: list[tuple[str, str]] = []
+        if tag == "a":
+            href = _resolve_zhihu_resource_url(attrs.get("href"))
+            if not href:
+                return
+            safe_attrs.append(("href", href))
+            self._append_resource_url(href)
+            title = str(attrs.get("title") or "").strip()
+            if title:
+                safe_attrs.append(("title", title))
+        elif tag == "ol":
+            start = str(attrs.get("start") or "").strip()
+            if start.isdigit():
+                safe_attrs.append(("start", start))
+        elif tag in {"td", "th"}:
+            for name in ("colspan", "rowspan"):
+                value = str(attrs.get(name) or "").strip()
+                if value.isdigit():
+                    safe_attrs.append((name, value))
+
+        serialized_attrs = "".join(
+            f' {name}="{escape_html(value, quote=True)}"'
+            for name, value in safe_attrs
+        )
+        self._parts.append(f"<{tag}{serialized_attrs}>")
+        if tag not in _ZHIHU_VOID_TAGS:
+            self._open_tags.append(tag)
+
+    def _emit_image(self, attrs: Mapping[str, str]) -> None:
+        candidates = (
+            attrs.get("data-original"),
+            attrs.get("data-actualsrc"),
+            attrs.get("src"),
+        )
+        media_url = next(
+            (
+                resolved
+                for candidate in candidates
+                if (resolved := _resolve_zhihu_resource_url(candidate))
+                and _is_zhihu_media_url(resolved)
+            ),
+            "",
+        )
+        identity = (
+            str(attrs.get("data-original-token") or "").strip()
+            or media_url
+            or next((str(item).strip() for item in candidates if item), "")
+        )
+        if self._figure_ids and identity:
+            figure_identity = (self._figure_ids[-1], identity)
+            if figure_identity in self._seen_figure_images:
+                return
+            self._seen_figure_images.add(figure_identity)
+
+        safe_attrs: list[tuple[str, str]] = []
+        alt = str(attrs.get("alt") or "").replace("\x00", "").strip()
+        if alt:
+            safe_attrs.append(("alt", alt))
+        if media_url:
+            safe_attrs.append(("data-original", media_url))
+            if media_url not in self._media_urls:
+                self._media_urls.append(media_url)
+            self._append_resource_url(media_url)
+        serialized_attrs = "".join(
+            f' {name}="{escape_html(value, quote=True)}"'
+            for name, value in safe_attrs
+        )
+        self._parts.append(f"<img{serialized_attrs}>")
+
+    def _emit_endtag(self, tag: str) -> None:
+        if self._skipped_tags:
+            if tag in self._skipped_tags:
+                while self._skipped_tags:
+                    skipped_tag = self._skipped_tags.pop()
+                    if skipped_tag == tag:
+                        break
+            return
+        if tag in self._open_tags:
+            while self._open_tags:
+                open_tag = self._open_tags.pop()
+                self._parts.append(f"</{open_tag}>")
+                if open_tag == tag:
+                    break
+        if tag == "figure" and self._figure_ids:
+            self._figure_ids.pop()
+
+    def _append_resource_url(self, value: str) -> None:
+        if value and value not in self._resource_urls:
+            self._resource_urls.append(value)
+
+    def render(self) -> str:
+        """Close provider markup and return one deterministic HTML fragment."""
+
+        while self._open_tags:
+            self._parts.append(f"</{self._open_tags.pop()}>")
+        return "".join(self._parts).strip()
 
     @property
     def media_urls(self) -> tuple[str, ...]:
-        """Return deduplicated HTTPS Zhihu media references in source order."""
-
         return tuple(self._media_urls)
 
     @property
     def resource_urls(self) -> tuple[str, ...]:
-        """Return deduplicated rich-text hyperlinks and media references."""
-
         return tuple(self._resource_urls)
+
+
+class _ZhihuMarkdownConverter(HTMLParser):
+    """Translate canonical answer HTML into portable, non-loading Markdown."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._trailing_newlines = 0
+        self._links: list[str] = []
+        self._lists: list[dict[str, int | bool]] = []
+        self._pre_depth = 0
+        self._inline_code_depth = 0
+
+    def _append(self, value: str) -> None:
+        if not value:
+            return
+        self._parts.append(value)
+        self._trailing_newlines = len(value) - len(value.rstrip("\n"))
+
+    def _ensure_newlines(self, count: int) -> None:
+        if not self._parts:
+            return
+        if self._trailing_newlines < count:
+            self._append("\n" * (count - self._trailing_newlines))
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.casefold()
+        attrs_by_name = _attrs_map(attrs)
+        if tag == "p":
+            self._ensure_newlines(2)
+        elif tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            self._ensure_newlines(2)
+            self._append(f"{'#' * int(tag[1])} ")
+        elif tag in {"ul", "ol"}:
+            self._ensure_newlines(1 if self._lists else 2)
+            start = str(attrs_by_name.get("start") or "1")
+            self._lists.append(
+                {
+                    "ordered": tag == "ol",
+                    "index": int(start) if start.isdigit() else 1,
+                }
+            )
+        elif tag == "li":
+            self._ensure_newlines(1)
+            context = self._lists[-1] if self._lists else {"ordered": False, "index": 1}
+            index = int(context["index"])
+            prefix = f"{index}." if context["ordered"] else "-"
+            if context["ordered"]:
+                context["index"] = index + 1
+            self._append(f"{'  ' * max(0, len(self._lists) - 1)}{prefix} ")
+        elif tag == "a":
+            href = _resolve_zhihu_resource_url(attrs_by_name.get("href"))
+            self._links.append(href)
+            if href:
+                self._append("[")
+        elif tag in {"b", "strong"}:
+            self._append("**")
+        elif tag in {"em", "i"}:
+            self._append("*")
+        elif tag in {"del", "s"}:
+            self._append("~~")
+        elif tag == "code" and not self._pre_depth:
+            self._inline_code_depth += 1
+            self._append("`")
+        elif tag == "pre":
+            self._ensure_newlines(2)
+            self._pre_depth += 1
+            self._append("```\n")
+        elif tag == "blockquote":
+            self._ensure_newlines(2)
+            self._append("> ")
+        elif tag == "br":
+            self._ensure_newlines(1)
+        elif tag == "hr":
+            self._ensure_newlines(2)
+            self._append("---")
+            self._ensure_newlines(2)
+        elif tag == "figure":
+            self._ensure_newlines(2)
+        elif tag == "figcaption":
+            self._ensure_newlines(1)
+            self._append("*")
+        elif tag == "img":
+            self._ensure_newlines(1)
+            source = _resolve_zhihu_resource_url(attrs_by_name.get("data-original"))
+            self._append(
+                f"{_ZHIHU_IMAGE_PLACEHOLDER}(<{source}>)"
+                if source
+                else _ZHIHU_IMAGE_PLACEHOLDER
+            )
+            self._ensure_newlines(1)
+        elif tag in {"table", "tr"}:
+            self._ensure_newlines(2 if tag == "table" else 1)
+        elif tag in {"td", "th"}:
+            if self._parts and not self._trailing_newlines:
+                self._append(" | ")
+
+    def handle_startendtag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag.casefold() not in _ZHIHU_VOID_TAGS:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.casefold()
+        if tag == "p":
+            self._ensure_newlines(2)
+        elif tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            self._ensure_newlines(2)
+        elif tag in {"ul", "ol"}:
+            if self._lists:
+                self._lists.pop()
+            self._ensure_newlines(1 if self._lists else 2)
+        elif tag == "li":
+            self._ensure_newlines(1)
+        elif tag == "a":
+            href = self._links.pop() if self._links else ""
+            if href:
+                self._append(f"](<{href.replace('>', '%3E')}>)")
+        elif tag in {"b", "strong"}:
+            self._append("**")
+        elif tag in {"em", "i"}:
+            self._append("*")
+        elif tag in {"del", "s"}:
+            self._append("~~")
+        elif tag == "code" and self._inline_code_depth:
+            self._inline_code_depth -= 1
+            self._append("`")
+        elif tag == "pre" and self._pre_depth:
+            self._pre_depth -= 1
+            self._ensure_newlines(1)
+            self._append("```")
+            self._ensure_newlines(2)
+        elif tag == "blockquote":
+            self._ensure_newlines(2)
+        elif tag == "figcaption":
+            self._append("*")
+            self._ensure_newlines(1)
+        elif tag == "figure":
+            self._ensure_newlines(2)
+        elif tag == "tr":
+            self._ensure_newlines(1)
+        elif tag == "table":
+            self._ensure_newlines(2)
+
+    def handle_data(self, data: str) -> None:
+        value = data.replace("\x00", "")
+        if self._pre_depth:
+            self._append(value)
+            return
+        value = re.sub(r"\s+", " ", value)
+        if not value or (not value.strip() and (not self._parts or self._trailing_newlines)):
+            return
+        if not self._inline_code_depth:
+            value = re.sub(r"([\\`*_[\]<>])", r"\\\1", value)
+        self._append(value)
+
+    def render(self) -> str:
+        """Return stable Markdown with at most one blank line between blocks."""
+
+        return re.sub(r"\n{3,}", "\n\n", "".join(self._parts)).strip()
 
 
 def normalize_zhihu_profile_url(value: object) -> ZhihuProfile:
@@ -296,26 +686,47 @@ def _answer_api_url(profile: ZhihuProfile, offset: int) -> str:
     return f"{ZHIHU_HOME_URL}/api/v4/members/{quote(profile.author_token, safe='-_')}/answers?{query}"
 
 
-def _parse_answer_html(value: str) -> tuple[str, tuple[str, ...]]:
-    parser = _ZhihuHTMLTextExtractor()
+def normalize_zhihu_rich_text(value: object) -> ZhihuRichText:
+    """Isolate answer content and derive canonical HTML plus portable Markdown."""
+
+    source = str(value or "").replace("\x00", "").strip()
+    if not source:
+        return ZhihuRichText("", "", (), ())
+
+    detector = _ZhihuBodyRootDetector()
     try:
-        parser.feed(value)
-        parser.close()
+        detector.feed(source)
+        detector.close()
+        root_kind = next(
+            (
+                candidate
+                for candidate in _ZHIHU_BODY_ROOT_PRIORITY
+                if candidate in detector.root_kinds
+            ),
+            None,
+        )
+        html_parser = _ZhihuCanonicalHTMLParser(root_kind)
+        html_parser.feed(source)
+        html_parser.close()
+        content_html = html_parser.render()
+        markdown_parser = _ZhihuMarkdownConverter()
+        markdown_parser.feed(content_html)
+        markdown_parser.close()
+        content_markdown = markdown_parser.render()
     except (AssertionError, ValueError):
-        return re.sub(r"\s+", " ", value.replace("\x00", " ")).strip(), ()
-    return parser.text(), parser.media_urls
+        return ZhihuRichText("", "", (), ())
+    return ZhihuRichText(
+        content_html=content_html,
+        content_markdown=content_markdown,
+        media_urls=html_parser.media_urls,
+        resource_urls=html_parser.resource_urls,
+    )
 
 
 def extract_zhihu_resource_links(value: str) -> tuple[str, ...]:
     """Extract links from answer rich text without retaining executable markup."""
 
-    parser = _ZhihuHTMLTextExtractor()
-    try:
-        parser.feed(str(value or ""))
-        parser.close()
-    except (AssertionError, ValueError):
-        return ()
-    return parser.resource_urls
+    return normalize_zhihu_rich_text(value).resource_urls
 
 
 def _clean_text(value: object, *, maximum: int | None = None) -> str:
@@ -409,9 +820,15 @@ def normalize_zhihu_answer_payload(
     question_id = _clean_text(question.get("id"))
     if not question_id.isdigit():
         raise ZhihuArchiveError(f"Zhihu answer {answer_id} is missing a stable question ID.")
-    content_html = _clean_text(payload.get("content"), maximum=ZHIHU_ANSWER_CONTENT_LIMIT)
+    raw_content_html = _clean_text(
+        payload.get("content"),
+        maximum=ZHIHU_ANSWER_CONTENT_LIMIT,
+    )
     excerpt = _clean_text(payload.get("excerpt"), maximum=ZHIHU_ANSWER_CONTENT_LIMIT)
-    content_text, media_urls = _parse_answer_html(content_html)
+    rich_text = normalize_zhihu_rich_text(raw_content_html)
+    content_html = rich_text.content_html
+    content_text = rich_text.content_markdown
+    media_urls = rich_text.media_urls
     is_collapsed = _boolean(payload.get("is_collapsed"), "collapsed flag")
     is_normal = _optional_boolean(payload.get("is_normal"), "normal-answer flag")
     content_available = bool(content_html and content_text)

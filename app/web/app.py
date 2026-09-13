@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.73.1-codex.1
+# Code version: v1.75.0-codex.1
 
 from __future__ import annotations
 
@@ -109,6 +109,7 @@ from app.core.providers import (
     list_chatgpt_agent_sources,
     list_chatgpt_project_sessions,
     normalize_chatgpt_conversation_url,
+    normalize_zhihu_rich_text,
     probe_and_collect_chatgpt_sources,
     reset_chatgpt_state,
     reset_grok_state,
@@ -180,6 +181,8 @@ _STORED_HTML_ALLOWED_TAGS = frozenset(
         "code",
         "del",
         "em",
+        "figcaption",
+        "figure",
         "h1",
         "h2",
         "h3",
@@ -209,7 +212,24 @@ _STORED_HTML_ALLOWED_TAGS = frozenset(
         "ul",
     }
 )
-_STORED_HTML_VOID_TAGS = frozenset({"br", "hr"})
+_STORED_HTML_VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
 _STORED_HTML_SKIPPED_TAGS = frozenset({"iframe", "object", "script", "style", "svg"})
 _STORED_HTML_SKIPPED_CLASSES = frozenset({"screen-reader-user-query-label"})
 
@@ -227,11 +247,12 @@ def _safe_stored_html_url(value: str) -> str:
 class _StoredHtmlSanitizer(HTMLParser):
     """Keep harmless rich-text structure while dropping cached page chrome."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, replace_images: bool = False) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.open_tags: list[str] = []
         self.skipped_tags: list[str] = []
+        self.replace_images = replace_images
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
@@ -244,6 +265,12 @@ class _StoredHtmlSanitizer(HTMLParser):
         if tag in _STORED_HTML_SKIPPED_TAGS or class_names & _STORED_HTML_SKIPPED_CLASSES:
             if tag not in _STORED_HTML_VOID_TAGS:
                 self.skipped_tags.append(tag)
+            return
+        if tag == "img" and self.replace_images:
+            self.parts.append(
+                '<span class="browser-zhihu-image-placeholder" role="img" '
+                'aria-label="Image omitted from cached Zhihu answer"></span>'
+            )
             return
         if tag not in _STORED_HTML_ALLOWED_TAGS:
             return
@@ -309,12 +336,12 @@ class _StoredHtmlSanitizer(HTMLParser):
         return "".join(self.parts).strip()
 
 
-def sanitize_stored_html(value: str) -> str:
+def sanitize_stored_html(value: str, *, replace_images: bool = False) -> str:
     """Sanitize cached rich text before marking it safe for a Jinja template."""
     source = str(value or "").replace("\x00", "").strip()
     if not source:
         return ""
-    parser = _StoredHtmlSanitizer()
+    parser = _StoredHtmlSanitizer(replace_images=replace_images)
     parser.feed(source)
     parser.close()
     return parser.render()
@@ -391,9 +418,19 @@ def render_agent_response(value: str) -> Markup:
     return _render_agent_markdown(source)
 
 
-def render_cached_message(content_text: str, content_html: str = "") -> Markup:
+def render_cached_message(
+    content_text: str,
+    content_html: str = "",
+    *,
+    replace_images: bool = False,
+) -> Markup:
     """Render one cached message from sanitized rich text or Markdown fallback."""
-    rich_text = sanitize_stored_html(content_html)
+    source_html = (
+        normalize_zhihu_rich_text(content_html).content_html
+        if replace_images and content_html
+        else content_html
+    )
+    rich_text = sanitize_stored_html(source_html, replace_images=replace_images)
     return Markup(rich_text) if rich_text else render_prompt_markdown(content_text)
 
 
@@ -2292,10 +2329,11 @@ def create_app(
 
     @app.get("/browser/session/<session_id>/export")
     def browser_session_export(session_id: str):
-        """Download one complete session or the currently displayed session page."""
+        """Download a complete resource group unless page scope is explicit."""
         source = request.args.get("source", "all")
         sort = request.args.get("sort", "newest")
-        page_only = request.args.get("scope") == "page"
+        export_scope = request.args.get("scope", "all").strip().lower()
+        page_only = export_scope == "page"
         text_page = query_chat_history(
             media_catalog.local_store_root,
             source=source,
@@ -2307,7 +2345,7 @@ def create_app(
         )
         markdown = build_chat_history_markdown(
             text_page,
-            message_count=len(text_page.items) if page_only else None,
+            message_count=len(text_page.items),
         )
         if not markdown:
             abort(404)

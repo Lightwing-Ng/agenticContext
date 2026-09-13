@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer history for the formal text cache.
 
-Code version: v1.1.2-codex.1
+Code version: v1.5.0-codex.1
 """
 
 from __future__ import annotations
@@ -398,9 +398,9 @@ class ZhihuHistoryStore:
                 "role": "answer",
                 "author_label": answer.author_name or answer.author_token or "Zhihu answerer",
                 "content_text": display_text,
-                # Local resources deliberately renders text plus safe source links;
-                # provider HTML and remote images are never mounted into the page.
-                "content_html": "",
+                # Preserve canonical rich-text structure for the Web layer's
+                # strict sanitizer. Remote image payloads are never downloaded.
+                "content_html": answer.content_html,
                 "content_sha256": answer.content_sha256,
                 "source_links": links,
                 "model_label": "",
@@ -594,9 +594,16 @@ def sync_zhihu_history(
             "output_dir": str(path.parent),
         }
 
+    available_answers = len(collection.answers)
+    reported_answers = collection.expected_total
+    unavailable_answers = (
+        max(reported_answers - available_answers, 0)
+        if reported_answers is not None
+        else 0
+    )
     state.update(
         phase="committing",
-        message=f"Writing and verifying {len(collection.answers):,} Zhihu answer records...",
+        message=f"Writing and verifying {available_answers:,} Zhihu answer records...",
     )
     write_result = store.merge_answers(collection.answers, utc_now_iso())
     store.save()
@@ -604,16 +611,18 @@ def sync_zhihu_history(
     if verified.cached_answers != write_result.cached_answers:
         raise RuntimeError("Zhihu history readback did not match the committed answer count.")
     state.update(
-        discovered_tweets=collection.expected_total or len(collection.answers),
-        queued_tweets=len(collection.answers),
-        processed_tweets=len(collection.answers),
+        discovered_tweets=reported_answers or available_answers,
+        queued_tweets=available_answers,
+        processed_tweets=available_answers,
         downloaded_posts=write_result.cached_answers,
         downloaded_tweets=write_result.cached_answers,
         performance_metrics={
             "collection_mode": collection_mode,
             "pages_processed": collection.pages_processed,
             "duplicates": collection.duplicates,
-            "expected_answers": collection.expected_total,
+            "expected_answers": reported_answers,
+            "available_answers": available_answers,
+            "unavailable_answers": unavailable_answers,
             "raw_answers": collection.raw_answers,
             "added": write_result.added,
             "changed": write_result.changed,
@@ -624,7 +633,10 @@ def sync_zhihu_history(
         "stopped": False,
         "collection_mode": collection_mode,
         "account": account,
-        "processed_answers": len(collection.answers),
+        "processed_answers": available_answers,
+        "reported_answers": reported_answers,
+        "available_answers": available_answers,
+        "unavailable_answers": unavailable_answers,
         "cached_answers": write_result.cached_answers,
         "pages_processed": collection.pages_processed,
         "duplicates": collection.duplicates,

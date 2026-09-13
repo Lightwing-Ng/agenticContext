@@ -1,4 +1,4 @@
-<!-- Code version: v1.71.9-codex.1 -->
+<!-- Code version: v1.73.2-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,8 +9,8 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.117.7-codex.1') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.120.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.2-codex.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
@@ -325,8 +325,9 @@
                                 </button>
                                 <button
                                     type="button"
-                                    class="browser-session-action-button browser-session-full-export-button browser-session-page-export-button"
-                                    data-browser-session-download-url="{{ url_for('browser_session_export', session_id=text_page.current_session.stable_id, source=filters.source, sort=filters.sort) }}"
+                                    class="browser-session-action-button browser-session-full-export-button"
+                                    data-browser-session-export-scope="all"
+                                    data-browser-session-download-url="{{ url_for('browser_session_export', session_id=text_page.current_session.stable_id, source=filters.source, sort=filters.sort, scope='all') }}"
                                     aria-label="Export Markdown"
                                     title="Export Markdown"
                                 >
@@ -845,7 +846,7 @@
                                                     id="browser_session_message_{{ message.stable_id }}"
                                                     lang="zh-CN"
                                                     data-browser-session-message-source
-                                                >{{ render_cached_message(message.content_text, message.content_html) }}</div>
+                                                >{{ render_cached_message(message.content_text, message.content_html, replace_images=message.source == "zhihu") }}</div>
                                                 {% endif %}
                                                 {% if message.source != "zhihu" %}
                                                 <button

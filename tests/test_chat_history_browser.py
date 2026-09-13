@@ -1,6 +1,6 @@
 """Focused tests for the local text-history browser."""
 
-# Code version: v1.7.1-codex.1
+# Code version: v1.8.0-codex.1
 
 from datetime import datetime
 import hashlib
@@ -151,6 +151,53 @@ def test_query_zhihu_history_groups_answerers_and_opens_all_their_answers(
     assert "- Answers: 2" in markdown
     assert "## Answers" in markdown
     assert "Newest question" in markdown
+
+
+def test_zhihu_markdown_export_rebuilds_structure_from_legacy_rich_html(
+    tmp_path: Path,
+) -> None:
+    history_path = tmp_path / "llm" / "zhihu" / "history.parquet"
+    row = _zhihu_history_row(
+        "9",
+        "Structured question",
+        "Fixture Author",
+        "Flattened legacy text",
+        profile_slug="fixture-author",
+        last_seen_at="2026-08-12T08:00:00Z",
+    )
+    row["content_html"] = (
+        '<div class="RichContent-inner"><span id="content">'
+        '<span class="RichText ztext" itemprop="text">'
+        '<h2>Section</h2><p>Paragraph with <b>emphasis</b> and '
+        '<a href="/question/9">one link</a>.</p>'
+        '<ul><li>First point</li><li>Second point</li></ul><hr>'
+        '<figure><noscript><img data-original-token="same" '
+        'data-original="https://pic1.zhimg.com/one.jpg"></noscript>'
+        '<div><img data-original-token="same" '
+        'data-original="https://pic1.zhimg.com/one.jpg"></div>'
+        '<figcaption>One caption</figcaption></figure>'
+        '</span></span></div><div class="Reward">Reward leak</div>'
+    )
+    write_parquet_rows_atomic(history_path, [row], ZHIHU_HISTORY_SCHEMA)
+    index_page = query_chat_history(tmp_path, source="zhihu", session_view=True)
+    detail_page = query_chat_history(
+        tmp_path,
+        source="zhihu",
+        session_view=True,
+        session=index_page.sessions[0].stable_id,
+    )
+
+    markdown = build_chat_history_markdown(detail_page)
+
+    assert "## Section" in markdown
+    assert "Paragraph with **emphasis** and " in markdown
+    assert "[one link](<https://www.zhihu.com/question/9>)" in markdown
+    assert "- First point\n- Second point" in markdown
+    assert "\n---\n" in markdown
+    assert markdown.count("Image omitted from cached Zhihu answer") == 1
+    assert "*One caption*" in markdown
+    assert "Flattened legacy text" not in markdown
+    assert "Reward leak" not in markdown
 
 
 def test_query_chat_history_reads_and_filters_typed_messages(tmp_path: Path) -> None:

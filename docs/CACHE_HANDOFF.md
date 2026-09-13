@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.10.1-codex.1`
+Documentation version: `v1.12.0-codex.1`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -26,7 +26,7 @@ Cache is the execution surface. Its canonical source pages are:
 | ChatGPT | `/cache/chatgpt` | ChatGPT images | ChatGPT sessions and messages |
 | Gemini | `/cache/gemini` | Gemini sessions and messages | Gemini sessions and messages |
 | Claude | `/cache/claude` | Claude sessions and messages | Claude sessions and messages |
-| Zhihu | `/cache/zhihu` | Upvoted answers or one answerer's answers | One text session per answer plus source links |
+| Zhihu | `/cache/zhihu` | Upvoted answers or one answerer's answers | One rich-text session per answer plus source links |
 
 The historical top-level paths `/grok`, `/chatgpt`, `/gemini`, `/claude`, and `/zhihu` are compatibility
 redirects. Do not introduce new links to them. The legacy `/chatgpt` plan is not a
@@ -137,7 +137,14 @@ action. Its standard Answerer select is populated from the cached author labels 
 sessions, search, ordering, and pagination to the selected name. The index shows each literal
 answerer in its Answerer column, while a one-answer detail table uses that name instead of the
 generic Role heading. The original answer, question, answerer, embedded anchor, and remote image
-URLs are stored in `source_links`. Provider HTML is empty and remote media is never mounted.
+URLs are stored in `source_links`. The collector isolates the narrowest supported answer-body node,
+stores canonical semantic HTML in `content_html`, and stores a structure-preserving Markdown
+translation in `content_text`; reward, editing, voting, and other page controls are excluded. The
+Web layer normalizes legacy rich rows again before applying its final sanitizer. Duplicate fallback
+and lazy-loader copies inside one figure render as one local `photo.badge.arrow.down.svg`
+placeholder, while captions remain visible. `Export Markdown` defaults to every answer in the
+selected answerer group, independent of the current 100-row page. No remote media source is mounted
+or downloaded.
 
 ## 4. Local compute boundary
 
@@ -162,7 +169,7 @@ The current persistent cache layout is:
 | `local_store/llm/gemini/history.parquet` | Gemini Text runtime | Typed Gemini messages |
 | `local_store/llm/grok/history.parquet` | Grok Text runtime | Typed Grok messages |
 | `local_store/llm/claude/history.parquet` | Claude Text runtime | Typed Claude messages |
-| `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; provider HTML omitted and source links retained |
+| `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; rich-text source and source links retained |
 | `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers |
 | `local_store/.cache_task.lock` | Cache runtimes | Cross-process advisory task lock |
 | `logs/cachelikes.log.jsonl` | All runtimes | Structured diagnostics |

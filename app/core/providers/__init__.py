@@ -1,6 +1,6 @@
 """Provider workflows exposed to the application layer."""
 
-# Code version: v1.4.1-codex.1
+# Code version: v1.5.0-codex.1
 
 from ..chatgpt_agent_sources import (
     fetch_chatgpt_conversation_history,
@@ -28,6 +28,7 @@ from ..grok_history import build_grok_history_snapshot
 from ..grok_history_service import GrokHistoryService
 from ..grok_service import GrokDownloadService
 from ..service import CacheLikesService
+from ..zhihu_answers import normalize_zhihu_rich_text
 from ..zhihu_history import build_zhihu_history_initial_snapshot
 from ..zhihu_history_service import ZhihuHistoryService
 
@@ -54,6 +55,7 @@ __all__ = [
     "list_chatgpt_agent_sources",
     "list_chatgpt_project_sessions",
     "normalize_chatgpt_conversation_url",
+    "normalize_zhihu_rich_text",
     "probe_and_collect_chatgpt_sources",
     "reset_chatgpt_state",
     "reset_grok_state",

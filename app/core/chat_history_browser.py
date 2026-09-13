@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.17.0-codex.1
+# Code version: v1.18.0-codex.1
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from .resource_persistence import (
     ZHIHU_HISTORY_FILENAME,
     read_parquet_rows,
 )
+from .zhihu_answers import normalize_zhihu_rich_text
 
 
 CHAT_HISTORY_PAGE_SIZE = 100
@@ -797,7 +798,14 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
             else " ".join(message.author_label.split()) or message.role.title() or "Message"
         )
         timestamp = format_chat_message_timestamp_label(message.last_seen_at)
-        content = message.content_text.strip() or "(empty message)"
+        content = message.content_text.strip()
+        if session.source == "zhihu" and message.content_html:
+            normalized_markdown = normalize_zhihu_rich_text(
+                message.content_html
+            ).content_markdown
+            if normalized_markdown:
+                content = normalized_markdown
+        content = content or "(empty message)"
         lines.extend((f"### {index}. {role} · {timestamp}", "", content, ""))
         for link_index, source_link in enumerate(message.source_links, start=1):
             lines.append(f"Source link {link_index}: {source_link}")

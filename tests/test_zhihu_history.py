@@ -1,6 +1,6 @@
 """Fixture-only coverage for the formal Zhihu text cache.
 
-Code version: v1.1.3-codex.1
+Code version: v1.5.0-codex.1
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from app.core.zhihu_history import (
     sync_zhihu_history,
     zhihu_history_path,
 )
+from app.core.zhihu_history_service import _format_completion_message
 
 
 class RecordingState:
@@ -191,14 +192,15 @@ def test_liked_answer_collection_rejects_untrusted_activity_cursor() -> None:
         collect_zhihu_liked_answers(profile, lambda _url: payload, lambda: False)
 
 
-def test_formal_store_keeps_text_and_links_without_provider_html(tmp_path: Path) -> None:
+def test_formal_store_keeps_rich_text_for_sanitized_local_replay(tmp_path: Path) -> None:
     profile = normalize_zhihu_profile_url("https://www.zhihu.com/people/fixture-author")
+    content_html = (
+        '<p>Readable <a href="/question/100007">rich text</a></p>'
+        '<img alt="diagram" data-original="//pic1.zhimg.com/example.png">'
+    )
     payload = _answer_payload(
         7,
-        content=(
-            '<p>Readable <a href="/question/100007">rich text</a></p>'
-            '<img alt="diagram" data-original="//pic1.zhimg.com/example.png">'
-        ),
+        content=content_html,
     )
     page = {"data": [payload], "paging": {"totals": 1, "is_end": True}}
 
@@ -211,8 +213,16 @@ def test_formal_store_keeps_text_and_links_without_provider_html(tmp_path: Path)
 
     row = ZhihuHistoryStore(zhihu_history_path(tmp_path)).rows[0]
     assert result.cached_answers == 1
-    assert row["content_text"] == "Readable rich text\n[diagram]"
-    assert row["content_html"] == ""
+    assert row["content_text"] == (
+        "Readable [rich text](<https://www.zhihu.com/question/100007>)\n\n"
+        "[Image omitted from cached Zhihu answer]"
+        "(<https://pic1.zhimg.com/example.png>)"
+    )
+    assert row["content_html"] == (
+        '<p>Readable <a href="https://www.zhihu.com/question/100007">'
+        'rich text</a></p><img alt="diagram" '
+        'data-original="https://pic1.zhimg.com/example.png">'
+    )
     assert "https://www.zhihu.com/question/100007" in row["source_links"]
     assert "https://pic1.zhimg.com/example.png" in row["source_links"]
     assert row["conversation_url"].endswith("/answer/7")
@@ -261,7 +271,7 @@ def test_liked_mode_sync_is_visible_in_local_resources(tmp_path: Path) -> None:
     assert page.sessions[0].conversation_title == "Fixture Author"
     assert page.sessions[0].message_count == 1
     assert page.items[0].source == "zhihu"
-    assert page.items[0].content_html == ""
+    assert page.items[0].content_html == "<p>Answer 2197549311</p>"
 
 
 def test_optional_author_mode_uses_the_answerer_url_and_merges_history(tmp_path: Path) -> None:
@@ -308,6 +318,32 @@ def test_completed_author_sync_queues_only_answers_exposed_by_stable_pagination(
     assert state.values["queued_tweets"] == 1
     assert state.values["processed_tweets"] == 1
     assert state.values["performance_metrics"]["expected_answers"] == 2
+    assert state.values["performance_metrics"]["available_answers"] == 1
+    assert state.values["performance_metrics"]["unavailable_answers"] == 1
+    assert result["reported_answers"] == 2
+    assert result["available_answers"] == 1
+    assert result["unavailable_answers"] == 1
+
+
+def test_completion_message_explains_provider_unavailable_answers() -> None:
+    message = _format_completion_message(
+        {
+            "processed_answers": 412,
+            "pages_processed": 22,
+            "added": 412,
+            "changed": 0,
+            "unchanged": 0,
+            "cached_answers": 1_746,
+            "reported_answers": 422,
+            "unavailable_answers": 10,
+        }
+    )
+
+    assert message == (
+        "Finished Zhihu answer cache. Read 412 answers across 22 pages; added 412, changed 0, "
+        "unchanged 0; cached total 1,746. Zhihu reports 422 answers; 10 were unavailable in its "
+        "answer list and could not be cached."
+    )
 
 
 def test_optional_author_mode_keeps_an_unavailable_answer_as_a_source_record(

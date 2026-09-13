@@ -1,4 +1,4 @@
-/* Code version: v1.4.1-codex.1 */
+/* Code version: v1.4.2-codex.1 */
 
 .browser-heading-copy {
     display: flex;
@@ -283,6 +283,21 @@
         right: 0;
         width: 100%;
         max-width: none;
+    }
+}
+
+@media (min-width: 601px) and (max-width: 900px) {
+    .browser-session-detail-actions--session {
+        align-items: center;
+        flex-wrap: nowrap;
+        min-width: 0;
+    }
+
+    .browser-session-detail-actions--session > .browser-search-field {
+        flex: 0 1 var(--layout-control-width);
+        width: min(100%, var(--layout-control-width));
+        min-width: 0;
+        margin-inline-start: auto;
     }
 }
 

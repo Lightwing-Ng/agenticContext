@@ -1,12 +1,14 @@
 """Route and asset coverage for the formal Zhihu cache source.
 
-Code version: v1.3.3-codex.1
+Code version: v1.6.0-codex.1
 """
 
 from __future__ import annotations
 
 import hashlib
+from html import unescape
 from pathlib import Path
+import re
 from unittest.mock import patch
 from xml.etree import ElementTree
 
@@ -22,6 +24,9 @@ from app.web.app import create_app
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 ZHIHU_LOGO_ASSET = REPOSITORY_ROOT / "app/web/static/images/zhihu.svg"
+ZHIHU_IMAGE_PLACEHOLDER_ASSET = (
+    REPOSITORY_ROOT / "app/web/static/images/photo.badge.arrow.down.svg"
+)
 
 
 def _create_zhihu_app(tmp_path: Path):
@@ -51,11 +56,14 @@ def test_zhihu_cache_page_uses_edge_login_and_text_first_controls(tmp_path: Path
     assert "Leave blank to cache answers upvoted by the signed-in account." not in body
     assert ">Open Zhihu settings</a>" in body
     assert 'href="/settings#settings-downloads"' in body
-    assert "Images and rich-text destinations are retained only as source links" in body
+    assert "Answer text and rich-text structure are stored" in body
+    assert "replaces each original image with a local placeholder" in body
     assert "--cache-source-mark: url('/static/images/zhihu.svg')" in body
     assert "Answers reported" in body
+    assert "Answers available" in body
+    assert "Answers queued" not in body
     assert "Answers found" not in body
-    assert 'cache-page.js?v=cache-page-v1.14.3-codex.1' in body
+    assert 'cache-page.js?v=cache-page-v1.15.0-codex.1' in body
 
 
 def test_zhihu_routes_probe_and_dispatch_the_selected_edge_session(tmp_path: Path) -> None:
@@ -113,15 +121,23 @@ def test_legacy_zhihu_route_and_status_use_the_formal_cache(tmp_path: Path) -> N
     assert status["output_dir"].endswith("/llm/zhihu")
 
 
-def test_local_resources_renders_zhihu_text_and_links_without_remote_media(tmp_path: Path) -> None:
+def test_local_resources_renders_zhihu_rich_text_and_local_image_placeholders(
+    tmp_path: Path,
+) -> None:
     application = _create_zhihu_app(tmp_path)
     profile = normalize_zhihu_profile_url("https://www.zhihu.com/people/fixture-author")
     answer = normalize_zhihu_answer_payload(
         {
             "id": 2197549311,
             "content": (
-                '<p>Cached answer body</p><a href="https://example.com/reference">Reference</a>'
-                '<img data-original="https://pic1.zhimg.com/example.png">'
+                '<p>Cached <strong>answer</strong> body</p>'
+                '<a href="https://example.com/reference">Reference</a>'
+                '<h2>Fixture section</h2><ul><li>First point</li></ul>'
+                '<figure><noscript><img data-original-token="fixture-image" '
+                'data-original="https://pic1.zhimg.com/example.png"></noscript>'
+                '<div><img data-original-token="fixture-image" '
+                'data-original="https://pic1.zhimg.com/example.png"></div>'
+                '<figcaption>Fixture image caption</figcaption></figure>'
                 '<p>Full answer final sentence.</p>'
             ),
             "content_need_truncated": True,
@@ -203,9 +219,20 @@ def test_local_resources_renders_zhihu_text_and_links_without_remote_media(tmp_p
     )
     assert 'class="browser-session-table-source"' not in index_body
     assert "Full answer final sentence." in detail_body
+    assert "<p>Cached <strong>answer</strong> body</p>" in detail_body
+    assert "<h2>Fixture section</h2>" in detail_body
+    assert "<ul><li>First point</li></ul>" in detail_body
+    assert "<figure>" in detail_body
+    assert "<figcaption>Fixture image caption</figcaption>" in detail_body
     assert 'href="https://example.com/reference"' in detail_body
     assert 'href="https://pic1.zhimg.com/example.png"' in detail_body
     assert 'src="https://pic1.zhimg.com/example.png"' not in detail_body
+    assert (
+        '<span class="browser-zhihu-image-placeholder" role="img" '
+        'aria-label="Image omitted from cached Zhihu answer"></span>'
+        in detail_body
+    )
+    assert detail_body.count('class="browser-zhihu-image-placeholder"') == 1
     assert "browser-session-table-message-shell is-expanded" in detail_body
     assert "data-browser-session-message-toggle" not in detail_body
     assert '<th scope="col" class="browser-session-col-role">Question</th>' in detail_body
@@ -214,6 +241,65 @@ def test_local_resources_renders_zhihu_text_and_links_without_remote_media(tmp_p
     assert '<span class="metric-label">Answerer</span>' in detail_body
     assert '<span class="metric-label">Answers</span>' in detail_body
     assert '<span class="metric-label">Projects</span>' not in detail_body
+
+
+def test_zhihu_export_button_downloads_every_answer_across_pages(
+    tmp_path: Path,
+) -> None:
+    profile = normalize_zhihu_profile_url(
+        "https://www.zhihu.com/people/fixture-author"
+    )
+    answers = tuple(
+        normalize_zhihu_answer_payload(
+            {
+                "id": 3_000_000_000 + index,
+                "content": f"<p>Answer body {index}</p>",
+                "author": {
+                    "id": "fixture-author-id",
+                    "name": "Fixture Author",
+                    "url_token": "fixture-author",
+                },
+                "question": {
+                    "id": 4_000_000_000 + index,
+                    "title": f"Question {index}",
+                },
+            },
+            profile,
+        )
+        for index in range(101)
+    )
+    store = ZhihuHistoryStore(zhihu_history_path(tmp_path / "local_store"))
+    store.merge_answers(answers, "2026-09-11T00:00:00Z")
+    store.save()
+    application = _create_zhihu_app(tmp_path)
+    session = query_chat_history(
+        tmp_path / "local_store",
+        source="zhihu",
+        session_view=True,
+    ).sessions[0]
+    client = application.test_client()
+    detail_body = client.get(
+        "/browser?view=text&source=zhihu&session_view=1&page=2"
+        f"&session={session.stable_id}"
+    ).get_data(as_text=True)
+
+    match = re.search(
+        r'data-browser-session-download-url="([^"]+)"',
+        detail_body,
+    )
+    assert match is not None
+    export_url = unescape(match.group(1))
+    assert "scope=all" in export_url
+    response = client.get(export_url)
+    markdown = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert response.mimetype == "text/markdown"
+    assert "_page_" not in response.headers["Content-Disposition"]
+    assert "- Answers: 101" in markdown
+    assert markdown.count("\n### ") == 101
+    assert "Question 0" in markdown
+    assert "Question 100" in markdown
 
 
 def test_zhihu_browser_preference_round_trips(tmp_path: Path) -> None:
@@ -234,3 +320,9 @@ def test_zhihu_logo_asset_is_exactly_the_first_vector_character() -> None:
     )
     assert asset_root.attrib["viewBox"] == "0 0 92 91"
     assert asset_paths[0].attrib["fill"] == "#0f88eb"
+
+
+def test_zhihu_image_placeholder_matches_the_requested_worthward_asset() -> None:
+    assert hashlib.sha256(ZHIHU_IMAGE_PLACEHOLDER_ASSET.read_bytes()).hexdigest() == (
+        "007674f3e60a67ed05db925628b1d5d6d22561e70dd22be9ea87601a9ec8533b"
+    )

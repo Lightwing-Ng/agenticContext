@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.22.1-codex.1`
+Documentation version: `v1.24.0-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -33,8 +33,11 @@ deterministic browser-only tools that process explicit input and keep drafts in 
 The `/cache/zhihu` source is the text-first Zhihu workflow: by default it caches every
 answer found in the signed-in account's vote-up activity, while an optional answerer URL caches all
 answers exposed for that profile. Formal rows are written to `local_store/llm/zhihu/history.parquet`
-and appear in Local resources; remote images and rich-text destinations are retained as hyperlinks,
-not downloaded or mounted. See [Beta experiments](docs/BETA.md) and
+and appear in Local resources. The cache isolates the provider's answer-body node, preserves its
+semantic HTML, and derives portable Markdown for the answerer's complete default export. Rich text
+is sanitized again at render time; remote images are not downloaded or mounted, duplicate fallback
+and lazy-loader nodes collapse to one local SVG placeholder at the original figure position. See
+[Beta experiments](docs/BETA.md) and
 [Cache handoff](docs/CACHE_HANDOFF.md) for their respective contracts.
 
 ## Visual Style Reference

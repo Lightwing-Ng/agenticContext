@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.63.9-codex.1
+Code version: v1.66.1-codex.1
 """
 
 import hashlib
@@ -1391,7 +1391,7 @@ def test_browser_grid_filename_wraps_without_hiding_its_extension() -> None:
 
 
 def test_chatgpt_session_metrics_put_the_session_name_on_its_own_row() -> None:
-    """Keep the Foundation session metrics readable across breakpoints."""
+    """Keep session metrics capped while the session name retains its own row."""
     stylesheet = _stylesheet()
 
     for token in (
@@ -1403,6 +1403,13 @@ def test_chatgpt_session_metrics_put_the_session_name_on_its_own_row() -> None:
         "justify-content: flex-end;",
     ):
         assert token in stylesheet
+
+    card_start = stylesheet.index(
+        ".browser-metric-grid.browser-session-metric-grid > .metric-card {"
+    )
+    card_rule = stylesheet[card_start:stylesheet.index("\n}", card_start)]
+    assert "width: 100%;" in card_rule
+    assert "max-width: var(--layout-control-width);" in card_rule
 
     session_name_start = stylesheet.index(".browser-metric-grid .browser-session-name-metric strong {")
     session_name_rule = stylesheet[session_name_start:stylesheet.index("\n}", session_name_start)]
@@ -1630,6 +1637,9 @@ def test_segmented_control_uses_the_sibling_generic_pill_contract() -> None:
         ".browser-session-actions > .browser-session-open-original-button {",
         ".browser-session-actions > .browser-session-refresh-button {",
         ".browser-session-actions > .browser-session-full-export-button {",
+        ".browser-session-table-message figure {",
+        ".browser-session-table-message figcaption {",
+        "margin-inline: 0;",
         ".browser-session-drawer-refresh-icon {",
         'mask-image: url("/static/images/arrow.trianglehead.clockwise.svg");',
         ".browser-session-page-export-icon {",
@@ -1982,6 +1992,19 @@ def test_browser_session_messages_wrap_rich_content_inside_fixed_cells() -> None
         assert token in code_rule
     for token in ("width: 100%;", "max-width: 100%;", "table-layout: fixed;"):
         assert token in nested_table_rule
+    placeholder_start = stylesheet.index(
+        ".browser-session-table-message .browser-zhihu-image-placeholder {"
+    )
+    placeholder_rule = stylesheet[
+        placeholder_start:stylesheet.index("\n}", placeholder_start)
+    ]
+    for token in (
+        "display: block;",
+        "width: 43px;",
+        "height: 31px;",
+        'mask: url("/static/images/photo.badge.arrow.down.svg") center/contain no-repeat;',
+    ):
+        assert token in placeholder_rule
 
 
 def test_browser_session_messages_default_to_compact_vertical_disclosure() -> None:
@@ -2198,7 +2221,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.117.7-codex.1 */",
+        "/* Code version: v2.120.1-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2630,13 +2653,12 @@ def test_agent_session_source_raises_above_the_inline_recent_session_list_when_o
     assert "bottom: calc(100% + 4px);" in upward_rule
 
 
-def test_browser_session_status_labels_share_nonbold_left_typography() -> None:
-    """Keep account, message, and terminal status text on one non-bold typography contract."""
+def test_browser_session_status_literal_fields_share_nonbold_left_typography() -> None:
+    """Keep Account, Terminal, and detail copy on one non-bold typography contract."""
     stylesheet = _stylesheet()
     selector = (
-        ".browser-session-status-account,\n"
-        ".browser-session-status-message[data-role=\"browser-session-message\"],\n"
-        ".agent-terminal-execution-label {"
+        ".browser-session-status-literal,\n"
+        ".browser-session-status-message[data-role=\"browser-session-message\"] {"
     )
     selector_start = stylesheet.index(selector)
     selector_rule = stylesheet[selector_start:stylesheet.index("\n}", selector_start)]
@@ -2649,6 +2671,22 @@ def test_browser_session_status_labels_share_nonbold_left_typography() -> None:
         "text-align: left;",
     ):
         assert token in selector_rule
+
+    literal_start = stylesheet.index(".browser-session-status-literal {", selector_start)
+    literal_rule = stylesheet[literal_start:stylesheet.index("\n}", literal_start)]
+    assert "display: inline-flex;" in literal_rule
+    assert "align-items: baseline;" in literal_rule
+    assert "gap: 4px;" in literal_rule
+
+    label_start = stylesheet.index(".browser-session-status-field-label {")
+    label_rule = stylesheet[label_start:stylesheet.index("\n}", label_start)]
+    assert "color: var(--muted);" in label_rule
+    assert "white-space: nowrap;" in label_rule
+
+    value_start = stylesheet.index(".browser-session-status-field-value {")
+    value_rule = stylesheet[value_start:stylesheet.index("\n}", value_start)]
+    assert "color: var(--text);" in value_rule
+    assert "overflow-wrap: anywhere;" in value_rule
 
 
 def test_browser_session_status_uses_the_same_leading_slot_for_loading_and_failure() -> None:

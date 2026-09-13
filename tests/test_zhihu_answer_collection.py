@@ -1,6 +1,6 @@
 """Pure-fixture coverage for the shared Zhihu answer collector.
 
-Code version: v1.0.0-codex.1
+Code version: v1.1.0-codex.1
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from app.core.zhihu_answers import (
     collect_zhihu_answers,
     normalize_zhihu_answer_payload,
     normalize_zhihu_profile_url,
+    normalize_zhihu_rich_text,
 )
 
 
@@ -251,3 +252,97 @@ def test_normalizer_rejects_an_unmarked_empty_answer() -> None:
 
     with pytest.raises(ZhihuArchiveError, match="does not expose complete cacheable content"):
         normalize_zhihu_answer_payload(payload, profile)
+
+
+def test_normalizer_isolates_full_page_rich_text_and_preserves_markdown() -> None:
+    content = """
+    <div class="RichContent RichContent--unescapable">
+      <div class="RichContent-inner">
+        <span id="content">
+          Outside the narrow body.
+          <span class="RichText ztext" itemprop="text">
+            <p>其实近期有许多降智的照妖镜。</p>
+            <p>在我看来，2018 年更新的<span><a href="/search?q=办法&amp;source=entity">《个人外汇管理办法》<svg><path d="decorative"></path></svg></a></span>已经很完备了。</p>
+            <ul>
+              <li>A4 纸包括散户境外炒股；</li>
+              <li>这玩意的<b>复杂度</b>不能被低估。</li>
+            </ul>
+            <hr>
+            <h2>常见降智言论辨析</h2>
+            <h3>1. 从深圳携带现金到香港</h3>
+            <figure>
+              <noscript><img alt="银行地推" data-original-token="image-token" data-original="https://pic1.zhimg.com/original.jpg"></noscript>
+              <div class="RichText-ConditionalImagePortal"><img src="data:image/svg+xml,placeholder" data-original-token="image-token" data-original="https://pic1.zhimg.com/original.jpg" data-actualsrc="https://picx.zhimg.com/preview.jpg"></div>
+              <figcaption>深圳某厂外某银行等地推</figcaption>
+            </figure>
+            <script>bodyScriptLeak()</script>
+          </span>
+          <span id="VirtualCatalogAnchorPoint"></span>
+        </span>
+      </div>
+      <div class="Reward"><button>开启送礼物</button></div>
+      <div class="ContentItem-time">编辑于 2026 年</div>
+      <div class="ContentItem-actions"><button>赞同 620</button><button>103 条评论</button></div>
+    </div>
+    """
+    profile = normalize_zhihu_profile_url(ZHIHU_FIXTURE_PROFILE_URL)
+    answer = normalize_zhihu_answer_payload(
+        _answer_payload(12, content=content),
+        profile,
+    )
+
+    assert answer.content_text == (
+        "其实近期有许多降智的照妖镜。\n\n"
+        "在我看来，2018 年更新的[《个人外汇管理办法》]"
+        "(<https://www.zhihu.com/search?q=办法&source=entity>)已经很完备了。\n\n"
+        "- A4 纸包括散户境外炒股；\n"
+        "- 这玩意的**复杂度**不能被低估。\n\n"
+        "---\n\n"
+        "## 常见降智言论辨析\n\n"
+        "### 1. 从深圳携带现金到香港\n\n"
+        "[Image omitted from cached Zhihu answer]"
+        "(<https://pic1.zhimg.com/original.jpg>)\n"
+        "*深圳某厂外某银行等地推*"
+    )
+    assert answer.content_html.startswith("<p>其实近期有许多降智的照妖镜。</p>")
+    assert "<ul>" in answer.content_html
+    assert "<li>这玩意的<b>复杂度</b>不能被低估。</li>" in answer.content_html
+    assert "<hr>" in answer.content_html
+    assert "<h2>常见降智言论辨析</h2>" in answer.content_html
+    assert "<figure>" in answer.content_html
+    assert "<figcaption>深圳某厂外某银行等地推</figcaption>" in answer.content_html
+    assert answer.content_html.count("<img") == 1
+    assert "<svg" not in answer.content_html
+    for page_chrome in (
+        "Outside the narrow body",
+        "VirtualCatalogAnchorPoint",
+        "bodyScriptLeak",
+        "开启送礼物",
+        "编辑于",
+        "赞同 620",
+        "103 条评论",
+    ):
+        assert page_chrome not in answer.content_html
+        assert page_chrome not in answer.content_text
+    assert answer.media_urls == ("https://pic1.zhimg.com/original.jpg",)
+
+
+def test_rich_text_normalization_is_safe_and_idempotent_for_api_fragments() -> None:
+    source = (
+        '<p>Rootless <strong>API</strong> fragment.</p>'
+        '<a href="javascript:alert(1)">Unsafe link text</a>'
+        '<button>Button leak</button><script>Script leak</script>'
+        '<figure><img data-original="https://pic1.zhimg.com/one.jpg">'
+        '<figcaption>One caption</figcaption></figure>'
+    )
+
+    first = normalize_zhihu_rich_text(source)
+    second = normalize_zhihu_rich_text(first.content_html)
+
+    assert second == first
+    assert "Rootless **API** fragment." in first.content_markdown
+    assert "Unsafe link text" in first.content_markdown
+    assert "javascript:" not in first.content_html
+    assert "Button leak" not in first.content_markdown
+    assert "Script leak" not in first.content_markdown
+    assert first.content_markdown.count("Image omitted from cached Zhihu answer") == 1

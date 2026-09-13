@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.17.1-codex.1`
+Documentation version: `v1.19.0-codex.1`
 
 ## Launch
 
@@ -231,7 +231,7 @@ interrupt it, so the optimizer must checkpoint frequently enough for the workloa
 | `local_store/llm/gemini/history.parquet` | Gemini typed text history |
 | `local_store/llm/grok/history.parquet` | Grok typed text history |
 | `local_store/llm/claude/history.parquet` | Claude typed text history |
-| `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text and source links |
+| `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links |
 | `local_store/prompt/prompts.parquet` | Saved prompt content snapshots and source pointers; prompts remain available if source history disappears |
 | `local_store/agent/agent_source_catalog.parquet` | Provider-neutral Agent session and Project discovery cache |
 | `local_store/.cache_task.lock` | Cross-source advisory task lock |
@@ -261,7 +261,13 @@ metrics, sessions, search, ordering, and pagination. The list shows the literal 
 redundant Source column and answer ID, and removes the inapplicable Projects metric. Detail tables
 use the literal answerer name instead of Role and render the complete stored text without the
 generic message-collapse limit. Original answer, question, profile, embedded anchor, and remote
-image URLs remain explicit source links; no provider HTML or image binary is mounted.
+image URLs remain explicit source links. The collector selects the canonical answer-body node,
+preserves paragraphs, lists, headings, emphasis, links, rules, figures, and captions, and writes the
+same structure as portable Markdown. Page controls are excluded. Rich text is normalized again and
+sanitized at the final render boundary; duplicate fallback and lazy-loader copies become one local
+`photo.badge.arrow.down.svg` placeholder per figure. The default `Export Markdown` action downloads
+every cached answer for the selected answerer across all Local resources pages. No provider image URL
+is mounted and no remote image binary is downloaded.
 
 ## Concurrency and local compute
 

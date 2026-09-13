@@ -1,4 +1,4 @@
-/* Code version: v1.9.2-codex.1 */
+/* Code version: v1.10.0-codex.1 */
 
 (() => {
     const SESSION_CACHE_PREFIX = "cachelikes:browser-session:v8:";
@@ -108,9 +108,26 @@
 
         if (!platform || !statusCard || !statusAccount || !statusCheckmark) return null;
 
-        function accountLabel(payload) {
+        function accountValue(payload) {
             const platformLabel = String(root.dataset.browserSessionAccountLabel || "").trim();
-            return platformLabel ? `${platformLabel} account` : (payload.account_name || "No signed-in account detected");
+            const accountName = String(payload?.account_name || "").trim();
+            const genericNames = new Set([
+                "account",
+                "chatgpt account",
+                "claude account",
+                "gemini account",
+                "google account",
+                "grok account",
+                "x account",
+                "zhihu account",
+                `${platformLabel} account`.toLowerCase(),
+            ]);
+            if (payload?.can_download) {
+                return accountName && !genericNames.has(accountName.toLowerCase())
+                    ? accountName
+                    : "Signed in";
+            }
+            return payload?.logged_in === false ? "Not signed in" : "Not verified";
         }
 
         function notify(payload, browserId, state) {
@@ -236,7 +253,7 @@
             root.classList.remove("is-browser-status-loading", "is-browser-status-refreshing");
             const isReady = Boolean(payload.can_download);
             root.classList.toggle("is-browser-ready", isReady);
-            statusAccount.textContent = accountLabel(payload);
+            statusAccount.textContent = accountValue(payload);
             if (statusMessage) {
                 statusMessage.textContent = payload.message || "";
                 statusMessage.hidden = ((hideReadyMessage || statusCard.classList.contains("browser-session-status-card-compact")) && isReady) || !payload.message;
@@ -254,7 +271,7 @@
             statusCard.setAttribute("aria-busy", "true");
             root.classList.add("is-browser-status-loading");
             root.classList.remove("is-browser-ready", "is-browser-status-refreshing");
-            statusAccount.textContent = "Checking signed-in account...";
+            statusAccount.textContent = "Checking";
             if (statusMessage) {
                 statusMessage.textContent = "";
                 statusMessage.hidden = true;

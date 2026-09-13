@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.42.7-codex.1
+Code version: v1.46.1-codex.1
 """
 
 from __future__ import annotations
@@ -166,7 +166,20 @@ def seeded_zhihu_browser_server_url(tmp_path: Path) -> Iterator[str]:
                 "role": "answer",
                 "author_label": "肥肥猫",
                 "content_text": "\n\n".join(paragraphs),
-                "content_html": "",
+                "content_html": (
+                    '<div class="RichContent"><div class="RichContent-inner">'
+                    '<span id="content"><span class="RichText ztext" itemprop="text">'
+                    + "".join(f"<p>{paragraph}</p>" for paragraph in paragraphs[:2])
+                    + '<h2>Fixture rich-text section</h2>'
+                    + '<ul><li>First structured point</li><li>Second structured point</li></ul>'
+                    + '<figure><noscript><img data-original-token="fixture-image" '
+                    + 'data-original="https://pic1.zhimg.com/fixture.png"></noscript>'
+                    + '<div><img data-original-token="fixture-image" '
+                    + 'data-original="https://pic1.zhimg.com/fixture.png"></div>'
+                    + '<figcaption>Fixture image caption</figcaption></figure>'
+                    + "".join(f"<p>{paragraph}</p>" for paragraph in paragraphs[2:])
+                    + '</span></span></div><div class="Reward">Reward leak</div></div>'
+                ),
                 "content_sha256": "fixture-zhihu-answer-hash",
                 "source_links": [
                     "https://www.zhihu.com/question/495309288/answer/2197549311",
@@ -914,7 +927,7 @@ def test_text_browser_omits_redundant_per_page_metric(
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("width", "height", "touch"),
-    ((992, 1_203, False), (390, 844, True)),
+    ((992, 1_203, False), (900, 959, False), (783, 863, False), (390, 844, True)),
 )
 def test_zhihu_text_browser_shows_answerers_and_complete_answers(
     disposable_browser: Browser,
@@ -936,6 +949,14 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
         height,
         touch=touch,
     )
+    remote_media_requests: list[str] = []
+    page.on(
+        "request",
+        lambda request: remote_media_requests.append(request.url)
+        if "zhimg.com" in request.url
+        else None,
+    )
+    page.reload(wait_until="networkidle")
     try:
         table = page.locator(".browser-session-index-table")
         expect(table).to_have_count(1)
@@ -1019,6 +1040,47 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
         ]
         expect(page.locator('[data-browser-session-tag]')).to_have_text("肥肥猫 ×")
         expect(page.get_by_role("link", name="Back to all answerers", exact=True)).to_be_visible()
+        toolbar_geometry = page.locator(".browser-content-toolbar").evaluate(
+            """toolbar => {
+                const box = element => {
+                    const bounds = element.getBoundingClientRect();
+                    return {
+                        top: bounds.top,
+                        right: bounds.right,
+                        bottom: bounds.bottom,
+                        width: bounds.width,
+                        centerY: bounds.top + bounds.height / 2,
+                    };
+                };
+                return {
+                    toolbar: box(toolbar),
+                    back: box(toolbar.querySelector('.browser-session-back-link')),
+                    roundButtons: [
+                        ...toolbar.querySelectorAll(
+                            '.browser-session-neighbor-button, .browser-session-actions-trigger'
+                        ),
+                    ].map(box),
+                    search: box(toolbar.querySelector('.browser-search-control')),
+                    documentOverflow:
+                        document.documentElement.scrollWidth
+                        - document.documentElement.clientWidth,
+                };
+            }"""
+        )
+        assert toolbar_geometry["documentOverflow"] == 0
+        if 600 < width <= 900:
+            assert abs(toolbar_geometry["search"]["width"] - 384) <= 1
+            same_row = [
+                toolbar_geometry["back"]["centerY"],
+                toolbar_geometry["search"]["centerY"],
+                *(button["centerY"] for button in toolbar_geometry["roundButtons"]),
+            ]
+            assert max(same_row) - min(same_row) <= 1
+            assert len(toolbar_geometry["roundButtons"]) == 3
+            assert (
+                toolbar_geometry["search"]["right"]
+                <= toolbar_geometry["toolbar"]["right"] + 1
+            )
         assert page.locator(".browser-session-question-link").all_inner_texts() == [
             "Fixture Zhihu question",
             "Earlier fixture question",
@@ -1026,6 +1088,46 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
         message = page.locator("[data-browser-session-message-source]")
         expect(message.first).to_contain_text("Full answer final sentence.")
         expect(message.nth(1)).to_contain_text("Earlier complete cached answer.")
+        expect(
+            message.first.get_by_role(
+                "heading",
+                name="Fixture rich-text section",
+                exact=True,
+            )
+        ).to_be_visible()
+        assert message.first.locator("ul > li").all_inner_texts() == [
+            "First structured point",
+            "Second structured point",
+        ]
+        expect(message.first.locator("figcaption")).to_have_text(
+            "Fixture image caption"
+        )
+        expect(message.first).not_to_contain_text("Reward leak")
+        placeholder = message.first.locator(".browser-zhihu-image-placeholder")
+        expect(placeholder).to_have_count(1)
+        expect(placeholder).to_have_attribute(
+            "aria-label",
+            "Image omitted from cached Zhihu answer",
+        )
+        placeholder_geometry = placeholder.evaluate(
+            """element => {
+                const bounds = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                return {
+                    display: style.display,
+                    width: bounds.width,
+                    height: bounds.height,
+                    maskImage: style.maskImage,
+                };
+            }"""
+        )
+        assert placeholder_geometry["display"] == "block"
+        assert placeholder_geometry["width"] == 43
+        assert placeholder_geometry["height"] == 31
+        assert placeholder_geometry["maskImage"].endswith(
+            '/static/images/photo.badge.arrow.down.svg")'
+        )
+        assert remote_media_requests == []
         layout = message.first.evaluate(
             """element => {
                 const scroller = document.querySelector('.browser-content-card');
@@ -2677,14 +2779,18 @@ def test_browser_session_status_reuses_account_typography_for_terminal_and_cache
         touch=False,
     )
     try:
+        field_labels = page.locator(
+            "#agent_runtime_form .browser-session-status-field-label"
+        )
         account = page.locator(
-            "xpath=/html/body/main/div/aside/form/div[1]/label[2]/div/div[2]/div/div/div/strong"
+            "#agent_runtime_form [data-role='browser-session-account']"
         )
-        terminal_label = page.locator(
-            "xpath=/html/body/main/div/aside/form/div[1]/label[2]/div/div[2]/div/div/p/span[2]"
+        terminal_value = page.locator(
+            "#agent_runtime_form [data-agent-terminal-execution-copy]"
         )
+        expect(field_labels).to_have_text(["Account:", "Terminal:"])
         expect(account).to_have_count(1)
-        expect(terminal_label).to_have_count(1)
+        expect(terminal_value).to_have_count(1)
 
         agent_typography = page.evaluate(
             """([accountElement, terminalElement]) => {
@@ -2700,19 +2806,106 @@ def test_browser_session_status_reuses_account_typography_for_terminal_and_cache
                 };
                 return [read(accountElement), read(terminalElement)];
             }""",
-            [account.element_handle(), terminal_label.element_handle()],
+            [account.element_handle(), terminal_value.element_handle()],
         )
         assert agent_typography[0] == agent_typography[1]
         assert agent_typography[0]["fontWeight"] == "400"
         assert agent_typography[0]["textAlign"] == "left"
 
         page.goto(f"{sidebar_server_url}/cache/chatgpt", wait_until="domcontentloaded")
+        cache_label = page.locator(
+            "aside .browser-session-status-field-label"
+        )
         cache_account = page.locator("aside .browser-session-status-account")
+        expect(cache_label).to_have_text("Account:")
         expect(cache_account).to_have_count(1)
         cache_typography = cache_account.evaluate(
             "element => { const style = getComputedStyle(element); return {fontFamily: style.fontFamily, fontSize: style.fontSize, fontWeight: style.fontWeight, lineHeight: style.lineHeight, textAlign: style.textAlign}; }"
         )
         assert cache_typography == agent_typography[0]
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(("width", "height"), ((1_011, 863), (390, 844)))
+def test_shared_literal_status_fields_reduce_generic_account_copy_and_preserve_identity(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    width: int,
+    height: int,
+) -> None:
+    """Render shared Account and Terminal literals without repeating provider names."""
+    agent_payload = _finished_chatgpt_agent_payload()
+    catalog_payload = _chatgpt_catalog_sessions()
+
+    def fulfill_browser_status(route) -> None:
+        is_zhihu = "platform=zhihu" in route.request.url
+        route.fulfill(
+            json={
+                "platform": "zhihu" if is_zhihu else "chatgpt",
+                "browser": "edge",
+                "browser_label": "Edge",
+                "logged_in": True,
+                "can_download": True,
+                "account_name": "Fixture profile" if is_zhihu else "ChatGPT account",
+                "message": "The selected browser session is ready.",
+                "agent_sources": catalog_payload,
+            }
+        )
+
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": height},
+        has_touch=False,
+        is_mobile=False,
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    page.route("**/api/browser-session**", fulfill_browser_status)
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=agent_payload))
+    page.route("**/api/agent/preferences", lambda route: route.fulfill(json=agent_payload))
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog_payload))
+    try:
+        page.goto(f"{sidebar_server_url}/cache/chatgpt", wait_until="domcontentloaded")
+        if width <= 900:
+            page.locator("#sidebar_toggle").click()
+        cache_card = page.locator("aside .browser-session-status-card")
+        expect(cache_card.locator(".browser-session-status-field-label")).to_have_text(
+            "Account:"
+        )
+        expect(cache_card.locator(".browser-session-status-account")).to_have_text(
+            "Signed in"
+        )
+        expect(cache_card).not_to_contain_text("ChatGPT account")
+
+        page.goto(
+            f"{sidebar_server_url}/agent/edge/chatgpt",
+            wait_until="domcontentloaded",
+        )
+        if width <= 900:
+            page.locator("#sidebar_toggle").click()
+        agent_card = page.locator(
+            "#agent_runtime_form .browser-session-status-card-compact"
+        )
+        expect(agent_card.locator(".browser-session-status-field-label")).to_have_text(
+            ["Account:", "Terminal:"]
+        )
+        expect(agent_card.locator(".browser-session-status-account")).to_have_text(
+            "Signed in"
+        )
+        expect(agent_card.locator("[data-agent-terminal-execution-copy]")).to_have_text(
+            re.compile(r"^(Granted|Not granted)$")
+        )
+        assert not page.evaluate(
+            "Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) "
+            "> document.documentElement.clientWidth"
+        )
+
+        page.goto(f"{sidebar_server_url}/cache/zhihu", wait_until="domcontentloaded")
+        expect(page.locator("aside .browser-session-status-account")).to_have_text(
+            "Fixture profile"
+        )
     finally:
         context.close()
 
@@ -2747,10 +2940,14 @@ def test_agent_compact_browser_status_uses_annotated_spacing(
                 const terminalRow = card?.querySelector(
                     '.agent-terminal-execution-status'
                 );
+                const terminalCopy = card?.querySelector(
+                    '[data-agent-terminal-execution-copy]'
+                );
                 if (!(card instanceof HTMLElement)
                         || !(accountRow instanceof HTMLElement)
                         || !(accountCheck instanceof HTMLElement)
-                        || !(terminalRow instanceof HTMLElement)) return null;
+                        || !(terminalRow instanceof HTMLElement)
+                        || !(terminalCopy instanceof HTMLElement)) return null;
                 card.hidden = false;
                 accountCheck.hidden = false;
                 const cardStyle = getComputedStyle(card);
@@ -2762,6 +2959,11 @@ def test_agent_compact_browser_status_uses_annotated_spacing(
                     accountRowGap: accountStyle.rowGap,
                     terminalRowGap: terminalStyle.rowGap,
                     terminalHeight: terminalRow.getBoundingClientRect().height,
+                    labels: Array.from(
+                        card.querySelectorAll('.browser-session-status-field-label'),
+                        element => element.textContent.trim(),
+                    ),
+                    terminalValueHidden: terminalCopy.hidden,
                     horizontalOverflow: Math.max(
                         document.documentElement.scrollWidth,
                         document.body.scrollWidth,
@@ -2775,6 +2977,8 @@ def test_agent_compact_browser_status_uses_annotated_spacing(
         assert geometry["accountRowGap"] == "2px"
         assert geometry["terminalRowGap"] == "2px"
         assert abs(geometry["terminalHeight"] - 28) <= 1
+        assert geometry["labels"] == ["Account:", "Terminal:"]
+        assert not geometry["terminalValueHidden"]
         assert not geometry["horizontalOverflow"]
     finally:
         context.close()
@@ -2812,6 +3016,7 @@ def test_cache_browser_session_failure_message_matches_account_typography_and_ha
         if width <= 900:
             page.locator("#sidebar_toggle").click()
         account = page.locator(".browser-session-status-account")
+        account_field = page.locator(".browser-session-status-literal")
         message = page.locator(
             '.browser-session-status-message[data-role="browser-session-message"]'
         )
@@ -2819,12 +3024,14 @@ def test_cache_browser_session_failure_message_matches_account_typography_and_ha
             '.browser-session-status-item .browser-session-status-checkmark[data-status-state="error"]'
         )
         expect(account).to_have_count(1)
+        expect(account).to_have_text("Not verified")
+        expect(account_field).to_have_count(1)
         expect(message).to_be_visible()
         expect(status_icon).to_be_visible()
 
         layout = page.evaluate(
             """() => {
-                const account = document.querySelector('.browser-session-status-account');
+                const account = document.querySelector('.browser-session-status-literal');
                 const message = document.querySelector('.browser-session-status-message[data-role="browser-session-message"]');
                 const icon = document.querySelector('.browser-session-status-item .browser-session-status-checkmark[data-status-state="error"]');
                 const item = document.querySelector('.browser-session-status-item');
@@ -7029,7 +7236,7 @@ def test_incomplete_chatgpt_effort_catalog_hides_stale_snapshot_options(
     page.route("**/api/browser-session**", bootstrap)
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
-        expect(page.locator(".browser-session-status-account")).to_have_text("ChatGPT account")
+        expect(page.locator(".browser-session-status-account")).to_have_text("Signed in")
         effort_options = page.locator(
             ".agent-effort-dropdown [data-agent-combobox-option]"
         )
@@ -10390,7 +10597,7 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
             const box = selector => {const r = document.querySelector(selector).getBoundingClientRect(); return {x:r.x, y:r.y, right:r.right, width:r.width};};
             return {rail: box('.browser-content-toolbar'), back: box('.browser-session-back-link'),
                     search: box('.browser-search-field'), next: box('.browser-session-neighbor-nav'),
-                    share: box('.browser-session-page-export-button')};
+                    share: box('.browser-session-full-export-button')};
         }""")
         assert abs(geometry["rail"]["x"] - geometry["back"]["x"]) <= 1
         assert geometry["share"]["x"] >= geometry["next"]["right"]
@@ -10745,7 +10952,10 @@ def test_text_source_selection_survives_global_search_form_submission(
         page.locator('[data-browser-source-filter-option="gemini"]').click()
         page.locator("#browser_search_input").fill("timestamp")
         page.locator("#browser_search_input").press("Enter")
-        expect(page).to_have_url(re.compile(r"[?&]source=gemini(?:&|$)"))
+        expect(page).to_have_url(
+            re.compile(r"(?=.*[?&]source=gemini(?:&|$))(?=.*[?&]q=timestamp(?:&|$))")
+        )
+        page.wait_for_load_state("domcontentloaded")
         page.locator("[data-browser-source-filter-trigger]").click()
         page.locator('[data-browser-source-filter-option="chatgpt"]').click()
         expect(page).to_have_url(re.compile(r"[?&]source=chatgpt(?:&|$)"))
@@ -10896,20 +11106,40 @@ def test_zhihu_cached_answer_metric_tracks_live_progress_without_overstating_fai
 
         state.update(
             phase="finished",
-            message="Finished Zhihu answer cache.",
-            downloaded_posts=1_334,
-            queued_tweets=1_006,
-            processed_tweets=1_006,
+            message=(
+                "Finished Zhihu answer cache. Read 412 answers across 22 pages; added 412, "
+                "changed 0, unchanged 0; cached total 1,746. Zhihu reports 422 answers; 10 were "
+                "unavailable in its answer list and could not be cached."
+            ),
+            downloaded_posts=1_746,
+            discovered_tweets=422,
+            queued_tweets=412,
+            processed_tweets=412,
+            performance_metrics={
+                "expected_answers": 422,
+                "available_answers": 412,
+                "unavailable_answers": 10,
+            },
         )
-        expect(cached_answers).to_have_text("1,334", timeout=6_000)
+        expect(cached_answers).to_have_text("1,746", timeout=6_000)
+        expect(page.locator("#discovered_tweets")).to_have_text("422")
+        expect(page.locator("#message")).to_contain_text(
+            "10 were unavailable in its answer list and could not be cached."
+        )
         expect(page.locator("#phase_value")).to_have_attribute("data-phase", "finished")
         expect(page.locator("#status_progress_value")).to_have_text("100%")
         expect(page.locator("#status_progress_detail")).to_have_text(
-            "1,006 / 1,006 available answers processed (100%). "
-            "Zhihu reported 1,177 total, but 171 were not exposed by either verified pagination pass."
+            "412 / 412 available answers cached (100%). Zhihu reports 422 answers; 10 are "
+            "unavailable in its answer list (for example, removed or restricted) and cannot be "
+            "cached."
         )
-        expect(page.locator("#progress_queued_tweets")).to_have_text("1,006")
-        expect(page.locator("#progress_processed_tweets")).to_have_text("1,006")
+        expect(
+            page.locator("#progress_queued_tweets")
+            .locator("..")
+            .locator(".progress-metric-label")
+        ).to_have_text("Answers available")
+        expect(page.locator("#progress_queued_tweets")).to_have_text("412")
+        expect(page.locator("#progress_processed_tweets")).to_have_text("412")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []
     finally:

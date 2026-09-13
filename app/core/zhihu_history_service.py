@@ -1,6 +1,6 @@
 """Background service for the formal Zhihu text cache.
 
-Code version: v1.1.1-codex.1
+Code version: v1.2.0-codex.1
 """
 
 from __future__ import annotations
@@ -22,6 +22,25 @@ from .zhihu_history import sync_zhihu_history
 
 
 logger = logging.getLogger(__name__)
+
+
+def _format_completion_message(result: dict[str, object]) -> str:
+    """Describe cache completion without treating provider-unavailable answers as failures."""
+
+    message = (
+        f"Finished Zhihu answer cache. Read {int(result['processed_answers']):,} answers across "
+        f"{int(result['pages_processed']):,} pages; added {int(result['added']):,}, changed "
+        f"{int(result['changed']):,}, unchanged {int(result['unchanged']):,}; cached total "
+        f"{int(result['cached_answers']):,}."
+    )
+    unavailable_answers = int(result.get("unavailable_answers") or 0)
+    reported_answers = result.get("reported_answers")
+    if unavailable_answers > 0 and reported_answers is not None:
+        message += (
+            f" Zhihu reports {int(reported_answers):,} answers; {unavailable_answers:,} "
+            "were unavailable in its answer list and could not be cached."
+        )
+    return message
 
 
 def _summarize_error_for_status(error: Exception) -> str:
@@ -89,12 +108,7 @@ class ZhihuHistoryService(CooperativeCacheWorker):
                     "The existing text cache was preserved."
                 )
                 return
-            completion_message = (
-                f"Finished Zhihu answer cache. Read {result['processed_answers']:,} answers across "
-                f"{result['pages_processed']:,} pages; added {result['added']:,}, changed "
-                f"{result['changed']:,}, unchanged {result['unchanged']:,}; cached total "
-                f"{result['cached_answers']:,}."
-            )
+            completion_message = _format_completion_message(result)
             completion_message = append_shadow_backup_completion(
                 completion_message,
                 shadow_backup_service=self._shadow_backup_service,
@@ -108,6 +122,8 @@ class ZhihuHistoryService(CooperativeCacheWorker):
                     "job_id": job_id,
                     "collection_mode": result["collection_mode"],
                     "processed_answers": result["processed_answers"],
+                    "reported_answers": result["reported_answers"],
+                    "unavailable_answers": result["unavailable_answers"],
                     "cached_answers": result["cached_answers"],
                 },
             )

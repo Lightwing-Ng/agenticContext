@@ -1,4 +1,4 @@
-/* Code version: v1.14.3-codex.1 */
+/* Code version: v1.15.0-codex.1 */
 
 (() => {
     "use strict";
@@ -508,13 +508,20 @@
             label = `Failed at ${percent}%`;
             detail = `${formatMetricNumber(processed)} / ${formatMetricNumber(queued)} ${progressUnit} processed before failure (${percent}%); ${formatMetricNumber(notProcessed)} not processed.`;
         } else if (sourceKey === "zhihu" && successfulTerminalPhases.has(data.phase) && hasMeasuredProgress) {
-            const reported = Math.max(Number(data.discovered_tweets) || 0, processed);
-            const providerGap = Math.max(reported - processed, 0);
+            const metrics = data.performance_metrics && typeof data.performance_metrics === "object"
+                ? data.performance_metrics
+                : {};
+            const reported = Math.max(Number(metrics.expected_answers ?? data.discovered_tweets) || 0, processed);
+            const available = Math.max(Number(metrics.available_answers ?? queued) || 0, processed);
+            const unavailable = Math.max(
+                Number(metrics.unavailable_answers) || (reported - available),
+                0,
+            );
             completePercent = 100;
             label = "100%";
-            detail = `${formatMetricNumber(processed)} / ${formatMetricNumber(processed)} available answers processed (100%).`;
-            if (providerGap > 0) {
-                detail += ` Zhihu reported ${formatMetricNumber(reported)} total, but ${formatMetricNumber(providerGap)} were not exposed by either verified pagination pass.`;
+            detail = `${formatMetricNumber(processed)} / ${formatMetricNumber(available)} available answers cached (100%).`;
+            if (unavailable > 0) {
+                detail += ` Zhihu reports ${formatMetricNumber(reported)} answers; ${formatMetricNumber(unavailable)} are unavailable in its answer list (for example, removed or restricted) and cannot be cached.`;
             }
         } else if (hasMeasuredProgress) {
             const pending = Math.max(queued - processed, 0);

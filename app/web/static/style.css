@@ -1,4 +1,4 @@
-/* Code version: v2.117.7-codex.1 */
+/* Code version: v2.120.1-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -1482,9 +1482,8 @@ h2 {
     display: none;
 }
 
-.browser-session-status-account,
-.browser-session-status-message[data-role="browser-session-message"],
-.agent-terminal-execution-label {
+.browser-session-status-literal,
+.browser-session-status-message[data-role="browser-session-message"] {
     font-family: inherit;
     font-size: var(--font-ui-lg);
     font-weight: var(--font-weight-regular);
@@ -1492,6 +1491,26 @@ h2 {
     line-height: 1.3;
     text-align: left;
     word-break: break-word;
+}
+
+.browser-session-status-literal {
+    min-width: 0;
+    max-width: 100%;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+}
+
+.browser-session-status-field-label {
+    flex: 0 0 auto;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.browser-session-status-field-value {
+    min-width: 0;
+    color: var(--text);
+    overflow-wrap: anywhere;
 }
 
 .browser-session-status-checkmark {
@@ -1537,9 +1556,6 @@ h2 {
     align-items: center;
     gap: 8px;
     margin: 0;
-    color: var(--muted);
-    font-size: var(--font-ui-sm);
-    line-height: 1.3;
 }
 
 .browser-session-panel.is-browser-ready .browser-session-status-card,
@@ -6289,6 +6305,11 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.browser-metric-grid.browser-session-metric-grid > .metric-card {
+    width: 100%;
+    max-width: var(--layout-control-width);
+}
+
 .browser-text-metric-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -6775,6 +6796,76 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     display: block;
     max-width: 100%;
     height: auto;
+}
+
+.browser-session-table-message p,
+.browser-session-table-message ul,
+.browser-session-table-message ol,
+.browser-session-table-message blockquote,
+.browser-session-table-message figure {
+    margin-block: 0 0.85em;
+}
+
+.browser-session-table-message ul,
+.browser-session-table-message ol {
+    padding-inline-start: 1.4em;
+}
+
+.browser-session-table-message li + li {
+    margin-block-start: 0.35em;
+}
+
+.browser-session-table-message h1,
+.browser-session-table-message h2,
+.browser-session-table-message h3,
+.browser-session-table-message h4,
+.browser-session-table-message h5,
+.browser-session-table-message h6 {
+    min-height: 0;
+    margin-block: 1.25em 0.6em;
+    color: inherit;
+    font-weight: var(--font-weight-semibold);
+    line-height: 1.35;
+    letter-spacing: 0;
+}
+
+.browser-session-table-message h1,
+.browser-session-table-message h2 {
+    font-size: 1.18em;
+}
+
+.browser-session-table-message h3,
+.browser-session-table-message h4,
+.browser-session-table-message h5,
+.browser-session-table-message h6 {
+    font-size: 1.08em;
+}
+
+.browser-session-table-message hr {
+    margin-block: 1.2em;
+    border: 0;
+    border-block-start: var(--frosted-glass-border);
+}
+
+.browser-session-table-message figure {
+    margin-inline: 0;
+}
+
+.browser-session-table-message figcaption {
+    margin-block-start: 4px;
+    color: var(--theme-muted);
+    font-size: var(--font-ui-xs);
+    line-height: 1.4;
+}
+
+.browser-session-table-message .browser-zhihu-image-placeholder {
+    display: block;
+    width: 43px;
+    height: 31px;
+    margin-block: 10px;
+    background-color: var(--theme-muted);
+    mask: url("/static/images/photo.badge.arrow.down.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/photo.badge.arrow.down.svg") center/contain no-repeat;
 }
 
 .browser-session-table-message pre {

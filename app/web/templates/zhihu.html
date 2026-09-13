@@ -1,4 +1,4 @@
-{# Code version: v1.1.1-codex.1 #}
+{# Code version: v1.4.0-codex.1 #}
 {% extends "_cache_page.html" %}
 {% from "_cache_page_components.html" import render_metric, render_progress_metric %}
 
@@ -23,7 +23,7 @@
 {% endblock %}
 
 {% block progress_metrics %}
-{{ render_progress_metric("Answers queued", "queued_tweets", snapshot.queued_tweets, "progress_queued_tweets") }}
+{{ render_progress_metric("Answers available", "queued_tweets", snapshot.queued_tweets, "progress_queued_tweets") }}
 {{ render_progress_metric("Answers processed", "processed_tweets", snapshot.processed_tweets, "progress_processed_tweets") }}
 {% endblock %}
 
@@ -32,7 +32,7 @@
     <div class="notice-floating-copy">
         <p class="metric-label notice-floating-label">Text-first answer archive</p>
         <p class="notice-floating-title">
-            Answer text is stored in <code>local_store/llm/zhihu/history.parquet</code>. Images and rich-text destinations are retained only as source links; no remote media is downloaded or mounted into Local resources.
+            Answer text and rich-text structure are stored in <code>local_store/llm/zhihu/history.parquet</code>. Remote images are not downloaded or mounted; Local resources replaces each original image with a local placeholder and retains its URL as a source link.
         </p>
     </div>
     <span class="status-chip status-collecting">Parquet v1</span>

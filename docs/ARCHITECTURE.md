@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.27.0-codex.1`
+Documentation version: `v1.29.0-codex.1`
 
 ## Runtime flow
 
@@ -332,7 +332,7 @@ selected Edge or Chrome profile cloned into an isolated Chromium context
   -> authenticated /api/v4/me identity check
   -> blank input: paginated MEMBER_VOTEUP_ANSWER activity targets
   -> answerer URL: paginated /api/v4/members/<token>/answers records
-  -> normalized text plus allowlisted source links
+  -> isolated answer-body HTML, portable Markdown, and allowlisted source links
   -> cumulative atomic local_store/llm/zhihu/history.parquet merge
   -> Local resources source=zhihu
 ```
@@ -345,10 +345,15 @@ complete-list pagination and provider-gap verification.
 
 The formal liked-answer collector retains an excerpt and source link when an individual activity
 target does not expose a body; one unavailable historical answer cannot discard an otherwise
-complete cumulative run. The formal store uses the shared text-history logical columns with one answer per conversation.
-`content_text` is normalized answer text and `content_html` is always empty. Original answer,
-question, answerer, embedded HTTP(S) anchors, and remote Zhihu image URLs are retained only in
-`source_links`; Local resources never mounts provider markup or downloads those image binaries.
+complete cumulative run. The formal store uses the shared text-history logical columns with one
+answer per conversation. `content_text` is a structure-preserving Markdown translation and
+`content_html` is canonical semantic HTML selected from the narrowest supported provider answer-body
+root. Reward, edit, vote, comment, and other page chrome never enter either field. Local resources
+normalizes legacy rich rows again, then applies the shared HTML allowlist at the final render boundary.
+Fallback and lazy-loader copies of one image inside a figure collapse to one single-line local SVG
+placeholder; no provider image URL is assigned to a rendered media source, and no remote image
+binary is downloaded. Original answer, question, answerer, embedded HTTP(S) anchors, and remote
+Zhihu image URLs remain available in `source_links`.
 Zhihu-only session indexes replace the generic message count with the literal answerer and omit the
 redundant Source column, answer ID, Projects metric, and Clear filters action. The sidebar's
 Answerer select is derived from unique cached author labels. The validated `answerer` query value
@@ -525,7 +530,7 @@ Doctor. The service never replays a local Action or continues automatically.
 | --- | --- | --- |
 | `local_store/` | User media, source catalogs, queues, manifests, and deletion previews | Ignored except `.gitkeep` |
 | `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability | Ignored except `.gitkeep` |
-| `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text and source links indexed by Local resources | Ignored |
+| `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
 | `logs/` | Local structured JSON-line logs | Ignored except `.gitkeep` |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local configuration | Outside the repository |
 | `app/`, `tests/`, `docs/`, `scripts/` | Versioned source, contracts, and checks | Committed |

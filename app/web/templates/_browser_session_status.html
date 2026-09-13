@@ -1,4 +1,11 @@
-{# Code version: v1.3.3-codex.1 #}
+{# Code version: v1.4.0-codex.1 #}
+
+{% macro render_literal_status(label) -%}
+<span class="browser-session-status-literal">
+    <span class="browser-session-status-field-label">{{ label }}:</span>
+    {{ caller() }}
+</span>
+{%- endmacro %}
 
 {% macro render_browser_session_status(empty_message="No signed-in account detected", ready_label="Ready", terminal_execution=none, account_label="", compact=false, hide_ready_message=false, login_action=false) -%}
 <div
@@ -13,7 +20,9 @@
             <div class="browser-session-status-item">
                 <span class="browser-session-status-checkmark" data-role="browser-session-checkmark" aria-label="{{ ready_label }}" hidden></span>
                 <span class="suggestion-loading-spinner browser-session-status-spinner" data-role="browser-session-spinner" aria-hidden="true" hidden></span>
-                <strong class="browser-session-status-account" data-role="browser-session-account">{{ account_label ~ " account" if account_label else empty_message }}</strong>
+                {% call render_literal_status("Account") %}
+                <span class="browser-session-status-field-value browser-session-status-account" data-role="browser-session-account">{{ "Not detected" if account_label else empty_message }}</span>
+                {% endcall %}
             </div>
             {% if login_action %}
             <button
@@ -48,8 +57,9 @@
                     data-status-state="{{ 'ready' if terminal_execution.ready else 'error' }}"
                     aria-hidden="true"
                 ></span>
-                <span class="agent-terminal-execution-label">Terminal permission</span>
-                <span data-agent-terminal-execution-copy hidden>{{ terminal_execution.status_label }}</span>
+                {% call render_literal_status("Terminal") %}
+                <span class="browser-session-status-field-value" data-agent-terminal-execution-copy>{{ terminal_execution.status_label }}</span>
+                {% endcall %}
             </p>
             {% endif %}
         </div>

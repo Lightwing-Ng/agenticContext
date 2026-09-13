@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.109.3-codex.1
+# Code version: v1.112.2-codex.1
 
 from __future__ import annotations
 
@@ -543,7 +543,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('value="edge"', zhihu_body)
         self.assertIn('class="shared-select-text-input"', zhihu_body)
         self.assertNotIn("Leave blank to cache answers upvoted by the signed-in account.", zhihu_body)
-        self.assertIn("Images and rich-text destinations are retained only as source links", zhihu_body)
+        self.assertIn("Answer text and rich-text structure are stored", zhihu_body)
+        self.assertIn("replaces each original image with a local placeholder", zhihu_body)
         self.assertIn("Zhihu answers cache overview", zhihu_body)
         self.assertIn("--cache-source-mark: url('/static/images/zhihu.svg')", zhihu_body)
         self.assertNotIn('data-browser-option="safari"', zhihu_body)
@@ -563,7 +564,16 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertIn('data-browser-session-account-label="ChatGPT"', chatgpt_body)
         self.assertIn('data-browser-session-hide-ready-message="true"', chatgpt_body)
-        self.assertIn(">ChatGPT account</strong>", chatgpt_body)
+        self.assertIn(
+            'class="browser-session-status-field-label">Account:</span>',
+            chatgpt_body,
+        )
+        self.assertIn(
+            'class="browser-session-status-field-value browser-session-status-account" '
+            'data-role="browser-session-account">Not detected</span>',
+            chatgpt_body,
+        )
+        self.assertNotIn(">ChatGPT account</strong>", chatgpt_body)
         self.assertNotIn("The ChatGPT account in the selected browser is ready.", chatgpt_body)
         self.assertIn('data-chatgpt-content-mode-input', chatgpt_body)
         self.assertIn('data-chatgpt-media-config', chatgpt_body)
@@ -592,7 +602,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.14.3-codex.1', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.15.0-codex.1', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt"', chatgpt_body)
@@ -625,7 +635,7 @@ class WebAppTests(unittest.TestCase):
                 stop_form_end = body.index(">", stop_form_start)
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', chatgpt_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.10.0-codex.1', chatgpt_body)
         self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.8.0-codex.1', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
@@ -732,7 +742,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.22.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.117.7-codex.1"
+                expected_style_version = "style-v2.120.1-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1169,10 +1179,10 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', local_body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.9.2-codex.1', local_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.10.0-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.117.7-codex.1', local_body)
+        self.assertIn('style-v2.120.1-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.8.0', local_body)
@@ -1199,8 +1209,16 @@ class WebAppTests(unittest.TestCase):
             local_body,
             rf'data-agent-terminal-execution-checkmark\s+data-status-state="{expected_terminal_state}"',
         )
-        self.assertIn('<span class="agent-terminal-execution-label">Terminal permission</span>', local_body)
-        self.assertNotIn('Terminal execution permission:', local_body)
+        self.assertIn(
+            'class="browser-session-status-field-label">Terminal:</span>',
+            local_body,
+        )
+        self.assertRegex(
+            local_body,
+            r'class="browser-session-status-field-value" '
+            r'data-agent-terminal-execution-copy>(Granted|Not granted)</span>',
+        )
+        self.assertNotIn('>Terminal permission</span>', local_body)
         self.assertIn('data-agent-platform-input', local_body)
         self.assertIn('data-agent-combobox-option="gemini"', local_body)
         self.assertIn('data-agent-combobox-option="grok"', local_body)
@@ -1753,9 +1771,21 @@ class WebAppTests(unittest.TestCase):
         body = response.get_data(as_text=True)
         self.assertIn('class="browser-session-status-card browser-session-status-card-compact"', body)
         self.assertIn('data-browser-session-account-label="ChatGPT"', body)
-        self.assertIn('<span class="agent-terminal-execution-label">Terminal permission</span>', body)
+        self.assertIn(
+            'class="browser-session-status-field-label">Account:</span>',
+            body,
+        )
+        self.assertIn(
+            'class="browser-session-status-field-label">Terminal:</span>',
+            body,
+        )
+        self.assertRegex(
+            body,
+            r'class="browser-session-status-field-value" '
+            r'data-agent-terminal-execution-copy>(Granted|Not granted)</span>',
+        )
         self.assertIn('data-agent-terminal-execution-checkmark', body)
-        self.assertNotIn('Terminal execution permission:', body)
+        self.assertNotIn('>Terminal permission</span>', body)
         status_item_start = body.index('<div class="browser-session-status-item">')
         status_item_end = body.index('</div>', status_item_start) + len('</div>')
         status_item = body[status_item_start:status_item_end]
@@ -3741,7 +3771,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="browser_filter_form"', body)
         self.assertIn('form="browser_filter_form"', body)
         self.assertGreater(body.index("data-browser-search"), body.index("</aside>"))
-        self.assertIn("browser-search.css?v=browser-search-v1.4.1-codex.1", body)
+        self.assertIn("browser-search.css?v=browser-search-v1.4.2-codex.1", body)
         self.assertIn('type="module"', body)
         self.assertIn("browser-search.js?v=browser-search-v2.2.1-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
@@ -3852,6 +3882,9 @@ class WebAppTests(unittest.TestCase):
             "--browser-session-search-input-inline-size: 256px;",
             "flex: 0 1 calc(var(--browser-session-search-input-inline-size) + 2px);",
             "width: min(calc(var(--browser-session-search-input-inline-size) + 2px), 100%);",
+            "@media (min-width: 601px) and (max-width: 900px) {",
+            "flex: 0 1 var(--layout-control-width);",
+            "width: min(100%, var(--layout-control-width));",
             ".browser-search-input::placeholder {",
         ):
             with self.subTest(search_style_fragment=fragment):
@@ -3987,7 +4020,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.117.7-codex.1", body)
+            self.assertIn("style-v2.120.1-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)
@@ -4166,6 +4199,9 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("browser.safari.png", detail_body)
         self.assertIn("Open original in Safari", detail_body)
         self.assertIn("Export Markdown", detail_body)
+        self.assertIn('data-browser-session-export-scope="all"', detail_body)
+        self.assertIn("scope=all", detail_body)
+        self.assertNotIn("browser-session-page-export-button", detail_body)
         self.assertIn("Refresh current page", detail_body)
         self.assertNotIn("Export current page results", detail_body)
         self.assertIn("browser-session-drawer-refresh-icon", detail_body)
@@ -4526,6 +4562,38 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("alert", rendered)
         self.assertNotIn("javascript:", rendered)
         self.assertIn('href="https://example.com"', rendered)
+
+    def test_cached_message_renderer_replaces_zhihu_images_without_remote_loads(self) -> None:
+        source = (
+            '<div class="RichContent"><div class="RichContent-inner">'
+            '<span id="content"><span class="RichText ztext" itemprop="text">'
+            '<p>Before</p><figure><noscript><img data-original-token="same" '
+            'data-original="https://pic1.zhimg.com/remote.png"></noscript>'
+            '<div><img data-original-token="same" '
+            'data-original="https://pic1.zhimg.com/remote.png" '
+            'onerror="alert(1)"></div><figcaption>Original caption</figcaption>'
+            '</figure><p>After</p></span></span></div>'
+            '<div class="ContentItem-actions"><button>Vote leak</button></div></div>'
+        )
+
+        rendered = str(
+            render_cached_message(
+                "Before\nAfter",
+                source,
+                replace_images=True,
+            )
+        )
+
+        self.assertIn("<p>Before</p>", rendered)
+        self.assertIn("<p>After</p>", rendered)
+        self.assertIn("<figure>", rendered)
+        self.assertIn("<figcaption>Original caption</figcaption>", rendered)
+        self.assertIn('class="browser-zhihu-image-placeholder"', rendered)
+        self.assertEqual(rendered.count('class="browser-zhihu-image-placeholder"'), 1)
+        self.assertNotIn("pic1.zhimg.com", rendered)
+        self.assertNotIn("onerror", rendered)
+        self.assertNotIn("alert", rendered)
+        self.assertNotIn("Vote leak", rendered)
 
     def test_browser_prompt_expands_inline_inside_its_media_card(self) -> None:
         script = LOCAL_MEDIA_BROWSER_SCRIPT_PATH.read_text(encoding="utf-8")
