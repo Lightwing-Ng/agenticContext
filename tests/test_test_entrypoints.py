@@ -1,6 +1,6 @@
 """Behavioral checks for the POSIX test and quality entrypoints.
 
-Code version: v1.1.0-codex.1
+Code version: v1.2.0-codex.1
 """
 
 import os
@@ -157,13 +157,14 @@ def test_quality_resolver_reports_missing_modules_before_fallback(tmp_path):
     result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0
     assert result.stdout.strip() == str(ready)
-    assert f"missing quality dependencies: {missing} (ruff pytest pytest_cov)" in result.stderr
+    expected = "flask playwright yt_dlp pyarrow PIL markdown_it ruff pytest pytest_cov"
+    assert f"missing quality dependencies: {missing} ({expected})" in result.stderr
 
     environment["AGENTIC_CONTEXT_PYTHON"] = str(missing)
     result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
     assert result.returncode != 0
     assert result.stdout == ""
-    assert f"missing quality dependencies: {missing} (ruff pytest pytest_cov)" in result.stderr
+    assert f"missing quality dependencies: {missing} ({expected})" in result.stderr
 
 
 def test_runtime_resolver_skips_unprepared_host_but_respects_override(tmp_path):
@@ -189,6 +190,36 @@ def test_runtime_resolver_skips_unprepared_host_but_respects_override(tmp_path):
     result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+def test_runtime_resolver_uses_prepared_platform_fallback(tmp_path):
+    """A prepared platform installation must remain usable behind an incomplete PATH Python."""
+    shell_bin = tmp_path / "shell-bin"
+    shell_bin.mkdir()
+    missing = shell_bin / "python3"
+    ready = tmp_path / "platform-python3"
+    for path, available in ((missing, False), (ready, True)):
+        path.write_text(
+            f"#!{sys.executable}\nimport sys\n"
+            "if sys.argv[1] == '-c' and sys.argv[2].startswith('import sys;'): exec(sys.argv[2])\n"
+            f"if sys.argv[1] == '-c' and sys.argv[2].startswith('import '): raise SystemExit({0 if available else 1})\n"
+            "exec(sys.argv[2])\n"
+        )
+        path.chmod(0o755)
+    environment = _environment()
+    environment.pop("AGENTIC_CONTEXT_PYTHON")
+    environment["PATH"] = str(shell_bin) + os.pathsep + environment["PATH"]
+    environment["PLATFORM_PYTHON"] = str(ready)
+    command = [
+        "bash", "-c",
+        "source \"$1\"; _python_platform_candidates() { printf '%s\\n' \"$PLATFORM_PYTHON\"; }; "
+        "resolve_python_bin runtime",
+        "resolver", str(PROJECT_ROOT / "scripts/resolve_python.sh"),
+    ]
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(ready)
+    assert f"missing runtime dependencies: {missing}" in result.stderr
 
 
 def test_app_entrypoint_checks_runtime_dependencies_before_main(tmp_path):

@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.17.0-codex.1`
+Documentation version: `v1.17.1-codex.1`
 
 ## Launch
 
@@ -27,6 +27,11 @@ On Windows:
 ```powershell
 .\scripts\run_app.ps1
 ```
+
+On macOS, the launcher prefers `python3` from `PATH`, then tries unversioned platform Python
+installations. It skips an otherwise supported interpreter when required application modules are
+missing, so an already prepared platform installation can still start the app without a manual
+interpreter override.
 
 The normal server address is `http://127.0.0.1:8666`, and the application binds only to loopback by
 default. To opt in to trusted-LAN access, set `AGENTIC_CONTEXT_HOST=0.0.0.0` and set

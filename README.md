@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.22.0-codex.1`
+Documentation version: `v1.22.1-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -54,7 +54,8 @@ endpoint through port forwarding, a public tunnel, or a reverse proxy.
 ## Requirements
 
 - macOS or Windows with a supported Python 3.13 or newer interpreter; the resolver prefers the
-  host `python3` or the Windows `py -3` launcher when it is supported
+  host `python3` or the Windows `py -3` launcher when it is supported, then tries unversioned
+  platform installations
 - A signed-in Chrome or Edge session on Windows, or Chrome, Edge, or Safari on macOS, for the
   source you want to cache
 - A signed-in Chrome or Edge session for the Zhihu Cache source or the optional Beta archive;

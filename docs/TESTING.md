@@ -1,10 +1,10 @@
 # Testing guide
 
-Documentation version: `v1.13.0-codex.1`
+Documentation version: `v1.13.1-codex.1`
 
 ## Supported commands
 
-Install the runtime and development dependencies with the supported Python 3.13 or newer workflow:
+Install the project dependencies with the supported Python 3.13 or newer workflow:
 
 ```bash
 ./scripts/setup_python.sh
@@ -408,10 +408,11 @@ headings. Fenced examples are not links. Remote URLs and references outside the 
 validated; shared references are printed separately because sibling files are absent in clean CI.
 The check does not claim to validate prose semantics, HTML anchors, or remote availability.
 
-The resolver checks the Python minimum version, not dependency availability. Run the setup wrapper
-with the same interpreter used for tests. If the host default lacks dependencies, set
-`AGENTIC_CONTEXT_PYTHON` to the path of a prepared Python 3.13 or newer executable. A resolver pass
-does not establish compatibility of every future dependency release.
+The resolver checks the Python minimum version and the modules required by its runtime, test, or
+quality mode. Run the setup wrapper with the same interpreter used for tests. If the host default
+lacks dependencies, the POSIX resolver tries unversioned platform installations; set
+`AGENTIC_CONTEXT_PYTHON` only when a specific prepared Python 3.13 or newer executable is required.
+A resolver pass does not establish compatibility of every future dependency release.
 
 Dated browser, platform, and CI observations are preserved in [TEST_HISTORY.md](TEST_HISTORY.md).
 Do not reuse those counts or version-specific commands as evidence for a new checkout.

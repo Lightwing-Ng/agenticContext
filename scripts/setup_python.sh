@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Code version: v1.1.2-codex.1
+# Code version: v1.1.3-codex.1
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ fi
 
 echo "Using Python: $PYTHON_BIN"
 "$PYTHON_BIN" -m pip install --upgrade pip
-"$PYTHON_BIN" -m pip install -r "$ROOT_DIR/requirements-dev.txt"
+"$PYTHON_BIN" -m pip install -r "$ROOT_DIR/requirements.txt"
 
 if [[ "${AGENTIC_CONTEXT_SKIP_PLAYWRIGHT_INSTALL:-${CACHELIKES_SKIP_PLAYWRIGHT_INSTALL:-0}}" != "1" ]]; then
 	"$PYTHON_BIN" -m playwright install chromium
