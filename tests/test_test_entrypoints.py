@@ -106,6 +106,66 @@ def test_quality_gate_rejects_noop_python(tmp_path, stale_report):
     assert "Quality gate passed." not in result.stdout
 
 
+def test_resolver_prefers_usable_path_python3_over_homebrew_style_installation(tmp_path):
+    """The first shell python3 must win over a later Homebrew-style python3 installation."""
+    shell_bin = tmp_path / "shell-bin"
+    homebrew_bin = tmp_path / "opt" / "homebrew" / "bin"
+    shell_bin.mkdir()
+    homebrew_bin.mkdir(parents=True)
+    shell_python3 = shell_bin / "python3"
+    homebrew_python3 = homebrew_bin / "python3"
+    for path in (shell_python3, homebrew_python3):
+        path.write_text(
+            f"#!{sys.executable}\nimport sys\n"
+            "if sys.argv[1] == '-c' and sys.argv[2].startswith('import '): raise SystemExit(0)\n"
+            "exec(sys.argv[2])\n"
+        )
+        path.chmod(0o755)
+    environment = _environment()
+    environment.pop("AGENTIC_CONTEXT_PYTHON")
+    environment["PATH"] = os.pathsep.join((str(shell_bin), str(homebrew_bin), environment["PATH"]))
+    command = ["bash", "-c", 'source "$1"; resolve_python_bin quality', "resolver",
+               str(PROJECT_ROOT / "scripts/resolve_python.sh")]
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(shell_python3)
+    assert str(homebrew_python3) not in result.stdout + result.stderr
+
+
+def test_quality_resolver_reports_missing_modules_before_fallback(tmp_path):
+    """An unprepared PATH python3 is diagnosed before a prepared PATH fallback is selected."""
+    missing = tmp_path / "python3"
+    ready = tmp_path / "python"
+    missing.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        "if sys.argv[1] == '-c' and sys.argv[2].startswith('import sys;'): exec(sys.argv[2])\n"
+        "if sys.argv[1] == '-c' and sys.argv[2].startswith('import '): raise SystemExit(1)\n"
+        "exec(sys.argv[2])\n"
+    )
+    ready.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        "if sys.argv[1] == '-c' and sys.argv[2].startswith('import '): raise SystemExit(0)\n"
+        "exec(sys.argv[2])\n"
+    )
+    missing.chmod(0o755)
+    ready.chmod(0o755)
+    environment = _environment()
+    environment.pop("AGENTIC_CONTEXT_PYTHON")
+    environment["PATH"] = str(tmp_path) + os.pathsep + environment["PATH"]
+    command = ["bash", "-c", 'source "$1"; resolve_python_bin quality', "resolver",
+               str(PROJECT_ROOT / "scripts/resolve_python.sh")]
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(ready)
+    assert f"missing quality dependencies: {missing} (ruff pytest pytest_cov)" in result.stderr
+
+    environment["AGENTIC_CONTEXT_PYTHON"] = str(missing)
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert f"missing quality dependencies: {missing} (ruff pytest pytest_cov)" in result.stderr
+
+
 def test_runtime_resolver_skips_unprepared_host_but_respects_override(tmp_path):
     """Dependency readiness must govern startup without overriding an explicit choice."""
     missing = tmp_path / "python3"

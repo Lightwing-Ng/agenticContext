@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Code version: v1.3.2-codex.1
+# Code version: v1.4.0-codex.1
 
 set -euo pipefail
 

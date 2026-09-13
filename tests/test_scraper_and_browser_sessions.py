@@ -34,6 +34,7 @@ from app.core.browser_sessions import (
     launch_chromium_context,
     parse_grok_account_label,
     probe_browser_session,
+    sync_playwright_or_error,
 )
 from app.core.config import CrawlConfig
 from app.core.scraper import (
@@ -46,6 +47,12 @@ from app.core.scraper import (
     collect_liked_tweet_urls,
 )
 from app.core.state import TaskState
+
+
+def test_sync_playwright_error_uses_open_ended_python_support_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.core.browser_sessions.sync_playwright", None)
+    with pytest.raises(RuntimeError, match=r"Python 3\.13 or newer"):
+        sync_playwright_or_error()
 
 
 def test_zhihu_status_requires_a_verified_account_token() -> None:
@@ -880,7 +887,7 @@ def test_clone_browser_profile_reports_macos_profile_permission_error(
 
     monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
     with patch("shutil.copytree", side_effect=PermissionError(1, "Operation not permitted", source_profile_dir)):
-        with pytest.raises(RuntimeError, match="Full Disk Access"):
+        with pytest.raises(RuntimeError, match=r"Full Disk Access.*Python 3\.13 or newer"):
             clone_browser_profile(descriptor)
 
 

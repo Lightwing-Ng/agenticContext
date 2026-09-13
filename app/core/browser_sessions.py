@@ -1376,7 +1376,7 @@ def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile
             raise RuntimeError(
                 f"macOS denied access to the {descriptor.label} profile at {denied_path}. "
                 "Open System Settings > Privacy & Security > Full Disk Access and enable "
-                "the Python 3.13 or 3.14 runtime used by agenticContext, then restart the cache service."
+                "the Python 3.13 or newer runtime used by agenticContext, then restart the cache service."
             ) from exc
         if is_windows_host():
             raise RuntimeError(
