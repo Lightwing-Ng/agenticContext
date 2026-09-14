@@ -1,10 +1,11 @@
 """Focused tests for the provider-neutral Agent session source adapter.
 
-Code version: v1.7.6-codex.1
+Code version: v1.8.0-codex.1
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.core.agent_session_sources import (
@@ -14,6 +15,7 @@ from app.core.agent_session_sources import (
     _read_grok_project_links,
     _read_grok_project_session_links,
     _read_project_session_links,
+    _run_chromium_source_collection,
     chatgpt_project_id,
     claude_project_session_id,
     fetch_grok_conversation_history,
@@ -655,6 +657,82 @@ def test_grok_agent_bootstrap_collects_readiness_and_sources_in_one_context() ->
     assert sources is not None
     assert sources["recent_sessions"][0]["url"] == "https://grok.com/c/session-1"
     collection.assert_called_once()
+
+
+def test_grok_agent_source_collection_uses_one_owned_safari_context() -> None:
+    page = SimpleNamespace(
+        wait_for_load_state=lambda *_args, **_kwargs: None,
+        wait_for_timeout=lambda *_args, **_kwargs: None,
+    )
+
+    class _SafariContext:
+        primary_page = page
+
+        def __enter__(self) -> "_SafariContext":
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+    with patch(
+        "app.core.agent_session_sources.browser_descriptors",
+        return_value={"safari": SimpleNamespace(engine="safari", label="Safari")},
+    ), patch(
+        "app.core.agent_session_sources.SafariContext",
+        return_value=_SafariContext(),
+    ) as safari_context:
+        result = _run_chromium_source_collection(
+            "safari",
+            CrawlConfig(),
+            "https://grok.com/",
+            lambda selected_page: selected_page,
+            silent=True,
+        )
+
+    assert result is page
+    safari_context.assert_called_once_with("https://grok.com/")
+
+
+def test_grok_agent_bootstrap_accepts_safari_without_cache_probe_semantics() -> None:
+    strict_status = {
+        "platform": "grok",
+        "browser_label": "Safari",
+        "logged_in": True,
+        "can_download": True,
+        "account_name": "Grok account",
+        "message": "Safari verified an authenticated Grok Web session.",
+    }
+    strict_sources = {"recent_sessions": [], "projects": []}
+
+    def run_collection(
+        _browser: str,
+        _config: CrawlConfig,
+        _home_url: str,
+        collector: object,
+        **_kwargs: object,
+    ) -> object:
+        with patch(
+            "app.core.agent_session_sources._grok_page_status",
+            return_value=strict_status,
+        ), patch(
+            "app.core.agent_session_sources._collect_grok_sources",
+            return_value=strict_sources,
+        ):
+            return collector(object())
+
+    with patch(
+        "app.core.agent_session_sources.browser_descriptors",
+        return_value={"safari": SimpleNamespace(engine="safari", label="Safari")},
+    ), patch(
+        "app.core.agent_session_sources._run_chromium_source_collection",
+        side_effect=run_collection,
+    ):
+        status, sources = probe_and_collect_grok_sources("safari", CrawlConfig())
+
+    assert status == strict_status
+    assert sources is not None
+    assert sources["platform"] == "grok"
+    assert sources["browser_label"] == "Safari"
 
 
 def test_gemini_sources_reuse_the_existing_history_link_collector() -> None:

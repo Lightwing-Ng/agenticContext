@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.112.2-codex.1
+# Code version: v1.113.0-codex.1
 
 from __future__ import annotations
 
@@ -380,6 +380,7 @@ class WebAppTests(unittest.TestCase):
         with app.test_client() as client:
             legacy = client.get("/agent")
             selected = client.get("/agent/edge/gemini")
+            safari_grok = client.get("/agent/safari/grok")
             invalid = client.get("/agent/safari/gemini")
 
         self.assertEqual(legacy.status_code, 302)
@@ -393,6 +394,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="browser" value="edge"', body)
         self.assertIn('data-browser-session-platform="gemini"', body)
         self.assertIn('href="/agent/edge/gemini"', body)
+        self.assertEqual(safari_grok.status_code, 200)
+        safari_grok_body = safari_grok.get_data(as_text=True)
+        self.assertIn("Grok Web Agent", safari_grok_body)
+        self.assertIn('name="browser" value="safari"', safari_grok_body)
+        self.assertIn('data-browser-session-platform="grok"', safari_grok_body)
         self.assertEqual(invalid.status_code, 404)
 
     def test_cache_timing_settings_survive_partial_start_forms(self) -> None:
@@ -740,7 +746,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.22.1-codex.1"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.23.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = "style-v2.120.1-codex.1"
                 self.assertIn(expected_style_version, body)
@@ -761,7 +767,7 @@ class WebAppTests(unittest.TestCase):
             "const shouldShowBackdrop = sidebarOverlayMedia.matches && isSidebarOpen;",
             'const dockLocationMemoryPrefix = "cachelikes:dock-location:v1:";',
             'const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);',
-            'const agentRoutePattern = /^\\/agent\\/(?:safari\\/chatgpt|(?:edge|chrome)\\/(?:chatgpt|gemini|grok|claude))$/;',
+            'const agentRoutePattern = /^\\/agent\\/(?:safari\\/(?:chatgpt|grok)|(?:edge|chrome)\\/(?:chatgpt|gemini|grok|claude))$/;',
             'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view"];',
             'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/zhihu"]);',
             'if (targetUrl.pathname === "/browser") return "/cache/chatgpt";',
@@ -1189,7 +1195,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.44.3-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.45.0-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -2129,7 +2135,7 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
 
-    def test_agent_preferences_persist_the_exact_project_and_execution_choices(self) -> None:
+    def test_agent_preferences_persist_safari_grok_without_edge_fallback(self) -> None:
         with TemporaryDirectory() as raw_root:
             workspace = Path(raw_root) / "Selected Project"
             workspace.mkdir()
@@ -2149,12 +2155,20 @@ class WebAppTests(unittest.TestCase):
                                 "workspace_path": str(workspace),
                                 "operating_system": "macos",
                                 "browser": "safari",
+                                "platform": "grok",
+                                "model": "grok-build",
                             },
                         )
+                        redirect_response = client.get("/agent")
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["settings"]["workspace_path"], str(workspace.resolve()))
+        self.assertEqual(payload["settings"]["browser"], "safari")
+        self.assertEqual(payload["settings"]["platform"], "grok")
+        self.assertEqual(payload["settings"]["model"], "grok-build")
+        self.assertEqual(redirect_response.status_code, 302)
+        self.assertEqual(redirect_response.headers["Location"], "/agent/safari/grok")
         save_computer_use_settings.assert_called_once()
 
     def test_agent_terminal_authorization_route_is_local_and_platform_aware(self) -> None:
@@ -2412,7 +2426,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.44.3-codex.1',
+            'computer-use-agent-v3.45.0-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',

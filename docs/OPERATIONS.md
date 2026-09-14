@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.19.0-codex.1`
+Documentation version: `v1.20.0-codex.1`
 
 ## Launch
 
@@ -49,6 +49,17 @@ publish it through a public tunnel or reverse proxy.
 
 - X caching begins from the currently signed-in Likes page in a supported host browser.
 - Grok and ChatGPT syncing use their existing authenticated browser sessions.
+- Opening or restoring a blank Jury page, choosing another browser, changing a juror or model,
+  and choosing `New session` do not launch a browser clone. `Check accounts` is the explicit
+  readiness probe; Start performs the required server-side recheck before it sends a prompt.
+- Jury remembers only the last browser, juror keys, and model-tier keys in same-origin local
+  browser storage. It validates them against the current rendered options before reuse and never
+  persists readiness, account diagnostics, prompts, or session content in that record.
+- The current Jury page sends no turn count. It continues only while parsed material evidence is
+  changing, records consensus or stable disagreement explicitly, and retains one-hour wall-clock
+  and 6,500,000-byte durable-record safety boundaries. Cached legacy clients that explicitly send
+  a valid two-to-six-round budget remain bounded. Do not replace these boundaries with an
+  unbounded loop or admit another Jury before every owned browser context has closed.
 - Both Zhihu workflows support only Chrome and Edge. They use an isolated temporary clone of the
   selected signed-in profile and perform credentialed same-origin API reads; Safari and an
   unauthenticated standalone HTTP client are not supported.
@@ -119,8 +130,10 @@ publish it through a public tunnel or reverse proxy.
   RFC1918 private IPv4 and IPv6 ULA clients must unlock before any application page or API is
   served; public, cross-site, and host-rebinding requests remain rejected.
 - Each task defaults to a new root-level ChatGPT, Gemini, Grok, or Claude Web conversation in the
-  selected authenticated browser session. Safari remains available only for ChatGPT; Claude uses
-  Edge or Chrome. The Agent sidebar can also join one of the 20 most recent root
+  selected authenticated browser session. On macOS, Safari supports ChatGPT and Grok Agent
+  sessions; Gemini and Claude use Edge or Chrome, and Jury remains Chromium-only. A supported
+  Safari/Grok preference is retained rather than silently replaced with Edge. The Agent sidebar can
+  also join one of the 20 most recent root
   sessions, start a session in one of the 20 most recent projects, or join one of a project's
   20 most recent sessions.
 - Gemini `New session in project` proves only a fresh transfer receipt on the selected Notebook
@@ -164,13 +177,15 @@ publish it through a public tunnel or reverse proxy.
   background refresh, return `unprobed` on a catalog/bootstrap miss, or return HTTP 409 on a history
   miss. The rule is browser-wide because every provider shares that browser's CDP context. It is
   deliberately absent on macOS.
-- ChatGPT and Claude on `/agent` use one agent-scoped browser bootstrap through Recent sessions:
+- ChatGPT, Grok, and Claude on `/agent` use one agent-scoped browser bootstrap through Recent sessions:
   the same bounded initial check verifies readiness, collects the root session/project catalog,
   returns it to the selector, and seeds the memory/Parquet cache. Cache reuse and task completion
   do not add a browser launch. A later browser launch is reserved for an explicit refresh, task
   submission, or later Project-session selection; an expired keyed Project-session read may serve
-  stale rows while one coalesced quiet refresh runs. Restricted Claude accounts remain unavailable
-  and are not sent through a login-bypass flow.
+  stale rows while one coalesced quiet refresh runs. Safari Grok uses the same visible-composer and
+  authenticated-conversations checks through page-local requests without exporting cookies or
+  cloning an Edge profile. Restricted Claude accounts remain unavailable and are not sent through
+  a login-bypass flow.
 
 ### Durable optimization jobs
 

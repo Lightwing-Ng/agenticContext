@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.1.0-codex.1
+Code version: v1.2.1-codex.1
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ def jury_app(tmp_path):
         "running": True,
         "message": "Reviewing the other juror's evidence.",
         "round": 2,
-        "max_rounds": 3,
+        "convergence_mode": "automatic",
+        "termination_reason": "",
         "providers": ["chatgpt", "grok"],
         "rounds": [],
         "response": "",
@@ -154,17 +155,44 @@ def test_jury_check_and_start_dispatch_web_only_inputs(jury_app):
     )
     started = client.post(
         "/api/jury/start",
-        json={**selection, "question": "Check the original claim against primary evidence.", "max_rounds": 3},
+        json={
+            **selection,
+            "question": "Check the original claim against primary evidence.",
+            "max_rounds": 2,
+        },
     )
     assert started.status_code == 202
     assert started.get_json()["session_id"] == "jury-example"
-    service.start.assert_called_once()
-    args, kwargs = service.start.call_args
-    assert "workspace_path" not in kwargs
-    assert "terminal" not in kwargs
-    assert "Check the original claim against primary evidence." in (*args, *kwargs.values())
-    assert selection["models"] in args
+    service.start.assert_called_once_with(
+        "edge", ["chatgpt", "grok"],
+        "Check the original claim against primary evidence.", 2, selection["models"],
+    )
     assert "no-store" in started.headers["Cache-Control"]
+
+
+def test_current_jury_start_uses_automatic_convergence_without_a_round_budget(jury_app):
+    application, service = jury_app
+    enable_fake_operations(application)
+    response = application.test_client().post(
+        "/api/jury/start",
+        json={
+            "browser": "edge",
+            "providers": ["chatgpt", "grok"],
+            "question": "Check the claim without a client-specified round budget.",
+            "models": {
+                "chatgpt": "chatgpt-latest-extra-high",
+                "grok": "grok-auto",
+            },
+        },
+    )
+    assert response.status_code == 202
+    service.start.assert_called_once_with(
+        "edge",
+        ["chatgpt", "grok"],
+        "Check the claim without a client-specified round budget.",
+        None,
+        {"chatgpt": "chatgpt-latest-extra-high", "grok": "grok-auto"},
+    )
 
 
 @pytest.mark.parametrize("route", ["check", "start", "stop"])

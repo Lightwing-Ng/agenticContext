@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.2.0-codex.1
+# Code version: v2.3.0-codex.1
 
 from __future__ import annotations
 
@@ -274,6 +274,71 @@ class SafariRequestClient:
                 time.sleep(SAFARI_APPLESCRIPT_RETRY_DELAY_SECONDS)
         raise last_error or RuntimeError("Safari request failed.")
 
+    def request_from_page(
+        self,
+        page: SafariPage,
+        url: str,
+        timeout: int,
+        headers: dict[str, str] | None = None,
+        *,
+        method: str = "GET",
+        body: str | None = None,
+        serialize: bool = False,
+    ) -> SafariResponse:
+        """Issue one authenticated same-origin request from an owned Safari page."""
+        normalized_method = str(method or "GET").strip().upper()
+        if normalized_method == "GET" and body is None:
+            return self.get_from_page(
+                page,
+                url,
+                timeout,
+                headers,
+                serialize=serialize,
+            )
+        if page.context is not self._context:
+            raise RuntimeError("Safari request page belongs to a different browser context.")
+        if normalized_method not in {"GET", "POST"}:
+            raise ValueError("Safari browser requests support only GET or POST.")
+        last_error: RuntimeError | None = None
+        for attempt_index in range(3):
+            try:
+                return self._request_once(
+                    page,
+                    url,
+                    timeout,
+                    headers or {},
+                    method=normalized_method,
+                    body=body,
+                    serialize=serialize,
+                )
+            except RuntimeError as exc:
+                last_error = exc
+                error_text = str(exc).lower()
+                retryable = any(
+                    marker in error_text
+                    for marker in (
+                        "request state disappeared",
+                        "load failed",
+                        "failed to fetch",
+                        "fetch is aborted",
+                    )
+                )
+                if not retryable or attempt_index >= 2:
+                    raise
+                if "request state disappeared" in error_text:
+                    page.wait_for_load_state(
+                        "domcontentloaded",
+                        min(max(1, int(timeout)), 60_000),
+                    )
+                if any(
+                    marker in error_text
+                    for marker in ("load failed", "failed to fetch", "fetch is aborted")
+                ):
+                    with contextlib.suppress(RuntimeError):
+                        page.keep_rendering_in_background()
+                time.sleep(SAFARI_APPLESCRIPT_RETRY_DELAY_SECONDS)
+        raise last_error or RuntimeError("Safari request failed.")
+
     def _get_once(
         self,
         page: SafariPage,
@@ -283,12 +348,50 @@ class SafariRequestClient:
         *,
         serialize: bool,
     ) -> SafariResponse:
+        return self._request_once(
+            page,
+            url,
+            timeout,
+            headers,
+            method="GET",
+            body=None,
+            serialize=serialize,
+        )
+
+    def _request_once(
+        self,
+        page: SafariPage,
+        url: str,
+        timeout: int,
+        headers: dict[str, str],
+        *,
+        method: str,
+        body: str | None,
+        serialize: bool,
+    ) -> SafariResponse:
         request_headers, referrer = _split_fetch_headers(headers)
         timeout_ms = max(1, int(timeout))
         request_guard = self._context.request_lock if serialize else contextlib.nullcontext()
         with request_guard:
             page.evaluate(
                 """(request) => {
+                    let targetUrl;
+                    try {
+                        targetUrl = new URL(request.url, location.href);
+                    } catch (_) {
+                        window.__cachelikesSafariRequest = {
+                            state: "failed",
+                            error: "Safari request URL is invalid.",
+                        };
+                        return false;
+                    }
+                    if (targetUrl.origin !== location.origin) {
+                        window.__cachelikesSafariRequest = {
+                            state: "failed",
+                            error: "Safari request must remain same-origin.",
+                        };
+                        return false;
+                    }
                     const controller = new AbortController();
                     window.__cachelikesSafariRequest = {
                         state: "pending",
@@ -296,13 +399,19 @@ class SafariRequestClient:
                     };
                     const timeoutId = setTimeout(() => controller.abort(), request.timeoutMs);
                     const options = {
+                        method: request.method,
                         credentials: "include",
                         cache: "no-store",
                         headers: request.headers,
+                        redirect: "error",
                         signal: controller.signal,
                     };
                     if (request.referrer) options.referrer = request.referrer;
-                    fetch(request.url, options).then(async (response) => {
+                    if (request.body !== null) options.body = request.body;
+                    fetch(targetUrl.href, options).then(async (response) => {
+                        if (new URL(response.url).origin !== location.origin) {
+                            throw new Error("Safari response left the current origin.");
+                        }
                         const responseHeaders = {};
                         response.headers.forEach((value, key) => {
                             responseHeaders[key] = value;
@@ -326,6 +435,8 @@ class SafariRequestClient:
                 }""",
                 {
                     "url": url,
+                    "method": method,
+                    "body": body,
                     "timeoutMs": timeout_ms,
                     "headers": request_headers,
                     "referrer": referrer,
@@ -433,25 +544,169 @@ class SafariRequestClient:
 
 
 class SafariLocator:
-    """Expose the locator operation required by shared page-readiness checks."""
+    """Expose the bounded locator operations used by Safari Web Agent flows."""
 
-    def __init__(self, page: SafariPage, selector: str) -> None:
+    def __init__(self, page: SafariPage, selector: str, index: int | None = None) -> None:
         self._page = page
         self._selector = selector
+        self._index = index
 
-    def inner_text(self, timeout: int = 30_000) -> str:
-        """Return text from the first matching element within a bounded wait."""
+    @property
+    def first(self) -> SafariLocator:
+        """Return a locator bound to the first matching element."""
+        return SafariLocator(self._page, self._selector, 0)
+
+    @property
+    def last(self) -> SafariLocator:
+        """Return a locator bound to the last matching element."""
+        return SafariLocator(self._page, self._selector, -1)
+
+    def nth(self, index: int) -> SafariLocator:
+        """Return a locator bound to one zero-based matching element."""
+        return SafariLocator(self._page, self._selector, int(index))
+
+    def count(self) -> int:
+        """Return the current number of matching elements."""
+        payload = self._page.evaluate(
+            """({selector, index}) => {
+                const count = document.querySelectorAll(selector).length;
+                if (index === null) return count;
+                const resolved = index < 0 ? count + index : index;
+                return resolved >= 0 && resolved < count ? 1 : 0;
+            }""",
+            {"selector": self._selector, "index": self._index},
+        )
+        return int(payload or 0)
+
+    def is_visible(self) -> bool:
+        """Return whether the selected element is currently rendered and visible."""
+        payload = self._page.evaluate(
+            """({selector, index}) => {
+                const elements = [...document.querySelectorAll(selector)];
+                const resolved = index === null ? 0 : (index < 0 ? elements.length + index : index);
+                const element = elements[resolved];
+                if (!element || element.getClientRects().length === 0) return false;
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return true;
+            }""",
+            {"selector": self._selector, "index": self._index},
+        )
+        return bool(payload)
+
+    def wait_for(self, state: str = "visible", timeout: int = 30_000) -> None:
+        """Wait for one supported locator state within a bounded interval."""
+        normalized_state = str(state or "visible").strip().lower()
+        if normalized_state not in {"visible", "hidden", "attached", "detached"}:
+            raise ValueError(f"Unsupported Safari locator state: {state}")
         deadline = time.monotonic() + max(0.001, int(timeout) / 1_000)
         while time.monotonic() < deadline:
             payload = self._page.evaluate(
-                """(selector) => {
-                    const element = document.querySelector(selector);
+                """({selector, index}) => {
+                    const elements = [...document.querySelectorAll(selector)];
+                    const resolved = index === null ? 0 : (index < 0 ? elements.length + index : index);
+                    const element = elements[resolved];
+                    let visible = false;
+                    if (element && element.getClientRects().length > 0) {
+                        visible = true;
+                        for (let current = element; current; current = current.parentElement) {
+                            const style = getComputedStyle(current);
+                            const opacity = Number.parseFloat(style.opacity || '1');
+                            if (style.display === 'none'
+                                || style.visibility === 'hidden'
+                                || style.visibility === 'collapse'
+                                || (Number.isFinite(opacity) && opacity <= 0)) {
+                                visible = false;
+                                break;
+                            }
+                        }
+                    }
+                    return {found: Boolean(element), visible};
+                }""",
+                {"selector": self._selector, "index": self._index},
+            )
+            found = bool(isinstance(payload, dict) and payload.get("found"))
+            visible = bool(isinstance(payload, dict) and payload.get("visible"))
+            if (
+                (normalized_state == "visible" and visible)
+                or (normalized_state == "hidden" and (not found or not visible))
+                or (normalized_state == "attached" and found)
+                or (normalized_state == "detached" and not found)
+            ):
+                return
+            time.sleep(SAFARI_POLL_INTERVAL_SECONDS)
+        raise TimeoutError(
+            f"Safari locator {self._selector!r} did not reach {normalized_state!r} "
+            f"within {timeout:,} ms."
+        )
+
+    def click(self, timeout: int = 30_000) -> None:
+        """Click the selected unique element after it becomes safely actionable."""
+        deadline = time.monotonic() + max(0.001, int(timeout) / 1_000)
+        while time.monotonic() < deadline:
+            payload = self._page.evaluate(
+                """({selector, index}) => {
+                    const elements = [...document.querySelectorAll(selector)];
+                    const resolved = index === null ? 0 : (index < 0 ? elements.length + index : index);
+                    const element = elements[resolved];
+                    if (!element || element.getClientRects().length === 0) return {clicked: false};
+                    for (let current = element; current; current = current.parentElement) {
+                        const style = getComputedStyle(current);
+                        const opacity = Number.parseFloat(style.opacity || '1');
+                        if (style.display === 'none'
+                            || style.visibility === 'hidden'
+                            || style.visibility === 'collapse'
+                            || (Number.isFinite(opacity) && opacity <= 0)) return {clicked: false};
+                    }
+                    if (element.disabled || element.getAttribute('aria-disabled') === 'true') {
+                        return {clicked: false};
+                    }
+                    element.click();
+                    return {clicked: true};
+                }""",
+                {"selector": self._selector, "index": self._index},
+            )
+            if isinstance(payload, dict) and payload.get("clicked"):
+                return
+            time.sleep(SAFARI_POLL_INTERVAL_SECONDS)
+        raise TimeoutError(
+            f"Safari could not click locator {self._selector!r} within {timeout:,} ms."
+        )
+
+    def get_attribute(self, name: str) -> str | None:
+        """Return one attribute from the selected element without exposing page state."""
+        payload = self._page.evaluate(
+            """({selector, index, name}) => {
+                const elements = [...document.querySelectorAll(selector)];
+                const resolved = index === null ? 0 : (index < 0 ? elements.length + index : index);
+                const element = elements[resolved];
+                return element ? element.getAttribute(name) : null;
+            }""",
+            {"selector": self._selector, "index": self._index, "name": str(name)},
+        )
+        return None if payload is None else str(payload)
+
+    def inner_text(self, timeout: int = 30_000) -> str:
+        """Return text from the selected matching element within a bounded wait."""
+        deadline = time.monotonic() + max(0.001, int(timeout) / 1_000)
+        while time.monotonic() < deadline:
+            payload = self._page.evaluate(
+                """({selector, index}) => {
+                    const elements = [...document.querySelectorAll(selector)];
+                    const resolved = index === null ? 0 : (index < 0 ? elements.length + index : index);
+                    const element = elements[resolved];
                     return {
                         found: Boolean(element),
                         text: element ? (element.innerText || element.textContent || "") : "",
                     };
                 }""",
-                self._selector,
+                {"selector": self._selector, "index": self._index},
             )
             if isinstance(payload, dict) and payload.get("found"):
                 return str(payload.get("text") or "")

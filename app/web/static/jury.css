@@ -1,4 +1,4 @@
-/* Code version: v1.1.3-codex.1 */
+/* Code version: v1.1.5-codex.1 */
 .agent-mode-section {
     display: grid;
     justify-items: center;
@@ -162,7 +162,8 @@
 .jury-account-status {
     display: grid;
     gap: 8px;
-    padding-inline: 0;
+    padding-block: 4px;
+    padding-inline: 10px 0;
 }
 .jury-account-status .secondary-button {
     justify-self: end;
@@ -262,36 +263,4 @@
     margin-bottom: 4px;
     color: var(--theme-error-strong);
     font-size: var(--font-ui-sm);
-}
-.jury-composer-note {
-    margin-inline-end: auto;
-    color: var(--muted);
-    font-size: var(--font-ui-xs);
-}
-.jury-round-limit {
-    flex: 0 1 auto;
-    min-width: 0;
-}
-.jury-round-limit select {
-    width: auto;
-    max-width: 100%;
-    min-height: var(--control-form-height);
-    margin: 0;
-    padding: 4px 6px;
-    border: none;
-    background: transparent;
-    color: var(--muted);
-    box-shadow: none;
-    font-size: var(--font-ui-xs);
-}
-@media (max-width: 600px) {
-    .jury-composer-note {
-        display: none;
-    }
-    .jury-page .agent-composer-footer {
-        gap: 8px;
-    }
-    .jury-round-limit {
-        margin-inline-end: auto;
-    }
 }

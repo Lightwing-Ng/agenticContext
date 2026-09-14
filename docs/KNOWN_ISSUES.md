@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.20.0-codex.1`
+Documentation version: `v1.21.0-codex.1`
 
 ## Windows host operating constraints
 
@@ -18,6 +18,19 @@ Documentation version: `v1.20.0-codex.1`
 - Prefer the `py -3` launcher on Windows; the resolver also accepts a `python` command that
   resolves to Python 3.13 or newer. Do not assume `python3` exists. `AGENTIC_CONTEXT_PYTHON`
   overrides the resolver on both platforms.
+
+## Safari Grok Agent support on 14 Sep 2026
+
+- macOS Safari now supports Grok Agent routes, persisted browser/provider/model preferences,
+  strict composer and authenticated-conversations readiness, exact Auto/Build model readback, and
+  receipt-bearing turns. It uses page-local authenticated requests without exporting cookies or
+  cloning an Edge profile, so choosing Safari does not enter Edge's credential-storage path.
+- Safari remains unsupported for Gemini and Claude Agent sessions, and Jury remains Edge/Chrome
+  only. Unsupported combinations fail closed; the frontend no longer silently changes a supported
+  Safari/Grok choice to Edge.
+- Safari automation still serializes owned windows across local processes and closes only the
+  task-owned window at completion. Unit and Flask coverage do not by themselves establish current
+  provider-side DOM or native authenticated acceptance.
 
 ## Bounded local compute rollout on 1 Sep 2026
 
@@ -172,7 +185,7 @@ Documentation version: `v1.20.0-codex.1`
   closed; a pre-existing conversation cannot become the run's new session even if it later echoes
   the current transfer ID. Fresh runs do not upload context before this binding completes.
 - Grok Agent readiness uses the signed-in home-page message composer and collects the initial source
-  catalog in the same Edge or Chrome context. It additionally requires an authenticated Grok
+  catalog in the same Edge, Chrome, or supported macOS Safari context. It additionally requires an authenticated Grok
   conversations request, and visible login or account-creation actions fail even when an anonymous
   composer is present. The cache-oriented `/files` probe remains separate.
 - Grok `Auto` matching rejects compound controls such as `Auto-play`, requires a semantic model

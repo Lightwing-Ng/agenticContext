@@ -1,6 +1,6 @@
 # Browser Jury
 
-Documentation version: `v1.0.1-codex.1`
+Documentation version: `v1.1.1-codex.1`
 
 ## Workflow
 
@@ -13,29 +13,47 @@ Claude is available only when explicitly checked. Requested model labels are ver
 live provider page before any question is submitted; an unavailable label fails visibly.
 Grok readiness uses the same authenticated chat endpoint, composer, and exact model as Jury;
 it does not depend on Cache's Files synchronization page or download capability.
-All selected accounts must pass the browser-only login check before the readiness checkmark
-appears. A selected provider that cannot sign in blocks the run before any prompt is sent;
-the user can deselect it and proceed with at least two jurors.
+Opening a blank Jury page and changing its browser, provider, or model selection do not launch a
+browser account probe. Choose `Check accounts` explicitly when the selection is ready; changing
+that selection invalidates the prior result and returns the card to `Not checked`. All selected
+accounts must pass this browser-only login check before the readiness checkmark appears. A selected
+provider that cannot sign in blocks the run before any prompt is sent; the user can deselect it and
+proceed with at least two jurors. Start rechecks the same selection before sending any prompt.
+
+The last browser, selected jurors, and every provider's model tier are remembered locally under
+`cachelikes:jury-runtime-preferences:v1` and restored on the next blank Jury page. Restored values
+must still exist in the rendered browser and model catalogs; stale or malformed values fall back to
+the current safe defaults. Readiness, account diagnostics, prompts, and session content are never
+stored in this preference record, and restoration never starts an account check.
 
 Every question creates one Jury session and one provider conversation for each selected
-juror. A provider context stays on one owning thread for its entire lifetime. Round 1 asks
-for independent research. Subsequent rounds give every juror the same frozen set of preceding
+juror. A provider context stays on one owning thread for its entire lifetime. The first pass asks
+for independent research. Subsequent passes give every juror the same frozen set of preceding
 opinions, citations, and objections. A candidate conclusion is nominated only when verdicts
 match; every juror must explicitly accept that exact candidate identifier, supply evidence
 (unless the verdict is unverified), and report no unresolved objection before consensus is
 shown. Agreement is a recorded outcome, not a guarantee of truth or independent source quality.
 
-The default limit is three rounds, adjustable from two to six. A differing or malformed vote
-does not count as assent. At the limit, the result remains inconclusive and retains the
-opinions. Provider failure stops the selected jury; the application never silently removes a
-juror or sends an uncertain message again. Stop cancels generation and waits for all owned
-browser contexts to close before admitting another question. User browser windows remain owned
-by the user.
+The current Web workflow does not send or infer a fixed turn count. It continues automatically
+while parsed verdicts, source URLs and their stated support, exact candidate acceptance, or
+concrete unresolved objections are materially changing. It stops with a visible inconclusive
+result after cross-review is complete without unanimous acceptance, or when a complete evidence
+state recurs without a new candidate requiring one review opportunity. A one-hour monotonic
+wall-clock boundary and a 6,500,000-byte durable-record soft boundary prevent an unbounded provider
+run without turning a pass count into the business rule. Each juror response is limited to 50,000
+UTF-8 bytes so a final complete barrier remains below the 8,000,000-byte reload boundary. Legacy
+clients that explicitly submit a valid two-to-six-round budget retain their bounded behavior; the
+current page submits none. Every termination reason is stored with the record. A differing or
+malformed vote never counts as assent. Provider failure stops the selected jury; the application
+never silently removes a juror or sends an uncertain message again. Stop cancels generation and
+waits for all owned browser contexts to close before admitting another question. If browser cleanup
+outlives the coordinator grace period, a finalizer keeps admission closed until the real owners exit.
+User browser windows remain owned by the user.
 
 ## Architecture and storage
 
-`app/core/jury.py` owns validation, round barriers, explicit votes, task admission, and archival
-state. `app/core/jury_browser.py` adapts the existing model selector, conversation binding,
+`app/core/jury.py` owns validation, evidence barriers, automatic convergence, explicit votes,
+task admission, and archival state. `app/core/jury_browser.py` adapts the existing model selector, conversation binding,
 submission receipt, and response reader without a workspace controller. The Agent domain
 facade exports `JuryService`; Flask routes preserve the application network, Origin, LAN
 unlock, disabled-external-operation, and no-store boundaries.

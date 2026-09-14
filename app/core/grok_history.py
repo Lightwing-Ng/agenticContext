@@ -1,6 +1,6 @@
 """Grok text history collection and local persistence.
 
-Code version: v1.2.2-codex.1
+Code version: v1.3.0-codex.1
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from .resource_persistence import (
     read_parquet_rows,
     write_parquet_rows_atomic,
 )
+from .safari_automation import SafariPage
 from .state import TaskSnapshot, TaskState
 
 
@@ -197,48 +198,69 @@ def _grok_api_json(
     url = f"{GROK_API_BASE_URL}{path}"
     serialized_body = json.dumps(body, ensure_ascii=False) if body is not None else None
     for attempt in range(1, GROK_API_RETRY_LIMIT + 1):
-        result = page.evaluate(
-            """
-            async ({url, method, body, timeoutMs}) => {
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-              try {
-                const options = {
-                  method,
-                  credentials: "include",
-                  headers: {Accept: "application/json"},
-                  signal: controller.signal,
-                };
-                if (body !== null) {
-                  options.headers["Content-Type"] = "application/json";
-                  options.body = body;
+        request_client = getattr(getattr(page, "context", None), "request", None)
+        request_from_page = getattr(request_client, "request_from_page", None)
+        if isinstance(page, SafariPage) and callable(request_from_page):
+            request_headers = {"Accept": "application/json"}
+            if serialized_body is not None:
+                request_headers["Content-Type"] = "application/json"
+            response = request_from_page(
+                page,
+                url,
+                GROK_API_REQUEST_TIMEOUT_MS,
+                request_headers,
+                method=method,
+                body=serialized_body,
+            )
+            response_text = response.text()
+            try:
+                response_body: Any = json.loads(response_text) if response_text else {}
+            except json.JSONDecodeError:
+                response_body = response_text
+            result = {"status": response.status, "body": response_body}
+        else:
+            result = page.evaluate(
+                """
+                async ({url, method, body, timeoutMs}) => {
+                  const controller = new AbortController();
+                  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                  try {
+                    const options = {
+                      method,
+                      credentials: "include",
+                      headers: {Accept: "application/json"},
+                      signal: controller.signal,
+                    };
+                    if (body !== null) {
+                      options.headers["Content-Type"] = "application/json";
+                      options.body = body;
+                    }
+                    const response = await fetch(url, options);
+                    const text = await response.text();
+                    let parsed = text;
+                    try { parsed = text ? JSON.parse(text) : {}; } catch (_) {}
+                    return {status: response.status, body: parsed};
+                  } catch (error) {
+                    if (controller.signal.aborted) {
+                      return {
+                        status: 408,
+                        body: {message: `Request timed out after ${timeoutMs} ms`},
+                        timedOut: true,
+                      };
+                    }
+                    throw error;
+                  } finally {
+                    clearTimeout(timeoutId);
+                  }
                 }
-                const response = await fetch(url, options);
-                const text = await response.text();
-                let parsed = text;
-                try { parsed = text ? JSON.parse(text) : {}; } catch (_) {}
-                return {status: response.status, body: parsed};
-              } catch (error) {
-                if (controller.signal.aborted) {
-                  return {
-                    status: 408,
-                    body: {message: `Request timed out after ${timeoutMs} ms`},
-                    timedOut: true,
-                  };
-                }
-                throw error;
-              } finally {
-                clearTimeout(timeoutId);
-              }
-            }
-            """,
-            {
-                "url": url,
-                "method": method,
-                "body": serialized_body,
-                "timeoutMs": GROK_API_REQUEST_TIMEOUT_MS,
-            },
-        )
+                """,
+                {
+                    "url": url,
+                    "method": method,
+                    "body": serialized_body,
+                    "timeoutMs": GROK_API_REQUEST_TIMEOUT_MS,
+                },
+            )
         payload = result.get("body") if isinstance(result, dict) else None
         if isinstance(payload, str):
             title_match = re.search(r"<title[^>]*>(.*?)</title>", payload, re.I | re.S)

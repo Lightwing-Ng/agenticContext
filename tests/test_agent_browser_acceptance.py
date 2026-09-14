@@ -1,6 +1,6 @@
 """Security and lifecycle tests for local browser acceptance.
 
-Code version: v1.0.0-codex.1
+Code version: v1.1.0-codex.1
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 import socket
+from threading import current_thread
 
 import pytest
 
@@ -52,8 +53,10 @@ def test_browser_acceptance_activity_detail_is_specific_and_bounded() -> None:
     ) == "public → /dashboard (desktop + narrow Chromium)"
 
 
-def test_workspace_controller_executes_registered_browser_acceptance(tmp_path: Path) -> None:
-    pytest.importorskip("playwright.sync_api")
+def test_workspace_controller_executes_browser_acceptance_inside_active_playwright(
+    tmp_path: Path,
+) -> None:
+    playwright_sync = pytest.importorskip("playwright.sync_api")
     workspace = tmp_path / "project"
     workspace.mkdir()
     (workspace / "index.html").write_text(
@@ -66,20 +69,84 @@ def test_workspace_controller_executes_registered_browser_acceptance(tmp_path: P
         lambda: False,
         compute_job_runtime_root=tmp_path / "runtime",
     )
-    result = controller.execute(
-        {
-            "action": "browser_acceptance",
-            "root": ".",
-            "target": "/",
-            "expected_text": ["Ready"],
-            "expected_selectors": ["main"],
-        }
-    )
+    with playwright_sync.sync_playwright():
+        result = controller.execute(
+            {
+                "action": "browser_acceptance",
+                "root": ".",
+                "target": "/",
+                "expected_text": ["Ready"],
+                "expected_selectors": ["main"],
+            }
+        )
     assert result["ok"] is True
     assert result["action"] == "browser_acceptance"
     assert result["preview"]["port"] != 8666
     assert result["verification_current"] is True
     assert "browser_acceptance" in controller.state.successful_checks
+
+
+def test_workspace_controller_runs_browser_acceptance_on_dedicated_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.agent import browser_acceptance
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace), command_timeout_seconds=20),
+        lambda: False,
+        compute_job_runtime_root=tmp_path / "runtime",
+    )
+    caller_thread = current_thread()
+    observed_threads = []
+
+    def fake_run_browser_acceptance(*_args: object, **_kwargs: object) -> dict[str, object]:
+        observed_threads.append(current_thread())
+        return {"ok": True, "action": "browser_acceptance"}
+
+    monkeypatch.setattr(
+        browser_acceptance,
+        "run_browser_acceptance",
+        fake_run_browser_acceptance,
+    )
+
+    result = controller.execute({"action": "browser_acceptance", "root": "."})
+
+    assert result["ok"] is True
+    assert len(observed_threads) == 1
+    assert observed_threads[0] is not caller_thread
+    assert observed_threads[0].name == "agent-browser-acceptance"
+
+
+def test_workspace_controller_reraises_browser_acceptance_worker_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.agent import browser_acceptance
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace), command_timeout_seconds=20),
+        lambda: False,
+        compute_job_runtime_root=tmp_path / "runtime",
+    )
+
+    def fail_browser_acceptance(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("synthetic browser acceptance failure")
+
+    monkeypatch.setattr(
+        browser_acceptance,
+        "run_browser_acceptance",
+        fail_browser_acceptance,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic browser acceptance failure"):
+        controller._browser_acceptance({"root": "."})
 
 
 def test_project_protected_ports_are_bounded_and_fail_closed(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.2.0-codex.1
+# Code version: v2.3.0-codex.1
 
 from __future__ import annotations
 
@@ -208,6 +208,83 @@ def test_safari_request_client_can_bind_a_request_to_one_owned_page() -> None:
     )
 
 
+def test_safari_request_client_posts_authenticated_json_from_one_owned_page() -> None:
+    context = SafariContext("https://grok.com/")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    body_text = '{"responses":[]}'
+
+    with patch.object(
+        page,
+        "evaluate",
+        side_effect=[
+            True,
+            {
+                "state": "ready",
+                "status": 200,
+                "headers": {"Content-Type": "application/json"},
+                "bodyLength": len(body_text),
+                "bodyText": body_text,
+                "cleanedInline": True,
+                "error": "",
+            },
+        ],
+    ) as evaluate:
+        response = context.request.request_from_page(
+            page,
+            "https://grok.com/rest/app-chat/conversations/demo/load-responses",
+            timeout=30_000,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+            body='{"responseIds":["response-1"]}',
+        )
+
+    assert response.status == 200
+    assert response.text() == body_text
+    request_argument = evaluate.call_args_list[0].args[1]
+    assert request_argument["method"] == "POST"
+    assert request_argument["body"] == '{"responseIds":["response-1"]}'
+    assert request_argument["headers"]["Content-Type"] == "application/json"
+    request_script = evaluate.call_args_list[0].args[0]
+    assert "targetUrl.origin !== location.origin" in request_script
+    assert 'redirect: "error"' in request_script
+    assert "fetch(targetUrl.href, options)" in request_script
+
+
+def test_safari_request_client_rejects_cross_origin_inside_the_page() -> None:
+    context = SafariContext("https://grok.com/")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+
+    with patch.object(
+        page,
+        "evaluate",
+        side_effect=[
+            False,
+            {
+                "state": "failed",
+                "status": 0,
+                "headers": {},
+                "bodyLength": 0,
+                "error": "Safari request must remain same-origin.",
+            },
+            True,
+        ],
+    ) as evaluate, pytest.raises(RuntimeError, match="must remain same-origin"):
+        context.request.get_from_page(
+            page,
+            "https://example.com/private",
+            timeout=1_000,
+        )
+
+    request_script = evaluate.call_args_list[0].args[0]
+    assert "targetUrl.origin !== location.origin" in request_script
+    assert "fetch(targetUrl.href, options)" in request_script
+
+
 def test_safari_request_client_recovers_from_suspended_window_fetch_failure() -> None:
     context = SafariContext("https://chatgpt.com/")
     page = SafariPage(context, window_id=123)
@@ -246,6 +323,39 @@ def test_safari_page_exposes_shared_readiness_helpers() -> None:
         assert page.locator("body").inner_text(timeout=1_000) == "Ready"
 
     assert page.context is context
+
+
+def test_safari_locator_exposes_bounded_grok_model_control_operations() -> None:
+    context = SafariContext("https://grok.com/")
+    page = SafariPage(context, window_id=123)
+
+    with patch.object(
+        page,
+        "evaluate",
+        side_effect=[
+            2,
+            1,
+            True,
+            {"clicked": True},
+            "true",
+            {"found": True, "visible": True},
+            {"found": True, "text": "Build Beta"},
+        ],
+    ) as evaluate:
+        locator = page.locator("[data-cachelikes-grok-model-trigger]")
+        assert locator.count() == 2
+        assert locator.first.count() == 1
+        assert locator.last.is_visible() is True
+        locator.nth(1).click(timeout=1_000)
+        assert locator.first.get_attribute("aria-expanded") == "true"
+        locator.first.wait_for(state="visible", timeout=1_000)
+        assert locator.first.inner_text(timeout=1_000) == "Build Beta"
+
+    observed_indexes = [
+        call.args[1]["index"]
+        for call in evaluate.call_args_list
+    ]
+    assert observed_indexes == [None, 0, -1, 1, 0, 0, 0]
 
 
 def test_safari_page_can_remain_render_active_in_background_without_stealing_focus() -> None:

@@ -1,4 +1,4 @@
-/* Code version: v3.44.3-codex.1 */
+/* Code version: v3.45.0-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
@@ -792,7 +792,8 @@
     }
 
     function normalizeAgentSelection() {
-        if (selectedPlatform() === "chatgpt" || selectedBrowser() !== "safari") return;
+        const safariPlatforms = new Set(["chatgpt", "grok"]);
+        if (safariPlatforms.has(selectedPlatform()) || selectedBrowser() !== "safari") return;
         const browserCombobox = document.querySelector(".agent-browser-combobox");
         const edgeOption = browserCombobox?.querySelector('[data-agent-combobox-option="edge"]');
         const browserInput = browserCombobox?.querySelector("[data-agent-combobox-input]");

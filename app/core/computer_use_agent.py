@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.71.2-codex.1
+Code version: v3.73.0-codex.1
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ from .agent_model_catalog import (
 from .agent_session_sources import (
     CLAUDE_HOME_URL,
     CLAUDE_HOSTS,
+    GROK_COMPOSER_SELECTOR,
     chatgpt_project_id,
     claude_project_session_id,
     normalize_agent_conversation_url,
@@ -211,6 +212,7 @@ PROVIDER_SESSION_BIND_POLL_MILLISECONDS = 100
 GROK_SESSION_BASELINE_PAGE_LIMIT = 100
 WEB_PROGRESS_TEXT = {"thinking", "working", "searching", "analyzing", "generating"}
 SUPPORTED_BROWSERS = frozenset({"chrome", "edge", "safari"})
+SUPPORTED_SAFARI_AGENT_PLATFORMS = frozenset({"chatgpt", "grok"})
 
 
 class AgentConnectionInterrupted(RuntimeError):
@@ -1671,8 +1673,11 @@ def open_browser_for_login(
         raise ValueError("The Agent platform must be ChatGPT, Gemini, Grok, or Claude.")
     if selected_browser not in SUPPORTED_BROWSERS:
         raise ValueError("The Agent browser must be Safari, Edge, or Chrome.")
-    if selected_browser == "safari" and selected_platform != "chatgpt":
-        raise ValueError("Gemini, Grok, and Claude Agent sessions require Edge or Chrome.")
+    if (
+        selected_browser == "safari"
+        and selected_platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS
+    ):
+        raise ValueError("Gemini and Claude Agent sessions require Edge or Chrome.")
     if sys.platform != "darwin" and not is_windows_host():
         raise RuntimeError("Browser login handoff is only supported on macOS and Windows.")
     # On Windows the Agent reuses a project-owned debug browser (reached over
@@ -1737,8 +1742,8 @@ def validate_computer_use_settings(payload: dict[str, Any]) -> ComputerUseSettin
         raise ValueError("The Agent browser must be Safari, Edge, or Chrome.")
     if operating_system == "windows" and browser == "safari":
         raise ValueError("Windows Agent sessions require Edge or Chrome; Safari is macOS-only.")
-    if platform != "chatgpt" and browser == "safari":
-        raise ValueError("Gemini, Grok, and Claude Agent sessions require Edge or Chrome.")
+    if browser == "safari" and platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS:
+        raise ValueError("Gemini and Claude Agent sessions require Edge or Chrome.")
 
     default_model = default_model_for_platform(platform)
     model = str(payload.get("model", default_model)).strip().lower()
@@ -5398,25 +5403,54 @@ class WorkspaceController:
             should_stop=self.should_stop,
         )
         artifact_root = self._compute_job_runtime_root / "browser-acceptance"
-        result = run_browser_acceptance(
-            BrowserAcceptanceRequest(
-                root=root,
-                target=str(payload.get("target") or "/"),
-                port=int(payload.get("port") or 0),
-                expected_text=tuple(str(item) for item in (payload.get("expected_text") or [])),
-                expected_selectors=tuple(
-                    str(item) for item in (payload.get("expected_selectors") or [])
-                ),
-                protected_ports=frozenset({DEFAULT_PORT}) | load_project_protected_ports(self.workspace),
-                timeout_seconds=float(self.settings.command_timeout_seconds),
-                artifact_root=artifact_root,
-            ),
-            playwright_context=sync_playwright_or_error,
-            process_group_options=_process_group_options,
-            stop_process=_stop_process,
-            process_changed=self.process_changed,
-            should_stop=self.should_stop,
+        acceptance_result: dict[str, Any] = {}
+        acceptance_failure: BaseException | None = None
+
+        def run_acceptance() -> None:
+            nonlocal acceptance_failure
+            try:
+                acceptance_result.update(
+                    run_browser_acceptance(
+                        BrowserAcceptanceRequest(
+                            root=root,
+                            target=str(payload.get("target") or "/"),
+                            port=int(payload.get("port") or 0),
+                            expected_text=tuple(
+                                str(item) for item in (payload.get("expected_text") or [])
+                            ),
+                            expected_selectors=tuple(
+                                str(item) for item in (payload.get("expected_selectors") or [])
+                            ),
+                            protected_ports=frozenset({DEFAULT_PORT})
+                            | load_project_protected_ports(self.workspace),
+                            timeout_seconds=float(self.settings.command_timeout_seconds),
+                            artifact_root=artifact_root,
+                        ),
+                        playwright_context=sync_playwright_or_error,
+                        process_group_options=_process_group_options,
+                        stop_process=_stop_process,
+                        process_changed=self.process_changed,
+                        should_stop=self.should_stop,
+                    )
+                )
+            except BaseException as exc:  # Re-raised on the controller thread below.
+                acceptance_failure = exc
+
+        # The controller thread already owns one Playwright sync connection for
+        # its provider browser, and that connection keeps an asyncio loop
+        # running in this thread. Opening a second sync_playwright() in the same
+        # thread is rejected ("Sync API inside the asyncio loop"), so browser
+        # acceptance runs on a dedicated worker thread with its own loop state.
+        acceptance_thread = Thread(
+            target=run_acceptance,
+            name="agent-browser-acceptance",
+            daemon=True,
         )
+        acceptance_thread.start()
+        acceptance_thread.join()
+        if acceptance_failure is not None:
+            raise acceptance_failure
+        result = acceptance_result
         after_fingerprint, after_scan_complete = _workspace_mutation_fingerprint(
             self.workspace,
             should_stop=self.should_stop,
@@ -10640,7 +10674,7 @@ def _run_web_action_loop(
             and message.startswith(f"Controller transfer ID: {transfer_marker}\n\n")
         )
         receipt_marker = ""
-        if browser_kind != "safari":
+        if browser_kind != "safari" or platform == "grok":
             receipt_marker = (
                 transfer_marker
                 if reuse_chatgpt_transfer_marker
@@ -11602,8 +11636,7 @@ def _web_composer_selector(platform: str) -> str:
             'textarea[aria-label*="prompt" i]'
         ),
         "grok": (
-            'textarea, div[contenteditable="true"][role="textbox"]'
-            '[aria-label="Ask Grok anything"]'
+            GROK_COMPOSER_SELECTOR
         ),
         "claude": CLAUDE_COMPOSER_SELECTOR,
     }.get(platform, 'textarea, [contenteditable="true"]')
@@ -11833,13 +11866,27 @@ def _verify_agent_page(
             should_stop,
             availability_check,
         )
-    if browser_kind == "safari":
-        raise RuntimeError(f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome.")
+    if browser_kind == "safari" and platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS:
+        raise RuntimeError(
+            f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome."
+        )
     if callable(availability_check):
         available, _paused_seconds = _run_availability_gate(availability_check)
         if not available:
             return False
-    if not _wait_for_web_composer(
+    if browser_kind == "safari":
+        if not _wait_for_visible_composer(
+            page.locator(_web_composer_selector(platform)),
+            should_stop=should_stop,
+            readiness_check=(
+                lambda: _run_availability_gate(availability_check)[1]
+                if callable(availability_check)
+                else 0.0
+            ),
+            require_unique=True,
+        ):
+            return False
+    elif not _wait_for_web_composer(
         page,
         platform,
         should_stop=should_stop,
@@ -16791,7 +16838,7 @@ def _submit_and_wait(
             )
         else:
             turn_receipt_marker = ""
-    elif browser_kind != "safari":
+    elif browser_kind != "safari" or platform == "grok":
         if not re.fullmatch(r"agent-turn-[0-9a-f]{32}", turn_receipt_marker):
             turn_receipt_marker = f"agent-turn-{secrets.token_hex(16)}"
         submitted_message = _message_with_turn_receipt(
@@ -16802,7 +16849,7 @@ def _submit_and_wait(
     else:
         turn_receipt_marker = ""
     selector = _web_assistant_selector(platform)
-    if browser_kind != "safari":
+    if browser_kind != "safari" or platform == "grok":
         def capture_baseline() -> tuple[str, dict[str, Any]]:
             checked_url = session_check(False) if session_check is not None else ""
             snapshot = (
@@ -16864,9 +16911,20 @@ def _submit_and_wait(
     if on_commit_attempted is not None:
         on_commit_attempted()
     if browser_kind == "safari":
-        if platform != "chatgpt":
-            raise RuntimeError(f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome.")
-        _submit_safari_prompt(page, message, should_stop)
+        if platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS:
+            raise RuntimeError(
+                f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome."
+            )
+        submission_accepted = _submit_safari_prompt(
+            page,
+            submitted_message,
+            should_stop,
+            platform=platform,
+            session_check=session_check,
+            expected_target_url=atomic_target_url,
+        )
+        if submission_accepted is False:
+            return ""
     elif platform == "chatgpt":
         _submit_chromium_prompt(
             page,
@@ -17031,7 +17089,7 @@ def _submit_and_wait(
         def read_response_state() -> dict[str, Any]:
             before_url = str(getattr(page, "url", "") or "").strip()
             checked_session = confirm_response_session()
-            if browser_kind != "safari":
+            if browser_kind != "safari" or platform == "grok":
                 snapshot = (
                     _chatgpt_response_snapshot(
                         page,
@@ -17102,7 +17160,7 @@ def _submit_and_wait(
             continue
         response_snapshot = read_state.get("snapshot") or {}
         current_user_receipt_visible = current_user_receipt_seen
-        if browser_kind != "safari":
+        if browser_kind != "safari" or platform == "grok":
             response_target_url = checked_response_session or atomic_target_url
             if response_target_url and not _web_target_is_open(
                 platform,
@@ -18353,14 +18411,81 @@ def _submit_safari_prompt(
     page: Any,
     message: str,
     should_stop: Callable[[], bool],
-) -> None:
-    """Fill Safari's composer and wait for ChatGPT's visible send control."""
+    *,
+    platform: str = DEFAULT_AGENT_PLATFORM,
+    session_check: Callable[[bool], str] | None = None,
+    expected_target_url: str = "",
+) -> bool:
+    """Fill one verified Safari composer and click its provider send control once."""
     if should_stop():
-        return
-    fill_result = page.evaluate(
-        """({value}) => {
-            const composer = document.querySelector('#prompt-textarea');
-            if (!composer) throw new Error('ChatGPT composer was not found.');
+        return False
+    if platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS:
+        raise RuntimeError(
+            f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome."
+        )
+    if session_check is not None:
+        session_check(False)
+    current_url = str(getattr(page, "url", "") or "").strip()
+    if platform == "grok" and not current_url:
+        raise RuntimeError("Safari could not verify the current Grok URL before filling the prompt.")
+    if expected_target_url and current_url and not _web_target_is_open(
+        platform,
+        expected_target_url,
+        current_url,
+    ):
+        raise RuntimeError(
+            f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} tab changed before "
+            "Safari could fill the prompt."
+        )
+    composer_marker = f"safari-composer-{secrets.token_hex(16)}"
+
+    def fill_verified_composer() -> Any:
+        return page.evaluate(
+            """({value, platform, composerSelector, composerMarker, expectedCurrentUrl}) => {
+            const isVisible = (element) => {
+                if (!element || element.getClientRects().length === 0) return false;
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return true;
+            };
+            if (expectedCurrentUrl && location.href !== expectedCurrentUrl) {
+                return {filled: false, targetMismatch: true, currentUrl: location.href};
+            }
+            const isProviderComposer = (element) => {
+                if (!isVisible(element)
+                    || element.disabled
+                    || element.getAttribute('aria-disabled') === 'true'
+                    || element.closest(
+                        '[role="dialog"], [role="menu"], [role="listbox"], nav, header, '
+                        + '[data-testid*="feedback" i], [class*="feedback" i]'
+                    )) return false;
+                if (platform === 'chatgpt') return element.id === 'prompt-textarea';
+                let scope = element.parentElement;
+                while (scope && scope !== document.body) {
+                    if (scope.querySelector('button[data-testid="chat-submit"]')) return true;
+                    if (scope.matches('main')) break;
+                    scope = scope.parentElement;
+                }
+                const metadata = `${element.getAttribute('aria-label') || ''} `
+                    + `${element.getAttribute('placeholder') || ''} `
+                    + `${element.getAttribute('data-testid') || ''}`;
+                return /prompt|message|ask|grok|what do you|输入|輸入|提问|提問/i.test(metadata);
+            };
+            const composers = [...document.querySelectorAll(composerSelector)]
+                .filter(isProviderComposer);
+            document.querySelectorAll('[data-cachelikes-safari-composer]')
+                .forEach((element) => element.removeAttribute('data-cachelikes-safari-composer'));
+            if (composers.length !== 1) {
+                return {filled: false, composerCount: composers.length};
+            }
+            const composer = composers[0];
+            composer.setAttribute('data-cachelikes-safari-composer', composerMarker);
             composer.focus();
             if (composer.tagName === 'TEXTAREA') {
                 const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
@@ -18378,35 +18503,127 @@ def _submit_safari_prompt(
                     composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
                 }
             }
-            return {filled: true, tagName: composer.tagName, contentEditable: composer.isContentEditable};
+            const readback = 'value' in composer
+                ? composer.value
+                : (composer.innerText || composer.textContent || '');
+            return {
+                filled: readback.replace(/\r\n?/g, '\n').trim()
+                    === value.replace(/\r\n?/g, '\n').trim(),
+                composerCount: composers.length,
+                tagName: composer.tagName,
+                contentEditable: composer.isContentEditable,
+            };
         }""",
-        {"value": message},
+            {
+                "value": message,
+                "platform": platform,
+                "composerSelector": _web_composer_selector(platform),
+                "composerMarker": composer_marker,
+                "expectedCurrentUrl": current_url,
+            },
+        )
+
+    executed, fill_result = _run_browser_action_unless_stopped(
+        should_stop,
+        fill_verified_composer,
     )
+    if not executed:
+        return False
+    if isinstance(fill_result, dict) and fill_result.get("targetMismatch"):
+        raise RuntimeError(
+            f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} tab changed before "
+            "Safari could fill the prompt."
+        )
     if not isinstance(fill_result, dict) or not fill_result.get("filled"):
-        raise RuntimeError("Safari did not fill the ChatGPT composer.")
+        raise RuntimeError(
+            f"Safari did not uniquely fill the {AGENT_PLATFORM_BY_KEY[platform]['label']} composer."
+        )
     if should_stop():
-        return
+        return False
 
     deadline = time.monotonic() + SAFARI_SEND_BUTTON_TIMEOUT_SECONDS
     last_state: dict[str, Any] = {}
     while time.monotonic() < deadline:
         if should_stop():
-            return
-        result = page.evaluate(
-            r"""() => {
+            return False
+        if session_check is not None:
+            session_check(False)
+        checked_url = str(getattr(page, "url", "") or "").strip()
+        if platform == "grok" and checked_url != current_url:
+            raise RuntimeError(
+                "The selected Grok tab changed before Safari could send the prompt."
+            )
+
+        def scan_and_submit() -> Any:
+            return page.evaluate(
+                r"""({platform, composerMarker, expectedMessage, expectedCurrentUrl}) => {
                 const isVisible = (element) => {
-                    const style = window.getComputedStyle(element);
-                    return element.getClientRects().length > 0
-                        && style.visibility !== 'hidden'
-                        && style.display !== 'none';
+                    if (!element || element.getClientRects().length === 0) return false;
+                    for (let current = element; current; current = current.parentElement) {
+                        const style = getComputedStyle(current);
+                        const opacity = Number.parseFloat(style.opacity || '1');
+                        if (style.display === 'none'
+                            || style.visibility === 'hidden'
+                            || style.visibility === 'collapse'
+                            || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                    }
+                    return true;
                 };
-                const labelFor = (button) => `${button.getAttribute('aria-label') || ''} ${button.innerText || button.textContent || ''}`.trim();
-                const controls = Array.from(document.querySelectorAll('button')).filter(isVisible);
-                const sendButtons = controls.filter((button) => {
-                    const label = labelFor(button);
-                    return button.getAttribute('data-testid') === 'send-button'
-                        || /^(send|send prompt)$/i.test(label);
-                });
+                if (expectedCurrentUrl && location.href !== expectedCurrentUrl) {
+                    return {clicked: false, targetMismatch: true, currentUrl: location.href};
+                }
+                const normalize = (value) => String(value || '')
+                    .replace(/\r\n?/g, '\n').trim();
+                const composerMatches = [...document.querySelectorAll(
+                    '[data-cachelikes-safari-composer]'
+                )].filter((element) => (
+                    element.getAttribute('data-cachelikes-safari-composer') === composerMarker
+                    && isVisible(element)
+                ));
+                const composer = composerMatches.length === 1 ? composerMatches[0] : null;
+                const composerValue = composer
+                    ? ('value' in composer
+                        ? composer.value
+                        : (composer.innerText || composer.textContent || ''))
+                    : '';
+                if (!composer || normalize(composerValue) !== normalize(expectedMessage)) {
+                    return {
+                        clicked: false,
+                        composerCount: composerMatches.length,
+                        composerExact: false,
+                    };
+                }
+                const semanticLabels = (button) => [
+                    button.getAttribute('aria-label') || '',
+                    button.getAttribute('title') || '',
+                    button.innerText || button.textContent || '',
+                ].map((value) => value.replace(/\s+/g, ' ').trim()).filter(Boolean);
+                const semanticSendButtons = (scope) => [...scope.querySelectorAll('button')]
+                    .filter(isVisible).filter((button) => {
+                        const testId = (button.getAttribute('data-testid') || '').trim();
+                        return semanticLabels(button).some((label) => (
+                            /^(?:send(?: prompt| message)?|submit|ask grok|发送|傳送|傳送訊息|发送消息|提交|提問|提问)$/i.test(label)
+                            && !/attach|upload|share|feedback|copy|附加|上传|上傳/i.test(label)
+                        )) || /^(?:send-button|submit-button|chat-submit)$/i.test(testId);
+                    });
+                let scope = document;
+                if (platform === 'grok') {
+                    scope = null;
+                    for (let candidate = composer.parentElement;
+                        candidate && candidate !== document.body;
+                        candidate = candidate.parentElement) {
+                        if (semanticSendButtons(candidate).length) {
+                            scope = candidate;
+                            break;
+                        }
+                        if (candidate.matches('main')) break;
+                    }
+                }
+                if (!scope) {
+                    return {clicked: false, composerCount: 1, sendButtons: []};
+                }
+                const controls = [...scope.querySelectorAll('button')].filter(isVisible);
+                const sendButtons = semanticSendButtons(scope);
                 const sendButton = sendButtons.find((button) =>
                     !button.disabled && button.getAttribute('aria-disabled') !== 'true'
                 );
@@ -18419,7 +18636,7 @@ def _submit_safari_prompt(
                     };
                 }
                 const generating = controls.some((button) => {
-                    const label = labelFor(button);
+                    const label = semanticLabels(button).join(' ');
                     const testId = button.getAttribute('data-testid') || '';
                     return /stop\s+(generating|response|answering)/i.test(label)
                         || /stop-(button|generating|response)/i.test(testId);
@@ -18429,21 +18646,48 @@ def _submit_safari_prompt(
                     generating,
                     sendButtons: sendButtons.map((button) => ({
                         ariaLabel: button.getAttribute('aria-label') || '',
+                        dataTestId: button.getAttribute('data-testid') || '',
                         disabled: Boolean(button.disabled || button.getAttribute('aria-disabled') === 'true'),
                     })),
                 };
-            }"""
-        )
+            }""",
+                {
+                    "platform": platform,
+                    "composerMarker": composer_marker,
+                    "expectedMessage": message,
+                    "expectedCurrentUrl": current_url,
+                },
+            )
+
+        try:
+            executed, result = _run_browser_action_unless_stopped(
+                should_stop,
+                scan_and_submit,
+            )
+        except Exception as exc:
+            if _provider_mutating_action_may_have_committed(page, platform, exc):
+                return True
+            raise
+        if not executed:
+            return False
         if isinstance(result, dict):
             last_state = result
+            if result.get("targetMismatch"):
+                raise RuntimeError(
+                    f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} tab changed "
+                    "before Safari could send the prompt."
+                )
             if result.get("clicked"):
-                return
+                return True
         if should_stop():
-            return
+            return False
         page.wait_for_timeout(WEB_SEND_BUTTON_POLL_MILLISECONDS)
 
     details = json.dumps(last_state, ensure_ascii=False, separators=(",", ":"))[:500]
-    raise RuntimeError(f"Safari did not expose an enabled ChatGPT send button: {details}")
+    raise RuntimeError(
+        f"Safari did not expose an enabled {AGENT_PLATFORM_BY_KEY[platform]['label']} "
+        f"send button: {details}"
+    )
 
 
 def _submit_chromium_prompt(

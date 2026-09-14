@@ -1,23 +1,26 @@
 """Jury deliberation boundaries with deterministic, browser-free jurors.
 
-Code version: v1.1.2-codex.1
+Code version: v1.2.1-codex.1
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from concurrent.futures import Future
 import json
 from threading import Barrier, Event, Lock, get_ident
 import time
 
 import pytest
 
+from app.core import jury as jury_module
 from app.core.computer_use_agent import ComputerUseSettings
 from app.core.config import CrawlConfig
 from app.core.jury import (
     DEFAULT_JURORS,
     JuryService,
     build_candidate,
+    deliberation_signature,
     parse_opinion,
     unanimous_acceptance,
     validate_model_selections,
@@ -71,7 +74,8 @@ class FakeBrowserFactory:
                     owner.threads[platform].append(get_ident())
                 return self
 
-            def ask(self, prompt):
+            def ask(self, prompt, *, timeout_seconds=None):
+                assert timeout_seconds is None or timeout_seconds > 0
                 packet = json.loads(prompt.split("Evidence packet (JSON):\n", 1)[1])
                 with owner.lock:
                     owner.threads[platform].append(get_ident())
@@ -114,10 +118,10 @@ def service_factory(tmp_path):
             thread.join(timeout=5)
 
 
-def complete(service, providers=None, max_rounds=3, models=None):
+def complete(service, providers=None, max_rounds=None, models=None):
     initial = service.start(
         "edge", providers or ["chatgpt", "grok"],
-        "Check this factual claim.", max_rounds, models,
+        "Check this factual claim.", max_rounds=max_rounds, models=models,
     )
     session_id = initial["session_id"]
     wait_until(lambda: not service.status(session_id)["running"])
@@ -192,6 +196,50 @@ def test_same_verdict_requires_explicit_acceptance_of_the_exact_candidate():
         assert unanimous_acceptance([accepted, dissent], candidate) is False
 
 
+def test_material_signature_detects_new_support_from_the_same_source_url():
+    old = [{**parse_opinion(json.dumps(vote())), "provider": "chatgpt"}]
+    revised = [{
+        **parse_opinion(json.dumps(vote(evidence=[{
+            "url": "https://source.example/report",
+            "supports": "A corrected table reverses the claimed causal direction.",
+        }]))),
+        "provider": "chatgpt",
+    }]
+    assert deliberation_signature(old) != deliberation_signature(revised)
+
+
+def test_material_signature_ignores_arbitrary_candidate_ids_but_tracks_exact_acceptance():
+    candidate = build_candidate([
+        parse_opinion(json.dumps(vote())),
+        parse_opinion(json.dumps(vote())),
+    ])
+    assert candidate is not None
+    wrong_one = [{
+        **parse_opinion(json.dumps(vote(
+            accept_candidate=True,
+            candidate_id="invented-one",
+        ))),
+        "provider": "chatgpt",
+    }]
+    wrong_two = [{
+        **parse_opinion(json.dumps(vote(
+            accept_candidate=True,
+            candidate_id="invented-two",
+        ))),
+        "provider": "chatgpt",
+    }]
+    accepted = [{
+        **parse_opinion(json.dumps(vote(candidate=candidate))),
+        "provider": "chatgpt",
+    }]
+    assert deliberation_signature(wrong_one, candidate) == deliberation_signature(
+        wrong_two, candidate,
+    )
+    assert deliberation_signature(wrong_one, candidate) != deliberation_signature(
+        accepted, candidate,
+    )
+
+
 def test_multiple_rounds_share_one_session_per_provider_and_one_prior_round_packet(service_factory):
     factory = FakeBrowserFactory()
     service = service_factory(factory)
@@ -211,15 +259,190 @@ def test_multiple_rounds_share_one_session_per_provider_and_one_prior_round_pack
     assert len({item["conversation_url"] for item in final["providers"]}) == 3
 
 
-def test_disagreement_reaches_round_cap_without_false_consensus_or_new_sessions(service_factory):
+def test_settled_disagreement_converges_without_false_consensus_or_new_sessions(service_factory):
     factory = FakeBrowserFactory(lambda key, packet, stop: vote(verdict="supported" if key == "chatgpt" else "refuted"))
-    final = complete(service_factory(factory), max_rounds=3)
+    final = complete(service_factory(factory))
     assert final["phase"] == "inconclusive"
     assert final["consensus"] is False
-    assert len(final["rounds"]) == 3
+    assert final["termination_reason"] == "cross_review_complete"
+    assert len(final["rounds"]) == 2
     assert factory.opened == factory.closed == {"chatgpt": 1, "grok": 1}
-    assert all(len(packets) == 3 for packets in factory.packets.values())
+    assert all(len(packets) == 2 for packets in factory.packets.values())
     assert {item["verdict"] for item in final["rounds"][-1]["opinions"]} == {"supported", "refuted"}
+
+
+def test_automatic_convergence_can_continue_beyond_the_old_three_round_default(service_factory):
+    counts = Counter()
+
+    def answer(key, packet, stop):
+        counts[key] += 1
+        number = counts[key]
+        if number <= 3:
+            return vote(
+                verdict="supported" if key == "chatgpt" else "refuted",
+                evidence=[{
+                    "url": f"https://source.example/review-{number}",
+                    "supports": f"Review pass {number} adds a primary source.",
+                }],
+                unresolved=[f"Review source set {number + 1}."],
+            )
+        return vote(candidate=packet["candidate"])
+
+    factory = FakeBrowserFactory(answer)
+    final = complete(service_factory(factory))
+    assert final["phase"] == "consensus"
+    assert final["termination_reason"] == "unanimous_acceptance"
+    assert final["round"] == 5
+    assert all(len(packets) == 5 for packets in factory.packets.values())
+    assert factory.opened == factory.closed == {"chatgpt": 1, "grok": 1}
+
+
+def test_explicit_legacy_round_budget_keeps_its_bounded_semantics(service_factory):
+    counts = Counter()
+
+    def answer(key, packet, stop):
+        counts[key] += 1
+        return vote(
+            verdict="supported" if key == "chatgpt" else "refuted",
+            evidence=[{
+                "url": f"https://source.example/review-{counts[key]}",
+                "supports": "The legacy client requested another bounded review pass.",
+            }],
+            unresolved=["Continue until the legacy round budget is exhausted."],
+        )
+
+    service = service_factory(FakeBrowserFactory(answer))
+    models = {"chatgpt": "chatgpt-latest-high", "grok": "grok-auto"}
+    initial = service.start(
+        "edge", ["chatgpt", "grok"], "Check the legacy client claim.", 3, models,
+    )
+    wait_until(lambda: not service.status(initial["session_id"])["running"])
+    final = service.status(initial["session_id"])
+    assert final["convergence_mode"] == "bounded"
+    assert final["max_rounds"] == 3
+    assert final["termination_reason"] == "round_limit"
+    assert final["round"] == 3
+
+
+def test_storage_boundary_stops_before_sending_another_automatic_round(
+    service_factory, monkeypatch,
+):
+    def record_size(record):
+        if (
+            record.get("rounds")
+            and len(record["rounds"][-1]["opinions"]) == len(record["providers"])
+        ):
+            return jury_module.AUTOMATIC_CONVERGENCE_STORAGE_SOFT_LIMIT_BYTES
+        return 0
+
+    monkeypatch.setattr(jury_module, "_serialized_record_size", record_size)
+    factory = FakeBrowserFactory(lambda key, packet, stop: vote(
+        verdict="supported" if key == "chatgpt" else "refuted",
+        unresolved=["A material objection remains."],
+    ))
+    final = complete(service_factory(factory))
+    assert final["phase"] == "inconclusive"
+    assert final["termination_reason"] == "storage_safety_boundary"
+    assert final["round"] == 1
+    assert all(len(packets) == 1 for packets in factory.packets.values())
+
+
+def test_wall_clock_boundary_stops_pending_workers_without_a_provider_failure(
+    service_factory, monkeypatch,
+):
+    monkeypatch.setattr(jury_module, "AUTOMATIC_CONVERGENCE_TIMEOUT_SECONDS", 0.05)
+
+    def answer(key, packet, shutdown):
+        assert shutdown.wait(5)
+        return vote()
+
+    factory = FakeBrowserFactory(answer)
+    final = complete(service_factory(factory))
+    assert final["phase"] == "inconclusive"
+    assert final["termination_reason"] == "time_safety_boundary"
+    assert final["round"] == 1
+    assert all(item["status"] != "failed" for item in final["providers"])
+    assert factory.opened == factory.closed == {"chatgpt": 1, "grok": 1}
+
+
+def test_complete_consensus_wins_when_the_clock_expires_before_future_harvest(
+    service_factory, monkeypatch,
+):
+    expired = Event()
+    calls = Counter()
+
+    class ClosedThread:
+        @staticmethod
+        def is_alive():
+            return False
+
+        @staticmethod
+        def join(timeout=None):
+            return None
+
+    class ImmediateWorker:
+        def __init__(self, factory, settings, platform, stop, config,
+                     on_conversation, model_selection):
+            self.platform = platform
+            self.thread = ClosedThread()
+            self.closed = True
+            self.error = None
+            self.conversation_url = f"https://{platform}.example/conversation/one"
+
+        def ask(self, prompt, timeout_seconds):
+            packet = json.loads(prompt.split("Evidence packet (JSON):\n", 1)[1])
+            calls[self.platform] += 1
+            if all(calls[key] >= 2 for key in ("chatgpt", "grok")):
+                expired.set()
+            response = vote(candidate=packet["candidate"])
+            future = Future()
+            future.set_result((json.dumps(response), self.conversation_url))
+            return future
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(jury_module, "_JurorWorker", ImmediateWorker)
+    monkeypatch.setattr(
+        jury_module, "monotonic", lambda: 3_601.0 if expired.is_set() else 0.0,
+    )
+    final = complete(service_factory())
+    assert final["phase"] == "consensus"
+    assert final["termination_reason"] == "unanimous_acceptance"
+    assert final["round"] == 2
+
+
+def test_repeated_unresolved_evidence_stops_as_a_visible_stall(service_factory):
+    factory = FakeBrowserFactory(lambda key, packet, stop: vote(
+        verdict="supported" if key == "chatgpt" else "refuted",
+        unresolved=["The primary archives remain inconsistent."],
+    ))
+    final = complete(service_factory(factory))
+    assert final["phase"] == "inconclusive"
+    assert final["termination_reason"] == "evidence_stalled"
+    assert final["round"] == 2
+    assert all(len(packets) == 2 for packets in factory.packets.values())
+
+
+def test_new_source_urls_reset_stall_detection_before_it_settles(service_factory):
+    counts = Counter()
+
+    def answer(key, packet, stop):
+        counts[key] += 1
+        source_number = min(counts[key], 2)
+        return vote(
+            verdict="supported" if key == "chatgpt" else "refuted",
+            evidence=[{
+                "url": f"https://source.example/review-{source_number}",
+                "supports": "The primary record remains disputed.",
+            }],
+            unresolved=["The primary archives remain inconsistent."],
+        )
+
+    final = complete(service_factory(FakeBrowserFactory(answer)))
+    assert final["phase"] == "inconclusive"
+    assert final["termination_reason"] == "evidence_stalled"
+    assert final["round"] == 3
 
 
 def test_third_juror_objection_blocks_two_accepting_jurors_until_reviewed(service_factory):
@@ -235,7 +458,7 @@ def test_third_juror_objection_blocks_two_accepting_jurors_until_reviewed(servic
         )
 
     factory = FakeBrowserFactory(answer)
-    final = complete(service_factory(factory), list(DEFAULT_JURORS), max_rounds=3)
+    final = complete(service_factory(factory), list(DEFAULT_JURORS))
     assert final["phase"] == "consensus"
     assert final["round"] == 3
     assert all(item["accept_candidate"] for item in final["rounds"][1]["opinions"])
@@ -329,8 +552,16 @@ def test_invalid_question_cannot_allocate_a_jury_or_open_a_browser(service_facto
     assert factory.opened == {}
 
 
+def test_new_jury_records_use_automatic_convergence_without_a_round_budget(service_factory):
+    service = service_factory()
+    initial = service.start("edge", ["chatgpt", "grok"], "Claim")
+    assert initial["convergence_mode"] == "automatic"
+    assert initial["termination_reason"] == ""
+    assert "max_rounds" not in initial
+
+
 @pytest.mark.parametrize("rounds", [True, "3", 1, 7])
-def test_round_budget_is_an_explicit_bounded_integer(service_factory, rounds):
+def test_legacy_round_budget_remains_a_bounded_integer(service_factory, rounds):
     service = service_factory()
     with pytest.raises(ValueError):
         service.start("edge", ["chatgpt", "grok"], "Claim", rounds)
@@ -358,7 +589,14 @@ def test_cancellation_retains_admission_until_all_browser_owners_close(service_f
         assert entered.wait(5)
         if not peer_failure:
             service.stop(session_id)
-        wait_until(lambda: service.stops[session_id].is_set())
+        stop_event = (
+            service.shutdowns[session_id]
+            if peer_failure
+            else service.stops[session_id]
+        )
+        wait_until(stop_event.is_set)
+        if peer_failure:
+            assert service.stops[session_id].is_set() is False
         assert service.status(session_id)["running"] is True
         with pytest.raises(RuntimeError, match="already running"):
             service.start("edge", ["chatgpt", "grok"], "Do not start a replacement.")
@@ -373,20 +611,117 @@ def test_cancellation_retains_admission_until_all_browser_owners_close(service_f
         assert failed["conversation_url"] == "https://grok.example/conversation/one"
 
 
+def test_terminal_consensus_cannot_be_overwritten_while_browser_cleanup_is_pending(
+    service_factory, monkeypatch,
+):
+    monkeypatch.setattr(jury_module, "WORKER_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+    released = Event()
+    factory = FakeBrowserFactory(close_wait=released)
+    service = service_factory(factory)
+    session_id = service.start("edge", ["chatgpt", "grok"], "Check the claim.")[
+        "session_id"
+    ]
+    try:
+        wait_until(lambda: service.status(session_id)["phase"] == "consensus")
+        wait_until(lambda: service.status(session_id).get("resource_cleanup_pending") is True)
+        assert service.status(session_id)["running"] is True
+        stopped = service.stop(session_id)
+        assert stopped["phase"] == "consensus"
+        assert service.stops[session_id].is_set() is False
+        with pytest.raises(RuntimeError, match="already running"):
+            service.start("edge", ["chatgpt", "grok"], "Do not overlap owners.")
+    finally:
+        released.set()
+    wait_until(lambda: not service.status(session_id)["running"])
+    assert service.status(session_id)["phase"] == "consensus"
+    assert service.status(session_id)["termination_reason"] == "unanimous_acceptance"
+
+
+def test_service_shutdown_is_not_misreported_as_a_user_stop(service_factory):
+    entered = Event()
+
+    def answer(key, packet, shutdown):
+        entered.set()
+        assert shutdown.wait(5)
+        return vote()
+
+    service = service_factory(FakeBrowserFactory(answer))
+    session_id = service.start("edge", ["chatgpt", "grok"], "Check the claim.")[
+        "session_id"
+    ]
+    assert entered.wait(5)
+    service.stop_at_exit()
+    wait_until(lambda: not service.status(session_id)["running"])
+    final = service.status(session_id)
+    assert final["phase"] == "interrupted"
+    assert final["termination_reason"] == "service_shutdown"
+    assert service.stops[session_id].is_set() is False
+
+
+def test_service_shutdown_during_readiness_failure_remains_interrupted(service_factory):
+    entered = Event()
+    released = Event()
+
+    def probe(settings, key, **kwargs):
+        entered.set()
+        assert released.wait(5)
+        raise RuntimeError("The provider probe ended during service shutdown.")
+
+    service = service_factory(login_check=probe)
+    session_id = service.start("edge", ["chatgpt", "grok"], "Check the claim.")[
+        "session_id"
+    ]
+    try:
+        assert entered.wait(5)
+        service.stop_at_exit()
+    finally:
+        released.set()
+    wait_until(lambda: not service.status(session_id)["running"])
+    final = service.status(session_id)
+    assert final["phase"] == "interrupted"
+    assert final["termination_reason"] == "service_shutdown"
+
+
 def test_reload_preserves_completed_and_interrupted_juries_without_resending(service_factory, tmp_path):
     root = tmp_path / "durable"
     final = complete(service_factory(root=root))
     interrupted_id = "a" * 32
-    interrupted = {**final, "session_id": interrupted_id, "running": True, "phase": "discussing", "consensus": False}
+    interrupted = {
+        **final,
+        "session_id": interrupted_id,
+        "running": True,
+        "phase": "discussing",
+        "consensus": False,
+    }
+    interrupted.pop("convergence_mode", None)
+    interrupted.pop("termination_reason", None)
+    interrupted.pop("resource_cleanup_pending", None)
     (root / f"{interrupted_id}.json").write_text(json.dumps(interrupted), encoding="utf-8")
+    cleanup_id = "b" * 32
+    cleanup_pending = {
+        **final,
+        "session_id": cleanup_id,
+        "running": True,
+        "phase": "consensus",
+        "resource_cleanup_pending": True,
+    }
+    (root / f"{cleanup_id}.json").write_text(
+        json.dumps(cleanup_pending), encoding="utf-8",
+    )
     poison = FakeBrowserFactory(lambda *args: pytest.fail("Reload must not send provider messages."))
     restored = service_factory(poison, root=root)
     assert restored.status(final["session_id"])["response"] == final["response"]
     assert restored.status(final["session_id"])["phase"] == "consensus"
     state = restored.status(interrupted_id)
     assert state["phase"] == "interrupted"
+    assert state["termination_reason"] == "service_restarted"
     assert state["running"] is False
     assert state["providers"] == final["providers"]
+    recovered_cleanup = restored.status(cleanup_id)
+    assert recovered_cleanup["phase"] == "consensus"
+    assert recovered_cleanup["consensus"] is True
+    assert recovered_cleanup["termination_reason"] == "unanimous_acceptance"
+    assert recovered_cleanup["resource_cleanup_pending"] is False
     assert poison.opened == {}
     assert restored.threads == {}
     snapshot = restored.status(final["session_id"])

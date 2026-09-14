@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.8.1-codex.1
+# Code version: v1.9.0-codex.1
 
 from typing import TYPE_CHECKING
 
@@ -42,6 +42,7 @@ _COMPUTER_USE_EXPORTS = frozenset(
         "OPERATING_SYSTEM_OPTIONS",
         "SUPPORTED_AGENT_PLATFORMS",
         "SUPPORTED_BROWSERS",
+        "SUPPORTED_SAFARI_AGENT_PLATFORMS",
         "ComputerUseAgentService",
         "ComputerUseSettingsStore",
         "browser_options_for_host",
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
         OPERATING_SYSTEM_OPTIONS,
         SUPPORTED_AGENT_PLATFORMS,
         SUPPORTED_BROWSERS,
+        SUPPORTED_SAFARI_AGENT_PLATFORMS,
         ComputerUseAgentService,
         ComputerUseSettingsStore,
         _render_final_action as render_final_agent_action,
@@ -123,6 +125,7 @@ __all__ = [
     "PAGE_OBSERVATIONS",
     "SUPPORTED_AGENT_PLATFORMS",
     "SUPPORTED_BROWSERS",
+    "SUPPORTED_SAFARI_AGENT_PLATFORMS",
     "WEBMCP_TOOLS",
     "browser_options_for_host",
     "build_agent_optimization_manifest",

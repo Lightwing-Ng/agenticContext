@@ -1,4 +1,4 @@
-/* Code version: v1.1.3-codex.1 */
+/* Code version: v1.1.6-codex.1 */
 (() => {
     "use strict";
     const root = document.querySelector("[data-jury-root]");
@@ -21,6 +21,8 @@
     const browserTrigger = find("browser-trigger");
     const browserMenu = find("browser-menu");
     const providerLabels = {chatgpt: "ChatGPT", grok: "Grok", gemini: "Gemini", claude: "Claude"};
+    const runtimePreferencesStorageKey = "cachelikes:jury-runtime-preferences:v1";
+    const runtimePreferencesVersion = 1;
     let browser = root.dataset.juryBrowser;
     let snapshot = {};
     let sessionId = "";
@@ -96,7 +98,6 @@
             if (locked) closeModelMenu(picker);
         });
         browserTrigger.disabled = locked;
-        find("max-rounds").disabled = locked;
         prompt.disabled = locked;
         find("check").disabled = checking || busy || isRunning() || selectedProviders().length < 2;
         find("new-session").disabled = busy || isRunning();
@@ -104,8 +105,6 @@
         submit.setAttribute("aria-label", isRunning() ? "Stop Jury" : "Start Jury");
         submit.title = isRunning() ? "Stop Jury" : "Start Jury";
         submit.disabled = busy || (!isRunning() && (Boolean(sessionId) || !isReady() || !prompt.value.trim()));
-        find("composer-note").textContent = sessionId && !isRunning()
-            ? "Choose New session for another question" : "One conversation per juror";
     }
 
     function renderAccountCheck(payload, configuration) {
@@ -120,6 +119,20 @@
         find("check-message").textContent = ready ? (payload.message || "")
             : (unavailableJurorMessage(records, selected) || payload.message
                 || "Every selected juror must be signed in. Deselect an unavailable juror to continue with at least two.");
+    }
+
+    function resetAccountCheck() {
+        checkGeneration += 1;
+        checkController?.abort();
+        checkController = undefined;
+        readyConfiguration = "";
+        checking = false;
+        find("check-spinner").hidden = true;
+        find("ready-check").hidden = true;
+        find("check-label").textContent = selectedProviders().length < 2
+            ? "Select at least two jurors" : "Not checked";
+        find("check-message").textContent = "";
+        syncControls();
     }
 
     async function checkAccounts() {
@@ -308,7 +321,6 @@
                 message: payload.phase === "checking" ? "Verifying selected accounts before sending." : "",
             }, configurationKey());
         }
-        if (payload.max_rounds) find("max-rounds").value = String(payload.max_rounds);
         find("introduction").hidden = Boolean(sessionId);
         find("question-header").hidden = !payload.question;
         find("question").textContent = payload.question || "";
@@ -415,12 +427,13 @@
         find("introduction").hidden = false;
         find("question-header").hidden = true;
         setMessage("Independent checks, shared review, one conversation per juror.");
+        rememberRuntimePreferences();
         updateLocation();
         renderTranscript();
         renderSessions();
         syncControls();
         prompt.focus();
-        checkAccounts();
+        resetAccountCheck();
     }
 
     function setModel(provider, value) {
@@ -593,6 +606,63 @@
             option.setAttribute("aria-selected", String(option === selected));
             option.classList.toggle("is-selected", option === selected);
         });
+        const agenticLink = root.querySelector('.agent-mode-control a[href^="/agent/"]');
+        if (agenticLink) {
+            const target = new URL(agenticLink.href, window.location.origin);
+            target.pathname = target.pathname.replace(
+                /^\/agent\/(?:edge|chrome)(?=\/)/,
+                "/agent/" + value,
+            );
+            agenticLink.setAttribute("href", target.pathname + target.search + target.hash);
+        }
+        const juryLink = root.querySelector('.agent-mode-control a[href^="/jury/"]');
+        if (juryLink) juryLink.setAttribute("href", "/jury/" + value);
+    }
+
+    function readRuntimePreferences() {
+        try {
+            const payload = JSON.parse(window.localStorage.getItem(runtimePreferencesStorageKey) || "null");
+            if (!payload || typeof payload !== "object" || Array.isArray(payload)
+                || payload.version !== runtimePreferencesVersion) return null;
+            return payload;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function rememberRuntimePreferences() {
+        try {
+            window.localStorage.setItem(runtimePreferencesStorageKey, JSON.stringify({
+                version: runtimePreferencesVersion,
+                browser,
+                providers: selectedProviders(),
+                models: Object.fromEntries(modelPickers.map((picker) => [picker.provider, picker.input.value])),
+            }));
+        } catch (_error) {
+            // Local storage is a convenience cache and must never block the Jury form.
+        }
+    }
+
+    function restoreRuntimePreferences() {
+        const remembered = readRuntimePreferences();
+        if (!remembered) return;
+        if (typeof remembered.browser === "string"
+            && browserOptions.some((option) => option.dataset.juryBrowserOption === remembered.browser)) {
+            setBrowser(remembered.browser);
+        }
+        if (Array.isArray(remembered.providers)) {
+            const allowed = new Set(providerInputs.map((input) => input.value));
+            const selected = new Set(remembered.providers.filter((provider) => allowed.has(provider)));
+            providerInputs.forEach((input) => { input.checked = selected.has(input.value); });
+        }
+        if (remembered.models && typeof remembered.models === "object" && !Array.isArray(remembered.models)) {
+            modelPickers.forEach((picker) => {
+                const model = remembered.models[picker.provider];
+                if (typeof model === "string") setModel(picker.provider, model);
+            });
+        }
+        rememberRuntimePreferences();
+        updateLocation();
     }
     const browserController = window.SHARED_SELECT.createController({
         getTrigger: () => browserTrigger, getMenu: () => browserMenu, getOptions: () => browserOptions,
@@ -606,13 +676,14 @@
     browserOptions.forEach((option) => option.addEventListener("click", () => {
         if (browserTrigger.disabled) return;
         setBrowser(option.dataset.juryBrowserOption);
+        rememberRuntimePreferences();
         closeBrowserMenu();
         browserController.highlightSelected();
         updateLocation();
         sessions = [];
         renderSessions();
         loadSessions();
-        checkAccounts();
+        resetAccountCheck();
     }));
     modelPickers.forEach((picker) => {
         const controller = window.SHARED_SELECT.createController({
@@ -629,9 +700,10 @@
         });
         picker.options.forEach((option) => option.addEventListener("click", () => {
             if (picker.trigger.disabled || !setModel(picker.provider, option.dataset.juryModelOption)) return;
+            rememberRuntimePreferences();
             closeModelMenu(picker);
             controller.highlightSelected();
-            checkAccounts();
+            resetAccountCheck();
         }));
     });
     document.addEventListener("click", (event) => {
@@ -656,8 +728,14 @@
     window.visualViewport?.addEventListener("resize", scheduleModelMenuPosition);
     window.visualViewport?.addEventListener("scroll", scheduleModelMenuPosition);
     document.fonts?.ready.then(scheduleModelMenuPosition);
-    providerInputs.forEach((input) => input.addEventListener("change", checkAccounts));
-    find("check").addEventListener("click", checkAccounts);
+    providerInputs.forEach((input) => input.addEventListener("change", () => {
+        rememberRuntimePreferences();
+        resetAccountCheck();
+    }));
+    find("check").addEventListener("click", () => {
+        rememberRuntimePreferences();
+        checkAccounts();
+    });
     find("new-session").addEventListener("click", newSession);
     prompt.addEventListener("input", syncControls);
     prompt.addEventListener("keydown", (event) => {
@@ -671,13 +749,14 @@
         if (submit.disabled) return;
         busy = true;
         const stopping = isRunning();
+        if (!stopping) rememberRuntimePreferences();
         syncControls();
         try {
             const payload = await requestJson(stopping ? "/api/jury/stop" : "/api/jury/start", {
                 method: "POST",
                 body: JSON.stringify(stopping ? {session_id: sessionId} : {
                     browser, providers: selectedProviders(), question: prompt.value.trim(),
-                    max_rounds: Number(find("max-rounds").value), models: selectedModels(),
+                    models: selectedModels(),
                 }),
             });
             applySnapshot(payload);
@@ -726,10 +805,11 @@
         resizeObserver.observe(composer);
         loadSessions();
         if (sessionId) pollStatus();
-        else checkAccounts();
+        else resetAccountCheck();
     });
     const initialSession = new URL(window.location.href).searchParams.get("session_id");
+    if (!initialSession) restoreRuntimePreferences();
     loadSessions();
     if (initialSession) selectSession(initialSession);
-    else checkAccounts();
+    else resetAccountCheck();
 })();

@@ -1,6 +1,6 @@
 """Provider-neutral Web Agent Project and session discovery.
 
-Code version: v1.9.9-codex.1
+Code version: v1.10.0-codex.1
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from .grok_history import (
     _response_nodes,
     list_grok_conversations,
 )
+from .safari_automation import SafariContext
 
 
 AGENT_SOURCE_LIMIT = 20
@@ -59,6 +60,10 @@ GEMINI_HOSTS = frozenset({"gemini.google.com"})
 GEMINI_PROJECT_PATH_PATTERN = re.compile(r"^/(?:app|notebook|notebooks)/[A-Za-z0-9_-]+/?$")
 GEMINI_RESERVED_PROJECT_IDS = frozenset({"create", "new"})
 GROK_HOSTS = frozenset({"grok.com", "www.grok.com"})
+GROK_COMPOSER_SELECTOR = (
+    'textarea, div[contenteditable="true"][role="textbox"]'
+    '[aria-label="Ask Grok anything"]'
+)
 GROK_CONVERSATION_PATH_PATTERN = re.compile(r"^/c/[A-Za-z0-9_-]+/?$")
 GROK_PROJECT_PATH_PATTERN = re.compile(r"^/project/[A-Za-z0-9_-]+/?$")
 CLAUDE_CONVERSATION_PATH_PATTERN = re.compile(
@@ -572,12 +577,12 @@ def probe_and_collect_grok_sources(
     *,
     silent: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Verify Grok Web and collect Agent sources in one Chromium context."""
+    """Verify Grok Web and collect Agent sources in one owned browser context."""
     descriptor = browser_descriptors(config).get(str(browser_name or "").strip().lower())
     if descriptor is None:
         raise ValueError(f"Unsupported browser: {browser_name}")
-    if descriptor.engine != "chromium":
-        raise ValueError(f"Grok Agent sessions require Edge or Chrome, not {descriptor.label}.")
+    if descriptor.engine not in {"chromium", "safari"}:
+        raise ValueError(f"Grok Agent sessions do not support {descriptor.label}.")
 
     def collect(page: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
         status = _grok_page_status(page, descriptor.label)
@@ -618,6 +623,62 @@ def probe_and_collect_grok_sources(
             "account_name": "",
             "message": str(exc),
         }, None
+
+
+def _grok_composer_snapshot(page: Any) -> dict[str, Any]:
+    """Return one bounded, provider-scoped Grok composer readiness snapshot."""
+    result = page.evaluate(
+        r"""({composerSelector}) => {
+            const visible = (element) => {
+                if (!element || element.getClientRects().length === 0) return false;
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return true;
+            };
+            const candidates = [...document.querySelectorAll(composerSelector)]
+                .filter((element) => {
+                    if (!visible(element)
+                        || element.disabled
+                        || element.getAttribute('aria-disabled') === 'true'
+                        || element.closest(
+                            '[role="dialog"], [role="menu"], [role="listbox"], nav, header, '
+                            + '[data-testid*="feedback" i], [class*="feedback" i]'
+                        )) return false;
+                    let scope = element.parentElement;
+                    while (scope && scope !== document.body) {
+                        if (scope.querySelector('button[data-testid="chat-submit"]')) return true;
+                        if (scope.matches('main')) break;
+                        scope = scope.parentElement;
+                    }
+                    const metadata = `${element.getAttribute('aria-label') || ''} `
+                        + `${element.getAttribute('placeholder') || ''} `
+                        + `${element.getAttribute('data-testid') || ''}`;
+                    return /prompt|message|ask|grok|what do you|输入|輸入|提问|提問/i.test(metadata);
+                });
+            return {count: candidates.length};
+        }""",
+        {"composerSelector": GROK_COMPOSER_SELECTOR},
+    )
+    return dict(result) if isinstance(result, dict) else {"count": 0}
+
+
+def _wait_for_unique_grok_composer(page: Any, timeout_ms: int = 20_000) -> bool:
+    """Wait for exactly one visible, enabled Grok composer."""
+    deadline = time.monotonic() + max(0.001, int(timeout_ms) / 1_000)
+    while True:
+        snapshot = _grok_composer_snapshot(page)
+        count = int(snapshot.get("count") or 0)
+        if count == 1:
+            return True
+        if count > 1 or time.monotonic() >= deadline:
+            return False
+        page.wait_for_timeout(250)
 
 
 def _grok_page_status(page: Any, browser_label: str) -> dict[str, Any]:
@@ -704,10 +765,11 @@ def _grok_page_status(page: Any, browser_label: str) -> dict[str, Any]:
             "message": f"{browser_label} is not signed in to Grok.",
         }
 
-    composer = page.locator("textarea").first
     try:
-        composer.wait_for(state="visible", timeout=20_000)
+        composer_ready = _wait_for_unique_grok_composer(page)
     except Exception:
+        composer_ready = False
+    if not composer_ready:
         if re.search(r"\b(?:sign in|log in|sign up|create account)\b", normalized_body):
             message = f"{browser_label} is not signed in to Grok."
         else:
@@ -1274,12 +1336,23 @@ def _run_chromium_source_collection(
     *,
     silent: bool = False,
 ) -> Any:
-    """Run one authenticated source collector in the selected Chromium profile."""
+    """Run one authenticated source collector in the selected supported browser."""
     descriptor = browser_descriptors(config).get(str(browser_name or "").strip().lower())
     if descriptor is None:
         raise ValueError(f"Unsupported browser: {browser_name}")
+    home_host = (urlsplit(home_url).hostname or "").lower()
+    if descriptor.engine == "safari":
+        if home_host not in GROK_HOSTS:
+            raise ValueError("Safari Agent sources are currently available only for Grok.")
+        with SafariContext(home_url) as context:
+            page = context.primary_page
+            page.wait_for_load_state("domcontentloaded", timeout=90_000)
+            page.wait_for_timeout(500)
+            return collector(page)
     if descriptor.engine != "chromium":
-        raise ValueError(f"Gemini, Grok, and Claude Agent sources require Edge or Chrome, not {descriptor.label}.")
+        raise ValueError(
+            f"Gemini, Grok, and Claude Agent sources require Edge or Chrome, not {descriptor.label}."
+        )
 
     with sync_playwright_or_error() as playwright:
         with launch_chromium_context(
@@ -1291,7 +1364,6 @@ def _run_chromium_source_collection(
             silent=silent,
             prefer_initialized_debug_profile=True,
         ) as context:
-            home_host = (urlsplit(home_url).hostname or "").lower()
             hosts = {home_host, f"www.{home_host}"} if home_host else set()
             if home_host in GEMINI_HOSTS:
                 hosts = set(GEMINI_HOSTS)

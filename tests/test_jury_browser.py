@@ -1,6 +1,6 @@
 """Verify isolated browser ownership and single-session jury exchanges.
 
-Code version: v1.1.1-codex.1
+Code version: v1.1.3-codex.1
 """
 
 from contextlib import contextmanager
@@ -106,7 +106,9 @@ def transport(monkeypatch):
 @pytest.mark.parametrize("platform", ["chatgpt", "grok", "gemini", "claude"])
 def test_rounds_reuse_one_page_and_bound_conversation(transport, platform):
     with jury.JuryBrowserSession(ComputerUseSettings(), platform) as session:
-        assert session.ask("Fact-check the claim.") == "Verified response 1"
+        assert session.ask(
+            "Fact-check the claim.", timeout_seconds=321,
+        ) == "Verified response 1"
         url = session.conversation_url
         assert session.ask("Review the other jurors' evidence.") == "Verified response 2"
         assert session.conversation_url == url
@@ -117,7 +119,9 @@ def test_rounds_reuse_one_page_and_bound_conversation(transport, platform):
     assert transport.events[-2:] == ["close:context", "close:playwright"]
     first, second = transport.submissions
     assert first[1]["session_mode"] == "new"
+    assert first[1]["timeout_seconds"] == 321
     assert second[1]["session_mode"] == "recent"
+    assert second[1]["timeout_seconds"] is None
     assert second[1]["submission_target_url"] == url
     assert first[1]["turn_receipt_marker"] != second[1]["turn_receipt_marker"]
 

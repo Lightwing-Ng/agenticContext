@@ -1,14 +1,16 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.71.1-codex.1`
+Documentation version: `v3.72.0-codex.1`
 
 ## Purpose
 
 The Agent workspace is a browser-mediated fallback for times when the local coding-agent token
-pool is constrained. It uses an already signed-in Web session for ChatGPT, Gemini, Grok, or Claude, with
-Edge or Chrome as the supported background Chromium browsers. ChatGPT also remains available in
-Safari for the existing session flows. Edge is the default because its Chromium controller does
-not depend on desktop clicks; Chrome uses the same isolated controller.
+pool is constrained. It uses an already signed-in Web session for ChatGPT, Gemini, Grok, or Claude.
+Edge or Chrome supports all four providers through the background Chromium controller, while macOS
+Safari supports ChatGPT and Grok Agent sessions through an owned Apple Events window. Gemini and
+Claude Agent sessions, and every Jury session, continue to require Edge or Chrome. Edge remains the
+default because its Chromium controller does not depend on desktop clicks; Chrome uses the same
+isolated controller.
 
 The default is a new root-level session. Every provider can also join one of the 20 most recent
 sessions or start a session in one of the 20 most recent Projects. ChatGPT, Grok, and Claude can
@@ -82,19 +84,24 @@ the Recent sessions step. Loading sessions inside a selected Project remains a l
 keyed operation; an expired Project-session entry may return stale rows while one coalesced quiet
 refresh runs because this request is explicitly user-initiated, unlike passive status polling.
 Grok's DOM fallback exposes only same-Project `?chat=<id>` sessions.
+Safari applies this same strict Grok readiness and source contract through a credentialed,
+same-origin request inside the owned page. It neither exports cookies nor falls back to the weaker
+Cache `/files` probe.
 
 This route uses no provider developer API, command-line coding-agent runtime, MCP connection, or
 third-party agent bridge. Readiness and catalog discovery may call the provider's own authenticated
-Web endpoints inside the cloned browser context.
+Web endpoints inside the selected browser context.
 ChatGPT plan limits, file-upload limits, data controls, storage, and retention still apply.
 
 ## Canonical navigation
 
 The Agent entrypoint is scoped by the selected browser and Web provider. The canonical form is
-`/agent/<browser>/<platform>`, such as `/agent/edge/chatgpt` or `/agent/edge/claude`; `/agent/<browser>/`
+`/agent/<browser>/<platform>`, such as `/agent/edge/chatgpt`, `/agent/edge/claude`, or
+`/agent/safari/grok`; `/agent/<browser>/`
 is a browser-scoped compatibility alias, and the legacy `/agent` path redirects to
 the persisted selection. Changing either selector updates the canonical path without reloading the
-page, so a copied URL preserves the intended Edge/ChatGPT selection.
+page, so a copied URL preserves the intended browser/provider selection. A supported Safari/Grok
+selection is retained across reloads and is never silently normalized to Edge.
 
 Completed UI state is bound to both the provider and browser recorded by the run. Opening or
 switching to another canonical route renders an idle phase with an empty activity list, response,
@@ -850,7 +857,8 @@ project browser/profile available. The next Chromium launch removes only abandon
 `cachelikes-chrome-*` directories older than 24 hours. Safari uses one shared Apple Events context,
 restores the previous frontmost application after window operations, and closes every task-owned
 window on success, stop, failure, or exception. Safari remains available only for ChatGPT's existing
-session flows. Claude requires Edge or Chrome. If Claude renders an
+session flows and for Grok's strict Agent flow. Gemini and Claude require Edge or Chrome. The Safari
+path does not clone a Chromium profile or enter Edge's credential-storage path. If Claude renders an
 account suspension, ban, deactivation, or other restricted-state message, the readiness card reports
 that state and does not attempt a login bypass.
 

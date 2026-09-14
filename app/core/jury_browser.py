@@ -1,6 +1,6 @@
 """Keep each juror in one authenticated browser conversation for an entire question.
 
-Code version: v1.1.1-codex.1
+Code version: v1.1.3-codex.1
 """
 
 from __future__ import annotations
@@ -442,7 +442,7 @@ class JuryBrowserSession:
             self._resources = None
             raise
 
-    def ask(self, prompt: str) -> str:
+    def ask(self, prompt: str, *, timeout_seconds: float | None = None) -> str:
         """Submit once and read the current juror response in its bound session."""
         self._require_owner()
         self._require_running()
@@ -476,6 +476,7 @@ class JuryBrowserSession:
                 availability_check=self._availability_check,
                 turn_receipt_marker=marker,
                 on_response_state=self._record_response_state,
+                timeout_seconds=timeout_seconds,
             )
             self._require_running()
             if not response.strip():

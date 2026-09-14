@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.25.1-codex.1`
+Documentation version: `v1.27.0-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -20,13 +20,19 @@ provider route does not prove that Gemini created a distinct subconversation.
 The selected Web provider supplies reasoning while a bounded local Computer Use controller
 reads, changes, runs, and verifies only the selected project. This fallback uses no API,
 command-line coding-agent runtime, MCP connection, or third-party agent bridge.
+On macOS, ChatGPT and Grok Agent sessions can use Safari without cloning a Chromium profile;
+Gemini and Claude Agent sessions and the browser Jury continue to require Edge or Chrome. The
+browser/provider preference is persisted as selected, and unsupported combinations fail closed
+instead of silently changing the browser.
 
 The Agent sidebar also offers Jurors, a browser-only fact-checking jury. ChatGPT Latest
 with Extra High, Grok Auto, and Gemini 3.1 Pro are selected by default; Claude remains
 available but unchecked. Every selected account must be signed in. Each question owns exactly
 one conversation per juror through independent research and subsequent cross-review rounds.
-The jury requires explicit unanimous acceptance of one exact conclusion; a round limit or
-unavailable provider produces a visible incomplete result. Agreement is not proof of truth.
+The jury requires explicit unanimous acceptance of one exact conclusion and automatically
+continues only while the parsed material evidence state is changing. Stable disagreement,
+wall-clock or durable-record safety boundaries, or an unavailable provider produces a visible
+incomplete result. The current Web page sends no turn count. Agreement is not proof of truth.
 See [Jury](docs/JURY.md) for the workflow, persistence, and verification contract.
 
 Top-level application pages also publish a conservative OpenAI Site tools (WebMCP) adapter for
@@ -73,7 +79,9 @@ endpoint through port forwarding, a public tunnel, or a reverse proxy.
   Safari is not supported for either Zhihu workflow
 - Playwright Chromium for Chromium-backed X, Grok, and ChatGPT automation
 - `yt-dlp` for X media downloads
-- An authenticated ChatGPT, Gemini, Grok, or Claude Web account for the optional Computer Use Agent workspace
+- An authenticated ChatGPT, Gemini, Grok, or Claude Web account for the optional Computer Use Agent
+  workspace; macOS Safari supports the ChatGPT and Grok Agent paths, while Gemini and Claude use
+  Edge or Chrome
 
 ChatGPT project caching uses up to three isolated Edge workers in parallel. The worker count is
 bounded deliberately because each worker owns a separate authenticated browser context.

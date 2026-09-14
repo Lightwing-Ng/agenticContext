@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.1.4-codex.1
+Code version: v1.1.9-codex.1
 """
 
 from copy import deepcopy
@@ -66,7 +66,8 @@ def session_payload(*, running=True, phase="reviewing", providers=("chatgpt", "g
         "running": running,
         "phase": phase,
         "message": "Cross-checking the evidence." if running else "No consensus. Objections remain.",
-        "max_rounds": 3,
+        "convergence_mode": "automatic",
+        "termination_reason": "",
         "round": 1,
         "providers": [{"key": key, "ready": True} for key in providers],
         "rounds": [{
@@ -113,6 +114,17 @@ def test_jury_model_menu_escapes_sidebar_clipping(jury_browser, sidebar_server_u
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
+        assert checks == []
+        page.evaluate("""() => {
+            const pagehide = new Event('pagehide');
+            Object.defineProperty(pagehide, 'persisted', {value: true});
+            window.dispatchEvent(pagehide);
+            const pageshow = new Event('pageshow');
+            Object.defineProperty(pageshow, 'persisted', {value: true});
+            window.dispatchEvent(pageshow);
+        }""")
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        assert checks == []
         trigger = page.locator('[data-jury-model-trigger="chatgpt"]')
         menu = page.locator('[data-jury-model-menu="chatgpt"]')
         trigger.click()
@@ -176,6 +188,96 @@ def test_jury_model_menu_escapes_sidebar_clipping(jury_browser, sidebar_server_u
         context.close()
 
 
+@pytest.mark.parametrize("width,height", [(1028, 1355), (390, 844)])
+def test_jury_runtime_preferences_restore_without_account_probe(
+    jury_browser,
+    sidebar_server_url,
+    width,
+    height,
+):
+    checks = []
+    page, context = open_jury(jury_browser, sidebar_server_url, width, checks, height=height)
+    storage_key = "cachelikes:jury-runtime-preferences:v1"
+    try:
+        page.locator('label[for="jury_provider_grok"]').click()
+        page.locator('label[for="jury_provider_gemini"]').click()
+        page.locator('label[for="jury_provider_claude"]').click()
+        for provider, model in (
+            ("chatgpt", "chatgpt-latest-medium"),
+            ("grok", "grok-build"),
+            ("gemini", "gemini-3.8-flash"),
+        ):
+            page.locator(f'[data-jury-model-trigger="{provider}"]').click()
+            page.locator(f'[data-jury-model-option="{model}"]').click()
+        target_key = (
+            "chrome"
+            if page.locator('[data-jury-browser-option="chrome"]').count()
+            else "edge"
+        )
+        page.locator("[data-jury-browser-trigger]").click()
+        page.locator(f'[data-jury-browser-option="{target_key}"]').click()
+
+        expected = {
+            "version": 1,
+            "browser": target_key,
+            "providers": ["chatgpt", "claude"],
+            "models": {
+                "chatgpt": "chatgpt-latest-medium",
+                "grok": "grok-build",
+                "gemini": "gemini-3.8-flash",
+                "claude": "claude-auto",
+            },
+        }
+        assert page.evaluate(
+            "key => JSON.parse(window.localStorage.getItem(key))",
+            storage_key,
+        ) == expected
+        expect(page.locator('[aria-label="Agent modes"] a').first).to_have_attribute(
+            "href",
+            re.compile(rf"^/agent/{target_key}/"),
+        )
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        assert checks == []
+
+        page.goto(f"{sidebar_server_url}/jury/edge", wait_until="domcontentloaded")
+        expect(page).to_have_url(f"{sidebar_server_url}/jury/{target_key}")
+        assert page.locator("[data-jury-provider]:checked").evaluate_all(
+            "inputs => inputs.map(input => input.value)"
+        ) == ["chatgpt", "claude"]
+        expect(page.locator('[data-jury-model-label="chatgpt"]')).to_have_text("Latest · Medium")
+        expect(page.locator('[data-jury-model-label="grok"]')).to_have_text("Build")
+        expect(page.locator('[data-jury-model-label="gemini"]')).to_have_text("3.8 Flash")
+        expect(page.locator('[data-jury-model-label="claude"]')).to_have_text("Auto")
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        expect(page.locator("[data-jury-ready-check]")).to_be_hidden()
+        expect(page.locator("[data-jury-submit]")).to_be_disabled()
+        assert checks == []
+
+        page.locator("[data-jury-new-session]").click()
+        assert page.evaluate(
+            "key => JSON.parse(window.localStorage.getItem(key))",
+            storage_key,
+        ) == expected
+        assert checks == []
+
+        page.evaluate(
+            "key => window.localStorage.setItem(key, '{')",
+            storage_key,
+        )
+        page.goto(f"{sidebar_server_url}/jury/edge", wait_until="domcontentloaded")
+        expect(page).to_have_url(f"{sidebar_server_url}/jury/edge")
+        assert page.locator("[data-jury-provider]:checked").evaluate_all(
+            "inputs => inputs.map(input => input.value)"
+        ) == ["chatgpt", "grok", "gemini"]
+        expect(page.locator('[data-jury-model-label="chatgpt"]')).to_have_text("Latest · Extra High")
+        expect(page.locator('[data-jury-model-label="grok"]')).to_have_text("Auto")
+        expect(page.locator('[data-jury-model-label="gemini"]')).to_have_text("3.1 Pro")
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        assert checks == []
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize("width", [1280, 390])
 def test_jury_all_selected_accounts_gate_and_shared_responsive_sidebar(jury_browser, sidebar_server_url, width):
     checks = []
@@ -190,6 +292,11 @@ def test_jury_all_selected_accounts_gate_and_shared_responsive_sidebar(jury_brow
         )
         expect(page.locator("[data-jury-provider]:checked")).to_have_count(3)
         expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        expect(page.locator("[data-jury-check-message]")).to_be_empty()
+        expect(page.locator("[data-jury-submit]")).to_be_disabled()
+        assert checks == []
+        page.locator("[data-jury-check]").click()
         expect(page.locator("[data-jury-check-label]")).to_have_text("Not ready")
         expect(page.locator("[data-jury-check-message]")).to_have_text(
             "Unavailable juror: Gemini (3.1 Pro) — Provider unavailable. "
@@ -271,7 +378,14 @@ def test_jury_all_selected_accounts_gate_and_shared_responsive_sidebar(jury_brow
         page.locator('[data-jury-model-option="gemini-3.8-flash"]').press("Enter")
         expect(gemini_model).to_have_attribute("aria-expanded", "false")
         expect(gemini_model).to_have_text("3.8 Flash")
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        expect(page.locator("[data-jury-submit]")).to_be_disabled()
+        assert len(checks) == 1
         page.locator('label[for="jury_provider_gemini"]').click()
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        expect(page.locator("[data-jury-submit]")).to_be_disabled()
+        assert len(checks) == 1
+        page.locator("[data-jury-check]").click()
         expect(page.locator("[data-jury-ready-check]")).to_be_visible()
         status_geometry = page.locator(".jury-account-status").evaluate("""card => {
             const literal = card.querySelector('.browser-session-status-literal').getBoundingClientRect();
@@ -321,6 +435,44 @@ def test_jury_all_selected_accounts_gate_and_shared_responsive_sidebar(jury_brow
         context.close()
 
 
+@pytest.mark.parametrize("width", [1028, 390])
+def test_jury_account_status_uses_compact_annotated_padding(
+    jury_browser,
+    sidebar_server_url,
+    width,
+):
+    """Keep the Jury-only readiness card compact at desktop and narrow widths."""
+    checks = []
+    page, context = open_jury(
+        jury_browser,
+        sidebar_server_url,
+        width,
+        checks,
+        height=1355,
+    )
+    try:
+        padding = page.locator(".jury-account-status").evaluate("""card => {
+            const style = getComputedStyle(card);
+            return {
+                top: style.paddingTop,
+                right: style.paddingRight,
+                bottom: style.paddingBottom,
+                left: style.paddingLeft,
+                pageFits: document.documentElement.scrollWidth <= innerWidth + 1,
+            };
+        }""")
+        assert padding == {
+            "top": "4px",
+            "right": "0px",
+            "bottom": "4px",
+            "left": "10px",
+            "pageFits": True,
+        }
+        assert checks == []
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize("width", [1280, 390])
 @pytest.mark.parametrize("providers", [("chatgpt", "grok"), ("chatgpt", "grok", "gemini")])
 def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sidebar_server_url, width, providers):
@@ -342,6 +494,12 @@ def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sideba
             page.locator('label[for="jury_provider_gemini"]').click()
         else:
             expect(page.locator('[data-jury-model-label="gemini"]')).to_have_text("3.1 Pro")
+        expect(page.locator(".jury-composer-note, .jury-round-limit, [data-jury-max-rounds]")).to_have_count(0)
+        expect(page.locator(".agent-composer-footer > *")).to_have_count(1)
+        expect(page.locator(".agent-composer-footer > .agent-composer-actions")).to_have_count(1)
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        assert checks == []
+        page.locator("[data-jury-check]").click()
         expect(page.locator("[data-jury-ready-check]")).to_be_visible()
         assert checks[-1]["providers"] == list(providers)
         if width <= 900:
@@ -354,16 +512,25 @@ def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sideba
         expect(page.locator(".jury-unresolved").first).to_contain_text("Publication date")
         expect(page.locator(".jury-evidence a").first).to_have_attribute("href", "https://example.com/original")
         assert page.locator("[data-jury-provider]").evaluate_all("inputs => inputs.every(input => input.disabled)")
-        next_round = deepcopy(current["rounds"][0])
-        next_round["round"] = 2
-        next_round["opinions"][0]["conclusion"] = '<img src=x onerror="window.juryInjected=true">'
-        next_round["opinions"][0]["evidence"].append({"url": "javascript:alert(1)", "supports": "Unsafe source is plain text."})
+        continued_rounds = []
+        for round_number in range(2, 5):
+            continued_round = deepcopy(current["rounds"][0])
+            continued_round["round"] = round_number
+            continued_rounds.append(continued_round)
+        continued_rounds[-1]["opinions"][0]["conclusion"] = (
+            '<img src=x onerror="window.juryInjected=true">'
+        )
+        continued_rounds[-1]["opinions"][0]["evidence"].append({
+            "url": "javascript:alert(1)",
+            "supports": "Unsafe source is plain text.",
+        })
         current.update(
-            running=False, phase="inconclusive", round=2,
-            rounds=[current["rounds"][0], next_round],
+            running=False, phase="inconclusive", round=4,
+            termination_reason="evidence_stalled",
+            rounds=[current["rounds"][0], *continued_rounds],
             response="The available evidence does not establish the claim.",
         )
-        expect(page.locator(".jury-round")).to_have_count(2, timeout=7000)
+        expect(page.locator(".jury-round")).to_have_count(4, timeout=7000)
         expect(page.locator("[data-jury-conclusion-title]")).to_have_text("Review outcome")
         expect(page.locator("[data-jury-conclusion]")).to_contain_text("Agreement is not proof")
         if width <= 900:
@@ -402,7 +569,7 @@ def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sideba
             }[key]
             for key in providers
         }
-        assert starts[0]["max_rounds"] == 3
+        assert "max_rounds" not in starts[0]
         assert starts[0]["question"] == current["question"]
         expect(page.locator("[data-jury-submit]")).to_be_disabled()
         page.screenshot(path=f"test-results/jury-discussion-{len(providers)}-{width}.png")
@@ -415,6 +582,9 @@ def test_jury_browser_keyboard_selection_and_dock_restore(jury_browser, sidebar_
     checks = []
     page, context = open_jury(jury_browser, sidebar_server_url, 1280, checks)
     try:
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        assert checks == []
+        page.locator("[data-jury-check]").click()
         expect(page.locator("[data-jury-ready-check]")).to_be_visible()
         trigger = page.locator("[data-jury-browser-trigger]")
         trigger.press("ArrowDown")
@@ -426,6 +596,10 @@ def test_jury_browser_keyboard_selection_and_dock_restore(jury_browser, sidebar_
         expect(trigger).to_have_attribute("aria-expanded", "false")
         expect(trigger).to_be_focused()
         expect(page).to_have_url(f"{sidebar_server_url}/jury/{selected_key}")
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        expect(page.locator("[data-jury-ready-check]")).to_be_hidden()
+        assert len(checks) == 1
+        page.locator("[data-jury-check]").click()
         expect(page.locator("[data-jury-ready-check]")).to_be_visible()
         assert checks[-1]["browser"] == selected_key
         page.locator('[data-dock-section="settings"]').click()
@@ -433,6 +607,8 @@ def test_jury_browser_keyboard_selection_and_dock_restore(jury_browser, sidebar_
         page.locator('[data-dock-section="agent"]').click()
         expect(page).to_have_url(f"{sidebar_server_url}/jury/{selected_key}")
         expect(page.locator('[aria-label="Agent modes"] [aria-current="page"]')).to_have_text("Jurors")
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        assert len(checks) == 2
         page.get_by_role("radio", name="Agentic", exact=True).click()
         expect(page).to_have_url(re.compile(rf"{re.escape(sidebar_server_url)}/agent/{selected_key}/[^/?]+"))
         expect(page.locator('[aria-label="Agent modes"]')).to_have_class(
@@ -441,6 +617,8 @@ def test_jury_browser_keyboard_selection_and_dock_restore(jury_browser, sidebar_
         expect(page.locator('[aria-label="Agent modes"] [aria-current="page"]')).to_have_text("Agentic")
         page.get_by_role("radio", name="Jurors", exact=True).click()
         expect(page).to_have_url(f"{sidebar_server_url}/jury/{selected_key}")
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        assert len(checks) == 2
     finally:
         context.close()
 
@@ -469,6 +647,10 @@ def test_jury_restore_is_read_only_and_stop_preserves_discussion(jury_browser, s
         page.locator("[data-jury-submit]").click()
         expect(page.locator("[data-jury-status-copy]")).to_contain_text("No further rounds")
         expect(page.locator(".jury-opinion")).to_have_count(2)
+        assert writes == [{"session_id": "jury-one"}]
+        page.locator("[data-jury-new-session]").click()
+        expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
+        expect(page.locator("[data-jury-ready-check]")).to_be_hidden()
         assert writes == [{"session_id": "jury-one"}]
     finally:
         context.close()

@@ -1,9 +1,9 @@
 """Focused tests for Grok text-history persistence and API pagination."""
 
-# Code version: v1.2.0-codex.1
+# Code version: v1.3.0-codex.1
 
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -16,6 +16,7 @@ from app.core.grok_history import (
     _grok_api_json,
     list_grok_conversations,
 )
+from app.core.safari_automation import SafariContext, SafariPage, SafariResponse
 
 
 def _message(key: str, role: str, index: int, content: str) -> GrokTextMessage:
@@ -177,6 +178,44 @@ def test_grok_api_fetch_has_a_bounded_abort_controller_timeout() -> None:
     assert "signal: controller.signal" in page.script
     assert "setTimeout(() => controller.abort(), timeoutMs)" in page.script
     assert "clearTimeout(timeoutId)" in page.script
+
+
+def test_grok_api_uses_safari_same_origin_request_for_get_and_post() -> None:
+    context = SafariContext("https://grok.com/")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    responses = [
+        SafariResponse(status=200, body_text='{"conversations":[]}'),
+        SafariResponse(status=200, body_text='{"responses":[]}'),
+    ]
+
+    with patch.object(
+        context.request,
+        "request_from_page",
+        side_effect=responses,
+    ) as request_from_page, patch.object(
+        page,
+        "evaluate",
+        side_effect=AssertionError("Safari Grok API must not await a page.evaluate promise."),
+    ):
+        assert _grok_api_json(page, "/rest/app-chat/conversations") == {
+            "conversations": []
+        }
+        assert _grok_api_json(
+            page,
+            "/rest/app-chat/conversations/demo/load-responses",
+            method="POST",
+            body={"responseIds": ["response-1"]},
+        ) == {"responses": []}
+
+    assert request_from_page.call_args_list[0].kwargs == {
+        "method": "GET",
+        "body": None,
+    }
+    assert request_from_page.call_args_list[1].kwargs == {
+        "method": "POST",
+        "body": '{"responseIds": ["response-1"]}',
+    }
 
 
 def test_grok_api_timeout_uses_existing_retry_backoff() -> None:

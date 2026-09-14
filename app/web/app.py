@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.77.0-codex.1
+# Code version: v1.78.1-codex.1
 
 from __future__ import annotations
 
@@ -1784,7 +1784,7 @@ def create_app(
         try:
             snapshot = app.extensions["jury_service"].start(
                 payload.get("browser", "edge"), payload.get("providers"),
-                payload.get("question"), payload.get("max_rounds", 3),
+                payload.get("question"), payload.get("max_rounds"),
                 payload.get("models"),
             )
         except ValueError as exc:

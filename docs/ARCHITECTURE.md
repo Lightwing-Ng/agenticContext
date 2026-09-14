@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.30.0-codex.1`
+Documentation version: `v1.32.0-codex.1`
 
 ## Runtime flow
 
@@ -82,8 +82,9 @@ or secondary Web-module import cannot bypass the five domain façades.
   bootstrap combines ChatGPT readiness and root-catalog collection in one browser context.
 - `app/core/agent_session_sources.py`: the provider-neutral Agent session and Project adapter;
   it maps ChatGPT Projects, Gemini Notebooks, Grok Projects, and Claude Projects into one URL and
-  source contract. Claude source discovery reads rendered links only and shares the Chromium launch
-  and Parquet cache boundary.
+  source contract. Grok can collect through one owned Chromium or macOS Safari context; Claude
+  source discovery reads rendered links only and shares the Chromium launch and Parquet cache
+  boundary.
 - `app/core/agent_source_cache.py`: the shared typed Parquet catalog for Agent recent sessions,
   Projects, and Project sessions. Its cache key isolates provider, browser, source kind, and
   Project URL, while atomic replacement preserves the other providers' entries.
@@ -107,12 +108,16 @@ transport boundary, while durable cache and state rules stay in core modules.
 
 ## Browser Jury
 
-The Agent domain facade also exports `JuryService`. `jury.py` owns bounded, durable,
+The Agent domain facade also exports `JuryService`. `jury.py` owns evidence-convergent, durable,
 multi-provider deliberations, while `jury_browser.py` owns one authenticated browser conversation
 per juror per question. The Jury uses no workspace controller or Terminal checks. Every review
-round consumes a frozen prior-round packet; consensus requires explicit agreement on one exact
-candidate, not merely matching labels. See [Jury](JURY.md) for persistence, session identity,
-failure handling, and verification.
+pass consumes a frozen prior-pass packet; consensus requires explicit agreement on one exact
+candidate, not merely matching labels. A deterministic parsed-evidence signature includes each
+source URL and its stated support, while ignoring arbitrary candidate-ID churn. It ends stable
+disagreement; monotonic wall-clock and serialized-record boundaries prevent an unbounded provider
+run without a user-selected turn count. User Stop and internal browser shutdown use separate
+signals, so one atomic terminal outcome cannot be overwritten during owned-context cleanup. See
+[Jury](JURY.md) for persistence, session identity, failure handling, and verification.
 
 ## Optional Beta experiments
 
@@ -490,6 +495,11 @@ and root source collection together in one Chromium browser launch, returns both
 page, and seeds the same source cache through its explicit `store` path. This keeps the status,
 first-run effort selector, and Recent sessions selection on one browser opening; Project-session
 loading remains isolated by its canonical Project URL key.
+The Grok bootstrap uses the same strict visible-composer and authenticated-conversations contract
+in one owned browser context. Edge and Chrome use the existing isolated Chromium profile path;
+macOS Safari uses `SafariContext` plus credentialed same-origin page requests, exports no cookies,
+and closes only its task-owned window. The weaker Cache `/files` signal is never an Agent-readiness
+substitute.
 The Agent-scoped browser-session status route uses that same cache. Passive polling reuses the
 cached bootstrap, including a bounded negative result; an explicit `refresh=1`, `true`, or `yes`
 requests a synchronous fresh result and coalesces with an in-flight collector for the same key.
@@ -499,8 +509,9 @@ the same Edge or Chrome debug browser. A cached entry is returned without backgr
 history miss returns an observable busy response, while bootstrap and catalog misses remain
 `unprobed`. This browser-wide gate is not used on macOS, where the existing isolated-context
 behavior remains unchanged.
-Agent bootstrap checks use quiet, task-independent Chromium contexts. ChatGPT source checks
-remain non-headless because its Cloudflare challenge rejects headless clones with HTTP 403.
+Agent bootstrap checks use quiet, task-independent browser contexts. Edge and Chrome checks use
+Chromium; ChatGPT source checks remain non-headless because its Cloudflare challenge rejects
+headless clones with HTTP 403. Safari Grok checks use the serialized macOS Apple Events context.
 On macOS, silent probes and executing
 Edge or Chrome task clones the selected profile into one normal, non-offscreen task-owned window so the user can
 choose to inspect it through macOS window management without an automatic full-display takeover.

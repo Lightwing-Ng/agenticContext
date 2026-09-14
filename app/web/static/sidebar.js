@@ -1,4 +1,4 @@
-/* Code version: v1.22.1-codex.1 */
+/* Code version: v1.23.0-codex.1 */
 
 (function initializeSidebar() {
     "use strict";
@@ -37,7 +37,7 @@
         ["/zhihu", "/cache/zhihu"],
     ]);
     const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view"];
-    const agentRoutePattern = /^\/agent\/(?:safari\/chatgpt|(?:edge|chrome)\/(?:chatgpt|gemini|grok|claude))$/;
+    const agentRoutePattern = /^\/agent\/(?:safari\/(?:chatgpt|grok)|(?:edge|chrome)\/(?:chatgpt|gemini|grok|claude))$/;
     const juryRoutePattern = /^\/jury(?:\/(?:edge|chrome))?$/;
     const settingsCategoryPattern = /^#settings-(browser|downloads|chatgpt|cloud|maintenance)$/;
     const dockLinks = sidebarDock
