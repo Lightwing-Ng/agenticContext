@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.24.0-codex.1`
+Documentation version: `v1.25.1-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -20,6 +20,14 @@ provider route does not prove that Gemini created a distinct subconversation.
 The selected Web provider supplies reasoning while a bounded local Computer Use controller
 reads, changes, runs, and verifies only the selected project. This fallback uses no API,
 command-line coding-agent runtime, MCP connection, or third-party agent bridge.
+
+The Agent sidebar also offers Jurors, a browser-only fact-checking jury. ChatGPT Latest
+with Extra High, Grok Auto, and Gemini 3.1 Pro are selected by default; Claude remains
+available but unchecked. Every selected account must be signed in. Each question owns exactly
+one conversation per juror through independent research and subsequent cross-review rounds.
+The jury requires explicit unanimous acceptance of one exact conclusion; a round limit or
+unavailable provider produces a visible incomplete result. Agreement is not proof of truth.
+See [Jury](docs/JURY.md) for the workflow, persistence, and verification contract.
 
 Top-level application pages also publish a conservative OpenAI Site tools (WebMCP) adapter for
 Agent Optimization. It exposes bounded capability discovery, current-page metadata, and allowlisted

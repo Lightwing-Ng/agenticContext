@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.29.1-codex.1`
+Documentation version: `v1.30.0-codex.1`
 
 ## Runtime flow
 
@@ -104,6 +104,15 @@ or secondary Web-module import cannot bypass the five domain façades.
 Web routes may orchestrate core services and present serialized state. Core modules must not
 depend on templates or browser DOM details. Source-specific automation belongs at a browser or
 transport boundary, while durable cache and state rules stay in core modules.
+
+## Browser Jury
+
+The Agent domain facade also exports `JuryService`. `jury.py` owns bounded, durable,
+multi-provider deliberations, while `jury_browser.py` owns one authenticated browser conversation
+per juror per question. The Jury uses no workspace controller or Terminal checks. Every review
+round consumes a frozen prior-round packet; consensus requires explicit agreement on one exact
+candidate, not merely matching labels. See [Jury](JURY.md) for persistence, session identity,
+failure handling, and verification.
 
 ## Optional Beta experiments
 

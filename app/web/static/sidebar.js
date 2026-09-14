@@ -1,4 +1,4 @@
-/* Code version: v1.22.0-codex.1 */
+/* Code version: v1.22.1-codex.1 */
 
 (function initializeSidebar() {
     "use strict";
@@ -38,6 +38,7 @@
     ]);
     const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view"];
     const agentRoutePattern = /^\/agent\/(?:safari\/chatgpt|(?:edge|chrome)\/(?:chatgpt|gemini|grok|claude))$/;
+    const juryRoutePattern = /^\/jury(?:\/(?:edge|chrome))?$/;
     const settingsCategoryPattern = /^#settings-(browser|downloads|chatgpt|cloud|maintenance)$/;
     const dockLinks = sidebarDock
         ? Array.from(sidebarDock.querySelectorAll("[data-dock-section], [data-section-link]"))
@@ -82,7 +83,7 @@
         if (targetUrl.origin !== window.location.origin) return "";
 
         if (section === "agent") {
-            return targetUrl.pathname === "/agent" || agentRoutePattern.test(targetUrl.pathname)
+            return targetUrl.pathname === "/agent" || agentRoutePattern.test(targetUrl.pathname) || juryRoutePattern.test(targetUrl.pathname)
                 ? `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`
                 : "";
         }
@@ -170,7 +171,7 @@
 
     function currentDockLocation(section) {
         if (section === "agent") {
-            return window.location.pathname === "/agent" || agentRoutePattern.test(window.location.pathname)
+            return window.location.pathname === "/agent" || agentRoutePattern.test(window.location.pathname) || juryRoutePattern.test(window.location.pathname)
                 ? `${window.location.pathname}${window.location.search}${window.location.hash}`
                 : "/agent";
         }
@@ -185,7 +186,7 @@
 
     function dockSectionForCurrentPath() {
         const normalizedPath = legacyCachePathMap.get(window.location.pathname) || window.location.pathname;
-        if (normalizedPath === "/agent" || agentRoutePattern.test(window.location.pathname)) return "agent";
+        if (normalizedPath === "/agent" || agentRoutePattern.test(window.location.pathname) || juryRoutePattern.test(window.location.pathname)) return "agent";
         if (cacheSectionPaths.has(normalizedPath)) return "cache";
         if (window.location.pathname === "/browser") return "local-resources";
         if (window.location.pathname === "/settings") return "settings";

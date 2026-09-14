@@ -1,0 +1,11 @@
+{# Code version: v1.0.0-codex.1 #}
+<nav class="settings-category-nav" aria-label="Agent modes">
+    <a href="{{ agent_entry_url() }}" class="settings-category-nav-item settings-category-nav-item-agent{% if current_agent_mode == 'agentic' %} is-active{% endif %}"{% if current_agent_mode == 'agentic' %} aria-current="page"{% endif %}>
+        <span class="settings-category-nav-icon-shell" aria-hidden="true"><span class="icon settings-category-nav-icon"></span></span>
+        <span class="settings-category-nav-label">Agentic</span>
+    </a>
+    <a href="/jury/{{ settings.browser if settings.browser in ('edge', 'chrome') else 'edge' }}" class="settings-category-nav-item settings-category-nav-item-llm{% if current_agent_mode == 'jury' %} is-active{% endif %}"{% if current_agent_mode == 'jury' %} aria-current="page"{% endif %}>
+        <span class="settings-category-nav-icon-shell" aria-hidden="true"><span class="icon settings-category-nav-icon"></span></span>
+        <span class="settings-category-nav-label">Jurors</span>
+    </a>
+</nav>

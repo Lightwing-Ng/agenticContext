@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.13.1-codex.1`
+Documentation version: `v1.14.0-codex.1`
 
 ## Supported commands
 
@@ -144,6 +144,12 @@ The resolver prefers a supported host `python3`, `python`, or Windows `py -3` la
 falls back to unversioned platform-specific Python installations.
 
 ## Quality gate
+
+Jury behavior and UI coverage run with `./scripts/test.sh tests/test_jury.py
+tests/test_jury_browser.py tests/test_jury_routes.py tests/test_jury_e2e.py`. These checks use
+fake provider boundaries; rendered acceptance uses disposable browser contexts and isolated
+local stores. Real signed-in provider/model acceptance remains a separately authorized manual
+check, as described in [Jury](JURY.md).
 
 The canonical local and CI quality gate is `scripts/check.sh` on macOS/Linux and
 `scripts/check.ps1` on Windows. The gates run, in order:

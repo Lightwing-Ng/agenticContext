@@ -740,7 +740,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.22.0-codex.1"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.22.1-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = "style-v2.120.1-codex.1"
                 self.assertIn(expected_style_version, body)

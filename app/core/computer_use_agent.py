@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.70.0-codex.1
+Code version: v3.71.1-codex.1
 """
 
 from __future__ import annotations
@@ -15838,6 +15838,7 @@ def _select_web_model(
     availability_check: Callable[[], bool | tuple[bool, float]] | None = None,
     chatgpt_effort: str = CHATGPT_EFFORT_POLICY_HIGHEST,
     session_type: str = "",
+    model_option: dict[str, Any] | None = None,
 ) -> bool:
     """Select a provider model when its page exposes a compatible model menu."""
     stop_requested = should_stop or (lambda: False)
@@ -15856,7 +15857,11 @@ def _select_web_model(
         )
         return bool(executed and selected)
     options = _platform_model_options(platform)
-    option = next((candidate for candidate in options if candidate["key"] == model), None)
+    option = (
+        model_option
+        if model_option is not None and model_option.get("key") == model
+        else next((candidate for candidate in options if candidate["key"] == model), None)
+    )
     if option is None:
         raise ValueError(f"Choose a supported {AGENT_PLATFORM_BY_KEY[platform]['label']} model.")
     remote_labels = tuple(option.get("remote_labels") or (option.get("label", ""),))
@@ -18803,11 +18808,12 @@ def _provider_turn_snapshot(
     assistant_selector: str | None = None,
     *,
     receipt_marker: str = "",
+    response_object_key: str = "action",
 ) -> dict[str, Any]:
     """Read one provider turn, URL, composer, and generation state atomically."""
     selector = assistant_selector or _web_assistant_selector(platform)
     result = page.evaluate(
-        r"""({platform, assistantSelector, userSelector, composerSelector, receiptMarker = ''}) => {
+        r"""({platform, assistantSelector, userSelector, composerSelector, receiptMarker = '', responseObjectKey = 'action'}) => {
             const visible = (element) => {
                 if (!element || element.getClientRects().length === 0) return false;
                 for (let current = element; current; current = current.parentElement) {
@@ -18993,8 +18999,20 @@ def _provider_turn_snapshot(
                 && (latestRelation & Node.DOCUMENT_POSITION_FOLLOWING)
             );
             let text = '';
+            let structuredResponse = false;
             if (latest) {
                 const codeBlocks = Array.from(latest.querySelectorAll('pre code'));
+                const verdictBlocks = responseObjectKey === 'verdict'
+                    ? codeBlocks.slice(-8).filter((block) => {
+                        try {
+                            const value = JSON.parse(block.innerText || block.textContent || '');
+                            return value && typeof value === 'object' && !Array.isArray(value)
+                                && ['supported', 'refuted', 'misleading', 'unverified'].includes(value.verdict);
+                        } catch (_error) {
+                            return false;
+                        }
+                    })
+                    : [];
                 const actionBlock = codeBlocks.slice(-8).reverse().find((block) =>
                     /[\"']action[\"']\s*:/.test(block.innerText || block.textContent || '')
                 );
@@ -19004,6 +19022,10 @@ def _provider_turn_snapshot(
                 text = actionBlock
                     ? `\`\`\`json\n${actionText}\n\`\`\``
                     : (latest.innerText || latest.textContent || '').trim();
+                if (verdictBlocks.length === 1) {
+                    text = (verdictBlocks[0].innerText || verdictBlocks[0].textContent || '').trim();
+                    structuredResponse = true;
+                }
             }
             const generating = Array.from(document.querySelectorAll('button')).some((button) => {
                 const buttonText = `${button.getAttribute('aria-label') || ''} ${button.innerText || button.textContent || ''}`.toLowerCase();
@@ -19026,6 +19048,7 @@ def _provider_turn_snapshot(
                 latestUserMessageId: latestUser?.getAttribute('data-message-id') || '',
                 markerEchoed,
                 text,
+                structuredResponse,
                 generating,
                 composerPresent: Boolean(composer),
                 composerEmpty: Boolean(composer)
@@ -19039,6 +19062,7 @@ def _provider_turn_snapshot(
             "userSelector": _web_user_selector(platform),
             "composerSelector": _web_composer_selector(platform),
             **({"receiptMarker": receipt_marker} if receipt_marker else {}),
+            **({"responseObjectKey": response_object_key} if response_object_key != "action" else {}),
         },
     )
     if not isinstance(result, dict):
@@ -19061,6 +19085,8 @@ def _provider_turn_snapshot(
         snapshot["latestUserMessageId"] = str(result.get("latestUserMessageId") or "")
     if receipt_marker:
         snapshot["markerEchoed"] = bool(result.get("markerEchoed"))
+    if response_object_key == "verdict":
+        snapshot["structuredResponse"] = bool(result.get("structuredResponse"))
     return snapshot
 
 

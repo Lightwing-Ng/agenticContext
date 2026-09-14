@@ -1,0 +1,149 @@
+<!-- Code version: v1.0.3-codex.1 -->
+<!doctype html>
+<html lang="en-US">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>{{ product_name }} Jury</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
+    <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.120.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.8.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='jury.css', v='jury-v1.0.2-codex.1') }}">
+    <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
+</head>
+<body>
+{% include "_sidebar_bootstrap.html" %}
+<main class="page agent-page jury-page" data-jury-root data-jury-browser="{{ settings.browser }}">
+    <button type="button" class="sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false"><span class="icon sidebar-toggle-icon" aria-hidden="true"></span></button>
+    <div class="app-shell is-sidebar-open" id="app_shell">
+        {% include "_theme_toggle.html" %}
+        <button type="button" class="sidebar-backdrop" id="sidebar_backdrop" aria-label="Close sidebar" aria-hidden="true" tabindex="-1" hidden></button>
+        <aside class="panel sidebar agent-sidebar" id="jury_sidebar" data-layout-role="sidebar-shell">
+            <section class="hero" data-layout-role="sidebar-title"><h1>Agent</h1></section>
+            {% set current_agent_mode = 'jury' %}
+            {% include "_agent_mode_nav.html" %}
+            <form class="agent-runtime-form" id="jury_runtime_form">
+                <div class="agent-connect-fields">
+                    <fieldset class="jury-provider-fieldset">
+                        <legend class="field-label">Web services</legend>
+                        <div class="jury-provider-list">
+                            {% set jury_model_labels = {'chatgpt': 'Latest · Extra High', 'grok': 'Auto', 'gemini': '3.1 Pro', 'claude': 'Auto'} %}
+                            {% for provider_key in ('chatgpt', 'grok', 'gemini', 'claude') %}
+                            {% set provider = platform_options | selectattr('key', 'equalto', provider_key) | list | first %}
+                            <label class="jury-provider-option">
+                                <input type="checkbox" name="providers" value="{{ provider_key }}" data-jury-provider aria-describedby="jury_model_{{ provider_key }} jury_ready_{{ provider_key }}"{% if provider_key != 'claude' %} checked{% endif %}>
+                                <span class="browser-picker-selected-icon-shell"><img class="browser-picker-option-icon" src="{{ url_for('static', filename=provider.icon_filename) }}" alt="" aria-hidden="true"></span>
+                                <span class="jury-provider-copy"><span>{{ provider.label }}</span><small id="jury_model_{{ provider_key }}">{{ jury_model_labels[provider_key] }}</small></span>
+                                <span class="jury-provider-readiness" id="jury_ready_{{ provider_key }}" data-jury-provider-readiness="{{ provider_key }}"></span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </fieldset>
+                    <div class="field">
+                        <span class="field-label">Browser</span>
+                        <div class="agent-browser-session-field">
+                            <div class="trade-strategy-combobox agent-combobox agent-browser-combobox" data-jury-browser-picker>
+                                <input type="hidden" name="browser" value="{{ settings.browser }}" data-jury-browser-input>
+                                {% set selected_browser = browser_options | selectattr('key', 'equalto', settings.browser) | list | first %}
+                                <button type="button" class="trade-strategy-select form-select trade-strategy-trigger agent-combobox-trigger" data-jury-browser-trigger aria-haspopup="listbox" aria-expanded="false" aria-controls="jury_browser_options" aria-label="Browser: {{ selected_browser.label }}">
+                                    <span class="browser-session-trigger-leading">
+                                        <span class="browser-picker-selected-icon-shell"><img class="browser-picker-option-icon" src="{{ url_for('static', filename=selected_browser.icon_filename) }}" alt="" data-jury-browser-icon aria-hidden="true"></span>
+                                        <span class="trade-strategy-trigger-label browser-session-trigger-label" data-jury-browser-label>{{ selected_browser.label }}</span>
+                                    </span>
+                                    <span class="browser-picker-trigger-chevron" aria-hidden="true"></span>
+                                </button>
+                                <div class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown agent-combobox-dropdown" id="jury_browser_options" data-jury-browser-menu role="listbox" aria-label="Choose browser" hidden>
+                                    {% for browser in browser_options %}
+                                    <button type="button" class="trade-strategy-dropdown-option agent-combobox-option{% if settings.browser == browser.key %} is-selected is-active{% endif %}" data-jury-browser-option="{{ browser.key }}" data-label="{{ browser.label }}" data-icon="{{ url_for('static', filename=browser.icon_filename) }}" role="option" aria-selected="{{ 'true' if settings.browser == browser.key else 'false' }}" tabindex="-1">
+                                        <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+                                        <img class="browser-picker-option-icon" src="{{ url_for('static', filename=browser.icon_filename) }}" alt="" aria-hidden="true">
+                                        <span class="trade-strategy-dropdown-text">{{ browser.label }}</span>
+                                    </button>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            <div class="browser-session-status-card browser-session-status-card-compact jury-account-status" role="status" aria-live="polite">
+                                <div class="browser-session-status-copy">
+                                <div class="browser-session-status-item">
+                                    <span class="browser-session-status-checkmark" data-jury-ready-check aria-label="All selected accounts are signed in" hidden></span>
+                                    <span class="suggestion-loading-spinner browser-session-status-spinner" data-jury-check-spinner aria-hidden="true" hidden></span>
+                                    <span class="browser-session-status-literal"><span class="browser-session-status-field-label">Accounts:</span><span class="browser-session-status-field-value" data-jury-check-label>Not checked</span></span>
+                                </div>
+                                <p class="browser-session-status-message" data-jury-check-message></p>
+                                <button type="button" class="secondary-button" data-jury-check>Check accounts</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
+            <details class="ui-collapse agent-session-collapse agent-execution-sessions" data-collapse="jury-sessions" aria-label="Recent sessions" open>
+                <summary><span class="agent-recent-sessions-title">Recent sessions <span class="agent-session-count" data-jury-active-count hidden></span></span></summary>
+                <div class="ui-collapse-body">
+                    <button type="button" class="secondary-button agent-new-session-button" data-jury-new-session><span class="agent-new-session-icon" aria-hidden="true"></span><span>New session</span></button>
+                    <div class="agent-execution-session-list" data-jury-session-list aria-label="Select a Jury session"><p class="agent-recent-sessions-empty">No Jury sessions yet.</p></div>
+                </div>
+            </details>
+        </aside>
+        <section class="panel chart-panel workspace agent-workspace" id="jury_workspace">
+            <div class="workspace-header">
+                <article class="report-card workspace-summary-card workspace-article-card agent-summary-card" data-layout-role="title-rail">
+                    <div class="report-heading-row" data-layout-role="title-heading"><div><h2>Jury</h2></div></div>
+                </article>
+            </div>
+            <div class="workspace-grid workspace-content-card agent-workspace-grid">
+                <article class="report-card workspace-article-card agent-task-card">
+                    <article class="agent-response-card">
+                        <div class="agent-response-toolbar">
+                            <p class="agent-response-status" data-jury-status data-status="idle" role="status" aria-live="polite">
+                                <span class="agent-response-status-indicator" aria-hidden="true"><span class="agent-response-status-dot"></span><span class="suggestion-loading-spinner agent-response-status-spinner" data-jury-run-spinner hidden></span></span>
+                                <span class="agent-response-status-copy" data-jury-status-copy>Independent checks, shared review, one conversation per juror.</span>
+                            </p>
+                        </div>
+                        <div class="agent-response-output">
+                            <header class="agent-response-question-header browser-session-table-message-shell" data-jury-question-header hidden>
+                                <div class="agent-response-question-scroll"><h3 class="agent-response-question" data-jury-question data-layout-role="scrollport" tabindex="0" aria-label="Question text"></h3></div>
+                            </header>
+                            <div class="agent-response-answer-shell">
+                                <div class="agent-response-answer browser-media-prompt-markdown" data-jury-answer data-layout-role="scrollport" tabindex="0" aria-label="Jury discussion">
+                                    <div class="jury-introduction" data-jury-introduction><p>Ask a factual question. Each juror investigates independently, reviews the others' findings, and revisits the evidence over several rounds.</p><p>Every juror keeps one conversation for this question. Disagreements and unavailable jurors remain visible.</p></div>
+                                    <section class="jury-conclusion" data-jury-conclusion hidden aria-labelledby="jury_conclusion_title">
+                                        <h3 id="jury_conclusion_title" data-jury-conclusion-title>Conclusion</h3>
+                                        <div class="agent-response-answer-content" data-jury-conclusion-content></div>
+                                        <p class="jury-evidence-note">Agreement is not proof. Review the cited sources and any remaining uncertainty.</p>
+                                    </section>
+                                    <div class="jury-rounds" data-jury-rounds></div>
+                                </div>
+                                <button type="button" class="global-quick-action-button agent-response-copy" data-jury-copy aria-label="Copy Jury discussion" title="Copy Jury discussion" hidden><span class="icon agent-response-copy-icon" aria-hidden="true"></span><span class="agent-response-copy-feedback" data-jury-copy-feedback aria-live="polite"></span></button>
+                            </div>
+                        </div>
+                    </article>
+                    <form class="agent-prompt-form" id="jury_prompt_form">
+                        <div class="field agent-composer-field">
+                            <span class="agent-composer-shell">
+                                <textarea class="text-input-control agent-prompt-input" name="question" rows="2" placeholder="What should the jury fact-check?" aria-label="Question for the jury" data-jury-prompt required></textarea>
+                                <span class="agent-composer-footer">
+                                    <span class="jury-composer-note" data-jury-composer-note>One conversation per juror</span>
+                                    <label class="jury-round-limit"><select name="max_rounds" data-jury-max-rounds aria-label="Maximum discussion rounds">{% for count in range(2, 7) %}<option value="{{ count }}"{% if count == 3 %} selected{% endif %}>Up to {{ count }} rounds</option>{% endfor %}</select></label>
+                                    <span class="agent-composer-actions"><button type="submit" class="agent-composer-submit" data-jury-submit aria-label="Start Jury" title="Start Jury" disabled><span class="icon agent-composer-submit-icon" aria-hidden="true"></span></button></span>
+                                </span>
+                            </span>
+                        </div>
+                    </form>
+                </article>
+            </div>
+        </section>
+    </div>
+    {% set dock_section = "agent" %}
+    {% include "_sidebar_dock.html" %}
+</main>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.22.1-codex.1') }}"></script>
+<script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.0') }}"></script>
+<script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
+<script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
+<script src="{{ url_for('static', filename='jury.js', v='jury-v1.0.1-codex.1') }}"></script>
+</body>
+</html>

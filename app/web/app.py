@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.75.0-codex.1
+# Code version: v1.76.0-codex.1
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from app.core.agent import (
     AgentSourceCache,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
+    JuryService,
     agent_access_password_is_configured,
     browser_options_for_host,
     build_agent_optimization_manifest,
@@ -721,6 +722,13 @@ def create_app(
     agent_session_pool = AgentSessionPool(computer_use_agent_service)
     app.extensions["agent_session_pool"] = agent_session_pool
     atexit.register(agent_session_pool.stop_at_exit)
+    jury_service = JuryService(
+        lambda: computer_use_settings.settings,
+        lambda: saved_config,
+        Path(computer_use_runtime_root or effective_local_store_root / "agent") / "jury",
+    )
+    app.extensions["jury_service"] = jury_service
+    atexit.register(jury_service.stop_at_exit)
 
     def available_agent_browser_keys() -> set[str]:
         """Return Agent browsers supported by the current host."""
@@ -1295,6 +1303,8 @@ def create_app(
         if (
             request.path.startswith("/agent")
             or request.path.startswith("/api/agent")
+            or request.path.startswith("/jury")
+            or request.path.startswith("/api/jury")
             or request.path == "/api/browser-session"
         ):
             response.headers["Cache-Control"] = (
@@ -1708,6 +1718,106 @@ def create_app(
         if not is_agent_access_unlocked():
             return render_locked_agent_access()
         return render_agent_page(browser.strip().lower(), platform.strip().lower())
+
+    @app.get("/jury")
+    def jury():
+        require_local_agent_request()
+        return redirect(url_for("jury_selected", browser="edge"))
+
+    @app.get("/jury/<browser>")
+    def jury_selected(browser: str):
+        require_local_agent_request()
+        if browser not in available_agent_browser_keys() & {"edge", "chrome"}:
+            abort(404)
+        return render_template(
+            "jury.html", version=APP_VERSION,
+            settings=replace(computer_use_settings.settings, browser=browser),
+            browser_options=[item for item in browser_options_for_host()
+                             if item["key"] in {"edge", "chrome"}],
+            platform_options=AGENT_PLATFORM_OPTIONS,
+        )
+
+    def jury_payload() -> dict[str, Any]:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            abort(make_response(jsonify({"error": "Send a JSON object."}), 400))
+        return payload
+
+    def jury_snapshot_response(snapshot: dict[str, Any]):
+        result = dict(snapshot)
+        result["response_html"] = str(render_prompt_markdown(str(result.get("response") or "")))
+        result["rounds"] = [
+            {**item, "opinions": [
+                {**opinion, "response_html": str(render_prompt_markdown(
+                    str(opinion.get("conclusion") or opinion.get("response") or "")
+                ))}
+                for opinion in item.get("opinions", [])
+            ]}
+            for item in result.get("rounds", [])
+        ]
+        return jsonify(result)
+
+    @app.post("/api/jury/check")
+    def jury_check():
+        require_local_agent_request()
+        if not external_agent_operations_enabled():
+            return reject_external_agent_operation()
+        payload = jury_payload()
+        try:
+            return jsonify(app.extensions["jury_service"].check(
+                payload.get("browser", "edge"), payload.get("providers"),
+            ))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+
+    @app.post("/api/jury/start")
+    def jury_start():
+        require_local_agent_request()
+        if not external_agent_operations_enabled():
+            return reject_external_agent_operation()
+        payload = jury_payload()
+        try:
+            snapshot = app.extensions["jury_service"].start(
+                payload.get("browser", "edge"), payload.get("providers"),
+                payload.get("question"), payload.get("max_rounds", 3),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except (RuntimeError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 409
+        return jury_snapshot_response(snapshot), 202
+
+    @app.get("/api/jury/status")
+    def jury_status():
+        require_local_agent_request()
+        try:
+            return jury_snapshot_response(app.extensions["jury_service"].status(
+                request.args.get("session_id", ""),
+            ))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+
+    @app.get("/api/jury/sessions")
+    def jury_sessions():
+        require_local_agent_request()
+        browser = request.args.get("browser", "edge")
+        if browser not in available_agent_browser_keys() & {"edge", "chrome"}:
+            return jsonify({"error": "Choose a supported browser."}), 400
+        return jsonify(app.extensions["jury_service"].sessions(browser))
+
+    @app.post("/api/jury/stop")
+    def jury_stop():
+        require_local_agent_request()
+        payload = jury_payload()
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str):
+            return jsonify({"error": "Choose a jury session."}), 400
+        try:
+            return jury_snapshot_response(app.extensions["jury_service"].stop(session_id))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
 
     @app.post("/agent/unlock")
     def unlock_agent():
