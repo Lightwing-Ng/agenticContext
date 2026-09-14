@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.1.3-codex.1
+Code version: v1.1.4-codex.1
 """
 
 from copy import deepcopy
@@ -31,7 +31,19 @@ def account_check(route, calls, *, unavailable=()):
     payload = route.request.post_data_json
     calls.append(payload)
     records = [
-        {"key": key, "ready": key not in unavailable, "message": "Signed in" if key not in unavailable else "Provider unavailable"}
+        {
+            "key": key,
+            "label": {"chatgpt": "ChatGPT", "grok": "Grok", "gemini": "Gemini", "claude": "Claude"}[key],
+            "ready": key not in unavailable,
+            "message": "Signed in" if key not in unavailable else "Provider unavailable",
+            "model": {
+                "chatgpt-latest-extra-high": "Latest · Extra High",
+                "grok-auto": "Auto",
+                "gemini-3.1-pro": "3.1 Pro",
+                "gemini-3.8-flash": "3.8 Flash",
+                "claude-auto": "Auto",
+            }[payload["models"][key]],
+        }
         for key in payload["providers"]
     ]
     ready = all(item["ready"] for item in records)
@@ -179,6 +191,17 @@ def test_jury_all_selected_accounts_gate_and_shared_responsive_sidebar(jury_brow
         expect(page.locator("[data-jury-provider]:checked")).to_have_count(3)
         expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
         expect(page.locator("[data-jury-check-label]")).to_have_text("Not ready")
+        expect(page.locator("[data-jury-check-message]")).to_have_text(
+            "Unavailable juror: Gemini (3.1 Pro) — Provider unavailable. "
+            "Sign in or deselect this juror, then check accounts again; at least two must remain selected."
+        )
+        unavailable_geometry = page.locator(".jury-account-status").evaluate("""card => ({
+            cardFits: card.scrollWidth <= card.clientWidth,
+            messageFits: card.querySelector('[data-jury-check-message]').scrollWidth
+                <= card.querySelector('[data-jury-check-message]').clientWidth,
+            pageFits: document.documentElement.scrollWidth <= innerWidth + 1,
+        })""")
+        assert all(unavailable_geometry.values())
         expect(page.locator("[data-jury-ready-check]")).to_be_hidden()
         expect(page.locator("#jury_sidebar")).not_to_contain_text("Terminal")
         expect(page.locator("#jury_sidebar")).not_to_contain_text("Current project")

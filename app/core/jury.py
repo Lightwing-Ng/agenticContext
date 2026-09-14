@@ -1,4 +1,4 @@
-"""Bounded, browser-only fact-checking deliberations. Code version: v1.1.1-codex.1."""
+"""Bounded, browser-only fact-checking deliberations. Code version: v1.1.2-codex.1."""
 
 from __future__ import annotations
 
@@ -24,10 +24,27 @@ from .computer_use_agent import (
 )
 from .state import utc_now
 
-JURY_VERSION = "1.1.1"
+JURY_VERSION = "1.1.2"
 DEFAULT_JURORS = ("chatgpt", "grok", "gemini")
 JUROR_LABELS = {item["key"]: item["label"] for item in AGENT_PLATFORM_OPTIONS}
 VERDICTS = {"supported", "refuted", "misleading", "unverified"}
+
+
+def _unavailable_juror_message(results: list[dict[str, Any]]) -> str:
+    unavailable = [item for item in results if not item["ready"]]
+    descriptions = []
+    for item in unavailable:
+        diagnostic = re.sub(r"\s+", " ", str(item.get("message") or "")).strip()
+        diagnostic = diagnostic.rstrip(".!?") or "Sign-in could not be verified"
+        descriptions.append(
+            f"{item['label']} ({item['model']}) — {diagnostic}"
+        )
+    noun = "juror" if len(descriptions) == 1 else "jurors"
+    reference = "this juror" if len(descriptions) == 1 else "these jurors"
+    return (
+        f"Unavailable {noun}: {'; '.join(descriptions)}. Sign in or deselect "
+        f"{reference}, then check accounts again; at least two must remain selected."
+    )
 
 
 def validate_selection(browser: object, providers: object) -> tuple[str, list[str]]:
@@ -272,7 +289,7 @@ class JuryService:
         ready = all(item["ready"] for item in results)
         return {"ready": ready, "browser": browser, "providers": results,
                 "message": "All selected jurors are signed in." if ready else
-                "Some selected jurors are unavailable. Recheck or adjust the selection."}
+                _unavailable_juror_message(results)}
 
     def start(self, browser: object, providers: object, question: object,
               max_rounds: object = 3, models: object = None) -> dict:

@@ -1,4 +1,4 @@
-/* Code version: v1.1.2-codex.1 */
+/* Code version: v1.1.3-codex.1 */
 (() => {
     "use strict";
     const root = document.querySelector("[data-jury-root]");
@@ -50,6 +50,25 @@
     const isReady = () => selectedProviders().length >= 2 && readyConfiguration === configurationKey();
     const displayPhase = (value) => String(value || "ready").replaceAll("_", " ");
 
+    function unavailableJurorMessage(records, selected) {
+        const unavailable = records.filter((record) =>
+            selected.includes(record.key) && record.ready !== true);
+        if (!unavailable.length) return "";
+        const descriptions = unavailable.map((record) => {
+            const picker = modelPickers.find((item) => item.provider === record.key);
+            const label = String(record.label || providerLabels[record.key] || record.key);
+            const model = String(record.model || picker?.label.textContent || "").trim();
+            const diagnostic = String(record.message || "Sign-in could not be verified")
+                .replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "")
+                || "Sign-in could not be verified";
+            return label + (model ? " (" + model + ")" : "") + " — " + diagnostic;
+        });
+        const one = descriptions.length === 1;
+        return "Unavailable juror" + (one ? "" : "s") + ": " + descriptions.join("; ")
+            + ". Sign in or deselect " + (one ? "this juror" : "these jurors")
+            + ", then check accounts again; at least two must remain selected.";
+    }
+
     async function requestJson(url, options = {}) {
         const response = await fetch(url, {
             credentials: "same-origin",
@@ -98,8 +117,9 @@
         readyConfiguration = ready ? configuration : "";
         find("ready-check").hidden = !ready;
         find("check-label").textContent = ready ? "All selected signed in" : "Not ready";
-        find("check-message").textContent = payload.message || (ready ? ""
-            : "Every selected juror must be signed in. Deselect an unavailable juror to continue with at least two.");
+        find("check-message").textContent = ready ? (payload.message || "")
+            : (unavailableJurorMessage(records, selected) || payload.message
+                || "Every selected juror must be signed in. Deselect an unavailable juror to continue with at least two.");
     }
 
     async function checkAccounts() {

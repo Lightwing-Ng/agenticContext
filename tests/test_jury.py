@@ -1,6 +1,6 @@
 """Jury deliberation boundaries with deterministic, browser-free jurors.
 
-Code version: v1.1.1-codex.1
+Code version: v1.1.2-codex.1
 """
 
 from __future__ import annotations
@@ -283,6 +283,11 @@ def test_readiness_requires_every_selected_login_without_probing_unselected_clau
     service = service_factory(login_check=probe)
     unavailable = service.check("edge", list(DEFAULT_JURORS))
     assert unavailable["ready"] is False
+    assert unavailable["message"] == (
+        "Unavailable juror: Gemini (3.1 Pro) — Sign-in could not be verified. "
+        "Sign in or deselect this juror, then check accounts again; at least two "
+        "must remain selected."
+    )
     assert checked == list(DEFAULT_JURORS)
     assert "claude" not in checked
     checked.clear()
