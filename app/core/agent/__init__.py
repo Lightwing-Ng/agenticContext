@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.8.0-codex.1
+# Code version: v1.8.1-codex.1
 
 from typing import TYPE_CHECKING
 
@@ -78,10 +78,16 @@ if TYPE_CHECKING:
     )
     from .session_pool import AgentSessionPool
     from ..jury import JuryService
+    from ..jury_browser import JURY_MODEL_OPTIONS_BY_PROVIDER
 
 
 def __getattr__(name: str):
     """Load the execution service lazily so core modules can use the registry safely."""
+    if name == "JURY_MODEL_OPTIONS_BY_PROVIDER":
+        from ..jury_browser import JURY_MODEL_OPTIONS_BY_PROVIDER
+
+        globals()[name] = JURY_MODEL_OPTIONS_BY_PROVIDER
+        return JURY_MODEL_OPTIONS_BY_PROVIDER
     if name == "JuryService":
         from ..jury import JuryService
 
@@ -111,6 +117,7 @@ __all__ = [
     "CAPABILITY_REGISTRY_VERSION",
     "ComputerUseAgentService",
     "ComputerUseSettingsStore",
+    "JURY_MODEL_OPTIONS_BY_PROVIDER",
     "JuryService",
     "OPERATING_SYSTEM_OPTIONS",
     "PAGE_OBSERVATIONS",

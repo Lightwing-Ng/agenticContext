@@ -1,6 +1,6 @@
 """Verify isolated browser ownership and single-session jury exchanges.
 
-Code version: v1.0.5-codex.1
+Code version: v1.1.1-codex.1
 """
 
 from contextlib import contextmanager
@@ -70,7 +70,7 @@ def transport(monkeypatch):
         selected_models.append((platform, model, kwargs))
         observation.update(
             observed="Latest" if platform == "chatgpt" else kwargs["model_option"]["label"],
-            thinking_effort="Extra High",
+            thinking_effort=kwargs["chatgpt_effort"],
             effort_catalog_complete=True,
         )
         return True
@@ -122,21 +122,34 @@ def test_rounds_reuse_one_page_and_bound_conversation(transport, platform):
     assert first[1]["turn_receipt_marker"] != second[1]["turn_receipt_marker"]
 
 
-@pytest.mark.parametrize("platform,model,label", [
-    ("chatgpt", "live:latest", "Latest"),
-    ("grok", "grok-auto", "Auto"),
-    ("gemini", "gemini-3.1-pro", "Gemini 3.1 Pro"),
+@pytest.mark.parametrize("platform,selection,model,label,effort", [
+    ("chatgpt", "chatgpt-latest-extra-high", "live:latest", "Latest", "Extra High"),
+    ("chatgpt", "chatgpt-latest-high", "live:latest", "Latest", "High"),
+    ("grok", "grok-auto", "grok-auto", "Auto", "Extra High"),
+    ("grok", "grok-build", "grok-build", "Build", "Extra High"),
+    ("gemini", "gemini-3.1-pro", "gemini-3.1-pro", "Gemini 3.1 Pro", "Extra High"),
+    ("gemini", "gemini-3.8-flash", "gemini-3.8-flash", "Gemini 3.8 Flash", "Extra High"),
 ])
-def test_requested_model_does_not_inherit_agent_defaults(transport, platform, model, label):
+def test_requested_model_does_not_inherit_agent_defaults(
+    transport, platform, selection, model, label, effort,
+):
     original = ComputerUseSettings(model="grok-build", chatgpt_effort="highest_available")
-    with jury.JuryBrowserSession(original, platform):
+    with jury.JuryBrowserSession(original, platform, model_selection=selection):
         pass
     selected_platform, selected_model, kwargs = transport.selected_models[0]
     assert (selected_platform, selected_model) == (platform, model)
     assert kwargs["model_option"]["label"] == label
-    assert kwargs["chatgpt_effort"] == "Extra High"
+    assert kwargs["chatgpt_effort"] == effort
     assert original.model == "grok-build"
     assert original.chatgpt_effort == "highest_available"
+
+
+def test_unknown_jury_model_tier_is_rejected_before_browser_launch(transport):
+    with pytest.raises(ValueError, match="supported model tier"):
+        jury.JuryBrowserSession(
+            ComputerUseSettings(), "gemini", model_selection="gemini-unknown",
+        )
+    assert transport.events == []
 
 
 def test_gemini_waits_for_the_accepted_first_turn_url_without_another_submission(transport, monkeypatch):
@@ -333,28 +346,71 @@ def test_cross_thread_prompt_is_rejected_before_browser_io(transport):
     assert transport.submissions == []
 
 
-def test_login_check_uses_browser_login_only(monkeypatch):
-    calls = []
-
-    def probe(*args, **kwargs):
-        calls.append((args, kwargs))
-        return {"logged_in": True, "can_download": False}
-
-    monkeypatch.setattr(jury, "probe_browser_session", probe)
-    result = jury.jury_browser_login_check(ComputerUseSettings(), "chatgpt")
-    assert result["ready"] is True
-    assert calls[0][0][:2] == ("chatgpt", "edge")
-    assert calls[0][1] == {"silent": True, "prefer_initialized_debug_profile": False}
-
-
-def test_grok_login_check_verifies_chat_without_files_access_or_submission(transport, monkeypatch):
-    monkeypatch.setattr(
-        jury, "probe_browser_session",
-        lambda *_args, **_kwargs: pytest.fail("Jury must not probe Grok Files."),
-    )
-    result = jury.jury_browser_login_check(ComputerUseSettings(), "grok")
+@pytest.mark.parametrize("platform", ["chatgpt", "grok", "gemini", "claude"])
+def test_login_check_verifies_each_chat_without_submission(transport, platform):
+    result = jury.jury_browser_login_check(ComputerUseSettings(), platform)
     assert result["ready"] is result["logged_in"] is True
     assert result["can_download"] is False
+    assert transport.submissions == []
+    assert transport.events[-2:] == ["close:context", "close:playwright"]
+
+
+def test_login_check_verifies_the_selected_model_tier(transport):
+    result = jury.jury_browser_login_check(
+        ComputerUseSettings(),
+        "gemini",
+        model_selection="gemini-3.8-flash",
+    )
+    assert result["ready"] is True
+    assert transport.selected_models[0][1] == "gemini-3.8-flash"
+
+
+def test_human_verification_surfaces_and_retains_the_same_page(transport, monkeypatch):
+    reason = "Human verification required: Grok requires security challenge control."
+    recoveries = []
+
+    monkeypatch.setattr(
+        jury.web_agent,
+        "_provider_human_verification_reason",
+        lambda *_args: reason,
+    )
+
+    def wait_for_recovery(**kwargs):
+        recoveries.append(kwargs)
+        assert transport.events[-1] != "close:context"
+        return "recovered"
+
+    monkeypatch.setattr(jury.web_agent, "_wait_for_browser_recovery", wait_for_recovery)
+    with jury.JuryBrowserSession(ComputerUseSettings(), "grok") as session:
+        page = session._page
+        assert session._availability_check() is True
+        assert session._page is page
+        assert "close:context" not in transport.events
+
+    assert len(recoveries) == 1
+    recovery = recoveries[0]
+    assert recovery["page"] is page
+    assert recovery["reason"] == reason
+    assert recovery["should_resume"] is None
+    assert recovery["monitor_screen_lock"] is False
+    assert transport.events[-2:] == ["close:context", "close:playwright"]
+
+
+def test_human_verification_stop_closes_without_touching_the_challenge(transport, monkeypatch):
+    reason = "Human verification required: Grok requires security challenge control."
+    monkeypatch.setattr(
+        jury.web_agent,
+        "_provider_human_verification_reason",
+        lambda *_args: reason,
+    )
+    monkeypatch.setattr(
+        jury.web_agent,
+        "_wait_for_browser_recovery",
+        lambda **_kwargs: "stopped",
+    )
+    with jury.JuryBrowserSession(ComputerUseSettings(), "grok") as session:
+        with pytest.raises(jury.JuryBrowserStopped, match="human verification"):
+            session._availability_check()
     assert transport.submissions == []
     assert transport.events[-2:] == ["close:context", "close:playwright"]
 

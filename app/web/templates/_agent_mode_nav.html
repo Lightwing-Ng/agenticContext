@@ -1,11 +1,25 @@
-{# Code version: v1.0.0-codex.1 #}
-<nav class="settings-category-nav" aria-label="Agent modes">
-    <a href="{{ agent_entry_url() }}" class="settings-category-nav-item settings-category-nav-item-agent{% if current_agent_mode == 'agentic' %} is-active{% endif %}"{% if current_agent_mode == 'agentic' %} aria-current="page"{% endif %}>
-        <span class="settings-category-nav-icon-shell" aria-hidden="true"><span class="icon settings-category-nav-icon"></span></span>
-        <span class="settings-category-nav-label">Agentic</span>
-    </a>
-    <a href="/jury/{{ settings.browser if settings.browser in ('edge', 'chrome') else 'edge' }}" class="settings-category-nav-item settings-category-nav-item-llm{% if current_agent_mode == 'jury' %} is-active{% endif %}"{% if current_agent_mode == 'jury' %} aria-current="page"{% endif %}>
-        <span class="settings-category-nav-icon-shell" aria-hidden="true"><span class="icon settings-category-nav-icon"></span></span>
-        <span class="settings-category-nav-label">Jurors</span>
-    </a>
-</nav>
+{# Code version: v1.1.0-codex.1 #}
+<section class="sidebar-section agent-mode-section">
+    <nav
+        class="segmented-control agent-mode-control"
+        aria-label="Agent modes"
+        data-option-count="2"
+        data-segmented-active-index="{{ 0 if current_agent_mode == 'agentic' else 1 }}"
+        style="--segmented-option-count: 2; --segmented-active-index: {{ 0 if current_agent_mode == 'agentic' else 1 }};"
+    >
+        <a
+            href="{{ agent_entry_url() }}"
+            class="segmented-control-option agent-mode-option{% if current_agent_mode == 'agentic' %} is-active{% endif %}"
+            role="radio"
+            aria-checked="{{ 'true' if current_agent_mode == 'agentic' else 'false' }}"
+            {% if current_agent_mode == 'agentic' %}aria-current="page"{% endif %}
+        ><span>Agentic</span></a>
+        <a
+            href="/jury/{{ settings.browser if settings.browser in ('edge', 'chrome') else 'edge' }}"
+            class="segmented-control-option agent-mode-option{% if current_agent_mode == 'jury' %} is-active{% endif %}"
+            role="radio"
+            aria-checked="{{ 'true' if current_agent_mode == 'jury' else 'false' }}"
+            {% if current_agent_mode == 'jury' %}aria-current="page"{% endif %}
+        ><span>Jurors</span></a>
+    </nav>
+</section>

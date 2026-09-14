@@ -1,6 +1,6 @@
 """Jury deliberation boundaries with deterministic, browser-free jurors.
 
-Code version: v1.0.1-codex.1
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from app.core.jury import (
     build_candidate,
     parse_opinion,
     unanimous_acceptance,
+    validate_model_selections,
     validate_selection,
 )
 
@@ -55,9 +56,11 @@ class FakeBrowserFactory:
         self.closed = Counter()
         self.threads = defaultdict(list)
         self.packets = defaultdict(list)
+        self.model_selections = defaultdict(list)
 
     def __call__(self, settings, platform, stop, **kwargs):
         owner = self
+        owner.model_selections[platform].append(kwargs["model_selection"])
 
         class Browser:
             conversation_url = f"https://{platform}.example/conversation/one"
@@ -111,8 +114,11 @@ def service_factory(tmp_path):
             thread.join(timeout=5)
 
 
-def complete(service, providers=None, max_rounds=3):
-    initial = service.start("edge", providers or ["chatgpt", "grok"], "Check this factual claim.", max_rounds)
+def complete(service, providers=None, max_rounds=3, models=None):
+    initial = service.start(
+        "edge", providers or ["chatgpt", "grok"],
+        "Check this factual claim.", max_rounds, models,
+    )
     session_id = initial["session_id"]
     wait_until(lambda: not service.status(session_id)["running"])
     return service.status(session_id)
@@ -121,6 +127,43 @@ def complete(service, providers=None, max_rounds=3):
 def test_default_jurors_keep_claude_available_but_unselected():
     assert DEFAULT_JURORS == ("chatgpt", "grok", "gemini")
     assert validate_selection("edge", ["chatgpt", "claude"]) == ("edge", ["chatgpt", "claude"])
+    defaults = validate_model_selections(list(DEFAULT_JURORS), None)
+    assert {key: value["selection_key"] for key, value in defaults.items()} == {
+        "chatgpt": "chatgpt-latest-extra-high",
+        "grok": "grok-auto",
+        "gemini": "gemini-3.1-pro",
+    }
+
+
+def test_selected_model_tiers_are_persisted_and_given_to_each_single_worker(service_factory):
+    factory = FakeBrowserFactory()
+    models = {
+        "chatgpt": "chatgpt-latest-high",
+        "gemini": "gemini-3.8-flash",
+    }
+    final = complete(
+        service_factory(factory), ["chatgpt", "gemini"], models=models,
+    )
+    assert [(item["key"], item["model_selection"], item["model"])
+            for item in final["providers"]] == [
+        ("chatgpt", "chatgpt-latest-high", "Latest · High"),
+        ("gemini", "gemini-3.8-flash", "3.8 Flash"),
+    ]
+    assert factory.model_selections == {
+        "chatgpt": ["chatgpt-latest-high"],
+        "gemini": ["gemini-3.8-flash"],
+    }
+
+
+@pytest.mark.parametrize("models", [[], {"claude": "claude-auto"}, {"gemini": "unknown"}])
+def test_invalid_model_tier_selection_is_rejected_before_browser_activity(
+    service_factory, models,
+):
+    factory = FakeBrowserFactory()
+    service = service_factory(factory)
+    with pytest.raises(ValueError):
+        service.start("edge", ["chatgpt", "gemini"], "Claim", models=models)
+    assert factory.opened == {}
 
 
 @pytest.mark.parametrize("providers", [None, "chatgpt,grok", [], ["chatgpt"], ["chatgpt", "chatgpt"], ["chatgpt", "unknown"], ["chatgpt", {}]])
@@ -246,6 +289,29 @@ def test_readiness_requires_every_selected_login_without_probing_unselected_clau
     ready = service.check("edge", ["chatgpt", "grok"])
     assert ready["ready"] is True
     assert checked == ["chatgpt", "grok"]
+
+
+def test_readiness_checks_the_selected_provider_model(service_factory):
+    selections = []
+
+    def probe(_settings, key, **kwargs):
+        selections.append((key, kwargs["model_selection"]))
+        return {"logged_in": True}
+
+    service = service_factory(login_check=probe)
+    ready = service.check(
+        "edge",
+        ["chatgpt", "gemini"],
+        {
+            "chatgpt": "chatgpt-latest-high",
+            "gemini": "gemini-3.8-flash",
+        },
+    )
+    assert ready["ready"] is True
+    assert selections == [
+        ("chatgpt", "chatgpt-latest-high"),
+        ("gemini", "gemini-3.8-flash"),
+    ]
 
 
 @pytest.mark.parametrize("question", [None, {}, "", "  ", "x" * 20_001])

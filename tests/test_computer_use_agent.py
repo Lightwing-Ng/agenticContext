@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.66.0-codex.1
+Code version: v3.66.1-codex.1
 """
 
 from __future__ import annotations
@@ -17632,6 +17632,26 @@ def test_provider_human_verification_uses_a_fixed_safe_reason(
 
     assert detected.startswith("Human verification required: ")
     assert reason in detected
+
+
+def test_grok_cloudflare_title_survives_dom_evaluation_failure() -> None:
+    class _Page:
+        def evaluate(self, _expression: str, _argument: object) -> dict[str, object]:
+            raise RuntimeError("Cloudflare replaced the execution context")
+
+        def title(self) -> str:
+            return "Just a moment..."
+
+        def locator(self, selector: str) -> object:
+            assert selector == "body"
+            raise RuntimeError("The challenge body is not readable yet")
+
+        def content(self) -> str:
+            return ""
+
+    assert _provider_human_verification_reason(_Page(), "grok") == (
+        "Human verification required: Grok requires Cloudflare security verification."
+    )
 
 
 @pytest.mark.parametrize("host_platform", ("darwin", "win32"))

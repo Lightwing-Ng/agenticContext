@@ -1,4 +1,4 @@
-"""Bounded, browser-only fact-checking deliberations. Code version: v1.0.1-codex.1."""
+"""Bounded, browser-only fact-checking deliberations. Code version: v1.1.1-codex.1."""
 
 from __future__ import annotations
 
@@ -24,15 +24,9 @@ from .computer_use_agent import (
 )
 from .state import utc_now
 
-JURY_VERSION = "1.0.1"
+JURY_VERSION = "1.1.1"
 DEFAULT_JURORS = ("chatgpt", "grok", "gemini")
 JUROR_LABELS = {item["key"]: item["label"] for item in AGENT_PLATFORM_OPTIONS}
-JUROR_MODELS = {
-    "chatgpt": "Latest · Extra High",
-    "grok": "Auto",
-    "gemini": "3.1 Pro",
-    "claude": "Auto",
-}
 VERDICTS = {"supported", "refuted", "misleading", "unverified"}
 
 
@@ -49,6 +43,20 @@ def validate_selection(browser: object, providers: object) -> tuple[str, list[st
     ):
         raise ValueError("Choose two to four distinct jurors.")
     return browser, list(providers)
+
+
+def validate_model_selections(providers: list[str], models: object) -> dict[str, dict[str, Any]]:
+    """Resolve an exact supported model tier for every selected juror."""
+    from .jury_browser import jury_model_option
+
+    if models is None:
+        models = {}
+    if not isinstance(models, dict) or any(key not in providers for key in models):
+        raise ValueError("Choose model tiers only for the selected jurors.")
+    return {
+        provider: jury_model_option(provider, models.get(provider))
+        for provider in providers
+    }
 
 
 def parse_opinion(response: str) -> dict[str, Any]:
@@ -151,18 +159,21 @@ class _JurorWorker:
     """Keep Playwright and its single provider conversation on one owning thread."""
 
     def __init__(self, factory: Callable, settings: ComputerUseSettings, platform: str,
-                 stop: Event, config: Any, on_conversation: Callable) -> None:
+                 stop: Event, config: Any, on_conversation: Callable,
+                 model_selection: str) -> None:
         self.requests: Queue = Queue()
         self.stop = stop
-        self.thread = Thread(target=self._run, args=(factory, settings, platform, config, on_conversation),
+        self.thread = Thread(target=self._run, args=(factory, settings, platform, config,
+                                                    on_conversation, model_selection),
                              name=f"jury-{platform}", daemon=True)
         self.thread.start()
 
     def _run(self, factory: Callable, settings: ComputerUseSettings, platform: str,
-             config: Any, on_conversation: Callable) -> None:
+             config: Any, on_conversation: Callable, model_selection: str) -> None:
         try:
             with factory(settings, platform, self.stop, config=config,
-                         on_conversation=on_conversation) as browser:
+                         on_conversation=on_conversation,
+                         model_selection=model_selection) as browser:
                 while not self.stop.is_set():
                     try:
                         request = self.requests.get(timeout=0.2)
@@ -235,29 +246,38 @@ class JuryService:
         self.root.chmod(0o700)
         _atomic_write_owner_only_text(path, json.dumps(record, ensure_ascii=False))
 
-    def check(self, browser: object, providers: object) -> dict:
+    def check(self, browser: object, providers: object, models: object = None) -> dict:
         browser, providers = validate_selection(browser, providers)
+        selections = validate_model_selections(providers, models)
         from .jury_browser import jury_browser_login_check
         probe = self.login_check or jury_browser_login_check
         settings = replace(self.settings_provider(), browser=browser)
         results = []
         for key in providers:
             try:
-                result = probe(settings, key, config=self.config_provider())
+                result = probe(
+                    settings,
+                    key,
+                    config=self.config_provider(),
+                    model_selection=selections[key]["selection_key"],
+                )
                 ready = result.get("logged_in") is True
                 message = "Signed in" if ready else str(result.get("message") or "Sign-in could not be verified.")
             except Exception as exc:
                 ready, message = False, str(exc)
+            model = selections[key]
             results.append({"key": key, "label": JUROR_LABELS[key], "ready": ready,
-                            "message": message, "model": JUROR_MODELS[key]})
+                            "message": message, "model": model["display_label"],
+                            "model_selection": model["selection_key"]})
         ready = all(item["ready"] for item in results)
         return {"ready": ready, "browser": browser, "providers": results,
                 "message": "All selected jurors are signed in." if ready else
                 "Some selected jurors are unavailable. Recheck or adjust the selection."}
 
     def start(self, browser: object, providers: object, question: object,
-              max_rounds: object = 3) -> dict:
+              max_rounds: object = 3, models: object = None) -> dict:
         browser, providers = validate_selection(browser, providers)
+        selections = validate_model_selections(providers, models)
         if not isinstance(question, str) or not question.strip() or len(question) > 20_000:
             raise ValueError("Enter a question containing 1 to 20,000 characters.")
         if type(max_rounds) is not int or not 2 <= max_rounds <= 6:
@@ -274,7 +294,9 @@ class JuryService:
                 "consensus": False, "candidate": None, "started_at": utc_now(),
                 "providers": [{"key": key, "label": JUROR_LABELS[key], "ready": False,
                                "status": "checking", "message": "", "conversation_url": "",
-                               "model": JUROR_MODELS[key]} for key in providers],
+                               "model": selections[key]["display_label"],
+                               "model_selection": selections[key]["selection_key"]}
+                              for key in providers],
             }
             self._save(record)
             self.records[session_id] = record
@@ -297,7 +319,12 @@ class JuryService:
         try:
             state = self.status(session_id)
             keys = [item["key"] for item in state["providers"]]
-            checked = self.check(state["browser"], keys)
+            models = {
+                item["key"]: item.get("model_selection")
+                for item in state["providers"]
+                if item.get("model_selection")
+            }
+            checked = self.check(state["browser"], keys, models)
             provider_states = [{**item, "status": "ready" if item["ready"] else "unavailable",
                                 "conversation_url": ""} for item in checked["providers"]]
             self._update(session_id, providers=provider_states)
@@ -314,9 +341,14 @@ class JuryService:
                     self._update(session_id, providers=deepcopy(provider_states))
 
             for key in keys:
+                model_selection = next(
+                    item["model_selection"] for item in provider_states
+                    if item["key"] == key
+                )
                 workers[key] = _JurorWorker(self.session_factory or JuryBrowserSession,
                                             settings, key, stop, self.config_provider(),
-                                            lambda url, key=key: record_conversation(key, url))
+                                            lambda url, key=key: record_conversation(key, url),
+                                            model_selection)
             previous: list[dict] = []
             rounds: list[dict] = []
             candidate = None

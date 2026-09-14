@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.0.0-codex.1
+Code version: v1.1.0-codex.1
 """
 
 from __future__ import annotations
@@ -138,11 +138,20 @@ def test_jury_check_and_start_dispatch_web_only_inputs(jury_app):
     application, service = jury_app
     enable_fake_operations(application)
     client = application.test_client()
-    selection = {"browser": "edge", "providers": ["chatgpt", "grok"]}
+    selection = {
+        "browser": "edge",
+        "providers": ["chatgpt", "grok"],
+        "models": {
+            "chatgpt": "chatgpt-latest-extra-high",
+            "grok": "grok-auto",
+        },
+    }
     checked = client.post("/api/jury/check", json=selection)
     assert checked.status_code == 200
     assert checked.get_json()["ready"] is True
-    service.check.assert_called_once()
+    service.check.assert_called_once_with(
+        "edge", ["chatgpt", "grok"], selection["models"],
+    )
     started = client.post(
         "/api/jury/start",
         json={**selection, "question": "Check the original claim against primary evidence.", "max_rounds": 3},
@@ -154,6 +163,7 @@ def test_jury_check_and_start_dispatch_web_only_inputs(jury_app):
     assert "workspace_path" not in kwargs
     assert "terminal" not in kwargs
     assert "Check the original claim against primary evidence." in (*args, *kwargs.values())
+    assert selection["models"] in args
     assert "no-store" in started.headers["Cache-Control"]
 
 

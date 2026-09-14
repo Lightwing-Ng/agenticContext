@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.76.0-codex.1
+# Code version: v1.77.0-codex.1
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from app.core.agent import (
     AgentSourceCache,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
+    JURY_MODEL_OPTIONS_BY_PROVIDER,
     JuryService,
     agent_access_password_is_configured,
     browser_options_for_host,
@@ -1735,6 +1736,7 @@ def create_app(
             browser_options=[item for item in browser_options_for_host()
                              if item["key"] in {"edge", "chrome"}],
             platform_options=AGENT_PLATFORM_OPTIONS,
+            jury_model_options_by_provider=JURY_MODEL_OPTIONS_BY_PROVIDER,
         )
 
     def jury_payload() -> dict[str, Any]:
@@ -1766,6 +1768,7 @@ def create_app(
         try:
             return jsonify(app.extensions["jury_service"].check(
                 payload.get("browser", "edge"), payload.get("providers"),
+                payload.get("models"),
             ))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -1782,6 +1785,7 @@ def create_app(
             snapshot = app.extensions["jury_service"].start(
                 payload.get("browser", "edge"), payload.get("providers"),
                 payload.get("question"), payload.get("max_rounds", 3),
+                payload.get("models"),
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400

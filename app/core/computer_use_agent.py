@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.71.1-codex.1
+Code version: v3.71.2-codex.1
 """
 
 from __future__ import annotations
@@ -62,6 +62,7 @@ from .browser_sessions import (
     CHROMIUM_WINDOW_MODE_TASK_STAGE,
     browser_descriptors,
     goto_with_retry,
+    is_grok_security_verification_page,
     launch_chromium_context,
     select_provider_tab,
     sync_playwright_or_error,
@@ -10011,12 +10012,30 @@ def _provider_human_verification_reason(page: Any, platform: str) -> str:
             {"composerSelector": _web_composer_selector(platform)},
         )
     except Exception:
-        return ""
-    if not isinstance(result, dict) or not result.get("detected"):
-        return ""
-    provider_label = AGENT_PLATFORM_BY_KEY[platform]["label"]
-    detail = str(result.get("reason") or "security challenge").strip()
-    return f"{HUMAN_VERIFICATION_REASON_PREFIX}{provider_label} requires {detail}."
+        result = None
+    if isinstance(result, dict) and result.get("detected"):
+        provider_label = AGENT_PLATFORM_BY_KEY[platform]["label"]
+        detail = str(result.get("reason") or "security challenge").strip()
+        return f"{HUMAN_VERIFICATION_REASON_PREFIX}{provider_label} requires {detail}."
+    if platform == "grok":
+        try:
+            title = str(page.title() or "")
+        except Exception:
+            title = ""
+        try:
+            body_text = str(page.locator("body").inner_text(timeout=1_000) or "")
+        except Exception:
+            body_text = ""
+        try:
+            html = str(page.content() or "")
+        except Exception:
+            html = ""
+        if is_grok_security_verification_page(title, body_text, html):
+            return (
+                f"{HUMAN_VERIFICATION_REASON_PREFIX}Grok requires "
+                "Cloudflare security verification."
+            )
+    return ""
 
 
 def _is_human_verification_reason(reason: str) -> bool:

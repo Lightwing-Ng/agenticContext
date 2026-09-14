@@ -1,10 +1,19 @@
-/* Code version: v1.0.1-codex.1 */
+/* Code version: v1.1.2-codex.1 */
 (() => {
     "use strict";
     const root = document.querySelector("[data-jury-root]");
     if (!root) return;
     const find = (name) => root.querySelector("[data-jury-" + name + "]");
     const providerInputs = Array.from(root.querySelectorAll("[data-jury-provider]"));
+    const modelPickers = Array.from(root.querySelectorAll("[data-jury-model-picker]")).map((picker) => ({
+        provider: picker.dataset.juryModelPicker,
+        picker,
+        input: picker.querySelector("[data-jury-model-input]"),
+        trigger: picker.querySelector("[data-jury-model-trigger]"),
+        label: picker.querySelector("[data-jury-model-label]"),
+        menu: picker.querySelector("[data-jury-model-menu]"),
+        options: Array.from(picker.querySelectorAll("[data-jury-model-option]")),
+    }));
     const browserOptions = Array.from(root.querySelectorAll("[data-jury-browser-option]"));
     const promptForm = document.getElementById("jury_prompt_form");
     const prompt = find("prompt");
@@ -27,9 +36,14 @@
     let lastSessions = "";
     let sessions = [];
     let disposed = false;
+    let modelMenuPositionFrame = 0;
+    let sidebarTransitioning = false;
 
     const selectedProviders = () => providerInputs.filter((input) => input.checked).map((input) => input.value);
-    const configurationKey = () => JSON.stringify([browser, selectedProviders()]);
+    const selectedModels = () => Object.fromEntries(modelPickers
+        .filter((picker) => selectedProviders().includes(picker.provider))
+        .map((picker) => [picker.provider, picker.input.value]));
+    const configurationKey = () => JSON.stringify([browser, selectedProviders(), selectedModels()]);
     const providerRecords = (payload) => Array.isArray(payload.providers) ? payload.providers
         : Object.entries(payload.providers || {}).map(([key, value]) => ({key, ...value}));
     const isRunning = () => snapshot.running === true;
@@ -57,6 +71,11 @@
     function syncControls() {
         const locked = busy || Boolean(sessionId);
         providerInputs.forEach((input) => { input.disabled = locked; });
+        modelPickers.forEach((picker) => {
+            picker.input.disabled = locked;
+            picker.trigger.disabled = locked;
+            if (locked) closeModelMenu(picker);
+        });
         browserTrigger.disabled = locked;
         find("max-rounds").disabled = locked;
         prompt.disabled = locked;
@@ -81,14 +100,6 @@
         find("check-label").textContent = ready ? "All selected signed in" : "Not ready";
         find("check-message").textContent = payload.message || (ready ? ""
             : "Every selected juror must be signed in. Deselect an unavailable juror to continue with at least two.");
-        providerInputs.forEach((input) => {
-            const status = root.querySelector('[data-jury-provider-readiness="' + input.value + '"]');
-            const record = records.find((entry) => entry.key === input.value);
-            status.textContent = input.checked && record ? (record.ready ? "Ready" : "Unavailable") : "";
-            status.title = input.checked && record ? (record.message || "") : "";
-            if (input.checked && record) status.dataset.ready = String(record.ready === true);
-            else delete status.dataset.ready;
-        });
     }
 
     async function checkAccounts() {
@@ -114,7 +125,11 @@
         try {
             const payload = await requestJson("/api/jury/check", {
                 method: "POST", signal: checkController.signal,
-                body: JSON.stringify({browser, providers: selectedProviders()}),
+                body: JSON.stringify({
+                    browser,
+                    providers: selectedProviders(),
+                    models: selectedModels(),
+                }),
             });
             if (generation !== checkGeneration || configuration !== configurationKey() || disposed) return;
             renderAccountCheck(payload, configuration);
@@ -265,6 +280,9 @@
         const records = providerRecords(payload);
         if (records.length) {
             providerInputs.forEach((input) => { input.checked = records.some((record) => record.key === input.value); });
+            records.forEach((record) => {
+                if (record.model_selection) setModel(record.key, record.model_selection);
+            });
             renderAccountCheck({
                 ready: records.every((record) => record.ready === true), providers: records,
                 message: payload.phase === "checking" ? "Verifying selected accounts before sending." : "",
@@ -385,6 +403,152 @@
         checkAccounts();
     }
 
+    function setModel(provider, value) {
+        const picker = modelPickers.find((item) => item.provider === provider);
+        const selected = picker?.options.find((option) => option.dataset.juryModelOption === value);
+        if (!picker || !selected) return false;
+        picker.input.value = value;
+        picker.label.textContent = selected.dataset.label;
+        picker.trigger.setAttribute(
+            "aria-label",
+            (providerLabels[provider] || provider) + " model tier: " + selected.dataset.label,
+        );
+        picker.options.forEach((option) => {
+            option.setAttribute("aria-selected", String(option === selected));
+            option.classList.toggle("is-selected", option === selected);
+            option.classList.toggle("is-active", option === selected);
+        });
+        return true;
+    }
+
+    function modelMenuOverlay() {
+        let overlay = document.querySelector("[data-shared-select-overlay]");
+        if (overlay instanceof HTMLElement) return overlay;
+        overlay = document.createElement("div");
+        overlay.className = "shared-select-overlay";
+        overlay.dataset.sharedSelectOverlay = "";
+        document.body.appendChild(overlay);
+        return overlay;
+    }
+
+    function resetModelMenuPosition(menu) {
+        ["position", "left", "top", "right", "bottom", "width", "minWidth", "maxWidth", "maxHeight", "overflowY"]
+            .forEach((property) => { menu.style[property] = ""; });
+    }
+
+    function restoreModelMenu(picker) {
+        if (picker.menu.parentElement?.matches("[data-shared-select-overlay]")) {
+            picker.picker.appendChild(picker.menu);
+        }
+        resetModelMenuPosition(picker.menu);
+    }
+
+    function positionModelMenu(picker) {
+        if (picker.menu.hidden) return;
+        const triggerRect = picker.trigger.getBoundingClientRect();
+        const providerList = picker.picker.closest(".jury-provider-list");
+        const sidebar = picker.picker.closest(".sidebar");
+        if (!(providerList instanceof HTMLElement) || !(sidebar instanceof HTMLElement)) return;
+        const contentRect = providerList.getBoundingClientRect();
+        const sidebarRect = sidebar.getBoundingClientRect();
+        const viewport = window.visualViewport;
+        const viewportTop = Number(viewport?.offsetTop) || 0;
+        const viewportHeight = Number(viewport?.height) || window.innerHeight;
+        const viewportBottom = viewportTop + viewportHeight;
+        const gap = 4;
+        const edge = 10;
+        const contentLeft = Math.max(sidebarRect.left + edge, contentRect.left);
+        const contentRight = Math.min(sidebarRect.right - edge, contentRect.right);
+        const maxWidth = Math.max(0, Math.min(240, contentRight - contentLeft));
+
+        const overlay = modelMenuOverlay();
+        if (picker.menu.parentElement !== overlay) overlay.appendChild(picker.menu);
+        Object.assign(picker.menu.style, {
+            position: "fixed",
+            left: `${Math.round(contentLeft)}px`,
+            top: `${Math.round(triggerRect.bottom + gap)}px`,
+            right: "auto",
+            bottom: "auto",
+            width: "max-content",
+            minWidth: `${Math.round(Math.min(triggerRect.width, maxWidth))}px`,
+            maxWidth: `${Math.round(maxWidth)}px`,
+            maxHeight: "none",
+            overflowY: "auto",
+        });
+        const naturalRect = picker.menu.getBoundingClientRect();
+        const menuStyle = getComputedStyle(picker.menu);
+        const menuPadding = (Number.parseFloat(menuStyle.paddingLeft) || 0)
+            + (Number.parseFloat(menuStyle.paddingRight) || 0);
+        const optionWidth = picker.options.reduce((width, option) => {
+            const optionStyle = getComputedStyle(option);
+            const text = option.querySelector(".trade-strategy-dropdown-text");
+            const check = option.querySelector(".trade-strategy-dropdown-check");
+            const textRange = document.createRange();
+            if (text) textRange.selectNodeContents(text);
+            const contentWidth = (text ? textRange.getBoundingClientRect().width : 0)
+                + (check?.getBoundingClientRect().width || 0);
+            return Math.max(
+                width,
+                contentWidth
+                    + (Number.parseFloat(optionStyle.columnGap) || 0)
+                    + (Number.parseFloat(optionStyle.paddingLeft) || 0)
+                    + (Number.parseFloat(optionStyle.paddingRight) || 0),
+            );
+        }, 0);
+        const menuWidth = Math.min(
+            maxWidth,
+            Math.max(triggerRect.width, naturalRect.width, optionWidth + menuPadding) + 12,
+        );
+        const menuHeight = Math.max(picker.menu.scrollHeight, naturalRect.height);
+        const spaceBelow = Math.max(0, viewportBottom - edge - triggerRect.bottom - gap);
+        const spaceAbove = Math.max(0, triggerRect.top - viewportTop - edge - gap);
+        const opensAbove = menuHeight > spaceBelow && spaceAbove > spaceBelow;
+        const availableHeight = Math.max(0, opensAbove ? spaceAbove : spaceBelow);
+        const visibleHeight = Math.min(menuHeight, availableHeight);
+        const menuLeft = Math.min(
+            Math.max(contentLeft, triggerRect.right - menuWidth),
+            contentRight - menuWidth,
+        );
+        const menuTop = opensAbove
+            ? Math.max(viewportTop + edge, triggerRect.top - gap - visibleHeight)
+            : Math.min(viewportBottom - edge - visibleHeight, triggerRect.bottom + gap);
+        Object.assign(picker.menu.style, {
+            left: `${Math.round(menuLeft)}px`,
+            top: `${Math.round(menuTop)}px`,
+            width: `${Math.round(menuWidth)}px`,
+            maxHeight: `${Math.round(availableHeight)}px`,
+        });
+    }
+
+    function scheduleModelMenuPosition() {
+        if (modelMenuPositionFrame) return;
+        modelMenuPositionFrame = window.requestAnimationFrame(() => {
+            modelMenuPositionFrame = 0;
+            modelPickers.forEach(positionModelMenu);
+            if (sidebarTransitioning && modelPickers.some((picker) => !picker.menu.hidden)) {
+                scheduleModelMenuPosition();
+            }
+        });
+    }
+
+    function closeModelMenu(picker) {
+        picker.menu.hidden = true;
+        picker.trigger.setAttribute("aria-expanded", "false");
+        picker.picker.classList.remove("is-open");
+        restoreModelMenu(picker);
+    }
+
+    function openModelMenu(picker) {
+        if (picker.trigger.disabled) return;
+        modelPickers.forEach((item) => {
+            if (item !== picker) closeModelMenu(item);
+        });
+        picker.menu.hidden = false;
+        picker.trigger.setAttribute("aria-expanded", "true");
+        picker.picker.classList.add("is-open");
+        positionModelMenu(picker);
+    }
+
     function closeBrowserMenu() {
         browserMenu.hidden = true;
         browserTrigger.setAttribute("aria-expanded", "false");
@@ -430,9 +594,48 @@
         loadSessions();
         checkAccounts();
     }));
+    modelPickers.forEach((picker) => {
+        const controller = window.SHARED_SELECT.createController({
+            getTrigger: () => picker.trigger,
+            getMenu: () => picker.menu,
+            getOptions: () => picker.options,
+            open: () => openModelMenu(picker),
+            close: () => closeModelMenu(picker),
+        });
+        controller.bindKeyboard();
+        picker.trigger.addEventListener("click", () => {
+            if (picker.menu.hidden) openModelMenu(picker);
+            else closeModelMenu(picker);
+        });
+        picker.options.forEach((option) => option.addEventListener("click", () => {
+            if (picker.trigger.disabled || !setModel(picker.provider, option.dataset.juryModelOption)) return;
+            closeModelMenu(picker);
+            controller.highlightSelected();
+            checkAccounts();
+        }));
+    });
     document.addEventListener("click", (event) => {
         if (!find("browser-picker").contains(event.target)) closeBrowserMenu();
+        modelPickers.forEach((picker) => {
+            if (!picker.picker.contains(event.target) && !picker.menu.contains(event.target)) closeModelMenu(picker);
+        });
     });
+    window.addEventListener("resize", scheduleModelMenuPosition);
+    const jurySidebar = document.getElementById("jury_sidebar");
+    jurySidebar?.addEventListener("scroll", scheduleModelMenuPosition, {passive: true});
+    jurySidebar?.addEventListener("transitionrun", () => {
+        sidebarTransitioning = true;
+        scheduleModelMenuPosition();
+    });
+    ["transitionend", "transitioncancel"].forEach((eventName) => {
+        jurySidebar?.addEventListener(eventName, () => {
+            sidebarTransitioning = false;
+            scheduleModelMenuPosition();
+        });
+    });
+    window.visualViewport?.addEventListener("resize", scheduleModelMenuPosition);
+    window.visualViewport?.addEventListener("scroll", scheduleModelMenuPosition);
+    document.fonts?.ready.then(scheduleModelMenuPosition);
     providerInputs.forEach((input) => input.addEventListener("change", checkAccounts));
     find("check").addEventListener("click", checkAccounts);
     find("new-session").addEventListener("click", newSession);
@@ -454,7 +657,7 @@
                 method: "POST",
                 body: JSON.stringify(stopping ? {session_id: sessionId} : {
                     browser, providers: selectedProviders(), question: prompt.value.trim(),
-                    max_rounds: Number(find("max-rounds").value),
+                    max_rounds: Number(find("max-rounds").value), models: selectedModels(),
                 }),
             });
             applySnapshot(payload);
@@ -493,6 +696,8 @@
         checkController?.abort();
         window.clearTimeout(pollTimer);
         window.clearTimeout(sessionsTimer);
+        window.cancelAnimationFrame(modelMenuPositionFrame);
+        modelMenuPositionFrame = 0;
         resizeObserver.disconnect();
     });
     window.addEventListener("pageshow", (event) => {

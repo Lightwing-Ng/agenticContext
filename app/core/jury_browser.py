@@ -1,6 +1,6 @@
 """Keep each juror in one authenticated browser conversation for an entire question.
 
-Code version: v1.0.5-codex.1
+Code version: v1.1.1-codex.1
 """
 
 from __future__ import annotations
@@ -21,39 +21,121 @@ from .browser_sessions import (
     browser_descriptors,
     goto_with_retry,
     launch_chromium_context,
-    probe_browser_session,
     sync_playwright_or_error,
 )
 from .config import CrawlConfig, is_macos_host
 from .computer_use_agent import ComputerUseSettings
 
 
-JURY_MODEL_OPTIONS: dict[str, dict[str, Any]] = {
-    "chatgpt": {
-        "key": "live:latest",
-        "label": "Latest",
-        "ui_label": "Latest",
-        "remote_labels": ("Latest",),
-    },
-    "grok": {
-        "key": "grok-auto",
-        "label": "Auto",
-        "ui_label": "Auto",
-        "remote_labels": ("Auto",),
-    },
-    "gemini": {
-        "key": "gemini-3.1-pro",
-        "label": "Gemini 3.1 Pro",
-        "ui_label": "3.1 Pro",
-        "remote_labels": ("Gemini 3.1 Pro", "3.1 Pro"),
-    },
-    "claude": {
-        "key": "claude-auto",
-        "label": "Auto",
-        "ui_label": "Auto",
-        "remote_labels": ("Auto",),
-    },
+JURY_MODEL_OPTIONS_BY_PROVIDER: dict[str, tuple[dict[str, Any], ...]] = {
+    "chatgpt": (
+        {
+            "selection_key": "chatgpt-latest-extra-high",
+            "key": "live:latest",
+            "label": "Latest",
+            "display_label": "Latest · Extra High",
+            "ui_label": "Latest",
+            "remote_labels": ("Latest",),
+            "chatgpt_effort": "Extra High",
+        },
+        {
+            "selection_key": "chatgpt-latest-high",
+            "key": "live:latest",
+            "label": "Latest",
+            "display_label": "Latest · High",
+            "ui_label": "Latest",
+            "remote_labels": ("Latest",),
+            "chatgpt_effort": "High",
+        },
+        {
+            "selection_key": "chatgpt-latest-medium",
+            "key": "live:latest",
+            "label": "Latest",
+            "display_label": "Latest · Medium",
+            "ui_label": "Latest",
+            "remote_labels": ("Latest",),
+            "chatgpt_effort": "Medium",
+        },
+        {
+            "selection_key": "chatgpt-latest-instant",
+            "key": "live:latest",
+            "label": "Latest",
+            "display_label": "Latest · Instant",
+            "ui_label": "Latest",
+            "remote_labels": ("Latest",),
+            "chatgpt_effort": "Instant",
+        },
+    ),
+    "grok": (
+        {
+            "selection_key": "grok-auto",
+            "key": "grok-auto",
+            "label": "Auto",
+            "display_label": "Auto",
+            "ui_label": "Auto",
+            "remote_labels": ("Auto",),
+        },
+        {
+            "selection_key": "grok-build",
+            "key": "grok-build",
+            "label": "Build",
+            "display_label": "Build",
+            "ui_label": "Build",
+            "remote_labels": ("Build",),
+            "remote_trigger_labels": ("Build Beta",),
+        },
+    ),
+    "gemini": (
+        {
+            "selection_key": "gemini-3.1-pro",
+            "key": "gemini-3.1-pro",
+            "label": "Gemini 3.1 Pro",
+            "display_label": "3.1 Pro",
+            "ui_label": "3.1 Pro",
+            "remote_labels": ("Gemini 3.1 Pro", "3.1 Pro"),
+        },
+        {
+            "selection_key": "gemini-3.8-flash",
+            "key": "gemini-3.8-flash",
+            "label": "Gemini 3.8 Flash",
+            "display_label": "3.8 Flash",
+            "ui_label": "3.8 Flash",
+            "remote_labels": ("Gemini 3.8 Flash", "3.8 Flash"),
+        },
+    ),
+    "claude": (
+        {
+            "selection_key": "claude-auto",
+            "key": "claude-auto",
+            "label": "Auto",
+            "display_label": "Auto",
+            "ui_label": "Auto",
+            "remote_labels": ("Auto",),
+        },
+    ),
 }
+JURY_MODEL_OPTIONS: dict[str, dict[str, Any]] = {
+    provider: options[0]
+    for provider, options in JURY_MODEL_OPTIONS_BY_PROVIDER.items()
+}
+
+
+def jury_model_option(platform: str, selection_key: object = None) -> dict[str, Any]:
+    """Resolve one explicit Jury model tier, defaulting only when omitted."""
+    options = JURY_MODEL_OPTIONS_BY_PROVIDER.get(platform, ())
+    if selection_key is None:
+        if not options:
+            raise ValueError(f"Unsupported jury provider: {platform}")
+        return dict(options[0])
+    if not isinstance(selection_key, str):
+        raise ValueError(f"Choose a supported model tier for {platform}.")
+    selected = next(
+        (option for option in options if option["selection_key"] == selection_key),
+        None,
+    )
+    if selected is None:
+        raise ValueError(f"Choose a supported model tier for {platform}.")
+    return dict(selected)
 
 
 class JuryBrowserStopped(RuntimeError):
@@ -96,30 +178,24 @@ def jury_browser_login_check(
     platform: str,
     *,
     config: CrawlConfig | None = None,
+    model_selection: str | None = None,
 ) -> dict[str, Any]:
-    """Check the selected provider's browser login without a Terminal probe."""
+    """Check the selected provider in its headed Jury browser without a prompt."""
     _validate_provider(settings, platform)
-    if platform == "grok":
-        # Cache readiness probes Files in a headless context. Jury uses the
-        # authenticated chat endpoint, composer, and model on its own page.
-        with JuryBrowserSession(settings, platform, config=config):
-            return {
-                "platform": platform,
-                "browser": settings.browser,
-                "logged_in": True,
-                "ready": True,
-                "can_download": False,
-                "message": "Grok chat is signed in and ready.",
-            }
-    result = dict(probe_browser_session(
+    with JuryBrowserSession(
+        settings,
         platform,
-        settings.browser,
-        config or CrawlConfig(),
-        silent=True,
-        prefer_initialized_debug_profile=False,
-    ))
-    result["ready"] = bool(result.get("logged_in"))
-    return result
+        config=config,
+        model_selection=model_selection,
+    ):
+        return {
+            "platform": platform,
+            "browser": settings.browser,
+            "logged_in": True,
+            "ready": True,
+            "can_download": False,
+            "message": f"{platform} chat is signed in and ready.",
+        }
 
 
 class JuryBrowserSession:
@@ -138,15 +214,16 @@ class JuryBrowserSession:
         *,
         config: CrawlConfig | None = None,
         on_conversation: Callable[[str], None] | None = None,
+        model_selection: str | None = None,
     ) -> None:
         _validate_provider(settings, platform)
         self.platform = platform
-        self.model_option = dict(JURY_MODEL_OPTIONS[platform])
+        self.model_option = jury_model_option(platform, model_selection)
         self.settings = replace(
             settings,
             platform=platform,
             model=self.model_option["key"],
-            chatgpt_effort="Extra High",
+            chatgpt_effort=str(self.model_option.get("chatgpt_effort") or "Extra High"),
             target_url=web_agent._platform_home_url(platform),
         )
         self.config = config or CrawlConfig()
@@ -181,7 +258,23 @@ class JuryBrowserSession:
         self._require_running()
         reason = web_agent._provider_human_verification_reason(self._page, self.platform)
         if reason:
-            raise RuntimeError(reason)
+            result = web_agent._wait_for_browser_recovery(
+                page=self._page,
+                expected_url=self._conversation_url or self.settings.target_url,
+                browser_kind=self.settings.browser,
+                platform=self.platform,
+                session_mode="recent" if self._conversation_url else "new",
+                expected_tab_id=None,
+                expected_title="",
+                should_stop=self.stop_event.is_set,
+                should_resume=None,
+                update=lambda **_changes: None,
+                reason=reason,
+                monitor_screen_lock=False,
+            )
+            if result == "stopped":
+                raise JuryBrowserStopped("The jury was stopped during human verification.")
+            self._require_running()
         return True
 
     def _record_response_state(self, **_state: Any) -> None:
@@ -307,7 +400,7 @@ class JuryBrowserSession:
                     self.model_observation,
                     should_stop=self.stop_event.is_set,
                     availability_check=self._availability_check,
-                    chatgpt_effort="Extra High",
+                    chatgpt_effort=self.settings.chatgpt_effort,
                     session_type=web_agent.session_type_for_mode("new"),
                     model_option=self.model_option,
                 )
@@ -333,13 +426,13 @@ class JuryBrowserSession:
                     selected
                     and self.model_observation.get("effort_catalog_complete")
                     and str(self.model_observation.get("thinking_effort") or "").casefold()
-                    == "extra high"
+                    == self.settings.chatgpt_effort.casefold()
                 )
             if not selected:
                 reason = self.model_observation.get("reason") or "model-readback-mismatch"
                 raise RuntimeError(
-                    f"{self.platform} could not verify {self.model_option['label']}"
-                    f"{' / Extra High' if self.platform == 'chatgpt' else ''}: {reason}. "
+                    f"{self.platform} could not verify "
+                    f"{self.model_option['display_label']}: {reason}. "
                     "No jury prompt was sent."
                 )
             return self

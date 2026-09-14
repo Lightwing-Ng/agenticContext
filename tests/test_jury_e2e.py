@@ -1,10 +1,11 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.0.2-codex.1
+Code version: v1.1.3-codex.1
 """
 
 from copy import deepcopy
 from pathlib import Path
+import re
 
 import pytest
 from playwright.sync_api import expect, sync_playwright
@@ -33,7 +34,16 @@ def account_check(route, calls, *, unavailable=()):
         {"key": key, "ready": key not in unavailable, "message": "Signed in" if key not in unavailable else "Provider unavailable"}
         for key in payload["providers"]
     ]
-    route.fulfill(json={"ready": all(item["ready"] for item in records), "providers": records})
+    ready = all(item["ready"] for item in records)
+    route.fulfill(json={
+        "ready": ready,
+        "providers": records,
+        "message": (
+            "All selected jurors are signed in."
+            if ready
+            else "Some selected jurors are unavailable. Recheck or adjust the selection."
+        ),
+    })
 
 
 def session_payload(*, running=True, phase="reviewing", providers=("chatgpt", "grok")):
@@ -64,9 +74,9 @@ def session_payload(*, running=True, phase="reviewing", providers=("chatgpt", "g
     }
 
 
-def open_jury(jury_browser, server_url, width, checks, *, unavailable=()):
+def open_jury(jury_browser, server_url, width, checks, *, height=900, unavailable=()):
     context = jury_browser.new_context(
-        viewport={"width": width, "height": 900},
+        viewport={"width": width, "height": height},
         color_scheme="dark" if width < 600 else "light",
         reduced_motion="reduce",
     )
@@ -79,6 +89,81 @@ def open_jury(jury_browser, server_url, width, checks, *, unavailable=()):
     return page, context
 
 
+def test_jury_model_menu_escapes_sidebar_clipping(jury_browser, sidebar_server_url):
+    checks = []
+    page, context = open_jury(
+        jury_browser,
+        sidebar_server_url,
+        753,
+        checks,
+        height=1355,
+    )
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        trigger = page.locator('[data-jury-model-trigger="chatgpt"]')
+        menu = page.locator('[data-jury-model-menu="chatgpt"]')
+        trigger.click()
+        expect(menu).to_be_visible()
+        page.wait_for_function("""() => {
+            const trigger = document.querySelector('[data-jury-model-trigger="chatgpt"]');
+            const menu = document.querySelector('[data-jury-model-menu="chatgpt"]');
+            return Math.abs(menu.getBoundingClientRect().right - trigger.getBoundingClientRect().right) <= 1;
+        }""")
+        geometry = menu.evaluate("""menu => {
+            const trigger = document.querySelector('[data-jury-model-trigger="chatgpt"]');
+            const providerList = document.querySelector('.jury-provider-list');
+            const menuRect = menu.getBoundingClientRect();
+            const triggerRect = trigger.getBoundingClientRect();
+            const contentRect = providerList.getBoundingClientRect();
+            const options = Array.from(menu.querySelectorAll('[role="option"]'));
+            return {
+                portalled: menu.parentElement?.matches('[data-shared-select-overlay]') === true,
+                left: menuRect.left,
+                right: menuRect.right,
+                top: menuRect.top,
+                bottom: menuRect.bottom,
+                triggerRight: triggerRect.right,
+                triggerBottom: triggerRect.bottom,
+                contentLeft: contentRect.left,
+                contentRight: contentRect.right,
+                viewportWidth: innerWidth,
+                viewportHeight: innerHeight,
+                optionsHit: options.every(option => {
+                    const box = option.getBoundingClientRect();
+                    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+                    return hit === option || option.contains(hit);
+                }),
+                optionLabelsFit: options.every(option => {
+                    const text = option.querySelector('.trade-strategy-dropdown-text');
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    context.font = getComputedStyle(text).font;
+                    return context.measureText(text.textContent).width <= text.clientWidth + 1;
+                }),
+                horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+            };
+        }""")
+        assert geometry["portalled"]
+        assert geometry["left"] >= geometry["contentLeft"] - 1
+        assert geometry["right"] <= geometry["contentRight"] + 1
+        assert abs(geometry["right"] - geometry["triggerRight"]) <= 1, geometry
+        assert geometry["top"] >= geometry["triggerBottom"] + 3
+        assert geometry["bottom"] <= geometry["viewportHeight"] - 9
+        assert geometry["optionsHit"]
+        assert geometry["optionLabelsFit"]
+        assert not geometry["horizontalOverflow"]
+        Path("test-results").mkdir(exist_ok=True)
+        page.screenshot(path="test-results/jury-model-menu-753.png")
+        page.keyboard.press("Escape")
+        expect(menu).to_be_hidden()
+        expect(trigger).to_have_attribute("aria-expanded", "false")
+        assert menu.evaluate("menu => menu.parentElement?.dataset.juryModelPicker === 'chatgpt'")
+        assert not errors
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize("width", [1280, 390])
 def test_jury_all_selected_accounts_gate_and_shared_responsive_sidebar(jury_browser, sidebar_server_url, width):
     checks = []
@@ -88,6 +173,9 @@ def test_jury_all_selected_accounts_gate_and_shared_responsive_sidebar(jury_brow
     try:
         expect(page.locator('[aria-label="Agent modes"] a')).to_have_text(["Agentic", "Jurors"])
         expect(page.locator('[aria-label="Agent modes"] a[aria-current="page"]')).to_have_text("Jurors")
+        expect(page.locator('[aria-label="Agent modes"]')).to_have_class(
+            re.compile(r"\bsegmented-control\b")
+        )
         expect(page.locator("[data-jury-provider]:checked")).to_have_count(3)
         expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
         expect(page.locator("[data-jury-check-label]")).to_have_text("Not ready")
@@ -95,12 +183,94 @@ def test_jury_all_selected_accounts_gate_and_shared_responsive_sidebar(jury_brow
         expect(page.locator("#jury_sidebar")).not_to_contain_text("Terminal")
         expect(page.locator("#jury_sidebar")).not_to_contain_text("Current project")
         expect(page.locator('[data-jury-browser-trigger]')).to_have_attribute("aria-label", "Browser: Edge")
+        row_geometry = page.locator("[data-jury-provider-row]").evaluate_all("""rows => rows.map(row => {
+            const items = [
+                row.querySelector('.jury-provider-selection-mark'),
+                row.querySelector('.browser-picker-selected-icon-shell'),
+                row.querySelector('.jury-provider-name'),
+                row.querySelector('[data-jury-model-trigger]'),
+            ].filter(item => item && item.getBoundingClientRect().width > 0);
+            const boxes = items.map(item => item.getBoundingClientRect());
+            const rowBox = row.getBoundingClientRect();
+            const trigger = row.querySelector('[data-jury-model-trigger]');
+            const name = row.querySelector('.jury-provider-name');
+            const nameRange = document.createRange();
+            nameRange.selectNodeContents(name);
+            const triggerStyle = getComputedStyle(trigger);
+            return {
+                sameLine: Math.max(...boxes.map(box => box.top)) < Math.min(...boxes.map(box => box.bottom)),
+                insideRow: boxes.every(box => box.left >= rowBox.left && box.right <= rowBox.right),
+                nameFits: nameRange.getBoundingClientRect().width <= name.getBoundingClientRect().width + 0.01,
+                rowHeight: rowBox.height,
+                triggerHeight: trigger.getBoundingClientRect().height,
+                triggerWidth: trigger.getBoundingClientRect().width,
+                triggerRight: trigger.getBoundingClientRect().right,
+                triggerRadius: triggerStyle.borderRadius,
+            };
+        })""")
+        assert all(item["sameLine"] and item["insideRow"] for item in row_geometry)
+        if width == 1280:
+            assert all(item["nameFits"] for item in row_geometry)
+        assert all(item["rowHeight"] == 36 and item["triggerHeight"] == 30 for item in row_geometry)
+        assert all(item["triggerWidth"] < 150 and item["triggerRadius"] == "999px" for item in row_geometry)
+        assert max(item["triggerRight"] for item in row_geometry) - min(
+            item["triggerRight"] for item in row_geometry
+        ) <= 1
+        expect(page.locator("[data-jury-provider-readiness]")).to_have_count(0)
+        expect(page.locator('[data-jury-model-picker="grok"]')).to_have_attribute(
+            "data-shared-select-kind", "jury-model",
+        )
+        selected_mark = page.locator(
+            '[data-jury-provider-row="chatgpt"] .jury-provider-selection-mark'
+        )
+        mark_style = selected_mark.evaluate(
+            "element => ({color: getComputedStyle(element).backgroundColor, "
+            "mask: getComputedStyle(element).maskImage})"
+        )
+        success_color = page.locator("[data-jury-root]").evaluate("""root => {
+            const sample = document.createElement('span');
+            sample.style.backgroundColor = 'var(--theme-success-strong)';
+            root.appendChild(sample);
+            const color = getComputedStyle(sample).backgroundColor;
+            sample.remove();
+            return color;
+        }""")
+        assert mark_style["color"] == success_color
+        assert "checkmark.circle.fill.svg" in mark_style["mask"]
         Path("test-results").mkdir(exist_ok=True)
         if width == 1280:
             page.screenshot(path="test-results/jury-unavailable.png")
-        page.locator('[data-jury-provider][value="gemini"]').uncheck()
+        gemini_model = page.locator('[data-jury-model-trigger="gemini"]')
+        gemini_model.press("ArrowDown")
+        expect(page.locator('[data-jury-model-option][data-provider="gemini"]').first).to_be_focused()
+        page.locator('[data-jury-model-option][data-provider="gemini"]').first.press("End")
+        expect(page.locator('[data-jury-model-option="gemini-3.8-flash"]')).to_be_focused()
+        page.locator('[data-jury-model-option="gemini-3.8-flash"]').press("Enter")
+        expect(gemini_model).to_have_attribute("aria-expanded", "false")
+        expect(gemini_model).to_have_text("3.8 Flash")
+        page.locator('label[for="jury_provider_gemini"]').click()
         expect(page.locator("[data-jury-ready-check]")).to_be_visible()
-        assert checks[-1] == {"browser": "edge", "providers": ["chatgpt", "grok"]}
+        status_geometry = page.locator(".jury-account-status").evaluate("""card => {
+            const literal = card.querySelector('.browser-session-status-literal').getBoundingClientRect();
+            const message = card.querySelector('[data-jury-check-message]');
+            const messageRange = document.createRange();
+            messageRange.selectNodeContents(message);
+            const firstMessageLine = messageRange.getClientRects()[0];
+            return {literalLeft: literal.left, messageTextLeft: firstMessageLine?.left};
+        }""")
+        assert abs(status_geometry["literalLeft"] - status_geometry["messageTextLeft"]) <= 1
+        assert checks[-1] == {
+            "browser": "edge",
+            "providers": ["chatgpt", "grok"],
+            "models": {
+                "chatgpt": "chatgpt-latest-extra-high",
+                "grok": "grok-auto",
+            },
+        }
+        empty_mark = page.locator(
+            '[data-jury-provider-row="gemini"] .jury-provider-selection-mark'
+        ).evaluate("element => getComputedStyle(element).maskImage")
+        assert empty_mark.endswith('/static/images/circle.svg\")')
         page.screenshot(path="test-results/jury-desktop.png" if width == 1280 else "test-results/jury-mobile.png")
         if width <= 900:
             page.locator("#sidebar_toggle").click()
@@ -146,9 +316,9 @@ def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sideba
     page.route("**/api/jury/status**", lambda route: route.fulfill(json=current))
     try:
         if "gemini" not in providers:
-            page.locator('[data-jury-provider][value="gemini"]').uncheck()
+            page.locator('label[for="jury_provider_gemini"]').click()
         else:
-            expect(page.locator("#jury_model_gemini")).to_have_text("3.1 Pro")
+            expect(page.locator('[data-jury-model-label="gemini"]')).to_have_text("3.1 Pro")
         expect(page.locator("[data-jury-ready-check]")).to_be_visible()
         assert checks[-1]["providers"] == list(providers)
         if width <= 900:
@@ -201,6 +371,14 @@ def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sideba
         assert page.evaluate("window.juryInjected || false") is False
         assert len(starts) == 1
         assert starts[0]["providers"] == list(providers)
+        assert starts[0]["models"] == {
+            key: {
+                "chatgpt": "chatgpt-latest-extra-high",
+                "grok": "grok-auto",
+                "gemini": "gemini-3.1-pro",
+            }[key]
+            for key in providers
+        }
         assert starts[0]["max_rounds"] == 3
         assert starts[0]["question"] == current["question"]
         expect(page.locator("[data-jury-submit]")).to_be_disabled()
@@ -232,6 +410,14 @@ def test_jury_browser_keyboard_selection_and_dock_restore(jury_browser, sidebar_
         page.locator('[data-dock-section="agent"]').click()
         expect(page).to_have_url(f"{sidebar_server_url}/jury/{selected_key}")
         expect(page.locator('[aria-label="Agent modes"] [aria-current="page"]')).to_have_text("Jurors")
+        page.get_by_role("radio", name="Agentic", exact=True).click()
+        expect(page).to_have_url(re.compile(rf"{re.escape(sidebar_server_url)}/agent/{selected_key}/[^/?]+"))
+        expect(page.locator('[aria-label="Agent modes"]')).to_have_class(
+            re.compile(r"\bsegmented-control\b")
+        )
+        expect(page.locator('[aria-label="Agent modes"] [aria-current="page"]')).to_have_text("Agentic")
+        page.get_by_role("radio", name="Jurors", exact=True).click()
+        expect(page).to_have_url(f"{sidebar_server_url}/jury/{selected_key}")
     finally:
         context.close()
 

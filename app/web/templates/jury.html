@@ -1,4 +1,4 @@
-<!-- Code version: v1.0.3-codex.1 -->
+<!-- Code version: v1.1.3-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -11,7 +11,8 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.120.1-codex.1') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.8.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='jury.css', v='jury-v1.0.2-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='jury.css', v='jury-v1.1.3-codex.1') }}">
+    <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
 </head>
 <body>
@@ -30,15 +31,37 @@
                     <fieldset class="jury-provider-fieldset">
                         <legend class="field-label">Web services</legend>
                         <div class="jury-provider-list">
-                            {% set jury_model_labels = {'chatgpt': 'Latest · Extra High', 'grok': 'Auto', 'gemini': '3.1 Pro', 'claude': 'Auto'} %}
                             {% for provider_key in ('chatgpt', 'grok', 'gemini', 'claude') %}
                             {% set provider = platform_options | selectattr('key', 'equalto', provider_key) | list | first %}
-                            <label class="jury-provider-option">
-                                <input type="checkbox" name="providers" value="{{ provider_key }}" data-jury-provider aria-describedby="jury_model_{{ provider_key }} jury_ready_{{ provider_key }}"{% if provider_key != 'claude' %} checked{% endif %}>
-                                <span class="browser-picker-selected-icon-shell"><img class="browser-picker-option-icon" src="{{ url_for('static', filename=provider.icon_filename) }}" alt="" aria-hidden="true"></span>
-                                <span class="jury-provider-copy"><span>{{ provider.label }}</span><small id="jury_model_{{ provider_key }}">{{ jury_model_labels[provider_key] }}</small></span>
-                                <span class="jury-provider-readiness" id="jury_ready_{{ provider_key }}" data-jury-provider-readiness="{{ provider_key }}"></span>
-                            </label>
+                            {% set model_options = jury_model_options_by_provider[provider_key] %}
+                            {% set selected_model = model_options[0] %}
+                            <div class="jury-provider-option" data-jury-provider-row="{{ provider_key }}">
+                                <label class="jury-provider-identity" for="jury_provider_{{ provider_key }}">
+                                    <input id="jury_provider_{{ provider_key }}" class="jury-provider-input" type="checkbox" name="providers" value="{{ provider_key }}" data-jury-provider aria-describedby="jury_model_trigger_{{ provider_key }}"{% if provider_key != 'claude' %} checked{% endif %}>
+                                    <span class="jury-provider-selection-mark" aria-hidden="true"></span>
+                                    <span class="browser-picker-selected-icon-shell"><img class="browser-picker-option-icon" src="{{ url_for('static', filename=provider.icon_filename) }}" alt="" aria-hidden="true"></span>
+                                    <span class="jury-provider-name">{{ provider.label }}</span>
+                                </label>
+                                <div class="jury-model-select-shell trade-strategy-param-select-shell backtest-shared-select-field" data-jury-model-picker="{{ provider_key }}" data-shared-select-field data-shared-select-kind="jury-model">
+                                    <select class="trade-strategy-native-select backtest-shared-select-native" name="model_{{ provider_key }}" data-jury-model-input="{{ provider_key }}" hidden aria-hidden="true" tabindex="-1">
+                                        {% for option in model_options %}<option value="{{ option.selection_key }}"{% if option.selection_key == selected_model.selection_key %} selected{% endif %}>{{ option.display_label }}</option>{% endfor %}
+                                    </select>
+                                    <div class="trade-strategy-combobox">
+                                        <button type="button" class="trade-strategy-select form-select trade-strategy-trigger backtest-shared-select-trigger jury-model-trigger" id="jury_model_trigger_{{ provider_key }}" data-jury-model-trigger="{{ provider_key }}" data-shared-select-trigger aria-haspopup="listbox" aria-expanded="false" aria-controls="jury_model_options_{{ provider_key }}" aria-label="{{ provider.label }} model tier: {{ selected_model.display_label }}" title="Choose {{ provider.label }} model tier">
+                                            <span class="trade-strategy-trigger-label" data-jury-model-label="{{ provider_key }}" data-shared-select-trigger-label data-fallback-label="{{ selected_model.display_label }}">{{ selected_model.display_label }}</span>
+                                            <span class="browser-picker-trigger-chevron" aria-hidden="true"></span>
+                                        </button>
+                                    </div>
+                                    <div id="jury_model_options_{{ provider_key }}" class="trade-strategy-dropdown backtest-shared-select-dropdown strategy-param-dropdown jury-model-dropdown" data-jury-model-menu="{{ provider_key }}" data-shared-select-dropdown role="listbox" aria-label="{{ provider.label }} model tier" hidden>
+                                        {% for option in model_options %}
+                                        <button type="button" class="trade-strategy-dropdown-option{% if option.selection_key == selected_model.selection_key %} is-selected is-active{% endif %}" data-jury-model-option="{{ option.selection_key }}" data-provider="{{ provider_key }}" data-label="{{ option.display_label }}" role="option" aria-selected="{{ 'true' if option.selection_key == selected_model.selection_key else 'false' }}" tabindex="-1">
+                                            <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+                                            <span class="trade-strategy-dropdown-text">{{ option.display_label }}</span>
+                                        </button>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            </div>
                             {% endfor %}
                         </div>
                     </fieldset>
@@ -72,7 +95,7 @@
                                     <span class="suggestion-loading-spinner browser-session-status-spinner" data-jury-check-spinner aria-hidden="true" hidden></span>
                                     <span class="browser-session-status-literal"><span class="browser-session-status-field-label">Accounts:</span><span class="browser-session-status-field-value" data-jury-check-label>Not checked</span></span>
                                 </div>
-                                <p class="browser-session-status-message" data-jury-check-message></p>
+                                <p class="browser-session-status-message" data-role="browser-session-message" data-jury-check-message></p>
                                 <button type="button" class="secondary-button" data-jury-check>Check accounts</button>
                                 </div>
                             </div>
@@ -144,6 +167,6 @@
 <script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.0') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
-<script src="{{ url_for('static', filename='jury.js', v='jury-v1.0.1-codex.1') }}"></script>
+<script src="{{ url_for('static', filename='jury.js', v='jury-v1.1.2-codex.1') }}"></script>
 </body>
 </html>
