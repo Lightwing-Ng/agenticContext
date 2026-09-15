@@ -1,6 +1,6 @@
 """Jury deliberation boundaries with deterministic, browser-free jurors.
 
-Code version: v1.3.0-codex.1
+Code version: v1.5.0-codex.1
 """
 
 from __future__ import annotations
@@ -225,12 +225,14 @@ def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
         lambda: ComputerUseSettings(browser="edge"),
         CrawlConfig,
         tmp_path / "safari-jury",
-        login_check=lambda *_args, **_kwargs: {"logged_in": True},
+        login_check=lambda *_args, **_kwargs: pytest.fail(
+            "Safari start must admit the reusable juror sessions directly."
+        ),
     )
     try:
         session_id = service.start(
             "safari",
-            ["chatgpt", "grok"],
+            ["chatgpt", "grok", "gemini"],
             "Check this factual claim.",
         )["session_id"]
         wait_until(lambda: not service.status(session_id)["running"])
@@ -240,14 +242,21 @@ def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
 
     assert final["phase"] == "consensus"
     assert events.count("open:safari-context") == 1
-    assert events.count("new:safari-page") == 1
+    assert events.count("new:safari-page") == 2
     assert [event for event in events if event.startswith("ask:")] == [
         "ask:chatgpt:1",
         "ask:grok:1",
+        "ask:gemini:1",
         "ask:chatgpt:2",
         "ask:grok:2",
+        "ask:gemini:2",
     ]
-    assert events[-3:] == ["close:grok", "close:chatgpt", "close:safari-context"]
+    assert events[-4:] == [
+        "close:gemini",
+        "close:grok",
+        "close:chatgpt",
+        "close:safari-context",
+    ]
     assert len(set(owner_threads)) == 1
 
     events.clear()
@@ -257,7 +266,9 @@ def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
         lambda: ComputerUseSettings(browser="edge"),
         CrawlConfig,
         tmp_path / "failed-safari-jury",
-        login_check=lambda *_args, **_kwargs: {"logged_in": True},
+        login_check=lambda *_args, **_kwargs: pytest.fail(
+            "Safari start must not open disposable preflight sessions."
+        ),
     )
     try:
         failed_session_id = failed_service.start(

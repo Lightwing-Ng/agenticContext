@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.74.0-codex.1`
+Documentation version: `v3.75.0-codex.1`
 
 ## Purpose
 
@@ -8,10 +8,10 @@ The Agent workspace is a browser-mediated fallback for times when the local codi
 pool is constrained. It uses an already signed-in Web session for ChatGPT, Gemini, Grok, or Claude.
 Edge or Chrome supports all four providers through the background Chromium controller, while macOS
 Safari supports ChatGPT and Grok Agent execution through an owned Apple Events window. Full Gemini
-and Claude Agent execution continues to require Edge or Chrome. macOS Safari Jury supports ChatGPT
-and Grok under one shared Apple Events context; its Gemini and Claude jurors fail closed before any
-prompt. Edge remains the default because its Chromium controller does not depend on desktop clicks;
-Chrome uses the same isolated controller.
+and Claude Agent execution continues to require Edge or Chrome. macOS Safari Jury supports ChatGPT,
+Grok, and Gemini under one shared Apple Events window with one tab per juror; Claude remains
+optional. Edge remains the default because its Chromium controller does not depend on desktop
+clicks; Chrome uses the same isolated controller.
 
 Safari Gemini and Claude canonical routes remain available for source-only Recent sessions and
 Project browsing. Their status payload explicitly disables Agent execution, so Ask remains
@@ -202,7 +202,7 @@ within 0.01px of its label. The user-owned service was not restarted.
    model control and visibly read back the configured model. ChatGPT resolves `Best available`
    from the rendered catalog, then proves that exact model and a trusted live thinking-effort slider; the controller reads its live ARIA
    range and rendered labels instead of assuming a fixed effort vocabulary. Gemini must prove
-   `Gemini 3.1 Pro`, Grok must prove `Build`, and Claude must prove
+   `Gemini 3.1 Pro`, Grok must prove the configured `Build` or `Auto` tier, and Claude must prove
    `Auto`. A missing,
    changed, localized, or ambiguous selector fails closed without attaching context or sending a
    prompt. Only exact model labels and explicit model or mode selector wrappers are accepted;
@@ -280,11 +280,13 @@ within 0.01px of its label. The user-owned service was not restarted.
    were a model option. Grok uses only the exact visible `#model-select-trigger` whose accessible
    name is `Model select` and whose popup type is `menu`. The closed trigger may omit
    `aria-controls`; after a trusted Playwright click, the controller requires that attribute to
-   identify exactly one visible controlled surface. The selected candidate must be one exact `Build` or `Build Beta`
-   `menuitemradio` owned directly by that menu. The controller then reopens the menu and requires
+   identify exactly one visible controlled surface. The selected candidate must be the exact
+   configured `Build` or `Auto` `menuitemradio` owned directly by that menu. The controller then
+   reopens the menu and requires
    both `aria-checked="true"` and `data-state="checked"`, closes it, and requires the trigger to
-   read back `Build Beta`. Nested menus, upgrade dialogs, duplicate controls or options, disabled
-   choices, and unknown overlays fail closed. When Radix intercepts the closing trigger click after
+   read back the configured tier (`Build Beta` for `Build`, or `Auto`). Nested menus, upgrade
+   dialogs, duplicate controls or options, disabled choices, and unknown overlays fail closed.
+   When Radix intercepts the closing trigger click after
    unmounting the menu, the controller may use one trusted `Escape` keypress and still requires a
    closed-surface readback. Only the exact `Meet Grok Bot` and `Introducing Build
    Mode` onboarding dialogs may be dismissed, through one visible enabled exact `Dismiss` button;

@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.81.0-codex.1
+# Code version: v1.81.1-codex.1
 
 from __future__ import annotations
 
@@ -2053,7 +2053,7 @@ def create_app(
     def jury_sessions():
         require_local_agent_request()
         browser = request.args.get("browser", "edge")
-        if browser not in available_agent_browser_keys() & {"edge", "chrome"}:
+        if browser not in available_agent_browser_keys():
             return jsonify({"error": "Choose a supported browser."}), 400
         return jsonify(app.extensions["jury_service"].sessions(browser))
 

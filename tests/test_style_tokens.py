@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.67.0-codex.1
+Code version: v1.68.1-codex.1
 """
 
 import hashlib
@@ -2221,7 +2221,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.121.0-codex.1 */",
+        "/* Code version: v2.122.0-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -3070,7 +3070,7 @@ def test_agent_answer_markdown_uses_provider_aligned_rich_text_geometry() -> Non
         "overflow-x: auto;",
         "overflow-y: hidden;",
         "border: 1px solid var(--theme-glass-border);",
-        "border-radius: 16px;",
+        "border-radius: var(--radius-panel);",
         "background: var(--glass-surface-background-strong);",
     ):
         assert declaration in table_shell_rule

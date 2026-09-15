@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.35.0-codex.1`
+Documentation version: `v1.36.0-codex.1`
 
 ## Runtime flow
 
@@ -111,10 +111,10 @@ transport boundary, while durable cache and state rules stay in core modules.
 
 The Agent domain facade also exports `JuryService`. `jury.py` owns evidence-convergent, durable,
 multi-provider deliberations, while `jury_browser.py` owns one authenticated browser conversation
-per juror per question. Edge and Chrome admit all four providers. macOS Safari admits ChatGPT and
-Grok only, under one shared Safari context with one task-owned window per juror and same-thread,
-sequential submission against each round's frozen evidence packet. Safari Gemini and Claude fail
-closed before prompt submission, and no Safari path falls back to Edge. The Jury uses no workspace
+per juror per question. Edge and Chrome admit all four providers. macOS Safari admits ChatGPT, Grok, and Gemini under one
+shared Safari context with one task-owned window and one tab per juror, plus same-thread sequential
+submission against each round's frozen evidence packet. Claude remains optional. No Safari path
+falls back to Edge. The Jury uses no workspace
 controller or Terminal checks. Every review
 pass consumes a frozen prior-pass packet; consensus requires explicit agreement on one exact
 candidate, not merely matching labels. A deterministic parsed-evidence signature includes each
@@ -552,10 +552,11 @@ isolated-context behavior.
 Agent bootstrap checks use quiet, task-independent browser contexts. Edge and Chrome checks use
 Chromium; ChatGPT source checks remain non-headless because its Cloudflare challenge rejects
 headless clones with HTTP 403. Safari catalog checks for all four providers use the serialized
-macOS Apple Events context. Full Safari execution remains limited to ChatGPT and Grok; Gemini and
-Claude are catalog-only and the backend execution gate rejects them before task admission. Their
+macOS Apple Events context. Full Safari Agent execution remains limited to ChatGPT and Grok; Gemini
+and Claude are catalog-only and the backend execution gate rejects them before task admission. Their
 canonical routes and persisted preferences remain valid, Ask stays disabled, and neither selection
-is silently rewritten to Edge.
+is silently rewritten to Edge. Safari Jury is separate: ChatGPT, Grok, and Gemini share one owned
+window with one tab per juror.
 
 Safari credentialed page requests reject cross-origin targets and redirects before reading a
 response. WebKit service-worker responses may omit `Response.url`; that empty field is accepted only

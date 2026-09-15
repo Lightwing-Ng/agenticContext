@@ -1,4 +1,4 @@
-/* Code version: v2.121.0-codex.1 */
+/* Code version: v2.122.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -8297,7 +8297,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     overflow-y: hidden;
     overscroll-behavior-inline: contain;
     border: 1px solid var(--theme-glass-border);
-    border-radius: 16px;
+    border-radius: var(--radius-panel);
     background: var(--glass-surface-background-strong);
     -webkit-overflow-scrolling: touch;
 }

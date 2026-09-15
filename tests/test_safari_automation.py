@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.5.0-codex.1
+# Code version: v2.7.0-codex.1
 
 from __future__ import annotations
 
@@ -388,12 +388,16 @@ def test_safari_native_activation_is_origin_bound_trusted_and_non_retried() -> N
     assert "expected.port" in script
     assert "current.port" in script
     assert "expected.href !== current.href" in script
-    assert script.count("document.hasFocus()") == 4
+    assert script.count("document.hasFocus()") == 5
     assert script.count("document.elementFromPoint") == 2
     assert "currentFrontmostProcessName is not \"Safari\"" in script
     assert "count of sheets of front window" in script
-    assert 'count of windows whose subrole is "AXDialog"' in script
-    assert "set targetTab to current tab of targetWindow" in script
+    assert "repeat with safariWindow in windows" in script
+    assert '(subrole of safariWindow as text) is "AXDialog"' in script
+    assert 'windows whose subrole is "AXDialog"' not in script
+    assert "set current tab of targetWindow to targetTab" in script
+    assert "set targetTab to current tab of targetWindow" not in script
+    assert "nativeFocusReady" in script
     assert "(id of front window) is not (id of targetWindow)" in script
     assert "(current tab of targetWindow) is not targetTab" in script
     assert "set shouldRestoreNativeFocus to (current tab of targetWindow) is targetTab" in script
@@ -404,9 +408,112 @@ def test_safari_native_activation_is_origin_bound_trusted_and_non_retried() -> N
     )
     native_return = script.index("key code 36")
     assert final_verification < final_window_check < native_return
+    assert script.index("nativeFocusReady") < native_return
     assert script.index("count of sheets of front window") < native_return
-    assert script.index('count of windows whose subrole is "AXDialog"') < native_return
-    assert run.call_args.kwargs == {"retry_transient": False}
+    assert script.index("repeat with safariWindow in windows") < native_return
+    assert run.call_args.kwargs == {"retry_transient": False, "reveal_tab": True}
+
+
+def test_safari_locator_press_uses_one_bounded_trusted_navigation_key() -> None:
+    context = SafariContext("https://chatgpt.com/")
+    page = SafariPage(context, window_id=123)
+
+    with patch.object(
+        page,
+        "evaluate",
+        return_value={"actionable": True, "currentUrl": "https://chatgpt.com/"},
+    ), patch.object(page, "_activate_marked_element") as activate:
+        page.locator('[role="slider"]').press("ArrowRight", timeout=1_000)
+
+    marker, target_url = activate.call_args.args
+    assert marker.startswith("safari-native-")
+    assert target_url == "https://chatgpt.com/"
+    assert activate.call_args.kwargs == {"key": "ArrowRight"}
+
+
+def test_safari_locator_escape_remains_bound_to_the_expected_url() -> None:
+    context = SafariContext("https://grok.com/")
+    page = SafariPage(context, window_id=123)
+
+    with patch.object(
+        page,
+        "evaluate",
+        return_value={"actionable": True, "currentUrl": "https://grok.com/"},
+    ), patch.object(page, "_activate_marked_element") as activate:
+        page.locator('[aria-haspopup="menu"]').press(
+            "Escape",
+            timeout=1_000,
+            expected_url="https://grok.com/",
+        )
+
+    _marker, target_url = activate.call_args.args
+    assert target_url == "https://grok.com/"
+    assert activate.call_args.kwargs == {"key": "Escape"}
+
+
+def test_safari_locator_evaluate_binds_one_selected_element() -> None:
+    context = SafariContext("https://chatgpt.com/")
+    page = SafariPage(context, window_id=123)
+
+    with patch.object(page, "evaluate", return_value=["Instant", "Medium"]) as evaluate:
+        result = page.locator('[role="slider"]').nth(2).evaluate(
+            "(element, suffix) => [element.textContent, suffix]",
+            "Medium",
+        )
+
+    assert result == ["Instant", "Medium"]
+    source = evaluate.call_args.args[0]
+    assert "const callback = ((element, suffix) => [element.textContent, suffix]);" in source
+    assert "eval" not in source
+    payload = evaluate.call_args.args[1]
+    assert payload == {
+        "selector": '[role="slider"]',
+        "index": 2,
+        "argument": "Medium",
+    }
+
+
+def test_safari_native_activation_binds_the_requested_navigation_key() -> None:
+    page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123)
+
+    with patch.object(page, "_run_in_window", return_value="trusted") as run:
+        page._activate_marked_element(
+            "safari-native-slider",
+            "https://chatgpt.com/",
+            key="ArrowRight",
+        )
+
+    script = run.call_args.args[0]
+    assert "expectedKey" in script
+    assert "ArrowRight" in script
+    assert "event.key === request.expectedKey" in script
+    assert "key code 124" in script
+    assert "key code 36" not in script
+
+
+def test_safari_native_input_transaction_restores_focus_after_the_sequence() -> None:
+    page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123)
+
+    with patch.object(
+        page,
+        "_run_in_window",
+        side_effect=["Codex\n456\ntrue\nfalse", "trusted", ""],
+    ) as run:
+        with page.native_input_transaction():
+            page._activate_marked_element(
+                "safari-native-slider",
+                "https://chatgpt.com/",
+                key="ArrowRight",
+            )
+
+    activation_script = run.call_args_list[1].args[0]
+    restore_script = run.call_args_list[2].args[0]
+    assert "set shouldRestoreNativeFocus" not in activation_script
+    assert 'set previousFrontmostProcessName to "Codex"' in restore_script
+    assert "set previousWindowId to 456" in restore_script
+    assert "set previousWindowWasVisible to true" in restore_script
+    assert "set previousWindowWasMiniaturized to false" in restore_script
+    assert page._native_input_transaction_depth == 0
 
 
 @pytest.mark.parametrize(
@@ -694,6 +801,7 @@ def test_safari_context_creates_a_standard_visible_background_window() -> None:
 
     script = run.call_args.args[0]
     assert page.window_id == 123
+    assert page.tab_index == 1
     goto.assert_called_once_with(
         "https://grok.com/files",
         wait_until="domcontentloaded",
@@ -727,7 +835,7 @@ def test_safari_page_content_clips_source_after_reading_the_owned_tab() -> None:
     with patch.object(page, "_run_in_window", return_value="0123456789") as run:
         assert page.content(limit=4) == "0123"
 
-    assert run.call_args.args[0] == "return source of current tab of targetWindow"
+    assert run.call_args.args[0] == "return source of targetTab"
 
 
 def test_safari_page_navigation_retries_a_start_page_and_verifies_the_target_url() -> None:
@@ -773,7 +881,7 @@ def test_safari_page_reads_navigation_state_without_json_wrapping() -> None:
         "href": "https://chatgpt.com/project",
         "readyState": "interactive",
     }
-    assert "URL of current tab" in run.call_args.args[0]
+    assert "URL of targetTab" in run.call_args.args[0]
     assert "document.readyState" in run.call_args.args[0]
 
 
@@ -793,7 +901,8 @@ def test_safari_page_close_closes_the_owned_window() -> None:
     assert "click button 1 of front window" in script
     assert "if not (exists (first window whose id is 123))" in script
     assert 'return "closed"' in script
-    assert "set URL of current tab of targetWindow" not in script
+    assert "set URL of targetTab" not in script
+    assert "close targetTab" not in script
     assert page._closed is True
     assert context.pages == []
 
@@ -877,3 +986,109 @@ def test_safari_context_can_fail_fast_when_another_task_owns_the_lease(
             first_context._release_context_lock()
 
     assert probe_context._context_lock_handle is None
+
+
+def test_safari_context_adds_additional_pages_as_tabs_in_the_owned_window() -> None:
+    context = SafariContext("https://chatgpt.com/")
+    first = SafariPage(context, window_id=123, tab_index=1)
+    context.pages.append(first)
+
+    with patch(
+        "app.core.safari_automation.run_applescript",
+        return_value="2",
+    ) as run, patch.object(SafariPage, "goto") as goto:
+        page = context._create_page("about:blank")
+
+    script = run.call_args.args[0]
+    assert page.window_id == 123
+    assert page.tab_index == 2
+    assert "make new tab at end of tabs of targetWindow" in script
+    assert "make new document" not in script
+    assert "frontmost of process previousFrontmostProcessName" in script
+    assert "set current tab of targetWindow to newTab" in script
+    goto.assert_called_once_with(
+        "about:blank",
+        wait_until="domcontentloaded",
+        timeout=60_000,
+    )
+
+
+def test_safari_page_closes_a_sibling_tab_without_closing_the_window() -> None:
+    context = SafariContext("https://chatgpt.com/")
+    first = SafariPage(context, window_id=123, tab_index=1)
+    second = SafariPage(context, window_id=123, tab_index=2)
+    third = SafariPage(context, window_id=123, tab_index=3)
+    context.pages.extend([first, second, third])
+
+    with patch.object(second, "_run_in_window", return_value="closed") as run:
+        second.close()
+
+    script = run.call_args.args[0]
+    assert "close targetTab" in script
+    assert "click button 1 of front window" not in script
+    assert second._closed is True
+    assert second not in context.pages
+    assert first.tab_index == 1
+    assert third.tab_index == 2
+    assert [page.tab_index for page in context.pages] == [1, 2]
+
+
+def test_safari_page_evaluate_binds_the_owned_tab() -> None:
+    page = SafariPage(
+        SafariContext("https://chatgpt.com/"),
+        window_id=123,
+        tab_index=2,
+    )
+
+    with patch(
+        "app.core.safari_automation.run_applescript",
+        return_value='{"ok":true,"value":1}',
+    ) as run:
+        assert page.evaluate("() => 1") == 1
+
+    script = run.call_args.args[0]
+    assert "set targetTab to tab 2 of targetWindow" in script
+    assert "set current tab of targetWindow to targetTab" in script
+    assert "delay 0.05" in script
+    assert "in current tab of targetWindow" in script.split("do JavaScript", 1)[1]
+
+
+def test_safari_page_evaluate_retries_an_unreadable_background_tab_result() -> None:
+    page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123, tab_index=1)
+    encoded = '{"ok":true,"value":"ready"}'
+
+    with patch.object(
+        page,
+        "_run_in_window",
+        side_effect=["missing value", "", encoded],
+    ) as run, patch("app.core.safari_automation.time.sleep"):
+        assert page.evaluate("() => 'ready'") == "ready"
+
+    assert run.call_count == 3
+    assert "nativeFocusReady" in run.call_args_list[1].args[0]
+    assert "in current tab of targetWindow" in run.call_args_list[2].args[0]
+
+
+def test_safari_page_evaluate_stages_a_large_argument_in_chunks() -> None:
+    page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123, tab_index=1)
+    scripts: list[str] = []
+
+    def run_window(statement: str, **_kwargs: object) -> str:
+        scripts.append(statement)
+        if "JSON.parse(window.__cachelikesSafariEvalArg" in statement:
+            return '{"ok":true,"value":"ok"}'
+        return '{"ok":true,"value":null}'
+
+    with patch.object(page, "_run_in_window", side_effect=run_window):
+        assert page.evaluate("({value}) => value.slice(0, 2)", {"value": "x" * 2500}) == "ok"
+
+    assert any("window.__cachelikesSafariEvalArg[token] = ''" in script for script in scripts)
+    assert sum("+= chunk" in script for script in scripts) >= 2
+    assert any("JSON.parse(window.__cachelikesSafariEvalArg" in script for script in scripts)
+    javascript_literals = [
+        script.split("do JavaScript ", 1)[1].split(" in current tab", 1)[0]
+        for script in scripts
+        if "do JavaScript " in script
+    ]
+    assert javascript_literals
+    assert all("\n" not in literal for literal in javascript_literals)

@@ -1,5 +1,6 @@
-"""Session switching, capacity, and selected controls. Code version: v1.10.2-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.10.3-codex.1."""
 
+import re
 from copy import deepcopy
 from threading import Thread
 from urllib.parse import parse_qs, urlsplit
@@ -74,11 +75,20 @@ def test_grok_composer_snapshot_uses_one_rendered_provider_scoped_surface(
         context.close()
 
 
+@pytest.mark.parametrize(
+    "viewport",
+    (
+        {"width": 1_007, "height": 1_497},
+        {"width": 390, "height": 844},
+    ),
+    ids=("annotated-desktop", "narrow"),
+)
 def test_safari_selection_persists_for_source_only_providers_without_edge_fallback(
     disposable_browser,
     agent_selection_server_url,
+    viewport,
 ):
-    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
+    context = disposable_browser.new_context(viewport=viewport)
     page = context.new_page()
     browser_status_requests = []
     page_errors = []
@@ -171,8 +181,26 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             json={"platform": "grok", "recent_sessions": [], "projects": []}
         ),
     )
+
+    def ensure_sidebar_open():
+        if viewport["width"] > 900:
+            return
+        shell = page.locator(".app-shell")
+        if "is-sidebar-open" not in (shell.get_attribute("class") or "").split():
+            page.get_by_role("button", name="Toggle sidebar", exact=True).click()
+            expect(shell).to_have_class(re.compile(r"\bis-sidebar-open\b"))
+
+    def ensure_sidebar_closed():
+        if viewport["width"] > 900:
+            return
+        shell = page.locator(".app-shell")
+        if "is-sidebar-open" in (shell.get_attribute("class") or "").split():
+            page.get_by_role("button", name="Toggle sidebar", exact=True).click()
+            expect(shell).to_have_class(re.compile(r"\bis-sidebar-collapsed\b"))
+
     try:
         page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        ensure_sidebar_open()
         page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
         page.get_by_role("option", name="Grok", exact=True).click()
         page.get_by_role("button", name="Browser: Edge", exact=True).click()
@@ -215,11 +243,34 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             "Grok Safari recent session"
         )
 
+        ensure_sidebar_closed()
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+            and response.request.post_data_json.get("platform") == "grok"
+            and response.request.post_data_json.get("browser") == "safari"
+            and response.request.post_data_json.get("model") == "grok-auto"
+        ) as model_preference_response:
+            page.get_by_role("button", name="Model: Build", exact=True).click()
+            page.get_by_role("option", name="Grok · Auto", exact=True).click()
+
+        model_payload = model_preference_response.value.request.post_data_json
+        assert model_payload["model"] == "grok-auto"
+        assert model_payload["preference_client_id"] == saved_payload[
+            "preference_client_id"
+        ]
+        assert model_payload["preference_revision"] > saved_payload[
+            "preference_revision"
+        ]
+        expect(page.get_by_role("button", name="Model: Auto", exact=True)).to_be_visible()
+
         page.reload(wait_until="domcontentloaded")
+        ensure_sidebar_open()
         expect(page.get_by_role("button", name="Web service: Grok", exact=True)).to_be_visible()
         expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
-        expect(page.get_by_role("button", name="Model: Build", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="Model: Auto", exact=True)).to_be_visible()
         page.goto(f"{agent_selection_server_url}/agent", wait_until="domcontentloaded")
+        ensure_sidebar_open()
         expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/grok")
 
         page.wait_for_function(

@@ -1,6 +1,26 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.23.0-codex.1`
+Documentation version: `v1.24.0-codex.1`
+
+## Safari Jury single-window tabs on 15 Sep 2026
+
+- Safari Jury now runs ChatGPT, Grok, and Gemini in one task-owned Safari window with one tab per
+  selected juror. Additional SOTA selections add tabs, not windows. After each window-affecting
+  step the controller restores the previous frontmost application so Stage Manager can keep that
+  window off the user's current stage.
+- Gemini model proof uses the same trusted native-input lease as ChatGPT and Grok. A Stage Manager
+  animation can delay document focus; native activation now waits for that focus instead of failing
+  closed on the first unfocused attempt. Claude remains optional and is not part of the default
+  three-juror set.
+
+## Safari Grok Agent model-tier selection on 15 Sep 2026
+
+- The Agent model catalog exposes both current Grok tiers, `Build` and `Auto`, on Safari as well as
+  Edge and Chrome. `Build` remains the strongest default, while an explicit `Auto` choice persists
+  through the versioned Agent preference contract and page reload.
+- Grok execution continues to fail closed unless the remote selector reads back the exact configured
+  tier. Restoring the selectable `Auto` tier does not weaken the trusted-trigger, controlled-menu,
+  checked-state, closed-trigger, Stop, or pre-transfer gates.
 
 ## Windows host operating constraints
 
@@ -27,9 +47,9 @@ Documentation version: `v1.23.0-codex.1`
   cloning an Edge profile, so choosing Safari does not enter Edge's credential-storage path.
 - Safari Gemini and Claude remain valid source-only Agent routes: they may check the account and
   browse Recent sessions and Projects, and the selection persists without an Edge fallback. Full
-  Agent execution stays disabled; choose Edge or Chrome to start a Gemini or Claude task. The same
-  boundary applies to Jury: macOS Safari supports ChatGPT and Grok jurors, while selected Gemini or
-  Claude jurors fail readiness explicitly before any prompt.
+  Agent execution stays disabled; choose Edge or Chrome to start a Gemini or Claude task. Safari
+  Jury is a separate runtime: ChatGPT, Grok, and Gemini jurors can submit prompts from one owned
+  Safari window, while Claude remains optional.
 - Safari automation still serializes owned windows across local processes and closes only the
   task-owned window at completion. While a Safari Agent owns that serialized context, account,
   source, Project-session, and history probes serve cached state or fail busy instead of waiting on
@@ -95,10 +115,12 @@ Documentation version: `v1.23.0-codex.1`
   all three strict-format retries with escalating, non-identical instructions, never executes the
   malformed response, and offers only a read-only `list` action on the final correction when the
   model cannot choose its next step. Strict parsing and the bounded terminal failure remain intact.
-- Gemini now fails closed on an exact `Gemini 3.1 Pro` selection, and Grok fails closed on an
-  exact `Build` selection with a `Build Beta` trigger readback. The legacy persisted `grok-auto`
-  and `grok-heavy` keys migrate to `grok-build`; neither `Auto` nor the unavailable paid `Heavy`
-  mode is accepted as proof that Grok is using the agentic Build mode available to this account.
+- At the time of this rollout, Gemini failed closed on an exact `Gemini 3.1 Pro` selection, and Grok
+  failed closed on an exact `Build` selection with a `Build Beta` trigger readback. The legacy
+  persisted `grok-auto` and `grok-heavy` keys migrated to `grok-build`; neither `Auto` nor the
+  unavailable paid `Heavy` mode was accepted as proof that Grok was using the agentic Build mode
+  available to that account.
+  The current two-tier Agent contract is documented in the 15 Sep 2026 entry above.
 - Grok model verification uses trusted clicks on the exact current Radix trigger and its controlled
   menu. The exact `Build` radio must prove selection through both `aria-checked="true"` and
   `data-state="checked"` after a reopen, and the closed trigger must read `Build Beta`. Nested menus,

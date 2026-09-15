@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.3.0-codex.1
+Code version: v1.3.1-codex.1
 """
 
 from __future__ import annotations
@@ -89,6 +89,14 @@ def test_jury_status_and_sessions_are_read_only_and_not_cached(jury_app):
         assert item.headers["X-Content-Type-Options"] == "nosniff"
     service.check.assert_not_called()
     service.start.assert_not_called()
+
+
+def test_safari_jury_sessions_catalog_uses_the_selected_browser(jury_app):
+    application, service = jury_app
+    response = application.test_client().get("/api/jury/sessions?browser=safari")
+
+    assert response.status_code == 200
+    service.sessions.assert_called_once_with("safari")
 
 
 @pytest.mark.parametrize("route", ["check", "start"])

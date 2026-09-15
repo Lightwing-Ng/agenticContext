@@ -1,6 +1,6 @@
 """Verify isolated browser ownership and single-session jury exchanges.
 
-Code version: v1.2.0-codex.1
+Code version: v1.5.0-codex.1
 """
 
 from contextlib import contextmanager
@@ -235,13 +235,29 @@ def test_chatgpt_effort_is_fail_closed_before_any_submission(transport, monkeypa
     assert transport.events[-2:] == ["close:context", "close:playwright"]
 
 
-def test_transient_effort_control_rebinds_only_the_same_page_before_submission(transport, monkeypatch):
+@pytest.mark.parametrize(
+    "transient_reason",
+    [
+        "requested-effort-control-not-found",
+        "effort-slider-unreadable",
+        "effort-label-unreadable",
+        "model-control-remounted",
+        "model-state-transition-unverified",
+        "model-selection-native-input-blocked",
+        "effort-selection-native-input-blocked",
+    ],
+)
+def test_transient_effort_control_rebinds_only_the_same_page_before_submission(
+    transport,
+    monkeypatch,
+    transient_reason,
+):
     calls = []
 
     def select(page, _kind, _platform, _model, observation, **_kwargs):
         calls.append(page)
         if len(calls) == 1:
-            observation.update(reason="requested-effort-control-not-found", observed="Latest")
+            observation.update(reason=transient_reason, observed="Latest")
             return False
         observation.update(thinking_effort="Extra High", effort_catalog_complete=True, observed="Latest")
         return True
@@ -249,7 +265,7 @@ def test_transient_effort_control_rebinds_only_the_same_page_before_submission(t
     monkeypatch.setattr(jury.web_agent, "_select_web_model", select)
     with jury.JuryBrowserSession(ComputerUseSettings(), "chatgpt") as session:
         assert len(session.model_observation_history) == 2
-        assert session.model_observation_history[0]["reason"] == "requested-effort-control-not-found"
+        assert session.model_observation_history[0]["reason"] == transient_reason
         assert transport.submissions == []
         session.ask("Claim")
     assert len(calls) == 2
@@ -259,7 +275,7 @@ def test_transient_effort_control_rebinds_only_the_same_page_before_submission(t
 
 
 @pytest.mark.parametrize("reason,attempts", [
-    ("requested-effort-control-not-found", 2),
+    ("requested-effort-control-not-found", 6),
     ("requested-effort-unavailable", 1),
     ("effort-selection-label-mismatch", 1),
 ])
@@ -480,21 +496,8 @@ def test_unsupported_browser_is_rejected_without_launch(transport):
     assert transport.events == []
 
 
-@pytest.mark.parametrize("platform", ["gemini", "claude"])
-def test_safari_source_only_providers_are_rejected_before_browser_activity(
-    transport,
-    platform,
-    monkeypatch,
-):
-    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
-    with pytest.raises(ValueError, match="Safari Jury supports ChatGPT and Grok"):
-        jury.JuryBrowserSession(ComputerUseSettings(browser="safari"), platform)
-    assert transport.events == []
-    assert transport.submissions == []
-
-
-@pytest.mark.parametrize("platform", ["chatgpt", "grok"])
-def test_safari_juror_uses_the_injected_owned_page_without_chromium_fallback(
+@pytest.mark.parametrize("platform", ["chatgpt", "grok", "gemini", "claude"])
+def test_safari_jurors_use_the_injected_owned_page_without_chromium_fallback(
     transport,
     platform,
     monkeypatch,
@@ -511,6 +514,75 @@ def test_safari_juror_uses_the_injected_owned_page_without_chromium_fallback(
     assert not any(event.startswith("open:") for event in transport.events)
     assert not any(event == "new_page" for event in transport.events)
     assert transport.browser_kinds[-2:] == [("select", "safari"), ("submit", "safari")]
+
+
+def test_safari_ask_holds_one_native_focus_lease_for_the_turn(transport, monkeypatch):
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    lease = []
+
+    @contextmanager
+    def transaction():
+        lease.append("focus")
+        try:
+            yield
+        finally:
+            lease.append("restore")
+
+    transport.page.native_input_transaction = transaction
+    transport.page.wake_for_javascript = lambda: lease.append("wake")
+    with jury.JuryBrowserSession(
+        ComputerUseSettings(browser="safari"),
+        "chatgpt",
+        browser_page=transport.page,
+    ) as session:
+        session.ask("Fact-check the claim.")
+
+    assert lease == ["focus", "wake", "restore"]
+
+
+def test_claude_auto_accepts_the_verified_current_provider_model(transport, monkeypatch):
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    with jury.JuryBrowserSession(
+        ComputerUseSettings(browser="safari"),
+        "claude",
+        browser_page=transport.page,
+    ):
+        pass
+
+    selected = transport.selected_models[0]
+    assert selected[0:2] == ("claude", "claude-auto")
+    assert selected[2]["model_option"]["accept_current"] is True
+
+
+def test_claude_auto_records_the_current_provider_model_without_reselecting():
+    calls = []
+    observation = {}
+
+    def evaluate(_script, arguments):
+        calls.append(arguments)
+        return {
+            "ok": True,
+            "expanded": False,
+            "current": "Model: Sonnet 5 Low",
+            "selected": "Model: Sonnet 5 Low",
+            "available": ["Model: Sonnet 5 Low"],
+        }
+
+    assert jury.web_agent._select_web_model(
+        SimpleNamespace(
+            evaluate=evaluate,
+            locator=lambda _selector: None,
+            url="https://claude.ai/new",
+        ),
+        "safari",
+        "claude",
+        "claude-auto",
+        observation,
+        model_option=jury.JURY_MODEL_OPTIONS["claude"],
+    )
+
+    assert calls[0]["acceptCurrent"] is True
+    assert observation["observed"] == "Model: Sonnet 5 Low"
 
 
 def test_explicit_grok_model_uses_existing_trusted_selector_without_changing_agent_catalog(monkeypatch):

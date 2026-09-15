@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.46.6-codex.1
+Code version: v1.46.8-codex.1
 """
 
 from __future__ import annotations
@@ -10369,16 +10369,27 @@ def test_explicit_agentic_troubleshooting_session_is_the_only_reused_target(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize('width', [1_021, 375])
+@pytest.mark.parametrize(
+    ('width', 'height'),
+    ((1_021, 863), (1_007, 1_417), (375, 863)),
+)
 def test_agent_bootstrap_discovers_models_efforts_and_restores_markdown_once(
     disposable_browser: Browser,
     sidebar_server_url: str,
     width: int,
+    height: int,
 ) -> None:
     from app.core.agent_model_catalog import chatgpt_live_catalog
     from app.web.app import render_agent_response
 
-    raw = json.dumps({'action': 'final', 'summary': '## Restored result\n\n**Verified**\n\n- One launch'})
+    raw = json.dumps({
+        'action': 'final',
+        'summary': (
+            '## Restored result\n\n**Verified**\n\n'
+            '| Check | Result |\n| --- | --- |\n| Radius | 10px |\n\n'
+            '- One launch'
+        ),
+    })
     payload = _finished_chatgpt_agent_payload()
     payload['agent'].update(response=raw, response_html=str(render_agent_response(raw)), history=[])
     status = {
@@ -10396,7 +10407,7 @@ def test_agent_bootstrap_discovers_models_efforts_and_restores_markdown_once(
         },
     }
     requests = []
-    context = disposable_browser.new_context(viewport={'width': width, 'height': 863})
+    context = disposable_browser.new_context(viewport={'width': width, 'height': height})
     page = context.new_page()
     page.route('**/api/agent/status', lambda route: route.fulfill(json=payload))
 
@@ -10411,6 +10422,10 @@ def test_agent_bootstrap_discovers_models_efforts_and_restores_markdown_once(
         expect(page.get_by_role('button', name='Option: Exhaustive', exact=True)).to_be_visible()
         expect(page.locator('#agent_response_answer h2')).to_have_text('Restored result')
         expect(page.locator('#agent_response_answer strong')).to_have_text('Verified')
+        expect(page.locator('.agent-markdown-table-shell')).to_have_css(
+            'border-radius',
+            '10px',
+        )
         expect(page.locator('[data-agent-effort-input]')).to_have_value('highest_available')
         assert len(requests) == 1
         assert 'refresh=1' in requests[0]

@@ -1,4 +1,4 @@
-"""Evidence-convergent browser-only fact-checking. Code version: v1.3.0-codex.1."""
+"""Evidence-convergent browser-only fact-checking. Code version: v1.5.0-codex.1."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from .computer_use_agent import (
 )
 from .state import utc_now
 
-JURY_VERSION = "1.3.0"
+JURY_VERSION = "1.5.0"
 AUTOMATIC_CONVERGENCE_TIMEOUT_SECONDS = 3_600
 AUTOMATIC_CONVERGENCE_STORAGE_SOFT_LIMIT_BYTES = 6_500_000
 MAX_PERSISTED_JURY_RECORD_BYTES = 8_000_000
@@ -470,15 +470,35 @@ class JuryService:
                 for item in state["providers"]
                 if item.get("model_selection")
             }
-            checked = self.check(state["browser"], keys, models)
-            provider_states = [{**item, "status": "ready" if item["ready"] else "unavailable",
-                                "conversation_url": ""} for item in checked["providers"]]
-            self._update(session_id, providers=provider_states)
-            if not checked["ready"]:
-                raise RuntimeError(checked["message"])
+            settings = replace(self.settings_provider(), browser=state["browser"])
+            inline_safari = state["browser"] == "safari" and self.session_factory is None
+            if inline_safari:
+                provider_states = [
+                    {
+                        **item,
+                        "ready": False,
+                        "status": "checking",
+                        "message": "",
+                        "conversation_url": "",
+                    }
+                    for item in state["providers"]
+                ]
+                self._update(session_id, providers=provider_states)
+            else:
+                checked = self.check(state["browser"], keys, models)
+                provider_states = [
+                    {
+                        **item,
+                        "status": "ready" if item["ready"] else "unavailable",
+                        "conversation_url": "",
+                    }
+                    for item in checked["providers"]
+                ]
+                self._update(session_id, providers=provider_states)
+                if not checked["ready"]:
+                    raise RuntimeError(checked["message"])
             if user_stop.is_set() or shutdown.is_set():
                 return
-            settings = replace(self.settings_provider(), browser=state["browser"])
 
             def record_conversation(key: str, url: str) -> None:
                 with self.lock:
@@ -487,7 +507,7 @@ class JuryService:
                             item["conversation_url"] = url
                     self._update(session_id, providers=deepcopy(provider_states))
 
-            if state["browser"] == "safari" and self.session_factory is None:
+            if inline_safari:
                 from .safari_automation import SafariContext
 
                 safari_context = inline_resources.enter_context(SafariContext(
@@ -503,18 +523,49 @@ class JuryService:
                         item["model_selection"] for item in provider_states
                         if item["key"] == key
                     )
-                    browser_session = inline_resources.enter_context(JuryBrowserSession(
-                        settings,
-                        key,
-                        shutdown,
-                        config=self.config_provider(),
-                        on_conversation=(
-                            lambda url, key=key: record_conversation(key, url)
-                        ),
-                        model_selection=model_selection,
-                        browser_page=page,
-                    ))
+                    try:
+                        browser_session = inline_resources.enter_context(
+                            JuryBrowserSession(
+                                settings,
+                                key,
+                                shutdown,
+                                config=self.config_provider(),
+                                on_conversation=(
+                                    lambda url, key=key: record_conversation(key, url)
+                                ),
+                                model_selection=model_selection,
+                                browser_page=page,
+                            )
+                        )
+                    except Exception as exc:
+                        for item in provider_states:
+                            if item["key"] == key:
+                                item.update(
+                                    ready=False,
+                                    status="unavailable",
+                                    message=str(exc),
+                                )
+                        self._update(
+                            session_id,
+                            providers=deepcopy(provider_states),
+                        )
+                        if user_stop.is_set() or shutdown.is_set():
+                            return
+                        continue
+                    for item in provider_states:
+                        if item["key"] == key:
+                            item.update(
+                                ready=True,
+                                status="ready",
+                                message="Signed in",
+                            )
                     jurors[key] = _InlineJuror(browser_session)
+                    self._update(
+                        session_id,
+                        providers=deepcopy(provider_states),
+                    )
+                if not all(item["ready"] for item in provider_states):
+                    raise RuntimeError(_unavailable_juror_message(provider_states))
             else:
                 for key in keys:
                     model_selection = next(

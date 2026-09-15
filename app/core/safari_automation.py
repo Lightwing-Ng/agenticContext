@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.5.0-codex.1
+# Code version: v2.7.0-codex.1
 
 from __future__ import annotations
 
@@ -33,6 +33,11 @@ SAFARI_NAVIGATION_RETRY_LIMIT = 3
 SAFARI_NAVIGATION_RETRY_DELAY_SECONDS = 0.5
 SAFARI_WRONG_PAGE_GRACE_SECONDS = 1.0
 SAFARI_CLOSE_RETRY_LIMIT = 3
+SAFARI_NATIVE_FOCUS_POLL_ATTEMPTS = 20
+SAFARI_NATIVE_FOCUS_POLL_DELAY_SECONDS = 0.05
+SAFARI_JAVASCRIPT_RETRY_LIMIT = 2
+SAFARI_JAVASCRIPT_ARGUMENT_INLINE_LIMIT = 1_200
+SAFARI_JAVASCRIPT_ARGUMENT_CHUNK_SIZE = 1_000
 SAFARI_WINDOW_CREATION_LOCK = RLock()
 SAFARI_WINDOW_CREATION_LOCK_PATH = Path(tempfile.gettempdir()) / "cachelikes-safari-window-creation.lock"
 SAFARI_CONTEXT_LOCK_PATH = Path(tempfile.gettempdir()) / "cachelikes-safari-context.lock"
@@ -98,6 +103,37 @@ end if
 SAFARI_BACKGROUND_WINDOW_APPLESCRIPT = (
     f"{SAFARI_KEEP_WINDOW_AVAILABLE_APPLESCRIPT}\n{SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}"
 )
+SAFARI_WAIT_FOR_NATIVE_FOCUS_APPLESCRIPT = f"""
+set current tab of targetWindow to targetTab
+{SAFARI_KEEP_WINDOW_AVAILABLE_APPLESCRIPT}
+set index of targetWindow to 1
+activate
+set nativeFocusReady to false
+repeat with focusPollIndex from 1 to {SAFARI_NATIVE_FOCUS_POLL_ATTEMPTS}
+    set currentFrontmostProcessName to ""
+    tell application "System Events"
+        try
+            set currentFrontmostProcessName to name of first application process whose frontmost is true
+        end try
+    end tell
+    if currentFrontmostProcessName is "Safari" then
+        if (id of front window) is (id of targetWindow) then
+            if (current tab of targetWindow) is targetTab then
+                set documentFocused to false
+                try
+                    set documentFocused to do JavaScript "document.hasFocus()" in targetTab
+                end try
+                if documentFocused then
+                    set nativeFocusReady to true
+                    exit repeat
+                end if
+            end if
+        end if
+    end if
+    delay {SAFARI_NATIVE_FOCUS_POLL_DELAY_SECONDS:g}
+end repeat
+if not nativeFocusReady then error "Safari native activation refused: document-unfocused"
+""".strip()
 
 
 logger = logging.getLogger(__name__)
@@ -283,7 +319,7 @@ class SafariRequestClient:
         *,
         serialize: bool = False,
     ) -> SafariResponse:
-        """Fetch through one owned page so separate Safari windows can run concurrently."""
+        """Fetch through one owned page so separate Safari tabs can run concurrently."""
         if page.context is not self._context:
             raise RuntimeError("Safari request page belongs to a different browser context.")
         last_error: RuntimeError | None = None
@@ -703,8 +739,13 @@ class SafariLocator:
             f"within {timeout:,} ms."
         )
 
-    def click(self, timeout: int = 30_000, *, expected_url: str = "") -> None:
-        """Activate the selected unique element with one trusted native Return key."""
+    def _mark_for_native_input(
+        self,
+        timeout: int,
+        *,
+        expected_url: str = "",
+    ) -> tuple[str, str]:
+        """Focus and mark one exact locator before a trusted native key event."""
         deadline = time.monotonic() + max(0.001, int(timeout) / 1_000)
         activation_marker = f"safari-native-{secrets.token_hex(16)}"
         bound_url = str(expected_url or "").strip()
@@ -776,14 +817,42 @@ class SafariLocator:
             if isinstance(payload, dict) and payload.get("targetMismatch"):
                 raise RuntimeError("Safari target changed before native activation.")
             if isinstance(payload, dict) and payload.get("actionable"):
-                self._page._activate_marked_element(
+                return (
                     activation_marker,
                     bound_url or str(payload.get("currentUrl") or ""),
                 )
-                return
             time.sleep(SAFARI_POLL_INTERVAL_SECONDS)
         raise TimeoutError(
-            f"Safari could not click locator {self._selector!r} within {timeout:,} ms."
+            f"Safari could not focus locator {self._selector!r} within {timeout:,} ms."
+        )
+
+    def click(self, timeout: int = 30_000, *, expected_url: str = "") -> None:
+        """Activate the selected unique element with one trusted native Return key."""
+        activation_marker, bound_url = self._mark_for_native_input(
+            timeout,
+            expected_url=expected_url,
+        )
+        self._page._activate_marked_element(activation_marker, bound_url)
+
+    def press(
+        self,
+        key: str,
+        timeout: int = 30_000,
+        *,
+        expected_url: str = "",
+    ) -> None:
+        """Send one supported trusted navigation key to the selected unique element."""
+        normalized_key = str(key or "").strip()
+        if normalized_key not in {"Home", "ArrowRight", "Escape"}:
+            raise ValueError(f"Unsupported Safari locator key: {key}")
+        activation_marker, bound_url = self._mark_for_native_input(
+            timeout,
+            expected_url=expected_url,
+        )
+        self._page._activate_marked_element(
+            activation_marker,
+            bound_url,
+            key=normalized_key,
         )
 
     def get_attribute(self, name: str) -> str | None:
@@ -798,6 +867,28 @@ class SafariLocator:
             {"selector": self._selector, "index": self._index, "name": str(name)},
         )
         return None if payload is None else str(payload)
+
+    def evaluate(self, expression: str, argument: Any = None) -> Any:
+        """Evaluate one trusted locator callback against the selected element."""
+        callback_source = str(expression or "").strip()
+        locator_expression = f"""({{selector, index, argument}}) => {{
+                const elements = Array.from(document.querySelectorAll(selector));
+                const resolved = index === null
+                    ? 0
+                    : (index < 0 ? elements.length + index : index);
+                const element = elements[resolved];
+                if (!element) throw new Error('Safari locator element is unavailable.');
+                const callback = ({callback_source});
+                return callback(element, argument);
+            }}"""
+        return self._page.evaluate(
+            locator_expression,
+            {
+                "selector": self._selector,
+                "index": self._index,
+                "argument": argument,
+            },
+        )
 
     def inner_text(self, timeout: int = 30_000) -> str:
         """Return text from the selected matching element within a bounded wait."""
@@ -822,13 +913,20 @@ class SafariLocator:
 
 
 class SafariPage:
-    """Represent one Safari window owned by the current sync."""
+    """Represent one Safari tab in the single window owned by the current sync."""
 
-    def __init__(self, context: SafariContext, window_id: int) -> None:
+    def __init__(
+        self,
+        context: SafariContext,
+        window_id: int,
+        tab_index: int = 1,
+    ) -> None:
         self._context = context
         self.window_id = int(window_id)
+        self.tab_index = max(1, int(tab_index))
         self._closed = False
         self._rendering_active = False
+        self._native_input_transaction_depth = 0
         self._recovery_url = context.initial_url if not context.pages else "about:blank"
 
     @property
@@ -839,7 +937,7 @@ class SafariPage:
     @property
     def url(self) -> str:
         """Return the current tab URL."""
-        return self._run_in_window("return URL of current tab of targetWindow").strip()
+        return self._run_in_window("return URL of targetTab").strip()
 
     def goto(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 60_000) -> None:
         """Navigate the current tab with retries and verify the destination URL."""
@@ -881,7 +979,8 @@ class SafariPage:
             )
             try:
                 self._run_in_window(
-                    f'set URL of current tab of targetWindow to "{escape_applescript_text(target_url)}"'
+                    f'set URL of targetTab to "{escape_applescript_text(target_url)}"',
+                    reveal_tab=True,
                 )
             except RuntimeError as exc:
                 last_error = exc
@@ -945,7 +1044,7 @@ class SafariPage:
 set pageUrlValue to ""
 set pageStateValue to ""
 try
-    set candidateUrl to URL of current tab of targetWindow
+    set candidateUrl to URL of targetTab
     if candidateUrl is not missing value then set pageUrlValue to candidateUrl as text
 end try
 try
@@ -953,7 +1052,8 @@ try
     if candidateState is not missing value then set pageStateValue to candidateState as text
 end try
 return pageUrlValue & linefeed & pageStateValue
-""".strip()
+""".strip(),
+            reveal_tab=True,
         )
         state_lines = raw_state.split("\n", maxsplit=1)
         return {
@@ -988,7 +1088,7 @@ return pageUrlValue & linefeed & pageStateValue
 
     def content(self, limit: int | None = None) -> str:
         """Return the current tab's rendered source, optionally clipped in Python."""
-        source = self._run_in_window("return source of current tab of targetWindow")
+        source = self._run_in_window("return source of targetTab")
         if limit is None:
             return source
         return source[: max(0, int(limit))]
@@ -999,35 +1099,105 @@ return pageUrlValue & linefeed & pageStateValue
 
     def evaluate(self, expression: str, argument: Any = None) -> Any:
         """Evaluate a Playwright-style page function and decode its result."""
-        function_source = str(expression or "").strip()
+        function_source = re.sub(r"\s+", " ", str(expression or "").strip())
         argument_json = json.dumps(argument, separators=(",", ":"))
-        invocation = f"({function_source})({argument_json})"
-        wrapper = f"""
-(() => {{
-    try {{
-        const value = {invocation};
-        return JSON.stringify({{ ok: true, value }});
-    }} catch (error) {{
-        return JSON.stringify({{
-            ok: false,
-            error: String(error && error.message ? error.message : error),
-        }});
-    }}
-}})()
-""".strip()
-        raw_result = self._run_in_window(
-            f'return do JavaScript "{escape_applescript_text(wrapper)}" in current tab of targetWindow'
-        )
-        try:
-            payload = json.loads(raw_result)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("Safari returned an unreadable JavaScript result.") from exc
-        if not payload.get("ok"):
-            raise RuntimeError(f"Safari JavaScript failed: {payload.get('error') or 'unknown error'}")
-        return payload.get("value")
+        if len(argument_json) > SAFARI_JAVASCRIPT_ARGUMENT_INLINE_LIMIT:
+            token = self._store_javascript_argument(argument_json)
+            argument_json = (
+                "JSON.parse(window.__cachelikesSafariEvalArg["
+                f"{json.dumps(token)}])"
+            )
+        return self._evaluate_compact(function_source, argument_json)
 
-    def _activate_marked_element(self, marker: str, expected_url: str) -> None:
+    def _store_javascript_argument(self, payload: str) -> str:
+        """Move a large JSON argument into the page in bounded Safari scripts."""
+        token = secrets.token_hex(8)
+        self._evaluate_compact(
+            "({token}) => { window.__cachelikesSafariEvalArg = window.__cachelikesSafariEvalArg || {}; window.__cachelikesSafariEvalArg[token] = ''; }",
+            json.dumps({"token": token}, separators=(",", ":")),
+        )
+        for offset in range(0, len(payload), SAFARI_JAVASCRIPT_ARGUMENT_CHUNK_SIZE):
+            chunk = payload[offset:offset + SAFARI_JAVASCRIPT_ARGUMENT_CHUNK_SIZE]
+            self._evaluate_compact(
+                "({token, chunk}) => { window.__cachelikesSafariEvalArg[token] += chunk; }",
+                json.dumps({"token": token, "chunk": chunk}, separators=(",", ":")),
+            )
+        return token
+
+    def _evaluate_compact(self, function_source: str, argument_json: str) -> Any:
+        """Run one compact, single-line Safari JavaScript function."""
+        wrapper = (
+            "(function(){try{const value=("
+            f"{function_source})({argument_json});"
+            "return JSON.stringify({ok:true,value});"
+            "}catch(error){return JSON.stringify({ok:false,error:String("
+            "error&&error.message?error.message:error)});}})()"
+        )
+        statement = (
+            f'return do JavaScript "{escape_applescript_text(wrapper)}" '
+            "in current tab of targetWindow"
+        )
+        last_raw = ""
+        last_error: Exception | None = None
+        for attempt_index in range(SAFARI_JAVASCRIPT_RETRY_LIMIT + 1):
+            if attempt_index:
+                if not self._native_input_transaction_depth:
+                    with contextlib.suppress(RuntimeError):
+                        self.wake_for_javascript()
+                time.sleep(SAFARI_POLL_INTERVAL_SECONDS * attempt_index)
+            try:
+                raw_result = self._run_in_window(statement, reveal_tab=True)
+            except RuntimeError as exc:
+                last_error = exc
+                if attempt_index >= SAFARI_JAVASCRIPT_RETRY_LIMIT:
+                    break
+                continue
+            last_raw = str(raw_result or "")
+            normalized = last_raw.strip()
+            if not normalized or normalized.casefold() in {"missing value", "null"}:
+                last_error = RuntimeError("Safari returned an unreadable JavaScript result.")
+                if attempt_index >= SAFARI_JAVASCRIPT_RETRY_LIMIT:
+                    break
+                continue
+            try:
+                payload = json.loads(normalized)
+            except json.JSONDecodeError as exc:
+                last_error = RuntimeError(
+                    "Safari returned an unreadable JavaScript result."
+                )
+                last_error.__cause__ = exc
+                if attempt_index >= SAFARI_JAVASCRIPT_RETRY_LIMIT:
+                    break
+                continue
+            if not payload.get("ok"):
+                raise RuntimeError(
+                    f"Safari JavaScript failed: {payload.get('error') or 'unknown error'}"
+                )
+            return payload.get("value")
+        preview = re.sub(r"\s+", " ", last_raw).strip()[:120]
+        detail = f" ({preview!r})" if preview else ""
+        raise RuntimeError(
+            f"Safari returned an unreadable JavaScript result{detail}."
+        ) from last_error
+
+    def _activate_marked_element(
+        self,
+        marker: str,
+        expected_url: str,
+        *,
+        key: str = "Enter",
+    ) -> None:
         """Dispatch one non-retried trusted key event to an exact marked web control."""
+        native_key_codes = {
+            "Enter": 36,
+            "Home": 115,
+            "ArrowRight": 124,
+            "Escape": 53,
+        }
+        normalized_key = str(key or "").strip()
+        key_code = native_key_codes.get(normalized_key)
+        if key_code is None:
+            raise ValueError(f"Unsupported Safari native input key: {key}")
         try:
             parsed = urlsplit(str(expected_url or "").strip())
             port = parsed.port
@@ -1046,6 +1216,7 @@ return pageUrlValue & linefeed & pageStateValue
             {
                 "activationMarker": str(marker),
                 "expectedUrl": str(expected_url),
+                "expectedKey": normalized_key,
                 "allowedHosts": sorted(SAFARI_NATIVE_INPUT_HOSTS),
             },
             separators=(",", ":"),
@@ -1120,7 +1291,7 @@ return pageUrlValue & linefeed & pageStateValue
         event.target === element || element.contains(event.target)
     );
     const recordKeydown = (event) => {{
-        if (belongsToTarget(event) && event.isTrusted && event.key === 'Enter') {{
+        if (belongsToTarget(event) && event.isTrusted && event.key === request.expectedKey) {{
             state.keydownTrusted = true;
         }}
     }};
@@ -1232,45 +1403,52 @@ if shouldRestoreNativeFocus then
     end if
 end if
 """.strip()
+        if self._native_input_transaction_depth:
+            restore_after_input = ""
         statement = f"""
 {SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
-set targetTab to current tab of targetWindow
-{SAFARI_KEEP_WINDOW_AVAILABLE_APPLESCRIPT}
-set index of targetWindow to 1
-activate
-delay 0.05
+{SAFARI_WAIT_FOR_NATIVE_FOCUS_APPLESCRIPT}
 set nativeInputAttempted to false
 try
-    set activationState to do JavaScript "{escape_applescript_text(prepare_script)}" in current tab of targetWindow
+    set activationState to do JavaScript "{escape_applescript_text(prepare_script)}" in targetTab
     if activationState is not "ready" then error "Safari native activation refused: " & activationState
     if (id of front window) is not (id of targetWindow) then error "Safari target window changed before native activation."
     if (current tab of targetWindow) is not targetTab then error "Safari target tab changed before native activation."
-    set currentUrlBeforeInput to URL of current tab of targetWindow as text
+    set currentUrlBeforeInput to URL of targetTab as text
     if currentUrlBeforeInput is not "{expected_url_literal}" then error "Safari target URL changed before native activation."
-    set finalActivationState to do JavaScript "{escape_applescript_text(verify_script)}" in current tab of targetWindow
+    set finalActivationState to do JavaScript "{escape_applescript_text(verify_script)}" in targetTab
     if finalActivationState is not "ready" then error "Safari native activation refused: " & finalActivationState
     if (id of front window) is not (id of targetWindow) then error "Safari target window changed before native activation."
     if (current tab of targetWindow) is not targetTab then error "Safari target tab changed before native activation."
-    set finalUrlBeforeInput to URL of current tab of targetWindow as text
+    set finalUrlBeforeInput to URL of targetTab as text
     if finalUrlBeforeInput is not "{expected_url_literal}" then error "Safari target URL changed before native activation."
     tell application "System Events"
         set currentFrontmostProcessName to name of first application process whose frontmost is true
         if currentFrontmostProcessName is not "Safari" then error "Safari lost focus before native activation."
         tell process "Safari"
             if (count of sheets of front window) is not 0 then error "Safari displayed a native sheet before activation."
-            if (count of windows whose subrole is "AXDialog") is not 0 then error "Safari displayed a native dialog before activation."
+            set safariHasNativeDialog to false
+            repeat with safariWindow in windows
+                try
+                    if (subrole of safariWindow as text) is "AXDialog" then
+                        set safariHasNativeDialog to true
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if safariHasNativeDialog then error "Safari displayed a native dialog before activation."
             set nativeInputAttempted to true
-            key code 36
+            key code {key_code}
         end tell
     end tell
     delay 0.1
     set currentUrlAfterInput to ""
     try
-        set currentUrlAfterInput to URL of current tab of targetWindow as text
+        set currentUrlAfterInput to URL of targetTab as text
     end try
     set receiptState to "unavailable"
     try
-        set receiptState to do JavaScript "{escape_applescript_text(receipt_script)}" in current tab of targetWindow
+        set receiptState to do JavaScript "{escape_applescript_text(receipt_script)}" in targetTab
     end try
     if receiptState is not "trusted" and currentUrlAfterInput is "{expected_url_literal}" then
         error "Safari did not deliver a trusted activation event to the marked control."
@@ -1285,9 +1463,14 @@ end try
 {restore_after_input}
 return receiptState
 """.strip()
-        with safari_native_input_guard():
+        input_guard = (
+            contextlib.nullcontext()
+            if self._native_input_transaction_depth
+            else safari_native_input_guard()
+        )
+        with input_guard:
             try:
-                self._run_in_window(statement, retry_transient=False)
+                self._run_in_window(statement, retry_transient=False, reveal_tab=True)
             except RuntimeError as exc:
                 message = str(exc)
                 uncertain_token = "SAFARI_NATIVE_INPUT_UNCERTAIN:"
@@ -1306,6 +1489,51 @@ return receiptState
                     message,
                     input_attempted=True,
                 ) from exc
+
+    def wake_for_javascript(self) -> None:
+        """Bring the owned tab forward so page JavaScript can run, then leave it focused."""
+        self._run_in_window(
+            SAFARI_WAIT_FOR_NATIVE_FOCUS_APPLESCRIPT,
+            reveal_tab=True,
+        )
+
+    @contextlib.contextmanager
+    def native_input_transaction(self):
+        """Keep one owned Safari window focused across a serialized input sequence."""
+        if self._native_input_transaction_depth:
+            self._native_input_transaction_depth += 1
+            try:
+                yield
+            finally:
+                self._native_input_transaction_depth -= 1
+            return
+        with safari_native_input_guard():
+            focus_state = self._run_in_window(
+                f"""
+{SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
+return previousFrontmostProcessName & linefeed & (previousWindowId as text) & linefeed & (previousWindowWasVisible as text) & linefeed & (previousWindowWasMiniaturized as text)
+""".strip()
+            ).splitlines()
+            if len(focus_state) != 4 or not focus_state[1].isdigit():
+                raise RuntimeError("Safari could not capture the native focus owner.")
+            previous_process = focus_state[0]
+            previous_window_id = int(focus_state[1])
+            previous_window_visible = focus_state[2].strip().lower() == "true"
+            previous_window_miniaturized = focus_state[3].strip().lower() == "true"
+            self._native_input_transaction_depth = 1
+            try:
+                yield
+            finally:
+                self._native_input_transaction_depth = 0
+                self._run_in_window(
+                    f"""
+set previousFrontmostProcessName to "{escape_applescript_text(previous_process)}"
+set previousWindowId to {previous_window_id}
+set previousWindowWasVisible to {str(previous_window_visible).lower()}
+set previousWindowWasMiniaturized to {str(previous_window_miniaturized).lower()}
+{SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+""".strip()
+                )
 
     def bring_to_front(self) -> None:
         """Bring the owned Safari window forward."""
@@ -1330,15 +1558,28 @@ return receiptState
         self.keep_rendering_in_background()
 
     def close(self) -> None:
-        """Close the Safari window owned by this page."""
+        """Close the owned tab, or the shared window when this is the last tab."""
         if self._closed:
             self._context._forget_page(self)
             return
         with safari_window_creation_guard():
-            last_error = self._close_owned_window()
+            siblings = [
+                page
+                for page in self._context.pages
+                if page is not self
+                and page.window_id == self.window_id
+                and not page._closed
+            ]
+            if siblings:
+                last_error = self._close_owned_tab()
+                if last_error is None:
+                    self._context._reindex_tabs_after_close(self)
+            else:
+                last_error = self._close_owned_window()
         if last_error is not None:
             logger.warning(
-                "Safari could not fully close owned window %s: %s",
+                "Safari could not fully close owned tab %s in window %s: %s",
+                self.tab_index,
                 self.window_id,
                 last_error,
             )
@@ -1346,6 +1587,41 @@ return receiptState
         self._context._forget_page(self)
         if last_error is not None:
             raise last_error
+
+    def _close_owned_tab(self) -> RuntimeError | None:
+        """Close this tab without activating Safari or closing sibling tabs."""
+        last_error: RuntimeError | None = None
+        for attempt_index in range(SAFARI_CLOSE_RETRY_LIMIT):
+            try:
+                close_state = self._run_in_window(
+                    f"""
+{SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
+try
+    close targetTab
+on error errorMessage number errorNumber
+    {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+    error errorMessage number errorNumber
+end try
+{SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+return "closed"
+""".strip(),
+                    recover_missing=False,
+                ).strip()
+                if close_state == "closed":
+                    last_error = None
+                    break
+                last_error = RuntimeError(
+                    f"Safari tab {self.tab_index} of window {self.window_id} "
+                    f"returned unexpected close state {close_state!r}."
+                )
+            except RuntimeError as exc:
+                if is_missing_safari_window_error(exc):
+                    last_error = None
+                    break
+                last_error = exc
+            if attempt_index + 1 < SAFARI_CLOSE_RETRY_LIMIT:
+                time.sleep(SAFARI_APPLESCRIPT_RETRY_DELAY_SECONDS * (attempt_index + 1))
+        return last_error
 
     def _close_owned_window(self) -> RuntimeError | None:
         """Close the owned window without touching the user's front window."""
@@ -1567,18 +1843,43 @@ return "closed"
             time.sleep(SAFARI_POLL_INTERVAL_SECONDS)
         raise RuntimeError("Safari media request timed out.")
 
+    def _owned_tab_script(self, *, reveal: bool = False) -> str:
+        """Bind the owned tab, optionally making it current without activating Safari."""
+        reveal_script = (
+            "if (current tab of targetWindow) is not targetTab then\n"
+            "    set current tab of targetWindow to targetTab\n"
+            "    delay 0.05\n"
+            "end if"
+            if reveal
+            else ""
+        )
+        return "\n".join(
+            line
+            for line in (
+                (
+                    f"if (count of tabs of targetWindow) < {int(self.tab_index)} then "
+                    'error "Safari target tab is missing."'
+                ),
+                f"set targetTab to tab {int(self.tab_index)} of targetWindow",
+                reveal_script,
+            )
+            if line
+        )
+
     def _run_in_window(
         self,
         statement: str,
         *,
         recover_missing: bool = True,
         retry_transient: bool = True,
+        reveal_tab: bool = False,
     ) -> str:
         if self._closed:
             raise RuntimeError("Safari window is already closed.")
         source = f"""
 tell application "Safari"
     set targetWindow to first window whose id is {self.window_id}
+    {self._owned_tab_script(reveal=reveal_tab)}
     {statement}
 end tell
         """
@@ -1595,7 +1896,7 @@ end tell
 
 
 class SafariContext:
-    """Own Safari windows created for one authenticated browser sync."""
+    """Own one Safari window and its tabs for one authenticated browser sync."""
 
     def __init__(self, initial_url: str, *, lock_blocking: bool = True) -> None:
         self.initial_url = initial_url
@@ -1635,7 +1936,7 @@ class SafariContext:
         return False
 
     def new_page(self) -> SafariPage:
-        """Create an additional owned Safari window."""
+        """Create an additional owned tab in the shared Safari window."""
         return self._create_page("about:blank")
 
     def cookies(self, urls: list[str]) -> list[dict[str, str]]:
@@ -1644,7 +1945,7 @@ class SafariContext:
         return []
 
     def close(self) -> None:
-        """Close all Safari windows owned by this sync."""
+        """Close the Safari window and tabs owned by this sync."""
         try:
             self.housekeep()
         finally:
@@ -1676,7 +1977,7 @@ class SafariContext:
             handle.close()
 
     def housekeep(self) -> int:
-        """Close every tracked Safari window and return the number released."""
+        """Close every tracked Safari tab or window and return the number released."""
         closed_count = 0
         cleanup_errors: list[BaseException] = []
         for page in list(reversed(self.pages)):
@@ -1694,10 +1995,15 @@ class SafariContext:
         return closed_count
 
     def _create_page(self, url: str) -> SafariPage:
-        raw_window_id = self._create_window(url)
-        if not raw_window_id.isdigit():
-            raise RuntimeError("Safari did not return a usable window identifier.")
-        page = SafariPage(self, int(raw_window_id))
+        if self.pages:
+            window_id = self.pages[0].window_id
+            tab_index = self._create_tab(window_id, url)
+            page = SafariPage(self, window_id, tab_index=tab_index)
+        else:
+            raw_window_id = self._create_window(url)
+            if not raw_window_id.isdigit():
+                raise RuntimeError("Safari did not return a usable window identifier.")
+            page = SafariPage(self, int(raw_window_id), tab_index=1)
         self.pages.append(page)
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
@@ -1706,6 +2012,16 @@ class SafariContext:
                 page.close()
             raise
         return page
+
+    def _reindex_tabs_after_close(self, closed_page: SafariPage) -> None:
+        """Keep remaining tab indexes aligned after Safari closes one owned tab."""
+        for page in self.pages:
+            if (
+                page is not closed_page
+                and page.window_id == closed_page.window_id
+                and page.tab_index > closed_page.tab_index
+            ):
+                page.tab_index -= 1
 
     def _create_window(self, url: str) -> str:
         source = f"""
@@ -1755,6 +2071,40 @@ end tell
 """
         with safari_window_creation_guard():
             return run_applescript(source).strip()
+
+    def _create_tab(self, window_id: int, url: str) -> int:
+        """Add one tab to the already owned Safari window without activating it."""
+        source = f"""
+tell application "Safari"
+    set targetWindow to first window whose id is {int(window_id)}
+    set newTab to missing value
+    set previousFrontmostProcessName to ""
+    set previousWindowId to 0
+    set previousWindowWasVisible to false
+    set previousWindowWasMiniaturized to false
+    {SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
+    try
+        set newTab to make new tab at end of tabs of targetWindow
+        set URL of newTab to "{escape_applescript_text(url)}"
+        set current tab of targetWindow to newTab
+        {SAFARI_BACKGROUND_WINDOW_APPLESCRIPT}
+        return index of newTab
+    on error errorMessage number errorNumber
+        if newTab is not missing value then
+            try
+                close newTab
+            end try
+        end if
+        {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+        error errorMessage number errorNumber
+    end try
+end tell
+"""
+        with safari_window_creation_guard():
+            raw_tab_index = run_applescript(source).strip()
+        if not raw_tab_index.isdigit():
+            raise RuntimeError("Safari did not return a usable tab identifier.")
+        return int(raw_tab_index)
 
     def _forget_page(self, page: SafariPage) -> None:
         with contextlib.suppress(ValueError):

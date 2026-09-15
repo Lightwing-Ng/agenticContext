@@ -1,11 +1,11 @@
 """Keep each juror in one authenticated browser conversation for an entire question.
 
-Code version: v1.2.0-codex.1
+Code version: v1.5.0-codex.1
 """
 
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext, suppress
 from dataclasses import replace
 import json
 import re
@@ -112,6 +112,7 @@ JURY_MODEL_OPTIONS_BY_PROVIDER: dict[str, tuple[dict[str, Any], ...]] = {
             "display_label": "Auto",
             "ui_label": "Auto",
             "remote_labels": ("Auto",),
+            "accept_current": True,
         },
     ),
 }
@@ -173,12 +174,6 @@ def _validate_provider(settings: ComputerUseSettings, platform: str) -> None:
     if settings.browser == "safari":
         if not is_macos_host():
             raise ValueError("Safari Jury sessions require macOS.")
-        if platform not in web_agent.SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS:
-            label = web_agent.AGENT_PLATFORM_BY_KEY[platform]["label"]
-            raise ValueError(
-                f"{label} Jury sessions require Edge or Chrome; Safari Jury supports "
-                "ChatGPT and Grok."
-            )
         return
     if settings.browser not in {"edge", "chrome"}:
         raise ValueError("Choose Safari, Microsoft Edge, or Google Chrome for Jury.")
@@ -421,7 +416,12 @@ class JuryBrowserSession:
             if self.platform == "chatgpt":
                 web_agent._select_chat_mode(self._page, self._browser_kind)
             selected = False
-            for attempt in range(2):
+            model_attempt_limit = (
+                web_agent.CHATGPT_MODEL_CONTROL_RETRY_ATTEMPTS
+                if self.platform == "chatgpt"
+                else 3
+            )
+            for attempt in range(model_attempt_limit):
                 self.model_observation.clear()
                 selected = web_agent._select_web_model(
                     self._page,
@@ -438,18 +438,19 @@ class JuryBrowserSession:
                 self.model_observation_history.append(dict(self.model_observation))
                 if (
                     selected
-                    or self.platform != "chatgpt"
-                    or self.model_observation.get("reason") not in {
-                        "requested-effort-control-not-found", "power-control-recycled",
-                    }
-                    or attempt == 1
+                    or self.model_observation.get("reason")
+                    not in web_agent.RETRYABLE_WEB_MODEL_PROOF_REASONS
+                    or attempt + 1 >= model_attempt_limit
                 ):
                     break
                 # A fresh page can hydrate its effort control after the model
                 # menu. Rebind that same page once before admitting any prompt.
                 self._availability_check()
                 self._binding.check()
-                self._page.wait_for_timeout(500)
+                self._page.wait_for_timeout(
+                    web_agent.CHATGPT_MODEL_CONTROL_RETRY_BACKOFF_MILLISECONDS
+                    * (attempt + 1)
+                )
             self._require_running()
             self._binding.check()
             if self.platform == "chatgpt":
@@ -492,23 +493,35 @@ class JuryBrowserSession:
                 if self.platform == "chatgpt" and self._turn_count == 0
                 else f"agent-turn-{secrets.token_hex(16)}"
             )
-            response = web_agent._submit_and_wait(
-                self._page,
-                self._browser_kind,
-                message,
-                self.stop_event.is_set,
-                platform=self.platform,
-                session_check=self._binding.check,
-                session_recover=lambda should_stop: self._recover_response_session(
-                    marker, should_stop,
-                ),
-                submission_target_url=self._conversation_url or self.settings.target_url,
-                session_mode="new" if self._turn_count == 0 else "recent",
-                availability_check=self._availability_check,
-                turn_receipt_marker=marker,
-                on_response_state=self._record_response_state,
-                timeout_seconds=timeout_seconds,
+            transaction_factory = getattr(self._page, "native_input_transaction", None)
+            transaction = (
+                transaction_factory()
+                if self._browser_kind == "safari" and callable(transaction_factory)
+                else nullcontext()
             )
+            with transaction:
+                if self._browser_kind == "safari":
+                    wake = getattr(self._page, "wake_for_javascript", None)
+                    if callable(wake):
+                        with suppress(RuntimeError):
+                            wake()
+                response = web_agent._submit_and_wait(
+                    self._page,
+                    self._browser_kind,
+                    message,
+                    self.stop_event.is_set,
+                    platform=self.platform,
+                    session_check=self._binding.check,
+                    session_recover=lambda should_stop: self._recover_response_session(
+                        marker, should_stop,
+                    ),
+                    submission_target_url=self._conversation_url or self.settings.target_url,
+                    session_mode="new" if self._turn_count == 0 else "recent",
+                    availability_check=self._availability_check,
+                    turn_receipt_marker=marker,
+                    on_response_state=self._record_response_state,
+                    timeout_seconds=timeout_seconds,
+                )
             self._require_running()
             if not response.strip():
                 raise RuntimeError("The juror returned no complete response.")

@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.29.0-codex.1`
+Documentation version: `v1.30.0-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -24,8 +24,8 @@ On macOS, ChatGPT and Grok Agent tasks can execute through Safari without clonin
 profile. Safari Gemini and Claude remain valid source-only routes for account checks and Recent
 sessions and Projects browsing, but full Agent execution requires Edge or Chrome. Browser/provider/
 model preferences persist as selected; an unavailable choice fails closed instead of triggering an
-Edge fallback. On macOS, Browser Jury also admits Safari for ChatGPT and Grok; Gemini and Claude
-remain explicit Edge-or-Chrome jurors.
+Edge fallback. On macOS, Browser Jury also admits Safari for ChatGPT, Grok, and Gemini in one owned window
+with one tab per juror; Claude remains optional and is unchecked by default.
 
 The Agent sidebar also offers Jurors, a browser-only fact-checking jury. ChatGPT Latest
 with Extra High, Grok Auto, and Gemini 3.1 Pro are selected by default; Claude remains

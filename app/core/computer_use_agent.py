@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.76.1-codex.1
+Code version: v3.79.0-codex.1
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ from .config import (
 )
 from .gemini_downloader import inspect_gemini_session
 from .grok_history import _grok_api_json
-from .safari_automation import SafariContext, SafariNativeActivationError
+from .safari_automation import SafariContext, SafariLocator, SafariNativeActivationError
 from .state import utc_now
 
 if TYPE_CHECKING:
@@ -155,6 +155,32 @@ CHATGPT_MODEL_CONTROL_WAIT_ATTEMPTS = 61
 CHATGPT_MODEL_CONTROL_POLL_MILLISECONDS = 250
 CHATGPT_MODEL_VIEW_WAIT_ATTEMPTS = 20
 CHATGPT_MODEL_VIEW_POLL_MILLISECONDS = 100
+SAFARI_RETRYABLE_CONTROL_BINDING_REASONS = frozenset(
+    {
+        "model-control-remounted",
+        "model-selection-native-input-blocked",
+    }
+)
+CHATGPT_RETRYABLE_MODEL_PROOF_REASONS = frozenset(
+    {
+        "requested-effort-control-not-found",
+        "effort-slider-unreadable",
+        "effort-label-unreadable",
+        "model-control-remounted",
+        "model-state-transition-unverified",
+        "power-control-recycled",
+        "model-selection-native-input-blocked",
+        "effort-selection-native-input-blocked",
+    }
+)
+RETRYABLE_WEB_MODEL_PROOF_REASONS = CHATGPT_RETRYABLE_MODEL_PROOF_REASONS | {
+    "model-not-exposed",
+    "model-menu-open-failed",
+    "model-menu-close-failed",
+    "model-menu-reopen-failed",
+    "model-menu-did-not-close-after-selection",
+}
+SAFARI_COMPOSER_AMBIGUITY_GRACE_SECONDS = 5.0
 # ChatGPT can report a checked model before React mounts or replaces the
 # corresponding effort slider. Rebind only the already trusted semantic
 # control, with no context attachment or prompt submission during the wait.
@@ -214,6 +240,9 @@ GROK_SESSION_BASELINE_PAGE_LIMIT = 100
 WEB_PROGRESS_TEXT = {"thinking", "working", "searching", "analyzing", "generating"}
 SUPPORTED_BROWSERS = frozenset({"chrome", "edge", "safari"})
 SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS = frozenset({"chatgpt", "grok"})
+SUPPORTED_SAFARI_WEB_SESSION_PLATFORMS = frozenset(
+    {"chatgpt", "grok", "gemini", "claude"}
+)
 # Compatibility alias for runtime helpers that predate the split between
 # read-only source discovery and full Agent execution.
 SUPPORTED_SAFARI_AGENT_PLATFORMS = SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS
@@ -296,6 +325,13 @@ GROK_MODEL_OPTIONS = (
         "remote_trigger_labels": ("Build Beta",),
         "strength": 100,
     },
+    {
+        "key": "grok-auto",
+        "label": "Auto",
+        "ui_label": "Auto",
+        "remote_labels": ("Auto",),
+        "strength": 90,
+    },
 )
 CLAUDE_MODEL_OPTIONS = (
     {
@@ -313,7 +349,6 @@ AGENT_MODEL_OPTIONS_BY_PLATFORM = {
     "claude": CLAUDE_MODEL_OPTIONS,
 }
 LEGACY_AGENT_MODEL_KEYS = {
-    ("grok", "grok-auto"): "grok-build",
     ("grok", "grok-heavy"): "grok-build",
 }
 
@@ -9839,6 +9874,13 @@ class _ProviderSessionBinding:
             self.session_mode,
         ):
             receipt_url = self._current_submission_receipt_url()
+            if not receipt_url and normalize_agent_conversation_url(
+                self.platform,
+                current_url,
+            ):
+                # Safari Gemini can expose the canonical /app/<id> URL before the
+                # user-turn receipt is readable in the serialized tab.
+                receipt_url = current_url
             if not receipt_url:
                 return ""
             conversation = self._latch_fresh_conversation_from_receipt(receipt_url)
@@ -11786,6 +11828,18 @@ def _is_composer_wait_timeout(exc: Exception) -> bool:
     return isinstance(exc, TimeoutError) or exc.__class__.__name__ == "TimeoutError"
 
 
+def _is_safari_locator_remount_error(exc: Exception) -> bool:
+    """Recognize a Safari locator whose React-owned element was replaced."""
+    return str(exc or "").strip().endswith(
+        "Safari locator element is unavailable."
+    )
+
+
+def _is_safari_target_changed_before_input(exc: Exception) -> bool:
+    """Recognize a Safari URL rebind that happened before native input."""
+    return str(exc or "").strip() == "Safari target changed before native activation."
+
+
 def _is_transient_browser_navigation_error(exc: Exception) -> bool:
     """Recognize browser execution errors that can occur across one navigation commit."""
     message = str(exc or "").casefold()
@@ -11875,6 +11929,83 @@ def _wait_for_unique_grok_composer(
         page.wait_for_timeout(WEB_SEND_BUTTON_POLL_MILLISECONDS)
     raise _ComposerReadinessTimeout(
         "The provider-scoped Grok composer readiness wait expired."
+    )
+
+
+def _wait_for_unique_safari_composer(
+    page: Any,
+    platform: str,
+    should_stop: Callable[[], bool] | None = None,
+    readiness_check: Callable[[], float] | None = None,
+) -> bool:
+    """Wait for one visible provider composer using Safari-compatible CSS."""
+    deadline = time.monotonic() + CHATGPT_COMPOSER_TIMEOUT_SECONDS
+    last_count = 0
+    ambiguous_since: float | None = None
+    while time.monotonic() < deadline:
+        if callable(should_stop) and should_stop():
+            return False
+        if callable(readiness_check):
+            deadline += max(0.0, float(readiness_check() or 0.0))
+            if callable(should_stop) and should_stop():
+                return False
+        snapshot = page.evaluate(
+            r"""({composerSelector, platform}) => {
+                const visible = (element) => {
+                    if (!element || element.getClientRects().length === 0) return false;
+                    for (let current = element; current; current = current.parentElement) {
+                        const style = getComputedStyle(current);
+                        const opacity = Number.parseFloat(style.opacity || '1');
+                        if (style.display === 'none'
+                            || style.visibility === 'hidden'
+                            || style.visibility === 'collapse'
+                            || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                    }
+                    return true;
+                };
+                const isProviderComposer = (element) => {
+                    if (!visible(element)
+                        || element.disabled
+                        || element.getAttribute('aria-disabled') === 'true'
+                        || element.closest(
+                            '[role="dialog"], [role="menu"], [role="listbox"], nav, header, '
+                            + '[data-testid*="feedback" i], [class*="feedback" i]'
+                        )) return false;
+                    const metadata = `${element.getAttribute('aria-label') || ''} `
+                        + `${element.getAttribute('placeholder') || ''} `
+                        + `${element.getAttribute('data-testid') || ''}`;
+                    return /prompt|message|ask|gemini|claude|what do you|输入|輸入|提问|提問/i.test(
+                        metadata
+                    );
+                };
+                const composers = [...document.querySelectorAll(composerSelector)]
+                    .filter(isProviderComposer);
+                return {count: composers.length, url: location.href, platform};
+            }""",
+            {
+                "composerSelector": _web_composer_selector(platform),
+                "platform": platform,
+            },
+        )
+        last_count = int(snapshot.get("count") or 0) if isinstance(snapshot, dict) else 0
+        if last_count == 1:
+            return True
+        if last_count > 1:
+            observed_at = time.monotonic()
+            if ambiguous_since is None:
+                ambiguous_since = observed_at
+            if (
+                observed_at - ambiguous_since
+                >= SAFARI_COMPOSER_AMBIGUITY_GRACE_SECONDS
+            ):
+                raise _ComposerReadinessTimeout(
+                    f"Expected one Safari {platform} composer, found {last_count}."
+                )
+        else:
+            ambiguous_since = None
+        page.wait_for_timeout(WEB_SEND_BUTTON_POLL_MILLISECONDS)
+    raise _ComposerReadinessTimeout(
+        f"The Safari {platform} composer readiness wait expired; found {last_count}."
     )
 
 
@@ -11973,7 +12104,7 @@ def _verify_agent_page(
             should_stop,
             availability_check,
         )
-    if browser_kind == "safari" and platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS:
+    if browser_kind == "safari" and platform not in SUPPORTED_SAFARI_WEB_SESSION_PLATFORMS:
         raise RuntimeError(
             f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome."
         )
@@ -11997,15 +12128,28 @@ def _verify_agent_page(
             "finish opening in the browser."
         )
     if browser_kind == "safari":
-        if not _wait_for_unique_grok_composer(
-            page,
-            should_stop=should_stop,
-            readiness_check=(
-                lambda: _run_availability_gate(availability_check)[1]
+        def readiness_check() -> float:
+            return (
+                _run_availability_gate(availability_check)[1]
                 if callable(availability_check)
                 else 0.0
-            ),
-        ):
+            )
+
+        composer_ready = (
+            _wait_for_unique_grok_composer(
+                page,
+                should_stop=should_stop,
+                readiness_check=readiness_check,
+            )
+            if platform == "grok"
+            else _wait_for_unique_safari_composer(
+                page,
+                platform,
+                should_stop=should_stop,
+                readiness_check=readiness_check,
+            )
+        )
+        if not composer_ready:
             return False
     elif not _wait_for_web_composer(
         page,
@@ -14194,6 +14338,7 @@ def _chatgpt_press_effort_key(
 ) -> bool:
     """Press one slider key, reacquiring the element once when ChatGPT redraws it."""
     candidate = slider
+    blocked_native_input: SafariNativeActivationError | None = None
     for _attempt in range(2):
         if candidate is None:
             candidate = _chatgpt_find_effort_slider_in_scope(
@@ -14211,6 +14356,10 @@ def _chatgpt_press_effort_key(
                 except TypeError:
                     press(key)
                 return True
+            except SafariNativeActivationError as exc:
+                if exc.input_attempted:
+                    return True
+                blocked_native_input = exc
             except Exception as exc:
                 if not _is_composer_wait_timeout(exc):
                     raise
@@ -14221,6 +14370,8 @@ def _chatgpt_press_effort_key(
             wait_for_timeout=wait_for_timeout,
             wait_budget=wait_budget,
         )
+    if blocked_native_input is not None:
+        raise blocked_native_input
     return False
 
 
@@ -14244,7 +14395,7 @@ def _chatgpt_normalize_effort_label(value: Any) -> str:
     """Keep one live provider effort label without assuming a subscription vocabulary."""
     normalized = " ".join(str(value or "").replace("\x00", "").split())
     normalized = re.sub(
-        r",\s*\d+\s+of\s+\d+\.?(?:\s+use\s+(?:left|right)(?:\s+and\s+(?:left|right))?\s+arrow.*)?$",
+        r",\s*\d+\s+of\s+\d+\.?(?:\s*use\s+(?:left|right)(?:\s+and\s+(?:left|right))?\s+arrow.*)?$",
         "",
         normalized,
         flags=re.IGNORECASE,
@@ -14296,7 +14447,7 @@ def _chatgpt_slider_effort_label(slider: Any) -> str:
                         .map(normalize)
                         .filter(Boolean)
                         .map(line => line.replace(
-                            /^(.+?),\s*\d+\s+of\s+\d+\.?(?:\s+use\s+(?:left|right)(?:\s+and\s+(?:left|right))?\s+arrow.*)?$/i,
+                            /^(.+?),\s*\d+\s+of\s+\d+\.?(?:\s*use\s+(?:left|right)(?:\s+and\s+(?:left|right))?\s+arrow.*)?$/i,
                             '$1',
                         ));
                     const candidates = [];
@@ -14321,7 +14472,7 @@ def _chatgpt_slider_effort_label(slider: Any) -> str:
                 }"""
             )
         except Exception as exc:
-            if _is_composer_wait_timeout(exc):
+            if _is_composer_wait_timeout(exc) or _is_safari_locator_remount_error(exc):
                 return ""
             raise
         if isinstance(raw_candidates, (list, tuple)):
@@ -14462,7 +14613,23 @@ def _chatgpt_discover_subscription_effort(
         reread = _read_chatgpt_model_menu(page)
         if reread.get("ok"):
             result = reread
-        label = _chatgpt_slider_effort_label(slider)
+        label = ""
+        for label_attempt in range(3):
+            label = _chatgpt_slider_effort_label(slider)
+            if label:
+                break
+            if label_attempt >= 2:
+                continue
+            slider = _chatgpt_find_effort_slider_in_scope(
+                page,
+                slider_scope,
+                trusted_model_menu_scope=trusted_model_menu_scope,
+                wait_for_timeout=wait_for_timeout,
+                wait_budget=slider_bind_wait_budget,
+            )
+            if slider is None:
+                break
+            wait_for_timeout(CHATGPT_MODEL_VIEW_POLL_MILLISECONDS)
         if not label:
             return finish(complete=False, error="effort-label-unreadable")
         if any(
@@ -15166,6 +15333,575 @@ def _select_chatgpt_model_chromium(
     return False
 
 
+def _chatgpt_safari_model_snapshot(
+    page: Any,
+    remote_labels: tuple[str, ...],
+    *,
+    power_marker: str,
+    select_marker: str,
+    choice_marker: str,
+) -> dict[str, Any]:
+    """Bind Safari model actions to one exact ChatGPT power menu."""
+    result = page.evaluate(
+        r"""({remoteLabels, powerMarker, selectMarker, choiceMarker}) => {
+            const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+            const normalized = (value) => normalize(value).toLowerCase();
+            const visible = (element) => {
+                if (!element || !element.getClientRects().length || element.closest('[inert]')) {
+                    return false;
+                }
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return true;
+            };
+            const hasMenuSemantics = (element) => {
+                if (!element
+                    || element.closest('[role="menu"], [role="listbox"]')
+                    || element.closest('#prompt-textarea, [contenteditable="true"]')) return false;
+                const popup = normalized(element.getAttribute('aria-haspopup'));
+                const expanded = normalized(element.getAttribute('aria-expanded'));
+                return popup === 'menu' || popup === 'listbox' || popup === 'true'
+                    || expanded === 'true' || expanded === 'false';
+            };
+            const excluded = (element) => {
+                const testId = normalized(element.getAttribute('data-testid'));
+                const label = normalized([
+                    element.getAttribute('aria-label'),
+                    element.innerText,
+                ].filter(Boolean).join(' '));
+                return testId === 'send-button'
+                    || testId === 'composer-plus-btn'
+                    || testId.includes('send-button')
+                    || /(?:^|\s)(?:send|stop|attach|plus|add photos?|microphone|voice|search|new chat|switch model)(?:$|\s)/i.test(label);
+            };
+            const composer = document.querySelector('#prompt-textarea, [contenteditable="true"]');
+            const nearComposer = (element) => {
+                if (!composer || !visible(composer)) return false;
+                const elementRect = element.getBoundingClientRect();
+                const composerRect = composer.getBoundingClientRect();
+                const verticalGap = Math.min(
+                    Math.abs(elementRect.bottom - composerRect.top),
+                    Math.abs(elementRect.top - composerRect.bottom),
+                );
+                const horizontalOverlap = elementRect.right >= composerRect.left - 96
+                    && elementRect.left <= composerRect.right + 96;
+                return verticalGap <= 180 && horizontalOverlap;
+            };
+            document.querySelectorAll('[data-cachelikes-chatgpt-safari-power]')
+                .forEach((element) => element.removeAttribute(
+                    'data-cachelikes-chatgpt-safari-power'
+                ));
+            document.querySelectorAll('[data-cachelikes-chatgpt-safari-select]')
+                .forEach((element) => element.removeAttribute(
+                    'data-cachelikes-chatgpt-safari-select'
+                ));
+            document.querySelectorAll('[data-cachelikes-chatgpt-safari-choice]')
+                .forEach((element) => element.removeAttribute(
+                    'data-cachelikes-chatgpt-safari-choice'
+                ));
+            const preferred = Array.from(document.querySelectorAll(
+                '[data-testid^="model-switcher-"], [data-testid*="model-switcher"], '
+                + '[data-testid*="thinking-effort"], [data-testid*="reasoning-effort"], '
+                + 'button.__composer-pill[aria-haspopup], [role="button"].__composer-pill[aria-haspopup]'
+            )).filter((element) => visible(element) && hasMenuSemantics(element) && !excluded(element));
+            const nearby = Array.from(document.querySelectorAll('button, [role="button"]'))
+                .filter((element) => (
+                    visible(element)
+                    && hasMenuSemantics(element)
+                    && !excluded(element)
+                    && nearComposer(element)
+                ));
+            const candidates = [...new Set(preferred.length ? preferred : nearby)];
+            if (candidates.length !== 1) {
+                return {
+                    ok: false,
+                    reason: candidates.length ? 'power-control-ambiguous' : 'power-control-not-found',
+                };
+            }
+            const power = candidates[0];
+            power.setAttribute('data-cachelikes-chatgpt-safari-power', powerMarker);
+            const expanded = normalized(power.getAttribute('aria-expanded')) === 'true';
+            const controlledId = normalize(power.getAttribute('aria-controls'));
+            if (!expanded) {
+                return {
+                    ok: true,
+                    expanded: false,
+                    controlledId,
+                    view: 'closed',
+                };
+            }
+            if (!controlledId) {
+                return {ok: false, reason: 'model-surface-not-found'};
+            }
+            const surfaces = Array.from(document.querySelectorAll('[id]'))
+                .filter((element) => element.id === controlledId && visible(element));
+            if (surfaces.length !== 1
+                || !['menu', 'listbox'].includes(surfaces[0].getAttribute('role'))) {
+                return {
+                    ok: false,
+                    reason: surfaces.length ? 'model-surface-ambiguous' : 'model-surface-not-found',
+                };
+            }
+            const surface = surfaces[0];
+            const actionCandidates = Array.from(surface.querySelectorAll(
+                '[aria-label="Select model"], [role="menuitem"], button, [role="button"]'
+            )).filter((element) => (
+                visible(element)
+                && !element.disabled
+                && element.getAttribute('aria-disabled') !== 'true'
+                && normalized(
+                    element.getAttribute('aria-label')
+                    || element.innerText
+                    || element.textContent
+                ) === 'select model'
+            ));
+            if (actionCandidates.length === 1) {
+                actionCandidates[0].setAttribute(
+                    'data-cachelikes-chatgpt-safari-select',
+                    selectMarker,
+                );
+            }
+            const choiceLabel = (element) => normalize(
+                String(element.innerText || element.textContent || '')
+                    .split(/\n+/)
+                    .find((line) => normalize(line))
+                    || element.getAttribute('aria-label')
+            );
+            const choices = Array.from(surface.querySelectorAll(
+                '[role="menuitemradio"], [role="option"]'
+            )).filter((element) => (
+                visible(element)
+                && !element.disabled
+                && element.getAttribute('aria-disabled') !== 'true'
+            ));
+            const available = choices.map(choiceLabel).filter(Boolean);
+            const selectedChoices = choices.filter((element) => (
+                element.getAttribute('aria-checked') === 'true'
+                || element.getAttribute('aria-selected') === 'true'
+            ));
+            const matches = (value) => remoteLabels.some((label) => (
+                normalized(value) === normalized(label)
+            ));
+            const targetChoices = choices.filter((element) => matches(choiceLabel(element)));
+            if (targetChoices.length === 1) {
+                targetChoices[0].setAttribute(
+                    'data-cachelikes-chatgpt-safari-choice',
+                    choiceMarker,
+                );
+            }
+            return {
+                ok: true,
+                expanded: true,
+                controlledId,
+                view: choices.length ? 'model' : 'effort',
+                selectCount: actionCandidates.length,
+                targetCount: targetChoices.length,
+                selected: selectedChoices.length === 1
+                    ? choiceLabel(selectedChoices[0])
+                    : '',
+                selectedCount: selectedChoices.length,
+                available,
+            };
+        }""",
+        {
+            "remoteLabels": list(remote_labels),
+            "powerMarker": power_marker,
+            "selectMarker": select_marker,
+            "choiceMarker": choice_marker,
+        },
+    )
+    return dict(result) if isinstance(result, dict) else {
+        "ok": False,
+        "reason": "model-control-unavailable",
+    }
+
+
+def _chatgpt_safari_click(
+    page: Any,
+    attribute: str,
+    marker: str,
+    expected_url: str,
+) -> tuple[bool, str]:
+    """Activate one previously verified Safari model control exactly once."""
+    locator = page.locator(f'[{attribute}="{marker}"]')
+    if locator.count() != 1 or not locator.first.is_visible():
+        return False, "model-control-remounted"
+    try:
+        if isinstance(locator.first, SafariLocator):
+            locator.first.click(
+                timeout=CHATGPT_MODEL_LOCATOR_TIMEOUT_MILLISECONDS,
+                expected_url=expected_url,
+            )
+        else:
+            locator.first.click(timeout=CHATGPT_MODEL_LOCATOR_TIMEOUT_MILLISECONDS)
+    except SafariNativeActivationError as exc:
+        if exc.input_attempted:
+            return True, "model-selection-click-uncertain"
+        return False, "model-selection-native-input-blocked"
+    except Exception as exc:
+        if _is_composer_wait_timeout(exc) or _is_safari_target_changed_before_input(exc):
+            return False, "model-control-remounted"
+        raise
+    return True, ""
+
+
+def _select_chatgpt_model_safari_in_transaction(
+    page: Any,
+    option: dict[str, Any],
+    remote_labels: tuple[str, ...],
+    observation: dict[str, Any] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    thinking_effort: str = CHATGPT_EFFORT_POLICY_HIGHEST,
+) -> bool:
+    """Select and verify ChatGPT through trusted Safari-native controls."""
+    stop_requested = should_stop or (lambda: False)
+    wait_for_timeout = getattr(page, "wait_for_timeout", lambda _milliseconds: None)
+    power_marker = f"chatgpt-power-{secrets.token_hex(8)}"
+    select_marker = f"chatgpt-select-{secrets.token_hex(8)}"
+    choice_marker = f"chatgpt-choice-{secrets.token_hex(8)}"
+    expected_url = str(getattr(page, "url", "") or "").strip()
+    available: list[str] = []
+    attempted_labels = remote_labels
+    stage = "discover-power-control"
+
+    def fail(reason: str, state: dict[str, Any] | None = None) -> bool:
+        payload = state or {}
+        diagnostic = {
+            key: payload[key]
+            for key in ("view", "selectCount", "targetCount", "selectedCount")
+            if isinstance(payload.get(key), (str, int))
+            and not isinstance(payload.get(key), bool)
+        }
+        diagnostic["stage"] = stage
+        _record_model_observation(
+            observation,
+            observed=str(payload.get("selected") or ""),
+            available=available or list(payload.get("available") or []),
+            attempted_labels=attempted_labels,
+            menu_text=", ".join(available or list(payload.get("available") or [])),
+            reason=reason,
+            diagnostic=diagnostic,
+        )
+        return False
+
+    def snapshot(labels: tuple[str, ...] | None = None) -> dict[str, Any]:
+        return _chatgpt_safari_model_snapshot(
+            page,
+            attempted_labels if labels is None else labels,
+            power_marker=power_marker,
+            select_marker=select_marker,
+            choice_marker=choice_marker,
+        )
+
+    def wait_for_view(view: str) -> dict[str, Any]:
+        state: dict[str, Any] = {}
+        for attempt in range(CHATGPT_MODEL_VIEW_WAIT_ATTEMPTS):
+            if stop_requested():
+                return {"ok": False, "reason": "stop-requested"}
+            state = snapshot()
+            if state.get("ok"):
+                if state.get("view") == view:
+                    return state
+                if attempt + 1 < CHATGPT_MODEL_VIEW_WAIT_ATTEMPTS:
+                    wait_for_timeout(CHATGPT_MODEL_VIEW_POLL_MILLISECONDS)
+                    continue
+                return {
+                    **state,
+                    "ok": False,
+                    "reason": "model-state-transition-unverified",
+                }
+            if state.get("reason") not in {
+                "model-surface-not-found",
+                "model-control-remounted",
+            }:
+                return state
+            if attempt + 1 < CHATGPT_MODEL_VIEW_WAIT_ATTEMPTS:
+                wait_for_timeout(CHATGPT_MODEL_VIEW_POLL_MILLISECONDS)
+        return state or {"ok": False, "reason": "model-surface-not-found"}
+
+    def click(attribute: str, marker: str) -> tuple[bool, str]:
+        if stop_requested():
+            return False, "stop-requested"
+        for attempt in range(4):
+            clicked, reason = _chatgpt_safari_click(
+                page,
+                attribute,
+                marker,
+                str(getattr(page, "url", "") or expected_url).strip(),
+            )
+            retryable_without_input = (
+                reason in SAFARI_RETRYABLE_CONTROL_BINDING_REASONS
+            )
+            if clicked or not retryable_without_input or attempt + 1 >= 4:
+                return clicked, reason
+            wait_for_timeout(CHATGPT_MODEL_VIEW_POLL_MILLISECONDS)
+            refreshed = snapshot()
+            if not refreshed.get("ok"):
+                return False, str(
+                    refreshed.get("reason") or "model-control-remounted"
+                )
+        return False, "model-control-remounted"
+
+    def wait_for_effort_or_reopen() -> dict[str, Any]:
+        effort_state = wait_for_view("effort")
+        if effort_state.get("ok") or effort_state.get("view") != "closed":
+            return effort_state
+        reopened, reason = click(
+            "data-cachelikes-chatgpt-safari-power",
+            power_marker,
+        )
+        if not reopened:
+            return {**effort_state, "ok": False, "reason": reason}
+        return wait_for_view("effort")
+
+    def wait_for_model_or_retry() -> dict[str, Any]:
+        model_state = wait_for_view("model")
+        for _attempt in range(2):
+            if model_state.get("ok"):
+                return model_state
+            if model_state.get("view") == "closed":
+                reopened, reason = click(
+                    "data-cachelikes-chatgpt-safari-power",
+                    power_marker,
+                )
+                if not reopened:
+                    return {**model_state, "ok": False, "reason": reason}
+                model_state = wait_for_effort_or_reopen()
+            if model_state.get("view") != "effort":
+                return model_state
+            if model_state.get("selectCount") != 1:
+                return {
+                    **model_state,
+                    "ok": False,
+                    "reason": "model-control-ambiguous",
+                }
+            selected, reason = click(
+                "data-cachelikes-chatgpt-safari-select",
+                select_marker,
+            )
+            if not selected:
+                return {**model_state, "ok": False, "reason": reason}
+            model_state = wait_for_view("model")
+        return model_state
+
+    _wait_for_chatgpt_composer_if_available(page, should_stop=stop_requested)
+    if stop_requested():
+        return fail("stop-requested")
+    state: dict[str, Any] = {}
+    for attempt in range(CHATGPT_MODEL_CONTROL_WAIT_ATTEMPTS):
+        state = snapshot()
+        if state.get("ok") or state.get("reason") != "power-control-not-found":
+            break
+        if attempt + 1 < CHATGPT_MODEL_CONTROL_WAIT_ATTEMPTS:
+            wait_for_timeout(CHATGPT_MODEL_CONTROL_POLL_MILLISECONDS)
+    if not state.get("ok"):
+        return fail(str(state.get("reason") or "power-control-not-found"), state)
+    if not state.get("expanded"):
+        stage = "open-power-menu"
+        clicked, reason = click(
+            "data-cachelikes-chatgpt-safari-power",
+            power_marker,
+        )
+        if not clicked:
+            return fail(reason, state)
+    stage = "wait-for-effort-view"
+    state = wait_for_effort_or_reopen()
+    if not state.get("ok"):
+        return fail(str(state.get("reason") or "model-surface-not-found"), state)
+    if state.get("selectCount") != 1:
+        return fail("model-control-ambiguous", state)
+    stage = "open-model-view"
+    clicked, reason = click(
+        "data-cachelikes-chatgpt-safari-select",
+        select_marker,
+    )
+    if not clicked:
+        return fail(reason, state)
+    stage = "wait-for-model-view"
+    state = wait_for_model_or_retry()
+    if not state.get("ok"):
+        return fail(str(state.get("reason") or "model-surface-not-found"), state)
+    available = [
+        str(value).strip()
+        for value in state.get("available", [])
+        if str(value).strip()
+    ]
+    if option["key"] == LATEST_CHATGPT_MODEL:
+        catalog = chatgpt_live_catalog(available)
+        if not catalog:
+            return fail("model-catalog-unavailable", state)
+        attempted_labels = tuple(catalog[0]["remote_labels"])
+        if observation is not None:
+            observation["model_options"] = catalog
+            observation["model_catalog_complete"] = True
+        state = snapshot()
+    if state.get("targetCount") != 1:
+        return fail(
+            "model-control-ambiguous"
+            if int(state.get("targetCount") or 0) > 1
+            else "model-not-exposed",
+            state,
+        )
+    selected_model = str(state.get("selected") or "").strip()
+    target_already_selected = bool(
+        state.get("selectedCount") == 1
+        and _chatgpt_model_text_matches(selected_model, attempted_labels)
+    )
+    if not target_already_selected:
+        stage = "select-model"
+        clicked, reason = click(
+            "data-cachelikes-chatgpt-safari-choice",
+            choice_marker,
+        )
+        if not clicked:
+            return fail(reason, state)
+        stage = "wait-for-effort-after-model"
+        state = wait_for_effort_or_reopen()
+        if not state.get("ok"):
+            return fail(str(state.get("reason") or "model-readback-mismatch"), state)
+        if state.get("selectCount") != 1:
+            return fail("model-control-ambiguous", state)
+        stage = "reopen-model-for-readback"
+        clicked, reason = click(
+            "data-cachelikes-chatgpt-safari-select",
+            select_marker,
+        )
+        if not clicked:
+            return fail(reason, state)
+        stage = "wait-for-model-readback"
+        state = wait_for_model_or_retry()
+        if not state.get("ok"):
+            return fail(str(state.get("reason") or "model-readback-mismatch"), state)
+        if (
+            state.get("selectedCount") != 1
+            or not _chatgpt_model_text_matches(
+                str(state.get("selected") or ""),
+                attempted_labels,
+            )
+            or state.get("targetCount") != 1
+        ):
+            return fail("model-readback-mismatch", state)
+        selected_model = str(state.get("selected") or "").strip()
+    stage = "close-model-view"
+    clicked, reason = click(
+        "data-cachelikes-chatgpt-safari-power",
+        power_marker,
+    )
+    if not clicked:
+        return fail(reason, state)
+    stage = "wait-for-closed-model-view"
+    state = wait_for_view("closed")
+    if not state.get("ok"):
+        return fail("model-menu-close-failed", state)
+    stage = "reopen-effort-view"
+    clicked, reason = click(
+        "data-cachelikes-chatgpt-safari-power",
+        power_marker,
+    )
+    if not clicked:
+        return fail(reason, state)
+    stage = "wait-for-effort-before-discovery"
+    state = wait_for_effort_or_reopen()
+    if not state.get("ok"):
+        return fail(str(state.get("reason") or "model-surface-not-found"), state)
+    menu_id = str(state.get("controlledId") or "").strip()
+    if not menu_id:
+        return fail("model-surface-not-found", state)
+    result_payload: dict[str, Any] = {
+        "ok": True,
+        "current": selected_model,
+        "selected_model": selected_model,
+        "available": available,
+        "thinking_effort": None,
+    }
+    stage = "discover-effort-catalog"
+    try:
+        verified_payload, effort_labels, catalog_complete = (
+            _chatgpt_select_subscription_effort(
+                page,
+                result_payload,
+                wait_for_timeout,
+                thinking_effort,
+                trusted_model_menu_scope=f"menu:{menu_id}",
+            )
+        )
+    except SafariNativeActivationError as exc:
+        return fail(
+            "effort-selection-click-uncertain"
+            if exc.input_attempted
+            else "effort-selection-native-input-blocked",
+            state,
+        )
+    if not catalog_complete:
+        return fail(
+            str(
+                verified_payload.get("effort_selection_error")
+                or "effort-selection-unverified"
+            ),
+            state,
+        )
+    state = snapshot()
+    if not state.get("ok"):
+        return fail("model-menu-state-unverified", state)
+    if state.get("expanded"):
+        stage = "close-power-menu"
+        clicked, reason = click(
+            "data-cachelikes-chatgpt-safari-power",
+            power_marker,
+        )
+        if not clicked:
+            return fail(reason, state)
+        stage = "wait-for-closed-menu"
+        closed_state = wait_for_view("closed")
+        if not closed_state.get("ok"):
+            return fail("model-menu-close-failed", closed_state)
+    elif state.get("view") != "closed":
+        return fail("model-menu-state-unverified", state)
+    _record_model_observation(
+        observation,
+        observed=selected_model,
+        available=available,
+        thinking_effort=_chatgpt_effort_label(verified_payload),
+        available_efforts=effort_labels,
+        effort_catalog_complete=True,
+        attempted_labels=attempted_labels,
+        menu_text=selected_model,
+    )
+    return True
+
+
+def _select_chatgpt_model_safari(
+    page: Any,
+    option: dict[str, Any],
+    remote_labels: tuple[str, ...],
+    observation: dict[str, Any] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    thinking_effort: str = CHATGPT_EFFORT_POLICY_HIGHEST,
+) -> bool:
+    """Keep the multi-step Safari model proof within one native focus lease."""
+    transaction_factory = getattr(page, "native_input_transaction", None)
+    transaction = (
+        transaction_factory()
+        if callable(transaction_factory)
+        else nullcontext()
+    )
+    with transaction:
+        return _select_chatgpt_model_safari_in_transaction(
+            page,
+            option,
+            remote_labels,
+            observation=observation,
+            should_stop=should_stop,
+            thinking_effort=thinking_effort,
+        )
+
+
 def _select_chatgpt_model(
     page: Any,
     browser_kind: str,
@@ -15187,6 +15923,15 @@ def _select_chatgpt_model(
         raise ValueError("Choose a supported ChatGPT model.")
 
     remote_labels = tuple(option.get("remote_labels") or (option.get("label", ""),))
+    if browser_kind == "safari":
+        return _select_chatgpt_model_safari(
+            page,
+            option,
+            remote_labels,
+            observation=observation,
+            should_stop=should_stop,
+            thinking_effort=thinking_effort,
+        )
 
     def verify_fallback_effort_catalog(result_payload: dict[str, Any]) -> bool:
         """Apply the same live effort proof when a compatibility selector chose the model."""
@@ -15868,6 +16613,53 @@ def _select_grok_model_with_trusted_clicks(
             return wait_for_closed()
         if should_stop():
             return False, current
+        if browser_kind == "safari" and isinstance(trigger, SafariLocator):
+            escape_target = page.locator(
+                f'[data-cachelikes-grok-model-choice="{choice_marker}"]'
+            )
+            if escape_target.count() == 1 and escape_target.first.is_visible():
+                trigger = escape_target.first
+            for attempt in range(2):
+                try:
+                    trigger.press(
+                        "Escape",
+                        timeout=3_000,
+                        expected_url=current_url,
+                    )
+                    break
+                except SafariNativeActivationError as exc:
+                    if exc.input_attempted:
+                        break
+                    return False, current
+                except Exception as exc:
+                    if attempt or not _is_composer_wait_timeout(exc):
+                        return False, current
+                    refreshed_state, refreshed_trigger = trigger_locator()
+                    current = str(refreshed_state.get("current") or current).strip()
+                    if (
+                        not refreshed_state.get("ok")
+                        or not refreshed_state.get("expanded")
+                        or not isinstance(refreshed_trigger, SafariLocator)
+                    ):
+                        return False, current
+                    refreshed_surface = _inspect_open_grok_model_surface(
+                        page,
+                        trigger_marker,
+                        surface_marker,
+                        choice_marker,
+                        remote_labels,
+                    )
+                    refreshed_choice = page.locator(
+                        f'[data-cachelikes-grok-model-choice="{choice_marker}"]'
+                    )
+                    trigger = (
+                        refreshed_choice.first
+                        if refreshed_surface.get("ok")
+                        and refreshed_choice.count() == 1
+                        and refreshed_choice.first.is_visible()
+                        else refreshed_trigger
+                    )
+            return wait_for_closed()
         try:
             _click_provider_locator(
                 trigger,
@@ -15888,6 +16680,29 @@ def _select_grok_model_with_trusted_clicks(
                 return False, current
             press("Escape")
         return wait_for_closed()
+
+    def close_verified_target_menu() -> tuple[bool, str]:
+        if browser_kind != "safari":
+            return close_menu()
+        choice = page.locator(
+            f'[data-cachelikes-grok-model-choice="{choice_marker}"]'
+        )
+        if choice.count() != 1 or not choice.first.is_visible():
+            return False, ""
+        try:
+            _click_provider_locator(
+                choice.first,
+                browser_kind,
+                current_url,
+                timeout=3_000,
+            )
+        except Exception as exc:
+            if not safari_input_may_have_landed(exc):
+                return False, ""
+        closed, current = wait_for_closed()
+        if closed:
+            return True, current
+        return close_menu()
 
     def open_menu() -> dict[str, Any]:
         blocking_state = _grok_blocking_dialog_snapshot(page)
@@ -15974,6 +16789,7 @@ def _select_grok_model_with_trusted_clicks(
             if surface_state.get("ok") or surface_state.get("reason") not in {
                 "model-menu-open-failed",
                 "model-surface-not-found",
+                "model-not-exposed",
             }:
                 return surface_state
         if click_uncertain:
@@ -16030,55 +16846,49 @@ def _select_grok_model_with_trusted_clicks(
     ):
         close_menu()
         return record_failure("model-selection-proof-conflict")
-
-    if not first_surface.get("selected"):
-        choice = page.locator(
-            f'[data-cachelikes-grok-model-choice="{choice_marker}"]'
+    if first_surface.get("selected"):
+        closed, current = close_verified_target_menu()
+        if not closed:
+            return record_failure("model-menu-close-failed", current)
+        if not _web_model_text_matches(current, trigger_labels):
+            return record_failure("model-readback-mismatch", current)
+        _record_model_observation(
+            observation,
+            observed=current,
+            available=available,
+            attempted_labels=remote_labels,
+            menu_text=current,
         )
-        if choice.count() != 1 or not choice.first.is_visible():
-            close_menu()
-            return record_failure("model-option-ambiguous")
-        if should_stop():
-            return record_failure("stop-requested")
-        try:
-            _click_provider_locator(
-                choice.first,
-                browser_kind,
-                current_url,
-                timeout=3_000,
-            )
-        except Exception as exc:
-            if safari_input_may_have_landed(exc):
-                selection_confirmed = False
-                for _attempt in range(20):
-                    if should_stop():
-                        return record_failure("stop-requested")
-                    state, _trigger = trigger_locator()
-                    if state.get("ok") and not state.get("expanded"):
-                        selection_confirmed = _web_model_text_matches(
-                            str(state.get("current") or ""),
-                            remote_labels,
-                        )
-                    elif state.get("ok") and state.get("expanded"):
-                        reread = _inspect_open_grok_model_surface(
-                            page,
-                            trigger_marker,
-                            surface_marker,
-                            choice_marker,
-                            remote_labels,
-                        )
-                        selection_confirmed = bool(reread.get("selected"))
-                    if selection_confirmed:
-                        break
-                    page.wait_for_timeout(100)
-                if not selection_confirmed:
-                    return record_failure("model-selection-click-uncertain")
-            elif browser_kind == "safari":
-                return record_failure("model-selection-native-input-blocked")
-            else:
-                page.wait_for_timeout(150)
+        return True
+
+    choice = page.locator(
+        f'[data-cachelikes-grok-model-choice="{choice_marker}"]'
+    )
+    if choice.count() != 1 or not choice.first.is_visible():
+        close_menu()
+        return record_failure("model-option-ambiguous")
+    if should_stop():
+        return record_failure("stop-requested")
+    try:
+        _click_provider_locator(
+            choice.first,
+            browser_kind,
+            current_url,
+            timeout=3_000,
+        )
+    except Exception as exc:
+        if safari_input_may_have_landed(exc):
+            selection_confirmed = False
+            for _attempt in range(20):
+                if should_stop():
+                    return record_failure("stop-requested")
                 state, _trigger = trigger_locator()
-                if state.get("ok") and state.get("expanded"):
+                if state.get("ok") and not state.get("expanded"):
+                    selection_confirmed = _web_model_text_matches(
+                        str(state.get("current") or ""),
+                        remote_labels,
+                    )
+                elif state.get("ok") and state.get("expanded"):
                     reread = _inspect_open_grok_model_surface(
                         page,
                         trigger_marker,
@@ -16086,29 +16896,48 @@ def _select_grok_model_with_trusted_clicks(
                         choice_marker,
                         remote_labels,
                     )
-                    if not reread.get("selected"):
-                        close_menu()
-                        return record_failure("model-selection-click-uncertain")
-        closed, current = wait_for_closed()
+                    selection_confirmed = bool(reread.get("selected"))
+                if selection_confirmed:
+                    break
+                page.wait_for_timeout(100)
+            if not selection_confirmed:
+                return record_failure("model-selection-click-uncertain")
+        elif browser_kind == "safari":
+            return record_failure("model-selection-native-input-blocked")
+        else:
+            page.wait_for_timeout(150)
+            state, _trigger = trigger_locator()
+            if state.get("ok") and state.get("expanded"):
+                reread = _inspect_open_grok_model_surface(
+                    page,
+                    trigger_marker,
+                    surface_marker,
+                    choice_marker,
+                    remote_labels,
+                )
+                if not reread.get("selected"):
+                    close_menu()
+                    return record_failure("model-selection-click-uncertain")
+    closed, current = wait_for_closed()
+    if not closed:
+        reread = _inspect_open_grok_model_surface(
+            page,
+            trigger_marker,
+            surface_marker,
+            choice_marker,
+            remote_labels,
+        )
+        if reread.get("selectionContradictory") or reread.get(
+            "selectionAmbiguous"
+        ):
+            close_menu()
+            return record_failure("model-selection-proof-conflict", current)
+        if not reread.get("selected"):
+            close_menu()
+            return record_failure("model-readback-mismatch", current)
+        closed, current = close_menu()
         if not closed:
-            reread = _inspect_open_grok_model_surface(
-                page,
-                trigger_marker,
-                surface_marker,
-                choice_marker,
-                remote_labels,
-            )
-            if reread.get("selectionContradictory") or reread.get(
-                "selectionAmbiguous"
-            ):
-                close_menu()
-                return record_failure("model-selection-proof-conflict", current)
-            if not reread.get("selected"):
-                close_menu()
-                return record_failure("model-readback-mismatch", current)
-            closed, current = close_menu()
-            if not closed:
-                return record_failure("model-menu-close-failed", current)
+            return record_failure("model-menu-close-failed", current)
 
     verification_surface = open_menu_after_onboarding_retry()
     if not verification_surface.get("ok"):
@@ -16125,7 +16954,7 @@ def _select_grok_model_with_trusted_clicks(
     if not verification_surface.get("selected"):
         close_menu()
         return record_failure("model-readback-mismatch")
-    closed, current = close_menu()
+    closed, current = close_verified_target_menu()
     if not closed:
         return record_failure("model-menu-close-failed", current)
     if not _web_model_text_matches(current, trigger_labels):
@@ -16138,6 +16967,457 @@ def _select_grok_model_with_trusted_clicks(
         menu_text=current,
     )
     return True
+
+
+def _safari_web_model_snapshot(
+    page: Any,
+    platform: str,
+    remote_labels: tuple[str, ...],
+    ui_label: str,
+    *,
+    accept_current: bool,
+    trigger_marker: str,
+    choice_marker: str,
+) -> dict[str, Any]:
+    """Describe one provider model control without returning a JavaScript Promise."""
+    result = page.evaluate(
+        r"""({platform, remoteLabels, uiLabel, acceptCurrent, triggerMarker, choiceMarker}) => {
+            const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+            const normalized = (value) => normalize(value).toLowerCase();
+            const visible = (element) => {
+                if (!element || !element.getClientRects().length || element.closest('[inert]')) {
+                    return false;
+                }
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return true;
+            };
+            const labelFor = (element) => normalize([
+                element?.getAttribute('aria-label'),
+                element?.innerText,
+                element?.textContent,
+            ].filter(Boolean).join(' '));
+            const hasPopup = (element) => {
+                const popup = normalized(element.getAttribute('aria-haspopup'));
+                const expanded = normalized(element.getAttribute('aria-expanded'));
+                return ['menu', 'listbox', 'dialog', 'true'].includes(popup)
+                    || expanded === 'true' || expanded === 'false';
+            };
+            document.querySelectorAll('[data-cachelikes-safari-web-model-trigger]')
+                .forEach((element) => element.removeAttribute(
+                    'data-cachelikes-safari-web-model-trigger'
+                ));
+            document.querySelectorAll('[data-cachelikes-safari-web-model-choice]')
+                .forEach((element) => element.removeAttribute(
+                    'data-cachelikes-safari-web-model-choice'
+                ));
+            const controls = [...document.querySelectorAll('button, [role="button"]')]
+                .filter(visible)
+                .filter((element) => !element.disabled
+                    && element.getAttribute('aria-disabled') !== 'true'
+                    && !element.closest('[role="menu"], [role="listbox"], [role="dialog"]')
+                    && hasPopup(element));
+            const preferred = controls.filter((element) => {
+                const metadata = normalized([
+                    labelFor(element),
+                    element.getAttribute('data-testid'),
+                    element.getAttribute('id'),
+                ].filter(Boolean).join(' '));
+                if (platform === 'gemini') {
+                    return /(?:^|\s)(?:open )?(?:model|mode) picker(?:[,:]|\s|$)/u.test(metadata)
+                        || /(?:^|\s)(?:model|mode) selector(?:[,:]|\s|$)/u.test(metadata)
+                        || metadata.includes('model-switcher');
+                }
+                return platform === 'claude' && (
+                    element.getAttribute('data-testid') === 'model-selector-dropdown'
+                    || /(?:^|\s)model:/u.test(metadata)
+                    || metadata.includes('model-selector')
+                );
+            });
+            if (preferred.length !== 1) {
+                return {
+                    ok: false,
+                    reason: preferred.length
+                        ? 'model-control-ambiguous'
+                        : 'model-control-not-found',
+                    diagnostic: {semantic_trigger_count: preferred.length},
+                };
+            }
+            const trigger = preferred[0];
+            trigger.setAttribute('data-cachelikes-safari-web-model-trigger', triggerMarker);
+            const controlledId = normalize(trigger.getAttribute('aria-controls'));
+            const visibleSurfaces = [...document.querySelectorAll(
+                '[role="menu"], [role="listbox"], [role="dialog"]'
+            )].filter(visible);
+            const controlledSurface = controlledId
+                ? document.getElementById(controlledId)
+                : null;
+            const surface = controlledSurface && visible(controlledSurface)
+                ? controlledSurface
+                : (visibleSurfaces.length === 1 ? visibleSurfaces[0] : null);
+            const expanded = trigger.getAttribute('aria-expanded') === 'true'
+                || Boolean(surface);
+            const current = labelFor(trigger);
+            if (acceptCurrent || !expanded) {
+                return {
+                    ok: true,
+                    expanded,
+                    current,
+                    selected: acceptCurrent ? current : '',
+                    available: acceptCurrent && current ? [current] : [],
+                    controlledId,
+                };
+            }
+            if (!surface) {
+                return {
+                    ok: false,
+                    reason: visibleSurfaces.length
+                        ? 'model-surface-ambiguous'
+                        : 'model-surface-not-found',
+                    current,
+                    controlledId,
+                };
+            }
+            const primaryLabel = (element) => {
+                const primary = element.querySelector(
+                    '.label, [data-testid*="label" i], [data-testid*="name" i]'
+                );
+                if (primary && visible(primary)) {
+                    return normalize(primary.innerText || primary.textContent);
+                }
+                return normalize(
+                    String(element.innerText || element.textContent || '')
+                        .split(/\n+/)
+                        .find((line) => normalize(line))
+                    || element.getAttribute('aria-label')
+                );
+            };
+            const candidates = [...surface.querySelectorAll(
+                '[role="menuitem"], [role="menuitemradio"], [role="option"], button'
+            )]
+                .filter(visible)
+                .filter((element) => !element.disabled
+                    && element.getAttribute('aria-disabled') !== 'true');
+            const wanted = [uiLabel, ...remoteLabels]
+                .map(normalized)
+                .filter(Boolean);
+            const targetChoices = candidates.filter((element) => (
+                wanted.includes(normalized(primaryLabel(element)))
+            ));
+            if (targetChoices.length === 1) {
+                targetChoices[0].setAttribute(
+                    'data-cachelikes-safari-web-model-choice',
+                    choiceMarker,
+                );
+            }
+            const selectedProof = (element) => Boolean(element) && (
+                element.getAttribute('aria-selected') === 'true'
+                || element.getAttribute('aria-checked') === 'true'
+                || element.classList.contains('selected')
+                || [...element.querySelectorAll('[aria-label]')].some((marker) => (
+                    ['selected', '已选中', '已選取', '已選中'].includes(
+                        normalized(marker.getAttribute('aria-label'))
+                    )
+                ))
+            );
+            const selectedTargets = targetChoices.filter(selectedProof);
+            const available = candidates.map(primaryLabel).filter(Boolean);
+            const signedOut = candidates.some((element) => (
+                normalized(primaryLabel(element)) === 'sign in for all models'
+            ));
+            return {
+                ok: true,
+                expanded: true,
+                current,
+                controlledId,
+                targetCount: targetChoices.length,
+                targetSelected: selectedTargets.length === 1,
+                selected: selectedTargets.length === 1
+                    ? primaryLabel(selectedTargets[0])
+                    : '',
+                selectedCount: selectedTargets.length,
+                signedOut,
+                available,
+            };
+        }""",
+        {
+            "platform": platform,
+            "remoteLabels": list(remote_labels),
+            "uiLabel": ui_label,
+            "acceptCurrent": accept_current,
+            "triggerMarker": trigger_marker,
+            "choiceMarker": choice_marker,
+        },
+    )
+    return dict(result) if isinstance(result, dict) else {
+        "ok": False,
+        "reason": "model-control-unavailable",
+    }
+
+
+def _safari_web_model_click(
+    page: Any,
+    attribute: str,
+    marker: str,
+    expected_url: str,
+) -> tuple[bool, str]:
+    """Activate one synchronously marked Safari provider-model control."""
+    locator = page.locator(f'[{attribute}="{marker}"]')
+    if locator.count() != 1 or not locator.first.is_visible():
+        return False, "model-control-remounted"
+    try:
+        if isinstance(locator.first, SafariLocator):
+            locator.first.click(
+                timeout=CHATGPT_MODEL_LOCATOR_TIMEOUT_MILLISECONDS,
+                expected_url=expected_url,
+            )
+        else:
+            locator.first.click(timeout=CHATGPT_MODEL_LOCATOR_TIMEOUT_MILLISECONDS)
+    except SafariNativeActivationError as exc:
+        if exc.input_attempted:
+            return True, "model-selection-click-uncertain"
+        return False, "model-selection-native-input-blocked"
+    except Exception as exc:
+        if _is_composer_wait_timeout(exc) or _is_safari_target_changed_before_input(exc):
+            return False, "model-control-remounted"
+        raise
+    return True, ""
+
+
+def _select_safari_web_model_in_transaction(
+    page: Any,
+    platform: str,
+    option: dict[str, Any],
+    remote_labels: tuple[str, ...],
+    observation: dict[str, Any] | None,
+    should_stop: Callable[[], bool],
+) -> bool:
+    """Select Gemini or read Claude Auto through synchronous Safari snapshots."""
+    trigger_marker = f"web-model-trigger-{secrets.token_hex(8)}"
+    choice_marker = f"web-model-choice-{secrets.token_hex(8)}"
+    expected_url = str(getattr(page, "url", "") or "").strip()
+    wait_for_timeout = getattr(page, "wait_for_timeout", lambda _milliseconds: None)
+    accept_current = option.get("accept_current") is True
+    ui_label = str(option.get("ui_label") or option.get("label") or "").strip()
+
+    def snapshot() -> dict[str, Any]:
+        return _safari_web_model_snapshot(
+            page,
+            platform,
+            remote_labels,
+            ui_label,
+            accept_current=accept_current,
+            trigger_marker=trigger_marker,
+            choice_marker=choice_marker,
+        )
+
+    def click(attribute: str, marker: str) -> tuple[bool, str]:
+        for attempt in range(4):
+            clicked, reason = _safari_web_model_click(
+                page,
+                attribute,
+                marker,
+                str(getattr(page, "url", "") or expected_url).strip(),
+            )
+            retryable_without_input = (
+                reason in SAFARI_RETRYABLE_CONTROL_BINDING_REASONS
+            )
+            if clicked or not retryable_without_input or attempt + 1 >= 4:
+                return clicked, reason
+            wait_for_timeout(CHATGPT_MODEL_VIEW_POLL_MILLISECONDS)
+            refreshed = snapshot()
+            if not refreshed.get("ok"):
+                return False, str(
+                    refreshed.get("reason") or "model-control-remounted"
+                )
+        return False, "model-control-remounted"
+
+    def wait_for_expanded(expanded: bool) -> dict[str, Any]:
+        state: dict[str, Any] = {}
+        for attempt in range(CHATGPT_MODEL_VIEW_WAIT_ATTEMPTS):
+            if should_stop():
+                return {"ok": False, "reason": "stop-requested"}
+            state = snapshot()
+            if state.get("ok") and bool(state.get("expanded")) is expanded:
+                return state
+            if state.get("reason") not in {
+                "model-control-not-found",
+                "model-surface-not-found",
+                "model-control-remounted",
+            }:
+                return state
+            if attempt + 1 < CHATGPT_MODEL_VIEW_WAIT_ATTEMPTS:
+                wait_for_timeout(CHATGPT_MODEL_VIEW_POLL_MILLISECONDS)
+        return state or {"ok": False, "reason": "model-state-transition-unverified"}
+
+    def record_failure(reason: str, state: dict[str, Any] | None = None) -> bool:
+        payload = state or {}
+        available = [
+            str(value).strip()
+            for value in payload.get("available", [])
+            if str(value).strip()
+        ]
+        diagnostic = dict(payload.get("diagnostic") or {})
+        for key in ("targetCount", "selectedCount"):
+            value = payload.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                diagnostic[key] = value
+        _record_model_observation(
+            observation,
+            observed=str(payload.get("selected") or payload.get("current") or ""),
+            available=available,
+            attempted_labels=remote_labels,
+            menu_text=", ".join(available),
+            reason=reason,
+            diagnostic=diagnostic,
+        )
+        return False
+
+    state: dict[str, Any] = {}
+    for attempt in range(WEB_MODEL_CONTROL_WAIT_ATTEMPTS):
+        if should_stop():
+            return record_failure("stop-requested")
+        state = snapshot()
+        if state.get("ok") or state.get("reason") != "model-control-not-found":
+            break
+        if attempt + 1 < WEB_MODEL_CONTROL_WAIT_ATTEMPTS:
+            wait_for_timeout(int(WEB_MODEL_CONTROL_POLL_SECONDS * 1_000))
+    if not state.get("ok"):
+        return record_failure(
+            str(state.get("reason") or "model-control-unavailable"),
+            state,
+        )
+    if accept_current:
+        current = str(state.get("current") or state.get("selected") or "").strip()
+        if not current:
+            return record_failure("model-readback-mismatch", state)
+        if state.get("expanded"):
+            clicked, reason = click(
+                "data-cachelikes-safari-web-model-trigger",
+                trigger_marker,
+            )
+            if not clicked:
+                return record_failure(reason, state)
+            closed_state = wait_for_expanded(False)
+            if not closed_state.get("ok"):
+                return record_failure("model-menu-close-failed", closed_state)
+        _record_model_observation(
+            observation,
+            observed=current,
+            available=[current],
+            attempted_labels=remote_labels,
+            menu_text=current,
+        )
+        return True
+    if platform != "gemini":
+        return record_failure("model-control-unavailable", state)
+    if not state.get("expanded"):
+        clicked, reason = click(
+            "data-cachelikes-safari-web-model-trigger",
+            trigger_marker,
+        )
+        if not clicked:
+            return record_failure(reason, state)
+        state = wait_for_expanded(True)
+    if not state.get("ok"):
+        return record_failure(
+            str(state.get("reason") or "model-menu-open-failed"),
+            state,
+        )
+    if state.get("signedOut"):
+        return record_failure("signed-out", state)
+    if state.get("targetCount") == 0:
+        for attempt in range(CHATGPT_MODEL_VIEW_WAIT_ATTEMPTS):
+            if should_stop():
+                return record_failure("stop-requested", state)
+            if attempt:
+                wait_for_timeout(CHATGPT_MODEL_VIEW_POLL_MILLISECONDS)
+            state = snapshot()
+            if (
+                not state.get("ok")
+                or not state.get("expanded")
+                or state.get("targetCount") != 0
+            ):
+                break
+    if state.get("targetCount") != 1:
+        return record_failure(
+            "model-control-ambiguous"
+            if int(state.get("targetCount") or 0) > 1
+            else "model-not-exposed",
+            state,
+        )
+    if not state.get("targetSelected"):
+        clicked, reason = click(
+            "data-cachelikes-safari-web-model-choice",
+            choice_marker,
+        )
+        if not clicked:
+            return record_failure(reason, state)
+        state = wait_for_expanded(False)
+        if not state.get("ok"):
+            return record_failure("model-menu-did-not-close-after-selection", state)
+        clicked, reason = click(
+            "data-cachelikes-safari-web-model-trigger",
+            trigger_marker,
+        )
+        if not clicked:
+            return record_failure(reason, state)
+        state = wait_for_expanded(True)
+        if not state.get("ok"):
+            return record_failure("model-menu-reopen-failed", state)
+        if state.get("targetCount") != 1 or not state.get("targetSelected"):
+            return record_failure("model-readback-mismatch", state)
+    selected = str(state.get("selected") or ui_label).strip()
+    available = [
+        str(value).strip()
+        for value in state.get("available", [])
+        if str(value).strip()
+    ]
+    clicked, reason = click(
+        "data-cachelikes-safari-web-model-trigger",
+        trigger_marker,
+    )
+    if not clicked:
+        return record_failure(reason, state)
+    closed_state = wait_for_expanded(False)
+    if not closed_state.get("ok"):
+        return record_failure("model-menu-close-failed", closed_state)
+    _record_model_observation(
+        observation,
+        observed=selected,
+        available=available,
+        attempted_labels=remote_labels,
+        menu_text=selected,
+    )
+    return True
+
+
+def _select_safari_web_model(
+    page: Any,
+    platform: str,
+    option: dict[str, Any],
+    remote_labels: tuple[str, ...],
+    observation: dict[str, Any] | None,
+    should_stop: Callable[[], bool],
+) -> bool:
+    """Hold one Safari focus lease across provider-model inspection and selection."""
+    transaction_factory = getattr(page, "native_input_transaction", None)
+    transaction = transaction_factory() if callable(transaction_factory) else nullcontext()
+    with transaction:
+        return _select_safari_web_model_in_transaction(
+            page,
+            platform,
+            option,
+            remote_labels,
+            observation,
+            should_stop,
+        )
 
 
 def _select_web_model(
@@ -16177,6 +17457,7 @@ def _select_web_model(
     if option is None:
         raise ValueError(f"Choose a supported {AGENT_PLATFORM_BY_KEY[platform]['label']} model.")
     remote_labels = tuple(option.get("remote_labels") or (option.get("label", ""),))
+    accept_current_model = option.get("accept_current") is True
     if stop_requested():
         _record_model_observation(
             observation,
@@ -16184,6 +17465,44 @@ def _select_web_model(
             attempted_labels=remote_labels,
         )
         return False
+    if browser_kind == "safari" and platform in {"gemini", "claude"}:
+        if not callable(getattr(page, "locator", None)):
+            _record_model_observation(
+                observation,
+                reason="trusted-model-selector-unavailable",
+                attempted_labels=remote_labels,
+            )
+            return False
+        if callable(availability_check):
+            available, _paused_seconds = _run_availability_gate(
+                availability_check
+            )
+            if not available:
+                _record_model_observation(
+                    observation,
+                    reason="stop-requested",
+                    attempted_labels=remote_labels,
+                )
+                return False
+        executed, selected = _run_browser_action_unless_stopped(
+            stop_requested,
+            lambda: _select_safari_web_model(
+                page,
+                platform,
+                option,
+                remote_labels,
+                observation,
+                stop_requested,
+            ),
+        )
+        if not executed:
+            _record_model_observation(
+                observation,
+                reason="stop-requested",
+                attempted_labels=remote_labels,
+            )
+            return False
+        return bool(selected)
     if platform == "grok":
         if not callable(getattr(page, "locator", None)):
             _record_model_observation(
@@ -16206,16 +17525,26 @@ def _select_web_model(
                     attempted_labels=remote_labels,
                 )
                 return False
+        def select_grok_model() -> bool:
+            transaction_factory = getattr(page, "native_input_transaction", None)
+            transaction = (
+                transaction_factory()
+                if browser_kind == "safari" and callable(transaction_factory)
+                else nullcontext()
+            )
+            with transaction:
+                return _select_grok_model_with_trusted_clicks(
+                    page,
+                    browser_kind,
+                    remote_labels,
+                    trigger_labels,
+                    observation,
+                    stop_requested,
+                )
+
         executed, selected = _run_browser_action_unless_stopped(
             stop_requested,
-            lambda: _select_grok_model_with_trusted_clicks(
-                page,
-                browser_kind,
-                remote_labels,
-                trigger_labels,
-                observation,
-                stop_requested,
-            ),
+            select_grok_model,
         )
         if not executed:
             _record_model_observation(
@@ -16228,7 +17557,7 @@ def _select_web_model(
 
     def evaluate_model_control() -> Any:
         return page.evaluate(
-            r"""async ({remoteLabels, platform, uiLabel}) => {
+            r"""async ({remoteLabels, platform, uiLabel, acceptCurrentModel}) => {
             const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
             const isVisible = (element) => {
                 if (!element || element.getClientRects().length === 0) return false;
@@ -16377,7 +17706,10 @@ def _select_web_model(
                         || (platform === 'grok' && surface.contains(owner));
                 })
                 .filter((element) => !/send|submit|attach|upload|dictate/i.test(labelFor(element)));
-            const trigger = findTrigger();
+            const matchingTriggers = triggerCandidates().filter(triggerLabelMatches);
+            const trigger = acceptCurrentModel
+                ? (matchingTriggers.length === 1 ? matchingTriggers[0] : null)
+                : findTrigger();
             if (!trigger) {
                 const visibleButtons = [...document.querySelectorAll('button, [role="button"]')]
                     .filter(isVisible);
@@ -16386,7 +17718,9 @@ def _select_web_model(
                 )].filter(isVisible);
                 return {
                     ok: false,
-                    reason: 'model-control-not-found',
+                    reason: acceptCurrentModel && matchingTriggers.length > 1
+                        ? 'model-control-ambiguous'
+                        : 'model-control-not-found',
                     available: [],
                     menuRoles: visibleSurfaces()
                         .map((surface) => normalize(surface.getAttribute('role') || ''))
@@ -16400,6 +17734,17 @@ def _select_web_model(
                         visible_menu_count: visibleSurfaces().length,
                     },
                 };
+            }
+            if (acceptCurrentModel) {
+                const selected = labelFor(trigger);
+                const closed = await closeExpandedTrigger(trigger);
+                return selected && closed
+                    ? {ok: true, selected, available: [selected]}
+                    : {
+                        ok: false,
+                        reason: closed ? 'model-readback-mismatch' : 'model-menu-close-failed',
+                        available: selected ? [selected] : [],
+                    };
             }
             const controlledId = (trigger.getAttribute('aria-controls') || '').trim();
             const exactGeminiPrimary = normalize(uiLabel);
@@ -16634,6 +17979,7 @@ def _select_web_model(
                 "remoteLabels": list(remote_labels),
                 "platform": platform,
                 "uiLabel": str(option.get("ui_label") or option.get("label") or ""),
+                "acceptCurrentModel": accept_current_model,
             },
         )
 
@@ -16677,7 +18023,10 @@ def _select_web_model(
     if (
         isinstance(result, dict)
         and result.get("ok")
-        and _web_model_text_matches(selected_model, remote_labels)
+        and (
+            accept_current_model
+            or _web_model_text_matches(selected_model, remote_labels)
+        )
     ):
         _record_model_observation(
             observation,
@@ -17160,7 +18509,7 @@ def _submit_and_wait(
     if on_commit_attempted is not None:
         on_commit_attempted()
     if browser_kind == "safari":
-        if platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS:
+        if platform not in SUPPORTED_SAFARI_WEB_SESSION_PLATFORMS:
             raise RuntimeError(
                 f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome."
             )
@@ -18670,7 +20019,7 @@ def _submit_safari_prompt(
     """Fill one verified Safari composer and click its provider send control once."""
     if should_stop():
         return False
-    if platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS:
+    if platform not in SUPPORTED_SAFARI_WEB_SESSION_PLATFORMS:
         raise RuntimeError(
             f"{AGENT_PLATFORM_BY_KEY[platform]['label']} Agent sessions require Edge or Chrome."
         )
@@ -18739,10 +20088,22 @@ def _submit_safari_prompt(
                 return {filled: false, composerCount: composers.length};
             }
             const composer = composers[0];
+            const readComposer = (element) => {
+                if (!element) return '';
+                if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
+                    return element.value || '';
+                }
+                return element.innerText || element.textContent || '';
+            };
             composer.setAttribute('data-cachelikes-safari-composer', composerMarker);
             composer.focus();
-            if (composer.tagName === 'TEXTAREA') {
-                const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+            if (composer.tagName === 'TEXTAREA' || composer.tagName === 'INPUT') {
+                const setter = Object.getOwnPropertyDescriptor(
+                    composer.tagName === 'TEXTAREA'
+                        ? HTMLTextAreaElement.prototype
+                        : HTMLInputElement.prototype,
+                    'value',
+                )?.set;
                 if (setter) setter.call(composer, value); else composer.value = value;
                 composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
             } else {
@@ -18752,14 +20113,13 @@ def _submit_safari_prompt(
                 selection?.removeAllRanges();
                 selection?.addRange(range);
                 const inserted = Boolean(document.execCommand?.('insertText', false, value));
-                if (!inserted || composer.textContent !== value) {
+                if (!inserted || readComposer(composer).replace(/\r\n?/g, '\n').trim()
+                    !== value.replace(/\r\n?/g, '\n').trim()) {
                     composer.textContent = value;
                     composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
                 }
             }
-            const readback = 'value' in composer
-                ? composer.value
-                : (composer.innerText || composer.textContent || '');
+            const readback = readComposer(composer);
             return {
                 filled: readback.replace(/\r\n?/g, '\n').trim()
                     === value.replace(/\r\n?/g, '\n').trim(),
@@ -18829,6 +20189,7 @@ def _submit_safari_prompt(
                 }
                 const normalize = (value) => String(value || '')
                     .replace(/\r\n?/g, '\n').trim();
+                const collapse = (value) => normalize(value).replace(/\s+/g, ' ');
                 const composerMatches = [...document.querySelectorAll(
                     '[data-cachelikes-safari-composer]'
                 )].filter((element) => (
@@ -18837,15 +20198,29 @@ def _submit_safari_prompt(
                 ));
                 const composer = composerMatches.length === 1 ? composerMatches[0] : null;
                 const composerValue = composer
-                    ? ('value' in composer
-                        ? composer.value
-                        : (composer.innerText || composer.textContent || ''))
+                    ? (
+                        composer.tagName === 'TEXTAREA' || composer.tagName === 'INPUT'
+                            ? (composer.value || '')
+                            : (composer.innerText || composer.textContent || '')
+                    )
                     : '';
-                if (!composer || normalize(composerValue) !== normalize(expectedMessage)) {
+                const normalizedComposer = normalize(composerValue);
+                const normalizedExpected = normalize(expectedMessage);
+                const receipt = (String(expectedMessage || '').match(
+                    /agent-(?:transfer|turn)-[0-9a-f]{16,}/i
+                ) || [])[0] || '';
+                const composerExact = collapse(composerValue) === collapse(expectedMessage)
+                    || Boolean(
+                        receipt
+                        && normalizedComposer.toLowerCase().includes(receipt.toLowerCase())
+                    );
+                if (!composer || !composerExact) {
                     return {
                         clicked: false,
                         composerCount: composerMatches.length,
                         composerExact: false,
+                        composerLength: normalizedComposer.length,
+                        expectedLength: normalizedExpected.length,
                     };
                 }
                 const semanticLabels = (button) => [
@@ -18949,6 +20324,18 @@ def _submit_safari_prompt(
                     f"{AGENT_PLATFORM_BY_KEY[platform]['label']} send buttons and "
                     "refused native input."
                 )
+            if result.get("composerExact") is False:
+                refilled, fill_retry = _run_browser_action_unless_stopped(
+                    should_stop,
+                    fill_verified_composer,
+                )
+                if not refilled:
+                    return False
+                if isinstance(fill_retry, dict) and fill_retry.get("targetMismatch"):
+                    raise RuntimeError(
+                        f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} tab changed before "
+                        "Safari could fill the prompt."
+                    )
             if result.get("ready"):
                 if session_check is not None:
                     session_check(False)
