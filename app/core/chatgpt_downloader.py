@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.49.2-codex.1
+# Code version: v1.49.3-codex.1
 
 from __future__ import annotations
 
@@ -3031,7 +3031,7 @@ def _is_unavailable_chatgpt_image_error(candidate: ChatGPTImageCandidate, error:
 def _launch_chatgpt_browser_context(descriptor, initial_url: str):
     """Open one isolated authenticated context for either Chromium or Safari."""
     if descriptor.engine == "safari":
-        with SafariContext(initial_url) as context:
+        with SafariContext(initial_url, lock_blocking=False) as context:
             yield context
         return
 

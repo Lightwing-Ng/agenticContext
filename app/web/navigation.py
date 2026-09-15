@@ -1,6 +1,6 @@
 """Canonical local-console navigation helpers.
 
-Code version: v1.2.0-codex.1
+Code version: v1.3.0-codex.1
 """
 
 from __future__ import annotations
@@ -8,7 +8,6 @@ from __future__ import annotations
 from app.core.agent import (
     SUPPORTED_AGENT_PLATFORMS,
     SUPPORTED_BROWSERS,
-    SUPPORTED_SAFARI_AGENT_PLATFORMS,
 )
 
 
@@ -19,10 +18,6 @@ def is_supported_agent_selection(browser: str | None, platform: str | None) -> b
     return (
         selected_browser in SUPPORTED_BROWSERS
         and selected_platform in SUPPORTED_AGENT_PLATFORMS
-        and not (
-            selected_browser == "safari"
-            and selected_platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS
-        )
     )
 
 

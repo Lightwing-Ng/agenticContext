@@ -1,12 +1,13 @@
 # Browser Jury
 
-Documentation version: `v1.1.1-codex.1`
+Documentation version: `v1.2.0-codex.1`
 
 ## Workflow
 
 Agentic retains the existing project controller. Jurors opens `/jury/edge` and uses only
 authenticated provider websites. There is no project picker, context upload, or Terminal
-readiness check. Edge and Chrome use the existing Browser control design.
+readiness check. Jury is Chromium-only: only Edge or Chrome is admitted, and Safari is not a Jury
+runtime. Edge and Chrome use the existing Browser control design.
 
 ChatGPT Latest / Extra High, Grok Auto, and Gemini 3.1 Pro are selected by default.
 Claude is available only when explicitly checked. Requested model labels are verified on the

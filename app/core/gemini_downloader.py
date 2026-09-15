@@ -1,6 +1,6 @@
 """Browser-backed Gemini session history caching."""
 
-# Code version: v1.10.6-codex.1
+# Code version: v1.11.0-codex.1
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .browser_sessions import (
@@ -484,12 +484,24 @@ def wait_for_gemini_bot_check_clear(
         page.wait_for_timeout(GEMINI_BOT_CHECK_POLL_MILLISECONDS)
 
 
-def _wait_for_gemini_ready(page, timeout_seconds: float = GEMINI_READY_TIMEOUT_SECONDS) -> dict[str, Any]:
+def _wait_for_gemini_ready(
+    page,
+    timeout_seconds: float = GEMINI_READY_TIMEOUT_SECONDS,
+    *,
+    deadline: float | None = None,
+) -> dict[str, Any]:
     """Wait until Gemini exposes authenticated navigation or a chat composer."""
-    remaining_checks = max(1, int(max(1.0, timeout_seconds) / 0.5))
+    started_at = time.monotonic()
+    ready_deadline = started_at + max(1.0, timeout_seconds)
+    if deadline is not None:
+        ready_deadline = min(ready_deadline, float(deadline))
+    remaining_seconds = ready_deadline - started_at
+    remaining_checks = max(1, int(max(0.5, remaining_seconds) / 0.5))
     last_snapshot: dict[str, Any] = {}
     consecutive_signed_out_checks = 0
     for _attempt in range(remaining_checks):
+        if time.monotonic() >= ready_deadline:
+            break
         last_snapshot = inspect_gemini_session(page)
         if last_snapshot.get("unsupportedRegion"):
             raise RuntimeError(
@@ -499,7 +511,9 @@ def _wait_for_gemini_ready(page, timeout_seconds: float = GEMINI_READY_TIMEOUT_S
             consecutive_signed_out_checks += 1
             if consecutive_signed_out_checks >= 2:
                 raise RuntimeError("The selected browser is not signed in to Gemini.")
-            page.wait_for_timeout(500)
+            wait_ms = min(500, max(0, int((ready_deadline - time.monotonic()) * 1_000)))
+            if wait_ms:
+                page.wait_for_timeout(wait_ms)
             continue
         consecutive_signed_out_checks = 0
         if (
@@ -509,15 +523,23 @@ def _wait_for_gemini_ready(page, timeout_seconds: float = GEMINI_READY_TIMEOUT_S
             or is_gemini_conversation_url(str(last_snapshot.get("href") or ""))
         ):
             return last_snapshot
-        page.wait_for_timeout(500)
+        wait_ms = min(500, max(0, int((ready_deadline - time.monotonic()) * 1_000)))
+        if wait_ms:
+            page.wait_for_timeout(wait_ms)
     raise RuntimeError(
         "Gemini did not expose an authenticated chat page before the startup timeout. "
         f"Last page: {last_snapshot.get('title') or last_snapshot.get('href') or 'unknown'}."
     )
 
 
-def _open_gemini_sidebar(page) -> None:
+def _open_gemini_sidebar(
+    page,
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
     """Open the main navigation and its independently collapsible Recents list."""
+    stop_requested = should_stop or (lambda: False)
+    if stop_requested():
+        return
     opened_sidebar = page.evaluate(
         r"""() => {
             const hasConversationLinks = [...document.querySelectorAll('a[href]')].some((link) => {
@@ -536,8 +558,12 @@ def _open_gemini_sidebar(page) -> None:
         }"""
     )
     if opened_sidebar:
+        if stop_requested():
+            return
         page.wait_for_timeout(GEMINI_RENDER_SETTLE_MILLISECONDS)
     for _attempt_index in range(20):
+        if stop_requested():
+            return
         recents_state = page.evaluate(
             r"""() => {
             const conversationLinks = [...document.querySelectorAll('a[href]')].filter((link) => {
@@ -566,6 +592,8 @@ def _open_gemini_sidebar(page) -> None:
         if isinstance(recents_state, dict):
             if int(recents_state.get("links") or 0) > 0 or recents_state.get("expanded"):
                 return
+        if stop_requested():
+            return
         page.wait_for_timeout(500)
 
 
@@ -985,6 +1013,8 @@ def _collect_gemini_rpc_conversation_links(
     cursor = ""
     wait_rounds = max(1, GEMINI_HISTORY_RPC_READY_WAIT_MILLISECONDS // 500)
     for wait_index in range(wait_rounds + 1):
+        if should_stop():
+            return list(collected.values())[:max_conversations]
         for response in list(captured_responses):
             try:
                 payloads = _decode_gemini_history_rpc_payloads(response.text())
@@ -1000,6 +1030,8 @@ def _collect_gemini_rpc_conversation_links(
         if page_request is not None:
             break
         if wait_index < wait_rounds:
+            if should_stop():
+                return list(collected.values())[:max_conversations]
             page.wait_for_timeout(500)
     if page_request is None:
         raise RuntimeError(
@@ -1016,10 +1048,14 @@ def _collect_gemini_rpc_conversation_links(
         and len(collected) < max_conversations
         and not should_stop()
     ):
+        if should_stop():
+            break
         page.wait_for_timeout(pause_ms)
         payloads: list[Any] | None = None
         last_error: Exception | None = None
         for attempt_index in range(GEMINI_HISTORY_RPC_RETRY_LIMIT):
+            if should_stop():
+                break
             request_index += 1
             try:
                 payloads = _fetch_gemini_history_rpc_page(
@@ -1039,7 +1075,11 @@ def _collect_gemini_rpc_conversation_links(
                             f"{GEMINI_HISTORY_RPC_RETRY_LIMIT - 1:,} after "
                             f"{retry_delay_ms / 1_000:g} seconds."
                         )
+                    if should_stop():
+                        break
                     page.wait_for_timeout(retry_delay_ms)
+        if should_stop():
+            break
         if payloads is None:
             if len(collected) >= GEMINI_HISTORY_RPC_ACCESSIBLE_LIMIT:
                 if state is not None:
@@ -1128,22 +1168,63 @@ def collect_gemini_conversation_links(
     config: CrawlConfig,
     should_stop,
     state: TaskState | None = None,
+    *,
+    navigate: bool = True,
+    wait_for_ready: bool = True,
+    deadline: float | None = None,
 ) -> list[GeminiConversationLink]:
     """Collect recent and lazy-loaded Gemini history links from the sidebar."""
-    rpc_responses = _attach_gemini_history_rpc_capture(page)
-    goto_with_retry(page, GEMINI_HOME_URL, attempts=2, timeout_ms=60_000)
-    _prepare_gemini_page_for_rendering(page)
-    if not wait_for_gemini_bot_check_clear(page, state, should_stop, "collecting"):
+    def stop_requested() -> bool:
+        return bool(
+            should_stop()
+            or (deadline is not None and time.monotonic() >= float(deadline))
+        )
+
+    if stop_requested():
         return []
-    _wait_for_gemini_ready(page)
-    _open_gemini_sidebar(page)
-    page.wait_for_timeout(GEMINI_RENDER_SETTLE_MILLISECONDS)
+    rpc_responses = _attach_gemini_history_rpc_capture(page)
+    if navigate:
+        navigation_timeout_ms = 60_000
+        if deadline is not None:
+            remaining_ms = int((float(deadline) - time.monotonic()) * 1_000)
+            if remaining_ms < 1_000:
+                return []
+            navigation_timeout_ms = min(navigation_timeout_ms, remaining_ms)
+        goto_with_retry(
+            page,
+            GEMINI_HOME_URL,
+            attempts=2,
+            timeout_ms=navigation_timeout_ms,
+            should_stop=stop_requested,
+        )
+    if stop_requested():
+        return []
+    _prepare_gemini_page_for_rendering(page)
+    if not wait_for_gemini_bot_check_clear(page, state, stop_requested, "collecting"):
+        return []
+    if wait_for_ready:
+        _wait_for_gemini_ready(page, deadline=deadline)
+    if stop_requested():
+        return []
+    _open_gemini_sidebar(page, stop_requested)
+    if stop_requested():
+        return []
+    settle_ms = GEMINI_RENDER_SETTLE_MILLISECONDS
+    if deadline is not None:
+        settle_ms = min(
+            settle_ms,
+            max(0, int((float(deadline) - time.monotonic()) * 1_000)),
+        )
+    if settle_ms:
+        page.wait_for_timeout(settle_ms)
+    if stop_requested():
+        return []
 
     rpc_links = _collect_gemini_rpc_conversation_links(
         page,
         rpc_responses,
         config,
-        should_stop,
+        stop_requested,
         state,
     )
     if rpc_links:
@@ -1159,9 +1240,9 @@ def collect_gemini_conversation_links(
     collected: dict[str, GeminiConversationLink] = {}
     stale_rounds = 0
     for _round_index in range(max_rounds):
-        if should_stop():
+        if stop_requested():
             break
-        if not wait_for_gemini_bot_check_clear(page, state, should_stop, "collecting"):
+        if not wait_for_gemini_bot_check_clear(page, state, stop_requested, "collecting"):
             break
         visible_links = _read_gemini_conversation_links(page)
         previous_count = len(collected)
@@ -1181,8 +1262,15 @@ def collect_gemini_conversation_links(
             )
         ):
             break
-        page.wait_for_timeout(pause_ms)
-        if not wait_for_gemini_bot_check_clear(page, state, should_stop, "collecting"):
+        bounded_pause_ms = pause_ms
+        if deadline is not None:
+            bounded_pause_ms = min(
+                bounded_pause_ms,
+                max(0, int((float(deadline) - time.monotonic()) * 1_000)),
+            )
+        if bounded_pause_ms:
+            page.wait_for_timeout(bounded_pause_ms)
+        if not wait_for_gemini_bot_check_clear(page, state, stop_requested, "collecting"):
             break
     return list(collected.values())[:max_conversations]
 
@@ -1277,7 +1365,7 @@ def launch_gemini_browser_context(config: CrawlConfig):
     if descriptor is None:
         raise RuntimeError(f"Unsupported Gemini browser: {config.gemini_browser}")
     if descriptor.engine == "safari":
-        with SafariContext(GEMINI_HOME_URL) as context:
+        with SafariContext(GEMINI_HOME_URL, lock_blocking=False) as context:
             yield context, descriptor
         return
     with sync_playwright_or_error() as playwright:

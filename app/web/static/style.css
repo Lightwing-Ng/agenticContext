@@ -1,4 +1,4 @@
-/* Code version: v2.120.1-codex.1 */
+/* Code version: v2.121.0-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -8215,6 +8215,128 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-session-table-message a,
 .browser-media-prompt-markdown a {
     color: var(--accent-text);
+}
+
+.agent-response-answer-content h3 {
+    margin: 30px 0 10px;
+    font-size: 20px;
+    font-weight: var(--font-weight-semibold);
+    line-height: 1.4;
+}
+
+.agent-response-answer-content strong {
+    font-weight: var(--font-weight-semibold);
+}
+
+.agent-response-answer-content p {
+    margin: 0 0 15px;
+    line-height: 1.5;
+}
+
+.agent-response-answer-content ul,
+.agent-response-answer-content ol {
+    margin: 7.5px 0 15px;
+    padding-left: 20px;
+}
+
+.agent-response-answer-content li {
+    line-height: 1.5;
+}
+
+.agent-response-answer-content .agent-inline-citation {
+    display: inline-flex;
+    align-items: center;
+    max-width: calc(100% - 4px);
+    margin-inline-start: 4px;
+    padding: 3px 8px;
+    overflow: hidden;
+    border: 1px solid transparent;
+    border-radius: var(--radius-pill);
+    background: var(--glass-chip-background);
+    color: var(--muted);
+    font-size: var(--font-size-3);
+    font-weight: var(--font-weight-medium);
+    line-height: 1;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    vertical-align: 0.05em;
+    white-space: nowrap;
+    transition:
+        background var(--motion-duration-fast) var(--motion-standard),
+        color var(--motion-duration-fast) var(--motion-standard);
+}
+
+.agent-response-answer-content a.agent-inline-citation:hover {
+    background: var(--glass-chip-background-hover);
+    color: var(--accent-text-hover);
+    text-decoration: none;
+}
+
+.agent-response-answer-content a.agent-inline-citation:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+}
+
+.agent-response-answer-content .agent-markdown-table-shell:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: -2px;
+}
+
+.agent-response-answer-content .agent-inline-citation--unresolved {
+    cursor: default;
+    opacity: 0.72;
+}
+
+.agent-response-answer-content .agent-markdown-table-shell {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    margin: 8px 0 15px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    border: 1px solid var(--theme-glass-border);
+    border-radius: 16px;
+    background: var(--glass-surface-background-strong);
+    -webkit-overflow-scrolling: touch;
+}
+
+.agent-response-answer-content .agent-markdown-table-shell table {
+    width: max-content;
+    min-width: 100%;
+    border-spacing: 0;
+    border-collapse: separate;
+    font-size: var(--font-size-3);
+    line-height: 1.5;
+}
+
+.agent-response-answer-content .agent-markdown-table-shell th,
+.agent-response-answer-content .agent-markdown-table-shell td {
+    min-width: 140px;
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.agent-response-answer-content .agent-markdown-table-shell th {
+    border-bottom: 1px solid var(--theme-glass-border);
+    background: var(--glass-surface-background-dense);
+    color: var(--text);
+    font-weight: var(--font-weight-semibold);
+}
+
+.agent-response-answer-content .agent-markdown-table-shell tbody tr:not(:last-child) td {
+    border-bottom: 1px solid var(--theme-glass-border);
+}
+
+.agent-response-answer-content > :first-child {
+    margin-top: 0;
+}
+
+.agent-response-answer-content > :last-child {
+    margin-bottom: 0;
 }
 
 .browser-media-prompt-unavailable {

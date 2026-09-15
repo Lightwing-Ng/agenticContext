@@ -1,6 +1,6 @@
 """Provider-neutral Web Agent Project and session discovery.
 
-Code version: v1.10.0-codex.1
+Code version: v1.14.0-codex.1
 """
 
 from __future__ import annotations
@@ -8,17 +8,19 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import re
+import time
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from .browser_sessions import (
     browser_descriptors,
+    claude_composer_snapshot,
+    grok_composer_snapshot,
     goto_with_retry,
     is_grok_security_verification_page,
     launch_chromium_context,
     select_provider_tab,
     sync_playwright_or_error,
-    visible_claude_composer_selector,
 )
 from .chatgpt_agent_sources import (
     list_chatgpt_agent_sources,
@@ -30,23 +32,30 @@ from .chatgpt_downloader import _chatgpt_project_id as _extract_chatgpt_project_
 from .config import CrawlConfig
 from .gemini_downloader import (
     GEMINI_HOME_URL,
+    _wait_for_gemini_ready,
     collect_gemini_conversation_links,
+    inspect_gemini_bot_check,
     normalize_gemini_conversation_url,
 )
 from .grok_history import (
+    GROK_AGENT_HISTORY_RENDER_CONTRACT,
     GROK_HOME_URL,
     GrokConversation,
     _grok_api_json,
     _load_responses,
     _normalized_messages,
     _response_nodes,
+    extract_grok_inline_citations,
     list_grok_conversations,
+    normalize_grok_display_markdown,
 )
 from .safari_automation import SafariContext
 
 
 AGENT_SOURCE_LIMIT = 20
 AGENT_SESSION_HISTORY_LIMIT = 100
+GEMINI_SOURCE_BOOTSTRAP_TIMEOUT_SECONDS = 180
+GEMINI_SOURCE_COLLECTION_TIMEOUT_SECONDS = 75
 SUPPORTED_AGENT_SOURCE_PLATFORMS = frozenset({"chatgpt", "gemini", "grok", "claude"})
 AGENT_SOURCE_PLATFORM_LABELS = {
     "chatgpt": "ChatGPT",
@@ -60,16 +69,27 @@ GEMINI_HOSTS = frozenset({"gemini.google.com"})
 GEMINI_PROJECT_PATH_PATTERN = re.compile(r"^/(?:app|notebook|notebooks)/[A-Za-z0-9_-]+/?$")
 GEMINI_RESERVED_PROJECT_IDS = frozenset({"create", "new"})
 GROK_HOSTS = frozenset({"grok.com", "www.grok.com"})
-GROK_COMPOSER_SELECTOR = (
-    'textarea, div[contenteditable="true"][role="textbox"]'
-    '[aria-label="Ask Grok anything"]'
-)
 GROK_CONVERSATION_PATH_PATTERN = re.compile(r"^/c/[A-Za-z0-9_-]+/?$")
 GROK_PROJECT_PATH_PATTERN = re.compile(r"^/project/[A-Za-z0-9_-]+/?$")
 CLAUDE_CONVERSATION_PATH_PATTERN = re.compile(
     r"^/(?:chat/[A-Za-z0-9_-]+|project/[A-Za-z0-9_-]+/(?:chat|c)/[A-Za-z0-9_-]+)/?$"
 )
 CLAUDE_PROJECT_PATH_PATTERN = re.compile(r"^/project/[A-Za-z0-9_-]+/?$")
+
+
+def _has_official_https_origin(parsed: Any, hosts: frozenset[str]) -> bool:
+    """Require a standard provider HTTPS origin without embedded credentials."""
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() in hosts
+        and port in {None, 443}
+        and not parsed.username
+        and not parsed.password
+    )
 
 
 def normalize_agent_conversation_url(platform: str, value: str) -> str:
@@ -122,10 +142,7 @@ def normalize_gemini_project_url(value: str) -> str:
     except ValueError:
         return ""
     if (
-        parsed.scheme.lower() != "https"
-        or (parsed.hostname or "").lower() not in GEMINI_HOSTS
-        or parsed.username
-        or parsed.password
+        not _has_official_https_origin(parsed, GEMINI_HOSTS)
         or not GEMINI_PROJECT_PATH_PATTERN.fullmatch(parsed.path)
     ):
         return ""
@@ -170,10 +187,7 @@ def normalize_claude_conversation_url(value: str) -> str:
     except ValueError:
         return ""
     if (
-        parsed.scheme.lower() != "https"
-        or (parsed.hostname or "").lower() not in CLAUDE_HOSTS
-        or parsed.username
-        or parsed.password
+        not _has_official_https_origin(parsed, CLAUDE_HOSTS)
     ):
         return ""
     if CLAUDE_PROJECT_PATH_PATTERN.fullmatch(parsed.path):
@@ -193,10 +207,7 @@ def normalize_claude_project_url(value: str) -> str:
     except ValueError:
         return ""
     if (
-        parsed.scheme.lower() != "https"
-        or (parsed.hostname or "").lower() not in CLAUDE_HOSTS
-        or parsed.username
-        or parsed.password
+        not _has_official_https_origin(parsed, CLAUDE_HOSTS)
         or not CLAUDE_PROJECT_PATH_PATTERN.fullmatch(parsed.path)
     ):
         return ""
@@ -223,10 +234,7 @@ def normalize_grok_conversation_url(value: str) -> str:
     except ValueError:
         return ""
     if (
-        parsed.scheme.lower() != "https"
-        or (parsed.hostname or "").lower() not in GROK_HOSTS
-        or parsed.username
-        or parsed.password
+        not _has_official_https_origin(parsed, GROK_HOSTS)
     ):
         return ""
     if GROK_CONVERSATION_PATH_PATTERN.fullmatch(parsed.path):
@@ -245,10 +253,7 @@ def normalize_grok_project_url(value: str) -> str:
     except ValueError:
         return ""
     if (
-        parsed.scheme.lower() != "https"
-        or (parsed.hostname or "").lower() not in GROK_HOSTS
-        or parsed.username
-        or parsed.password
+        not _has_official_https_origin(parsed, GROK_HOSTS)
         or not GROK_PROJECT_PATH_PATTERN.fullmatch(parsed.path)
     ):
         return ""
@@ -370,13 +375,15 @@ def fetch_grok_conversation_history(
         ]
         responses = _load_responses(page, conversation_id, response_ids)
         history = _pair_grok_history(
-            _normalized_messages(conversation, nodes, responses, "")
+            _normalized_messages(conversation, nodes, responses, ""),
+            responses=responses,
         )
         return {
             "conversation_url": normalized_url,
             "title": title,
             "history": history[-AGENT_SESSION_HISTORY_LIMIT:],
             "limit": AGENT_SESSION_HISTORY_LIMIT,
+            "render_contract": GROK_AGENT_HISTORY_RENDER_CONTRACT,
         }
 
     return _run_chromium_source_collection(
@@ -412,9 +419,14 @@ def _grok_conversation_title(page: Any, project_id: str, conversation_id: str) -
     return ""
 
 
-def _pair_grok_history(messages: list[Any]) -> list[dict[str, str]]:
+def _pair_grok_history(
+    messages: list[Any],
+    *,
+    responses: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Pair ordered Grok user and assistant messages into Agent response pages."""
-    history: list[dict[str, str]] = []
+    history: list[dict[str, Any]] = []
+    raw_responses = responses or {}
     pending_prompt: Any | None = None
     for message in sorted(
         (item for item in messages if item is not None),
@@ -429,10 +441,14 @@ def _pair_grok_history(messages: list[Any]) -> list[dict[str, str]]:
             continue
         if role != "assistant" or pending_prompt is None:
             continue
+        response_id = str(getattr(message, "message_key", "") or "").rsplit(":", 1)[-1]
+        response_payload = raw_responses.get(response_id, {})
         history.append(
             {
                 "prompt": str(getattr(pending_prompt, "content_text", "") or "").strip(),
                 "response": content,
+                "display_response": normalize_grok_display_markdown(content),
+                "citations": extract_grok_inline_citations(response_payload),
                 "started_at": str(getattr(pending_prompt, "timestamp", "") or ""),
                 "finished_at": str(getattr(message, "timestamp", "") or ""),
             }
@@ -474,6 +490,86 @@ def _list_gemini_agent_sources(
         "projects": projects[:AGENT_SOURCE_LIMIT],
         "limit": AGENT_SOURCE_LIMIT,
     }
+
+
+def probe_and_collect_gemini_sources(
+    browser_name: str,
+    config: CrawlConfig,
+    *,
+    silent: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Verify Gemini and collect Recent sessions in one owned browser context."""
+    deadline = time.monotonic() + GEMINI_SOURCE_BOOTSTRAP_TIMEOUT_SECONDS
+    descriptor = browser_descriptors(config).get(str(browser_name or "").strip().lower())
+    if descriptor is None:
+        raise ValueError(f"Unsupported browser: {browser_name}")
+    if descriptor.engine not in {"chromium", "safari"}:
+        raise ValueError(f"Gemini Agent sources do not support {descriptor.label}.")
+    capped_config = replace(
+        config,
+        gemini_max_conversations=min(
+            AGENT_SOURCE_LIMIT,
+            max(1, int(config.gemini_max_conversations)),
+        ),
+    )
+
+    def unavailable(message: str) -> dict[str, Any]:
+        return {
+            "platform": "gemini",
+            "browser_label": descriptor.label,
+            "logged_in": False,
+            "can_download": False,
+            "account_name": "",
+            "message": message,
+        }
+
+    def collect(page: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        try:
+            _wait_for_gemini_ready(page, deadline=deadline)
+        except Exception as exc:
+            return unavailable(str(exc)), None
+        status = {
+            "platform": "gemini",
+            "browser_label": descriptor.label,
+            "logged_in": True,
+            "can_download": True,
+            "account_name": "Google account",
+            "message": f"{descriptor.label} verified an authenticated Gemini session.",
+        }
+        try:
+            snapshot = _collect_gemini_sources(
+                page,
+                capped_config,
+                deadline=deadline,
+                page_ready=True,
+            )
+        except Exception:
+            return status, None
+        return status, {
+            "platform": "gemini",
+            "browser_label": descriptor.label,
+            "recent_sessions": _normalize_session_rows(
+                "gemini",
+                _snapshot_rows(snapshot, "recent_sessions"),
+            ),
+            "projects": _normalize_project_rows(
+                "gemini",
+                _snapshot_rows(snapshot, "projects"),
+            )[:AGENT_SOURCE_LIMIT],
+            "limit": AGENT_SOURCE_LIMIT,
+        }
+
+    try:
+        return _run_chromium_source_collection(
+            browser_name,
+            capped_config,
+            GEMINI_HOME_URL,
+            collect,
+            silent=silent,
+            deadline=deadline,
+        )
+    except Exception as exc:  # pragma: no cover - depends on local browser state
+        return unavailable(str(exc)), None
 
 
 def _list_grok_agent_sources(
@@ -536,12 +632,12 @@ def probe_and_collect_claude_sources(
     *,
     silent: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Verify Claude and collect its source catalog in one Chromium context."""
+    """Verify Claude and collect its source catalog in one owned browser context."""
     descriptor = browser_descriptors(config).get(str(browser_name or "").strip().lower())
     if descriptor is None:
         raise ValueError(f"Unsupported browser: {browser_name}")
-    if descriptor.engine != "chromium":
-        raise ValueError(f"Claude Agent sessions require Edge or Chrome, not {descriptor.label}.")
+    if descriptor.engine not in {"chromium", "safari"}:
+        raise ValueError(f"Claude Agent sources do not support {descriptor.label}.")
 
     def collect(page: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
         status = _claude_page_status(page, descriptor.label)
@@ -625,54 +721,11 @@ def probe_and_collect_grok_sources(
         }, None
 
 
-def _grok_composer_snapshot(page: Any) -> dict[str, Any]:
-    """Return one bounded, provider-scoped Grok composer readiness snapshot."""
-    result = page.evaluate(
-        r"""({composerSelector}) => {
-            const visible = (element) => {
-                if (!element || element.getClientRects().length === 0) return false;
-                for (let current = element; current; current = current.parentElement) {
-                    const style = getComputedStyle(current);
-                    const opacity = Number.parseFloat(style.opacity || '1');
-                    if (style.display === 'none'
-                        || style.visibility === 'hidden'
-                        || style.visibility === 'collapse'
-                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
-                }
-                return true;
-            };
-            const candidates = [...document.querySelectorAll(composerSelector)]
-                .filter((element) => {
-                    if (!visible(element)
-                        || element.disabled
-                        || element.getAttribute('aria-disabled') === 'true'
-                        || element.closest(
-                            '[role="dialog"], [role="menu"], [role="listbox"], nav, header, '
-                            + '[data-testid*="feedback" i], [class*="feedback" i]'
-                        )) return false;
-                    let scope = element.parentElement;
-                    while (scope && scope !== document.body) {
-                        if (scope.querySelector('button[data-testid="chat-submit"]')) return true;
-                        if (scope.matches('main')) break;
-                        scope = scope.parentElement;
-                    }
-                    const metadata = `${element.getAttribute('aria-label') || ''} `
-                        + `${element.getAttribute('placeholder') || ''} `
-                        + `${element.getAttribute('data-testid') || ''}`;
-                    return /prompt|message|ask|grok|what do you|输入|輸入|提问|提問/i.test(metadata);
-                });
-            return {count: candidates.length};
-        }""",
-        {"composerSelector": GROK_COMPOSER_SELECTOR},
-    )
-    return dict(result) if isinstance(result, dict) else {"count": 0}
-
-
 def _wait_for_unique_grok_composer(page: Any, timeout_ms: int = 20_000) -> bool:
     """Wait for exactly one visible, enabled Grok composer."""
     deadline = time.monotonic() + max(0.001, int(timeout_ms) / 1_000)
     while True:
-        snapshot = _grok_composer_snapshot(page)
+        snapshot = grok_composer_snapshot(page)
         count = int(snapshot.get("count") or 0)
         if count == 1:
             return True
@@ -841,13 +894,20 @@ def _claude_page_status(page: Any, browser_label: str) -> dict[str, Any]:
             "account_name": "Claude account restricted",
             "message": f"{browser_label} reported that the Claude account is restricted or unavailable.",
         }
-    try:
-        composer = page.locator(visible_claude_composer_selector())
-        count = getattr(composer, "count", None)
-        if callable(count) and count() != 1:
-            raise RuntimeError("Claude composer count was not unique.")
-        composer.wait_for(state="visible", timeout=20_000)
-    except Exception:
+    composer_ready = False
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        try:
+            composer_count = int(claude_composer_snapshot(page).get("count") or 0)
+            if composer_count == 1:
+                composer_ready = True
+                break
+            if composer_count > 1:
+                break
+        except Exception:
+            pass
+        page.wait_for_timeout(250)
+    if not composer_ready:
         if re.search(r"\b(?:sign in|log in|sign up|create account)\b", normalized_body):
             message = f"{browser_label} is not signed in to Claude."
         else:
@@ -915,12 +975,40 @@ def _list_grok_project_sessions(
     }
 
 
-def _collect_gemini_sources(page: Any, config: CrawlConfig) -> dict[str, Any]:
+def _collect_gemini_sources(
+    page: Any,
+    config: CrawlConfig,
+    *,
+    deadline: float | None = None,
+    page_ready: bool = False,
+) -> dict[str, Any]:
     """Reuse Gemini's history collector, then read Notebook links from its sidebar."""
-    links = collect_gemini_conversation_links(page, config, lambda: False)
+    source_deadline = time.monotonic() + GEMINI_SOURCE_COLLECTION_TIMEOUT_SECONDS
+    if deadline is not None:
+        source_deadline = min(source_deadline, float(deadline))
+
+    def should_stop() -> bool:
+        return time.monotonic() >= source_deadline
+
+    links = collect_gemini_conversation_links(
+        page,
+        config,
+        should_stop,
+        navigate=not page_ready,
+        wait_for_ready=not page_ready,
+        deadline=source_deadline,
+    )
+    if should_stop() and inspect_gemini_bot_check(page).get("detected"):
+        raise RuntimeError(
+            "Google requested a human verification. Complete it in Safari, then recheck."
+        )
+    if should_stop() and not links:
+        raise RuntimeError(
+            "Gemini Recent sessions did not finish loading before the source timeout."
+        )
     return {
         "recent_sessions": links,
-        "projects": _read_gemini_project_links(page),
+        "projects": [] if should_stop() else _read_gemini_project_links(page),
     }
 
 
@@ -934,9 +1022,8 @@ def _collect_grok_sources(page: Any) -> dict[str, Any]:
 
 def _collect_claude_sources(page: Any) -> dict[str, Any]:
     """Read Claude's sidebar links without depending on private API endpoints."""
-    try:
-        rows = page.evaluate(
-            r"""() => {
+    rows = page.evaluate(
+        r"""() => {
                 const textOf = (element) => [
                     element?.innerText,
                     element?.textContent,
@@ -970,20 +1057,22 @@ def _collect_claude_sources(page: Any) -> dict[str, Any]:
                 }
                 return {recent_sessions: recentSessions, projects};
             }"""
-        )
-    except Exception:
-        return {"recent_sessions": [], "projects": []}
-    return rows if isinstance(rows, dict) else {"recent_sessions": [], "projects": []}
+    )
+    if not isinstance(rows, dict):
+        raise RuntimeError("Claude source discovery returned an invalid DOM payload.")
+    return rows
 
 
 def _read_gemini_project_links(page: Any) -> list[dict[str, str]]:
     """Read only explicit Gemini Notebook routes as shared Projects."""
     try:
-        rows = page.locator(
-            'a[href*="/notebook/"], a[href*="/notebooks/"], '
-            '[role="link"][href*="/notebook/"], [role="link"][href*="/notebooks/"]'
-        ).evaluate_all(
-            r"""(elements) => {
+        rows = page.evaluate(
+            r"""() => {
+                const elements = document.querySelectorAll(
+                    'a[href*="/notebook/"], a[href*="/notebooks/"], '
+                    + '[role="link"][href*="/notebook/"], '
+                    + '[role="link"][href*="/notebooks/"]'
+                );
                 const textOf = (element) => [
                     element?.innerText,
                     element?.textContent,
@@ -1335,23 +1424,40 @@ def _run_chromium_source_collection(
     collector: Callable[[Any], Any],
     *,
     silent: bool = False,
+    deadline: float | None = None,
 ) -> Any:
     """Run one authenticated source collector in the selected supported browser."""
+    def remaining_timeout_ms(default_ms: int) -> int:
+        if deadline is None:
+            return default_ms
+        remaining_ms = int((float(deadline) - time.monotonic()) * 1_000)
+        if remaining_ms <= 0:
+            raise RuntimeError("Browser source collection exceeded its server deadline.")
+        return min(default_ms, remaining_ms)
+
+    def wait_before_collection(page: Any) -> None:
+        page.wait_for_timeout(remaining_timeout_ms(500))
+        remaining_timeout_ms(1)
+
     descriptor = browser_descriptors(config).get(str(browser_name or "").strip().lower())
     if descriptor is None:
         raise ValueError(f"Unsupported browser: {browser_name}")
     home_host = (urlsplit(home_url).hostname or "").lower()
     if descriptor.engine == "safari":
-        if home_host not in GROK_HOSTS:
-            raise ValueError("Safari Agent sources are currently available only for Grok.")
-        with SafariContext(home_url) as context:
+        safari_source_hosts = GEMINI_HOSTS | GROK_HOSTS | CLAUDE_HOSTS
+        if home_host not in safari_source_hosts:
+            raise ValueError("Safari Agent sources require an official supported provider host.")
+        with SafariContext(home_url, lock_blocking=False) as context:
             page = context.primary_page
-            page.wait_for_load_state("domcontentloaded", timeout=90_000)
-            page.wait_for_timeout(500)
+            page.wait_for_load_state(
+                "domcontentloaded",
+                timeout=remaining_timeout_ms(90_000),
+            )
+            wait_before_collection(page)
             return collector(page)
     if descriptor.engine != "chromium":
         raise ValueError(
-            f"Gemini, Grok, and Claude Agent sources require Edge or Chrome, not {descriptor.label}."
+            f"Gemini, Grok, and Claude Agent sources do not support {descriptor.label}."
         )
 
     with sync_playwright_or_error() as playwright:
@@ -1374,6 +1480,16 @@ def _run_chromium_source_collection(
             page = select_provider_tab(context, home_url=home_url, hosts=hosts)
             current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
             if current_url != str(home_url).strip().rstrip("/"):
-                goto_with_retry(page, home_url, attempts=2, timeout_ms=90_000)
-            page.wait_for_timeout(500)
+                goto_with_retry(
+                    page,
+                    home_url,
+                    attempts=2,
+                    timeout_ms=remaining_timeout_ms(90_000),
+                    should_stop=(
+                        None
+                        if deadline is None
+                        else lambda: time.monotonic() >= float(deadline)
+                    ),
+                )
+            wait_before_collection(page)
             return collector(page)

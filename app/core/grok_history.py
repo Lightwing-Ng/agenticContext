@@ -1,6 +1,6 @@
 """Grok text history collection and local persistence.
 
-Code version: v1.3.0-codex.1
+Code version: v1.4.0-codex.1
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from .cache_timing import wait_for_cache_scan
 from .browser_sessions import (
@@ -47,6 +47,19 @@ GROK_RESPONSE_BATCH_SIZE = 50
 GROK_API_RETRY_LIMIT = 3
 GROK_API_RETRY_DELAY_MS = 1_000
 GROK_API_REQUEST_TIMEOUT_MS = 30_000
+GROK_AGENT_HISTORY_RENDER_CONTRACT = "grok-inline-citations-v1"
+GROK_INLINE_CITATION_PATTERN = re.compile(
+    r'<grok:render'
+    r'(?=[^>]{0,512}\bcard_id="(?P<card_id>[A-Za-z0-9_-]{1,128})")'
+    r'(?=[^>]{0,512}\bcard_type="citation_card")'
+    r'(?=[^>]{0,512}\btype="render_inline_citation")'
+    r'[^>]{0,512}>\s*'
+    r'<argument\s+name="citation_id"\s*>(?P<citation_id>[0-9]{1,6})</argument>\s*'
+    r'</grok:render>'
+)
+GROK_SESSION_UPDATE_HEADING_PATTERN = re.compile(
+    r'\*\*「[^\r\n]{1,160}」Session 更新\b'
+)
 
 
 @dataclass(frozen=True)
@@ -138,6 +151,92 @@ def _message_source_links(response: dict[str, Any]) -> list[str]:
     ):
         links.extend(_extract_source_links(response.get(field), key=field))
     return list(dict.fromkeys(links))
+
+
+def _safe_grok_citation_url(value: Any) -> str:
+    """Return one absolute HTTP(S) citation URL from provider metadata."""
+    candidate = str(value or "").strip()
+    if not candidate or len(candidate) > 2_048 or any(ord(char) < 32 for char in candidate):
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+        _ = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        return ""
+    return candidate
+
+
+def _grok_citation_label(url: str) -> str:
+    """Derive the compact source label used by Grok's citation pills."""
+    hostname = (urlsplit(url).hostname or "").lower()
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    label = hostname.split(".", 1)[0] or hostname
+    return f"{label[:1].upper()}{label[1:]}"[:80] or "Source"
+
+
+def extract_grok_inline_citations(response: dict[str, Any]) -> list[dict[str, str]]:
+    """Preserve Grok card identities before history normalization flattens links."""
+    cards: dict[str, dict[str, str]] = {}
+    raw_cards = response.get("cardAttachmentsJson")
+    for raw_card in raw_cards if isinstance(raw_cards, list) else []:
+        if isinstance(raw_card, dict):
+            card = raw_card
+        elif isinstance(raw_card, str) and len(raw_card) <= 16_384:
+            try:
+                decoded = json.loads(raw_card)
+            except (TypeError, ValueError):
+                continue
+            card = decoded if isinstance(decoded, dict) else {}
+        else:
+            continue
+        card_id = str(card.get("id") or "").strip()
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", card_id)
+            or str(card.get("type") or "") != "render_inline_citation"
+            or str(card.get("cardType") or "") != "citation_card"
+        ):
+            continue
+        url = _safe_grok_citation_url(card.get("url"))
+        if not url:
+            continue
+        cards[card_id] = {
+            "card_id": card_id,
+            "url": url,
+            "label": _grok_citation_label(url),
+        }
+
+    citations: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for match in GROK_INLINE_CITATION_PATTERN.finditer(_response_text(response)):
+        card_id = match.group("card_id")
+        citation_id = match.group("citation_id")
+        card = cards.get(card_id)
+        identity = (card_id, citation_id)
+        if card is None or identity in seen:
+            continue
+        seen.add(identity)
+        citations.append({**card, "citation_id": citation_id})
+    return citations
+
+
+def normalize_grok_display_markdown(value: str) -> str:
+    """Match Grok's final body while retaining the untouched API response separately."""
+    source = str(value or "").replace("\x00", "").strip()
+    heading = GROK_SESSION_UPDATE_HEADING_PATTERN.search(source)
+    if heading is None or heading.start() == 0 or heading.start() > 500:
+        return source
+    prelude = source[: heading.start()]
+    if "\n" in prelude or "\r" in prelude or not prelude.endswith(("。", ".", "!", "！", "?", "？")):
+        return source
+    return source[heading.start() :]
 
 
 def _response_text(response: dict[str, Any]) -> str:

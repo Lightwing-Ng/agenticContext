@@ -1,20 +1,27 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.72.0-codex.1`
+Documentation version: `v3.73.0-codex.1`
 
 ## Purpose
 
 The Agent workspace is a browser-mediated fallback for times when the local coding-agent token
 pool is constrained. It uses an already signed-in Web session for ChatGPT, Gemini, Grok, or Claude.
 Edge or Chrome supports all four providers through the background Chromium controller, while macOS
-Safari supports ChatGPT and Grok Agent sessions through an owned Apple Events window. Gemini and
-Claude Agent sessions, and every Jury session, continue to require Edge or Chrome. Edge remains the
+Safari supports ChatGPT and Grok Agent execution through an owned Apple Events window. Full Gemini
+and Claude Agent execution, and every Jury session, continue to require Edge or Chrome. Edge remains the
 default because its Chromium controller does not depend on desktop clicks; Chrome uses the same
 isolated controller.
 
-The default is a new root-level session. Every provider can also join one of the 20 most recent
-sessions or start a session in one of the 20 most recent Projects. ChatGPT, Grok, and Claude can
-also join one of that Project's 20 most recent sessions. Gemini Notebook session ownership cannot
+Safari Gemini and Claude canonical routes remain available for source-only Recent sessions and
+Project browsing. Their status payload explicitly disables Agent execution, so Ask remains
+unavailable; the selected route and preference persist without silently changing the browser to
+Edge. This source-only contract does not imply that Safari can submit a Gemini or Claude task.
+
+The default is a new root-level session. On an execution-capable browser/provider pair, every
+provider can also join one of the 20 most recent sessions or start a session in one of the 20 most
+recent Projects. ChatGPT, Grok, and Claude can also join one of that Project's 20 most recent
+sessions. Safari Gemini and Claude stop at catalog browsing and cannot join or start a task. Gemini
+Notebook session ownership cannot
 be proved from its current Web routes, so Gemini Projects fail closed to `New session in project`.
 For Gemini, that mode starts a receipt-isolated controller task on the selected Notebook surface;
 it does not prove that Gemini created a distinct provider-side subconversation.
@@ -31,11 +38,14 @@ under `local_store/agent/agent_source_catalog.parquet`. The cache key isolates p
 catalog kind, and Project URL. Fresh entries are reused from process memory for 15 minutes; the
 first process read hydrates that memory from Parquet. After expiry, passive page loads, polling,
 and task-completion rendering return the last verified catalog without starting another browser
-collector. A cache miss performs one bounded bootstrap check that collects account readiness,
-models, efforts, and sources together. There is no separate effort-refresh button. Subsequent task
+collector. A cache miss performs one bounded provider-specific bootstrap that collects account
+readiness and sources. Where supported, the ChatGPT bootstrap also collects the rendered model and
+effort catalogs. There is no separate effort-refresh button. Subsequent task
 submission verifies its requested model and effort in the task's own browser context. Concurrent
-requests share one browser flight, and response revisions prevent an older response from replacing
-the accepted result. Publication is monotonic per cache key: a collector that started before a
+non-forced requests share one browser flight, and response revisions prevent an older response from
+replacing the accepted result. A forced refresh that arrives during an older flight waits for that
+flight to release its key and then performs a second serialized collection; it does not reuse the
+older result as the requested refresh. Publication is monotonic per cache key: a collector that started before a
 newer bootstrap publication may still finish and release its coalescing slot, but it cannot roll
 the catalog or `cached_at` backward. A direct bootstrap publication wakes readers waiting on an
 older flight, and a superseded failed flight returns that current publication as a cache hit.
@@ -55,8 +65,10 @@ through the current provider URL contract; malformed legacy rows are dropped ins
 returned as selectable history.
 
 
-On `/agent`, ChatGPT, Grok, and Claude use an agent-scoped bootstrap request: the selected browser
-context verifies the actual Web composer and collects Recent sessions and Projects in one launch.
+On `/agent`, ChatGPT, Gemini, Grok, and Claude use an agent-scoped bootstrap request: the selected
+browser context verifies provider-specific authenticated readiness and collects Recent sessions and
+Projects in one launch. Safari Gemini and Claude remain execution-disabled after that catalog is
+returned.
 For Edge or Chrome with ChatGPT, that same launch also discovers the rendered model catalog and the chosen model's complete live effort
 slider before the user submits a task, so the first-run selector is not limited to a hard-coded
 default.
@@ -97,11 +109,20 @@ ChatGPT plan limits, file-upload limits, data controls, storage, and retention s
 
 The Agent entrypoint is scoped by the selected browser and Web provider. The canonical form is
 `/agent/<browser>/<platform>`, such as `/agent/edge/chatgpt`, `/agent/edge/claude`, or
-`/agent/safari/grok`; `/agent/<browser>/`
+`/agent/safari/grok`, `/agent/safari/gemini`, or `/agent/safari/claude`; `/agent/<browser>/`
 is a browser-scoped compatibility alias, and the legacy `/agent` path redirects to
 the persisted selection. Changing either selector updates the canonical path without reloading the
-page, so a copied URL preserves the intended browser/provider selection. A supported Safari/Grok
+page, so a copied URL preserves the intended browser/provider selection. Every valid macOS Safari
 selection is retained across reloads and is never silently normalized to Edge.
+
+Browser/provider/model/workspace preferences are saved as one serialized full snapshot. The page
+keeps the newest unacknowledged snapshot in same-tab session storage with a sessionStorage-scoped client identifier and
+monotonic revision, makes one best-effort beacon or keepalive delivery on page exit, and replays it
+before the next document's first status or browser-session request. A retired model or a model owned
+by another provider invalidates that pending snapshot before any visible or hidden field is changed;
+the page clears it without sending a request or starting a retry loop. The server ignores stale
+revisions from the same client in the current server process. Duplicate Tab may copy that identifier
+and revision, so this ordering is not a durable cross-tab transaction.
 
 Completed UI state is bound to both the provider and browser recorded by the run. Opening or
 switching to another canonical route renders an idle phase with an empty activity list, response,
@@ -715,6 +736,14 @@ worker snapshot does not own that selected history.
   release it. Only after those cleanup steps does it clear context metadata and persist
   `running=false` as the completion barrier. Worker completion and process shutdown cannot both
   claim the same assertion.
+  The browser sends both the selected session ID and that session's active run ID. The service
+  compares both under the same lifecycle lock before publishing Stop; a delayed receipt from an
+  earlier run of the same session returns HTTP 409 and cannot stop its successor.
+  Safari generation cancellation resolves exactly one visible, enabled semantic Stop control in
+  the main answer scope, excluding dialog, menu, navigation, and header controls. It binds that
+  control to the exact URL and uses the same one-shot trusted Return boundary. Zero or multiple
+  matches cause zero native input; an uncertain post-input result is followed only by bounded
+  generation-state reads and never by a second Return.
   During service exit, the shutdown hook requests Stop, waits up to eight seconds, and then claims
   any assertion that the worker has not already claimed. A late worker registration after shutdown
   immediately attempts to release its assertion instead of repopulating the shared slot. The
@@ -856,11 +885,29 @@ removes its temporary profile. A Windows CDP-backed exit disconnects Playwright 
 project browser/profile available. The next Chromium launch removes only abandoned `cachelikes-edge-*` or
 `cachelikes-chrome-*` directories older than 24 hours. Safari uses one shared Apple Events context,
 restores the previous frontmost application after window operations, and closes every task-owned
-window on success, stop, failure, or exception. Safari remains available only for ChatGPT's existing
-session flows and for Grok's strict Agent flow. Gemini and Claude require Edge or Chrome. The Safari
-path does not clone a Chromium profile or enter Edge's credential-storage path. If Claude renders an
+window on success, stop, failure, or exception. Safari full execution remains available only for
+ChatGPT's existing session flows and for Grok's strict Agent flow. Gemini and Claude full execution
+require Edge or Chrome, while their source-only Safari routes can browse Recent sessions and
+Projects. The Safari path does not clone a Chromium profile or enter Edge's credential-storage path. If Claude renders an
 account suspension, ban, deactivation, or other restricted-state message, the readiness card reports
 that state and does not attempt a login bypass.
+
+Safari admission is bidirectional: a Safari Cache start is rejected while a Safari Agent owns the
+browser, and a Safari Agent start is rejected while any Safari Cache worker owns it. Browser-status,
+source, Project-session, and history endpoints use cached state or return a bounded busy/unprobed
+result; they never wait behind the task on the same cross-process lock.
+
+Safari page requests prove the target is same-origin before fetch, use `redirect: "error"`, and
+reject `response.redirected`. A service-worker response may leave `Response.url` empty; that value is
+accepted only behind those request and redirect checks. Any nonempty response URL must parse and
+match the current origin.
+
+Safari activates one exact marked control with one trusted native Return only after official HTTPS
+origin, default port, no-credentials, window, tab, exact-URL, document/element focus, center hit-test,
+and no-sheet/no-dialog checks. A post-input transport or receipt failure is uncertain: the caller
+uses readback only and never retries the native key. Grok model controls additionally require exact
+open-menu, checked-state, and closed-trigger readback. Focus restoration proceeds only while Safari,
+the same owned window and tab, and its document retain focus.
 
 When an Agent browser status is not signed in, the status card exposes an `Open <Browser> to sign in`
 action. It opens the selected browser visibly at the provider home page; the user must then choose the
@@ -1029,7 +1076,8 @@ policy, not a benchmark ranking; there is no hard-coded next-generation model na
 keys remain readable for saved runs. Concrete choices use bounded `live:` labels and must be
 verified again against the provider before a task can attach context or send a prompt.
 
-One bootstrap discovers models, the selected model's complete effort range, and session sources.
+The ChatGPT capability bootstrap discovers models, the selected model's complete effort range, and
+session sources.
 An initially unreadable model catalog receives one bounded retry in the same browser context;
 other verification failures remain fail-closed and no retry opens another browser.
 The highest-effort policy displays the actual final slider label while retaining its policy value.

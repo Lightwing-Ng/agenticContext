@@ -1,6 +1,6 @@
 """Focused tests for the persistent Agent source cache."""
 
-# Code version: v2.1.7-codex.1
+# Code version: v2.1.8-codex.1
 
 from __future__ import annotations
 
@@ -267,6 +267,84 @@ class AgentSourceCacheTests(unittest.TestCase):
         self.assertTrue(
             all(result["recent_sessions"] == [{"id": "one"}] for result in results)
         )
+
+    def test_force_refresh_waiting_on_cold_miss_runs_a_new_collector(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            cache = AgentSourceCache(raw_root)
+            initial_started = Event()
+            release_initial = Event()
+            force_started = Event()
+            release_force = Event()
+            initial_result: list[dict[str, object]] = []
+            force_result: list[dict[str, object]] = []
+
+            def collect_initial() -> dict[str, object]:
+                initial_started.set()
+                self.assertTrue(release_initial.wait(timeout=5))
+                return {"recent_sessions": [{"id": "initial"}]}
+
+            def collect_forced() -> dict[str, object]:
+                force_started.set()
+                self.assertTrue(release_force.wait(timeout=5))
+                return {"recent_sessions": [{"id": "forced"}]}
+
+            initial = Thread(
+                target=lambda: initial_result.append(
+                    cache.get_or_collect(
+                        platform="grok",
+                        browser="safari",
+                        source_kind="browser-session",
+                        collector=collect_initial,
+                    )
+                )
+            )
+            initial.start()
+            self.assertTrue(initial_started.wait(timeout=5))
+
+            forced = Thread(
+                target=lambda: force_result.append(
+                    cache.get_or_collect(
+                        platform="grok",
+                        browser="safari",
+                        source_kind="browser-session",
+                        collector=collect_forced,
+                        force_refresh=True,
+                    )
+                )
+            )
+            forced.start()
+            self.assertFalse(force_started.wait(timeout=0.1))
+
+            try:
+                release_initial.set()
+                self.assertTrue(force_started.wait(timeout=5))
+                initial.join(timeout=5)
+                self.assertFalse(initial.is_alive())
+                self.assertTrue(forced.is_alive())
+            finally:
+                release_force.set()
+                initial.join(timeout=5)
+                forced.join(timeout=5)
+
+            self.assertFalse(forced.is_alive())
+            final = cache.get_or_collect(
+                platform="grok",
+                browser="safari",
+                source_kind="browser-session",
+                collector=lambda: {"unexpected": True},
+            )
+
+        self.assertEqual(
+            initial_result[0]["recent_sessions"],
+            [{"id": "initial"}],
+        )
+        self.assertEqual(force_result[0]["cache"]["status"], "refreshed")
+        self.assertEqual(
+            force_result[0]["recent_sessions"],
+            [{"id": "forced"}],
+        )
+        self.assertEqual(final["recent_sessions"], [{"id": "forced"}])
+        self.assertEqual(cache._refreshing, set())
 
     def test_bootstrap_store_supersedes_an_older_inflight_refresh(self) -> None:
         """Do not let an older browser flight roll back a newer bootstrap publication."""

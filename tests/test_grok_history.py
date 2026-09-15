@@ -1,6 +1,6 @@
 """Focused tests for Grok text-history persistence and API pagination."""
 
-# Code version: v1.3.0-codex.1
+# Code version: v1.4.0-codex.1
 
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -14,7 +14,9 @@ from app.core.grok_history import (
     GrokHistoryStore,
     GrokTextMessage,
     _grok_api_json,
+    extract_grok_inline_citations,
     list_grok_conversations,
+    normalize_grok_display_markdown,
 )
 from app.core.safari_automation import SafariContext, SafariPage, SafariResponse
 
@@ -89,6 +91,41 @@ def test_grok_history_is_included_in_all_source_queries(tmp_path: Path) -> None:
     page = query_chat_history(tmp_path, source="all")
     assert page.total_count == 1
     assert page.items[0].source == "grok"
+
+
+def test_grok_inline_citations_follow_card_identity_and_reject_unsafe_urls() -> None:
+    marker = (
+        '<grok:render card_id="safe-card" card_type="citation_card" '
+        'type="render_inline_citation"><argument name="citation_id">107</argument>'
+        '</grok:render>'
+    )
+    unsafe_marker = marker.replace("safe-card", "unsafe-card").replace("107", "2")
+    response = {
+        "message": f"Evidence {marker} ignored {unsafe_marker} repeated {marker}",
+        "cardAttachmentsJson": [
+            '{"id":"unsafe-card","type":"render_inline_citation",'
+            '"cardType":"citation_card","url":"javascript:alert(1)"}',
+            '{"id":"safe-card","type":"render_inline_citation",'
+            '"cardType":"citation_card","url":"https://www.example.com/source"}',
+            '{broken',
+        ],
+    }
+
+    assert extract_grok_inline_citations(response) == [{
+        "card_id": "safe-card",
+        "url": "https://www.example.com/source",
+        "label": "Example",
+        "citation_id": "107",
+    }]
+
+
+def test_grok_display_markdown_removes_only_native_hidden_session_update_prelude() -> None:
+    source = "核对证据。**「研究」Session 更新 — 结论**\n\n正文"
+
+    assert normalize_grok_display_markdown(source) == "**「研究」Session 更新 — 结论**\n\n正文"
+    assert normalize_grok_display_markdown("正常引言。\n\n**「研究」Session 更新 — 结论**") == (
+        "正常引言。\n\n**「研究」Session 更新 — 结论**"
+    )
 
 
 def test_grok_security_challenge_is_actionable_and_is_not_retried() -> None:

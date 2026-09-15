@@ -1,6 +1,6 @@
 """Read-through Parquet cache for Web Agent source discovery.
 
-Code version: v2.1.7-codex.1
+Code version: v2.1.8-codex.1
 """
 
 from __future__ import annotations
@@ -227,7 +227,12 @@ class AgentSourceCache:
                 self._condition.wait()
                 cached = self._entries.get(key)
                 current_time = requested_now or _utc_now()
-                if cached and cached.is_fresh(current_time, self.ttl_seconds):
+                # A forced caller must own the next flight after the older one exits.
+                if (
+                    cached
+                    and not force_refresh
+                    and cached.is_fresh(current_time, self.ttl_seconds)
+                ):
                     return _with_cache_metadata(
                         cached.payload,
                         status="hit",

@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.11.0-codex.1
+Code version: v1.12.0-codex.1
 """
 
 from __future__ import annotations
@@ -439,19 +439,9 @@ def test_claude_probe_waits_for_hydration_before_requiring_unique_composer(hydra
     """A delayed composer must be awaited, while ambiguous composers stay blocked."""
     from app.core.browser_sessions import _probe_claude_session
 
-    hydrated = False
-    composer = MagicMock()
-
-    def wait_for_composer(**_kwargs):
-        nonlocal hydrated
-        hydrated = True
-
-    composer.first.wait_for.side_effect = wait_for_composer
-    composer.count.side_effect = lambda: hydrated_count if hydrated else 0
     page = MagicMock()
-    page.locator.side_effect = lambda selector: (
-        SimpleNamespace(inner_text=lambda **_kwargs: "Welcome back")
-        if selector == "body" else composer
+    page.locator.return_value = SimpleNamespace(
+        inner_text=lambda **_kwargs: "Welcome back"
     )
     context = MagicMock()
     context.pages = [page]
@@ -460,15 +450,50 @@ def test_claude_probe_waits_for_hydration_before_requiring_unique_composer(hydra
         patch("app.core.browser_sessions._serialized_sync_playwright"),
         patch("app.core.browser_sessions.launch_chromium_context") as launch,
         patch("app.core.browser_sessions.goto_with_retry"),
+        patch(
+            "app.core.browser_sessions.claude_composer_snapshot",
+            side_effect=({"count": 0}, {"count": hydrated_count}),
+        ) as composer_snapshot,
     ):
         launch.return_value.__enter__.return_value = context
         result = _probe_claude_session(descriptor)
 
-    assert hydrated
     assert result["can_download"] is (hydrated_count == 1)
-    composer.first.wait_for.assert_called_once_with(state="visible", timeout=20_000)
+    assert composer_snapshot.call_count == 2
     assert launch.call_args.kwargs["headless"] is False
     assert launch.call_args.kwargs["background_window"] is True
+
+
+def test_claude_probe_uses_one_nonblocking_safari_context() -> None:
+    from app.core.browser_sessions import _probe_claude_session
+
+    page = MagicMock()
+    page.locator.return_value = SimpleNamespace(
+        inner_text=lambda **_kwargs: "Welcome back"
+    )
+    context = MagicMock()
+    context.primary_page = page
+    descriptor = SimpleNamespace(engine="safari", label="Safari")
+    with patch("app.core.browser_sessions.SafariContext") as safari_context, patch(
+        "app.core.browser_sessions.goto_with_retry"
+    ) as goto, patch(
+        "app.core.browser_sessions.claude_composer_snapshot",
+        return_value={"count": 1},
+    ):
+        safari_context.return_value.__enter__.return_value = context
+        result = _probe_claude_session(descriptor)
+
+    assert result["can_download"] is True
+    safari_context.assert_called_once_with(
+        "https://claude.ai/new",
+        lock_blocking=False,
+    )
+    goto.assert_called_once_with(
+        page,
+        "https://claude.ai/new",
+        attempts=2,
+        timeout_ms=60_000,
+    )
 
 
 @pytest.mark.parametrize("host_platform", ("darwin", "win32", "linux"))
@@ -1823,7 +1848,10 @@ def test_safari_profile_link_detection_uses_the_rendered_navigation() -> None:
     with patch("app.core.browser_sessions.SafariContext", return_value=context) as safari_context:
         assert detect_safari_x_account_handle(wait_seconds=1) == "demo_user"
 
-    safari_context.assert_called_once_with("https://x.com/home")
+    safari_context.assert_called_once_with(
+        "https://x.com/home",
+        lock_blocking=False,
+    )
     page.wait_for_timeout.assert_called_once_with(1_000)
     page.evaluate.assert_called_once()
     context.__exit__.assert_called_once()
@@ -1841,7 +1869,10 @@ def test_safari_page_snapshot_uses_a_rendered_background_window() -> None:
         snapshot = fetch_safari_page_snapshot("https://grok.com/files", wait_seconds=1)
 
     assert snapshot == {"url": "https://grok.com/files", "source": "<html>Grok</html>"}
-    safari_context.assert_called_once_with("https://grok.com/files")
+    safari_context.assert_called_once_with(
+        "https://grok.com/files",
+        lock_blocking=False,
+    )
     page.wait_for_timeout.assert_called_once_with(1_000)
     page.content.assert_called_once_with(limit=500_000)
     context.__exit__.assert_called_once()
@@ -1870,7 +1901,10 @@ def test_safari_likes_collection_uses_window_id_targeting() -> None:
             state,
         )
 
-    safari_context.assert_called_once_with("https://x.com/demo_user/likes")
+    safari_context.assert_called_once_with(
+        "https://x.com/demo_user/likes",
+        lock_blocking=False,
+    )
     assert page.wait_for_timeout.call_args_list[0].args == (8_000,)
     assert page.evaluate.call_count == 4
     context.__exit__.assert_called_once()

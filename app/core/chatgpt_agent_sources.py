@@ -1,6 +1,6 @@
 """Read ChatGPT Web sessions, projects, and conversation history for the local Agent.
 
-Code version: v1.6.7-codex.1
+Code version: v1.6.8-codex.1
 """
 
 from __future__ import annotations
@@ -164,7 +164,7 @@ def probe_and_collect_chatgpt_sources(
     }
     try:
         if descriptor.engine == "safari":
-            with SafariContext(CHATGPT_HOME_URL) as context:
+            with SafariContext(CHATGPT_HOME_URL, lock_blocking=False) as context:
                 page = context.primary_page
                 page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
                 page.wait_for_load_state("domcontentloaded", 90_000)
@@ -243,7 +243,7 @@ def list_chatgpt_agent_sources(
         raise ValueError(f"Unsupported browser: {browser_name}")
 
     if descriptor.engine == "safari":
-        with SafariContext(CHATGPT_HOME_URL) as context:
+        with SafariContext(CHATGPT_HOME_URL, lock_blocking=False) as context:
             page = context.primary_page
             page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
             page.wait_for_timeout(1_000)
@@ -292,7 +292,7 @@ def list_chatgpt_project_sessions(
         raise ValueError(f"Unsupported browser: {browser_name}")
 
     if descriptor.engine == "safari":
-        with SafariContext(CHATGPT_HOME_URL) as context:
+        with SafariContext(CHATGPT_HOME_URL, lock_blocking=False) as context:
             page = context.primary_page
             page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
             page.wait_for_timeout(500)
@@ -354,7 +354,10 @@ def fetch_chatgpt_conversation_history(
         raise ValueError(f"Unsupported browser: {browser_name}")
 
     if descriptor.engine == "safari":
-        with SafariContext(normalized_conversation_url) as context:
+        with SafariContext(
+            normalized_conversation_url,
+            lock_blocking=False,
+        ) as context:
             page = context.primary_page
             page.goto(normalized_conversation_url, wait_until="domcontentloaded", timeout=90_000)
             page.wait_for_timeout(500)

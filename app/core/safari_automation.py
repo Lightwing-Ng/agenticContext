@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.3.0-codex.1
+# Code version: v2.5.0-codex.1
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import re
+import secrets
 import subprocess
 import tempfile
 import time
@@ -35,6 +36,23 @@ SAFARI_CLOSE_RETRY_LIMIT = 3
 SAFARI_WINDOW_CREATION_LOCK = RLock()
 SAFARI_WINDOW_CREATION_LOCK_PATH = Path(tempfile.gettempdir()) / "cachelikes-safari-window-creation.lock"
 SAFARI_CONTEXT_LOCK_PATH = Path(tempfile.gettempdir()) / "cachelikes-safari-context.lock"
+SAFARI_NATIVE_INPUT_LOCK = RLock()
+SAFARI_NATIVE_INPUT_LOCK_PATH = Path(tempfile.gettempdir()) / "cachelikes-safari-native-input.lock"
+SAFARI_NATIVE_INPUT_HOSTS = frozenset(
+    {
+        "chatgpt.com",
+        "www.chatgpt.com",
+        "grok.com",
+        "www.grok.com",
+        "gemini.google.com",
+        "claude.ai",
+        "www.claude.ai",
+        "x.com",
+        "www.x.com",
+        "twitter.com",
+        "www.twitter.com",
+    }
+)
 SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT = """
 set previousFrontmostProcessName to ""
 tell application "System Events"
@@ -85,6 +103,14 @@ SAFARI_BACKGROUND_WINDOW_APPLESCRIPT = (
 logger = logging.getLogger(__name__)
 
 
+class SafariNativeActivationError(RuntimeError):
+    """Describe whether a failed trusted activation may already have reached Safari."""
+
+    def __init__(self, message: str, *, input_attempted: bool) -> None:
+        super().__init__(message)
+        self.input_attempted = bool(input_attempted)
+
+
 def is_missing_safari_window_error(error: BaseException) -> bool:
     """Return whether Safari rejected an operation for a window that vanished."""
     message = str(error).lower()
@@ -110,7 +136,7 @@ def safari_navigation_matches(target_url: str, current_url: str) -> bool:
     current = urlsplit(normalized_current)
     if target.scheme not in {"http", "https"}:
         return normalized_current == normalized_target
-    if current.scheme not in {"http", "https"}:
+    if current.scheme not in {"http", "https"} or current.scheme != target.scheme:
         return False
 
     target_host = target.netloc.casefold()
@@ -121,8 +147,15 @@ def safari_navigation_matches(target_url: str, current_url: str) -> bool:
         return True
 
     authentication_hosts = {"auth.openai.com", "auth0.openai.com"}
+    chatgpt_hosts = {"chatgpt.com", "www.chatgpt.com"}
     authentication_paths = ("/auth", "/login", "/i/flow/login", "/account/login")
-    return current_host in authentication_hosts or (
+    return (
+        (target.hostname or "").casefold() in chatgpt_hosts
+        and (current.hostname or "").casefold() in authentication_hosts
+        and current.port in {None, 443}
+        and not current.username
+        and not current.password
+    ) or (
         current_host == target_host and current_path.startswith(authentication_paths)
     )
 
@@ -132,10 +165,11 @@ def escape_applescript_text(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def run_applescript(source: str) -> str:
+def run_applescript(source: str, *, retry_transient: bool = True) -> str:
     """Run one AppleScript program and return its standard output."""
     last_error = ""
-    for attempt_index in range(SAFARI_APPLESCRIPT_RETRY_LIMIT + 1):
+    retry_limit = SAFARI_APPLESCRIPT_RETRY_LIMIT if retry_transient else 0
+    for attempt_index in range(retry_limit + 1):
         try:
             process = subprocess.run(
                 ["osascript"],
@@ -150,14 +184,14 @@ def run_applescript(source: str) -> str:
                 f"Safari automation timed out after "
                 f"{SAFARI_APPLESCRIPT_TIMEOUT_SECONDS:g} seconds."
             )
-            if attempt_index >= SAFARI_APPLESCRIPT_RETRY_LIMIT:
+            if attempt_index >= retry_limit:
                 break
             time.sleep(SAFARI_APPLESCRIPT_RETRY_DELAY_SECONDS * (attempt_index + 1))
             continue
         if process.returncode == 0:
             return (process.stdout or "").rstrip("\n")
         last_error = (process.stderr or process.stdout or "").strip()
-        if attempt_index >= SAFARI_APPLESCRIPT_RETRY_LIMIT:
+        if attempt_index >= retry_limit:
             break
         lowered = last_error.lower()
         if not any(
@@ -174,6 +208,18 @@ def safari_window_creation_guard():
     """Serialize front-window capture across threads and local app processes."""
     with SAFARI_WINDOW_CREATION_LOCK:
         with SAFARI_WINDOW_CREATION_LOCK_PATH.open("a+") as lock_handle:
+            lock_file(lock_handle)
+            try:
+                yield
+            finally:
+                unlock_file(lock_handle)
+
+
+@contextlib.contextmanager
+def safari_native_input_guard():
+    """Serialize native Safari input across threads and local app processes."""
+    with SAFARI_NATIVE_INPUT_LOCK:
+        with SAFARI_NATIVE_INPUT_LOCK_PATH.open("a+") as lock_handle:
             lock_file(lock_handle)
             try:
                 yield
@@ -409,8 +455,19 @@ class SafariRequestClient:
                     if (request.referrer) options.referrer = request.referrer;
                     if (request.body !== null) options.body = request.body;
                     fetch(targetUrl.href, options).then(async (response) => {
-                        if (new URL(response.url).origin !== location.origin) {
+                        if (response.redirected) {
                             throw new Error("Safari response left the current origin.");
+                        }
+                        if (response.url) {
+                            let responseUrl;
+                            try {
+                                responseUrl = new URL(response.url, targetUrl.href);
+                            } catch (_) {
+                                throw new Error("Safari returned an invalid response URL.");
+                            }
+                            if (responseUrl.origin !== location.origin) {
+                                throw new Error("Safari response left the current origin.");
+                            }
                         }
                         const responseHeaders = {};
                         response.headers.forEach((value, key) => {
@@ -646,33 +703,83 @@ class SafariLocator:
             f"within {timeout:,} ms."
         )
 
-    def click(self, timeout: int = 30_000) -> None:
-        """Click the selected unique element after it becomes safely actionable."""
+    def click(self, timeout: int = 30_000, *, expected_url: str = "") -> None:
+        """Activate the selected unique element with one trusted native Return key."""
         deadline = time.monotonic() + max(0.001, int(timeout) / 1_000)
+        activation_marker = f"safari-native-{secrets.token_hex(16)}"
+        bound_url = str(expected_url or "").strip()
         while time.monotonic() < deadline:
             payload = self._page.evaluate(
-                """({selector, index}) => {
+                """({selector, index, activationMarker, expectedCurrentUrl}) => {
+                    if (expectedCurrentUrl && location.href !== expectedCurrentUrl) {
+                        return {
+                            actionable: false,
+                            targetMismatch: true,
+                            currentUrl: location.href,
+                        };
+                    }
                     const elements = [...document.querySelectorAll(selector)];
                     const resolved = index === null ? 0 : (index < 0 ? elements.length + index : index);
                     const element = elements[resolved];
-                    if (!element || element.getClientRects().length === 0) return {clicked: false};
+                    document.querySelectorAll('[data-cachelikes-safari-native-activation]')
+                        .forEach((candidate) => candidate.removeAttribute(
+                            'data-cachelikes-safari-native-activation'
+                        ));
+                    if (!element || element.getClientRects().length === 0) return {actionable: false};
                     for (let current = element; current; current = current.parentElement) {
                         const style = getComputedStyle(current);
                         const opacity = Number.parseFloat(style.opacity || '1');
                         if (style.display === 'none'
                             || style.visibility === 'hidden'
                             || style.visibility === 'collapse'
-                            || (Number.isFinite(opacity) && opacity <= 0)) return {clicked: false};
+                            || (Number.isFinite(opacity) && opacity <= 0)) return {actionable: false};
                     }
                     if (element.disabled || element.getAttribute('aria-disabled') === 'true') {
-                        return {clicked: false};
+                        return {actionable: false};
                     }
-                    element.click();
-                    return {clicked: true};
+                    element.scrollIntoView({block: 'center', inline: 'center'});
+                    const rect = element.getBoundingClientRect();
+                    const left = Math.max(0, rect.left);
+                    const right = Math.min(window.innerWidth, rect.right);
+                    const top = Math.max(0, rect.top);
+                    const bottom = Math.min(window.innerHeight, rect.bottom);
+                    if (right <= left || bottom <= top) return {actionable: false};
+                    const hit = document.elementFromPoint(
+                        left + ((right - left) / 2),
+                        top + ((bottom - top) / 2),
+                    );
+                    if (!hit || (hit !== element && !element.contains(hit))) {
+                        return {actionable: false};
+                    }
+                    element.setAttribute(
+                        'data-cachelikes-safari-native-activation',
+                        activationMarker,
+                    );
+                    element.focus({preventScroll: true});
+                    const focused = document.activeElement === element
+                        || element.contains(document.activeElement);
+                    if (!focused) {
+                        element.removeAttribute('data-cachelikes-safari-native-activation');
+                    }
+                    return {
+                        actionable: focused,
+                        currentUrl: location.href,
+                    };
                 }""",
-                {"selector": self._selector, "index": self._index},
+                {
+                    "selector": self._selector,
+                    "index": self._index,
+                    "activationMarker": activation_marker,
+                    "expectedCurrentUrl": bound_url,
+                },
             )
-            if isinstance(payload, dict) and payload.get("clicked"):
+            if isinstance(payload, dict) and payload.get("targetMismatch"):
+                raise RuntimeError("Safari target changed before native activation.")
+            if isinstance(payload, dict) and payload.get("actionable"):
+                self._page._activate_marked_element(
+                    activation_marker,
+                    bound_url or str(payload.get("currentUrl") or ""),
+                )
                 return
             time.sleep(SAFARI_POLL_INTERVAL_SECONDS)
         raise TimeoutError(
@@ -918,6 +1025,287 @@ return pageUrlValue & linefeed & pageStateValue
         if not payload.get("ok"):
             raise RuntimeError(f"Safari JavaScript failed: {payload.get('error') or 'unknown error'}")
         return payload.get("value")
+
+    def _activate_marked_element(self, marker: str, expected_url: str) -> None:
+        """Dispatch one non-retried trusted key event to an exact marked web control."""
+        try:
+            parsed = urlsplit(str(expected_url or "").strip())
+            port = parsed.port
+        except ValueError as exc:
+            raise RuntimeError("Safari refused native input on an invalid page URL.") from exc
+        if (
+            parsed.scheme.lower() != "https"
+            or (parsed.hostname or "").lower() not in SAFARI_NATIVE_INPUT_HOSTS
+            or port not in {None, 443}
+            or parsed.username
+            or parsed.password
+        ):
+            raise RuntimeError("Safari refused native input outside an official HTTPS provider origin.")
+
+        request_json = json.dumps(
+            {
+                "activationMarker": str(marker),
+                "expectedUrl": str(expected_url),
+                "allowedHosts": sorted(SAFARI_NATIVE_INPUT_HOSTS),
+            },
+            separators=(",", ":"),
+        )
+        prepare_script = f"""
+(() => {{
+    const request = {request_json};
+    let expected;
+    let current;
+    try {{
+        expected = new URL(request.expectedUrl);
+        current = new URL(location.href);
+    }} catch (_) {{
+        return 'invalid-url';
+    }}
+    const allowedHosts = new Set(request.allowedHosts);
+    if (expected.protocol !== 'https:'
+        || current.protocol !== 'https:'
+        || !allowedHosts.has(expected.hostname.toLowerCase())
+        || !allowedHosts.has(current.hostname.toLowerCase())
+        || expected.port
+        || current.port
+        || expected.username
+        || expected.password
+        || current.username
+        || current.password
+        || expected.href !== current.href) return 'target-mismatch';
+    const candidates = [...document.querySelectorAll(
+        '[data-cachelikes-safari-native-activation]'
+    )].filter((element) => (
+        element.getAttribute('data-cachelikes-safari-native-activation')
+            === request.activationMarker
+    ));
+    if (candidates.length !== 1) return 'target-ambiguous';
+    const element = candidates[0];
+    if (!element.getClientRects().length
+        || element.disabled
+        || element.getAttribute('aria-disabled') === 'true') return 'target-disabled';
+    for (let currentElement = element;
+        currentElement;
+        currentElement = currentElement.parentElement) {{
+        const style = getComputedStyle(currentElement);
+        const opacity = Number.parseFloat(style.opacity || '1');
+        if (style.display === 'none'
+            || style.visibility === 'hidden'
+            || style.visibility === 'collapse'
+            || (Number.isFinite(opacity) && opacity <= 0)) return 'target-hidden';
+    }}
+    const rect = element.getBoundingClientRect();
+    const left = Math.max(0, rect.left);
+    const right = Math.min(window.innerWidth, rect.right);
+    const top = Math.max(0, rect.top);
+    const bottom = Math.min(window.innerHeight, rect.bottom);
+    if (right <= left || bottom <= top) return 'target-offscreen';
+    const hit = document.elementFromPoint(
+        left + ((right - left) / 2),
+        top + ((bottom - top) / 2),
+    );
+    if (!hit || (hit !== element && !element.contains(hit))) return 'target-obscured';
+    element.focus({{preventScroll: true}});
+    if (!document.hasFocus()) return 'document-unfocused';
+    if (document.activeElement !== element
+        && !element.contains(document.activeElement)) return 'target-unfocused';
+    const previous = window.__cachelikesSafariNativeActivation;
+    if (previous && typeof previous.cleanup === 'function') previous.cleanup();
+    const state = {{
+        token: request.activationMarker,
+        keydownTrusted: false,
+        clickTrusted: false,
+    }};
+    const belongsToTarget = (event) => (
+        event.target === element || element.contains(event.target)
+    );
+    const recordKeydown = (event) => {{
+        if (belongsToTarget(event) && event.isTrusted && event.key === 'Enter') {{
+            state.keydownTrusted = true;
+        }}
+    }};
+    const recordClick = (event) => {{
+        if (belongsToTarget(event) && event.isTrusted) state.clickTrusted = true;
+    }};
+    document.addEventListener('keydown', recordKeydown, true);
+    document.addEventListener('click', recordClick, true);
+    state.cleanup = () => {{
+        document.removeEventListener('keydown', recordKeydown, true);
+        document.removeEventListener('click', recordClick, true);
+    }};
+    window.__cachelikesSafariNativeActivation = state;
+    return 'ready';
+}})()
+""".strip()
+        receipt_script = f"""
+(() => {{
+    const state = window.__cachelikesSafariNativeActivation;
+    if (!state || state.token !== {json.dumps(str(marker))}) return 'untrusted';
+    const trusted = Boolean(state.keydownTrusted || state.clickTrusted);
+    if (typeof state.cleanup === 'function') state.cleanup();
+    delete window.__cachelikesSafariNativeActivation;
+    return trusted ? 'trusted' : 'untrusted';
+}})()
+""".strip()
+        expected_url_literal = escape_applescript_text(str(expected_url))
+        verify_script = f"""
+(() => {{
+    if (location.href !== {json.dumps(str(expected_url))}) return 'target-mismatch';
+    if (!document.hasFocus()) return 'document-unfocused';
+    const candidates = [...document.querySelectorAll(
+        '[data-cachelikes-safari-native-activation]'
+    )].filter((element) => (
+        element.getAttribute('data-cachelikes-safari-native-activation')
+            === {json.dumps(str(marker))}
+    ));
+    if (candidates.length !== 1) return 'target-ambiguous';
+    const element = candidates[0];
+    if (!element.getClientRects().length
+        || element.disabled
+        || element.getAttribute('aria-disabled') === 'true') return 'target-disabled';
+    for (let currentElement = element;
+        currentElement;
+        currentElement = currentElement.parentElement) {{
+        const style = getComputedStyle(currentElement);
+        const opacity = Number.parseFloat(style.opacity || '1');
+        if (style.display === 'none'
+            || style.visibility === 'hidden'
+            || style.visibility === 'collapse'
+            || (Number.isFinite(opacity) && opacity <= 0)) return 'target-hidden';
+    }}
+    const rect = element.getBoundingClientRect();
+    const left = Math.max(0, rect.left);
+    const right = Math.min(window.innerWidth, rect.right);
+    const top = Math.max(0, rect.top);
+    const bottom = Math.min(window.innerHeight, rect.bottom);
+    if (right <= left || bottom <= top) return 'target-offscreen';
+    const hit = document.elementFromPoint(
+        left + ((right - left) / 2),
+        top + ((bottom - top) / 2),
+    );
+    if (!hit || (hit !== element && !element.contains(hit))) return 'target-obscured';
+    if (document.activeElement !== element
+        && !element.contains(document.activeElement)) return 'target-unfocused';
+    return 'ready';
+}})()
+""".strip()
+        restore_after_input = """
+set shouldRestoreNativeFocus to false
+tell application "System Events"
+    try
+        set shouldRestoreNativeFocus to (name of first application process whose frontmost is true) is "Safari"
+    end try
+end tell
+if shouldRestoreNativeFocus then
+    try
+        set shouldRestoreNativeFocus to (id of front window) is (id of targetWindow)
+    on error
+        set shouldRestoreNativeFocus to false
+    end try
+    if shouldRestoreNativeFocus then
+        try
+            set shouldRestoreNativeFocus to (current tab of targetWindow) is targetTab
+        on error
+            set shouldRestoreNativeFocus to false
+        end try
+    end if
+    if shouldRestoreNativeFocus then
+        try
+            set shouldRestoreNativeFocus to do JavaScript "document.hasFocus()" in targetTab
+        on error
+            set shouldRestoreNativeFocus to false
+        end try
+    end if
+    if shouldRestoreNativeFocus then
+        if previousWindowId is not 0 and previousWindowWasVisible and not previousWindowWasMiniaturized then
+            try
+                set index of (first window whose id is previousWindowId) to 1
+            end try
+        end if
+        if previousFrontmostProcessName is not "" and previousFrontmostProcessName is not "Safari" then
+            tell application "System Events"
+                try
+                    set frontmost of process previousFrontmostProcessName to true
+                end try
+            end tell
+        end if
+    end if
+end if
+""".strip()
+        statement = f"""
+{SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
+set targetTab to current tab of targetWindow
+{SAFARI_KEEP_WINDOW_AVAILABLE_APPLESCRIPT}
+set index of targetWindow to 1
+activate
+delay 0.05
+set nativeInputAttempted to false
+try
+    set activationState to do JavaScript "{escape_applescript_text(prepare_script)}" in current tab of targetWindow
+    if activationState is not "ready" then error "Safari native activation refused: " & activationState
+    if (id of front window) is not (id of targetWindow) then error "Safari target window changed before native activation."
+    if (current tab of targetWindow) is not targetTab then error "Safari target tab changed before native activation."
+    set currentUrlBeforeInput to URL of current tab of targetWindow as text
+    if currentUrlBeforeInput is not "{expected_url_literal}" then error "Safari target URL changed before native activation."
+    set finalActivationState to do JavaScript "{escape_applescript_text(verify_script)}" in current tab of targetWindow
+    if finalActivationState is not "ready" then error "Safari native activation refused: " & finalActivationState
+    if (id of front window) is not (id of targetWindow) then error "Safari target window changed before native activation."
+    if (current tab of targetWindow) is not targetTab then error "Safari target tab changed before native activation."
+    set finalUrlBeforeInput to URL of current tab of targetWindow as text
+    if finalUrlBeforeInput is not "{expected_url_literal}" then error "Safari target URL changed before native activation."
+    tell application "System Events"
+        set currentFrontmostProcessName to name of first application process whose frontmost is true
+        if currentFrontmostProcessName is not "Safari" then error "Safari lost focus before native activation."
+        tell process "Safari"
+            if (count of sheets of front window) is not 0 then error "Safari displayed a native sheet before activation."
+            if (count of windows whose subrole is "AXDialog") is not 0 then error "Safari displayed a native dialog before activation."
+            set nativeInputAttempted to true
+            key code 36
+        end tell
+    end tell
+    delay 0.1
+    set currentUrlAfterInput to ""
+    try
+        set currentUrlAfterInput to URL of current tab of targetWindow as text
+    end try
+    set receiptState to "unavailable"
+    try
+        set receiptState to do JavaScript "{escape_applescript_text(receipt_script)}" in current tab of targetWindow
+    end try
+    if receiptState is not "trusted" and currentUrlAfterInput is "{expected_url_literal}" then
+        error "Safari did not deliver a trusted activation event to the marked control."
+    end if
+on error errorMessage number errorNumber
+    {restore_after_input}
+    if nativeInputAttempted then
+        error "SAFARI_NATIVE_INPUT_UNCERTAIN: " & errorMessage number errorNumber
+    end if
+    error "SAFARI_NATIVE_INPUT_NOT_ATTEMPTED: " & errorMessage number errorNumber
+end try
+{restore_after_input}
+return receiptState
+""".strip()
+        with safari_native_input_guard():
+            try:
+                self._run_in_window(statement, retry_transient=False)
+            except RuntimeError as exc:
+                message = str(exc)
+                uncertain_token = "SAFARI_NATIVE_INPUT_UNCERTAIN:"
+                not_attempted_token = "SAFARI_NATIVE_INPUT_NOT_ATTEMPTED:"
+                if uncertain_token in message:
+                    raise SafariNativeActivationError(
+                        message.split(uncertain_token, 1)[1].strip(),
+                        input_attempted=True,
+                    ) from exc
+                if not_attempted_token in message:
+                    raise SafariNativeActivationError(
+                        message.split(not_attempted_token, 1)[1].strip(),
+                        input_attempted=False,
+                    ) from exc
+                raise SafariNativeActivationError(
+                    message,
+                    input_attempted=True,
+                ) from exc
 
     def bring_to_front(self) -> None:
         """Bring the owned Safari window forward."""
@@ -1179,7 +1567,13 @@ return "closed"
             time.sleep(SAFARI_POLL_INTERVAL_SECONDS)
         raise RuntimeError("Safari media request timed out.")
 
-    def _run_in_window(self, statement: str, *, recover_missing: bool = True) -> str:
+    def _run_in_window(
+        self,
+        statement: str,
+        *,
+        recover_missing: bool = True,
+        retry_transient: bool = True,
+    ) -> str:
         if self._closed:
             raise RuntimeError("Safari window is already closed.")
         source = f"""
@@ -1187,9 +1581,11 @@ tell application "Safari"
     set targetWindow to first window whose id is {self.window_id}
     {statement}
 end tell
-"""
+        """
         try:
-            return run_applescript(source)
+            if retry_transient:
+                return run_applescript(source)
+            return run_applescript(source, retry_transient=False)
         except RuntimeError as exc:
             if not recover_missing or not is_missing_safari_window_error(exc):
                 raise
@@ -1201,8 +1597,9 @@ end tell
 class SafariContext:
     """Own Safari windows created for one authenticated browser sync."""
 
-    def __init__(self, initial_url: str) -> None:
+    def __init__(self, initial_url: str, *, lock_blocking: bool = True) -> None:
         self.initial_url = initial_url
+        self.lock_blocking = bool(lock_blocking)
         self.pages: list[SafariPage] = []
         self.request = SafariRequestClient(self)
         self.request_lock = RLock()
@@ -1258,7 +1655,13 @@ class SafariContext:
         if self._context_lock_handle is not None:
             return
         handle = SAFARI_CONTEXT_LOCK_PATH.open("a+")
-        lock_file(handle)
+        try:
+            lock_file(handle, blocking=self.lock_blocking)
+        except BlockingIOError as exc:
+            handle.close()
+            raise RuntimeError(
+                "Safari is busy with another active browser task. Try again after it finishes."
+            ) from exc
         self._context_lock_handle = handle
 
     def _release_context_lock(self) -> None:

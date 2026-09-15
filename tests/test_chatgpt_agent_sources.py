@@ -1,13 +1,14 @@
 """Focused tests for the Agent's ChatGPT Web source catalog.
 
-Code version: v1.2.9-codex.1
+Code version: v1.3.0-codex.1
 """
 
 from __future__ import annotations
 
 from contextlib import nullcontext
 import json
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 
 from app.core.chatgpt_agent_sources import (
     CHATGPT_PROJECT_API_ENDPOINTS,
@@ -18,7 +19,10 @@ from app.core.chatgpt_agent_sources import (
     _conversation_history_items,
     _conversation_item,
     _fetch_conversation_history,
+    fetch_chatgpt_conversation_history,
     humanize_agent_history_prompts,
+    list_chatgpt_agent_sources,
+    list_chatgpt_project_sessions,
     normalize_chatgpt_conversation_url,
     normalize_chatgpt_project_url,
     probe_and_collect_chatgpt_sources,
@@ -171,6 +175,78 @@ def test_chatgpt_status_and_sources_share_one_chromium_context() -> None:
     assert launch_context.call_args.kwargs["background_window"] is True
     collect_sources.assert_called_once_with(context, page, "Edge")
     discover_efforts.assert_called_once_with(page)
+
+
+def test_chatgpt_safari_source_entrypoints_use_nonblocking_owned_context() -> None:
+    page = MagicMock()
+    context = MagicMock()
+    context.__enter__.return_value = context
+    context.primary_page = page
+    context.request.get.return_value = _Response({"accessToken": "fixture-token"})
+    descriptor = SimpleNamespace(
+        browser_id="safari",
+        label="Safari",
+        icon_filename="images/browser.safari.png",
+        engine="safari",
+    )
+    sources = {
+        "browser_label": "Safari",
+        "recent_sessions": [{"id": "recent-1"}],
+        "projects": [],
+        "limit": 20,
+    }
+    project_sessions = [{"id": "project-session-1"}]
+    conversation_history = {
+        "title": "Recent session",
+        "history": [],
+    }
+
+    with patch(
+        "app.core.chatgpt_agent_sources.browser_descriptors",
+        return_value={"safari": descriptor},
+    ), patch(
+        "app.core.chatgpt_agent_sources.SafariContext",
+        return_value=context,
+    ) as safari_context, patch(
+        "app.core.chatgpt_agent_sources._discover_chatgpt_agent_efforts",
+        return_value={},
+    ), patch(
+        "app.core.chatgpt_agent_sources._collect_sources",
+        return_value=sources,
+    ), patch(
+        "app.core.chatgpt_agent_sources._collect_project_sessions",
+        return_value=project_sessions,
+    ), patch(
+        "app.core.chatgpt_agent_sources._fetch_conversation_history",
+        return_value=conversation_history,
+    ):
+        status, bootstrap_sources = probe_and_collect_chatgpt_sources(
+            "safari",
+            CrawlConfig(),
+        )
+        listed_sources = list_chatgpt_agent_sources("safari", CrawlConfig())
+        listed_project = list_chatgpt_project_sessions(
+            "safari",
+            "https://chatgpt.com/g/g-p-fixture/project",
+            CrawlConfig(),
+        )
+        fetched_history = fetch_chatgpt_conversation_history(
+            "safari",
+            "https://chatgpt.com/c/fixture-session",
+            CrawlConfig(),
+        )
+
+    assert status["can_download"] is True
+    assert bootstrap_sources == {**sources, "platform": "chatgpt"}
+    assert listed_sources == sources
+    assert listed_project["sessions"] == project_sessions
+    assert fetched_history == conversation_history
+    assert safari_context.call_args_list == [
+        call("https://chatgpt.com/", lock_blocking=False),
+        call("https://chatgpt.com/", lock_blocking=False),
+        call("https://chatgpt.com/", lock_blocking=False),
+        call("https://chatgpt.com/c/fixture-session", lock_blocking=False),
+    ]
 
 
 def test_root_sessions_filter_project_sessions_and_limit_to_twenty() -> None:

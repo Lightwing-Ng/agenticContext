@@ -1,7 +1,7 @@
 """Focused tests for controller hardening: model verification, action parser,
 directory picker, recent-session catalog, and browser interruption recovery.
 
-Code version: v3.50.2-codex.1
+Code version: v3.50.3-codex.1
 """
 
 from __future__ import annotations
@@ -1236,13 +1236,13 @@ class TestRecentSessionCatalog:
         assert 'catalogState = "loading"' in script
         assert 'catalogState = "ready"' in script
         assert 'catalogState = "error"' in script
-        assert "CATALOG_TIMEOUT_MS = 15000" in script
+        assert "CATALOG_TIMEOUT_MS = 240_000" in script
         assert "new AbortController()" in script
         assert 'query.set("refresh", "1")' in script
         assert "loadAgentSources({forceRefresh: true})" in script
         assert 'catalogState === "error"' in script
         assert "clearCatalogLoadingState" in script
-        assert "Recent sessions timed out after 15 seconds." in script
+        assert "Recent sessions timed out after 4 minutes." in script
 
     def test_explicit_source_catalog_refresh_collects_the_newest_catalog(self) -> None:
         first_payload = {

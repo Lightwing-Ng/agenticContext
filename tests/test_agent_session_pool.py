@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.2-codex.1."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.4-codex.1."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -185,6 +185,21 @@ def test_has_active_worker_reflects_running_state(sessions):
     assert pool.has_active_worker("edge", "chatgpt") is False
 
 
+def test_unique_active_session_id_requires_exactly_one_running_task(sessions):
+    pool, workspace, entered = sessions
+    second_workspace = sibling_workspace(workspace, "workspace-two")
+    assert pool.unique_active_session_id() == ""
+    first_id = start(pool, workspace, "first")
+    wait_until(lambda: "first" in entered)
+    assert pool.unique_active_session_id() == first_id
+    second_id = start(pool, second_workspace, "second", read_only=True)
+    wait_until(lambda: "second" in entered)
+    assert pool.unique_active_session_id() == ""
+    pool.get(first_id).request_stop()
+    wait_until(lambda: not pool.get(first_id).snapshot()["running"])
+    assert pool.unique_active_session_id() == second_id
+
+
 def test_windows_debug_browser_admits_only_one_worker(sessions, monkeypatch):
     pool, workspace, entered = sessions
     monkeypatch.setattr("app.core.agent.session_pool.is_windows_host", lambda: True)
@@ -294,27 +309,164 @@ def test_api_targets_only_selected_session_and_rejects_unknown(tmp_path, monkeyp
             assert response.status_code == 202
             ids.append(response.json["agent"]["session_id"])
         assert client.post("/api/agent/ask", headers={**headers, "X-CacheLikes-Agent-Workspace": str(workspaces[2])}, json={"prompt": "third", "workspace_path": str(workspaces[2])}).status_code == 409
+        run_ids = {}
         for key, prompt, workspace in zip(ids, ("first", "second"), workspaces[:2]):
             payload = client.get("/api/agent/status", headers={
                 **headers,
                 "X-CacheLikes-Agent-Session": key,
                 "X-CacheLikes-Agent-Workspace": str(workspace),
             }).json
+            run_ids[key] = payload["agent"]["run_id"]
             assert payload["agent"]["prompt"] == prompt
             assert payload["active_count"] == 2
             assert {item["session_id"] for item in payload["sessions"]} == set(ids)
             assert {
                 item["workspace_path"] for item in payload["sessions"]
             } == {str(item) for item in workspaces[:2]}
-        assert client.post("/api/agent/stop", headers={**headers, "X-CacheLikes-Agent-Session": ids[0]}).json["stop_requested"]
+        assert client.post(
+            "/api/agent/stop",
+            headers={**headers, "X-CacheLikes-Agent-Session": ids[0]},
+            json={
+                "stop_target_session_id": ids[0],
+                "stop_target_run_id": run_ids[ids[0]],
+            },
+        ).json["stop_requested"]
         wait_until(lambda: not pool.get(ids[0]).snapshot()["running"])
         assert pool.get(ids[1]).snapshot()["running"]
-        assert client.post("/api/agent/stop", headers={**headers, "X-CacheLikes-Agent-Session": "unknown"}).status_code == 404
+        unique_status = client.get("/api/agent/status", headers=headers).json
+        assert unique_status["agent"]["running"]
+        assert unique_status["agent"]["prompt"] == ""
+        assert unique_status["agent"]["stop_target_session_id"] == ids[1]
+        assert unique_status["agent"]["stop_target_run_id"] == run_ids[ids[1]]
+
+        pool.get(ids[1]).request_stop()
+        wait_until(lambda: not pool.get(ids[1]).snapshot()["running"])
+        replacement = client.post(
+            "/api/agent/ask",
+            headers={
+                **headers,
+                "X-CacheLikes-Agent-Workspace": str(workspaces[2]),
+            },
+            json={
+                "prompt": "replacement",
+                "workspace_path": str(workspaces[2]),
+                "browser": "edge",
+                "platform": "chatgpt",
+            },
+        )
+        assert replacement.status_code == 202
+        replacement_id = replacement.json["agent"]["session_id"]
+        stale_stop = client.post(
+            "/api/agent/stop",
+            headers=headers,
+            json={
+                "stop_target_session_id": ids[1],
+                "stop_target_run_id": run_ids[ids[1]],
+            },
+        )
+        assert stale_stop.status_code == 409
+        assert stale_stop.json["code"] == "stale_agent_stop_target"
+        assert pool.get(replacement_id).snapshot()["running"]
+
+        restarted = client.post(
+            "/api/agent/ask",
+            headers={
+                **headers,
+                "X-CacheLikes-Agent-Session": ids[1],
+                "X-CacheLikes-Agent-Workspace": str(workspaces[1]),
+            },
+            json={
+                "prompt": "second run",
+                "workspace_path": str(workspaces[1]),
+                "browser": "edge",
+                "platform": "chatgpt",
+            },
+        )
+        assert restarted.status_code == 202
+        restarted_run_id = restarted.json["agent"]["run_id"]
+        assert restarted_run_id != run_ids[ids[1]]
+        stale_same_session_stop = client.post(
+            "/api/agent/stop",
+            headers=headers,
+            json={
+                "stop_target_session_id": ids[1],
+                "stop_target_run_id": run_ids[ids[1]],
+            },
+        )
+        assert stale_same_session_stop.status_code == 409
+        assert stale_same_session_stop.json["code"] == "stale_agent_stop_target"
         assert pool.get(ids[1]).snapshot()["running"]
+        fresh_same_session_stop = client.post(
+            "/api/agent/stop",
+            headers=headers,
+            json={
+                "stop_target_session_id": ids[1],
+                "stop_target_run_id": restarted_run_id,
+            },
+        )
+        assert fresh_same_session_stop.status_code == 200
+        assert fresh_same_session_stop.json["stop_requested"]
+        wait_until(lambda: not pool.get(ids[1]).snapshot()["running"])
+        assert pool.get(replacement_id).snapshot()["running"]
+
+        refreshed = client.get("/api/agent/status", headers=headers).json
+        assert refreshed["agent"]["stop_target_session_id"] == replacement_id
+        assert refreshed["agent"]["stop_target_run_id"] == replacement.json["agent"]["run_id"]
+        stopped = client.post(
+            "/api/agent/stop",
+            headers=headers,
+            json={
+                "stop_target_session_id": replacement_id,
+                "stop_target_run_id": refreshed["agent"]["stop_target_run_id"],
+            },
+        )
+        assert stopped.status_code == 200
+        assert stopped.json["stop_requested"]
+        wait_until(lambda: not pool.get(replacement_id).snapshot()["running"])
+        assert client.post("/api/agent/stop", headers={**headers, "X-CacheLikes-Agent-Session": "unknown"}).status_code == 404
         unknown = client.get("/api/agent/status", headers={**headers, "X-CacheLikes-Agent-Session": "expired"})
         assert unknown.status_code == 404
         assert unknown.json["code"] == "unknown_agent_session"
         assert not client.get("/api/agent/status", headers=headers).json["agent"].get("running")
+
+        primary_headers = {
+            key: value
+            for key, value in headers.items()
+            if key != "X-CacheLikes-Agent-Session"
+        }
+        primary_start = client.post(
+            "/api/agent/ask",
+            headers={
+                **primary_headers,
+                "X-CacheLikes-Agent-Workspace": str(workspaces[0]),
+            },
+            json={
+                "prompt": "primary run",
+                "workspace_path": str(workspaces[0]),
+                "browser": "edge",
+                "platform": "chatgpt",
+            },
+        )
+        assert primary_start.status_code == 202
+        primary_status = client.get(
+            "/api/agent/status",
+            headers={
+                **primary_headers,
+                "X-CacheLikes-Agent-Workspace": str(workspaces[0]),
+            },
+        ).json
+        assert primary_status["agent"]["stop_target_session_id"] == "primary"
+        primary_stop = client.post(
+            "/api/agent/stop",
+            headers=primary_headers,
+            json={
+                "stop_target_session_id": "primary",
+                "stop_target_run_id": primary_status["agent"]["stop_target_run_id"],
+            },
+        )
+        assert primary_stop.status_code == 200
+        assert primary_stop.json["stop_requested"]
+        wait_until(lambda: not pool.get().snapshot()["running"])
     finally:
         release.set()
         pool.stop_at_exit()

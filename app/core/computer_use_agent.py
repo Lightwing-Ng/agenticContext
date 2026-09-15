@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.73.0-codex.1
+Code version: v3.76.1-codex.1
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ from .agent_model_catalog import (
 from .agent_session_sources import (
     CLAUDE_HOME_URL,
     CLAUDE_HOSTS,
-    GROK_COMPOSER_SELECTOR,
     chatgpt_project_id,
     claude_project_session_id,
     normalize_agent_conversation_url,
@@ -61,7 +60,9 @@ from .browser_sessions import (
     CLAUDE_COMPOSER_SELECTOR,
     CHROMIUM_WINDOW_MODE_OFFSCREEN,
     CHROMIUM_WINDOW_MODE_TASK_STAGE,
+    GROK_COMPOSER_SELECTOR,
     browser_descriptors,
+    grok_composer_snapshot,
     goto_with_retry,
     is_grok_security_verification_page,
     launch_chromium_context,
@@ -80,7 +81,7 @@ from .config import (
 )
 from .gemini_downloader import inspect_gemini_session
 from .grok_history import _grok_api_json
-from .safari_automation import SafariContext
+from .safari_automation import SafariContext, SafariNativeActivationError
 from .state import utc_now
 
 if TYPE_CHECKING:
@@ -212,7 +213,10 @@ PROVIDER_SESSION_BIND_POLL_MILLISECONDS = 100
 GROK_SESSION_BASELINE_PAGE_LIMIT = 100
 WEB_PROGRESS_TEXT = {"thinking", "working", "searching", "analyzing", "generating"}
 SUPPORTED_BROWSERS = frozenset({"chrome", "edge", "safari"})
-SUPPORTED_SAFARI_AGENT_PLATFORMS = frozenset({"chatgpt", "grok"})
+SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS = frozenset({"chatgpt", "grok"})
+# Compatibility alias for runtime helpers that predate the split between
+# read-only source discovery and full Agent execution.
+SUPPORTED_SAFARI_AGENT_PLATFORMS = SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS
 
 
 class AgentConnectionInterrupted(RuntimeError):
@@ -1673,11 +1677,6 @@ def open_browser_for_login(
         raise ValueError("The Agent platform must be ChatGPT, Gemini, Grok, or Claude.")
     if selected_browser not in SUPPORTED_BROWSERS:
         raise ValueError("The Agent browser must be Safari, Edge, or Chrome.")
-    if (
-        selected_browser == "safari"
-        and selected_platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS
-    ):
-        raise ValueError("Gemini and Claude Agent sessions require Edge or Chrome.")
     if sys.platform != "darwin" and not is_windows_host():
         raise RuntimeError("Browser login handoff is only supported on macOS and Windows.")
     # On Windows the Agent reuses a project-owned debug browser (reached over
@@ -1723,6 +1722,37 @@ def normalize_chatgpt_effort(value: Any) -> str:
     return normalized
 
 
+def is_agent_execution_supported(browser: str, platform: str) -> bool:
+    """Return whether one browser/provider pair may start a full Agent task."""
+    selected_browser = str(browser or "").strip().lower()
+    selected_platform = str(platform or "").strip().lower()
+    return bool(
+        selected_browser in SUPPORTED_BROWSERS
+        and selected_platform in SUPPORTED_AGENT_PLATFORMS
+        and not (
+            selected_browser == "safari"
+            and selected_platform not in SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS
+        )
+    )
+
+
+def agent_execution_blocked_message(browser: str, platform: str) -> str:
+    """Explain a source-only browser/provider selection without implying sign-out."""
+    if is_agent_execution_supported(browser, platform):
+        return ""
+    selected_platform = str(platform or "").strip().lower()
+    platform_label = AGENT_PLATFORM_BY_KEY.get(selected_platform, {}).get(
+        "label",
+        "This provider",
+    )
+    if str(browser or "").strip().lower() == "safari":
+        return (
+            f"Safari can browse {platform_label} Recent sessions here. "
+            f"Choose Edge or Chrome to start a {platform_label} Web Agent task."
+        )
+    return "This browser and Web service cannot start an Agent task."
+
+
 def validate_computer_use_settings(payload: dict[str, Any]) -> ComputerUseSettings:
     """Normalize and validate settings received from the local control page."""
     workspace = Path(str(payload.get("workspace_path", PROJECT_ROOT))).expanduser().resolve()
@@ -1742,9 +1772,6 @@ def validate_computer_use_settings(payload: dict[str, Any]) -> ComputerUseSettin
         raise ValueError("The Agent browser must be Safari, Edge, or Chrome.")
     if operating_system == "windows" and browser == "safari":
         raise ValueError("Windows Agent sessions require Edge or Chrome; Safari is macOS-only.")
-    if browser == "safari" and platform not in SUPPORTED_SAFARI_AGENT_PLATFORMS:
-        raise ValueError("Gemini and Claude Agent sessions require Edge or Chrome.")
-
     default_model = default_model_for_platform(platform)
     model = str(payload.get("model", default_model)).strip().lower()
     model = LEGACY_AGENT_MODEL_KEYS.get((platform, model), model)
@@ -1763,8 +1790,7 @@ def validate_computer_use_settings(payload: dict[str, Any]) -> ComputerUseSettin
     )
 
     target_url = str(payload.get("target_url", _platform_home_url(platform))).strip()
-    target_parts = urlsplit(target_url)
-    if target_parts.scheme != "https" or (target_parts.hostname or "").lower() not in _platform_hosts(platform):
+    if not _web_url_has_official_origin(platform, target_url):
         platform_label = AGENT_PLATFORM_BY_KEY[platform]["label"]
         raise ValueError(f"The Agent target must use the official {platform_label} HTTPS host.")
 
@@ -1943,6 +1969,7 @@ class ComputerUseSettingsStore:
         self._lock = RLock()
         self._settings_path = settings_path or DEFAULT_AGENT_SETTINGS_PATH
         self._settings = load_computer_use_settings(self._settings_path)
+        self._preference_client_revisions: dict[str, int] = {}
 
     @property
     def settings(self) -> ComputerUseSettings:
@@ -1965,25 +1992,55 @@ class ComputerUseSettingsStore:
         platform: str = DEFAULT_AGENT_PLATFORM,
         model: str | None = None,
         chatgpt_effort: str | None = None,
+        client_id: str = "",
+        client_revision: int = 0,
     ) -> ComputerUseSettings:
-        candidate = asdict(self.settings)
-        candidate.update(
-            {
-                "workspace_path": workspace_path,
-                "operating_system": operating_system,
-                "platform": platform,
-                "browser": browser,
-                "model": model or self.settings.model,
-                "chatgpt_effort": (
-                    self.settings.chatgpt_effort
-                    if chatgpt_effort is None
-                    else chatgpt_effort
-                ),
-            }
-        )
-        if platform != self.settings.platform:
-            candidate["target_url"] = _platform_home_url(platform)
-        return self.update(validate_computer_use_settings(candidate))
+        with self._lock:
+            normalized_client_id = str(client_id or "").strip()
+            try:
+                normalized_revision = int(client_revision)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("The Agent preference revision must be an integer.") from exc
+            if isinstance(client_revision, bool) or normalized_revision < 0:
+                raise ValueError("The Agent preference revision must be a non-negative integer.")
+            if normalized_client_id and not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,128}",
+                normalized_client_id,
+            ):
+                raise ValueError("The Agent preference client id is invalid.")
+            if normalized_client_id and normalized_revision:
+                previous_revision = self._preference_client_revisions.get(
+                    normalized_client_id,
+                    0,
+                )
+                if normalized_revision <= previous_revision:
+                    return self._settings
+            current = self._settings
+            candidate = asdict(current)
+            candidate.update(
+                {
+                    "workspace_path": workspace_path,
+                    "operating_system": operating_system,
+                    "platform": platform,
+                    "browser": browser,
+                    "model": model or current.model,
+                    "chatgpt_effort": (
+                        current.chatgpt_effort
+                        if chatgpt_effort is None
+                        else chatgpt_effort
+                    ),
+                }
+            )
+            if platform != current.platform:
+                candidate["target_url"] = _platform_home_url(platform)
+            updated = self.update(validate_computer_use_settings(candidate))
+            if normalized_client_id and normalized_revision:
+                self._preference_client_revisions.pop(normalized_client_id, None)
+                self._preference_client_revisions[normalized_client_id] = normalized_revision
+                while len(self._preference_client_revisions) > 256:
+                    oldest_client_id = next(iter(self._preference_client_revisions))
+                    self._preference_client_revisions.pop(oldest_client_id, None)
+            return updated
 
     def snapshot(self) -> dict[str, Any]:
         settings = self.settings
@@ -7364,6 +7421,10 @@ class ComputerUseAgentService:
         if candidate["platform"] != base.platform:
             candidate["target_url"] = _platform_home_url(candidate["platform"])
         settings = validate_computer_use_settings(candidate)
+        if not is_agent_execution_supported(settings.browser, settings.platform):
+            raise RuntimeError(
+                agent_execution_blocked_message(settings.browser, settings.platform)
+            )
         host_operating_system = detect_host_operating_system()
         if settings.operating_system != host_operating_system:
             host_label = "Windows" if host_operating_system == "windows" else "macOS"
@@ -7538,9 +7599,13 @@ class ComputerUseAgentService:
                 self._persist_snapshot_locked()
                 raise
 
-    def request_stop(self) -> bool:
+    def request_stop(self, *, expected_run_id: str = "") -> bool:
         with self._lock:
-            if not self._snapshot.running or self._completion_started:
+            if (
+                (expected_run_id and self._snapshot.run_id != expected_run_id)
+                or not self._snapshot.running
+                or self._completion_started
+            ):
                 return False
             stop_accepted = self._stop_requested.set()
             if stop_accepted is False:
@@ -8757,7 +8822,7 @@ def run_web_computer_use(
         return stopped_result
 
     if descriptor.engine == "safari":
-        with SafariContext(selected_target_url) as context:
+        with SafariContext(selected_target_url, lock_blocking=False) as context:
             if should_stop():
                 return stopped_result
             page = context.primary_page
@@ -8995,8 +9060,8 @@ def _provider_tab_identity(page: Any) -> tuple[Any, str, str]:
     return tab_id, url, title
 
 
-def _chatgpt_url_has_official_origin(value: str) -> bool:
-    """Require ChatGPT's HTTPS origin without credentials or a custom port."""
+def _web_url_has_official_origin(platform: str, value: str) -> bool:
+    """Require one provider's HTTPS origin without credentials or a custom port."""
     try:
         parsed = urlsplit(str(value or "").strip())
         port = parsed.port
@@ -9004,11 +9069,16 @@ def _chatgpt_url_has_official_origin(value: str) -> bool:
         return False
     return bool(
         parsed.scheme.lower() == "https"
-        and (parsed.hostname or "").lower() in CHATGPT_HOSTS
+        and (parsed.hostname or "").lower() in _platform_hosts(platform)
         and port in {None, 443}
         and not parsed.username
         and not parsed.password
     )
+
+
+def _chatgpt_url_has_official_origin(value: str) -> bool:
+    """Require ChatGPT's HTTPS origin without credentials or a custom port."""
+    return _web_url_has_official_origin("chatgpt", value)
 
 
 def _chatgpt_fresh_navigation_allowed(expected_url: str, current_url: str) -> bool:
@@ -9099,9 +9169,12 @@ def _chatgpt_conversation_id_is_client_placeholder(conversation_id: str) -> bool
 
 def _grok_fresh_navigation_allowed(expected_url: str, current_url: str) -> bool:
     """Permit only Grok's root home-to-root-conversation transition."""
-    expected = urlsplit(str(expected_url or ""))
-    if (expected.hostname or "").lower() not in GROK_HOSTS:
+    if not (
+        _web_url_has_official_origin("grok", expected_url)
+        and _web_url_has_official_origin("grok", current_url)
+    ):
         return False
+    expected = urlsplit(str(expected_url or ""))
     if (expected.path.rstrip("/") or "/") != "/":
         return False
     conversation = normalize_agent_conversation_url("grok", current_url)
@@ -9140,6 +9213,11 @@ def _provider_new_session_transition_allowed(
     session_mode: str,
 ) -> bool:
     """Allow only the selected landing's canonical post-submit conversation."""
+    if not (
+        _web_url_has_official_origin(platform, expected_url)
+        and _web_url_has_official_origin(platform, current_url)
+    ):
+        return False
     mode = str(session_mode or "new").strip().lower()
     if mode == "new":
         if platform == "chatgpt":
@@ -11673,11 +11751,13 @@ def _web_assistant_selector(platform: str) -> str:
 
 def _web_target_is_open(platform: str, target_url: str, current_url: str) -> bool:
     """Check that a provider page stayed on its official host and selected path."""
+    if not (
+        _web_url_has_official_origin(platform, target_url)
+        and _web_url_has_official_origin(platform, current_url)
+    ):
+        return False
     target = urlsplit(str(target_url or ""))
     current = urlsplit(str(current_url or ""))
-    hosts = _platform_hosts(platform)
-    if (target.hostname or "").lower() not in hosts or (current.hostname or "").lower() not in hosts:
-        return False
     if platform == "chatgpt":
         return _chatgpt_target_is_open(target_url, current_url)
     if platform == "grok":
@@ -11769,6 +11849,33 @@ def _wait_for_visible_composer(
     raise _ComposerReadinessTimeout(
         "The provider composer readiness wait expired."
     ) from last_error
+
+
+def _wait_for_unique_grok_composer(
+    page: Any,
+    should_stop: Callable[[], bool] | None = None,
+    readiness_check: Callable[[], float] | None = None,
+) -> bool:
+    """Wait for one visible, enabled, provider-scoped Grok composer."""
+    deadline = time.monotonic() + CHATGPT_COMPOSER_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if callable(should_stop) and should_stop():
+            return False
+        if callable(readiness_check):
+            deadline += max(0.0, float(readiness_check() or 0.0))
+            if callable(should_stop) and should_stop():
+                return False
+        count = int(grok_composer_snapshot(page).get("count") or 0)
+        if count == 1:
+            return True
+        if count > 1:
+            raise _ComposerReadinessTimeout(
+                f"Expected one provider-scoped Grok composer, found {count}."
+            )
+        page.wait_for_timeout(WEB_SEND_BUTTON_POLL_MILLISECONDS)
+    raise _ComposerReadinessTimeout(
+        "The provider-scoped Grok composer readiness wait expired."
+    )
 
 
 def _require_gemini_agent_availability(page: Any) -> None:
@@ -11874,16 +11981,30 @@ def _verify_agent_page(
         available, _paused_seconds = _run_availability_gate(availability_check)
         if not available:
             return False
+    current_url = str(page.url or "")
+    if not _web_url_has_official_origin(platform, current_url):
+        raise RuntimeError(
+            f"The selected browser did not reach the official "
+            f"{AGENT_PLATFORM_BY_KEY[platform]['label']} HTTPS origin."
+        )
+    if selected_target_url and not _web_target_is_open(
+        platform,
+        selected_target_url,
+        current_url,
+    ):
+        raise RuntimeError(
+            f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} session did not "
+            "finish opening in the browser."
+        )
     if browser_kind == "safari":
-        if not _wait_for_visible_composer(
-            page.locator(_web_composer_selector(platform)),
+        if not _wait_for_unique_grok_composer(
+            page,
             should_stop=should_stop,
             readiness_check=(
                 lambda: _run_availability_gate(availability_check)[1]
                 if callable(availability_check)
                 else 0.0
             ),
-            require_unique=True,
         ):
             return False
     elif not _wait_for_web_composer(
@@ -11896,8 +12017,11 @@ def _verify_agent_page(
     if callable(should_stop) and should_stop():
         return False
     current_url = str(page.url or "")
-    if (urlsplit(current_url).hostname or "").lower() not in _platform_hosts(platform):
-        raise RuntimeError(f"The selected browser did not reach {AGENT_PLATFORM_BY_KEY[platform]['label']} Web.")
+    if not _web_url_has_official_origin(platform, current_url):
+        raise RuntimeError(
+            f"The selected browser did not reach the official "
+            f"{AGENT_PLATFORM_BY_KEY[platform]['label']} HTTPS origin."
+        )
     if selected_target_url and not _web_target_is_open(platform, selected_target_url, current_url):
         raise RuntimeError(
             f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} session did not finish opening in the browser."
@@ -15356,8 +15480,24 @@ def _select_chatgpt_model(
     return False
 
 
+def _click_provider_locator(
+    locator: Any,
+    browser_kind: str,
+    expected_url: str,
+    *,
+    timeout: int,
+) -> None:
+    """Keep Safari native input bound to the caller-verified provider page."""
+    if browser_kind == "safari":
+        locator.click(timeout=timeout, expected_url=expected_url)
+        return
+    locator.click(timeout=timeout)
+
+
 def _dismiss_known_grok_onboarding_dialogs(
     page: Any,
+    browser_kind: str,
+    expected_url: str,
     should_stop: Callable[[], bool],
 ) -> tuple[bool, str]:
     """Dismiss only exact Grok onboarding promos before touching the model picker."""
@@ -15429,7 +15569,12 @@ def _dismiss_known_grok_onboarding_dialogs(
         dismiss = page.locator(f'[data-cachelikes-grok-dismiss="{marker}"]')
         if dismiss.count() != 1 or not dismiss.first.is_visible():
             return False, "onboarding-dismiss-not-found"
-        dismiss.first.click(timeout=5_000)
+        _click_provider_locator(
+            dismiss.first,
+            browser_kind,
+            expected_url,
+            timeout=5_000,
+        )
         page.wait_for_timeout(250)
     return False, "onboarding-dialog-timeout"
 
@@ -15619,13 +15764,27 @@ def _inspect_open_grok_model_surface(
 
 def _select_grok_model_with_trusted_clicks(
     page: Any,
+    browser_kind: str,
     remote_labels: tuple[str, ...],
     trigger_labels: tuple[str, ...],
     observation: dict[str, Any] | None,
     should_stop: Callable[[], bool],
 ) -> bool:
     """Select Grok's current Radix model menu with trusted, bound clicks."""
-    dismissed, dismiss_reason = _dismiss_known_grok_onboarding_dialogs(page, should_stop)
+    current_url = str(getattr(page, "url", "") or "").strip()
+    if not _web_url_has_official_origin("grok", current_url):
+        _record_model_observation(
+            observation,
+            reason="provider-origin-untrusted",
+            attempted_labels=remote_labels,
+        )
+        return False
+    dismissed, dismiss_reason = _dismiss_known_grok_onboarding_dialogs(
+        page,
+        browser_kind,
+        current_url,
+        should_stop,
+    )
     if not dismissed:
         _record_model_observation(
             observation,
@@ -15640,8 +15799,19 @@ def _select_grok_model_with_trusted_clicks(
     bound_controlled_id = ""
 
     def close_after_safe_failure(reason: str) -> None:
-        if reason != "blocking-dialog":
+        if reason not in {
+            "blocking-dialog",
+            "model-selection-click-uncertain",
+            "model-selection-native-input-blocked",
+        }:
             close_menu()
+
+    def safari_input_may_have_landed(error: BaseException) -> bool:
+        return (
+            browser_kind == "safari"
+            and isinstance(error, SafariNativeActivationError)
+            and error.input_attempted
+        )
 
     def record_failure(reason: str, observed: str = "") -> bool:
         _record_model_observation(
@@ -15699,8 +15869,17 @@ def _select_grok_model_with_trusted_clicks(
         if should_stop():
             return False, current
         try:
-            trigger.click(timeout=3_000)
-        except Exception:
+            _click_provider_locator(
+                trigger,
+                browser_kind,
+                current_url,
+                timeout=3_000,
+            )
+        except Exception as exc:
+            if safari_input_may_have_landed(exc):
+                return wait_for_closed()
+            if browser_kind == "safari":
+                return False, current
             if _grok_blocking_dialog_snapshot(page).get("blocking"):
                 return False, current
             keyboard = getattr(page, "keyboard", None)
@@ -15724,37 +15903,64 @@ def _select_grok_model_with_trusted_clicks(
             state, trigger = trigger_locator()
         if should_stop():
             return {"ok": False, "reason": "stop-requested"}
+        click_uncertain = False
         try:
-            trigger.click(timeout=3_000)
-        except Exception:
-            page.wait_for_timeout(150)
-            state, trigger = trigger_locator()
-            if not state.get("ok"):
-                return state
-            if not state.get("expanded"):
-                clear, reason = _dismiss_known_grok_onboarding_dialogs(
-                    page,
-                    should_stop,
-                )
-                if not clear:
-                    return {"ok": False, "reason": reason}
+            _click_provider_locator(
+                trigger,
+                browser_kind,
+                current_url,
+                timeout=3_000,
+            )
+        except Exception as exc:
+            click_uncertain = safari_input_may_have_landed(exc)
+            if browser_kind == "safari" and not click_uncertain:
+                return {
+                    "ok": False,
+                    "reason": "model-selection-native-input-blocked",
+                }
+            if not click_uncertain:
+                page.wait_for_timeout(150)
                 state, trigger = trigger_locator()
-                if not state.get("ok") or state.get("expanded"):
-                    return {"ok": False, "reason": "model-control-ambiguous"}
-                try:
-                    trigger.click(timeout=3_000)
-                except Exception:
-                    return {
-                        "ok": False,
-                        "reason": "model-selection-click-uncertain",
-                    }
+                if not state.get("ok"):
+                    return state
+                if not state.get("expanded"):
+                    clear, reason = _dismiss_known_grok_onboarding_dialogs(
+                        page,
+                        browser_kind,
+                        current_url,
+                        should_stop,
+                    )
+                    if not clear:
+                        return {"ok": False, "reason": reason}
+                    state, trigger = trigger_locator()
+                    if not state.get("ok") or state.get("expanded"):
+                        return {"ok": False, "reason": "model-control-ambiguous"}
+                    try:
+                        _click_provider_locator(
+                            trigger,
+                            browser_kind,
+                            current_url,
+                            timeout=3_000,
+                        )
+                    except Exception:
+                        return {
+                            "ok": False,
+                            "reason": "model-selection-click-uncertain",
+                        }
         surface_state: dict[str, Any] = {}
         for _attempt in range(20):
             if should_stop():
                 return {"ok": False, "reason": "stop-requested"}
             page.wait_for_timeout(100)
             if _grok_blocking_dialog_snapshot(page).get("blocking"):
-                return {"ok": False, "reason": "blocking-dialog"}
+                return {
+                    "ok": False,
+                    "reason": (
+                        "model-selection-click-uncertain"
+                        if click_uncertain
+                        else "blocking-dialog"
+                    ),
+                }
             state, _trigger = trigger_locator()
             if not state.get("ok"):
                 continue
@@ -15770,13 +15976,20 @@ def _select_grok_model_with_trusted_clicks(
                 "model-surface-not-found",
             }:
                 return surface_state
+        if click_uncertain:
+            return {"ok": False, "reason": "model-selection-click-uncertain"}
         return surface_state or {"ok": False, "reason": "model-menu-open-failed"}
 
     def open_menu_after_onboarding_retry() -> dict[str, Any]:
         surface_state = open_menu()
         if surface_state.get("reason") != "blocking-dialog":
             return surface_state
-        clear, reason = _dismiss_known_grok_onboarding_dialogs(page, should_stop)
+        clear, reason = _dismiss_known_grok_onboarding_dialogs(
+            page,
+            browser_kind,
+            current_url,
+            should_stop,
+        )
         if not clear:
             return {"ok": False, "reason": reason}
         return open_menu()
@@ -15828,21 +16041,54 @@ def _select_grok_model_with_trusted_clicks(
         if should_stop():
             return record_failure("stop-requested")
         try:
-            choice.first.click(timeout=3_000)
-        except Exception:
-            page.wait_for_timeout(150)
-            state, _trigger = trigger_locator()
-            if state.get("ok") and state.get("expanded"):
-                reread = _inspect_open_grok_model_surface(
-                    page,
-                    trigger_marker,
-                    surface_marker,
-                    choice_marker,
-                    remote_labels,
-                )
-                if not reread.get("selected"):
-                    close_menu()
+            _click_provider_locator(
+                choice.first,
+                browser_kind,
+                current_url,
+                timeout=3_000,
+            )
+        except Exception as exc:
+            if safari_input_may_have_landed(exc):
+                selection_confirmed = False
+                for _attempt in range(20):
+                    if should_stop():
+                        return record_failure("stop-requested")
+                    state, _trigger = trigger_locator()
+                    if state.get("ok") and not state.get("expanded"):
+                        selection_confirmed = _web_model_text_matches(
+                            str(state.get("current") or ""),
+                            remote_labels,
+                        )
+                    elif state.get("ok") and state.get("expanded"):
+                        reread = _inspect_open_grok_model_surface(
+                            page,
+                            trigger_marker,
+                            surface_marker,
+                            choice_marker,
+                            remote_labels,
+                        )
+                        selection_confirmed = bool(reread.get("selected"))
+                    if selection_confirmed:
+                        break
+                    page.wait_for_timeout(100)
+                if not selection_confirmed:
                     return record_failure("model-selection-click-uncertain")
+            elif browser_kind == "safari":
+                return record_failure("model-selection-native-input-blocked")
+            else:
+                page.wait_for_timeout(150)
+                state, _trigger = trigger_locator()
+                if state.get("ok") and state.get("expanded"):
+                    reread = _inspect_open_grok_model_surface(
+                        page,
+                        trigger_marker,
+                        surface_marker,
+                        choice_marker,
+                        remote_labels,
+                    )
+                    if not reread.get("selected"):
+                        close_menu()
+                        return record_failure("model-selection-click-uncertain")
         closed, current = wait_for_closed()
         if not closed:
             reread = _inspect_open_grok_model_surface(
@@ -15964,6 +16210,7 @@ def _select_web_model(
             stop_requested,
             lambda: _select_grok_model_with_trusted_clicks(
                 page,
+                browser_kind,
                 remote_labels,
                 trigger_labels,
                 observation,
@@ -16651,6 +16898,8 @@ def _provider_mutating_action_may_have_committed(
     exc: Exception,
 ) -> bool:
     """Fail closed against duplicate sends after navigation or challenge races."""
+    if isinstance(exc, SafariNativeActivationError) and exc.input_attempted:
+        return True
     if _is_transient_browser_navigation_error(exc):
         return True
     try:
@@ -17451,19 +17700,15 @@ def _submit_and_wait(
                         "ChatGPT kept the failed assistant response after one bounded Retry. "
                         "The controller turn was not resent."
                     )
-        if (
-            platform == "chatgpt"
-            and user_receipt_contract
-            and not current_user_receipt_seen
-            and now >= receipt_deadline
-        ):
+        if user_receipt_contract and not current_user_receipt_seen and now >= receipt_deadline:
             receipt_description = (
                 "its unique controller receipt"
                 if turn_receipt_marker
                 else "an exact user-turn receipt"
             )
             raise AgentConnectionInterrupted(
-                f"ChatGPT did not expose {receipt_description} within "
+                f"{AGENT_PLATFORM_BY_KEY[platform]['label']} did not expose "
+                f"{receipt_description} within "
                 f"{receipt_timeout_seconds:g} seconds. The controller turn was not resent."
             )
         if platform != "chatgpt" and user_receipt_contract:
@@ -17556,6 +17801,12 @@ def _submit_chromium_web_prompt(
     read_recovery_budget = recovery_budget or _ProviderReadRecoveryBudget()
     if not str(expected_target_url or "").strip():
         raise RuntimeError("Provider submission requires a verified target URL.")
+    current_url = str(getattr(page, "url", "") or "").strip()
+    if not _web_target_is_open(platform, expected_target_url, current_url):
+        raise RuntimeError(
+            f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} tab changed before "
+            "the Chromium browser could fill the prompt."
+        )
     available, _paused_seconds = _run_availability_gate(availability_check)
     if not available:
         return False
@@ -18426,8 +18677,11 @@ def _submit_safari_prompt(
     if session_check is not None:
         session_check(False)
     current_url = str(getattr(page, "url", "") or "").strip()
-    if platform == "grok" and not current_url:
-        raise RuntimeError("Safari could not verify the current Grok URL before filling the prompt.")
+    if not _web_url_has_official_origin(platform, current_url):
+        raise RuntimeError(
+            f"Safari could not verify the official "
+            f"{AGENT_PLATFORM_BY_KEY[platform]['label']} HTTPS origin before filling the prompt."
+        )
     if expected_target_url and current_url and not _web_target_is_open(
         platform,
         expected_target_url,
@@ -18542,6 +18796,7 @@ def _submit_safari_prompt(
         return False
 
     deadline = time.monotonic() + SAFARI_SEND_BUTTON_TIMEOUT_SECONDS
+    send_marker = f"safari-send-{secrets.token_hex(16)}"
     last_state: dict[str, Any] = {}
     while time.monotonic() < deadline:
         if should_stop():
@@ -18556,7 +18811,7 @@ def _submit_safari_prompt(
 
         def scan_and_submit() -> Any:
             return page.evaluate(
-                r"""({platform, composerMarker, expectedMessage, expectedCurrentUrl}) => {
+                r"""({platform, composerMarker, sendMarker, expectedMessage, expectedCurrentUrl}) => {
                 const isVisible = (element) => {
                     if (!element || element.getClientRects().length === 0) return false;
                     for (let current = element; current; current = current.parentElement) {
@@ -18624,15 +18879,25 @@ def _submit_safari_prompt(
                 }
                 const controls = [...scope.querySelectorAll('button')].filter(isVisible);
                 const sendButtons = semanticSendButtons(scope);
-                const sendButton = sendButtons.find((button) =>
+                const enabledSendButtons = sendButtons.filter((button) =>
                     !button.disabled && button.getAttribute('aria-disabled') !== 'true'
                 );
-                if (sendButton) {
-                    sendButton.click();
+                document.querySelectorAll('[data-cachelikes-safari-send]')
+                    .forEach((button) => button.removeAttribute('data-cachelikes-safari-send'));
+                if (enabledSendButtons.length === 1) {
+                    const sendButton = enabledSendButtons[0];
+                    sendButton.setAttribute('data-cachelikes-safari-send', sendMarker);
                     return {
-                        clicked: true,
+                        ready: true,
                         ariaLabel: sendButton.getAttribute('aria-label') || '',
                         dataTestId: sendButton.getAttribute('data-testid') || '',
+                    };
+                }
+                if (enabledSendButtons.length > 1) {
+                    return {
+                        ready: false,
+                        reason: 'send-button-ambiguous',
+                        enabledSendButtonCount: enabledSendButtons.length,
                     };
                 }
                 const generating = controls.some((button) => {
@@ -18654,6 +18919,7 @@ def _submit_safari_prompt(
                 {
                     "platform": platform,
                     "composerMarker": composer_marker,
+                    "sendMarker": send_marker,
                     "expectedMessage": message,
                     "expectedCurrentUrl": current_url,
                 },
@@ -18677,7 +18943,47 @@ def _submit_safari_prompt(
                     f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} tab changed "
                     "before Safari could send the prompt."
                 )
-            if result.get("clicked"):
+            if result.get("reason") == "send-button-ambiguous":
+                raise RuntimeError(
+                    f"Safari found multiple enabled "
+                    f"{AGENT_PLATFORM_BY_KEY[platform]['label']} send buttons and "
+                    "refused native input."
+                )
+            if result.get("ready"):
+                if session_check is not None:
+                    session_check(False)
+                native_target_url = str(getattr(page, "url", "") or "").strip()
+                if native_target_url != current_url or not _web_target_is_open(
+                    platform,
+                    current_url,
+                    native_target_url,
+                ):
+                    raise RuntimeError(
+                        f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} tab changed "
+                        "before Safari could activate Send."
+                    )
+                send_button = page.locator(
+                    f'[data-cachelikes-safari-send="{send_marker}"]'
+                )
+                if send_button.count() != 1 or not send_button.first.is_visible():
+                    raise RuntimeError(
+                        f"Safari lost the verified {AGENT_PLATFORM_BY_KEY[platform]['label']} "
+                        "send button before native activation."
+                    )
+                try:
+                    executed, _activation = _run_browser_action_unless_stopped(
+                        should_stop,
+                        lambda: send_button.first.click(
+                            timeout=3_000,
+                            expected_url=current_url,
+                        ),
+                    )
+                except Exception as exc:
+                    if _provider_mutating_action_may_have_committed(page, platform, exc):
+                        return True
+                    raise
+                if not executed:
+                    return False
                 return True
         if should_stop():
             return False
@@ -19412,7 +19718,96 @@ def _web_is_generating(page: Any, browser_kind: str) -> bool:
 
 
 def _stop_web_generation(page: Any, browser_kind: str) -> None:
-    del browser_kind
+    if browser_kind == "safari":
+        current_url = str(getattr(page, "url", "") or "").strip()
+        marker = f"safari-stop-{secrets.token_hex(16)}"
+        try:
+            state = page.evaluate(
+                r"""({marker, expectedCurrentUrl}) => {
+                    if (!expectedCurrentUrl || location.href !== expectedCurrentUrl) {
+                        return {count: 0, targetMismatch: true};
+                    }
+                    const scope = document.querySelector('main') || document.body;
+                    if (!scope) return {count: 0};
+                    const visible = (element) => {
+                        if (!element || !element.getClientRects().length) return false;
+                        for (let current = element; current; current = current.parentElement) {
+                            const style = getComputedStyle(current);
+                            const opacity = Number.parseFloat(style.opacity || '1');
+                            if (style.display === 'none'
+                                || style.visibility === 'hidden'
+                                || style.visibility === 'collapse'
+                                || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                        }
+                        return true;
+                    };
+                    const candidates = [...scope.querySelectorAll('button')].filter((button) => {
+                        const text = `${button.getAttribute('aria-label') || ''} ${button.innerText || button.textContent || ''}`.toLowerCase();
+                        const testId = (button.getAttribute('data-testid') || '').toLowerCase();
+                        return visible(button)
+                            && !button.disabled
+                            && button.getAttribute('aria-disabled') !== 'true'
+                            && !button.closest('[role="dialog"], [role="menu"], nav, header')
+                            && (
+                                /stop\s+(generating|response|answering|streaming)/.test(text)
+                                || /停止(?:生成|回答|串流|流式传输|流式傳輸)?/.test(text)
+                                || /stop-(button|generating|response|streaming)/.test(testId)
+                            );
+                    });
+                    document.querySelectorAll('[data-cachelikes-safari-stop]')
+                        .forEach((candidate) => candidate.removeAttribute(
+                            'data-cachelikes-safari-stop'
+                        ));
+                    if (candidates.length !== 1) return {count: candidates.length};
+                    candidates[0].setAttribute('data-cachelikes-safari-stop', marker);
+                    return {count: 1};
+                }""",
+                {"marker": marker, "expectedCurrentUrl": current_url},
+            )
+            if not isinstance(state, dict) or state.get("count") != 1:
+                return
+            try:
+                page.locator(
+                    f'[data-cachelikes-safari-stop="{marker}"]'
+                ).click(timeout=3_000, expected_url=current_url)
+            except SafariNativeActivationError as exc:
+                if not exc.input_attempted:
+                    LOGGER.warning(
+                        "Safari did not attempt the trusted Stop activation: %s",
+                        exc,
+                    )
+                    return
+            except Exception as exc:
+                LOGGER.warning(
+                    "Safari Stop activation could not be proven before native input: %s",
+                    exc,
+                )
+                return
+            for _attempt in range(20):
+                if not _web_is_generating(page, browser_kind):
+                    return
+                page.wait_for_timeout(100)
+            LOGGER.warning(
+                "Safari Stop activation was not confirmed; native input was not repeated."
+            )
+        except Exception as exc:
+            LOGGER.warning("Safari could not safely inspect the Stop control: %s", exc)
+        finally:
+            try:
+                page.evaluate(
+                    r"""({marker}) => {
+                        document.querySelectorAll('[data-cachelikes-safari-stop]')
+                            .forEach((candidate) => {
+                                if (candidate.getAttribute('data-cachelikes-safari-stop') === marker) {
+                                    candidate.removeAttribute('data-cachelikes-safari-stop');
+                                }
+                            });
+                    }""",
+                    {"marker": marker},
+                )
+            except Exception:
+                pass
+        return
     page.evaluate(
         r"""() => {
             const button = Array.from(document.querySelectorAll('button')).find((candidate) => {

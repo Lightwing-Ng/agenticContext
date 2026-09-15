@@ -1,6 +1,6 @@
 """Collect liked tweet URLs from the logged-in X account."""
 
-# Code version: v1.4.1-codex.1
+# Code version: v1.4.2-codex.1
 
 from __future__ import annotations
 
@@ -616,7 +616,7 @@ def collect_liked_tweet_urls_via_safari(
 }
 """.strip()
     state.append_event(f"Launching a background Safari window for X likes collection at {likes_url}.")
-    with SafariContext(likes_url) as context:
+    with SafariContext(likes_url, lock_blocking=False) as context:
         page = context.primary_page
         page.wait_for_timeout(8_000)
         raw_links_json = "[]"

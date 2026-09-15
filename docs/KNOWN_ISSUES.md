@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.21.0-codex.1`
+Documentation version: `v1.22.0-codex.1`
 
 ## Windows host operating constraints
 
@@ -19,18 +19,38 @@ Documentation version: `v1.21.0-codex.1`
   resolves to Python 3.13 or newer. Do not assume `python3` exists. `AGENTIC_CONTEXT_PYTHON`
   overrides the resolver on both platforms.
 
-## Safari Grok Agent support on 14 Sep 2026
+## Safari Agent execution and source-only support on 14 Sep 2026
 
 - macOS Safari now supports Grok Agent routes, persisted browser/provider/model preferences,
-  strict composer and authenticated-conversations readiness, exact Auto/Build model readback, and
+  strict composer and authenticated-conversations readiness, exact Build model readback, and
   receipt-bearing turns. It uses page-local authenticated requests without exporting cookies or
   cloning an Edge profile, so choosing Safari does not enter Edge's credential-storage path.
-- Safari remains unsupported for Gemini and Claude Agent sessions, and Jury remains Edge/Chrome
-  only. Unsupported combinations fail closed; the frontend no longer silently changes a supported
-  Safari/Grok choice to Edge.
+- Safari Gemini and Claude remain valid source-only Agent routes: they may check the account and
+  browse Recent sessions and Projects, and the selection persists without an Edge fallback. Full
+  Agent execution stays disabled; choose Edge or Chrome to start a Gemini or Claude task. Jury
+  remains Edge/Chrome only.
 - Safari automation still serializes owned windows across local processes and closes only the
-  task-owned window at completion. Unit and Flask coverage do not by themselves establish current
-  provider-side DOM or native authenticated acceptance.
+  task-owned window at completion. While a Safari Agent owns that serialized context, account,
+  source, Project-session, and history probes serve cached state or fail busy instead of waiting on
+  the same lock. Admission is bidirectional: a Safari Cache task also blocks a new Safari Agent,
+  and an active Safari Agent blocks a new Safari Cache task.
+- Safari activates one exact marked control with one trusted native Return only after
+  official-origin, window, tab, exact-URL, document/element focus, center hit-test, and
+  no-sheet/no-dialog checks. A post-input transport or receipt failure is uncertain: callers use
+  readback only and never retry the native key. Grok selection still requires exact checked-state
+  and closed-trigger proof; Stop requires one unique semantic control in the main answer scope.
+- Safari same-origin requests reject redirects and revalidate every nonempty response URL. WebKit
+  may expose an empty `Response.url` for a same-origin service-worker synthetic response; that empty
+  value is accepted only after the request target and redirect state have already passed their
+  independent guards.
+- macOS lock state or unavailable Accessibility control prevents current live native acceptance.
+  Read-only authenticated requests and catalog discovery do not establish that trusted Return was
+  accepted by the current provider DOM.
+- The preference outbox uses a sessionStorage-scoped client identifier and process-local revision
+  gate. A browser Duplicate Tab can copy both values; concurrent duplicate tabs are therefore not a
+  durable cross-tab transaction and may need an explicit selection retry if their writes collide.
+  Unit, Flask, and isolated Chromium coverage do not by themselves establish current provider-side
+  DOM or native authenticated acceptance.
 
 ## Bounded local compute rollout on 1 Sep 2026
 

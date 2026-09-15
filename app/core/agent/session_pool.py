@@ -1,6 +1,6 @@
 """Bounded, independently controlled Web Agent sessions.
 
-Code version: v1.8.1-codex.1
+Code version: v1.8.2-codex.1
 """
 
 from contextlib import contextmanager
@@ -449,6 +449,16 @@ class AgentSessionPool:
                     service.snapshot() for service in self._services.values()
                 )
             )
+
+    def unique_active_session_id(self) -> str:
+        """Return the only active session id, or an empty value when ambiguous."""
+        with self._lock:
+            active_ids = [
+                session_id
+                for session_id, service in self._services.items()
+                if service.snapshot().get("running")
+            ]
+        return active_ids[0] if len(active_ids) == 1 else ""
 
     def dismiss_failed(
         self,

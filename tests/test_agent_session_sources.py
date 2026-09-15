@@ -1,6 +1,6 @@
 """Focused tests for the provider-neutral Agent session source adapter.
 
-Code version: v1.8.0-codex.1
+Code version: v1.13.0-codex.1
 """
 
 from __future__ import annotations
@@ -8,8 +8,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from app.core.agent_session_sources import (
+    GEMINI_SOURCE_BOOTSTRAP_TIMEOUT_SECONDS,
     _claude_page_status,
+    _collect_claude_sources,
+    _collect_gemini_sources,
     _grok_page_status,
     _read_gemini_project_links,
     _read_grok_project_links,
@@ -24,9 +29,10 @@ from app.core.agent_session_sources import (
     normalize_agent_conversation_url,
     normalize_agent_source_catalog_payload,
     normalize_agent_project_url,
+    probe_and_collect_claude_sources,
+    probe_and_collect_gemini_sources,
     probe_and_collect_grok_sources,
 )
-from app.core.browser_sessions import visible_claude_composer_selector
 from app.core.config import CrawlConfig
 from app.core.gemini_downloader import GeminiConversationLink
 from app.core.grok_history import GrokConversation
@@ -46,6 +52,13 @@ def test_agent_conversation_url_normalization_is_provider_specific() -> None:
         "https://www.chatgpt.com/c/session-3?messageId=ignored",
     ) == "https://chatgpt.com/c/session-3"
     assert normalize_agent_conversation_url("grok", "https://example.com/c/session") == ""
+    assert normalize_agent_conversation_url("grok", "https://grok.com:444/c/session") == ""
+    assert normalize_agent_conversation_url("grok", "https://user:pass@grok.com/c/session") == ""
+    assert normalize_agent_conversation_url("grok", "https://grok.com:invalid/c/session") == ""
+    assert (
+        normalize_agent_conversation_url("grok", "https://grok.com:443/c/session")
+        == "https://grok.com/c/session"
+    )
     assert normalize_agent_conversation_url(
         "grok",
         "https://grok.com/project/project-1?chat=session-1",
@@ -94,6 +107,8 @@ def test_agent_project_url_normalization_hides_provider_specific_routes() -> Non
         "https://www.claude.ai/project/project-1/?tab=chats",
     ) == "https://claude.ai/project/project-1"
     assert normalize_agent_project_url("grok", "https://example.com/project/project-1") == ""
+    assert normalize_agent_project_url("grok", "https://grok.com:444/project/project-1") == ""
+    assert normalize_agent_project_url("grok", "https://user:pass@grok.com/project/project-1") == ""
 
 
 def test_cached_gemini_project_rows_are_revalidated_before_replay() -> None:
@@ -328,17 +343,6 @@ def test_claude_status_exposes_account_restriction_without_attempting_login_bypa
 
 
 def test_claude_status_requires_one_shared_semantic_composer() -> None:
-    class _Composer:
-        @property
-        def first(self) -> "_Composer":
-            return self
-
-        def count(self) -> int:
-            return 1
-
-        def wait_for(self, **_kwargs: object) -> None:
-            return None
-
     class _Body:
         def inner_text(self, **_kwargs: object) -> str:
             return "Claude"
@@ -347,27 +351,21 @@ def test_claude_status_requires_one_shared_semantic_composer() -> None:
         def wait_for_timeout(self, _milliseconds: int) -> None:
             return None
 
-        def locator(self, selector: str) -> _Body | _Composer:
-            if selector == "body":
-                return _Body()
-            assert selector == visible_claude_composer_selector()
-            return _Composer()
+        def locator(self, selector: str) -> _Body:
+            assert selector == "body"
+            return _Body()
 
-    status = _claude_page_status(_Page(), "Edge")
+    with patch(
+        "app.core.agent_session_sources.claude_composer_snapshot",
+        return_value={"count": 1},
+    ):
+        status = _claude_page_status(_Page(), "Edge")
 
     assert status["logged_in"] is True
     assert status["can_download"] is True
 
 
 def test_claude_status_rejects_ambiguous_semantic_composers() -> None:
-    class _Composer:
-        @property
-        def first(self) -> "_Composer":
-            raise AssertionError("An ambiguous composer set must not be awaited.")
-
-        def count(self) -> int:
-            return 2
-
     class _Body:
         def inner_text(self, **_kwargs: object) -> str:
             return "Claude"
@@ -376,13 +374,15 @@ def test_claude_status_rejects_ambiguous_semantic_composers() -> None:
         def wait_for_timeout(self, _milliseconds: int) -> None:
             return None
 
-        def locator(self, selector: str) -> _Body | _Composer:
-            if selector == "body":
-                return _Body()
-            assert selector == visible_claude_composer_selector()
-            return _Composer()
+        def locator(self, selector: str) -> _Body:
+            assert selector == "body"
+            return _Body()
 
-    status = _claude_page_status(_Page(), "Edge")
+    with patch(
+        "app.core.agent_session_sources.claude_composer_snapshot",
+        return_value={"count": 2},
+    ):
+        status = _claude_page_status(_Page(), "Edge")
 
     assert status["logged_in"] is False
     assert status["can_download"] is False
@@ -420,6 +420,10 @@ def test_grok_agent_status_uses_the_message_composer_instead_of_files() -> None:
             if argument is None:
                 assert "authAction" in expression
                 return False
+            if "composerSelector" in argument:
+                assert 'div[contenteditable="true"]' in str(argument["composerSelector"])
+                assert "getClientRects" in expression
+                return {"count": 1}
             assert "/rest/app-chat/conversations?" in str(argument["url"])
             return {"status": 200, "body": {"conversations": []}}
 
@@ -526,6 +530,8 @@ def test_grok_agent_status_requires_positive_authenticated_api_evidence() -> Non
         ) -> object:
             if argument is None:
                 return False
+            if "composerSelector" in argument:
+                return {"count": 1}
             return {"status": 401, "body": {"error": "Unauthorized"}}
 
         def locator(self, selector: str) -> object:
@@ -571,6 +577,8 @@ def test_grok_agent_status_rejects_a_schema_invalid_success_payload() -> None:
         ) -> object:
             if argument is None:
                 return False
+            if "composerSelector" in argument:
+                return {"count": 1}
             return {"status": 200, "body": {"error": "not authenticated"}}
 
         def locator(self, selector: str) -> object:
@@ -659,7 +667,15 @@ def test_grok_agent_bootstrap_collects_readiness_and_sources_in_one_context() ->
     collection.assert_called_once()
 
 
-def test_grok_agent_source_collection_uses_one_owned_safari_context() -> None:
+@pytest.mark.parametrize(
+    "home_url",
+    (
+        "https://gemini.google.com/app",
+        "https://grok.com/",
+        "https://claude.ai/new",
+    ),
+)
+def test_provider_source_collection_uses_one_owned_safari_context(home_url: str) -> None:
     page = SimpleNamespace(
         wait_for_load_state=lambda *_args, **_kwargs: None,
         wait_for_timeout=lambda *_args, **_kwargs: None,
@@ -684,13 +700,29 @@ def test_grok_agent_source_collection_uses_one_owned_safari_context() -> None:
         result = _run_chromium_source_collection(
             "safari",
             CrawlConfig(),
-            "https://grok.com/",
+            home_url,
             lambda selected_page: selected_page,
             silent=True,
         )
 
     assert result is page
-    safari_context.assert_called_once_with("https://grok.com/")
+    safari_context.assert_called_once_with(home_url, lock_blocking=False)
+
+
+def test_safari_source_collection_rejects_non_provider_origins() -> None:
+    with patch(
+        "app.core.agent_session_sources.browser_descriptors",
+        return_value={"safari": SimpleNamespace(engine="safari", label="Safari")},
+    ), patch("app.core.agent_session_sources.SafariContext") as safari_context:
+        with pytest.raises(ValueError, match="official supported provider host"):
+            _run_chromium_source_collection(
+                "safari",
+                CrawlConfig(),
+                "https://example.com/",
+                lambda page: page,
+            )
+
+    safari_context.assert_not_called()
 
 
 def test_grok_agent_bootstrap_accepts_safari_without_cache_probe_semantics() -> None:
@@ -733,6 +765,193 @@ def test_grok_agent_bootstrap_accepts_safari_without_cache_probe_semantics() -> 
     assert sources is not None
     assert sources["platform"] == "grok"
     assert sources["browser_label"] == "Safari"
+
+
+def test_gemini_agent_bootstrap_accepts_safari_and_bounds_recent_sessions() -> None:
+    source_snapshot = {
+        "recent_sessions": [
+            {
+                "title": "Gemini session",
+                "url": "https://gemini.google.com/app/gemini-1",
+            }
+        ],
+        "projects": [],
+    }
+
+    def run_collection(
+        browser_name: str,
+        config: CrawlConfig,
+        home_url: str,
+        collector: object,
+        **_kwargs: object,
+    ) -> object:
+        assert browser_name == "safari"
+        assert home_url == "https://gemini.google.com/app"
+        assert config.gemini_max_conversations == 20
+        return collector(object())
+
+    with patch(
+        "app.core.agent_session_sources.browser_descriptors",
+        return_value={"safari": SimpleNamespace(engine="safari", label="Safari")},
+    ), patch(
+        "app.core.agent_session_sources.time.monotonic",
+        return_value=100.0,
+    ), patch(
+        "app.core.agent_session_sources._run_chromium_source_collection",
+        side_effect=run_collection,
+    ) as collection, patch(
+        "app.core.agent_session_sources._wait_for_gemini_ready",
+        return_value={"hasComposer": True},
+    ) as ready, patch(
+        "app.core.agent_session_sources._collect_gemini_sources",
+        return_value=source_snapshot,
+    ) as collect:
+        status, sources = probe_and_collect_gemini_sources("safari", CrawlConfig())
+
+    assert status["can_download"] is True
+    assert status["browser_label"] == "Safari"
+    assert sources is not None
+    assert sources["recent_sessions"][0]["url"] == (
+        "https://gemini.google.com/app/gemini-1"
+    )
+    collection.assert_called_once()
+    ready.assert_called_once()
+    collect.assert_called_once()
+    deadline = collection.call_args.kwargs["deadline"]
+    assert GEMINI_SOURCE_BOOTSTRAP_TIMEOUT_SECONDS < 240
+    assert deadline == 100.0 + GEMINI_SOURCE_BOOTSTRAP_TIMEOUT_SECONDS
+    assert ready.call_args.kwargs == {"deadline": deadline}
+    assert collect.call_args.kwargs == {
+        "deadline": deadline,
+        "page_ready": True,
+    }
+
+
+def test_gemini_source_collection_reuses_bootstrap_readiness_deadline() -> None:
+    link = GeminiConversationLink(
+        conversation_id="gemini-1",
+        url="https://gemini.google.com/app/gemini-1",
+        title="Gemini session",
+    )
+    with patch(
+        "app.core.agent_session_sources.time.monotonic",
+        return_value=100.0,
+    ), patch(
+        "app.core.agent_session_sources.collect_gemini_conversation_links",
+        return_value=[link],
+    ) as collect, patch(
+        "app.core.agent_session_sources._read_gemini_project_links",
+        return_value=[],
+    ):
+        snapshot = _collect_gemini_sources(
+            object(),
+            CrawlConfig(),
+            deadline=150.0,
+            page_ready=True,
+        )
+
+    assert snapshot == {"recent_sessions": [link], "projects": []}
+    assert collect.call_args.kwargs == {
+        "navigate": False,
+        "wait_for_ready": False,
+        "deadline": 150.0,
+    }
+
+
+def test_claude_agent_bootstrap_accepts_safari_for_read_only_sources() -> None:
+    strict_status = {
+        "platform": "claude",
+        "browser_label": "Safari",
+        "logged_in": True,
+        "can_download": True,
+        "account_name": "Claude account",
+        "message": "Safari verified Claude.",
+    }
+    source_snapshot = {
+        "recent_sessions": [
+            {
+                "title": "Claude session",
+                "url": "https://claude.ai/chat/claude-1",
+            }
+        ],
+        "projects": [],
+    }
+
+    def run_collection(
+        browser_name: str,
+        _config: CrawlConfig,
+        home_url: str,
+        collector: object,
+        **_kwargs: object,
+    ) -> object:
+        assert browser_name == "safari"
+        assert home_url == "https://claude.ai/new"
+        return collector(object())
+
+    with patch(
+        "app.core.agent_session_sources.browser_descriptors",
+        return_value={"safari": SimpleNamespace(engine="safari", label="Safari")},
+    ), patch(
+        "app.core.agent_session_sources._run_chromium_source_collection",
+        side_effect=run_collection,
+    ) as collection, patch(
+        "app.core.agent_session_sources._claude_page_status",
+        return_value=strict_status,
+    ) as ready, patch(
+        "app.core.agent_session_sources._collect_claude_sources",
+        return_value=source_snapshot,
+    ) as collect:
+        status, sources = probe_and_collect_claude_sources("safari", CrawlConfig())
+
+    assert status == strict_status
+    assert sources is not None
+    assert sources["recent_sessions"][0]["url"] == "https://claude.ai/chat/claude-1"
+    collection.assert_called_once()
+    ready.assert_called_once()
+    collect.assert_called_once()
+
+
+def test_claude_agent_bootstrap_propagates_source_dom_failures() -> None:
+    class _Page:
+        def evaluate(self, _script: str) -> object:
+            raise RuntimeError("Safari DOM evaluation failed")
+
+    def run_collection(
+        _browser_name: str,
+        _config: CrawlConfig,
+        _home_url: str,
+        collector: object,
+        **_kwargs: object,
+    ) -> object:
+        return collector(_Page())
+
+    ready_status = {
+        "platform": "claude",
+        "browser_label": "Safari",
+        "logged_in": True,
+        "can_download": True,
+        "account_name": "Claude account",
+        "message": "Safari verified Claude.",
+    }
+    with patch(
+        "app.core.agent_session_sources.browser_descriptors",
+        return_value={"safari": SimpleNamespace(engine="safari", label="Safari")},
+    ), patch(
+        "app.core.agent_session_sources._run_chromium_source_collection",
+        side_effect=run_collection,
+    ), patch(
+        "app.core.agent_session_sources._claude_page_status",
+        return_value=ready_status,
+    ):
+        with pytest.raises(RuntimeError, match="Safari DOM evaluation failed"):
+            probe_and_collect_claude_sources("safari", CrawlConfig())
+
+
+def test_claude_source_reader_rejects_non_catalog_dom_payloads() -> None:
+    page = SimpleNamespace(evaluate=lambda _script: None)
+
+    with pytest.raises(RuntimeError, match="invalid DOM payload"):
+        _collect_claude_sources(page)
 
 
 def test_gemini_sources_reuse_the_existing_history_link_collector() -> None:
@@ -861,25 +1080,20 @@ def test_gemini_project_reader_ignores_recent_app_links_in_a_notebook_nav() -> N
         },
     )
 
-    class _NotebookLinks:
-        def __init__(self, selector: str) -> None:
-            self.selector = selector
-
-        def evaluate_all(self, script: str) -> list[dict[str, str]]:
+    class _Page:
+        def evaluate(self, script: str) -> list[dict[str, str]]:
+            assert "document.querySelectorAll" in script
+            assert 'href*="/notebook/"' in script
+            assert 'href*="/notebooks/"' in script
             assert "parent.tagName === 'NAV'" not in script
             assert "context.join" not in script
+            assert "['create', 'new'].includes(projectId)" in script
             return [
                 row
                 for row in rows
                 if "/notebook/" in row["href"] or "/notebooks/" in row["href"]
+                if not row["href"].endswith(("/create", "/new"))
             ]
-
-    class _Page:
-        def locator(self, selector: str) -> _NotebookLinks:
-            assert 'href*="/notebook/"' in selector
-            assert 'href*="/notebooks/"' in selector
-            assert 'href*="/app/"' not in selector
-            return _NotebookLinks(selector)
 
     assert _read_gemini_project_links(_Page()) == [
         {
@@ -1205,7 +1419,17 @@ def test_grok_conversation_history_fetch_pairs_project_messages() -> None:
                             {
                                 "responseId": "assistant-1",
                                 "sender": "assistant",
-                                "message": "The selected session is now visible.",
+                                "message": (
+                                    "The selected session is now visible. "
+                                    '<grok:render card_id="card-1" card_type="citation_card" '
+                                    'type="render_inline_citation"><argument '
+                                    'name="citation_id">81</argument></grok:render>'
+                                ),
+                                "cardAttachmentsJson": [
+                                    '{"id":"card-1","type":"render_inline_citation",'
+                                    '"cardType":"citation_card",'
+                                    '"url":"https://www.example.com/evidence"}'
+                                ],
                                 "createTime": "2026-09-02T01:00:02Z",
                             },
                         ]
@@ -1227,9 +1451,27 @@ def test_grok_conversation_history_fetch_pairs_project_messages() -> None:
         )
 
     assert payload["title"] == "Renamed project session"
+    assert payload["render_contract"] == "grok-inline-citations-v1"
     assert payload["history"] == [{
         "prompt": "What changed?",
-        "response": "The selected session is now visible.",
+        "response": (
+            "The selected session is now visible. "
+            '<grok:render card_id="card-1" card_type="citation_card" '
+            'type="render_inline_citation"><argument '
+            'name="citation_id">81</argument></grok:render>'
+        ),
+        "display_response": (
+            "The selected session is now visible. "
+            '<grok:render card_id="card-1" card_type="citation_card" '
+            'type="render_inline_citation"><argument '
+            'name="citation_id">81</argument></grok:render>'
+        ),
+        "citations": [{
+            "card_id": "card-1",
+            "url": "https://www.example.com/evidence",
+            "label": "Example",
+            "citation_id": "81",
+        }],
         "started_at": "2026-09-02T01:00:00Z",
         "finished_at": "2026-09-02T01:00:02Z",
     }]

@@ -1,15 +1,740 @@
-"""Session switching, capacity, and selected controls. Code version: v1.7.4-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.10.2-codex.1."""
 
 from copy import deepcopy
+from threading import Thread
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from playwright.sync_api import expect
+from werkzeug.serving import make_server
 
 from tests import test_sidebar_e2e as fixtures
+from app.core.browser_sessions import grok_composer_snapshot
 from app.web.app import render_agent_response
 
 disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
+
+
+@pytest.fixture()
+def agent_selection_server_url(tmp_path):
+    """Serve one isolated Agent settings store for persistence interaction tests."""
+    from app.web.app import create_app
+
+    application = create_app(
+        tmp_path / "local-store",
+        computer_use_settings_path=tmp_path / "settings" / "computer-use-agent.json",
+        computer_use_runtime_root=tmp_path / "computer-use-runtime",
+        agent_external_operations_enabled=False,
+    )
+    application.config.update(TESTING=True)
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+
+
+def test_grok_composer_snapshot_uses_one_rendered_provider_scoped_surface(
+    disposable_browser,
+):
+    context = disposable_browser.new_context(viewport={"width": 900, "height": 700})
+    page = context.new_page()
+    try:
+        page.set_content(
+            """
+            <main>
+                <textarea style="display:none" aria-label="Ask Grok anything"></textarea>
+                <section id="primary-composer">
+                    <div contenteditable="true" role="textbox"
+                         aria-label="Ask Grok anything"></div>
+                    <button data-testid="chat-submit" aria-label="Send"></button>
+                </section>
+                <section class="feedback-panel">
+                    <div contenteditable="true" role="textbox"
+                         aria-label="Ask Grok anything"></div>
+                </section>
+            </main>
+            """
+        )
+        assert grok_composer_snapshot(page) == {"count": 1}
+        page.locator("main").evaluate(
+            """main => {
+                const duplicate = document.createElement('textarea');
+                duplicate.setAttribute('aria-label', 'Ask Grok anything');
+                main.append(duplicate);
+            }"""
+        )
+        assert grok_composer_snapshot(page) == {"count": 2}
+    finally:
+        context.close()
+
+
+def test_safari_selection_persists_for_source_only_providers_without_edge_fallback(
+    disposable_browser,
+    agent_selection_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
+    page = context.new_page()
+    browser_status_requests = []
+    page_errors = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+    page.add_init_script(
+        """(() => {
+            window.__agentRouteWrites = [];
+            const originalReplaceState = history.replaceState.bind(history);
+            history.replaceState = (...args) => {
+                window.__agentRouteWrites.push(String(args[2] || ''));
+                return originalReplaceState(...args);
+            };
+        })()"""
+    )
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
+
+    def fulfill_agent_status(route):
+        headers = route.request.headers
+        platform = headers.get("x-cachelikes-agent-platform", "chatgpt")
+        browser = headers.get("x-cachelikes-agent-browser", "edge")
+        route.fulfill(
+            json={
+                **base,
+                "agent": {
+                    "session_id": headers.get("x-cachelikes-agent-session", "new"),
+                    "platform": platform,
+                    "browser": browser,
+                    "running": False,
+                    "phase": "idle",
+                    "history": [],
+                },
+                "sessions": [],
+                "active_count": 0,
+                "can_start": True,
+            }
+        )
+
+    def fulfill_browser_status(route):
+        query = parse_qs(urlsplit(route.request.url).query)
+        platform = query.get("platform", [""])[0]
+        browser = query.get("browser", [""])[0]
+        platform_label = {
+            "chatgpt": "ChatGPT",
+            "gemini": "Gemini",
+            "grok": "Grok",
+            "claude": "Claude",
+        }[platform]
+        conversation_url = {
+            "chatgpt": "https://chatgpt.com/c/safari-recent",
+            "gemini": "https://gemini.google.com/app/safari-recent",
+            "grok": "https://grok.com/c/safari-recent",
+            "claude": "https://claude.ai/chat/safari-recent",
+        }[platform]
+        browser_status_requests.append((platform, browser))
+        route.fulfill(
+            json={
+                "platform": platform,
+                "browser": browser,
+                "browser_label": browser.title(),
+                "logged_in": True,
+                "can_download": True,
+                "account_name": "Signed in",
+                "message": "Ready",
+                "agent_sources": {
+                    "recent_sessions": [{
+                        "id": "safari-recent",
+                        "title": f"{platform_label} Safari recent session",
+                        "url": conversation_url,
+                        "updated_at": "2026-09-14T00:00:00Z",
+                    }],
+                    "projects": [],
+                },
+                "agent_execution_supported": (
+                    browser != "safari" or platform in {"chatgpt", "grok"}
+                ),
+                "agent_execution_message": (
+                    ""
+                    if browser != "safari" or platform in {"chatgpt", "grok"}
+                    else f"Safari can browse {platform.title()} Recent sessions here."
+                ),
+            }
+        )
+
+    page.route("**/api/agent/status", fulfill_agent_status)
+    page.route("**/api/browser-session**", fulfill_browser_status)
+    page.route(
+        "**/api/agent/sources**",
+        lambda route: route.fulfill(
+            json={"platform": "grok", "recent_sessions": [], "projects": []}
+        ),
+    )
+    try:
+        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
+        page.get_by_role("option", name="Grok", exact=True).click()
+        page.get_by_role("button", name="Browser: Edge", exact=True).click()
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+            and response.request.post_data_json.get("platform") == "grok"
+            and response.request.post_data_json.get("browser") == "safari"
+        ) as preference_response:
+            page.get_by_role("option", name="Safari", exact=True).click()
+
+        saved_payload = preference_response.value.request.post_data_json
+        assert saved_payload["platform"] == "grok"
+        assert saved_payload["browser"] == "safari"
+        assert saved_payload["model"] == "grok-build"
+        assert saved_payload["preference_client_id"]
+        assert saved_payload["preference_revision"] >= 1
+        assert not page_errors
+        assert page.evaluate(
+            """() => ({
+                platform: document.querySelector('.agent-platform-combobox input')?.value,
+                browser: document.querySelector('.agent-browser-combobox input')?.value,
+                path: location.pathname,
+                routeWrites: window.__agentRouteWrites,
+            })"""
+        ) == {
+            "platform": "grok",
+            "browser": "safari",
+            "path": "/agent/safari/grok",
+            "routeWrites": ["/agent/edge/grok", "/agent/safari/grok"],
+        }
+        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/grok")
+        expect(
+            page.locator('#agent_runtime_form input[name="platform"]')
+        ).to_have_value("grok")
+        expect(page.locator('#agent_runtime_form input[name="browser"]')).to_have_value(
+            "safari"
+        )
+        expect(page.locator(".agent-execution-session-title")).to_have_text(
+            "Grok Safari recent session"
+        )
+
+        page.reload(wait_until="domcontentloaded")
+        expect(page.get_by_role("button", name="Web service: Grok", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="Model: Build", exact=True)).to_be_visible()
+        page.goto(f"{agent_selection_server_url}/agent", wait_until="domcontentloaded")
+        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/grok")
+
+        page.wait_for_function(
+            "() => document.querySelector('[data-role=browser-session-account]')?.textContent === 'Signed in'"
+        )
+        browser_status_requests.clear()
+        page.get_by_role("button", name="Web service: Grok", exact=True).click()
+        with page.expect_response(
+            lambda response: "/api/browser-session?" in response.url
+            and "platform=gemini" in response.url
+            and "browser=safari" in response.url
+        ), page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+            and response.request.post_data_json.get("platform") == "gemini"
+            and response.request.post_data_json.get("browser") == "safari"
+        ) as reloaded_preference_response:
+            page.get_by_role("option", name="Gemini", exact=True).click()
+        reloaded_payload = reloaded_preference_response.value.request.post_data_json
+        assert reloaded_payload["preference_client_id"] == saved_payload[
+            "preference_client_id"
+        ]
+        assert reloaded_payload["preference_revision"] > saved_payload[
+            "preference_revision"
+        ]
+        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/gemini")
+        expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
+        expect(page.locator("#agent_ask_button")).to_be_disabled()
+        expect(page.locator(".agent-execution-session-title")).to_have_text(
+            "Gemini Safari recent session"
+        )
+        assert "Safari can browse Gemini Recent sessions here" in (
+            page.locator("#agent_ask_button").get_attribute("title") or ""
+        )
+        assert ("gemini", "safari") in browser_status_requests
+        assert ("gemini", "edge") not in browser_status_requests
+
+        browser_status_requests.clear()
+        page.get_by_role("button", name="Web service: Gemini", exact=True).click()
+        with page.expect_response(
+            lambda response: "/api/browser-session?" in response.url
+            and "platform=claude" in response.url
+            and "browser=safari" in response.url
+        ), page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+            and response.request.post_data_json.get("platform") == "claude"
+            and response.request.post_data_json.get("browser") == "safari"
+        ):
+            page.get_by_role("option", name="Claude", exact=True).click()
+        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/claude")
+        expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
+        expect(page.locator("#agent_ask_button")).to_be_disabled()
+        expect(page.locator(".agent-execution-session-title")).to_have_text(
+            "Claude Safari recent session"
+        )
+        assert ("claude", "safari") in browser_status_requests
+        assert ("claude", "edge") not in browser_status_requests
+
+        browser_status_requests.clear()
+        page.get_by_role("button", name="Web service: Claude", exact=True).click()
+        with page.expect_response(
+            lambda response: "/api/browser-session?" in response.url
+            and "platform=chatgpt" in response.url
+            and "browser=safari" in response.url
+        ), page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+            and response.request.post_data_json.get("platform") == "chatgpt"
+            and response.request.post_data_json.get("browser") == "safari"
+        ):
+            page.get_by_role("option", name="ChatGPT", exact=True).click()
+        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/chatgpt")
+        expect(page.locator("#agent_ask_button")).to_be_enabled()
+        expect(page.locator(".agent-execution-session-title")).to_have_text(
+            "ChatGPT Safari recent session"
+        )
+        assert ("chatgpt", "safari") in browser_status_requests
+        assert ("chatgpt", "edge") not in browser_status_requests
+    finally:
+        context.close()
+
+
+def test_agent_preference_save_retries_the_latest_failed_payload(
+    disposable_browser,
+    agent_selection_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
+    page = context.new_page()
+    requests = []
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
+
+    def fulfill_agent_status(route):
+        headers = route.request.headers
+        route.fulfill(
+            json={
+                **base,
+                "agent": {
+                    "session_id": "new",
+                    "platform": headers.get("x-cachelikes-agent-platform", "chatgpt"),
+                    "browser": headers.get("x-cachelikes-agent-browser", "edge"),
+                    "running": False,
+                    "phase": "idle",
+                    "history": [],
+                },
+                "sessions": [],
+                "active_count": 0,
+                "can_start": True,
+            }
+        )
+
+    def fulfill_preference(route):
+        requests.append(route.request.post_data_json)
+        if len(requests) == 1:
+            route.fulfill(status=503, json={"error": "Temporary failure"})
+            return
+        route.fulfill(json={"settings": {}, "runtime": {}})
+
+    page.route("**/api/agent/status", fulfill_agent_status)
+    page.route(
+        "**/api/browser-session**",
+        lambda route: route.fulfill(
+            json={
+                "platform": "grok",
+                "browser": "safari",
+                "browser_label": "Safari",
+                "logged_in": True,
+                "can_download": True,
+                "account_name": "Signed in",
+                "message": "Ready",
+                "agent_sources": {"recent_sessions": [], "projects": []},
+            }
+        ),
+    )
+    page.route(
+        "**/api/agent/sources**",
+        lambda route: route.fulfill(
+            json={"platform": "grok", "recent_sessions": [], "projects": []}
+        ),
+    )
+    page.route("**/api/agent/preferences", fulfill_preference)
+    try:
+        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
+        page.get_by_role("option", name="Grok", exact=True).click()
+        page.get_by_role("button", name="Browser: Edge", exact=True).click()
+        page.get_by_role("option", name="Safari", exact=True).click()
+        page.wait_for_function("() => window.location.pathname === '/agent/safari/grok'")
+        page.wait_for_timeout(1_500)
+        assert len(requests) >= 2
+        assert requests[1] == requests[0]
+    finally:
+        context.close()
+
+
+def test_agent_preference_outbox_restores_selection_and_replays_on_first_reload(
+    disposable_browser,
+    agent_selection_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
+    page = context.new_page()
+    requests = []
+    status_selections = []
+    browser_selections = []
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.update(agent={"session_id": "new"}, sessions=[], active_count=0, can_start=True)
+
+    def fulfill_status(route):
+        headers = route.request.headers
+        status_selections.append(
+            (
+                headers.get("x-cachelikes-agent-platform"),
+                headers.get("x-cachelikes-agent-browser"),
+            )
+        )
+        route.fulfill(json=base)
+
+    def fulfill_browser_status(route):
+        query = parse_qs(urlsplit(route.request.url).query)
+        browser_selections.append(
+            (query.get("platform", [""])[0], query.get("browser", [""])[0])
+        )
+        route.fulfill(
+            json={
+                "platform": "grok",
+                "browser": "safari",
+                "browser_label": "Safari",
+                "logged_in": True,
+                "can_download": True,
+                "account_name": "Signed in",
+                "message": "Ready",
+                "agent_sources": {"recent_sessions": [], "projects": []},
+            }
+        )
+
+    page.route("**/api/agent/status", fulfill_status)
+    page.route(
+        "**/api/browser-session**",
+        fulfill_browser_status,
+    )
+    page.route(
+        "**/api/agent/preferences",
+        lambda route: (
+            requests.append(route.request.post_data_json),
+            route.fulfill(json={"settings": {}, "runtime": {}}),
+        ),
+    )
+    try:
+        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        payload = page.evaluate(
+            """() => {
+                const payload = {
+                    workspace_path: document.querySelector('[name="workspace_path"]').value,
+                    operating_system: 'macos',
+                    platform: 'grok',
+                    browser: 'safari',
+                    model: 'grok-build',
+                    chatgpt_effort: 'highest_available',
+                    preference_client_id: 'outbox-reload-client',
+                    preference_revision: 41,
+                };
+                sessionStorage.setItem(
+                    'cachelikes:agent-preference-client-v1',
+                    payload.preference_client_id,
+                );
+                sessionStorage.setItem(
+                    'cachelikes:agent-preference-revision-v1',
+                    String(payload.preference_revision),
+                );
+                sessionStorage.setItem(
+                    'cachelikes:agent-preference-pending-v1',
+                    JSON.stringify(payload),
+                );
+                return payload;
+            }"""
+        )
+
+        status_selections.clear()
+        browser_selections.clear()
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_function("() => window.location.pathname === '/agent/safari/grok'")
+        expect(page.get_by_role("button", name="Web service: Grok", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="Model: Build", exact=True)).to_be_visible()
+        page.wait_for_function("() => sessionStorage.getItem('cachelikes:agent-preference-pending-v1') === null")
+        assert requests == [payload]
+        assert status_selections[0] == ("grok", "safari")
+        assert browser_selections[0] == ("grok", "safari")
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    "invalid_model",
+    ("grok-retired", "latest_available"),
+    ids=("removed-model", "wrong-platform-model"),
+)
+def test_agent_preference_outbox_discards_invalid_model_without_restoring_or_posting(
+    disposable_browser,
+    agent_selection_server_url,
+    invalid_model,
+):
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
+    page = context.new_page()
+    requests = []
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.update(agent={"session_id": "new"}, sessions=[], active_count=0, can_start=True)
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
+    page.route(
+        "**/api/browser-session**",
+        lambda route: route.fulfill(
+            json={
+                "platform": "chatgpt",
+                "browser": "edge",
+                "browser_label": "Edge",
+                "logged_in": True,
+                "can_download": True,
+                "account_name": "Signed in",
+                "message": "Ready",
+                "agent_sources": {"recent_sessions": [], "projects": []},
+            }
+        ),
+    )
+    page.route(
+        "**/api/agent/preferences",
+        lambda route: (
+            requests.append(route.request.post_data_json),
+            route.fulfill(status=409, json={"error": "Choose a supported Grok model."}),
+        ),
+    )
+    try:
+        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        baseline = page.evaluate(
+            """() => ({
+                workspace_path: document.querySelector('[name="workspace_path"]').value,
+                platform: document.querySelector('.agent-platform-combobox input').value,
+                browser: document.querySelector('.agent-browser-combobox input').value,
+                model: document.querySelector('[data-agent-model-input]').value,
+            })"""
+        )
+        page.evaluate(
+            """({workspacePath, model}) => {
+                const payload = {
+                    workspace_path: workspacePath,
+                    operating_system: 'macos',
+                    platform: 'grok',
+                    browser: 'safari',
+                    model,
+                    chatgpt_effort: 'highest_available',
+                    preference_client_id: 'invalid-outbox-client',
+                    preference_revision: 51,
+                };
+                sessionStorage.setItem(
+                    'cachelikes:agent-preference-client-v1',
+                    payload.preference_client_id,
+                );
+                sessionStorage.setItem(
+                    'cachelikes:agent-preference-revision-v1',
+                    String(payload.preference_revision),
+                );
+                sessionStorage.setItem(
+                    'cachelikes:agent-preference-pending-v1',
+                    JSON.stringify(payload),
+                );
+            }""",
+            {"workspacePath": baseline["workspace_path"], "model": invalid_model},
+        )
+
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_function(
+            "() => sessionStorage.getItem('cachelikes:agent-preference-pending-v1') === null"
+        )
+        page.wait_for_timeout(1_250)
+        assert requests == []
+        assert page.evaluate(
+            """() => ({
+                platform: document.querySelector('.agent-platform-combobox input').value,
+                browser: document.querySelector('.agent-browser-combobox input').value,
+                model: document.querySelector('[data-agent-model-input]').value,
+                path: window.location.pathname,
+            })"""
+        ) == {
+            "platform": baseline["platform"],
+            "browser": baseline["browser"],
+            "model": baseline["model"],
+            "path": "/agent/edge/chatgpt",
+        }
+    finally:
+        context.close()
+
+
+def test_removed_remembered_project_falls_back_to_new_without_request_loop(
+    disposable_browser,
+    sidebar_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.update(agent={"session_id": "new"}, sessions=[], active_count=0, can_start=True)
+    project_session_requests = []
+    page.add_init_script(
+        """localStorage.setItem(
+            'cachelikes:agent-session-selection:v1:chatgpt:edge',
+            JSON.stringify({
+                version: 1,
+                mode: 'project',
+                project_url: 'https://chatgpt.com/g/removed-project',
+                project_session_url: 'https://chatgpt.com/c/removed-session',
+            }),
+        );"""
+    )
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
+    page.route(
+        "**/api/browser-session**",
+        lambda route: route.fulfill(
+            json={
+                "can_download": True,
+                "logged_in": True,
+                "browser": "edge",
+                "platform": "chatgpt",
+                "account_name": "Signed in",
+                "agent_sources": {"recent_sessions": [], "projects": []},
+            }
+        ),
+    )
+    page.route(
+        "**/api/agent/project-sessions**",
+        lambda route: (
+            project_session_requests.append(route.request.url),
+            route.fulfill(json={"recent_sessions": []}),
+        ),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        expect(
+            page.get_by_role("button", name="Session source: New session", exact=True)
+        ).to_be_visible()
+        expect(page.get_by_role("button", name="Ask ChatGPT Web", exact=True)).to_be_enabled()
+        remembered = page.evaluate(
+            """JSON.parse(localStorage.getItem(
+                'cachelikes:agent-session-selection:v1:chatgpt:edge'
+            ))"""
+        )
+        assert remembered == {
+            "version": 1,
+            "mode": "new",
+            "project_url": "",
+            "project_session_url": "new",
+        }
+        page.reload(wait_until="domcontentloaded")
+        expect(
+            page.get_by_role("button", name="Session source: New session", exact=True)
+        ).to_be_visible()
+        expect(page.get_by_role("button", name="Ask ChatGPT Web", exact=True)).to_be_enabled()
+        assert project_session_requests == []
+    finally:
+        context.close()
+
+
+def test_force_recheck_bypasses_hanging_cached_request_and_keeps_newest_result(
+    disposable_browser,
+    sidebar_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
+    page = context.new_page()
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.update(agent={"session_id": "new"}, sessions=[], active_count=0, can_start=True)
+    held_requests = []
+    source_requests = []
+
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
+    page.route("**/api/browser-session**", lambda route: held_requests.append(route))
+    page.route(
+        "**/api/agent/sources**",
+        lambda route: (
+            source_requests.append(route.request.url),
+            route.abort(),
+        ),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/grok")
+        for _ in range(100):
+            if len(held_requests) == 1:
+                break
+            page.wait_for_timeout(20)
+        assert len(held_requests) == 1
+        assert "refresh=1" not in held_requests[0].request.url
+
+        page.locator('[data-role="browser-session-recheck"]').dispatch_event("click")
+        for _ in range(100):
+            if len(held_requests) == 2:
+                break
+            page.wait_for_timeout(20)
+        assert len(held_requests) == 2
+        assert "refresh=1" in held_requests[1].request.url
+
+        held_requests[1].fulfill(
+            json={
+                "can_download": True,
+                "logged_in": True,
+                "browser": "edge",
+                "platform": "grok",
+                "account_name": "Fresh User",
+                "message": "Fresh readiness",
+                "agent_sources": {
+                    "recent_sessions": [],
+                    "projects": [
+                        {"title": "Fresh Project", "url": "https://grok.com/project/fresh"}
+                    ],
+                },
+            }
+        )
+        account = page.locator('[data-role="browser-session-account"]')
+        expect(account).to_have_text("Fresh User")
+        expect(
+            page.locator(
+                '[data-agent-session-list="projects"] '
+                '[data-agent-combobox-option="https://grok.com/project/fresh"]'
+            )
+        ).to_have_count(1)
+
+        held_requests[0].fulfill(
+            json={
+                "can_download": False,
+                "logged_in": False,
+                "browser": "edge",
+                "platform": "grok",
+                "account_name": "",
+                "message": "Old readiness",
+                "agent_sources": {
+                    "recent_sessions": [],
+                    "projects": [
+                        {"title": "Old Project", "url": "https://grok.com/project/old"}
+                    ],
+                },
+            }
+        )
+        page.wait_for_timeout(100)
+        expect(account).to_have_text("Fresh User")
+        expect(
+            page.locator(
+                '[data-agent-session-list="projects"] '
+                '[data-agent-combobox-option="https://grok.com/project/fresh"]'
+            )
+        ).to_have_count(1)
+        expect(
+            page.locator(
+                '[data-agent-session-list="projects"] '
+                '[data-agent-combobox-option="https://grok.com/project/old"]'
+            )
+        ).to_have_count(0)
+        assert source_requests == []
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize(("width", "color_scheme"), [(1024, "light"), (390, "dark")])
@@ -58,6 +783,169 @@ def test_agent_response_renders_latex_without_treating_currency_as_math(
         assert geometry["clientWidth"] <= answer.evaluate("element => element.clientWidth")
         assert geometry["scrollWidth"] >= geometry["clientWidth"]
         assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    ((1_007, 1_355), (390, 844)),
+)
+def test_grok_response_renders_native_markdown_without_provider_markup_leaks(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+    height,
+):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": height},
+        color_scheme="dark",
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    raw_response = (
+        "**Evidence-ranked longevity options**\n\n"
+        "### 1. Rapamycin / Sirolimus\n\n"
+        "- **Original use**: transplant immunosuppression.\n"
+        "- **Evidence**: animal lifespan results are stronger than human outcomes. "
+        '<grok:render card_id="066a7b" card_type="citation_card" '
+        'type="render_inline_citation"><argument name="citation_id">81</argument>'
+        "</grok:render>\n\n"
+        "### 2. Evidence matrix\n\n"
+        "| Drug | Original indication | Longevity discussion | Evidence and safety notes |\n"
+        "| --- | --- | --- | --- |\n"
+        "| Rapamycin | Transplant immunosuppression | Intermittent mTORC1 inhibition | "
+        "Human lifespan endpoints remain unproven |\n"
+        "| SGLT2 inhibitor | Type 2 diabetes | Cardiometabolic risk reduction | "
+        "Benefits come from indicated clinical populations |"
+    )
+    citations = [
+        {
+            "card_id": "066a7b",
+            "citation_id": "81",
+            "url": "https://example.com/source",
+            "label": "Example",
+        }
+    ]
+    base = fixtures._finished_chatgpt_agent_payload()
+    base["agent"].update(
+        platform="grok",
+        browser="edge",
+        model="grok-build",
+        actual_model="Grok Build",
+        prompt="Compare longevity prescriptions.",
+        response=raw_response,
+        response_html=str(
+            render_agent_response(
+                raw_response,
+                provider="grok",
+                citations=citations,
+            )
+        ),
+        history=[],
+    )
+    page_errors = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=base))
+    page.route(
+        "**/api/browser-session**",
+        lambda route: route.fulfill(
+            json={
+                "can_download": True,
+                "logged_in": True,
+                "browser": "edge",
+                "platform": "grok",
+                "agent_sources": {"recent_sessions": [], "projects": []},
+            }
+        ),
+    )
+    page.route(
+        "**/api/agent/sources**",
+        lambda route: route.fulfill(
+            json={"platform": "grok", "recent_sessions": [], "projects": []}
+        ),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/grok")
+        answer = page.locator("#agent_response_answer")
+        expect(answer).to_contain_text("Evidence-ranked longevity options")
+
+        visible_text = answer.inner_text()
+        rendered_markup = answer.inner_html()
+        for provider_fragment in ("grok:render", "argument", "citation_id"):
+            assert provider_fragment not in visible_text
+            assert provider_fragment not in rendered_markup
+
+        heading = answer.locator("h3").first
+        paragraph = answer.locator("li").first
+        strong = answer.locator("strong").first
+        expect(heading).to_have_css("font-size", "20px")
+        expect(heading).to_have_css("line-height", "28px")
+        expect(strong).to_have_css("font-weight", "600")
+        type_scale = answer.evaluate(
+            """element => ({
+                heading: parseFloat(getComputedStyle(element.querySelector('h3')).fontSize),
+                body: parseFloat(getComputedStyle(element.querySelector('li')).fontSize),
+            })"""
+        )
+        assert type_scale["heading"] > type_scale["body"]
+        expect(paragraph).to_be_visible()
+
+        citation = answer.locator("a.agent-inline-citation")
+        expect(citation).to_have_count(1)
+        expect(citation).to_have_text("Example")
+        expect(citation).to_have_attribute("href", "https://example.com/source")
+        expect(citation).to_have_attribute("target", "_blank")
+        rel_tokens = set((citation.get_attribute("rel") or "").split())
+        assert {"noopener", "noreferrer", "nofollow"}.issubset(rel_tokens)
+        citation_style = citation.evaluate(
+            """element => {
+                const style = getComputedStyle(element);
+                const bounds = element.getBoundingClientRect();
+                return {
+                    backgroundColor: style.backgroundColor,
+                    borderRadius: parseFloat(style.borderRadius),
+                    fontSize: style.fontSize,
+                    paddingInlineEnd: parseFloat(style.paddingInlineEnd),
+                    paddingInlineStart: parseFloat(style.paddingInlineStart),
+                    height: bounds.height,
+                    protocol: new URL(element.href).protocol,
+                    whiteSpace: style.whiteSpace,
+                };
+            }"""
+        )
+        assert citation_style["protocol"] == "https:"
+        assert citation_style["fontSize"] == "13px"
+        assert citation_style["whiteSpace"] == "nowrap"
+        assert citation_style["paddingInlineStart"] >= 7
+        assert citation_style["paddingInlineEnd"] >= 7
+        assert citation_style["borderRadius"] >= citation_style["height"] / 2
+        assert citation_style["backgroundColor"] != "rgba(0, 0, 0, 0)"
+
+        table_shell = answer.locator(".agent-markdown-table-shell")
+        expect(table_shell).to_have_count(1)
+        expect(table_shell.locator("table")).to_have_count(1)
+        if width == 390:
+            table_geometry = table_shell.evaluate(
+                "element => ({clientWidth: element.clientWidth, scrollWidth: element.scrollWidth})"
+            )
+            assert table_geometry["scrollWidth"] > table_geometry["clientWidth"]
+            table_shell.evaluate("element => { element.scrollLeft = element.scrollWidth; }")
+            page.wait_for_function(
+                """element => (
+                    element.scrollLeft >= element.scrollWidth - element.clientWidth - 1
+                )""",
+                arg=table_shell.element_handle(),
+            )
+
+        document_geometry = page.evaluate(
+            """() => ({
+                clientWidth: document.documentElement.clientWidth,
+                scrollWidth: document.documentElement.scrollWidth,
+            })"""
+        )
+        assert document_geometry["scrollWidth"] <= document_geometry["clientWidth"] + 1
+        assert not page_errors
     finally:
         context.close()
 

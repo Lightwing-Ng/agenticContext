@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.66.1-codex.1
+Code version: v1.67.0-codex.1
 """
 
 import hashlib
@@ -2221,7 +2221,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.120.1-codex.1 */",
+        "/* Code version: v2.121.0-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -3002,6 +3002,95 @@ def test_agent_response_question_and_answer_use_requested_type_sizes() -> None:
     assert "font-size: var(--font-size-5);" in answer_rule
     assert ".agent-response-output h3" not in heading_rule
     assert ".agent-response-output h3" not in subheading_rule
+
+
+def test_agent_answer_markdown_uses_provider_aligned_rich_text_geometry() -> None:
+    """Keep Agent-only Markdown hierarchy, citations, and tables legible at every width."""
+    stylesheet = _stylesheet()
+
+    generic_heading_start = stylesheet.index(".browser-media-prompt-markdown h1,")
+    heading_start = stylesheet.index(".agent-response-answer-content h3 {")
+    heading_rule = stylesheet[heading_start:stylesheet.index("\n}", heading_start)]
+    strong_start = stylesheet.index(".agent-response-answer-content strong {")
+    strong_rule = stylesheet[strong_start:stylesheet.index("\n}", strong_start)]
+    paragraph_start = stylesheet.index(".agent-response-answer-content p {")
+    paragraph_rule = stylesheet[paragraph_start:stylesheet.index("\n}", paragraph_start)]
+    list_start = stylesheet.index(
+        ".agent-response-answer-content ul,\n.agent-response-answer-content ol {"
+    )
+    list_rule = stylesheet[list_start:stylesheet.index("\n}", list_start)]
+    item_start = stylesheet.index(".agent-response-answer-content li {")
+    item_rule = stylesheet[item_start:stylesheet.index("\n}", item_start)]
+
+    assert heading_start > generic_heading_start
+    for declaration in (
+        "margin: 30px 0 10px;",
+        "font-size: 20px;",
+        "font-weight: var(--font-weight-semibold);",
+        "line-height: 1.4;",
+    ):
+        assert declaration in heading_rule
+    assert "font-weight: var(--font-weight-semibold);" in strong_rule
+    assert "margin: 0 0 15px;" in paragraph_rule
+    assert "line-height: 1.5;" in paragraph_rule
+    assert "margin: 7.5px 0 15px;" in list_rule
+    assert "padding-left: 20px;" in list_rule
+    assert "line-height: 1.5;" in item_rule
+
+    citation_start = stylesheet.index(
+        ".agent-response-answer-content .agent-inline-citation {"
+    )
+    citation_rule = stylesheet[citation_start:stylesheet.index("\n}", citation_start)]
+    for declaration in (
+        "display: inline-flex;",
+        "margin-inline-start: 4px;",
+        "padding: 3px 8px;",
+        "border-radius: var(--radius-pill);",
+        "background: var(--glass-chip-background);",
+        "font-size: var(--font-size-3);",
+        "font-weight: var(--font-weight-medium);",
+        "white-space: nowrap;",
+    ):
+        assert declaration in citation_rule
+    assert ".agent-response-answer-content a.agent-inline-citation:hover {" in stylesheet
+    assert ".agent-response-answer-content a.agent-inline-citation:focus-visible {" in stylesheet
+    assert ".agent-response-answer-content .agent-inline-citation--unresolved {" in stylesheet
+
+    table_shell_start = stylesheet.index(
+        ".agent-response-answer-content .agent-markdown-table-shell {"
+    )
+    table_shell_rule = stylesheet[
+        table_shell_start:stylesheet.index("\n}", table_shell_start)
+    ]
+    for declaration in (
+        "box-sizing: border-box;",
+        "width: 100%;",
+        "min-width: 0;",
+        "max-width: 100%;",
+        "overflow-x: auto;",
+        "overflow-y: hidden;",
+        "border: 1px solid var(--theme-glass-border);",
+        "border-radius: 16px;",
+        "background: var(--glass-surface-background-strong);",
+    ):
+        assert declaration in table_shell_rule
+
+    table_start = stylesheet.index(
+        ".agent-response-answer-content .agent-markdown-table-shell table {"
+    )
+    table_rule = stylesheet[table_start:stylesheet.index("\n}", table_start)]
+    assert "width: max-content;" in table_rule
+    assert "min-width: 100%;" in table_rule
+    assert "font-size: var(--font-size-3);" in table_rule
+
+    cells_start = stylesheet.index(
+        ".agent-response-answer-content .agent-markdown-table-shell th,"
+    )
+    cells_rule = stylesheet[cells_start:stylesheet.index("\n}", cells_start)]
+    assert "min-width: 140px;" in cells_rule
+    assert "padding: 8px 10px;" in cells_rule
+    assert "overflow-wrap: anywhere;" in cells_rule
+    assert ".agent-response-answer-content .agent-markdown-table-shell tbody tr:not(:last-child) td {" in stylesheet
 
 
 def test_agent_response_code_blocks_wrap_long_lines() -> None:

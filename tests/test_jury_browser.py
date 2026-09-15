@@ -1,6 +1,6 @@
 """Verify isolated browser ownership and single-session jury exchanges.
 
-Code version: v1.1.3-codex.1
+Code version: v1.1.4-codex.1
 """
 
 from contextlib import contextmanager
@@ -438,8 +438,8 @@ def test_explicit_grok_model_uses_existing_trusted_selector_without_changing_age
     existing = jury.web_agent._platform_model_options("grok")
     page = SimpleNamespace(locator=lambda _selector: None)
 
-    def select(_page, labels, triggers, _observation, _stop):
-        calls.append((labels, triggers))
+    def select(_page, browser_kind, labels, triggers, _observation, _stop):
+        calls.append((browser_kind, labels, triggers))
         return True
 
     monkeypatch.setattr(jury.web_agent, "_select_grok_model_with_trusted_clicks", select)
@@ -447,7 +447,7 @@ def test_explicit_grok_model_uses_existing_trusted_selector_without_changing_age
         page, "chromium", "grok", "grok-auto",
         model_option=jury.JURY_MODEL_OPTIONS["grok"],
     )
-    assert calls == [(("Auto",), ("Auto",))]
+    assert calls == [("chromium", ("Auto",), ("Auto",))]
     assert jury.web_agent._platform_model_options("grok") == existing
 
 

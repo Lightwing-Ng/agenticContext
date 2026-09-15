@@ -1,6 +1,6 @@
 """Grok media sync helpers."""
 
-# Code version: v1.18.0-codex.1
+# Code version: v1.18.1-codex.1
 
 from __future__ import annotations
 
@@ -3129,7 +3129,9 @@ def sync_grok_media(
         with contextlib.ExitStack() as browser_stack:
             if descriptor.engine == "safari":
                 state.append_event("Opening an authenticated offscreen Safari window for Grok sync.")
-                context = browser_stack.enter_context(SafariContext(GROK_FILES_URL))
+                context = browser_stack.enter_context(
+                    SafariContext(GROK_FILES_URL, lock_blocking=False)
+                )
                 max_library_pages = 1
             else:
                 state.append_event(f"Launching {descriptor.label} in the background for Grok sync.")

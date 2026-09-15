@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.3.0-codex.1
+# Code version: v2.5.0-codex.1
 
 from __future__ import annotations
 
@@ -16,8 +16,10 @@ import pytest
 
 from app.core.safari_automation import (
     SafariContext,
+    SafariNativeActivationError,
     SafariPage,
     run_applescript,
+    safari_navigation_matches,
 )
 
 
@@ -252,6 +254,8 @@ def test_safari_request_client_posts_authenticated_json_from_one_owned_page() ->
     assert "targetUrl.origin !== location.origin" in request_script
     assert 'redirect: "error"' in request_script
     assert "fetch(targetUrl.href, options)" in request_script
+    assert "if (response.redirected)" in request_script
+    assert "if (response.url)" in request_script
 
 
 def test_safari_request_client_rejects_cross_origin_inside_the_page() -> None:
@@ -336,17 +340,20 @@ def test_safari_locator_exposes_bounded_grok_model_control_operations() -> None:
             2,
             1,
             True,
-            {"clicked": True},
+            {"actionable": True, "currentUrl": "https://grok.com/"},
             "true",
             {"found": True, "visible": True},
             {"found": True, "text": "Build Beta"},
         ],
-    ) as evaluate:
+    ) as evaluate, patch.object(page, "_activate_marked_element") as activate:
         locator = page.locator("[data-cachelikes-grok-model-trigger]")
         assert locator.count() == 2
         assert locator.first.count() == 1
         assert locator.last.is_visible() is True
-        locator.nth(1).click(timeout=1_000)
+        locator.nth(1).click(
+            timeout=1_000,
+            expected_url="https://grok.com/",
+        )
         assert locator.first.get_attribute("aria-expanded") == "true"
         locator.first.wait_for(state="visible", timeout=1_000)
         assert locator.first.inner_text(timeout=1_000) == "Build Beta"
@@ -356,6 +363,134 @@ def test_safari_locator_exposes_bounded_grok_model_control_operations() -> None:
         for call in evaluate.call_args_list
     ]
     assert observed_indexes == [None, 0, -1, 1, 0, 0, 0]
+    click_script = evaluate.call_args_list[3].args[0]
+    click_argument = evaluate.call_args_list[3].args[1]
+    assert "scrollIntoView" in click_script
+    assert "document.elementFromPoint" in click_script
+    assert "element.contains(hit)" in click_script
+    assert "element.click()" not in click_script
+    assert click_argument["expectedCurrentUrl"] == "https://grok.com/"
+    activation_marker, activation_url = activate.call_args.args
+    assert activation_marker.startswith("safari-native-")
+    assert activation_url == "https://grok.com/"
+
+
+def test_safari_native_activation_is_origin_bound_trusted_and_non_retried() -> None:
+    context = SafariContext("https://grok.com/")
+    page = SafariPage(context, window_id=123)
+
+    with patch.object(page, "_run_in_window", return_value="trusted") as run:
+        page._activate_marked_element("safari-native-abc", "https://grok.com/")
+
+    script = run.call_args.args[0]
+    assert "key code 36" in script
+    assert "event.isTrusted" in script
+    assert "expected.port" in script
+    assert "current.port" in script
+    assert "expected.href !== current.href" in script
+    assert script.count("document.hasFocus()") == 4
+    assert script.count("document.elementFromPoint") == 2
+    assert "currentFrontmostProcessName is not \"Safari\"" in script
+    assert "count of sheets of front window" in script
+    assert 'count of windows whose subrole is "AXDialog"' in script
+    assert "set targetTab to current tab of targetWindow" in script
+    assert "(id of front window) is not (id of targetWindow)" in script
+    assert "(current tab of targetWindow) is not targetTab" in script
+    assert "set shouldRestoreNativeFocus to (current tab of targetWindow) is targetTab" in script
+    assert 'do JavaScript "document.hasFocus()" in targetTab' in script
+    final_verification = script.rindex("set finalActivationState")
+    final_window_check = script.rindex(
+        "if (id of front window) is not (id of targetWindow)"
+    )
+    native_return = script.index("key code 36")
+    assert final_verification < final_window_check < native_return
+    assert script.index("count of sheets of front window") < native_return
+    assert script.index('count of windows whose subrole is "AXDialog"') < native_return
+    assert run.call_args.kwargs == {"retry_transient": False}
+
+
+@pytest.mark.parametrize(
+    ("message", "input_attempted"),
+    (
+        ("SAFARI_NATIVE_INPUT_NOT_ATTEMPTED: blocked", False),
+        ("SAFARI_NATIVE_INPUT_UNCERTAIN: timed out", True),
+        ("Apple event timed out", True),
+    ),
+)
+def test_safari_native_activation_classifies_transport_uncertainty(
+    message: str,
+    input_attempted: bool,
+) -> None:
+    page = SafariPage(SafariContext("https://grok.com/"), window_id=123)
+
+    with patch.object(page, "_run_in_window", side_effect=RuntimeError(message)):
+        with pytest.raises(SafariNativeActivationError) as exc_info:
+            page._activate_marked_element(
+                "safari-native-abc",
+                "https://grok.com/",
+            )
+
+    assert exc_info.value.input_attempted is input_attempted
+
+
+def test_safari_locator_rejects_url_drift_before_any_native_input() -> None:
+    page = SafariPage(SafariContext("https://grok.com/"), window_id=123)
+
+    with patch.object(
+        page,
+        "evaluate",
+        return_value={
+            "actionable": False,
+            "targetMismatch": True,
+            "currentUrl": "https://grok.com/c/unexpected",
+        },
+    ) as evaluate, patch.object(page, "_activate_marked_element") as activate:
+        with pytest.raises(RuntimeError, match="target changed"):
+            page.locator("button").click(
+                timeout=1_000,
+                expected_url="https://grok.com/",
+            )
+
+    assert evaluate.call_args.args[1]["expectedCurrentUrl"] == "https://grok.com/"
+    activate.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "http://grok.com/",
+        "https://grok.com:444/",
+        "https://user:pass@grok.com/",
+        "https://grok.com:invalid/",
+        "https://example.com/",
+    ),
+)
+def test_safari_native_activation_rejects_untrusted_origins_before_input(url: str) -> None:
+    page = SafariPage(SafariContext("https://grok.com/"), window_id=123)
+
+    with patch.object(page, "_run_in_window") as run, pytest.raises(
+        RuntimeError,
+        match="refused native input",
+    ):
+        page._activate_marked_element("safari-native-abc", url)
+
+    run.assert_not_called()
+
+
+def test_safari_navigation_rejects_cross_scheme_provider_drift() -> None:
+    assert not safari_navigation_matches("https://grok.com/", "http://grok.com/")
+    assert safari_navigation_matches("https://grok.com/", "https://grok.com/")
+
+
+def test_safari_navigation_scopes_openai_auth_redirects_to_chatgpt() -> None:
+    assert safari_navigation_matches(
+        "https://chatgpt.com/",
+        "https://auth.openai.com/authorize",
+    )
+    assert not safari_navigation_matches(
+        "https://grok.com/",
+        "https://auth.openai.com/authorize",
+    )
 
 
 def test_safari_page_can_remain_render_active_in_background_without_stealing_focus() -> None:
@@ -490,6 +625,21 @@ def test_run_applescript_bounds_a_hung_safari_event() -> None:
         match="timed out",
     ):
         run_applescript("return true")
+
+
+def test_run_applescript_never_retries_native_mutating_input() -> None:
+    failed = type(
+        "Process",
+        (),
+        {"returncode": 1, "stderr": "execution error (-1712)", "stdout": ""},
+    )()
+
+    with patch("app.core.safari_automation.subprocess.run", return_value=failed) as run, patch(
+        "app.core.safari_automation.time.sleep"
+    ), pytest.raises(RuntimeError, match="-1712"):
+        run_applescript("key code 36", retry_transient=False)
+
+    run.assert_called_once()
 
 
 def test_safari_context_housekeeping_closes_all_owned_windows() -> None:
@@ -709,3 +859,21 @@ def test_safari_context_holds_one_cross_process_lease_for_its_lifetime(tmp_path:
 
         assert second_entered is True
         second_context._release_context_lock()
+
+
+def test_safari_context_can_fail_fast_when_another_task_owns_the_lease(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    first_context = SafariContext("https://grok.com/")
+    probe_context = SafariContext("https://grok.com/", lock_blocking=False)
+
+    with patch("app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH", lock_path):
+        first_context._acquire_context_lock()
+        try:
+            with pytest.raises(RuntimeError, match="Safari is busy"):
+                probe_context._acquire_context_lock()
+        finally:
+            first_context._release_context_lock()
+
+    assert probe_context._context_lock_handle is None

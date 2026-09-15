@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.20.0-codex.1`
+Documentation version: `v1.21.0-codex.1`
 
 ## Launch
 
@@ -131,8 +131,12 @@ publish it through a public tunnel or reverse proxy.
   served; public, cross-site, and host-rebinding requests remain rejected.
 - Each task defaults to a new root-level ChatGPT, Gemini, Grok, or Claude Web conversation in the
   selected authenticated browser session. On macOS, Safari supports ChatGPT and Grok Agent
-  sessions; Gemini and Claude use Edge or Chrome, and Jury remains Chromium-only. A supported
-  Safari/Grok preference is retained rather than silently replaced with Edge. The Agent sidebar can
+  execution; Safari Gemini and Claude remain valid source-only routes for account, Recent sessions,
+  and Project browsing, while their full execution uses Edge or Chrome. Jury remains Chromium-only.
+  Browser/provider/model/workspace preferences are queued as one revisioned snapshot and restored
+  before the first status or source request after reload. A retired or wrong-provider model invalidates
+  the pending snapshot without a POST or retry loop. A selected Safari route is retained rather than
+  silently replaced with Edge. On execution-capable routes, the Agent sidebar can
   also join one of the 20 most recent root
   sessions, start a session in one of the 20 most recent projects, or join one of a project's
   20 most recent sessions.
@@ -147,7 +151,13 @@ publish it through a public tunnel or reverse proxy.
   file input.
 - Sending a task transmits the generated context and requested source excerpts to the selected Web
   account. Review that provider's data controls before using private or regulated source code.
+  Safari Gemini and Claude source-only browsing never attaches local context or submits a provider
+  prompt.
 - Stop requests end current web generation and terminate the active local command process group.
+  Each request binds both the selected session and its current run ID; a delayed Stop from an older
+  run of the same session returns HTTP 409. Safari resolves one unique semantic Stop control on the
+  exact page and sends one trusted native Return. An ambiguous control causes zero input, and an
+  uncertain post-input result is confirmed only through generation-state reads, never a retry.
   On Windows, approved `.ps1` scripts run through the PowerShell controller, and process-tree
   cleanup uses `taskkill /T /F` where applicable. That mechanism is not an OS-level sandbox.
   Stop requests do not stop a detached durable compute job; use its dedicated `Stop job` control
@@ -169,15 +179,22 @@ publish it through a public tunnel or reverse proxy.
   minutes per provider/browser/Project key. Fresh reads use process memory; the first read after a
   restart hydrates memory from Parquet. Expired passive reads retain the previous catalog and never
   launch a background browser collector. One initial Agent bootstrap cache miss performs a bounded
-  check; model and effort discovery happen in that check; later task submissions verify their requested settings without a separate refresh button. Concurrent requests share one flight. The
+  check. ChatGPT model and effort discovery happens in its capability bootstrap; later task
+  submissions verify their requested settings without a separate refresh button. Concurrent
+  non-forced requests share one flight.
+  A forced Recheck waiting on an older same-key flight runs a new serialized collector after the old
+  flight exits and does not accept the older result as its refresh. The
   response's `cache.status` is `hit`, `miss`, `refreshed`, or `stale`; a stale response means the
   previous verified catalog was retained after an explicit check failed.
-- While a Windows Agent task owns Edge or Chrome, source, Project-session, history, and bootstrap
-  routes do not start another live collector for that browser. They return a cached entry without
-  background refresh, return `unprobed` on a catalog/bootstrap miss, or return HTTP 409 on a history
-  miss. The rule is browser-wide because every provider shares that browser's CDP context. It is
-  deliberately absent on macOS.
-- ChatGPT, Grok, and Claude on `/agent` use one agent-scoped browser bootstrap through Recent sessions:
+- Safari admission is bidirectional: a Cache start is rejected while a Safari Agent owns the
+  browser, and an Agent start is rejected while any Safari Cache worker owns it. While a Windows
+  Agent task owns Edge or Chrome, or a macOS Agent task owns Safari, source,
+  Project-session, history, and bootstrap routes do not start another live collector for that
+  browser. They return a cached entry without background refresh, return `unprobed` on a
+  catalog/bootstrap miss, or return HTTP 409 on a history miss. The Windows rule is browser-wide
+  because every provider shares that browser's CDP context; the Safari rule protects its serialized
+  Apple Events context. macOS Edge and Chrome retain their isolated-context behavior.
+- ChatGPT, Gemini, Grok, and Claude on `/agent` use one agent-scoped browser bootstrap through Recent sessions:
   the same bounded initial check verifies readiness, collects the root session/project catalog,
   returns it to the selector, and seeds the memory/Parquet cache. Cache reuse and task completion
   do not add a browser launch. A later browser launch is reserved for an explicit refresh, task
@@ -185,7 +202,8 @@ publish it through a public tunnel or reverse proxy.
   stale rows while one coalesced quiet refresh runs. Safari Grok uses the same visible-composer and
   authenticated-conversations checks through page-local requests without exporting cookies or
   cloning an Edge profile. Restricted Claude accounts remain unavailable and are not sent through
-  a login-bypass flow.
+  a login-bypass flow. Safari Gemini and Claude stop after catalog discovery, report execution as
+  unsupported, and never enable Ask.
 
 ### Durable optimization jobs
 

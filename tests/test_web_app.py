@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.113.0-codex.1
+# Code version: v1.118.3-codex.1
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from app.web.app import (
     render_cached_message,
     render_prompt_markdown,
     render_agent_response,
+    render_agent_response_copy_text,
 )
 from app.web.cache_sources import CACHE_SOURCE_VIEWS
 
@@ -118,6 +119,55 @@ class WebAppTests(unittest.TestCase):
         self.assertIn(r"\(x^2 + y^2\)", rendered)
         self.assertIn(r"<code>\[literal code\]</code>", rendered)
         self.assertNotIn("\ue000", rendered)
+
+    def test_agent_response_renders_grok_citations_and_tables_without_provider_markup(self) -> None:
+        marker = (
+            '<grok:render card_id="066a7b" card_type="citation_card" '
+            'type="render_inline_citation"><argument name="citation_id">81</argument>'
+            '</grok:render>'
+        )
+        source = (
+            "核对证据。**「研究」Session 更新 — 结论**\n\n"
+            "### 1. Evidence\n\n"
+            f"- **Source**: verified {marker}\n\n"
+            "| Item | Evidence |\n| --- | --- |\n| A | B |\n\n"
+            "<script>alert('unsafe')</script>"
+        )
+        citations = [{
+            "card_id": "066a7b",
+            "citation_id": "81",
+            "url": "https://www.example.com/source",
+            "label": "Example",
+        }]
+
+        rendered = str(
+            render_agent_response(source, provider="grok", citations=citations)
+        )
+        copied = render_agent_response_copy_text(
+            source,
+            provider="grok",
+            citations=citations,
+        )
+
+        self.assertTrue(rendered.startswith("<p><strong>「研究」Session 更新 — 结论</strong>"))
+        self.assertIn("<h3>1. Evidence</h3>", rendered)
+        self.assertIn('<div class="agent-markdown-table-shell"', rendered)
+        self.assertIn('<a class="agent-inline-citation"', rendered)
+        self.assertIn('href="https://www.example.com/source"', rendered)
+        self.assertIn('rel="noopener noreferrer nofollow"', rendered)
+        self.assertNotIn("核对证据", rendered)
+        self.assertNotIn("grok:render", rendered)
+        self.assertNotIn("citation_id", rendered)
+        self.assertNotIn("<script>", rendered)
+        self.assertIn("&lt;script&gt;", rendered)
+        self.assertNotIn("核对证据", copied)
+        self.assertNotIn("grok:render", copied)
+        self.assertIn("[Example](https://www.example.com/source)", copied)
+
+        unresolved = str(render_agent_response(source, provider="grok"))
+        self.assertIn("agent-inline-citation--unresolved", unresolved)
+        self.assertIn("Source 81", unresolved)
+        self.assertNotIn("grok:render", unresolved)
 
     def test_local_katex_vendor_bundle_is_complete(self) -> None:
         self.assertTrue((KATEX_ASSET_ROOT / "katex.min.js").is_file())
@@ -381,7 +431,7 @@ class WebAppTests(unittest.TestCase):
             legacy = client.get("/agent")
             selected = client.get("/agent/edge/gemini")
             safari_grok = client.get("/agent/safari/grok")
-            invalid = client.get("/agent/safari/gemini")
+            safari_gemini = client.get("/agent/safari/gemini")
 
         self.assertEqual(legacy.status_code, 302)
         self.assertEqual(legacy.headers["Location"], "/agent/edge/chatgpt")
@@ -399,7 +449,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Grok Web Agent", safari_grok_body)
         self.assertIn('name="browser" value="safari"', safari_grok_body)
         self.assertIn('data-browser-session-platform="grok"', safari_grok_body)
-        self.assertEqual(invalid.status_code, 404)
+        self.assertEqual(safari_gemini.status_code, 200)
+        safari_gemini_body = safari_gemini.get_data(as_text=True)
+        self.assertIn("Gemini Web Agent", safari_gemini_body)
+        self.assertIn('name="browser" value="safari"', safari_gemini_body)
+        self.assertIn('data-browser-session-platform="gemini"', safari_gemini_body)
 
     def test_cache_timing_settings_survive_partial_start_forms(self) -> None:
         with TemporaryDirectory() as folder, patch("app.web.app.load_saved_config", return_value=CrawlConfig()), patch("app.web.app.save_config") as save:
@@ -641,7 +695,7 @@ class WebAppTests(unittest.TestCase):
                 stop_form_end = body.index(">", stop_form_start)
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.10.0-codex.1', chatgpt_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.0-codex.1', chatgpt_body)
         self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.8.0-codex.1', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
@@ -746,9 +800,9 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.23.0-codex.1"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.120.1-codex.1"
+                expected_style_version = "style-v2.121.0-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -767,7 +821,7 @@ class WebAppTests(unittest.TestCase):
             "const shouldShowBackdrop = sidebarOverlayMedia.matches && isSidebarOpen;",
             'const dockLocationMemoryPrefix = "cachelikes:dock-location:v1:";',
             'const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);',
-            'const agentRoutePattern = /^\\/agent\\/(?:safari\\/(?:chatgpt|grok)|(?:edge|chrome)\\/(?:chatgpt|gemini|grok|claude))$/;',
+            'const agentRoutePattern = /^\\/agent\\/(?:safari|edge|chrome)\\/(?:chatgpt|gemini|grok|claude)$/;',
             'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view"];',
             'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/zhihu"]);',
             'if (targetUrl.pathname === "/browser") return "/cache/chatgpt";',
@@ -1185,17 +1239,17 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', local_body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.10.0-codex.1', local_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.0-codex.1', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.120.1-codex.1', local_body)
+        self.assertIn('style-v2.121.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.8.0', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.45.0-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.48.1-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1524,6 +1578,174 @@ class WebAppTests(unittest.TestCase):
         active.assert_not_called()
         probe.assert_called_once_with("edge", ANY, silent=True)
 
+    def test_macos_active_safari_agent_suppresses_browser_session_probe(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch("app.web.app.is_macos_host", return_value=True), patch.object(
+                pool,
+                "has_active_worker",
+                return_value=True,
+            ) as active, patch(
+                "app.web.app.probe_and_collect_grok_sources"
+            ) as probe:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/browser-session?platform=grok&browser=safari&scope=agent"
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json()["browser_session_freshness"]["cache_status"],
+            "unprobed",
+        )
+        active.assert_called_once_with("safari")
+        probe.assert_not_called()
+
+    def test_active_safari_agent_blocks_non_agent_browser_session_probe(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch.object(
+                pool,
+                "has_active_worker",
+                return_value=True,
+            ) as active, patch("app.web.app.probe_browser_session") as probe:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/browser-session?platform=grok&browser=safari"
+                    )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(response.get_json()["busy"])
+        self.assertIn("active Agent task", response.get_json()["message"])
+        active.assert_called_once_with("safari")
+        probe.assert_not_called()
+
+    def test_active_safari_agent_blocks_cache_starts_before_workers_run(self) -> None:
+        config = CrawlConfig(
+            x_browser="safari",
+            grok_browser="safari",
+            chatgpt_browser="safari",
+        )
+        with TemporaryDirectory() as raw_root, patch(
+            "app.web.app.load_saved_config",
+            return_value=config,
+        ), patch("app.web.app.save_config") as save:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch.object(
+                pool,
+                "has_active_worker",
+                return_value=True,
+            ), patch(
+                "app.core.service.CacheLikesService.start"
+            ) as media_start, patch(
+                "app.core.grok_history_service.GrokHistoryService.start"
+            ) as grok_text_start, patch.object(
+                app.extensions["chatgpt_service"],
+                "start",
+            ) as chatgpt_start:
+                with app.test_client() as client:
+                    responses = (
+                        client.post("/start"),
+                        client.post(
+                            "/cache/grok/text/start",
+                            data={"cache_content_mode": "text"},
+                        ),
+                        client.post("/chatgpt/start"),
+                    )
+
+        for response in responses:
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.get_json()["code"], "safari_agent_busy")
+        media_start.assert_not_called()
+        grok_text_start.assert_not_called()
+        chatgpt_start.assert_not_called()
+        save.assert_not_called()
+
+    def test_active_safari_agent_blocks_targeted_chatgpt_refresh(self) -> None:
+        config = CrawlConfig(chatgpt_browser="safari")
+        with TemporaryDirectory() as raw_root, patch(
+            "app.web.app.load_saved_config",
+            return_value=config,
+        ):
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch.object(
+                pool,
+                "has_active_worker",
+                return_value=True,
+            ), patch.object(
+                app.extensions["chatgpt_service"],
+                "start",
+            ) as start:
+                response = app.test_client().post(
+                    "/api/browser/chatgpt/session/refresh",
+                    json={"conversation_url": "https://chatgpt.com/c/busy"},
+                )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "safari_agent_busy")
+        start.assert_not_called()
+
+    def test_active_safari_cache_blocks_agent_start_before_pool_admission(self) -> None:
+        config = CrawlConfig(x_browser="safari")
+        with TemporaryDirectory() as raw_root, patch(
+            "app.web.app.load_saved_config",
+            return_value=config,
+        ):
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch(
+                "app.core.service.CacheLikesService.is_running",
+                return_value=True,
+            ), patch.object(pool, "start") as start:
+                response = app.test_client().post(
+                    "/api/agent/ask",
+                    json={
+                        "prompt": "Do not submit",
+                        "workspace_path": raw_root,
+                        "operating_system": "macos",
+                        "browser": "safari",
+                        "platform": "grok",
+                        "model": "grok-build",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "safari_cache_busy")
+        start.assert_not_called()
+
+    def test_safari_source_only_agent_request_is_rejected_before_admission(self) -> None:
+        providers = (
+            ("gemini", "gemini-3.1-pro", "Gemini"),
+            ("claude", "claude-auto", "Claude"),
+        )
+        for platform, model, label in providers:
+            with self.subTest(platform=platform), TemporaryDirectory() as raw_root:
+                app = create_app(Path(raw_root) / "local_store")
+                agent_service = app.extensions["computer_use_agent_service"]
+                with patch.object(agent_service, "_admission_guard") as admission:
+                    response = app.test_client().post(
+                        "/api/agent/ask",
+                        json={
+                            "prompt": "Do not submit",
+                            "workspace_path": raw_root,
+                            "operating_system": "macos",
+                            "browser": "safari",
+                            "platform": platform,
+                            "model": model,
+                        },
+                    )
+
+            self.assertEqual(response.status_code, 409)
+            self.assertIn(
+                f"Safari can browse {label} Recent sessions here",
+                response.get_json()["error"],
+            )
+            admission.assert_not_called()
+
     def test_only_agent_gemini_readiness_prefers_the_initialized_debug_profile(self) -> None:
         status_payload = {
             "platform": "gemini",
@@ -1539,7 +1761,10 @@ class WebAppTests(unittest.TestCase):
             with patch(
                 "app.web.app.probe_browser_session",
                 return_value=status_payload,
-            ) as probe:
+            ) as probe, patch(
+                "app.web.app.probe_and_collect_gemini_sources",
+                return_value=(status_payload, {"recent_sessions": [], "projects": []}),
+            ) as bootstrap:
                 with app.test_client() as client:
                     agent_response = client.get(
                         "/api/browser-session?platform=gemini&browser=edge&scope=agent"
@@ -1550,16 +1775,14 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(agent_response.status_code, 200)
         self.assertEqual(cache_response.status_code, 200)
-        self.assertEqual(probe.call_count, 2)
-        self.assertEqual(
-            probe.call_args_list[0].kwargs,
-            {
-                "silent": True,
-                "prefer_initialized_debug_profile": True,
-            },
+        bootstrap.assert_called_once_with(
+            "edge",
+            ANY,
+            silent=True,
         )
+        self.assertEqual(probe.call_count, 1)
         self.assertEqual(
-            probe.call_args_list[1].kwargs,
+            probe.call_args.kwargs,
             {
                 "silent": False,
                 "prefer_initialized_debug_profile": False,
@@ -1581,6 +1804,30 @@ class WebAppTests(unittest.TestCase):
                 with app.test_client() as client:
                     response = client.get(
                         "/api/agent/chatgpt-session-history?browser=edge&conversation_url="
+                        f"{conversation_url}"
+                    )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Agent task is running", response.get_json()["error"])
+        history.assert_not_called()
+
+    def test_macos_active_safari_agent_history_miss_returns_busy_without_collection(
+        self,
+    ) -> None:
+        conversation_url = "https://grok.com/c/safari-busy"
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch("app.web.app.is_macos_host", return_value=True), patch.object(
+                pool,
+                "has_active_worker",
+                return_value=True,
+            ), patch(
+                "app.web.app.fetch_grok_conversation_history"
+            ) as history:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/agent/grok-session-history?browser=safari&conversation_url="
                         f"{conversation_url}"
                     )
 
@@ -1900,10 +2147,14 @@ class WebAppTests(unittest.TestCase):
             "FOREIGN_STATUS_ERROR_SENTINEL",
             "FOREIGN_STATUS_ACTIVITY_SENTINEL",
             "FOREIGN_STATUS_HISTORY_SENTINEL",
-            "FOREIGN_STATUS_RUN_SENTINEL",
             "/tmp/foreign-agent-workspace",
         ):
             self.assertNotIn(sentinel, isolated_agent)
+        self.assertEqual(payload["agent"]["run_id"], "")
+        self.assertEqual(
+            payload["agent"]["stop_target_run_id"],
+            "FOREIGN_STATUS_RUN_SENTINEL",
+        )
         rendered_sessions = json.dumps(payload["sessions"], sort_keys=True)
         self.assertIn("FOREIGN_STATUS_RUN_SENTINEL", rendered_sessions)
         self.assertIn("/tmp/foreign-agent-workspace", rendered_sessions)
@@ -2364,9 +2615,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('syncPlatformState();', script)
         self.assertIn('selectedValue(".agent-browser-combobox", "edge")', script)
         self.assertIn('elements.ask.classList.toggle("is-stop", running)', script)
-        self.assertIn('mutate("/api/agent/stop")', script)
+        self.assertIn('mutate("/api/agent/stop", {', script)
+        self.assertIn('stop_target_session_id: String(', script)
+        self.assertIn('stop_target_run_id: String(', script)
         self.assertIn('mutate("/api/agent/resume")', script)
-        self.assertIn("CATALOG_TIMEOUT_MS = 15000", script)
+        self.assertIn("CATALOG_TIMEOUT_MS = 240_000", script)
         self.assertIn('query.set("refresh", "1")', script)
         self.assertIn('automaticSourcesSuppressedAfterCompletion = true;', script)
         self.assertIn('&& !automaticSourcesSuppressedAfterCompletion', script)
@@ -2375,7 +2628,7 @@ class WebAppTests(unittest.TestCase):
             script,
         )
         self.assertIn('browserStatusController.refresh()', script)
-        self.assertIn("Recent sessions timed out after 15 seconds.", script)
+        self.assertIn("Recent sessions timed out after 4 minutes.", script)
         self.assertIn("clearCatalogLoadingState", script)
         self.assertIn('requestJson("/api/agent/open-conversation"', script)
         self.assertIn('elements.conversationLink.classList.toggle("is-traditional-handoff"', script)
@@ -2426,7 +2679,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.45.0-codex.1',
+            'computer-use-agent-v3.48.1-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -2446,7 +2699,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('syncComboboxTriggerFromOption(combobox, option)', script)
         self.assertIn('window.localStorage.getItem(sessionSelectionCacheKey())', script)
         self.assertIn('function restoreRememberedSessionSelection()', script)
-        self.assertIn('void restoreRememberedProjectSession(remembered, currentProjectUrl)', script)
+        self.assertIn('void restoreRememberedProjectSession(', script)
         self.assertIn('historyUrlKey(item.url) === historyUrlKey(project)', script)
         self.assertIn('g-p-[0-9a-f]{32}', script)
         self.assertIn("selectedOption?.dataset.agentComboboxLabel", script)
@@ -2558,7 +2811,11 @@ class WebAppTests(unittest.TestCase):
         claude_body = claude_page.get_data(as_text=True)
         self.assertIn("Claude Web Agent", claude_body)
         self.assertIn('data-agent-platform-home-url="https://claude.ai/new"', claude_body)
-        self.assertEqual(safari_claude_page.status_code, 404)
+        self.assertEqual(safari_claude_page.status_code, 200)
+        safari_claude_body = safari_claude_page.get_data(as_text=True)
+        self.assertIn("Claude Web Agent", safari_claude_body)
+        self.assertIn('name="browser" value="safari"', safari_claude_body)
+        self.assertIn('data-browser-session-platform="claude"', safari_claude_body)
 
     def test_claude_agent_browser_bootstrap_reuses_one_status_and_source_payload(self) -> None:
         source_payload = {
@@ -2589,6 +2846,67 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["agent_sources"], source_payload)
         probe.assert_called_once()
+
+    def test_safari_gemini_and_claude_bootstrap_sources_without_execution_permission(self) -> None:
+        providers = (
+            (
+                "gemini",
+                "Gemini",
+                "probe_and_collect_gemini_sources",
+                "https://gemini.google.com/app/session-1",
+            ),
+            (
+                "claude",
+                "Claude",
+                "probe_and_collect_claude_sources",
+                "https://claude.ai/chat/session-1",
+            ),
+        )
+        for platform, label, collector_name, session_url in providers:
+            with self.subTest(platform=platform), TemporaryDirectory() as raw_root:
+                status_payload = {
+                    "platform": platform,
+                    "browser": "safari",
+                    "browser_label": "Safari",
+                    "logged_in": True,
+                    "can_download": True,
+                    "account_name": f"{label} account",
+                    "message": f"Safari verified {label}.",
+                }
+                source_payload = {
+                    "platform": platform,
+                    "browser_label": "Safari",
+                    "recent_sessions": [
+                        {
+                            "id": f"{platform}-session-1",
+                            "title": f"{label} session",
+                            "url": session_url,
+                            "updated_at": "",
+                        }
+                    ],
+                    "projects": [],
+                    "limit": 20,
+                }
+                app = create_app(Path(raw_root) / "local_store")
+                with patch(
+                    f"app.web.app.{collector_name}",
+                    return_value=(status_payload, source_payload),
+                ) as collector, patch("app.web.app.probe_browser_session") as legacy_probe:
+                    with app.test_client() as client:
+                        response = client.get(
+                            f"/api/browser-session?platform={platform}&browser=safari&scope=agent"
+                        )
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json()
+                self.assertEqual(payload["agent_sources"]["recent_sessions"][0]["url"], session_url)
+                self.assertFalse(payload["agent_execution_supported"])
+                self.assertIn(
+                    f"Safari can browse {label} Recent sessions here",
+                    payload["agent_execution_message"],
+                )
+                collector.assert_called_once_with("safari", ANY, silent=True)
+                legacy_probe.assert_not_called()
 
     def test_grok_agent_browser_bootstrap_uses_home_composer_and_reuses_sources(self) -> None:
         source_payload = {
@@ -2668,12 +2986,41 @@ class WebAppTests(unittest.TestCase):
                                 "model": "grok-build",
                             },
                         )
+                        safari_gemini_response = client.post(
+                            "/api/agent/preferences",
+                            json={
+                                "workspace_path": str(workspace),
+                                "operating_system": "macos",
+                                "platform": "gemini",
+                                "browser": "safari",
+                                "model": "gemini-3.1-pro",
+                            },
+                        )
+                        safari_claude_response = client.post(
+                            "/api/agent/preferences",
+                            json={
+                                "workspace_path": str(workspace),
+                                "operating_system": "macos",
+                                "platform": "claude",
+                                "browser": "safari",
+                                "model": "claude-auto",
+                            },
+                        )
+                        root_response = client.get("/agent")
 
         self.assertEqual(gemini_response.status_code, 200)
         self.assertEqual(gemini_response.get_json()["settings"]["model"], "gemini-3.1-pro")
         self.assertEqual(grok_response.status_code, 200)
         self.assertEqual(grok_response.get_json()["settings"]["platform"], "grok")
         self.assertEqual(grok_response.get_json()["settings"]["model"], "grok-build")
+        self.assertEqual(safari_gemini_response.status_code, 200)
+        self.assertEqual(safari_gemini_response.get_json()["settings"]["browser"], "safari")
+        self.assertEqual(safari_gemini_response.get_json()["settings"]["platform"], "gemini")
+        self.assertEqual(safari_claude_response.status_code, 200)
+        self.assertEqual(safari_claude_response.get_json()["settings"]["browser"], "safari")
+        self.assertEqual(safari_claude_response.get_json()["settings"]["platform"], "claude")
+        self.assertEqual(root_response.status_code, 302)
+        self.assertEqual(root_response.headers["Location"], "/agent/safari/claude")
 
     def test_agent_source_routes_are_loopback_only_and_delegate_selected_browser(self) -> None:
         with TemporaryDirectory() as raw_root:
@@ -2752,6 +3099,7 @@ class WebAppTests(unittest.TestCase):
     def test_agent_browser_session_bootstrap_reuses_each_provider_cache_until_refresh(self) -> None:
         providers = (
             ("chatgpt", "ChatGPT", "probe_and_collect_chatgpt_sources"),
+            ("gemini", "Gemini", "probe_and_collect_gemini_sources"),
             ("grok", "Grok", "probe_and_collect_grok_sources"),
             ("claude", "Claude", "probe_and_collect_claude_sources"),
         )
@@ -2760,6 +3108,7 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(platform=platform):
                 conversation_prefix = {
                     "chatgpt": "https://chatgpt.com/c/",
+                    "gemini": "https://gemini.google.com/app/",
                     "grok": "https://grok.com/c/",
                     "claude": "https://claude.ai/chat/",
                 }[platform]
@@ -3223,33 +3572,60 @@ class WebAppTests(unittest.TestCase):
 
     def test_agent_grok_session_history_route_renders_selected_project_session(self) -> None:
         conversation_url = "https://grok.com/project/project-1?chat=session-1"
+        marker = (
+            '<grok:render card_id="card-1" card_type="citation_card" '
+            'type="render_inline_citation"><argument name="citation_id">81</argument>'
+            '</grok:render>'
+        )
+        raw_response = f"核对证据。**「研究」Session 更新 — 结论**\n\nResult {marker}"
         payload = {
             "conversation_url": conversation_url,
             "title": "Renamed project session",
             "history": [{
                 "prompt": "What changed?",
-                "response": "The selected session is now visible.",
+                "response": raw_response,
+                "citations": [{
+                    "card_id": "card-1",
+                    "citation_id": "81",
+                    "url": "https://www.example.com/evidence",
+                    "label": "Example",
+                }],
                 "started_at": "2026-09-02T01:00:00Z",
                 "finished_at": "2026-09-02T01:00:02Z",
             }],
             "limit": 100,
+            "render_contract": "grok-inline-citations-v1",
         }
-        app = create_app()
-
-        with patch(
-            "app.web.app.fetch_grok_conversation_history",
-            return_value=payload,
-        ) as history:
-            with app.test_client() as client:
-                response = client.get(
-                    "/api/agent/grok-session-history?browser=edge&conversation_url="
-                    "https://grok.com/project/project-1?chat=session-1"
-                )
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            app.extensions["agent_source_cache"].store(
+                platform="grok",
+                browser="edge",
+                source_kind="session-history",
+                project_url=conversation_url,
+                payload={"title": "Legacy", "history": []},
+            )
+            with patch(
+                "app.web.app.fetch_grok_conversation_history",
+                return_value=payload,
+            ) as history:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/agent/grok-session-history?browser=edge&conversation_url="
+                        "https://grok.com/project/project-1?chat=session-1"
+                    )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["title"], "Renamed project session")
-        self.assertEqual(response.get_json()["history"][0]["prompt"], "What changed?")
-        self.assertIn("The selected session is now visible.", response.get_json()["history"][0]["response_html"])
+        response_payload = response.get_json()
+        rendered_item = response_payload["history"][0]
+        self.assertEqual(response_payload["title"], "Renamed project session")
+        self.assertEqual(rendered_item["prompt"], "What changed?")
+        self.assertEqual(rendered_item["response"], raw_response)
+        self.assertNotIn("核对证据", rendered_item["response_html"])
+        self.assertNotIn("grok:render", rendered_item["response_html"])
+        self.assertIn('href="https://www.example.com/evidence"', rendered_item["response_html"])
+        self.assertNotIn("grok:render", rendered_item["response_copy_text"])
+        self.assertIn("[Example](https://www.example.com/evidence)", rendered_item["response_copy_text"])
         history.assert_called_once()
 
     def test_agent_client_loads_grok_session_history_before_rendering_ready_state(self) -> None:
@@ -3276,6 +3652,13 @@ class WebAppTests(unittest.TestCase):
             'if (!runtime.ready)',
             'lastBrowserStatus.can_download',
             'requestJson("/api/agent/preferences"',
+            'let preferenceSaveInFlight = false;',
+            'let pendingPreferencePayload = readStoredPendingPreferencePayload();',
+            "restorePendingPreferenceSelection(pendingPreferencePayload)",
+            'async function flushPreferenceSave()',
+            'if (preferenceSaveInFlight || !pendingPreferencePayload) return;',
+            'if (!pendingPreferencePayload) return;',
+            'if (!failed || pendingIsNewer)',
             'selectedValue(".agent-os-combobox", elements.promptOs?.value || "macos")',
             'const sessionSourceChoice = trigger.closest(".agent-session-mode-combobox")',
             'trigger.disabled = !sessionSourceChoice',
@@ -3346,7 +3729,9 @@ class WebAppTests(unittest.TestCase):
             'let appliedBootstrapSignature = ""',
             "bootstrapSignature !== appliedBootstrapSignature",
             "sourceRequestId += 1",
-            'const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"])',
+            'const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"])',
+            "function agentExecutionSupported()",
+            "function agentExecutionBlockedMessage()",
             "void loadSelectedSessionHistory(session.conversation_url);",
             '"/api/agent/chatgpt-session-history"',
             "Loading the selected ${selectedPlatformLabel()} session history…",
@@ -3382,6 +3767,7 @@ class WebAppTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
+        self.assertNotIn("normalizeAgentSelection", script)
 
         self.assertNotIn("MCP runtime", script)
         self.assertNotIn("agent_phase_chip", script)
@@ -3390,9 +3776,10 @@ class WebAppTests(unittest.TestCase):
         copy_render_end = script.index("function copyResponseTextFallback", copy_render_start)
         copy_render = script[copy_render_start:copy_render_end]
         self.assertIn(
-            'responseCopyValue = typeof entry?.response === "string" ? entry.response : ""',
+            'responseCopyValue = typeof entry?.response_copy_text === "string"',
             copy_render,
         )
+        self.assertIn('typeof entry?.response === "string" ? entry.response : ""', copy_render)
         self.assertNotIn("response_html", copy_render)
         self.assertIn("elements.responseCopy.hidden = !copyAvailable", copy_render)
         self.assertIn("elements.responseCopy.disabled = !copyAvailable", copy_render)
@@ -3700,15 +4087,22 @@ class WebAppTests(unittest.TestCase):
         for fragment in (
             'const SESSION_CACHE_TTL_MS = 300_000;',
             'const SESSION_STALE_MAX_AGE_MS = 1_800_000;',
+            'const SESSION_REQUEST_TIMEOUT_MS = 240_000;',
             'const statusRequests = new Map();',
             'function requestBrowserStatus(platform, browserId, scope, options = {})',
             'const refresh = options.refresh === true;',
-            'const requestKey = `${requestScope}:${platform}:${browserId}`;',
+            'const requestKey = `${requestScope}:${platform}:${browserId}:${refresh ? "refresh" : "cached"}`;',
             'if (refresh) query.set("refresh", "1");',
+            '() => controller.abort(),',
+            '{cache: "no-store", signal: controller.signal}',
+            'throw new Error("Browser session check timed out after 4 minutes.");',
             'async function load(browserId, options = {})',
             'const forceRefresh = options.force === true || requiresChatgptCapabilities;',
-            'void load(String(browserId || "").trim().toLowerCase());',
-            'void load(activeBrowser);',
+            'function setSelection(platformId, browserId)',
+            'activeBrowser = nextBrowser;',
+            'void load(nextBrowser);',
+            'setSelection(platform, browserId);',
+            'setSelection(platformId, activeBrowser);',
             'requestBrowserStatus(requestPlatform, activeBrowser, scope, {refresh: forceRefresh})',
             'let statusRequestRevision = 0;',
             'requestRevision !== statusRequestRevision',
@@ -4034,7 +4428,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.120.1-codex.1", body)
+            self.assertIn("style-v2.121.0-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)

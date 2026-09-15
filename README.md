@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.27.0-codex.1`
+Documentation version: `v1.28.0-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -20,10 +20,11 @@ provider route does not prove that Gemini created a distinct subconversation.
 The selected Web provider supplies reasoning while a bounded local Computer Use controller
 reads, changes, runs, and verifies only the selected project. This fallback uses no API,
 command-line coding-agent runtime, MCP connection, or third-party agent bridge.
-On macOS, ChatGPT and Grok Agent sessions can use Safari without cloning a Chromium profile;
-Gemini and Claude Agent sessions and the browser Jury continue to require Edge or Chrome. The
-browser/provider preference is persisted as selected, and unsupported combinations fail closed
-instead of silently changing the browser.
+On macOS, ChatGPT and Grok Agent tasks can execute through Safari without cloning a Chromium
+profile. Safari Gemini and Claude remain valid source-only routes for account checks and Recent
+sessions and Projects browsing, but full Agent execution requires Edge or Chrome. Browser/provider/
+model preferences persist as selected; an unavailable choice fails closed instead of triggering an
+Edge fallback. Browser Jury admits only Edge or Chrome.
 
 The Agent sidebar also offers Jurors, a browser-only fact-checking jury. ChatGPT Latest
 with Extra High, Grok Auto, and Gemini 3.1 Pro are selected by default; Claude remains
@@ -80,8 +81,8 @@ endpoint through port forwarding, a public tunnel, or a reverse proxy.
 - Playwright Chromium for Chromium-backed X, Grok, and ChatGPT automation
 - `yt-dlp` for X media downloads
 - An authenticated ChatGPT, Gemini, Grok, or Claude Web account for the optional Computer Use Agent
-  workspace; macOS Safari supports the ChatGPT and Grok Agent paths, while Gemini and Claude use
-  Edge or Chrome
+  workspace; macOS Safari supports ChatGPT and Grok execution plus Gemini and Claude source-only
+  browsing, while full Gemini and Claude execution requires Edge or Chrome
 
 ChatGPT project caching uses up to three isolated Edge workers in parallel. The worker count is
 bounded deliberately because each worker owns a separate authenticated browser context.

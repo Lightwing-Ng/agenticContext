@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.23.0-codex.1
+# Code version: v1.26.0-codex.1
 
 from __future__ import annotations
 
@@ -89,6 +89,10 @@ CLAUDE_COMPOSER_SELECTOR = (
     'textarea[aria-label*="prompt" i], '
     'textarea[placeholder*="message" i]'
 )
+GROK_COMPOSER_SELECTOR = (
+    'textarea, div[contenteditable="true"][role="textbox"]'
+    '[aria-label="Ask Grok anything"]'
+)
 
 
 def visible_claude_composer_selector() -> str:
@@ -98,6 +102,80 @@ def visible_claude_composer_selector() -> str:
         for candidate in CLAUDE_COMPOSER_SELECTOR.split(",")
         if candidate.strip()
     )
+
+
+def claude_composer_snapshot(page: Any) -> dict[str, int]:
+    """Return the count of visible, enabled Claude message composers."""
+    result = page.evaluate(
+        r"""({composerSelector}) => {
+            const visible = (element) => {
+                if (!element || element.getClientRects().length === 0) return false;
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return true;
+            };
+            const candidates = [...document.querySelectorAll(composerSelector)]
+                .filter((element) => visible(element)
+                    && !element.disabled
+                    && element.getAttribute('aria-disabled') !== 'true'
+                    && !element.closest(
+                        '[role="dialog"], [role="menu"], [role="listbox"], nav, header, '
+                        + '[data-testid*="feedback" i], [class*="feedback" i]'
+                    ));
+            return {count: candidates.length};
+        }""",
+        {"composerSelector": CLAUDE_COMPOSER_SELECTOR},
+    )
+    return {"count": int(result.get("count") or 0)} if isinstance(result, dict) else {"count": 0}
+
+
+def grok_composer_snapshot(page: Any) -> dict[str, int]:
+    """Return the count of visible, enabled, provider-scoped Grok composers."""
+    result = page.evaluate(
+        r"""({composerSelector}) => {
+            const visible = (element) => {
+                if (!element || element.getClientRects().length === 0) return false;
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return true;
+            };
+            const candidates = [...document.querySelectorAll(composerSelector)]
+                .filter((element) => {
+                    if (!visible(element)
+                        || element.disabled
+                        || element.getAttribute('aria-disabled') === 'true'
+                        || element.closest(
+                            '[role="dialog"], [role="menu"], [role="listbox"], nav, header, '
+                            + '[data-testid*="feedback" i], [class*="feedback" i]'
+                        )) return false;
+                    let scope = element.parentElement;
+                    while (scope && scope !== document.body) {
+                        if (scope.querySelector('button[data-testid="chat-submit"]')) return true;
+                        if (scope.matches('main')) break;
+                        scope = scope.parentElement;
+                    }
+                    const metadata = `${element.getAttribute('aria-label') || ''} `
+                        + `${element.getAttribute('placeholder') || ''} `
+                        + `${element.getAttribute('data-testid') || ''}`;
+                    return /prompt|message|ask|grok|what do you|输入|輸入|提问|提問/i.test(metadata);
+                });
+            return {count: candidates.length};
+        }""",
+        {"composerSelector": GROK_COMPOSER_SELECTOR},
+    )
+    return {"count": int(result.get("count") or 0)} if isinstance(result, dict) else {"count": 0}
 EDGE_USER_DATA_DIR = default_edge_user_data_dir()
 EDGE_PROFILE_DIRECTORY = "Default"
 SAFARI_APPLESCRIPT_SOURCE_LIMIT = 500_000
@@ -370,12 +448,84 @@ def _probe_claude_session(
     prefer_initialized_debug_profile: bool = False,
 ) -> dict[str, Any]:
     """Verify a Claude Web composer without reading account or credential data."""
+    def inspect(page: Any) -> dict[str, Any]:
+        page.wait_for_timeout(2_000)
+        try:
+            body_text = page.locator("body").inner_text(timeout=5_000)
+        except Exception:
+            body_text = ""
+        normalized_body = str(body_text or "").casefold()
+        if any(
+            marker in normalized_body
+            for marker in (
+                "account suspended",
+                "account has been suspended",
+                "account disabled",
+                "account has been disabled",
+                "banned",
+                "deactivated",
+                "access restricted",
+                "account is unavailable",
+                "usage policy",
+                "terms of service",
+            )
+        ):
+            return {
+                "logged_in": False,
+                "can_download": False,
+                "account_name": "Claude account restricted",
+                "message": (
+                    f"{descriptor.label} reported that the Claude account is restricted or unavailable."
+                ),
+            }
+        composer_ready = False
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                composer_count = int(claude_composer_snapshot(page).get("count") or 0)
+                if composer_count == 1:
+                    composer_ready = True
+                    break
+                if composer_count > 1:
+                    break
+            except Exception:
+                pass
+            page.wait_for_timeout(250)
+        if not composer_ready:
+            # Hydration can reveal sign-in UI after the initial body snapshot.
+            try:
+                normalized_body = page.locator("body").inner_text(timeout=5_000).casefold()
+            except Exception:
+                pass
+            message = (
+                f"{descriptor.label} is not signed in to Claude."
+                if re.search(r"\b(?:sign in|log in|sign up|create account)\b", normalized_body)
+                else f"{descriptor.label} could not verify an available Claude message composer."
+            )
+            return {
+                "logged_in": False,
+                "can_download": False,
+                "account_name": "",
+                "message": message,
+            }
+        return {
+            "logged_in": True,
+            "can_download": True,
+            "account_name": "Claude account",
+            "message": f"{descriptor.label} is ready to use Claude Web.",
+        }
+
+    if descriptor.engine == "safari":
+        with SafariContext(CLAUDE_HOME_URL, lock_blocking=False) as context:
+            page = context.primary_page
+            goto_with_retry(page, CLAUDE_HOME_URL, attempts=2, timeout_ms=60_000)
+            return inspect(page)
     if descriptor.engine != "chromium":
         return {
             "logged_in": False,
             "can_download": False,
             "account_name": "",
-            "message": f"Claude Agent sessions require Edge or Chrome, not {descriptor.label}.",
+            "message": f"Claude Web sessions do not support {descriptor.label}.",
         }
     with _serialized_sync_playwright() as playwright:
         with launch_chromium_context(
@@ -390,66 +540,7 @@ def _probe_claude_session(
         ) as context:
             page = context.pages[0] if context.pages else context.new_page()
             goto_with_retry(page, CLAUDE_HOME_URL, attempts=2, timeout_ms=60_000)
-            page.wait_for_timeout(2_000)
-            try:
-                body_text = page.locator("body").inner_text(timeout=5_000)
-            except Exception:
-                body_text = ""
-            normalized_body = str(body_text or "").casefold()
-            if any(
-                marker in normalized_body
-                for marker in (
-                    "account suspended",
-                    "account has been suspended",
-                    "account disabled",
-                    "account has been disabled",
-                    "banned",
-                    "deactivated",
-                    "access restricted",
-                    "account is unavailable",
-                    "usage policy",
-                    "terms of service",
-                )
-            ):
-                return {
-                    "logged_in": False,
-                    "can_download": False,
-                    "account_name": "Claude account restricted",
-                    "message": (
-                        f"{descriptor.label} reported that the Claude account is restricted or unavailable."
-                    ),
-                }
-            try:
-                composer = page.locator(visible_claude_composer_selector())
-                composer.first.wait_for(
-                    state="visible",
-                    timeout=20_000,
-                )
-                if composer.count() != 1:
-                    raise RuntimeError("Claude composer count was not unique.")
-            except Exception:
-                # Hydration can reveal sign-in UI after the initial body snapshot.
-                try:
-                    normalized_body = page.locator("body").inner_text(timeout=5_000).casefold()
-                except Exception:
-                    pass
-                message = (
-                    f"{descriptor.label} is not signed in to Claude."
-                    if re.search(r"\b(?:sign in|log in|sign up|create account)\b", normalized_body)
-                    else f"{descriptor.label} could not verify an available Claude message composer."
-                )
-                return {
-                    "logged_in": False,
-                    "can_download": False,
-                    "account_name": "",
-                    "message": message,
-                }
-            return {
-                "logged_in": True,
-                "can_download": True,
-                "account_name": "Claude account",
-                "message": f"{descriptor.label} is ready to use Claude Web.",
-            }
+            return inspect(page)
 
 
 def _probe_gemini_session(
@@ -463,7 +554,7 @@ def _probe_gemini_session(
     from .gemini_downloader import _wait_for_gemini_ready
 
     if descriptor.engine == "safari":
-        with SafariContext(GEMINI_HOME_URL) as context:
+        with SafariContext(GEMINI_HOME_URL, lock_blocking=False) as context:
             page = context.primary_page
             goto_with_retry(page, GEMINI_HOME_URL, attempts=2, timeout_ms=60_000)
             snapshot = _wait_for_gemini_ready(page)
@@ -661,7 +752,7 @@ def _probe_chatgpt_session(
     project_url = CHATGPT_HOME_URL
 
     if descriptor.engine == "safari":
-        with SafariContext(project_url) as context:
+        with SafariContext(project_url, lock_blocking=False) as context:
             page = context.primary_page
             page.goto(project_url, wait_until="domcontentloaded", timeout=60_000)
             page.wait_for_load_state("domcontentloaded", 60_000)
@@ -1494,7 +1585,7 @@ def detect_safari_x_account_handle(wait_seconds: int = 10) -> str:
     return '';
 }
 """.strip()
-    with SafariContext(X_HOME_URL) as context:
+    with SafariContext(X_HOME_URL, lock_blocking=False) as context:
         page = context.primary_page
         page.wait_for_timeout(max(0, int(wait_seconds)) * 1_000)
         handle = page.evaluate(extract_handle_js)
@@ -1507,7 +1598,7 @@ def detect_safari_x_account_handle(wait_seconds: int = 10) -> str:
 
 def fetch_safari_page_snapshot(url: str, wait_seconds: int = 8) -> dict[str, str]:
     """Open one URL in Safari, capture the page source, and close the temporary tab."""
-    with SafariContext(url) as context:
+    with SafariContext(url, lock_blocking=False) as context:
         page = context.primary_page
         page.wait_for_timeout(max(0, int(wait_seconds)) * 1_000)
         return {

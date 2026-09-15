@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.9.0-codex.1
+# Code version: v1.11.0-codex.1
 
 from typing import TYPE_CHECKING
 
@@ -18,9 +18,15 @@ from ..agent_session_sources import (
     normalize_agent_source_catalog_payload,
     normalize_agent_project_url,
     probe_and_collect_claude_sources,
+    probe_and_collect_gemini_sources,
     probe_and_collect_grok_sources,
 )
 from ..agent_source_cache import AgentSourceCache
+from ..grok_history import (
+    GROK_AGENT_HISTORY_RENDER_CONTRACT,
+    GROK_INLINE_CITATION_PATTERN,
+    normalize_grok_display_markdown,
+)
 from .capability_registry import (
     AGENT_ACTIONS,
     CAPABILITY_REGISTRY,
@@ -42,11 +48,14 @@ _COMPUTER_USE_EXPORTS = frozenset(
         "OPERATING_SYSTEM_OPTIONS",
         "SUPPORTED_AGENT_PLATFORMS",
         "SUPPORTED_BROWSERS",
+        "SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS",
         "SUPPORTED_SAFARI_AGENT_PLATFORMS",
         "ComputerUseAgentService",
         "ComputerUseSettingsStore",
+        "agent_execution_blocked_message",
         "browser_options_for_host",
         "default_model_for_platform",
+        "is_agent_execution_supported",
         "is_loopback_address",
         "launch_terminal_authorization",
         "open_agent_in_browser",
@@ -65,12 +74,15 @@ if TYPE_CHECKING:
         OPERATING_SYSTEM_OPTIONS,
         SUPPORTED_AGENT_PLATFORMS,
         SUPPORTED_BROWSERS,
+        SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS,
         SUPPORTED_SAFARI_AGENT_PLATFORMS,
         ComputerUseAgentService,
         ComputerUseSettingsStore,
         _render_final_action as render_final_agent_action,
+        agent_execution_blocked_message,
         browser_options_for_host,
         default_model_for_platform,
+        is_agent_execution_supported,
         is_loopback_address,
         launch_terminal_authorization,
         open_agent_in_browser,
@@ -119,13 +131,17 @@ __all__ = [
     "CAPABILITY_REGISTRY_VERSION",
     "ComputerUseAgentService",
     "ComputerUseSettingsStore",
+    "GROK_AGENT_HISTORY_RENDER_CONTRACT",
+    "GROK_INLINE_CITATION_PATTERN",
     "JURY_MODEL_OPTIONS_BY_PROVIDER",
     "JuryService",
     "OPERATING_SYSTEM_OPTIONS",
     "PAGE_OBSERVATIONS",
     "SUPPORTED_AGENT_PLATFORMS",
     "SUPPORTED_BROWSERS",
+    "SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS",
     "SUPPORTED_SAFARI_AGENT_PLATFORMS",
+    "agent_execution_blocked_message",
     "WEBMCP_TOOLS",
     "browser_options_for_host",
     "build_agent_optimization_manifest",
@@ -137,6 +153,7 @@ __all__ = [
     "default_model_for_platform",
     "fetch_grok_conversation_history",
     "is_allowed_agent_network_request",
+    "is_agent_execution_supported",
     "is_loopback_address",
     "launch_terminal_authorization",
     "list_agent_project_sessions",
@@ -144,10 +161,12 @@ __all__ = [
     "normalize_agent_conversation_url",
     "normalize_agent_source_catalog_payload",
     "normalize_agent_project_url",
+    "normalize_grok_display_markdown",
     "open_agent_in_browser",
     "open_browser_for_login",
     "parse_agent_action",
     "probe_and_collect_claude_sources",
+    "probe_and_collect_gemini_sources",
     "probe_and_collect_grok_sources",
     "render_final_agent_action",
     "validate_agent_access_password",

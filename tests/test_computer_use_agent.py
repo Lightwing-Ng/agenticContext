@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.68.0-codex.1
+Code version: v3.70.1-codex.1
 """
 
 from __future__ import annotations
@@ -66,6 +66,7 @@ from app.core.computer_use_agent import (
     _chatgpt_is_project_surface,
     _chatgpt_target_is_open,
     _grok_existing_conversation_urls,
+    _grok_fresh_navigation_allowed,
     _web_target_is_open,
     _initial_web_agent_message,
     _observation_message,
@@ -87,6 +88,7 @@ from app.core.computer_use_agent import (
     _format_binary_size,
     build_context_markdown,
     detect_host_operating_system,
+    is_agent_execution_supported,
     is_loopback_address,
     launch_terminal_authorization,
     open_agent_in_browser,
@@ -111,6 +113,7 @@ from app.core.computer_use_agent import (
 )
 from app.core.agent.event_chain import AgentEventChain, new_run_id
 from app.core.config import CrawlConfig
+from app.core.safari_automation import SafariNativeActivationError
 
 
 def _select_verified_chatgpt_model(*args: object, **kwargs: object) -> bool:
@@ -370,16 +373,22 @@ def test_settings_validate_all_web_agent_platforms_and_model_contracts() -> None
         assert safari_grok.browser == "safari"
         assert safari_grok.platform == "grok"
 
-        with pytest.raises(ValueError, match="require Edge or Chrome"):
-            validate_computer_use_settings(
+        for safari_platform, safari_model, safari_target in (
+            ("gemini", "gemini-3.1-pro", "https://gemini.google.com/app"),
+            ("claude", "claude-auto", "https://claude.ai/new"),
+        ):
+            safari_sources = validate_computer_use_settings(
                 {
                     "workspace_path": raw_root,
-                    "platform": "gemini",
+                    "platform": safari_platform,
                     "browser": "safari",
-                    "model": "gemini-3.1-pro",
-                    "target_url": "https://gemini.google.com/app",
+                    "model": safari_model,
+                    "target_url": safari_target,
                 }
             )
+            assert safari_sources.browser == "safari"
+            assert safari_sources.platform == safari_platform
+            assert not is_agent_execution_supported("safari", safari_platform)
         with pytest.raises(ValueError, match="official Gemini HTTPS host"):
             validate_computer_use_settings(
                 {
@@ -390,6 +399,45 @@ def test_settings_validate_all_web_agent_platforms_and_model_contracts() -> None
                     "target_url": "https://example.com/",
                 }
             )
+
+
+@pytest.mark.parametrize(
+    ("platform", "model", "label"),
+    (
+        ("gemini", "gemini-3.1-pro", "Gemini"),
+        ("claude", "claude-auto", "Claude"),
+    ),
+)
+def test_safari_source_only_selection_cannot_start_full_agent_execution(
+    tmp_path: Path,
+    platform: str,
+    model: str,
+    label: str,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runner_calls: list[dict[str, object]] = []
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runner=lambda **kwargs: runner_calls.append(kwargs),
+        runtime_root=tmp_path / "runtime",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"Safari can browse {label} Recent sessions here",
+    ):
+        service.start(
+            "Do not send this prompt",
+            str(workspace),
+            CrawlConfig(),
+            platform=platform,
+            browser="safari",
+            model=model,
+        )
+
+    assert runner_calls == []
+    assert service.snapshot()["running"] is False
 
 
 @pytest.mark.parametrize("legacy_model", ("grok-auto", "grok-heavy"))
@@ -2676,6 +2724,94 @@ def test_grok_model_selection_fails_closed_without_a_trusted_locator() -> None:
     assert observation["attempted_labels"] == ["Build"]
 
 
+@pytest.mark.parametrize(
+    ("input_attempted", "expected_reason"),
+    (
+        (True, "model-selection-click-uncertain"),
+        (False, "model-selection-native-input-blocked"),
+    ),
+)
+def test_safari_grok_model_trigger_does_not_repeat_failed_native_input(
+    monkeypatch: pytest.MonkeyPatch,
+    input_attempted: bool,
+    expected_reason: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Locator:
+        first = None
+
+        def __init__(self) -> None:
+            self.first = self
+            self.clicks = 0
+
+        def count(self) -> int:
+            return 1
+
+        def is_visible(self) -> bool:
+            return True
+
+        def click(self, **_kwargs: object) -> None:
+            self.clicks += 1
+            raise SafariNativeActivationError(
+                "Native input transport became uncertain.",
+                input_attempted=input_attempted,
+            )
+
+    class _Page:
+        url = "https://grok.com/"
+
+        def __init__(self) -> None:
+            self.trigger = _Locator()
+            self.waits: list[int] = []
+
+        def locator(self, selector: str) -> _Locator:
+            assert "data-cachelikes-grok-model-trigger" in selector
+            return self.trigger
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            self.waits.append(milliseconds)
+
+    page = _Page()
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_dismiss_known_grok_onboarding_dialogs",
+        lambda *_args, **_kwargs: (True, ""),
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_grok_blocking_dialog_snapshot",
+        lambda _page: {"blocking": False},
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_grok_model_trigger_snapshot",
+        lambda *_args: {
+            "ok": True,
+            "current": "Auto",
+            "expanded": False,
+            "controlledId": "model-menu",
+        },
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_inspect_open_grok_model_surface",
+        lambda *_args: {"ok": False, "reason": "model-surface-not-found"},
+    )
+    observation: dict[str, object] = {}
+
+    assert computer_use_agent._select_grok_model_with_trusted_clicks(
+        page,
+        "safari",
+        ("Build",),
+        ("Build",),
+        observation,
+        lambda: False,
+    ) is False
+    assert page.trigger.clicks == 1
+    assert observation["reason"] == expected_reason
+
+
 @pytest.mark.parametrize("decoy", ("Claude", "Default"))
 def test_claude_auto_model_selection_rejects_brand_and_default_decoys(
     decoy: str,
@@ -3687,27 +3823,38 @@ def test_open_browser_for_login_macos_preserves_standard_handoff(
     )
 
 
-def test_open_browser_for_login_macos_allows_grok_safari(
+@pytest.mark.parametrize(
+    ("platform", "home_url"),
+    (
+        ("chatgpt", "https://chatgpt.com/"),
+        ("gemini", "https://gemini.google.com/app"),
+        ("grok", "https://grok.com/"),
+        ("claude", "https://claude.ai/new"),
+    ),
+)
+def test_open_browser_for_login_macos_allows_safari_source_providers(
     monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    home_url: str,
 ) -> None:
     from unittest.mock import Mock
 
     import app.core.computer_use_agent as computer_use_agent
 
-    expected = {"opened": True, "browser": "safari", "platform": "grok"}
+    expected = {"opened": True, "browser": "safari", "platform": platform}
     handoff = Mock(return_value=expected)
     config = CrawlConfig()
     monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
     monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
     monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", handoff)
 
-    result = open_browser_for_login("grok", "safari", config=config)
+    result = open_browser_for_login(platform, "safari", config=config)
 
     assert result is expected
     handoff.assert_called_once_with(
-        "grok",
+        platform,
         "safari",
-        "https://grok.com/",
+        home_url,
         background=True,
         config=config,
     )
@@ -4101,6 +4248,29 @@ def test_grok_target_check_preserves_root_and_project_session_identity() -> None
     )
 
 
+@pytest.mark.parametrize(
+    "untrusted_url",
+    (
+        "http://grok.com/",
+        "https://grok.com:444/",
+        "https://user:pass@grok.com/",
+        "https://grok.com:invalid/",
+    ),
+)
+def test_grok_target_check_rejects_untrusted_origins(untrusted_url: str) -> None:
+    assert not _web_target_is_open("grok", "https://grok.com/", untrusted_url)
+    assert not _web_target_is_open("grok", untrusted_url, "https://grok.com/")
+    assert not _grok_fresh_navigation_allowed(untrusted_url, "https://grok.com/c/session")
+
+
+def test_grok_target_check_accepts_the_explicit_standard_https_port() -> None:
+    assert _web_target_is_open(
+        "grok",
+        "https://grok.com:443/c/session",
+        "https://www.grok.com:443/c/session",
+    )
+
+
 def test_saved_settings_are_owner_readable_only() -> None:
     with TemporaryDirectory() as raw_root:
         settings_path = Path(raw_root) / "computer-use-agent.json"
@@ -4324,6 +4494,101 @@ def test_settings_store_normalizes_prompts_before_persisting_or_exposing_them(
     persisted = json.loads(settings_path.read_text(encoding="utf-8"))
     assert persisted["macos_system_prompt"] == updated.macos_system_prompt
     assert store.settings == updated
+
+
+def test_settings_preference_updates_hold_one_read_modify_write_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    store = ComputerUseSettingsStore(tmp_path / "settings.json")
+    first_validating = Event()
+    release_first = Event()
+    second_finished = Event()
+    original_validate = computer_use_agent.validate_computer_use_settings
+
+    def delayed_validate(payload: dict[str, object]) -> ComputerUseSettings:
+        if payload.get("platform") == "grok":
+            first_validating.set()
+            assert release_first.wait(timeout=2)
+        return original_validate(payload)
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "validate_computer_use_settings",
+        delayed_validate,
+    )
+
+    first = Thread(
+        target=lambda: store.update_preferences(
+            workspace_path=str(workspace),
+            operating_system="macos",
+            platform="grok",
+            browser="safari",
+            model="grok-build",
+        )
+    )
+
+    def save_second() -> None:
+        store.update_preferences(
+            workspace_path=str(workspace),
+            operating_system="macos",
+            platform="gemini",
+            browser="edge",
+            model="gemini-3.1-pro",
+        )
+        second_finished.set()
+
+    second = Thread(target=save_second)
+    first.start()
+    assert first_validating.wait(timeout=2)
+    second.start()
+    try:
+        assert not second_finished.wait(timeout=0.1)
+    finally:
+        release_first.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+    assert second_finished.is_set()
+    assert store.settings.platform == "gemini"
+    assert store.settings.browser == "edge"
+
+
+def test_settings_preference_revision_rejects_a_late_stale_page_write(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    store = ComputerUseSettingsStore(tmp_path / "settings.json")
+    client_id = "0123456789abcdef0123456789abcdef"
+
+    latest = store.update_preferences(
+        workspace_path=str(workspace),
+        operating_system="macos",
+        platform="grok",
+        browser="safari",
+        model="grok-build",
+        client_id=client_id,
+        client_revision=2,
+    )
+    stale = store.update_preferences(
+        workspace_path=str(workspace),
+        operating_system="macos",
+        platform="gemini",
+        browser="edge",
+        model="gemini-3.1-pro",
+        client_id=client_id,
+        client_revision=1,
+    )
+
+    assert latest.platform == "grok"
+    assert latest.browser == "safari"
+    assert stale == latest
+    assert store.settings == latest
 
 
 def test_initial_web_agent_message_states_fresh_and_read_only_contract() -> None:
@@ -4995,7 +5260,7 @@ def test_stop_during_browser_startup_never_enters_the_action_loop(
     monkeypatch.setattr(
         computer_use_agent,
         "SafariContext",
-        lambda _target_url: browser_context,
+        lambda _target_url, *, lock_blocking: browser_context,
     )
     monkeypatch.setattr(
         computer_use_agent,
@@ -14828,17 +15093,41 @@ def test_read_only_controller_rejects_mutating_actions(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "Before\n"
 
 
-def test_safari_submission_clicks_send_button_instead_of_dispatching_enter() -> None:
+def test_safari_submission_uses_one_native_send_activation() -> None:
     class _Page:
+        url = "https://chatgpt.com/"
+
         def __init__(self) -> None:
             self.evaluate_calls: list[tuple[str, object]] = []
             self.waits: list[int] = []
+            self.native_clicks = 0
+
+        def locator(self, selector: str) -> object:
+            assert "data-cachelikes-safari-send" in selector
+            page = self
+
+            class _Locator:
+                first = None
+
+                def __init__(self) -> None:
+                    self.first = self
+
+                def count(self) -> int:
+                    return 1
+
+                def is_visible(self) -> bool:
+                    return True
+
+                def click(self, **_kwargs: object) -> None:
+                    page.native_clicks += 1
+
+            return _Locator()
 
         def evaluate(self, expression: str, argument: object = None) -> dict[str, object]:
             self.evaluate_calls.append((expression, argument))
             if "composer.focus()" in expression:
                 return {"filled": True, "tagName": "DIV", "contentEditable": True}
-            return {"clicked": True, "ariaLabel": "Send prompt", "dataTestId": "send-button"}
+            return {"ready": True, "ariaLabel": "Send prompt", "dataTestId": "send-button"}
 
         def wait_for_timeout(self, milliseconds: int) -> None:
             self.waits.append(milliseconds)
@@ -14857,8 +15146,10 @@ def test_safari_submission_clicks_send_button_instead_of_dispatching_enter() -> 
 
     expressions = [expression for expression, _argument in page.evaluate_calls]
     assert any("document.execCommand" in expression for expression in expressions)
-    assert any("sendButton.click()" in expression for expression in expressions)
+    assert any("data-cachelikes-safari-send" in expression for expression in expressions)
+    assert all("sendButton.click()" not in expression for expression in expressions)
     assert all("KeyboardEvent" not in expression for expression in expressions)
+    assert page.native_clicks == 1
 
 
 def test_safari_grok_submission_uses_the_unique_provider_composer_and_send_scope() -> None:
@@ -14867,12 +15158,36 @@ def test_safari_grok_submission_uses_the_unique_provider_composer_and_send_scope
 
         def __init__(self) -> None:
             self.evaluate_calls: list[tuple[str, object]] = []
+            self.native_clicks = 0
+            self.native_click_kwargs: dict[str, object] = {}
+
+        def locator(self, selector: str) -> object:
+            assert "data-cachelikes-safari-send" in selector
+            page = self
+
+            class _Locator:
+                first = None
+
+                def __init__(self) -> None:
+                    self.first = self
+
+                def count(self) -> int:
+                    return 1
+
+                def is_visible(self) -> bool:
+                    return True
+
+                def click(self, **_kwargs: object) -> None:
+                    page.native_clicks += 1
+                    page.native_click_kwargs = dict(_kwargs)
+
+            return _Locator()
 
         def evaluate(self, expression: str, argument: object = None) -> dict[str, object]:
             self.evaluate_calls.append((expression, argument))
             if "composer.focus()" in expression:
                 return {"filled": True, "composerCount": 1}
-            return {"clicked": True, "ariaLabel": "Submit", "dataTestId": "chat-submit"}
+            return {"ready": True, "ariaLabel": "Submit", "dataTestId": "chat-submit"}
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
             return None
@@ -14896,6 +15211,184 @@ def test_safari_grok_submission_uses_the_unique_provider_composer_and_send_scope
     assert send_argument["expectedCurrentUrl"] == "https://grok.com/"
     assert "button[data-testid=\"chat-submit\"]" in page.evaluate_calls[0][0]
     assert "semanticSendButtons(candidate)" in page.evaluate_calls[1][0]
+    assert "sendButton.click()" not in page.evaluate_calls[1][0]
+    assert page.native_clicks == 1
+    assert page.native_click_kwargs == {
+        "timeout": 3_000,
+        "expected_url": "https://grok.com/",
+    }
+
+
+def test_safari_grok_submission_never_repeats_uncertain_native_send() -> None:
+    class _Page:
+        url = "https://grok.com/"
+
+        def __init__(self) -> None:
+            self.native_clicks = 0
+
+        def locator(self, selector: str) -> object:
+            assert "data-cachelikes-safari-send" in selector
+            page = self
+
+            class _Locator:
+                first = None
+
+                def __init__(self) -> None:
+                    self.first = self
+
+                def count(self) -> int:
+                    return 1
+
+                def is_visible(self) -> bool:
+                    return True
+
+                def click(self, **_kwargs: object) -> None:
+                    page.native_clicks += 1
+                    raise SafariNativeActivationError(
+                        "Native input transport became uncertain.",
+                        input_attempted=True,
+                    )
+
+            return _Locator()
+
+        def evaluate(self, expression: str, _argument: object = None) -> dict[str, object]:
+            if "composer.focus()" in expression:
+                return {"filled": True, "composerCount": 1}
+            return {"ready": True, "ariaLabel": "Submit", "dataTestId": "chat-submit"}
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            raise AssertionError("An uncertain Send must not enter a retry loop.")
+
+    page = _Page()
+    assert _submit_safari_prompt(
+        page,
+        "Inspect safely.",
+        lambda: False,
+        platform="grok",
+        expected_target_url=page.url,
+    ) is True
+    assert page.native_clicks == 1
+
+
+def test_safari_stop_rejects_ambiguous_controls_before_native_input() -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Page:
+        url = "https://grok.com/c/session"
+
+        def __init__(self) -> None:
+            self.locator_calls = 0
+
+        def evaluate(self, expression: str, _argument: object = None) -> object:
+            if "expectedCurrentUrl" in expression:
+                return {"count": 2}
+            return None
+
+        def locator(self, _selector: str) -> object:
+            self.locator_calls += 1
+            raise AssertionError("Ambiguous Stop controls must not reach native input.")
+
+    page = _Page()
+    computer_use_agent._stop_web_generation(page, "safari")
+    assert page.locator_calls == 0
+
+
+def test_safari_stop_does_not_repeat_uncertain_native_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Locator:
+        first = None
+
+        def __init__(self) -> None:
+            self.first = self
+            self.clicks = 0
+            self.kwargs: dict[str, object] = {}
+
+        def click(self, **kwargs: object) -> None:
+            self.clicks += 1
+            self.kwargs = kwargs
+            raise SafariNativeActivationError(
+                "Native input transport became uncertain.",
+                input_attempted=True,
+            )
+
+    class _Page:
+        url = "https://grok.com/c/session"
+
+        def __init__(self) -> None:
+            self.stop = _Locator()
+            self.waits: list[int] = []
+
+        def evaluate(self, expression: str, _argument: object = None) -> object:
+            if "expectedCurrentUrl" in expression:
+                return {"count": 1}
+            return None
+
+        def locator(self, selector: str) -> _Locator:
+            assert "data-cachelikes-safari-stop" in selector
+            return self.stop
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            self.waits.append(milliseconds)
+
+    generating = iter((True, False))
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_web_is_generating",
+        lambda *_args: next(generating),
+    )
+    page = _Page()
+
+    computer_use_agent._stop_web_generation(page, "safari")
+
+    assert page.stop.clicks == 1
+    assert page.stop.kwargs == {
+        "timeout": 3_000,
+        "expected_url": "https://grok.com/c/session",
+    }
+    assert page.waits == [100]
+
+
+def test_safari_submission_rejects_ambiguous_enabled_send_buttons() -> None:
+    class _Page:
+        url = "https://grok.com/"
+
+        def __init__(self) -> None:
+            self.evaluate_calls: list[str] = []
+            self.locator_calls = 0
+
+        def evaluate(self, expression: str, _argument: object = None) -> dict[str, object]:
+            self.evaluate_calls.append(expression)
+            if "composer.focus()" in expression:
+                return {"filled": True, "composerCount": 1}
+            return {
+                "ready": False,
+                "reason": "send-button-ambiguous",
+                "enabledSendButtonCount": 2,
+            }
+
+        def locator(self, _selector: str) -> object:
+            self.locator_calls += 1
+            raise AssertionError("Ambiguous controls must fail before native input.")
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            raise AssertionError("Ambiguous controls must fail without polling.")
+
+    page = _Page()
+    with pytest.raises(RuntimeError, match="multiple enabled Grok send buttons"):
+        _submit_safari_prompt(
+            page,
+            "Inspect safely.",
+            lambda: False,
+            platform="grok",
+            expected_target_url=page.url,
+        )
+
+    assert page.locator_calls == 0
+    assert "enabledSendButtons.length === 1" in page.evaluate_calls[1]
+    assert "enabledSendButtons.length > 1" in page.evaluate_calls[1]
 
 
 def test_safari_grok_submit_and_wait_appends_a_controller_receipt(
@@ -15011,6 +15504,8 @@ def test_safari_grok_submit_and_wait_attributes_the_receipted_response(
 
 def test_safari_grok_submission_guards_the_exact_page_when_binding_is_pending() -> None:
     class _Page:
+        url = "https://chatgpt.com/"
+
         def __init__(self) -> None:
             self.url = "https://grok.com/"
             self.evaluate_calls: list[tuple[str, object]] = []
@@ -15047,6 +15542,8 @@ def test_safari_submission_never_clicks_send_after_stop(stop_stage: str) -> None
     stop_requested = Event()
 
     class _Page:
+        url = "https://chatgpt.com/"
+
         def __init__(self) -> None:
             self.evaluate_calls: list[str] = []
             self.waits: list[int] = []
@@ -15057,7 +15554,7 @@ def test_safari_submission_never_clicks_send_after_stop(stop_stage: str) -> None
                 if stop_stage == "after_fill":
                     stop_requested.set()
                 return {"filled": True, "tagName": "DIV", "contentEditable": True}
-            assert "sendButton.click()" in expression
+            assert "data-cachelikes-safari-send" in expression
             return {"clicked": False, "generating": False, "sendButtons": []}
 
         def wait_for_timeout(self, milliseconds: int) -> None:
@@ -15076,7 +15573,8 @@ def test_safari_submission_never_clicks_send_after_stop(stop_stage: str) -> None
     send_attempts = [
         expression
         for expression in page.evaluate_calls
-        if "sendButton.click()" in expression
+        if "data-cachelikes-safari-send" in expression
+        and "composer.focus()" not in expression
     ]
     assert len(send_attempts) == (0 if stop_stage == "after_fill" else 1)
     assert page.waits == ([] if stop_stage == "after_fill" else [250])
@@ -15084,10 +15582,34 @@ def test_safari_submission_never_clicks_send_after_stop(stop_stage: str) -> None
 
 def test_safari_submission_waits_for_send_after_stop_answering() -> None:
     class _Page:
+        url = "https://chatgpt.com/"
+
         def __init__(self) -> None:
             self.evaluate_calls: list[tuple[str, object]] = []
             self.waits: list[int] = []
             self._send_attempts = 0
+            self.native_clicks = 0
+
+        def locator(self, selector: str) -> object:
+            assert "data-cachelikes-safari-send" in selector
+            page = self
+
+            class _Locator:
+                first = None
+
+                def __init__(self) -> None:
+                    self.first = self
+
+                def count(self) -> int:
+                    return 1
+
+                def is_visible(self) -> bool:
+                    return True
+
+                def click(self, **_kwargs: object) -> None:
+                    page.native_clicks += 1
+
+            return _Locator()
 
         def evaluate(self, expression: str, argument: object = None) -> dict[str, object]:
             self.evaluate_calls.append((expression, argument))
@@ -15096,7 +15618,7 @@ def test_safari_submission_waits_for_send_after_stop_answering() -> None:
             self._send_attempts += 1
             if self._send_attempts == 1:
                 return {"clicked": False, "generating": True, "sendButtons": []}
-            return {"clicked": True, "ariaLabel": "Send prompt", "dataTestId": "send-button"}
+            return {"ready": True, "ariaLabel": "Send prompt", "dataTestId": "send-button"}
 
         def wait_for_timeout(self, milliseconds: int) -> None:
             self.waits.append(milliseconds)
@@ -15115,18 +15637,43 @@ def test_safari_submission_waits_for_send_after_stop_answering() -> None:
 
     assert page.waits == [250]
     assert len(page.evaluate_calls) == 3
+    assert page.native_clicks == 1
 
 
 def test_safari_submission_accepts_a_changed_last_response_without_new_node() -> None:
     class _Page:
+        url = "https://chatgpt.com/"
+
         def __init__(self) -> None:
             self.evaluate_calls: list[tuple[str, object]] = []
+            self.native_clicks = 0
+
+        def locator(self, selector: str) -> object:
+            assert "data-cachelikes-safari-send" in selector
+            page = self
+
+            class _Locator:
+                first = None
+
+                def __init__(self) -> None:
+                    self.first = self
+
+                def count(self) -> int:
+                    return 1
+
+                def is_visible(self) -> bool:
+                    return True
+
+                def click(self, **_kwargs: object) -> None:
+                    page.native_clicks += 1
+
+            return _Locator()
 
         def evaluate(self, expression: str, argument: object = None) -> dict[str, object]:
             self.evaluate_calls.append((expression, argument))
             if "composer.focus()" in expression:
                 return {"filled": True, "tagName": "DIV", "contentEditable": True}
-            return {"clicked": True, "ariaLabel": "Send prompt", "dataTestId": "send-button"}
+            return {"ready": True, "ariaLabel": "Send prompt", "dataTestId": "send-button"}
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
             return None
@@ -15144,6 +15691,8 @@ def test_safari_submission_accepts_a_changed_last_response_without_new_node() ->
         assert _submit_and_wait(page, "safari", "Continue with the observation", lambda: False) == (
             '{"action":"search","query":"agent"}'
         )
+
+    assert page.native_clicks == 1
 
 
 def test_safari_generation_ignores_a_disabled_stop_answering_button() -> None:
@@ -15232,6 +15781,7 @@ def test_chromium_submission_waits_for_attachment_then_clicks_send() -> None:
     class _Page:
         def __init__(self) -> None:
             self.composer = _Composer()
+            self.url = "https://chatgpt.com/"
             self.evaluate_calls: list[str] = []
             self.waits: list[int] = []
             self.send_attempts = 0
@@ -15999,6 +16549,7 @@ def test_bound_grok_submission_can_fall_back_to_enter_when_submit_is_not_exposed
     class _Page:
         def __init__(self) -> None:
             self.composer = _Composer()
+            self.url = expected_target_url
 
         def locator(self, selector: str) -> _Composer:
             assert selector == _visible_web_composer_selector("grok")
@@ -16079,6 +16630,7 @@ def test_fresh_unbound_grok_submission_never_uses_enter_fallback(
         def __init__(self) -> None:
             self.composer = _Composer()
             self.waits: list[int] = []
+            self.url = expected_target_url
 
         def locator(self, selector: str) -> _Composer:
             assert selector == _visible_web_composer_selector("grok")
@@ -16149,6 +16701,7 @@ def test_grok_send_target_check_is_atomic_with_click_and_rejects_stale_landing()
         def __init__(self) -> None:
             self.composer = _Composer()
             self.scan_sources: list[str] = []
+            self.url = "https://grok.com/"
 
         def locator(self, selector: str) -> _Composer:
             assert selector == _visible_web_composer_selector("grok")
@@ -16215,6 +16768,8 @@ def test_provider_composer_fill_is_linearized_with_stop_signal(
             raise AssertionError("Stop must win before filling the provider composer.")
 
     class _Page:
+        url = "https://gemini.google.com/app/selected-session"
+
         def locator(self, _selector: str) -> _Composer:
             return _Composer()
 
@@ -16258,6 +16813,8 @@ def test_missing_provider_composer_is_not_submission_acceptance(
             return None
 
     class _Page:
+        url = "https://gemini.google.com/app/selected-session"
+
         def __init__(self) -> None:
             self.send_clicks = 0
 
@@ -16772,6 +17329,7 @@ def test_grok_submission_does_not_press_enter_after_stop_during_button_scan() ->
     class _Page:
         def __init__(self) -> None:
             self.composer = _Composer()
+            self.url = "https://grok.com/c/bound-session"
 
         def locator(self, selector: str) -> _Composer:
             assert selector == _visible_web_composer_selector("grok")
@@ -16827,6 +17385,7 @@ def test_grok_enter_fallback_linearizes_a_stop_at_the_final_action_gate() -> Non
     class _Page:
         def __init__(self) -> None:
             self.composer = _Composer()
+            self.url = "https://grok.com/c/bound-session"
 
         def locator(self, selector: str) -> _Composer:
             assert selector == _visible_web_composer_selector("grok")
@@ -19034,6 +19593,75 @@ def test_chatgpt_receipt_watchdog_ends_an_ambiguous_submit_without_resending(
             "Continue with the controller observation",
             lambda: False,
             platform="chatgpt",
+            session_check=lambda _allow_transition: target_url,
+            submission_target_url=target_url,
+            session_mode="recent",
+        )
+    assert submit_calls == 1
+
+
+def test_safari_grok_receipt_watchdog_ends_without_resending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    target_url = "https://grok.com/c/ambiguous-submit"
+    snapshots = iter(
+        (
+            {
+                "url": target_url,
+                "count": 1,
+                "userCount": 1,
+                "latestUserText": "Previous turn",
+                "text": "Previous response",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+            },
+            {
+                "url": target_url,
+                "count": 1,
+                "userCount": 1,
+                "latestUserText": "Previous turn",
+                "text": "Previous response",
+                "generating": False,
+                "assistantAfterLatestUser": True,
+                "markerEchoed": False,
+            },
+        )
+    )
+    submit_calls = 0
+
+    class _Page:
+        url = target_url
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            raise AssertionError("The receipt watchdog should stop before another poll.")
+
+    def submit(*_args: object, **_kwargs: object) -> bool:
+        nonlocal submit_calls
+        submit_calls += 1
+        return True
+
+    clock = iter((0.0, 0.0, 2.0))
+    monkeypatch.setattr(computer_use_agent, "CHATGPT_TURN_RECEIPT_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(computer_use_agent, "_submit_safari_prompt", submit)
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_provider_turn_snapshot",
+        lambda *_args, **_kwargs: next(snapshots),
+    )
+    monkeypatch.setattr(computer_use_agent.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(
+        computer_use_agent.AgentConnectionInterrupted,
+        match="Grok did not expose its unique controller receipt within 1 seconds",
+    ):
+        _submit_and_wait(
+            _Page(),
+            "safari",
+            "Continue with the controller observation",
+            lambda: False,
+            platform="grok",
             session_check=lambda _allow_transition: target_url,
             submission_target_url=target_url,
             session_mode="recent",
@@ -21518,32 +22146,22 @@ def test_grok_runtime_accepts_a_schema_valid_authenticated_api_response() -> Non
 
 
 def test_safari_grok_runtime_requires_one_composer_and_authenticated_api() -> None:
-    class _Composer:
-        def __init__(self) -> None:
-            self.waits: list[dict[str, object]] = []
-
-        def count(self) -> int:
-            return 1
-
-        def wait_for(self, **kwargs: object) -> None:
-            self.waits.append(kwargs)
-
     class _Page:
         url = "https://grok.com/"
 
         def __init__(self) -> None:
-            self.composer = _Composer()
+            self.composer_checks = 0
             self.api_urls: list[str] = []
-
-        def locator(self, selector: str) -> _Composer:
-            assert selector == _web_composer_selector("grok")
-            return self.composer
 
         def evaluate(
             self,
             expression: str,
             argument: dict[str, object],
         ) -> object:
+            if "composerSelector" in argument:
+                self.composer_checks += 1
+                assert argument["composerSelector"] == _web_composer_selector("grok")
+                return {"count": 1}
             if "authAction" in expression:
                 return False
             api_url = str(argument["url"])
@@ -21558,7 +22176,7 @@ def test_safari_grok_runtime_requires_one_composer_and_authenticated_api() -> No
         "grok",
         "https://grok.com/",
     ) is True
-    assert len(page.composer.waits) == 1
+    assert page.composer_checks == 1
     assert page.api_urls == [
         "https://grok.com/rest/app-chat/conversations?"
         "pageSize=1&excludeProjects=true"

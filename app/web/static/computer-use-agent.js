@@ -1,11 +1,49 @@
-/* Code version: v3.45.0-codex.1 */
+/* Code version: v3.48.1-codex.1 */
 
 (() => {
-    const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
+    const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
     const AGENT_SESSION_SELECTION_CACHE_VERSION = 1;
     const AGENT_SESSION_SELECTION_CACHE_PREFIX = "cachelikes:agent-session-selection";
     const MAX_AGENT_SESSION_CACHE_VALUE_LENGTH = 2048;
     const AGENT_SESSION_MODES = new Set(["new", "project"]);
+    const PREFERENCE_SAVE_DEBOUNCE_MS = 250;
+    const PREFERENCE_SAVE_TIMEOUT_MS = 8_000;
+    const PREFERENCE_CLIENT_STORAGE_KEY = "cachelikes:agent-preference-client-v1";
+    const PREFERENCE_REVISION_STORAGE_KEY = "cachelikes:agent-preference-revision-v1";
+    const PREFERENCE_PENDING_STORAGE_KEY = "cachelikes:agent-preference-pending-v1";
+    const preferenceClientId = (() => {
+        try {
+            const remembered = String(
+                window.sessionStorage.getItem(PREFERENCE_CLIENT_STORAGE_KEY) || "",
+            ).trim();
+            if (/^[A-Za-z0-9_-]{1,128}$/.test(remembered)) return remembered;
+        } catch (_error) {
+        }
+        let generated = "";
+        try {
+            generated = crypto.randomUUID().replaceAll("-", "");
+        } catch (_error) {
+            generated = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+        }
+        try {
+            window.sessionStorage.setItem(PREFERENCE_CLIENT_STORAGE_KEY, generated);
+        } catch (_error) {
+        }
+        return generated;
+    })();
+    let preferenceRevision = (() => {
+        try {
+            const remembered = Number.parseInt(
+                window.sessionStorage.getItem(PREFERENCE_REVISION_STORAGE_KEY) || "0",
+                10,
+            );
+            return Number.isSafeInteger(remembered) && remembered >= 0
+                ? remembered
+                : 0;
+        } catch (_error) {
+            return 0;
+        }
+    })();
     const runtimeForm = document.getElementById("agent_runtime_form");
     const promptForm = document.getElementById("agent_prompt_form");
     if (!runtimeForm || !promptForm) return;
@@ -89,6 +127,12 @@
         newSessionButton: document.querySelector("[data-agent-new-session]"),
         comboboxTriggers: Array.from(document.querySelectorAll("[data-agent-combobox-trigger]")),
     };
+    const safariExecutionPlatforms = new Set(
+        String(elements.agentPage?.dataset.agentSafariExecutionPlatforms || "")
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean),
+    );
 
     // Adopt the integrated Doctor layout even while a running server still serves
     // the previous template generation.
@@ -123,6 +167,15 @@
     let browserStatusState = "cleared";
     let browserStatusController = null;
     let preferenceTimer = null;
+    let preferenceSaveInFlight = false;
+    let inFlightPreferencePayload = null;
+    let pendingPreferencePayload = readStoredPendingPreferencePayload();
+    if (pendingPreferencePayload) {
+        preferenceRevision = Math.max(
+            preferenceRevision,
+            Number(pendingPreferencePayload.preference_revision || 0),
+        );
+    }
     let responseStatusTimer = null;
     let activitySignature = "";
     let activityWasRunning = false;
@@ -203,7 +256,8 @@
     let catalogError = "";
     let catalogAbort = null;
     let appliedBootstrapSignature = "";
-    const CATALOG_TIMEOUT_MS = 15000;
+    let sourceCatalogRevision = 0;
+    const CATALOG_TIMEOUT_MS = 240_000;
     const HIGHEST_CHATGPT_EFFORT = "highest_available";
     const CHATGPT_EFFORT_CATALOG_FRESHNESS = new Map([
         ["live_browser", new Set(["miss", "refreshed"])],
@@ -791,17 +845,6 @@
         return startedAt > previousStartedAt;
     }
 
-    function normalizeAgentSelection() {
-        const safariPlatforms = new Set(["chatgpt", "grok"]);
-        if (safariPlatforms.has(selectedPlatform()) || selectedBrowser() !== "safari") return;
-        const browserCombobox = document.querySelector(".agent-browser-combobox");
-        const edgeOption = browserCombobox?.querySelector('[data-agent-combobox-option="edge"]');
-        const browserInput = browserCombobox?.querySelector("[data-agent-combobox-input]");
-        if (!(browserInput instanceof HTMLInputElement) || !edgeOption) return;
-        browserInput.value = "edge";
-        syncComboboxTriggerFromOption(browserCombobox, edgeOption);
-    }
-
     function selectedModel() {
         return selectedValue(".agent-model-combobox", "");
     }
@@ -814,6 +857,21 @@
 
     function selectedPlatformLabel() {
         return document.querySelector(".agent-platform-combobox [data-agent-combobox-selected-label]")?.textContent?.trim() || "Web AI";
+    }
+
+    function agentExecutionSupported() {
+        if (typeof lastBrowserStatus?.agent_execution_supported === "boolean") {
+            return lastBrowserStatus.agent_execution_supported;
+        }
+        return selectedBrowser() !== "safari"
+            || safariExecutionPlatforms.has(selectedPlatform());
+    }
+
+    function agentExecutionBlockedMessage() {
+        const serverMessage = String(lastBrowserStatus?.agent_execution_message || "").trim();
+        if (serverMessage) return serverMessage;
+        const platformLabel = selectedPlatformLabel();
+        return `Safari can browse ${platformLabel} Recent sessions here. Choose Edge or Chrome to start a ${platformLabel} Web Agent task.`;
     }
 
     function syncAgentRoute() {
@@ -879,6 +937,8 @@
             conversation_url: "",
             project_url: "",
             workspace_path: "",
+            stop_target_session_id: String(agent.stop_target_session_id || ""),
+            stop_target_run_id: String(agent.stop_target_run_id || ""),
         };
     }
 
@@ -989,6 +1049,34 @@
         } catch (_error) {
             // Local storage is a convenience cache and must never block the Agent form.
         }
+    }
+
+    function restoreNewSessionFallback(restoreKey) {
+        const modeInput = elements.sessionMode;
+        const newOption = Array.from(
+            elements.sessionModeCombobox?.querySelectorAll(
+                "[data-agent-combobox-option]",
+            ) || [],
+        ).find((option) => option.dataset.agentComboboxOption === "new");
+        if (modeInput instanceof HTMLInputElement) modeInput.value = "new";
+        if (newOption) {
+            syncComboboxTriggerFromOption(elements.sessionModeCombobox, newOption);
+        }
+        applySessionModeSelection("new");
+        sessionSelectionRestoredKey = restoreKey;
+        try {
+            window.localStorage.setItem(
+                sessionSelectionCacheKey(),
+                JSON.stringify({
+                    version: AGENT_SESSION_SELECTION_CACHE_VERSION,
+                    mode: "new",
+                    project_url: "",
+                    project_session_url: "new",
+                }),
+            );
+        } catch (_error) {
+        }
+        render(lastPayload);
     }
 
     function historyUrlKey(value) {
@@ -1283,7 +1371,11 @@
         const sessionSourceMenu = elements.sessionModeCombobox?.querySelector("[data-agent-combobox-menu]");
         sessionSourceMenu?.setAttribute("aria-label", "Choose a session source");
         if (elements.sessionSource) elements.sessionSource.hidden = false;
-        browserStatusController?.setPlatform?.(platform);
+        if (browserStatusController?.setSelection) {
+            browserStatusController.setSelection(platform, selectedBrowser());
+        } else {
+            browserStatusController?.setPlatform?.(platform);
+        }
     }
 
     function syncConversationLink(agent) {
@@ -1617,10 +1709,13 @@
         }
         if (catalogState !== "ready") return;
         const cacheKey = sessionSelectionCacheKey();
-        if (sessionSelectionRestoredKey === cacheKey) return;
-        sessionSelectionRestoredKey = cacheKey;
+        const restoreKey = `${cacheKey}:${sourceCatalogRevision}`;
+        if (sessionSelectionRestoredKey === restoreKey) return;
         const remembered = readRememberedSessionSelection();
-        if (!remembered || remembered.mode === "new") return;
+        if (!remembered || remembered.mode === "new") {
+            sessionSelectionRestoredKey = restoreKey;
+            return;
+        }
 
         const modeInput = elements.sessionMode;
         const modeOption = Array.from(
@@ -1631,12 +1726,18 @@
         syncComboboxTriggerFromOption(elements.sessionModeCombobox, modeOption);
         applySessionModeSelection(remembered.mode);
 
-        if (!remembered.project_url) return;
+        if (!remembered.project_url) {
+            restoreNewSessionFallback(restoreKey);
+            return;
+        }
         const projectOption = Array.from(
             elements.projectCombobox?.querySelectorAll("[data-agent-combobox-option]") || [],
         ).find((option) => historyUrlKey(option.dataset.agentComboboxOption)
             === historyUrlKey(remembered.project_url));
-        if (!projectOption) return;
+        if (!projectOption) {
+            restoreNewSessionFallback(restoreKey);
+            return;
+        }
         const currentProjectUrl = projectOption.dataset.agentComboboxOption;
         selectSessionListValue(
             elements.projectCombobox,
@@ -1646,23 +1747,27 @@
         if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = currentProjectUrl;
         resetProjectSessions(true);
         updateSessionChoiceInputs();
-        void restoreRememberedProjectSession(remembered, currentProjectUrl);
+        void restoreRememberedProjectSession(
+            remembered,
+            currentProjectUrl,
+            restoreKey,
+        );
     }
 
-    async function restoreRememberedProjectSession(remembered, projectUrl) {
+    async function restoreRememberedProjectSession(remembered, projectUrl, restoreKey) {
         const loaded = await loadProjectSessions(projectUrl);
         if (loaded !== true
             || historyUrlKey(selectedProjectUrl()) !== historyUrlKey(projectUrl)) return;
         const sessionUrl = remembered.project_session_url;
         if (sessionUrl && sessionUrl !== "new") {
             const session = projectSessions.find((item) => historyUrlKey(item.url) === historyUrlKey(sessionUrl));
-            if (session) {
-                selectedProjectConversationUrl = session.url;
-                sessionTitleOverride = session.title || "";
-                updateSessionChoiceInputs();
-                void loadSelectedSessionHistory(session.url);
-            }
+            if (!session) return;
+            selectedProjectConversationUrl = session.url;
+            sessionTitleOverride = session.title || "";
+            updateSessionChoiceInputs();
+            void loadSelectedSessionHistory(session.url);
         }
+        sessionSelectionRestoredKey = restoreKey;
         rememberSessionSelection();
         render(lastPayload);
     }
@@ -1688,6 +1793,14 @@
     }
 
     function preferencePayload() {
+        preferenceRevision += 1;
+        try {
+            window.sessionStorage.setItem(
+                PREFERENCE_REVISION_STORAGE_KEY,
+                String(preferenceRevision),
+            );
+        } catch (_error) {
+        }
         return {
             workspace_path: elements.workspacePath?.value || "",
             operating_system: selectedOs(),
@@ -1695,22 +1808,210 @@
             browser: selectedBrowser(),
             model: selectedModel(),
             chatgpt_effort: selectedChatgptEffort(),
+            preference_client_id: preferenceClientId,
+            preference_revision: preferenceRevision,
         };
+    }
+
+    function readStoredPendingPreferencePayload() {
+        try {
+            const rawValue = window.sessionStorage.getItem(
+                PREFERENCE_PENDING_STORAGE_KEY,
+            );
+            if (!rawValue || rawValue.length > 8_192) return null;
+            const payload = JSON.parse(rawValue);
+            const revision = Number(payload?.preference_revision);
+            if (!payload
+                || payload.preference_client_id !== preferenceClientId
+                || !Number.isSafeInteger(revision)
+                || revision <= 0) {
+                window.sessionStorage.removeItem(PREFERENCE_PENDING_STORAGE_KEY);
+                return null;
+            }
+            return payload;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function storePendingPreferencePayload(payload) {
+        pendingPreferencePayload = payload;
+        try {
+            window.sessionStorage.setItem(
+                PREFERENCE_PENDING_STORAGE_KEY,
+                JSON.stringify(payload),
+            );
+        } catch (_error) {
+        }
+    }
+
+    function acknowledgePreferencePayload(payload) {
+        try {
+            const stored = readStoredPendingPreferencePayload();
+            if (stored
+                && stored.preference_client_id === payload.preference_client_id
+                && Number(stored.preference_revision)
+                    === Number(payload.preference_revision)) {
+                window.sessionStorage.removeItem(PREFERENCE_PENDING_STORAGE_KEY);
+            }
+        } catch (_error) {
+        }
+    }
+
+    function restorePendingPreferenceSelection(payload) {
+        if (!payload || typeof payload !== "object") return false;
+        const optionFor = (combobox, value) => Array.from(
+            combobox?.querySelectorAll("[data-agent-combobox-option]") || [],
+        ).find((option) => option.dataset.agentComboboxOption === String(value || ""));
+        const platform = String(payload.platform || "").trim();
+        const browser = String(payload.browser || "").trim();
+        const model = String(payload.model || "").trim();
+        const platformOption = optionFor(elements.platformCombobox, platform);
+        const browserOption = optionFor(
+            document.querySelector(".agent-browser-combobox"),
+            browser,
+        );
+        const modelOption = Array.from(
+            elements.modelCombobox?.querySelectorAll("[data-agent-combobox-option]") || [],
+        ).find((option) => option.dataset.agentComboboxOption === model
+            && option.dataset.agentPlatform === platform);
+        const operatingSystem = String(payload.operating_system || "").trim();
+        const workspacePath = String(payload.workspace_path || "").trim();
+        if (!platformOption
+            || !browserOption
+            || !modelOption
+            || !["macos", "windows"].includes(operatingSystem)
+            || !workspacePath
+            || workspacePath.length > 4_096) return false;
+
+        const platformInput = elements.platformCombobox?.querySelector(
+            "[data-agent-combobox-input]",
+        );
+        const browserCombobox = document.querySelector(".agent-browser-combobox");
+        const browserInput = browserCombobox?.querySelector("[data-agent-combobox-input]");
+        if (!(platformInput instanceof HTMLInputElement)
+            || !(browserInput instanceof HTMLInputElement)) return false;
+        platformInput.value = platform;
+        browserInput.value = browser;
+        syncComboboxTriggerFromOption(elements.platformCombobox, platformOption);
+        syncComboboxTriggerFromOption(browserCombobox, browserOption);
+        if (elements.promptOs instanceof HTMLInputElement) {
+            elements.promptOs.value = operatingSystem;
+        }
+        syncProjectPath(workspacePath);
+        if (elements.projectPath instanceof HTMLInputElement) {
+            elements.projectPath.value = workspacePath;
+        }
+
+        preferredModel = model;
+        syncPlatformState();
+        if (elements.modelInput instanceof HTMLInputElement) {
+            elements.modelInput.value = model;
+        }
+        syncComboboxTriggerFromOption(elements.modelCombobox, modelOption);
+        const effort = String(payload.chatgpt_effort || "").trim();
+        const effortOption = optionFor(elements.effortCombobox, effort);
+        if (elements.effortInput instanceof HTMLInputElement && effort) {
+            elements.effortInput.value = effort;
+            elements.effortInput.dataset.agentEffortPreference = effort;
+        }
+        if (effortOption) {
+            syncComboboxTriggerFromOption(elements.effortCombobox, effortOption);
+        }
+        executionScope = executionStorageKey();
+        executionSessionId = rememberedExecutionSession() || "new";
+        syncExecutionChoices();
+        return true;
+    }
+
+    async function flushPreferenceSave() {
+        if (preferenceSaveInFlight || !pendingPreferencePayload) return;
+        const payload = pendingPreferencePayload;
+        pendingPreferencePayload = null;
+        preferenceSaveInFlight = true;
+        inFlightPreferencePayload = payload;
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(
+            () => controller.abort(),
+            PREFERENCE_SAVE_TIMEOUT_MS,
+        );
+        let failed = false;
+        try {
+            await requestJson("/api/agent/preferences", {
+                method: "POST",
+                body: JSON.stringify(payload),
+                keepalive: true,
+                signal: controller.signal,
+            });
+            acknowledgePreferencePayload(payload);
+        } catch (error) {
+            failed = true;
+            const message = error?.name === "AbortError"
+                ? "Saving Agent preferences timed out."
+                : error.message;
+            setResponseStatusFallback(message);
+            if (!pendingPreferencePayload
+                || Number(pendingPreferencePayload.preference_revision || 0)
+                    <= Number(payload.preference_revision || 0)) {
+                storePendingPreferencePayload(payload);
+            }
+        } finally {
+            window.clearTimeout(timeoutId);
+            preferenceSaveInFlight = false;
+            inFlightPreferencePayload = null;
+            if (!pendingPreferencePayload) return;
+            const pendingIsNewer = Number(pendingPreferencePayload.preference_revision || 0)
+                > Number(payload.preference_revision || 0);
+            if (!failed || pendingIsNewer) {
+                void flushPreferenceSave();
+                return;
+            }
+            if (preferenceTimer !== null) window.clearTimeout(preferenceTimer);
+            preferenceTimer = window.setTimeout(() => {
+                preferenceTimer = null;
+                void flushPreferenceSave();
+            }, 1_000);
+        }
     }
 
     function schedulePreferenceSave() {
         if (preferenceTimer !== null) window.clearTimeout(preferenceTimer);
-        preferenceTimer = window.setTimeout(async () => {
+        storePendingPreferencePayload(preferencePayload());
+        preferenceTimer = window.setTimeout(() => {
             preferenceTimer = null;
-            try {
-                await requestJson("/api/agent/preferences", {
-                    method: "POST",
-                    body: JSON.stringify(preferencePayload()),
-                });
-            } catch (error) {
-                setResponseStatusFallback(error.message);
-            }
-        }, 250);
+            void flushPreferenceSave();
+        }, PREFERENCE_SAVE_DEBOUNCE_MS);
+    }
+
+    function flushPreferenceSaveOnPageHide() {
+        if (!pendingPreferencePayload && !inFlightPreferencePayload) return;
+        if (preferenceTimer !== null) {
+            window.clearTimeout(preferenceTimer);
+            preferenceTimer = null;
+        }
+        // Bind unload delivery after every request already issued by this page.
+        // The next document inherits this monotonic sequence from sessionStorage.
+        const payload = preferencePayload();
+        storePendingPreferencePayload(payload);
+        const body = JSON.stringify(payload);
+        let queued = false;
+        try {
+            queued = Boolean(navigator.sendBeacon(
+                "/api/agent/preferences",
+                new Blob([body], {type: "application/json"}),
+            ));
+        } catch (_error) {
+        }
+        if (queued) {
+            pendingPreferencePayload = null;
+            return;
+        }
+        void fetch("/api/agent/preferences", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body,
+            keepalive: true,
+        });
     }
 
     function initializeComboboxes() {
@@ -1760,17 +2061,13 @@
                 if (combobox === elements.modelCombobox) preferredModel = input.value;
                 syncComboboxTriggerFromOption(combobox, option);
                 closeComboboxForSelection();
-                normalizeAgentSelection();
                 syncExecutionChoices();
                 const isRouteSelection = combobox.classList.contains("agent-platform-combobox")
                     || combobox.classList.contains("agent-browser-combobox");
                 if (combobox.classList.contains("agent-platform-combobox")) {
                     sessionTitleOverride = "";
                     resetRemoteSessionHistory();
-                    sourceBrowser = "";
-                    sourcesLoaded = false;
-                    sourceRequestId += 1;
-                    appliedBootstrapSignature = "";
+                    resetAgentSourceRouteState();
                     projectSessionRequestId += 1;
                     agentSources = {recent_sessions: [], projects: []};
                     if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = "";
@@ -1783,9 +2080,7 @@
                 if (combobox.classList.contains("agent-browser-combobox")) {
                     sessionTitleOverride = "";
                     resetRemoteSessionHistory();
-                    sourceBrowser = "";
-                    sourcesLoaded = false;
-                    appliedBootstrapSignature = "";
+                    resetAgentSourceRouteState();
                     projectSessionRequestId += 1;
                     agentSources = {recent_sessions: [], projects: []};
                     if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = "";
@@ -1851,7 +2146,7 @@
             populateProjectSessions(payload.sessions || []);
             // Show durable cached choices immediately, then revalidate only an expired catalog.
             if (payload.cache?.status === "stale" && !options.forceRefresh) {
-                loadProjectSessions(projectUrl, {forceRefresh: true});
+                return loadProjectSessions(projectUrl, {forceRefresh: true});
             }
             return true;
         } catch (_error) {
@@ -1924,6 +2219,7 @@
             ? payload
             : {recent_sessions: [], projects: []};
         agentSources = sourcePayload;
+        sourceCatalogRevision += 1;
         rememberExecutionTitles(sourcePayload.recent_sessions);
         catalogState = "ready";
         catalogError = "";
@@ -2060,11 +2356,15 @@
             }
             applyAgentSources(payload);
         } catch (error) {
-            if (requestId !== sourceRequestId) {
+            if (
+                requestId !== sourceRequestId
+                || browserName !== selectedBrowser()
+                || platform !== selectedPlatform()
+            ) {
                 return;
             }
             if (error && error.name === "AbortError") {
-                applyAgentSourcesError("Recent sessions timed out after 15 seconds.");
+                applyAgentSourcesError("Recent sessions timed out after 4 minutes.");
             } else {
                 applyAgentSourcesError(error.message || `Could not load ${platformLabel} sessions`);
             }
@@ -2085,6 +2385,21 @@
             return;
         }
         void loadAgentSources({forceRefresh: true});
+    }
+
+    function resetAgentSourceRouteState() {
+        if (catalogAbort) catalogAbort.abort();
+        catalogAbort = null;
+        sourceRequestId += 1;
+        sourceBrowser = "";
+        sourcePlatform = "";
+        sourcesLoaded = false;
+        sourcesLoading = false;
+        catalogState = "idle";
+        catalogError = "";
+        appliedBootstrapSignature = "";
+        sessionSelectionRestoredKey = "";
+        automaticSourcesSuppressedAfterCompletion = false;
     }
 
     function bindCompletedAgentSession(agent, completedTransition) {
@@ -2147,7 +2462,10 @@
         const sessionMessage = remoteSessionHistoryLoading
             ? `Loading the selected ${selectedPlatformLabel()} session history…`
             : remoteSessionHistoryError;
-        const startBlockedMessage = !hasAgentRun && readiness.ready && !executionCanStart
+        const sourceOnlyMessage = !hasAgentRun && readiness.ready && !agentExecutionSupported()
+            ? agentExecutionBlockedMessage()
+            : "";
+        const startBlockedMessage = !hasAgentRun && readiness.ready && !sourceOnlyMessage && !executionCanStart
             ? (executionStartBlockedReason || "A new Agent task cannot start yet.")
             : "";
         const pauseCopy = agent?.paused
@@ -2156,6 +2474,7 @@
         const message = sessionMessage
             || pauseCopy
             || (hasAgentRun ? String(agent?.message || "").trim() : "")
+            || sourceOnlyMessage
             || startBlockedMessage
             || String(readiness.message || "").trim()
             || "Ready to use a signed-in Web AI session.";
@@ -2188,6 +2507,9 @@
         } else if (phase === "interrupted") {
             status = "interrupted";
             phaseLabel = "Interrupted";
+        } else if (sourceOnlyMessage) {
+            status = "ready";
+            phaseLabel = "Browse only";
         } else if (startBlockedMessage) {
             status = "loading";
             phaseLabel = "Waiting";
@@ -2337,6 +2659,9 @@
             getBrowser: selectedBrowser,
             onStateChange(payload, browserId, state) {
                 browserStatusState = String(state || "cleared");
+                if (["loading", "refreshing"].includes(browserStatusState)) {
+                    automaticSourcesSuppressedAfterCompletion = false;
+                }
                 lastBrowserStatus = state === "cleared"
                     ? null
                     : {...(payload || {}), browser: browserId};
@@ -2898,7 +3223,9 @@
 
     function renderResponseCopy(entry) {
         responseCopyRevision += 1;
-        responseCopyValue = typeof entry?.response === "string" ? entry.response : "";
+        responseCopyValue = typeof entry?.response_copy_text === "string"
+            ? entry.response_copy_text
+            : (typeof entry?.response === "string" ? entry.response : "");
         clearResponseCopyFeedback();
         if (!elements.responseCopy) return;
         const copyAvailable = Boolean(responseCopyValue);
@@ -3263,12 +3590,21 @@
             elements.resume.disabled = !paused;
         }
         if (elements.ask) {
-            elements.ask.disabled = ((!readiness.ready || !sessionChoiceReady() || !executionCanStart || promptSubmissionPending) && !running);
+            elements.ask.disabled = ((
+                !readiness.ready
+                || !sessionChoiceReady()
+                || !agentExecutionSupported()
+                || !executionCanStart
+                || promptSubmissionPending
+            ) && !running);
             elements.ask.classList.toggle("is-stop", running);
             elements.ask.dataset.agentAction = running ? "stop" : "ask";
             const label = running ? "Stop Agent task" : `Ask ${platformLabel} Web`;
             elements.ask.setAttribute("aria-label", label);
-            if (!running && !executionCanStart) {
+            if (!running && !agentExecutionSupported()) {
+                elements.ask.setAttribute("title", agentExecutionBlockedMessage());
+                elements.ask.setAttribute("aria-describedby", "agent_response_status");
+            } else if (!running && !executionCanStart) {
                 elements.ask.setAttribute(
                     "title",
                     executionStartBlockedReason || "A new Agent task cannot start yet.",
@@ -3469,7 +3805,14 @@
     });
     elements.ask?.addEventListener("click", () => {
         if (elements.ask?.classList.contains("is-stop")) {
-            mutate("/api/agent/stop");
+            mutate("/api/agent/stop", {
+                stop_target_session_id: String(
+                    lastPayload.agent?.stop_target_session_id || "",
+                ),
+                stop_target_run_id: String(
+                    lastPayload.agent?.stop_target_run_id || "",
+                ),
+            });
             return;
         }
         if (!elements.ask.disabled) promptForm.requestSubmit();
@@ -3498,6 +3841,7 @@
         },
         {passive: true},
     );
+    window.addEventListener("pagehide", flushPreferenceSaveOnPageHide);
     elements.promptInput?.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
         event.preventDefault();
@@ -3535,6 +3879,14 @@
         });
     });
 
+    if (pendingPreferencePayload
+        && !restorePendingPreferenceSelection(pendingPreferencePayload)) {
+        try {
+            window.sessionStorage.removeItem(PREFERENCE_PENDING_STORAGE_KEY);
+        } catch (_error) {
+        }
+        pendingPreferencePayload = null;
+    }
     initializeComboboxes();
     initializeBrowserSessionStatus();
     syncPlatformState();
@@ -3545,6 +3897,12 @@
     syncAgentRoute();
     resizePrompt();
     renderAgentMath(elements.responseAnswerContent || elements.responseAnswer);
+    if (pendingPreferencePayload) {
+        preferenceTimer = window.setTimeout(() => {
+            preferenceTimer = null;
+            void flushPreferenceSave();
+        }, 0);
+    }
 
     async function pollStatus() {
         const epoch = executionSessionEpoch;

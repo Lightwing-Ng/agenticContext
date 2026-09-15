@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.78.1-codex.1
+# Code version: v1.80.2-codex.1
 
 from __future__ import annotations
 
@@ -30,12 +30,16 @@ from app.core.agent import (
     AGENT_PLATFORM_OPTIONS,
     CAPABILITY_REGISTRY_VERSION,
     OPERATING_SYSTEM_OPTIONS as AGENT_OPERATING_SYSTEM_OPTIONS,
+    SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS,
     AgentSessionPool,
     AgentSourceCache,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
+    GROK_AGENT_HISTORY_RENDER_CONTRACT,
+    GROK_INLINE_CITATION_PATTERN,
     JURY_MODEL_OPTIONS_BY_PROVIDER,
     JuryService,
+    agent_execution_blocked_message,
     agent_access_password_is_configured,
     browser_options_for_host,
     build_agent_optimization_manifest,
@@ -43,6 +47,7 @@ from app.core.agent import (
     default_model_for_platform,
     fetch_grok_conversation_history,
     is_allowed_agent_network_request,
+    is_agent_execution_supported,
     is_loopback_address,
     launch_terminal_authorization,
     list_agent_project_sessions,
@@ -50,10 +55,12 @@ from app.core.agent import (
     normalize_agent_conversation_url,
     normalize_agent_source_catalog_payload,
     normalize_agent_project_url,
+    normalize_grok_display_markdown,
     open_agent_in_browser,
     open_browser_for_login,
     parse_agent_action,
     probe_and_collect_claude_sources,
+    probe_and_collect_gemini_sources,
     probe_and_collect_grok_sources,
     render_final_agent_action,
     validate_computer_use_settings,
@@ -83,6 +90,7 @@ from app.core.foundation import (
     build_initial_snapshot,
     configure_logging,
     get_log_file_path,
+    is_macos_host,
     is_windows_host,
     load_saved_config,
     save_config,
@@ -355,11 +363,99 @@ def render_prompt_markdown(value: str) -> Markup:
     return Markup(PROMPT_MARKDOWN_RENDERER.render(prompt)) if prompt else Markup("")
 
 
-def _render_agent_markdown(value: str) -> Markup:
+def _safe_agent_citation_url(value: Any) -> str:
+    """Keep only bounded absolute HTTP(S) URLs for rendered provider citations."""
+    candidate = str(value or "").strip()
+    if not candidate or len(candidate) > 2_048 or any(ord(char) < 32 for char in candidate):
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+        _ = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        return ""
+    return candidate
+
+
+def _agent_citation_index(citations: Iterable[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """Normalize trusted fields from one provider citation mapping."""
+    index: dict[str, dict[str, str]] = {}
+    for raw_item in citations:
+        if not isinstance(raw_item, dict):
+            continue
+        card_id = str(raw_item.get("card_id") or "").strip()
+        citation_id = str(raw_item.get("citation_id") or "").strip()
+        url = _safe_agent_citation_url(raw_item.get("url"))
+        label = " ".join(str(raw_item.get("label") or "").split())[:80]
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", card_id)
+            or not re.fullmatch(r"[0-9]{1,6}", citation_id)
+            or not url
+        ):
+            continue
+        index[card_id] = {
+            "citation_id": citation_id,
+            "url": url,
+            "label": label or "Source",
+        }
+    return index
+
+
+def _prepare_grok_response_markdown(
+    value: str,
+    citations: Iterable[dict[str, Any]],
+) -> tuple[str, dict[str, str]]:
+    """Replace Grok-only citation tags with inert tokens before Markdown parsing."""
+    source = normalize_grok_display_markdown(value)
+    citation_index = _agent_citation_index(citations)
+    token_root = "\ue100"
+    while token_root in source:
+        token_root += "\ue101"
+    replacements: dict[str, str] = {}
+
+    def replace_citation(match: re.Match[str]) -> str:
+        token = f"{token_root}{len(replacements)}{token_root}"
+        citation_id = match.group("citation_id")
+        citation = citation_index.get(match.group("card_id"))
+        if citation is None or citation["citation_id"] != citation_id:
+            safe_id = escape_html(citation_id, quote=True)
+            replacements[token] = (
+                '<span class="agent-inline-citation agent-inline-citation--unresolved" '
+                f'aria-label="Source citation {safe_id} unavailable">Source {safe_id}</span>'
+            )
+            return token
+        url = escape_html(citation["url"], quote=True)
+        label = escape_html(citation["label"])
+        replacements[token] = (
+            f'<a class="agent-inline-citation" href="{url}" target="_blank" '
+            f'rel="noopener noreferrer nofollow" aria-label="Open citation from {label}">'
+            f"{label}</a>"
+        )
+        return token
+
+    return GROK_INLINE_CITATION_PATTERN.sub(replace_citation, source), replacements
+
+
+def _render_agent_markdown(
+    value: str,
+    *,
+    provider: str = "",
+    citations: Iterable[dict[str, Any]] = (),
+) -> Markup:
     """Preserve TeX delimiters that Markdown would otherwise consume as escapes."""
     source = str(value or "").replace("\x00", "").strip()
     if not source:
         return Markup("")
+
+    inline_replacements: dict[str, str] = {}
+    if str(provider or "").strip().lower() == "grok":
+        source, inline_replacements = _prepare_grok_response_markdown(source, citations)
 
     sentinel = "\ue000"
     while sentinel in source:
@@ -376,15 +472,29 @@ def _render_agent_markdown(value: str) -> Markup:
     rendered = PROMPT_MARKDOWN_RENDERER.render(protected)
     for replacement, delimiter in replacements.items():
         rendered = rendered.replace(replacement, delimiter)
+    for replacement, citation_html in inline_replacements.items():
+        rendered = rendered.replace(replacement, citation_html)
+    rendered = rendered.replace(
+        "<table>",
+        (
+            '<div class="agent-markdown-table-shell" role="region" tabindex="0" '
+            'aria-label="Scrollable answer table"><table>'
+        ),
+    ).replace("</table>", "</table></div>")
     return Markup(rendered)
 
 
-def render_agent_response(value: str) -> Markup:
+def render_agent_response(
+    value: str,
+    *,
+    provider: str = "",
+    citations: Iterable[dict[str, Any]] = (),
+) -> Markup:
     """Render live and restored final actions through the same Markdown boundary.
 
-    The source remains untouched for copying and provenance. Only a complete
-    controller final envelope is unwrapped; ordinary JSON and malformed data
-    retain their original presentation.
+    The payload source remains untouched for provenance. Only a complete controller
+    final envelope is unwrapped; ordinary JSON and malformed data retain their
+    original presentation.
     """
     source = str(value or "").strip()
     candidate = source
@@ -417,7 +527,30 @@ def render_agent_response(value: str) -> Markup:
             source = render_final_agent_action(payload)
     except (ValueError, TypeError):
         pass
-    return _render_agent_markdown(source)
+    return _render_agent_markdown(source, provider=provider, citations=citations)
+
+
+def render_agent_response_copy_text(
+    value: str,
+    *,
+    provider: str = "",
+    citations: Iterable[dict[str, Any]] = (),
+) -> str:
+    """Return copyable Markdown without exposing provider-only rendering tags."""
+    source = str(value or "").replace("\x00", "").strip()
+    if str(provider or "").strip().lower() != "grok":
+        return source
+    source = normalize_grok_display_markdown(source)
+    citation_index = _agent_citation_index(citations)
+
+    def replace_citation(match: re.Match[str]) -> str:
+        citation_id = match.group("citation_id")
+        citation = citation_index.get(match.group("card_id"))
+        if citation is None or citation["citation_id"] != citation_id:
+            return f"[Source {citation_id}]"
+        return f"[{citation['label']}]({citation['url']})"
+
+    return GROK_INLINE_CITATION_PATTERN.sub(replace_citation, source)
 
 
 def render_cached_message(
@@ -1438,7 +1571,7 @@ def create_app(
         """Route an Agent catalog through cache without optional browser I/O."""
         if (
             allow_live_collection
-            and uses_windows_debug_browser(browser)
+            and uses_exclusive_agent_browser(browser)
             and agent_session_pool.has_active_worker(browser)
         ):
             allow_live_collection = False
@@ -1488,6 +1621,7 @@ def create_app(
         """Reuse one provider readiness-and-sources browser flight across Agent polls."""
         platform_label = {
             "chatgpt": "ChatGPT",
+            "gemini": "Gemini",
             "grok": "Grok",
             "claude": "Claude",
         }[platform]
@@ -1522,6 +1656,53 @@ def create_app(
         """Return whether this host/browser can share one project CDP context."""
         return is_windows_host() and browser in {"edge", "chrome"}
 
+    def uses_exclusive_agent_browser(browser: str) -> bool:
+        """Return whether live probes would contend with an active Agent browser."""
+        return uses_windows_debug_browser(browser) or (
+            is_macos_host() and browser == "safari"
+        )
+
+    def active_safari_cache_consumer() -> str:
+        """Return the active Cache source that currently owns Safari."""
+        for source_key, runtime in cache_runtimes.items():
+            cache_source = get_cache_source_view(source_key)
+            if (
+                cache_source is not None
+                and runtime.service.is_running()
+                and str(
+                    getattr(saved_config, cache_source.browser_config_field, "")
+                    or ""
+                ).strip().lower()
+                == "safari"
+            ):
+                return cache_source.label
+        if (
+            grok_history_service.is_running()
+            and str(saved_config.grok_browser).strip().lower() == "safari"
+        ):
+            return "Grok history"
+        return ""
+
+    def reject_active_safari_agent_for_cache(browser: str):
+        """Reject a Cache start that would wait behind the Safari Agent lock."""
+        if (
+            str(browser or "").strip().lower() == "safari"
+            and agent_session_pool.has_active_worker("safari")
+        ):
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "Safari is busy with an active Agent task. Stop it or "
+                            "wait for it to finish before starting this Cache task."
+                        ),
+                        "code": "safari_agent_busy",
+                    }
+                ),
+                409,
+            )
+        return None
+
     def selected_agent_session_id() -> str:
         return str(request.headers.get("X-CacheLikes-Agent-Session") or "primary").strip()
 
@@ -1530,6 +1711,68 @@ def create_app(
             return agent_session_pool.get(selected_agent_session_id())
         except ValueError as exc:
             abort(404, description=str(exc))
+
+    def requested_agent_route(
+        runtime_snapshot: dict[str, Any],
+    ) -> tuple[str, str, str]:
+        """Return the validated browser, provider, and workspace for this request."""
+        selected_browser = str(
+            request.headers.get("X-CacheLikes-Agent-Browser")
+            or runtime_snapshot.get("browser")
+            or ""
+        ).strip().lower()
+        selected_platform = str(
+            request.headers.get("X-CacheLikes-Agent-Platform")
+            or runtime_snapshot.get("platform")
+            or ""
+        ).strip().lower()
+        selected_workspace = str(
+            request.headers.get("X-CacheLikes-Agent-Workspace")
+            or runtime_snapshot.get("workspace_path")
+            or ""
+        ).strip()
+        if not is_supported_agent_selection(selected_browser, selected_platform):
+            selected_browser = str(
+                runtime_snapshot.get("browser") or "edge"
+            ).strip().lower()
+            selected_platform = str(
+                runtime_snapshot.get("platform") or "chatgpt"
+            ).strip().lower()
+            selected_workspace = str(
+                runtime_snapshot.get("workspace_path") or ""
+            ).strip()
+        return selected_browser, selected_platform, selected_workspace
+
+    def render_agent_history_item(
+        raw_item: dict[str, Any],
+        *,
+        provider: str,
+    ) -> dict[str, Any]:
+        """Add a safe display/copy projection while retaining provider provenance."""
+        item = dict(raw_item)
+        response = str(item.get("response", ""))
+        citations = item.get("citations")
+        citation_rows = citations if isinstance(citations, list) else []
+        display_response = (
+            str(item.get("display_response") or normalize_grok_display_markdown(response))
+            if provider == "grok"
+            else response
+        )
+        item["response_html"] = str(
+            render_agent_response(
+                display_response,
+                provider=provider,
+                citations=citation_rows,
+            )
+        )
+        if provider == "grok":
+            item["display_response"] = display_response
+            item["response_copy_text"] = render_agent_response_copy_text(
+                display_response,
+                provider=provider,
+                citations=citation_rows,
+            )
+        return item
 
     def build_agent_snapshot(session_id=None) -> dict[str, Any]:
         """Add safe rendered Markdown to the Agent status payload."""
@@ -1540,18 +1783,19 @@ def create_app(
             service = agent_session_pool.get(session_id) if session_id else selected_agent_service()
             snapshot = service.snapshot()
         snapshot["session_id"] = selected_id
-        snapshot["response_html"] = str(
-            render_agent_response(str(snapshot.get("response", "")))
-        )
+        provider = str(snapshot.get("platform") or "").strip().lower()
+        rendered_snapshot = render_agent_history_item(snapshot, provider=provider)
+        snapshot["response_html"] = rendered_snapshot["response_html"]
+        if provider == "grok":
+            snapshot["display_response"] = rendered_snapshot["display_response"]
+            snapshot["response_copy_text"] = rendered_snapshot["response_copy_text"]
         rendered_history: list[dict[str, Any]] = []
         for raw_item in snapshot.get("history", []):
             if not isinstance(raw_item, dict):
                 continue
-            item = dict(raw_item)
-            item["response_html"] = str(
-                render_agent_response(str(item.get("response", "")))
+            rendered_history.append(
+                render_agent_history_item(raw_item, provider=provider)
             )
-            rendered_history.append(item)
         snapshot["history"] = rendered_history
         return snapshot
 
@@ -1675,6 +1919,9 @@ def create_app(
             operating_system_options=AGENT_OPERATING_SYSTEM_OPTIONS,
             browser_options=browser_options_for_host(),
             platform_options=AGENT_PLATFORM_OPTIONS,
+            safari_agent_execution_platforms=",".join(
+                sorted(SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS)
+            ),
             model_options_by_platform=AGENT_MODEL_OPTIONS_BY_PLATFORM,
             render_prompt_markdown=render_prompt_markdown,
             format_agent_activity_time=format_agent_activity_time,
@@ -1857,25 +2104,9 @@ def create_app(
     def agent_status():
         require_local_agent_request()
         runtime_snapshot = computer_use_settings.snapshot()
-        selected_browser = str(
-            request.headers.get("X-CacheLikes-Agent-Browser")
-            or runtime_snapshot.get("browser")
-            or ""
-        ).strip().lower()
-        selected_platform = str(
-            request.headers.get("X-CacheLikes-Agent-Platform")
-            or runtime_snapshot.get("platform")
-            or ""
-        ).strip().lower()
-        selected_workspace = str(
-            request.headers.get("X-CacheLikes-Agent-Workspace")
-            or runtime_snapshot.get("workspace_path")
-            or ""
-        ).strip()
-        if not is_supported_agent_selection(selected_browser, selected_platform):
-            selected_browser = str(runtime_snapshot.get("browser") or "edge").strip().lower()
-            selected_platform = str(runtime_snapshot.get("platform") or "chatgpt").strip().lower()
-            selected_workspace = str(runtime_snapshot.get("workspace_path") or "").strip()
+        selected_browser, selected_platform, selected_workspace = (
+            requested_agent_route(runtime_snapshot)
+        )
         if selected_agent_session_id() != "new":
             try:
                 agent_session_pool.get(selected_agent_session_id())
@@ -1886,12 +2117,21 @@ def create_app(
             if selected_agent_session_id() == "new"
             else selected_agent_service()
         )
+        snapshot_session_id = selected_agent_session_id()
+        if snapshot_session_id == "new":
+            snapshot_session_id = agent_session_pool.unique_active_session_id() or "new"
+        agent_snapshot = build_agent_snapshot(snapshot_session_id)
+        if snapshot_session_id != "new" and agent_snapshot.get("running"):
+            agent_snapshot["stop_target_session_id"] = snapshot_session_id
+            agent_snapshot["stop_target_run_id"] = str(
+                agent_snapshot.get("run_id") or ""
+            )
         return jsonify(
             {
                 "runtime": runtime_snapshot,
                 **agent_session_pool.catalog(selected_browser, selected_platform, selected_workspace),
                 "agent": agent_snapshot_for_route(
-                    build_agent_snapshot(),
+                    agent_snapshot,
                     selected_browser,
                     selected_platform,
                     selected_workspace,
@@ -1972,6 +2212,8 @@ def create_app(
                         computer_use_settings.settings.chatgpt_effort,
                     )
                 ),
+                client_id=str(payload.get("preference_client_id", "")),
+                client_revision=payload.get("preference_revision", 0),
             )
         except (RuntimeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 409
@@ -2030,6 +2272,20 @@ def create_app(
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
         payload = request.get_json(silent=True) or {}
+        requested_browser = str(payload.get("browser", "")).strip().lower()
+        if requested_browser == "safari":
+            active_cache_source = active_safari_cache_consumer()
+            if active_cache_source:
+                return jsonify(
+                    {
+                        "error": (
+                            f"Safari is busy with the active {active_cache_source} "
+                            "Cache task. Stop it or wait for it to finish before "
+                            "starting an Agent task."
+                        ),
+                        "code": "safari_cache_busy",
+                    }
+                ), 409
         try:
             started_session_id = agent_session_pool.start(
                 selected_agent_session_id(),
@@ -2182,7 +2438,7 @@ def create_app(
         )
         if not conversation_url:
             return jsonify({"error": "Choose a valid ChatGPT conversation before loading its history."}), 400
-        ask_running = uses_windows_debug_browser(
+        ask_running = uses_exclusive_agent_browser(
             browser_name
         ) and agent_session_pool.has_active_worker(browser_name)
         try:
@@ -2223,9 +2479,9 @@ def create_app(
         ):
             if not isinstance(raw_item, dict):
                 continue
-            item = dict(raw_item)
-            item["response_html"] = str(render_agent_response(str(item.get("response", ""))))
-            rendered_history.append(item)
+            rendered_history.append(
+                render_agent_history_item(raw_item, provider="chatgpt")
+            )
         return jsonify(
             {
                 "conversation_url": conversation_url,
@@ -2249,15 +2505,20 @@ def create_app(
         )
         if not conversation_url:
             return jsonify({"error": "Choose a valid Grok conversation before loading its history."}), 400
-        ask_running = uses_windows_debug_browser(
+        ask_running = uses_exclusive_agent_browser(
             browser_name
         ) and agent_session_pool.has_active_worker(browser_name)
+        cache_separator = "&" if "?" in conversation_url else "?"
+        history_cache_url = (
+            f"{conversation_url}{cache_separator}agent_render_contract="
+            f"{quote(GROK_AGENT_HISTORY_RENDER_CONTRACT, safe='')}"
+        )
         try:
             payload = load_agent_source_catalog(
                 platform="grok",
                 browser=browser_name,
                 source_kind="session-history",
-                project_url=conversation_url,
+                project_url=history_cache_url,
                 collector=lambda: fetch_grok_conversation_history(
                     browser_name,
                     conversation_url,
@@ -2286,9 +2547,9 @@ def create_app(
         for raw_item in payload.get("history", []):
             if not isinstance(raw_item, dict):
                 continue
-            item = dict(raw_item)
-            item["response_html"] = str(render_agent_response(str(item.get("response", ""))))
-            rendered_history.append(item)
+            rendered_history.append(
+                render_agent_history_item(raw_item, provider="grok")
+            )
         return jsonify(
             {
                 "conversation_url": conversation_url,
@@ -2304,11 +2565,81 @@ def create_app(
         require_local_agent_request()
         if not external_agent_operations_enabled():
             return reject_external_agent_operation()
+        runtime_snapshot = computer_use_settings.snapshot()
+        requested_session_id = selected_agent_session_id()
+        payload = request.get_json(silent=True) or {}
+        target_session_id = str(
+            payload.get("stop_target_session_id") or ""
+        ).strip()
+        target_run_id = str(payload.get("stop_target_run_id") or "").strip()
+        if requested_session_id != "new":
+            try:
+                agent_session_pool.get(requested_session_id)
+            except ValueError as exc:
+                return jsonify(
+                    {"error": str(exc), "code": "unknown_agent_session"}
+                ), 404
+        invalid_session_id = (
+            target_session_id != "primary"
+            and not re.fullmatch(r"[0-9a-f]{32}", target_session_id)
+        )
+        if (
+            invalid_session_id
+            or not re.fullmatch(r"run-[0-9a-f]{16,64}", target_run_id)
+            or (
+                requested_session_id != "new"
+                and target_session_id != requested_session_id
+            )
+        ):
+            return jsonify(
+                {
+                    "error": (
+                        "The Agent stop target is stale. Refresh status before "
+                        "trying again."
+                    ),
+                    "code": "stale_agent_stop_target",
+                }
+            ), 409
+        try:
+            target_service = agent_session_pool.get(target_session_id)
+        except ValueError as exc:
+            if requested_session_id == "new":
+                return jsonify(
+                    {
+                        "error": (
+                            "The Agent stop target is stale. Refresh status before "
+                            "trying again."
+                        ),
+                        "code": "stale_agent_stop_target",
+                    }
+                ), 409
+            return jsonify({"error": str(exc), "code": "unknown_agent_session"}), 404
+        selected_browser, selected_platform, selected_workspace = (
+            requested_agent_route(runtime_snapshot)
+        )
+        stop_requested = target_service.request_stop(
+            expected_run_id=target_run_id,
+        )
+        if not stop_requested:
+            return jsonify(
+                {
+                    "error": (
+                        "The Agent stop target is stale. Refresh status before "
+                        "trying again."
+                    ),
+                    "code": "stale_agent_stop_target",
+                }
+            ), 409
         return jsonify(
             {
-                "stop_requested": selected_agent_service().request_stop(),
-                "runtime": computer_use_settings.snapshot(),
-                "agent": build_agent_snapshot(),
+                "stop_requested": stop_requested,
+                "runtime": runtime_snapshot,
+                "agent": agent_snapshot_for_route(
+                    build_agent_snapshot(target_session_id),
+                    selected_browser,
+                    selected_platform,
+                    selected_workspace,
+                ),
             }
         )
 
@@ -2616,6 +2947,12 @@ def create_app(
         if not is_chatgpt_conversation_url(conversation_url):
             return jsonify({"error": "A valid ChatGPT session URL is required."}), 400
 
+        busy_response = reject_active_safari_agent_for_cache(
+            saved_config.chatgpt_browser
+        )
+        if busy_response is not None:
+            return busy_response
+
         resource_count = sum(
             item.source == "chatgpt"
             for item in media_catalog.snapshot(force_refresh=True)
@@ -2647,11 +2984,14 @@ def create_app(
         if source_key == "grok" and request.form.get("cache_content_mode") == "text":
             return start_grok_history_runtime()
         config = parse_form_config(saved_config, preserve_missing_booleans=True)
+        browser_name = getattr(config, cache_source.browser_config_field)
+        busy_response = reject_active_safari_agent_for_cache(browser_name)
+        if busy_response is not None:
+            return busy_response
         saved_config = config
         save_config(saved_config)
         runtime_config = config
         if cache_source.require_browser_ready:
-            browser_name = getattr(runtime_config, cache_source.browser_config_field)
             descriptor = browser_descriptors(runtime_config).get(browser_name)
             if descriptor is None:
                 runtime.state.finish_error(f"Unsupported {cache_source.label} browser: {browser_name}")
@@ -2694,6 +3034,9 @@ def create_app(
         """Persist shared form values and start the Grok text-history runtime."""
         nonlocal saved_config
         config = parse_form_config(saved_config, preserve_missing_booleans=True)
+        busy_response = reject_active_safari_agent_for_cache(config.grok_browser)
+        if busy_response is not None:
+            return busy_response
         saved_config = config
         save_config(saved_config)
         browser_name = config.grok_browser
@@ -3013,6 +3356,16 @@ def create_app(
             require_local_agent_request()
 
         def browser_session_response(payload: dict[str, Any], status_code: int = 200):
+            if scope == "agent":
+                payload = dict(payload)
+                payload["agent_execution_supported"] = is_agent_execution_supported(
+                    browser_name,
+                    platform_name,
+                )
+                payload["agent_execution_message"] = agent_execution_blocked_message(
+                    browser_name,
+                    platform_name,
+                )
             response = jsonify(payload)
             response.status_code = status_code
             if scope == "agent":
@@ -3030,9 +3383,34 @@ def create_app(
 
         agent_bootstrap_collectors = {
             "chatgpt": probe_and_collect_chatgpt_sources,
+            "gemini": probe_and_collect_gemini_sources,
             "grok": probe_and_collect_grok_sources,
             "claude": probe_and_collect_claude_sources,
         }
+        safari_agent_busy = (
+            browser_name == "safari"
+            and not (
+                scope == "agent" and platform_name in agent_bootstrap_collectors
+            )
+            and agent_session_pool.has_active_worker("safari")
+        )
+        if safari_agent_busy:
+            return browser_session_response(
+                {
+                    "platform": platform_name,
+                    "browser": browser_name,
+                    "browser_label": "Safari",
+                    "logged_in": False,
+                    "can_download": False,
+                    "account_name": "",
+                    "message": (
+                        "Safari is busy with an active Agent task. "
+                        "Account checks resume after that task finishes."
+                    ),
+                    "busy": True,
+                },
+                409,
+            )
         if scope == "agent" and platform_name in agent_bootstrap_collectors:
             try:
                 payload = load_agent_browser_session_bootstrap(

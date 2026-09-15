@@ -1,10 +1,11 @@
-/* Code version: v1.10.0-codex.1 */
+/* Code version: v1.13.0-codex.1 */
 
 (() => {
     const SESSION_CACHE_PREFIX = "cachelikes:browser-session:v8:";
     const SESSION_CACHE_TTL_MS = 300_000;
     const SESSION_STALE_MAX_AGE_MS = 1_800_000;
-    const BOOTSTRAPPED_AGENT_PLATFORMS = new Set(["chatgpt", "grok", "claude"]);
+    const SESSION_REQUEST_TIMEOUT_MS = 240_000;
+    const BOOTSTRAPPED_AGENT_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
     const statusRequests = new Map();
 
     function readSessionValue(key) {
@@ -22,6 +23,34 @@
         }
     }
 
+    function removeSessionValue(key) {
+        try {
+            window.sessionStorage.removeItem(key);
+        } catch (_error) {
+        }
+    }
+
+    function browserStatusCanUseClientCache(payload) {
+        const freshness = payload?.browser_session_freshness;
+        if (!freshness || typeof freshness !== "object") return true;
+        const kind = String(freshness.kind || "").trim().toLowerCase();
+        const cacheStatus = String(freshness.cache_status || "").trim().toLowerCase();
+        return kind !== "stale_cache"
+            && !["stale", "unprobed", "unknown"].includes(cacheStatus);
+    }
+
+    function browserStatusCacheTimestamp(payload) {
+        const freshness = payload?.browser_session_freshness;
+        if (!freshness || typeof freshness !== "object") return Date.now();
+        const cachedAt = Date.parse(String(freshness.cached_at || ""));
+        const ageSeconds = Number(freshness.age_seconds);
+        const ageTimestamp = Number.isFinite(ageSeconds)
+            ? Date.now() - (Math.max(0, ageSeconds) * 1_000)
+            : Number.NaN;
+        const candidates = [cachedAt, ageTimestamp].filter(Number.isFinite);
+        return candidates.length ? Math.min(Date.now(), ...candidates) : Date.now();
+    }
+
     function readCachedStatus(cacheKey) {
         const cachedPayload = readSessionValue(cacheKey);
         if (!cachedPayload) return null;
@@ -32,6 +61,10 @@
                 || typeof cachedEntry.cached_at !== "number"
                 || !cachedEntry.payload
             ) return null;
+            if (!browserStatusCanUseClientCache(cachedEntry.payload)) {
+                removeSessionValue(cacheKey);
+                return null;
+            }
             return {
                 ageMs: Math.max(Date.now() - cachedEntry.cached_at, 0),
                 payload: cachedEntry.payload,
@@ -61,14 +94,19 @@
     function requestBrowserStatus(platform, browserId, scope, options = {}) {
         const refresh = options.refresh === true;
         const requestScope = scope || "default";
-        const requestKey = `${requestScope}:${platform}:${browserId}`;
+        const requestKey = `${requestScope}:${platform}:${browserId}:${refresh ? "refresh" : "cached"}`;
         if (statusRequests.has(requestKey)) return statusRequests.get(requestKey);
         const query = new URLSearchParams({platform, browser: browserId});
         if (scope) query.set("scope", scope);
         if (refresh) query.set("refresh", "1");
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(
+            () => controller.abort(),
+            SESSION_REQUEST_TIMEOUT_MS,
+        );
         const request = fetch(
             `/api/browser-session?${query.toString()}`,
-            {cache: "no-store"},
+            {cache: "no-store", signal: controller.signal},
         )
             .then(async (response) => {
                 const payload = await response.json();
@@ -77,7 +115,16 @@
                 }
                 return payload;
             })
-            .finally(() => statusRequests.delete(requestKey));
+            .catch((error) => {
+                if (error instanceof DOMException && error.name === "AbortError") {
+                    throw new Error("Browser session check timed out after 4 minutes.");
+                }
+                throw error;
+            })
+            .finally(() => {
+                window.clearTimeout(timeoutId);
+                statusRequests.delete(requestKey);
+            });
         statusRequests.set(requestKey, request);
         return request;
     }
@@ -349,7 +396,14 @@
                     || platform !== requestPlatform
                     || requestRevision !== statusRequestRevision
                 ) return;
-                writeSessionValue(cacheKey, JSON.stringify({cached_at: Date.now(), payload}));
+                if (browserStatusCanUseClientCache(payload)) {
+                    writeSessionValue(cacheKey, JSON.stringify({
+                        cached_at: browserStatusCacheTimestamp(payload),
+                        payload,
+                    }));
+                } else {
+                    removeSessionValue(cacheKey);
+                }
                 setStatus(payload, browserId);
             } catch (error) {
                 if (
@@ -374,19 +428,26 @@
             void openLoginBrowser();
         });
 
+        function setSelection(platformId, browserId) {
+            const nextPlatform = String(platformId || "").trim().toLowerCase();
+            const nextBrowser = String(browserId || "").trim().toLowerCase();
+            if (nextPlatform === platform && nextBrowser === activeBrowser) return;
+            platform = nextPlatform;
+            activeBrowser = nextBrowser;
+            root.dataset.browserSessionPlatform = nextPlatform;
+            lastPayload = null;
+            clearStatus();
+            void load(nextBrowser);
+        }
+
         const controller = {
             setBrowser(browserId) {
-                void load(String(browserId || "").trim().toLowerCase());
+                setSelection(platform, browserId);
             },
             setPlatform(platformId) {
-                const nextPlatform = String(platformId || "").trim().toLowerCase();
-                if (nextPlatform === platform) return;
-                platform = nextPlatform;
-                root.dataset.browserSessionPlatform = nextPlatform;
-                lastPayload = null;
-                clearStatus();
-                void load(activeBrowser);
+                setSelection(platformId, activeBrowser);
             },
+            setSelection,
             refresh() {
                 return load(activeBrowser, {force: true});
             },

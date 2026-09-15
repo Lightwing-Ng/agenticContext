@@ -1,11 +1,12 @@
 """Focused tests for Gemini session history Parquet persistence."""
 
-# Code version: v1.10.5-codex.1
+# Code version: v1.11.0-codex.1
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode
@@ -538,6 +539,78 @@ def test_gemini_collection_keeps_virtualized_loading_after_a_scroll_without_pixe
         links = collect_gemini_conversation_links(page, config, lambda: False)
 
     assert len(links) == 6
+
+
+def test_gemini_collection_reuses_a_ready_page_without_repeating_navigation() -> None:
+    class Page:
+        def evaluate(self, script, *_args):
+            if "document.querySelectorAll('a[href]')" in script:
+                return [{
+                    "conversationId": "conversation-1",
+                    "url": "https://gemini.google.com/app/conversation-1",
+                    "title": "Conversation 1",
+                }]
+            raise AssertionError(f"Unexpected page script: {script[:80]}")
+
+        def wait_for_timeout(self, _milliseconds):
+            return None
+
+    deadline = time.monotonic() + 5
+    with patch(
+        "app.core.gemini_downloader.goto_with_retry"
+    ) as navigate, patch(
+        "app.core.gemini_downloader.inspect_gemini_bot_check",
+        return_value={"detected": False},
+    ), patch(
+        "app.core.gemini_downloader._wait_for_gemini_ready"
+    ) as ready, patch(
+        "app.core.gemini_downloader._open_gemini_sidebar"
+    ), patch(
+        "app.core.gemini_downloader._prepare_gemini_page_for_rendering"
+    ):
+        links = collect_gemini_conversation_links(
+            Page(),
+            CrawlConfig(gemini_max_conversations=1),
+            lambda: False,
+            navigate=False,
+            wait_for_ready=False,
+            deadline=deadline,
+        )
+
+    assert [link.conversation_id for link in links] == ["conversation-1"]
+    navigate.assert_not_called()
+    ready.assert_not_called()
+
+
+def test_gemini_collection_stops_before_navigation_after_absolute_deadline() -> None:
+    with patch(
+        "app.core.gemini_downloader.time.monotonic",
+        return_value=100.0,
+    ), patch(
+        "app.core.gemini_downloader.goto_with_retry"
+    ) as navigate:
+        links = collect_gemini_conversation_links(
+            object(),
+            CrawlConfig(),
+            lambda: False,
+            deadline=99.0,
+        )
+
+    assert links == []
+    navigate.assert_not_called()
+
+
+def test_gemini_ready_gate_honors_an_expired_absolute_deadline() -> None:
+    with patch(
+        "app.core.gemini_downloader.time.monotonic",
+        return_value=100.0,
+    ), patch(
+        "app.core.gemini_downloader.inspect_gemini_session"
+    ) as inspect_session:
+        with pytest.raises(RuntimeError, match="startup timeout"):
+            _wait_for_gemini_ready(object(), deadline=99.0)
+
+    inspect_session.assert_not_called()
 
 
 def test_gemini_ready_gate_rejects_an_authenticated_region_unavailable_page() -> None:

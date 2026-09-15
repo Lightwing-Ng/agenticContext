@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.46.2-codex.1
+Code version: v1.46.6-codex.1
 """
 
 from __future__ import annotations
@@ -2098,7 +2098,7 @@ def test_agent_response_pagination_is_immersed_but_keeps_interactive_effects(
     """Verify one immersed glass pagination surface without clipping its interactions."""
     page, context = _open_page(
         disposable_browser,
-        f"{sidebar_server_url}/agent",
+        f"{sidebar_server_url}/agent/edge/chatgpt",
         width,
         height,
         touch=touch,
@@ -2365,7 +2365,7 @@ def test_agent_prompt_composer_stays_compact_until_expanded(
     """Keep a long Agent task readable without opening the Composer by default."""
     page, context = _open_page(
         disposable_browser,
-        f"{sidebar_server_url}/agent",
+        f"{sidebar_server_url}/agent/edge/chatgpt",
         1_280,
         900,
         touch=False,
@@ -2670,7 +2670,7 @@ def test_agent_model_and_sidebar_service_triggers_follow_typography_contract(
     """Verify Agent sidebar labels preserve their scoped typography and wrapping contracts."""
     page, context = _open_page(
         disposable_browser,
-        f"{sidebar_server_url}/agent",
+        f"{sidebar_server_url}/agent/edge/chatgpt",
         1_280,
         900,
         touch=False,
@@ -2775,7 +2775,7 @@ def test_browser_session_status_reuses_account_typography_for_terminal_and_cache
     """Verify Agent and Cache status surfaces reuse the same non-bold status typography."""
     page, context = _open_page(
         disposable_browser,
-        f"{sidebar_server_url}/agent",
+        f"{sidebar_server_url}/agent/edge/chatgpt",
         1_280,
         900,
         touch=False,
@@ -3709,7 +3709,10 @@ def test_simplified_chinese_language_boundary_runs_in_real_browser(
             "zh-CN",
         )
 
-        page.goto(f"{sidebar_server_url}/agent", wait_until="domcontentloaded")
+        page.goto(
+            f"{sidebar_server_url}/agent/edge/chatgpt",
+            wait_until="domcontentloaded",
+        )
         session_mode_trigger = page.locator(
             "xpath=/html/body/main/div/aside/form/div[2]/label/div/button"
         )
@@ -4204,7 +4207,10 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
     if platform == "grok":
         page.route("**/api/agent/grok-session-history**", fulfill_grok_history)
     try:
-        page.goto(f"{sidebar_server_url}/agent", wait_until="domcontentloaded")
+        page.goto(
+            f"{sidebar_server_url}/agent/edge/chatgpt",
+            wait_until="domcontentloaded",
+        )
         page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
         page.locator(
             f'.agent-platform-combobox [data-agent-combobox-option="{platform}"]'
@@ -4304,8 +4310,30 @@ def test_agent_provider_projects_submit_agentic_task_target(
 ) -> None:
     """Verify provider-native project containers serialize as one Project choice."""
     captured_ask_payloads: list[dict[str, str]] = []
+    browser_status_requests: list[str] = []
     source_requests: list[str] = []
     project_session_requests: list[str] = []
+
+    def source_payload() -> dict[str, object]:
+        return {
+            "platform": platform,
+            "browser_label": "Edge",
+            "recent_sessions": [],
+            "projects": [
+                {
+                    "id": f"{platform}-project",
+                    "title": f"{platform_label} project",
+                    "url": project_url,
+                    "updated_at": "2026-08-14T04:00:00Z",
+                    **(
+                        {"icon": "brain", "icon_color": "#3A83F7"}
+                        if platform == "chatgpt"
+                        else {}
+                    ),
+                }
+            ],
+            "limit": 20,
+        }
 
     def agent_payload(selected_platform: str) -> dict[str, object]:
         return {
@@ -4349,6 +4377,7 @@ def test_agent_provider_projects_submit_agentic_task_target(
         route.fulfill(json=agent_payload(platform))
 
     def fulfill_browser_status(route) -> None:
+        browser_status_requests.append(route.request.url)
         browser_id = "chrome" if "browser=chrome" in route.request.url else "edge"
         route.fulfill(
             json={
@@ -4359,6 +4388,7 @@ def test_agent_provider_projects_submit_agentic_task_target(
                 "can_download": True,
                 "account_name": f"{platform_label} account",
                 "message": f"{browser_id.title()} is ready for {platform_label} Web.",
+                "agent_sources": source_payload(),
             }
         )
 
@@ -4368,27 +4398,7 @@ def test_agent_provider_projects_submit_agentic_task_target(
 
     def fulfill_sources(route) -> None:
         source_requests.append(route.request.url)
-        route.fulfill(
-            json={
-                "platform": platform,
-                "browser_label": "Edge",
-                "recent_sessions": [],
-                "projects": [
-                    {
-                        "id": f"{platform}-project",
-                        "title": f"{platform_label} project",
-                        "url": project_url,
-                        "updated_at": "2026-08-14T04:00:00Z",
-                        **(
-                            {"icon": "brain", "icon_color": "#3A83F7"}
-                            if platform == "chatgpt"
-                            else {}
-                        ),
-                    }
-                ],
-                "limit": 20,
-            }
-        )
+        route.fulfill(json=source_payload())
 
     def fulfill_project_sessions(route) -> None:
         project_session_requests.append(route.request.url)
@@ -4419,11 +4429,10 @@ def test_agent_provider_projects_submit_agentic_task_target(
     page.route("**/api/agent/project-sessions**", fulfill_project_sessions)
     page.route("**/api/agent/ask", fulfill_ask)
     try:
-        page.goto(f"{sidebar_server_url}/agent", wait_until="domcontentloaded")
-        page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
-        page.locator(
-            f'.agent-platform-combobox [data-agent-combobox-option="{platform}"]'
-        ).click()
+        page.goto(
+            f"{sidebar_server_url}/agent/edge/{platform}",
+            wait_until="domcontentloaded",
+        )
         expect(page.get_by_role("button", name=f"Web service: {platform_label}", exact=True)).to_be_visible()
 
         page.locator(".agent-session-mode-combobox [data-agent-combobox-trigger]").click()
@@ -4491,7 +4500,8 @@ def test_agent_provider_projects_submit_agentic_task_target(
         assert captured_ask_payloads[0]["session_mode"] == "project_new"
         assert captured_ask_payloads[0]["project_url"] == project_url
         assert captured_ask_payloads[0]["conversation_url"] == ""
-        assert any(f"platform={platform}" in url for url in source_requests)
+        assert any(f"platform={platform}" in url for url in browser_status_requests)
+        assert source_requests == []
         assert any("project_url=" in url for url in project_session_requests)
     finally:
         context.close()
@@ -4508,6 +4518,21 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
     session_url = "https://grok.com/project/grok-project?chat=grok-session"
     history_requests: list[str] = []
     project_session_requests: list[str] = []
+    source_requests: list[str] = []
+
+    def source_payload() -> dict[str, object]:
+        return {
+            "platform": "grok",
+            "browser_label": "Edge",
+            "recent_sessions": [],
+            "projects": [{
+                "id": "grok-project",
+                "title": "Grok project",
+                "url": project_url,
+                "updated_at": "2026-09-02T01:00:00Z",
+            }],
+            "limit": 20,
+        }
 
     def agent_payload() -> dict[str, object]:
         return {
@@ -4554,6 +4579,7 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
                 "can_download": True,
                 "account_name": "Grok account",
                 "message": "Edge is ready for Grok Web.",
+                "agent_sources": source_payload(),
             }
         )
 
@@ -4561,20 +4587,8 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
         route.fulfill(json=agent_payload())
 
     def fulfill_sources(route) -> None:
-        route.fulfill(
-            json={
-                "platform": "grok",
-                "browser_label": "Edge",
-                "recent_sessions": [],
-                "projects": [{
-                    "id": "grok-project",
-                    "title": "Grok project",
-                    "url": project_url,
-                    "updated_at": "2026-09-02T01:00:00Z",
-                }],
-                "limit": 20,
-            }
-        )
+        source_requests.append(route.request.url)
+        route.fulfill(json=source_payload())
 
     def fulfill_project_sessions(route) -> None:
         project_session_requests.append(route.request.url)
@@ -4623,9 +4637,10 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
     page.route("**/api/agent/project-sessions**", fulfill_project_sessions)
     page.route("**/api/agent/grok-session-history**", fulfill_history)
     try:
-        page.goto(f"{sidebar_server_url}/agent", wait_until="domcontentloaded")
-        page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
-        page.locator('.agent-platform-combobox [data-agent-combobox-option="grok"]').click()
+        page.goto(
+            f"{sidebar_server_url}/agent/edge/grok",
+            wait_until="domcontentloaded",
+        )
         page.locator(".agent-session-mode-combobox [data-agent-combobox-trigger]").click()
         page.locator('.agent-session-mode-combobox [data-agent-combobox-option="project"]').click()
 
@@ -4661,6 +4676,7 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
         assert len(project_session_requests) == 2
         assert all("refresh=1" not in url for url in project_session_requests)
         assert len(history_requests) == 2
+        assert source_requests == []
     finally:
         context.close()
 
@@ -4673,7 +4689,7 @@ def test_agent_connection_selection_survives_cache_navigation(
 ) -> None:
     page, context = _open_page(
         disposable_browser,
-        f"{sidebar_server_url}/agent",
+        f"{sidebar_server_url}/agent/edge/chatgpt",
         1_280,
         900,
         touch=False,
@@ -4733,7 +4749,7 @@ def test_browser_text_media_switch_defaults_to_text_and_remembers_selection(
             "1",
         )
 
-        page.goto(f"{sidebar_server_url}/agent")
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
         page.goto(f"{sidebar_server_url}/browser")
         expect(page).to_have_url(re.compile(r"/browser\?view=media"))
         expect(page.locator("#browser_view_media")).to_be_checked()
@@ -4963,6 +4979,23 @@ def test_gemini_source_mark_preserves_full_color_at_target_viewports(
 
 FINISHED_SNAPSHOT_URL = "https://chatgpt.com/c/6a8d4fce-d1e8-83ee-9996-68e9ef114ef0"
 AGENTIC_TROUBLESHOOTING_URL = "https://chatgpt.com/c/6a8d310f-7af4-83e8-acb4-6e3e825e984f"
+GROK_DOM_FIXTURE_URL = "https://grok.com/"
+
+
+def _load_model_dom_fixture(page: Page, platform: str, body: str) -> None:
+    """Serve Grok fixtures from its trusted origin while retaining local DOM fixtures."""
+    if platform != "grok":
+        page.set_content(body)
+        return
+    page.route(
+        GROK_DOM_FIXTURE_URL,
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/html",
+            body=body,
+        ),
+    )
+    page.goto(GROK_DOM_FIXTURE_URL, wait_until="domcontentloaded")
 
 
 def _finished_chatgpt_agent_payload() -> dict[str, object]:
@@ -5842,7 +5875,9 @@ def test_auto_model_dom_selection_rejects_an_unrelated_auto_popup(
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            platform,
             """
             <button
                 id="playback-trigger"
@@ -5861,7 +5896,7 @@ def test_auto_model_dom_selection_rejects_an_unrelated_auto_popup(
                     document.querySelector('#playback-options').hidden = false;
                 });
             </script>
-            """
+            """,
         )
         monkeypatch.setattr(computer_use_agent, "WEB_MODEL_CONTROL_WAIT_ATTEMPTS", 1)
         monkeypatch.setattr(computer_use_agent, "GROK_MODEL_CONTROL_WAIT_ATTEMPTS", 1)
@@ -5894,14 +5929,16 @@ def test_auto_model_dom_selection_rejects_metadata_substring_decoys(
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            platform,
             f"""
             <button
                 id="{decoy_id}"
                 aria-haspopup="menu"
                 aria-expanded="false"
             >Auto</button>
-            """
+            """,
         )
         monkeypatch.setattr(computer_use_agent, "WEB_MODEL_CONTROL_WAIT_ATTEMPTS", 1)
         monkeypatch.setattr(computer_use_agent, "GROK_MODEL_CONTROL_WAIT_ATTEMPTS", 1)
@@ -5932,7 +5969,9 @@ def test_auto_model_dom_selection_rejects_label_substring_decoys(
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            platform,
             f"""
             <button
                 id="{decoy_id}"
@@ -5954,7 +5993,7 @@ def test_auto_model_dom_selection_rejects_label_substring_decoys(
                     trigger.textContent = 'Auto';
                 }});
             </script>
-            """
+            """,
         )
         monkeypatch.setattr(computer_use_agent, "WEB_MODEL_CONTROL_WAIT_ATTEMPTS", 1)
         monkeypatch.setattr(computer_use_agent, "GROK_MODEL_CONTROL_WAIT_ATTEMPTS", 1)
@@ -5987,7 +6026,9 @@ def test_grok_model_dom_selection_requires_current_radix_contract_and_dual_proof
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            "grok",
             f"""
             <button id="bare-build">Build</button>
             <button id="build-plan" aria-label="SuperGrok Build plan">Build</button>
@@ -6036,7 +6077,7 @@ def test_grok_model_dom_selection_requires_current_radix_contract_and_dual_proof
                     trigger.textContent = {json.dumps(trigger_label)};
                 }});
             </script>
-            """
+            """,
         )
         observation: dict[str, object] = {}
         assert (
@@ -6069,7 +6110,9 @@ def test_grok_build_selection_accepts_nested_controlled_menu_and_exact_aria_labe
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            "grok",
             """
             <button
                 id="model-select-trigger"
@@ -6124,7 +6167,7 @@ def test_grok_build_selection_accepts_nested_controlled_menu_and_exact_aria_labe
                     menu.hidden = true;
                 });
             </script>
-            """
+            """,
         )
 
         selected = _select_web_model(
@@ -6150,7 +6193,9 @@ def test_grok_build_selection_accepts_an_already_selected_option(
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            "grok",
             """
             <button
                 id="model-select-trigger"
@@ -6181,7 +6226,7 @@ def test_grok_build_selection_accepts_an_already_selected_option(
                     window.optionClicks += 1;
                 });
             </script>
-            """
+            """,
         )
 
         assert _select_web_model(page, "chromium", "grok", "grok-build") is True
@@ -6199,7 +6244,9 @@ def test_grok_build_selection_dismisses_only_the_two_known_onboarding_dialogs(
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            "grok",
             """
             <button
                 id="model-select-trigger"
@@ -6262,7 +6309,7 @@ def test_grok_build_selection_dismisses_only_the_two_known_onboarding_dialogs(
                     menu.hidden = true;
                 });
             </script>
-            """
+            """,
         )
 
         assert _select_web_model(page, "chromium", "grok", "grok-build") is True
@@ -6298,7 +6345,9 @@ def test_grok_build_selection_rejects_unknown_or_non_actionable_dialogs(
     page = context.new_page()
     try:
         disabled = "disabled" if dismiss_disabled else ""
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            "grok",
             f"""
             <button
                 id="model-select-trigger"
@@ -6328,7 +6377,7 @@ def test_grok_build_selection_rejects_unknown_or_non_actionable_dialogs(
                     window.selectionAudit.triggerClicks += 1;
                 }});
             </script>
-            """
+            """,
         )
 
         assert _select_web_model(page, "chromium", "grok", "grok-build") is False
@@ -6354,7 +6403,9 @@ def test_grok_build_selection_rejects_conflicting_or_duplicate_radio_proof(
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            "grok",
             f"""
             <button
                 id="model-select-trigger"
@@ -6398,7 +6449,7 @@ def test_grok_build_selection_rejects_conflicting_or_duplicate_radio_proof(
                     menu.hidden = true;
                 }});
             </script>
-            """
+            """,
         )
         observation: dict[str, object] = {}
 
@@ -6472,7 +6523,9 @@ def test_grok_build_selection_binds_exactly_one_controlled_menu_and_choice(
             if variant == "unrelated-menu"
             else ""
         )
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            "grok",
             f"""
             {trigger}
             {surface}
@@ -6495,7 +6548,7 @@ def test_grok_build_selection_binds_exactly_one_controlled_menu_and_choice(
                     }});
                 }});
             </script>
-            """
+            """,
         )
         observation: dict[str, object] = {}
 
@@ -6522,7 +6575,9 @@ def test_grok_build_selection_rebinds_a_remounted_radix_menu(
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            "grok",
             """
             <button
                 id="model-select-trigger"
@@ -6576,7 +6631,7 @@ def test_grok_build_selection_rebinds_a_remounted_radix_menu(
                     else unmount();
                 });
             </script>
-            """
+            """,
         )
 
         assert _select_web_model(page, "chromium", "grok", "grok-build") is True
@@ -6599,7 +6654,9 @@ def test_grok_build_selection_fails_before_an_extra_click_on_a_late_paywall(
     context = disposable_browser.new_context()
     page = context.new_page()
     try:
-        page.set_content(
+        _load_model_dom_fixture(
+            page,
+            "grok",
             """
             <button
                 id="model-select-trigger"
@@ -6642,7 +6699,7 @@ def test_grok_build_selection_fails_before_an_extra_click_on_a_late_paywall(
                     );
                 });
             </script>
-            """
+            """,
         )
         observation: dict[str, object] = {}
 
@@ -6849,7 +6906,7 @@ def test_fresh_grok_send_atomically_rejects_an_old_conversation_target(
     try:
         page.goto(actual_url, wait_until="domcontentloaded")
 
-        with pytest.raises(RuntimeError, match="selected provider tab changed"):
+        with pytest.raises(RuntimeError, match="selected Grok tab changed"):
             _submit_chromium_web_prompt(
                 page,
                 "grok",
@@ -8791,6 +8848,13 @@ def test_agent_browser_status_retries_a_fresh_negative_cache_and_force_refreshes
         "can_download": True,
         "account_name": "Gemini account",
         "message": "Edge verified an authenticated Gemini Web session.",
+        "agent_sources": {
+            "platform": "gemini",
+            "browser_label": "Edge",
+            "recent_sessions": [],
+            "projects": [],
+            "limit": 20,
+        },
     }
 
     def fulfill_browser_status(route) -> None:
@@ -10328,7 +10392,7 @@ def test_agent_bootstrap_discovers_models_efforts_and_restores_markdown_once(
         'thinking_effort': 'Exhaustive', 'effort_catalog_complete': True,
         'browser_session_freshness': {
             'kind': 'live_browser', 'cache_status': 'miss',
-            'cached_at': '2026-09-05T00:00:00Z', 'age_seconds': 0,
+            'cached_at': datetime.now(UTC).isoformat(), 'age_seconds': 0,
         },
     }
     requests = []
@@ -10507,7 +10571,10 @@ def test_cache_annotations_keep_static_icons_and_remaining_space(
         if width <= 900:
             page.locator("#sidebar_toggle").click()
         expect(page.locator("#activity")).to_have_count(0)
-        page.goto(f"{sidebar_server_url}/agent", wait_until="domcontentloaded")
+        page.goto(
+            f"{sidebar_server_url}/agent/edge/chatgpt",
+            wait_until="domcontentloaded",
+        )
         if width <= 900:
             page.locator("#sidebar_toggle").click()
         page.locator('.agent-session-mode-combobox [data-agent-combobox-trigger]').click()

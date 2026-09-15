@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.12.0-codex.1`
+Documentation version: `v1.14.0-codex.1`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -118,6 +118,27 @@ The response-node tree is important. A DOM scroll only exposes a partial, select
 branch and is not evidence that all history was discovered. The API list is paginated,
 and `load-responses` is required to recover the complete text payload.
 
+For Agent selected-session display, `load-responses` has an additional provider boundary.
+Grok can return `cardAttachmentsJson` as an array of JSON-encoded card strings, while the
+raw assistant message contains `<grok:render>` elements. The adapter preserves the raw message as
+provenance and emits a structured citation only when a
+`type="render_inline_citation"` element's `card_id` strictly matches an attachment with
+`cardType="citation_card"` and an HTTP(S) URL. It must not infer citation order, accept a partial
+identifier match, or turn malformed and non-HTTP(S) attachment data into a link.
+When the raw message has one single-line prelude immediately before an exact bold
+`「…」Session 更新` heading, the display adapter removes only that prelude to match Grok's native
+final DOM; the provenance response remains unchanged, and the rule never crosses a line break.
+
+Display Markdown remains a separate, HTML-disabled parse, and copy text is derived without provider
+tags. Recognized citation tokens are replaced with escaped application markup after parsing;
+legacy or incomplete cache data uses a safe
+unlinked fallback rather than exposing provider tags or inventing a URL. The versioned contract is
+part of the Grok Agent `session-history` cache identity. Advancing it invalidates only that source
+kind for Grok; recent sessions, Projects, other providers, and
+`local_store/llm/grok/history.parquet` remain intact. Third-level heading rhythm, citation chips,
+and horizontally scroll-contained tables belong to the Agent answer surface and do not redefine a
+shared Cache or Local resources style.
+
 Claude history is a separate Cache runtime. It opens the authenticated `/chats` page,
 discovers conversation links from rendered DOM, opens each conversation, and stores only
 rendered user/assistant message content, source links, and visible model labels. It does
@@ -227,6 +248,12 @@ The lifecycle is strict:
 Session probes, debugging helpers, and Cache collectors use this same lifecycle. They must not
 embed a second raw `osascript` launch path or rely on a successful AppleScript return as their
 only cleanup signal.
+
+Safari admission is bidirectional across Cache and Agent. A Cache start returns `safari_agent_busy`
+while a Safari Agent owns the browser; an Agent start returns `safari_cache_busy` while any Safari
+Cache worker owns it. Neither workflow queues a second owned window behind the shared Apple Events
+lock. Read-only Agent account, source, Project-session, and history probes use a verified cache or
+return bounded busy/unprobed state while the Agent owns Safari.
 
 Do not treat an AppleScript `close` return as proof of cleanup. Safari may retain
 script-visible empty windows after returning success. A verified ID disappearance is

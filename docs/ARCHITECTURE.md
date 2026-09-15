@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.32.0-codex.1`
+Documentation version: `v1.34.0-codex.1`
 
 ## Runtime flow
 
@@ -79,12 +79,13 @@ or secondary Web-module import cannot bypass the five domain façades.
   content validation.
 - `app/core/chatgpt_agent_sources.py`: authenticated browser-mediated catalogs of the 20 most
   recent root ChatGPT sessions, projects, and project sessions for the Agent sidebar. Its Agent
-  bootstrap combines ChatGPT readiness and root-catalog collection in one browser context.
+  bootstrap combines ChatGPT readiness and root-catalog collection in one owned Chromium or Safari
+  context.
 - `app/core/agent_session_sources.py`: the provider-neutral Agent session and Project adapter;
   it maps ChatGPT Projects, Gemini Notebooks, Grok Projects, and Claude Projects into one URL and
-  source contract. Grok can collect through one owned Chromium or macOS Safari context; Claude
-  source discovery reads rendered links only and shares the Chromium launch and Parquet cache
-  boundary.
+  source contract. Gemini, Grok, and Claude catalogs can collect through one owned Chromium or
+  macOS Safari context. Safari Gemini and Claude are catalog-only; Claude source discovery reads
+  rendered links only. All providers share the Parquet cache boundary.
 - `app/core/agent_source_cache.py`: the shared typed Parquet catalog for Agent recent sessions,
   Projects, and Project sessions. Its cache key isolates provider, browser, source kind, and
   Project URL, while atomic replacement preserves the other providers' entries.
@@ -110,7 +111,8 @@ transport boundary, while durable cache and state rules stay in core modules.
 
 The Agent domain facade also exports `JuryService`. `jury.py` owns evidence-convergent, durable,
 multi-provider deliberations, while `jury_browser.py` owns one authenticated browser conversation
-per juror per question. The Jury uses no workspace controller or Terminal checks. Every review
+per juror per question. The Jury admits only Edge or Chrome; Safari is not a Jury runtime. The Jury
+uses no workspace controller or Terminal checks. Every review
 pass consumes a frozen prior-pass packet; consensus requires explicit agreement on one exact
 candidate, not merely matching labels. A deterministic parsed-evidence signature includes each
 source URL and its stated support, while ignoring arbitrary candidate-ID churn. It ends stable
@@ -190,6 +192,18 @@ Route changes invalidate pending response epochs and restore only the target rou
 Unsent drafts remain in page memory, keyed by browser/provider scope and execution session ID;
 changing routes restores that route's draft without sending it or copying it into another route.
 Drafts are not persisted across a page reload.
+
+Runtime preferences use a serialized, full-snapshot outbox rather than independent field writes.
+Each same-tab browser session owns a sessionStorage-scoped client identifier and monotonic revision;
+the newest unsent snapshot is
+kept in same-tab session storage and replayed before the first status, browser-session, route, or
+source request after reload. The backend ignores an older revision from the same client. A pending
+snapshot is restored only when its operating system, browser, provider, workspace, and exact
+provider-owned model still exist in the rendered option contract; an invalid or retired model is
+discarded without changing hidden inputs or entering a retry loop. Page exit makes one best-effort
+beacon or keepalive delivery, while a later document remains responsible for replaying an
+unacknowledged snapshot. The revision gate is process-local and Duplicate Tab may copy both values,
+so this is not a durable cross-tab transaction.
 
 `AgentSessionPool.catalog()` and atomic admission share the same capacity predicate. The frontend
 uses `can_start` to gate Ask, while the locked backend remains authoritative if capacity changes
@@ -491,7 +505,7 @@ runs. The visible Agent refresh control uses `refresh=1` for an explicit synchro
 re-check. A failed refresh falls back to the last known entry and marks the response as stale; no
 remote conversation messages are written by this catalog.
 The ChatGPT `/agent` status route performs the account probe, dynamic model and complete live effort discovery,
-and root source collection together in one Chromium browser launch, returns both catalogs to the
+and root source collection together in one owned browser context, returns both catalogs to the
 page, and seeds the same source cache through its explicit `store` path. This keeps the status,
 first-run effort selector, and Recent sessions selection on one browser opening; Project-session
 loading remains isolated by its canonical Project URL key.
@@ -500,18 +514,66 @@ in one owned browser context. Edge and Chrome use the existing isolated Chromium
 macOS Safari uses `SafariContext` plus credentialed same-origin page requests, exports no cookies,
 and closes only its task-owned window. The weaker Cache `/files` signal is never an Agent-readiness
 substitute.
+Selected Grok session history keeps provider provenance, display data, and copy text separate. The
+raw assistant message remains unchanged for diagnostics, while the provider adapter decodes each
+bounded JSON string in the `cardAttachmentsJson` array. An inline
+citation becomes structured display metadata only when the message contains the corresponding
+`type="render_inline_citation"` Grok element and its strict `card_id` match has
+`cardType="citation_card"` plus an HTTP(S) URL. Unmatched, malformed, or non-HTTP(S) attachments
+cannot create a link.
+One narrow compatibility rule removes a single-line provider prelude immediately before an exact
+bold `「…」Session 更新` heading because Grok's native final DOM omits that raw-message prefix. The
+rule does not cross a line break, and the original response remains available as provenance.
+The answer renderer still parses Markdown with provider HTML disabled. It replaces only recognized
+Grok citation tokens with escaped application-owned markup after Markdown parsing; raw
+`<grok:render>` is never admitted as executable HTML. Legacy history without structured citation
+metadata falls back without fabricating a destination. The Grok session-history cache contract is
+versioned independently, so an incompatible contract invalidates only Grok `session-history`
+entries, not recent-session, Project, other-provider, or formal Grok Text history data.
+Agent answers own their response typography and overflow behavior: third-level headings, citation
+chips, and scroll-contained tables are scoped to the answer surface. Worthward has no equivalent
+Agent answer surface, so these rules are a product-specific candidate rather than a synchronized
+shared component.
 The Agent-scoped browser-session status route uses that same cache. Passive polling reuses the
 cached bootstrap, including a bounded negative result; an explicit `refresh=1`, `true`, or `yes`
-requests a synchronous fresh result and coalesces with an in-flight collector for the same key.
-The fresh result is stored and supersedes any older in-flight browser response.
+requests a synchronous fresh result. If an older collector already owns that cache key, the forced
+request waits for it to release the flight and then performs a new serialized collection instead
+of accepting the older result as its refresh. The forced result is stored last, while frontend
+request revisions prevent the older browser response from replacing it on screen.
 On Windows, an active Agent worker suppresses every live source/history/bootstrap collector for
-the same Edge or Chrome debug browser. A cached entry is returned without background refresh; a
-history miss returns an observable busy response, while bootstrap and catalog misses remain
-`unprobed`. This browser-wide gate is not used on macOS, where the existing isolated-context
-behavior remains unchanged.
+the same Edge or Chrome debug browser. A macOS Safari Agent applies the same cache-or-busy behavior
+because every owned Safari window is serialized through one Apple Events context. A cached entry is
+returned without background refresh; a history miss returns an observable busy response, while
+bootstrap and catalog misses remain `unprobed`. macOS Edge and Chrome keep their existing
+isolated-context behavior.
 Agent bootstrap checks use quiet, task-independent browser contexts. Edge and Chrome checks use
 Chromium; ChatGPT source checks remain non-headless because its Cloudflare challenge rejects
-headless clones with HTTP 403. Safari Grok checks use the serialized macOS Apple Events context.
+headless clones with HTTP 403. Safari catalog checks for all four providers use the serialized
+macOS Apple Events context. Full Safari execution remains limited to ChatGPT and Grok; Gemini and
+Claude are catalog-only and the backend execution gate rejects them before task admission. Their
+canonical routes and persisted preferences remain valid, Ask stays disabled, and neither selection
+is silently rewritten to Edge.
+
+Safari credentialed page requests reject cross-origin targets and redirects before reading a
+response. WebKit service-worker responses may omit `Response.url`; that empty field is accepted only
+because the request target was already proven same-origin, fetch uses `redirect: "error"`, and
+`response.redirected` is false. Any nonempty response URL is parsed and revalidated against the
+current origin.
+
+Trusted Safari mutations bind one visible, enabled, center-hit-tested DOM node to an unpredictable
+marker. Immediately before a single native Return event, AppleScript rechecks the exact owned
+window, tab, URL, document focus, marker, hit target, and absence of Safari sheets or accessibility
+dialogs. A transport error after input becomes an uncertain outcome and is never retried; a failure
+proved to occur before input fails closed without a cleanup activation. Focus restoration proceeds
+only while Safari, the owned window, the original tab, and its document still retain focus. Grok
+model selection requires the provider's checked-state and closed-trigger readback. Safari Stop uses
+the same one-shot boundary against one unique semantic Stop control and performs read-only
+generation-state confirmation rather than repeating an uncertain native event.
+
+The serialized Safari context is mutually exclusive across workflows: an active Safari Cache task
+blocks Agent admission, and an active Safari Agent task makes Cache admission fail before another
+window or collector is started. Passive Agent catalogs and history serve cached or explicit busy/
+unprobed results while a Safari Agent owns the context.
 On macOS, silent probes and executing
 Edge or Chrome task clones the selected profile into one normal, non-offscreen task-owned window so the user can
 choose to inspect it through macOS window management without an automatic full-display takeover.
