@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.21.0-codex.1`
+Documentation version: `v1.22.0-codex.1`
 
 ## Launch
 
@@ -132,7 +132,9 @@ publish it through a public tunnel or reverse proxy.
 - Each task defaults to a new root-level ChatGPT, Gemini, Grok, or Claude Web conversation in the
   selected authenticated browser session. On macOS, Safari supports ChatGPT and Grok Agent
   execution; Safari Gemini and Claude remain valid source-only routes for account, Recent sessions,
-  and Project browsing, while their full execution uses Edge or Chrome. Jury remains Chromium-only.
+  and Project browsing, while their full execution uses Edge or Chrome. macOS Safari Jury likewise
+  supports ChatGPT and Grok only; selecting Gemini or Claude produces an explicit readiness failure
+  before any prompt and never falls back to Edge.
   Browser/provider/model/workspace preferences are queued as one revisioned snapshot and restored
   before the first status or source request after reload. A retired or wrong-provider model invalidates
   the pending snapshot without a POST or retry loop. A selected Safari route is retained rather than

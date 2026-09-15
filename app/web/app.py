@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.80.2-codex.1
+# Code version: v1.81.0-codex.1
 
 from __future__ import annotations
 
@@ -1975,13 +1975,12 @@ def create_app(
     @app.get("/jury/<browser>")
     def jury_selected(browser: str):
         require_local_agent_request()
-        if browser not in available_agent_browser_keys() & {"edge", "chrome"}:
+        if browser not in available_agent_browser_keys():
             abort(404)
         return render_template(
             "jury.html", version=APP_VERSION,
             settings=replace(computer_use_settings.settings, browser=browser),
-            browser_options=[item for item in browser_options_for_host()
-                             if item["key"] in {"edge", "chrome"}],
+            browser_options=browser_options_for_host(),
             platform_options=AGENT_PLATFORM_OPTIONS,
             jury_model_options_by_provider=JURY_MODEL_OPTIONS_BY_PROVIDER,
         )

@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.73.0-codex.1`
+Documentation version: `v3.74.0-codex.1`
 
 ## Purpose
 
@@ -8,9 +8,10 @@ The Agent workspace is a browser-mediated fallback for times when the local codi
 pool is constrained. It uses an already signed-in Web session for ChatGPT, Gemini, Grok, or Claude.
 Edge or Chrome supports all four providers through the background Chromium controller, while macOS
 Safari supports ChatGPT and Grok Agent execution through an owned Apple Events window. Full Gemini
-and Claude Agent execution, and every Jury session, continue to require Edge or Chrome. Edge remains the
-default because its Chromium controller does not depend on desktop clicks; Chrome uses the same
-isolated controller.
+and Claude Agent execution continues to require Edge or Chrome. macOS Safari Jury supports ChatGPT
+and Grok under one shared Apple Events context; its Gemini and Claude jurors fail closed before any
+prompt. Edge remains the default because its Chromium controller does not depend on desktop clicks;
+Chrome uses the same isolated controller.
 
 Safari Gemini and Claude canonical routes remain available for source-only Recent sessions and
 Project browsing. Their status payload explicitly disables Agent execution, so Ask remains

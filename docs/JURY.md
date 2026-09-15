@@ -1,13 +1,15 @@
 # Browser Jury
 
-Documentation version: `v1.2.0-codex.1`
+Documentation version: `v1.3.0-codex.1`
 
 ## Workflow
 
-Agentic retains the existing project controller. Jurors opens `/jury/edge` and uses only
+Agentic retains the existing project controller. Jurors opens `/jury/edge` by default and uses only
 authenticated provider websites. There is no project picker, context upload, or Terminal
-readiness check. Jury is Chromium-only: only Edge or Chrome is admitted, and Safari is not a Jury
-runtime. Edge and Chrome use the existing Browser control design.
+readiness check. Edge and Chrome admit all four providers. On macOS, Safari is also a Jury runtime
+for ChatGPT and Grok, using the same Browser control and persisted selection. Gemini and Claude
+remain source-only in Safari and fail readiness with an explicit Edge-or-Chrome diagnostic before
+any Jury prompt is sent.
 
 ChatGPT Latest / Extra High, Grok Auto, and Gemini 3.1 Pro are selected by default.
 Claude is available only when explicitly checked. Requested model labels are verified on the
@@ -34,6 +36,13 @@ opinions, citations, and objections. A candidate conclusion is nominated only wh
 match; every juror must explicitly accept that exact candidate identifier, supply evidence
 (unless the verdict is unverified), and report no unresolved objection before consensus is
 shown. Agreement is a recorded outcome, not a guarantee of truth or independent source quality.
+
+Safari holds one nonblocking global automation lease for the Jury and creates one task-owned Safari
+window per selected juror inside that context. Because native Safari input is serialized, the
+coordinator asks ChatGPT and Grok sequentially on one owning thread. Both still receive the same
+frozen evidence packet for a given round: round 1 contains no peer result, and later rounds contain
+only the complete prior-round barrier. Closing, stopping, or failing the Jury closes only those
+task-owned windows and never falls back to Edge or enters its credential-storage path.
 
 The current Web workflow does not send or infer a fixed turn count. It continues automatically
 while parsed verdicts, source URLs and their stated support, exact candidate acceptance, or
@@ -85,7 +94,9 @@ The focused offline layer is:
 ```
 
 It uses fake provider boundaries and disposable local browser contexts. Live acceptance requires
-explicit authorization, an already signed-in Edge profile, and the requested model choices.
+explicit authorization, an already signed-in profile for the selected browser, and the requested
+model choices. A Safari acceptance run must select only ChatGPT and Grok and must verify that one
+Safari context owns both provider windows without opening Edge.
 Use one explicit question, record each provider conversation URL across rounds, and confirm
 cleanup without starting Claude. An unavailable Gemini account or exact model is reported
 separately from ChatGPT/Grok acceptance. Never treat an offline test as provider acceptance.

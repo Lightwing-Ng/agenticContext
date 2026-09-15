@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.1.9-codex.1
+Code version: v1.2.0-codex.1
 """
 
 from copy import deepcopy
@@ -188,7 +188,7 @@ def test_jury_model_menu_escapes_sidebar_clipping(jury_browser, sidebar_server_u
         context.close()
 
 
-@pytest.mark.parametrize("width,height", [(1028, 1355), (390, 844)])
+@pytest.mark.parametrize("width,height", [(1028, 1355), (1007, 1232), (390, 844)])
 def test_jury_runtime_preferences_restore_without_account_probe(
     jury_browser,
     sidebar_server_url,
@@ -210,8 +210,8 @@ def test_jury_runtime_preferences_restore_without_account_probe(
             page.locator(f'[data-jury-model-trigger="{provider}"]').click()
             page.locator(f'[data-jury-model-option="{model}"]').click()
         target_key = (
-            "chrome"
-            if page.locator('[data-jury-browser-option="chrome"]').count()
+            "safari"
+            if page.locator('[data-jury-browser-option="safari"]').count()
             else "edge"
         )
         page.locator("[data-jury-browser-trigger]").click()
@@ -619,6 +619,31 @@ def test_jury_browser_keyboard_selection_and_dock_restore(jury_browser, sidebar_
         expect(page).to_have_url(f"{sidebar_server_url}/jury/{selected_key}")
         expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
         assert len(checks) == 2
+    finally:
+        context.close()
+
+
+def test_jury_mode_link_switches_into_and_out_of_safari_without_account_probe(
+    jury_browser,
+    sidebar_server_url,
+):
+    checks = []
+    page, context = open_jury(jury_browser, sidebar_server_url, 1007, checks, height=1232)
+    try:
+        page.goto(f"{sidebar_server_url}/jury/safari", wait_until="domcontentloaded")
+        agentic = page.locator('[aria-label="Agent modes"] a').first
+        expect(agentic).to_have_attribute("href", re.compile(r"^/agent/safari/"))
+
+        page.locator("[data-jury-browser-trigger]").click()
+        page.locator('[data-jury-browser-option="edge"]').click()
+        expect(page).to_have_url(f"{sidebar_server_url}/jury/edge")
+        expect(agentic).to_have_attribute("href", re.compile(r"^/agent/edge/"))
+
+        page.locator("[data-jury-browser-trigger]").click()
+        page.locator('[data-jury-browser-option="safari"]').click()
+        expect(page).to_have_url(f"{sidebar_server_url}/jury/safari")
+        expect(agentic).to_have_attribute("href", re.compile(r"^/agent/safari/"))
+        assert checks == []
     finally:
         context.close()
 

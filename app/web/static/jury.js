@@ -1,4 +1,4 @@
-/* Code version: v1.1.6-codex.1 */
+/* Code version: v1.2.0-codex.1 */
 (() => {
     "use strict";
     const root = document.querySelector("[data-jury-root]");
@@ -610,7 +610,7 @@
         if (agenticLink) {
             const target = new URL(agenticLink.href, window.location.origin);
             target.pathname = target.pathname.replace(
-                /^\/agent\/(?:edge|chrome)(?=\/)/,
+                /^\/agent\/(?:safari|edge|chrome)(?=\/)/,
                 "/agent/" + value,
             );
             agenticLink.setAttribute("href", target.pathname + target.search + target.hash);

@@ -1,8 +1,9 @@
-"""Evidence-convergent browser-only fact-checking. Code version: v1.2.1-codex.1."""
+"""Evidence-convergent browser-only fact-checking. Code version: v1.3.0-codex.1."""
 
 from __future__ import annotations
 
 from concurrent.futures import Future
+from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import replace
 import hashlib
@@ -25,7 +26,7 @@ from .computer_use_agent import (
 )
 from .state import utc_now
 
-JURY_VERSION = "1.2.1"
+JURY_VERSION = "1.3.0"
 AUTOMATIC_CONVERGENCE_TIMEOUT_SECONDS = 3_600
 AUTOMATIC_CONVERGENCE_STORAGE_SOFT_LIMIT_BYTES = 6_500_000
 MAX_PERSISTED_JURY_RECORD_BYTES = 8_000_000
@@ -56,7 +57,7 @@ def _unavailable_juror_message(results: list[dict[str, Any]]) -> str:
 
 def validate_selection(browser: object, providers: object) -> tuple[str, list[str]]:
     """Reject ambiguous selections before any browser activity."""
-    available = {item["key"] for item in browser_options_for_host()} & {"edge", "chrome"}
+    available = {item["key"] for item in browser_options_for_host()}
     if not isinstance(browser, str) or browser not in available:
         raise ValueError("Choose a supported browser.")
     if (
@@ -280,6 +281,29 @@ class _JurorWorker:
         self.requests.put(None)
 
 
+class _InlineJuror:
+    """Adapt a same-thread Safari session to the coordinator's Future boundary."""
+
+    def __init__(self, browser: Any) -> None:
+        self.browser = browser
+        self.closed = False
+        self.error: BaseException | None = None
+        self.conversation_url = ""
+
+    def ask(self, prompt: str, timeout_seconds: float) -> Future:
+        future: Future = Future()
+        try:
+            response = self.browser.ask(prompt, timeout_seconds=timeout_seconds)
+            self.conversation_url = self.browser.conversation_url
+            future.set_result((response, self.conversation_url))
+        except Exception as exc:
+            self.conversation_url = self.browser.conversation_url
+            self.error = exc
+            self.closed = True
+            future.set_exception(exc)
+        return future
+
+
 class JuryService:
     """Own one active jury and durable, read-only completed deliberations."""
 
@@ -434,6 +458,8 @@ class JuryService:
     def _run(self, session_id: str) -> None:
         from .jury_browser import JuryBrowserSession
         workers: dict[str, _JurorWorker] = {}
+        jurors: dict[str, _JurorWorker | _InlineJuror] = {}
+        inline_resources = ExitStack()
         user_stop = self.stops[session_id]
         shutdown = self.shutdowns[session_id]
         try:
@@ -461,15 +487,51 @@ class JuryService:
                             item["conversation_url"] = url
                     self._update(session_id, providers=deepcopy(provider_states))
 
-            for key in keys:
-                model_selection = next(
-                    item["model_selection"] for item in provider_states
-                    if item["key"] == key
+            if state["browser"] == "safari" and self.session_factory is None:
+                from .safari_automation import SafariContext
+
+                safari_context = inline_resources.enter_context(SafariContext(
+                    "about:blank",
+                    lock_blocking=False,
+                ))
+                safari_pages = [safari_context.primary_page]
+                safari_pages.extend(
+                    safari_context.new_page() for _index in range(1, len(keys))
                 )
-                workers[key] = _JurorWorker(self.session_factory or JuryBrowserSession,
-                                            settings, key, shutdown, self.config_provider(),
-                                            lambda url, key=key: record_conversation(key, url),
-                                            model_selection)
+                for key, page in zip(keys, safari_pages, strict=True):
+                    model_selection = next(
+                        item["model_selection"] for item in provider_states
+                        if item["key"] == key
+                    )
+                    browser_session = inline_resources.enter_context(JuryBrowserSession(
+                        settings,
+                        key,
+                        shutdown,
+                        config=self.config_provider(),
+                        on_conversation=(
+                            lambda url, key=key: record_conversation(key, url)
+                        ),
+                        model_selection=model_selection,
+                        browser_page=page,
+                    ))
+                    jurors[key] = _InlineJuror(browser_session)
+            else:
+                for key in keys:
+                    model_selection = next(
+                        item["model_selection"] for item in provider_states
+                        if item["key"] == key
+                    )
+                    worker = _JurorWorker(
+                        self.session_factory or JuryBrowserSession,
+                        settings,
+                        key,
+                        shutdown,
+                        self.config_provider(),
+                        lambda url, key=key: record_conversation(key, url),
+                        model_selection,
+                    )
+                    workers[key] = worker
+                    jurors[key] = worker
             previous: list[dict] = []
             rounds: list[dict] = []
             candidate = None
@@ -514,45 +576,85 @@ class JuryService:
                              message=f"Round {number}: {'independent research' if number == 1 else 'cross-checking peer evidence'}.",
                              candidate=candidate)
                 response_timeout = max(1.0, deadline - monotonic())
-                pending = {
-                    key: worker.ask(prompt, response_timeout)
-                    for key, worker in workers.items()
-                }
+                timed_out = False
                 opinions = []
                 round_record = {"round": number, "opinions": opinions}
                 rounds.append(round_record)
-                timed_out = False
-                while pending and not user_stop.is_set() and not shutdown.is_set():
-                    for key, future in list(pending.items()):
-                        worker = workers[key]
-                        if not future.done() and not getattr(worker, "closed", False):
-                            continue
-                        if not future.done():
-                            raise RuntimeError(f"{JUROR_LABELS[key]}: {getattr(worker, 'error', 'Browser session closed.')}")
-                        try:
-                            response, url = future.result()
-                        except Exception:
-                            for item in provider_states:
-                                if item["key"] == key:
-                                    item.update(status="failed", conversation_url=getattr(worker, "conversation_url", ""))
-                            self._update(session_id, providers=deepcopy(provider_states))
-                            raise
-                        if (
-                            not isinstance(response, str)
-                            or len(response.encode("utf-8")) > MAX_JUROR_RESPONSE_BYTES
-                        ):
-                            raise RuntimeError(
-                                f"{JUROR_LABELS[key]} returned an oversized or invalid response."
-                            )
-                        opinion = {**parse_opinion(response), "provider": key,
-                                   "response": response, "conversation_url": url}
-                        opinions.append(opinion)
-                        opinions.sort(key=lambda item: keys.index(item["provider"]))
+
+                def record_response(key: str, future: Future) -> None:
+                    juror = jurors[key]
+                    try:
+                        response, url = future.result()
+                    except Exception:
                         for item in provider_states:
                             if item["key"] == key:
-                                item.update(status="reviewed", conversation_url=url)
+                                item.update(
+                                    status="failed",
+                                    conversation_url=getattr(
+                                        juror,
+                                        "conversation_url",
+                                        "",
+                                    ),
+                                )
+                        self._update(
+                            session_id,
+                            rounds=deepcopy(rounds),
+                            providers=deepcopy(provider_states),
+                        )
+                        raise
+                    if (
+                        not isinstance(response, str)
+                        or len(response.encode("utf-8")) > MAX_JUROR_RESPONSE_BYTES
+                    ):
+                        raise RuntimeError(
+                            f"{JUROR_LABELS[key]} returned an oversized or invalid response."
+                        )
+                    opinion = {
+                        **parse_opinion(response),
+                        "provider": key,
+                        "response": response,
+                        "conversation_url": url,
+                    }
+                    opinions.append(opinion)
+                    opinions.sort(key=lambda item: keys.index(item["provider"]))
+                    for item in provider_states:
+                        if item["key"] == key:
+                            item.update(status="reviewed", conversation_url=url)
+                    self._update(
+                        session_id,
+                        rounds=deepcopy(rounds),
+                        providers=deepcopy(provider_states),
+                    )
+
+                if state["browser"] == "safari" and self.session_factory is None:
+                    pending = {}
+                    for key, juror in jurors.items():
+                        if user_stop.is_set() or shutdown.is_set():
+                            break
+                        if monotonic() >= deadline:
+                            timed_out = True
+                            break
+                        future = juror.ask(
+                            prompt,
+                            max(1.0, deadline - monotonic()),
+                        )
+                        pending[key] = future
+                        record_response(key, future)
                         del pending[key]
-                        self._update(session_id, rounds=deepcopy(rounds), providers=deepcopy(provider_states))
+                else:
+                    pending = {
+                        key: juror.ask(prompt, response_timeout)
+                        for key, juror in jurors.items()
+                    }
+                while pending and not user_stop.is_set() and not shutdown.is_set():
+                    for key, future in list(pending.items()):
+                        juror = jurors[key]
+                        if not future.done() and not getattr(juror, "closed", False):
+                            continue
+                        if not future.done():
+                            raise RuntimeError(f"{JUROR_LABELS[key]}: {getattr(juror, 'error', 'Browser session closed.')}")
+                        record_response(key, future)
+                        del pending[key]
                     if pending:
                         if monotonic() >= deadline:
                             timed_out = True
@@ -683,6 +785,13 @@ class JuryService:
             ):
                 for worker in workers.values():
                     worker.thread.join(timeout=0.2)
+            try:
+                inline_resources.close()
+            except Exception as cleanup_error:
+                self._update(
+                    session_id,
+                    resource_cleanup_warning=str(cleanup_error),
+                )
             if any(worker.thread.is_alive() for worker in workers.values()):
                 self._update(session_id, resource_cleanup_pending=True)
                 finalizer = Thread(

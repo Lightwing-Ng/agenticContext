@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.2.1-codex.1
+Code version: v1.3.0-codex.1
 """
 
 from __future__ import annotations
@@ -58,6 +58,18 @@ def jury_app(tmp_path):
 def enable_fake_operations(application):
     """Enable route dispatch only after the browser-facing service has been replaced."""
     application.config["AGENT_EXTERNAL_OPERATIONS_ENABLED"] = True
+
+
+def test_macos_jury_route_exposes_safari_as_a_persistable_browser(jury_app):
+    application, service = jury_app
+    response = application.test_client().get("/jury/safari")
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert 'data-jury-browser="safari"' in body
+    assert 'name="browser" value="safari"' in body
+    assert 'data-jury-browser-option="safari"' in body
+    service.check.assert_not_called()
+    service.start.assert_not_called()
 
 
 def test_jury_status_and_sessions_are_read_only_and_not_cached(jury_app):

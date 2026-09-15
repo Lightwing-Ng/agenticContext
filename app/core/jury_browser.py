@@ -1,6 +1,6 @@
 """Keep each juror in one authenticated browser conversation for an entire question.
 
-Code version: v1.1.3-codex.1
+Code version: v1.2.0-codex.1
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from .browser_sessions import (
 )
 from .config import CrawlConfig, is_macos_host
 from .computer_use_agent import ComputerUseSettings
+from .safari_automation import SafariContext
 
 
 JURY_MODEL_OPTIONS_BY_PROVIDER: dict[str, tuple[dict[str, Any], ...]] = {
@@ -169,8 +170,18 @@ def normalize_jury_response(response: str, platform: str) -> str:
 def _validate_provider(settings: ComputerUseSettings, platform: str) -> None:
     if platform not in JURY_MODEL_OPTIONS:
         raise ValueError(f"Unsupported jury provider: {platform}")
+    if settings.browser == "safari":
+        if not is_macos_host():
+            raise ValueError("Safari Jury sessions require macOS.")
+        if platform not in web_agent.SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS:
+            label = web_agent.AGENT_PLATFORM_BY_KEY[platform]["label"]
+            raise ValueError(
+                f"{label} Jury sessions require Edge or Chrome; Safari Jury supports "
+                "ChatGPT and Grok."
+            )
+        return
     if settings.browser not in {"edge", "chrome"}:
-        raise ValueError("Jury requires Microsoft Edge or Google Chrome.")
+        raise ValueError("Choose Safari, Microsoft Edge, or Google Chrome for Jury.")
 
 
 def jury_browser_login_check(
@@ -199,9 +210,9 @@ def jury_browser_login_check(
 
 
 class JuryBrowserSession:
-    """Own one browser page on one worker thread, with no workspace controller.
+    """Own one browser page on one execution thread, with no workspace controller.
 
-    The coordinator must enter, ask, and exit on the same worker thread. A
+    The coordinator must enter, ask, and exit on the same execution thread. A
     failed exchange closes admission to further prompts; it never creates a
     replacement conversation or resends an ambiguous submission.
     """
@@ -215,8 +226,11 @@ class JuryBrowserSession:
         config: CrawlConfig | None = None,
         on_conversation: Callable[[str], None] | None = None,
         model_selection: str | None = None,
+        browser_page: Any = None,
     ) -> None:
         _validate_provider(settings, platform)
+        if browser_page is not None and settings.browser != "safari":
+            raise ValueError("A shared browser page is supported only for Safari Jury sessions.")
         self.platform = platform
         self.model_option = jury_model_option(platform, model_selection)
         self.settings = replace(
@@ -234,6 +248,8 @@ class JuryBrowserSession:
         self.last_raw_response = ""
         self._resources: ExitStack | None = None
         self._page: Any = None
+        self._provided_page = browser_page
+        self._browser_kind = "safari" if settings.browser == "safari" else "chromium"
         self._binding: Any = None
         self._owner_thread: int | None = None
         self._entered = False
@@ -252,7 +268,7 @@ class JuryBrowserSession:
 
     def _require_owner(self) -> None:
         if self._owner_thread != get_ident():
-            raise RuntimeError("A jury browser session must stay on its owning worker thread.")
+            raise RuntimeError("A jury browser session must stay on its owning execution thread.")
 
     def _availability_check(self) -> bool:
         self._require_running()
@@ -270,7 +286,7 @@ class JuryBrowserSession:
                 should_resume=None,
                 update=lambda **_changes: None,
                 reason=reason,
-                monitor_screen_lock=False,
+                monitor_screen_lock=self._browser_kind == "safari",
             )
             if result == "stopped":
                 raise JuryBrowserStopped("The jury was stopped during human verification.")
@@ -342,39 +358,54 @@ class JuryBrowserSession:
         resources = ExitStack()
         self._resources = resources
         try:
-            descriptor = browser_descriptors(self.config)[self.settings.browser]
-            playwright = resources.enter_context(sync_playwright_or_error())
-            self._require_running()
-            context = resources.enter_context(launch_chromium_context(
-                playwright,
-                descriptor,
-                headless=False,
-                clone_profile_first=True,
-                background_window=True,
-                silent=True,
-                window_mode=(
-                    CHROMIUM_WINDOW_MODE_TASK_STAGE
-                    if is_macos_host()
-                    else CHROMIUM_WINDOW_MODE_OFFSCREEN
-                ),
-                allow_cdp_attach=False,
-            ))
-            self._require_running()
-            self._page = context.new_page()
-            goto_with_retry(
-                self._page,
-                self.settings.target_url,
-                attempts=2,
-                timeout_ms=90_000,
-                should_stop=self.stop_event.is_set,
-            )
+            if self.settings.browser == "safari":
+                if self._provided_page is None:
+                    context = resources.enter_context(SafariContext(
+                        self.settings.target_url,
+                        lock_blocking=False,
+                    ))
+                    self._page = context.primary_page
+                else:
+                    self._page = self._provided_page
+                self._page.goto(
+                    self.settings.target_url,
+                    wait_until="domcontentloaded",
+                    timeout=90_000,
+                )
+            else:
+                descriptor = browser_descriptors(self.config)[self.settings.browser]
+                playwright = resources.enter_context(sync_playwright_or_error())
+                self._require_running()
+                context = resources.enter_context(launch_chromium_context(
+                    playwright,
+                    descriptor,
+                    headless=False,
+                    clone_profile_first=True,
+                    background_window=True,
+                    silent=True,
+                    window_mode=(
+                        CHROMIUM_WINDOW_MODE_TASK_STAGE
+                        if is_macos_host()
+                        else CHROMIUM_WINDOW_MODE_OFFSCREEN
+                    ),
+                    allow_cdp_attach=False,
+                ))
+                self._require_running()
+                self._page = context.new_page()
+                goto_with_retry(
+                    self._page,
+                    self.settings.target_url,
+                    attempts=2,
+                    timeout_ms=90_000,
+                    should_stop=self.stop_event.is_set,
+                )
             self._require_running()
             self._binding = web_agent._ProviderSessionBinding(
                 self._page, self.platform, self.settings.target_url, "new",
             )
             if not web_agent._verify_agent_page(
                 self._page,
-                "chromium",
+                self._browser_kind,
                 self.platform,
                 self.settings.target_url,
                 self.stop_event.is_set,
@@ -388,13 +419,13 @@ class JuryBrowserSession:
                 raise RuntimeError("The juror's fresh conversation could not be verified.")
             self._require_running()
             if self.platform == "chatgpt":
-                web_agent._select_chat_mode(self._page, "chromium")
+                web_agent._select_chat_mode(self._page, self._browser_kind)
             selected = False
             for attempt in range(2):
                 self.model_observation.clear()
                 selected = web_agent._select_web_model(
                     self._page,
-                    "chromium",
+                    self._browser_kind,
                     self.platform,
                     self.settings.model,
                     self.model_observation,
@@ -463,7 +494,7 @@ class JuryBrowserSession:
             )
             response = web_agent._submit_and_wait(
                 self._page,
-                "chromium",
+                self._browser_kind,
                 message,
                 self.stop_event.is_set,
                 platform=self.platform,

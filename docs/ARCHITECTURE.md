@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.34.0-codex.1`
+Documentation version: `v1.35.0-codex.1`
 
 ## Runtime flow
 
@@ -111,8 +111,11 @@ transport boundary, while durable cache and state rules stay in core modules.
 
 The Agent domain facade also exports `JuryService`. `jury.py` owns evidence-convergent, durable,
 multi-provider deliberations, while `jury_browser.py` owns one authenticated browser conversation
-per juror per question. The Jury admits only Edge or Chrome; Safari is not a Jury runtime. The Jury
-uses no workspace controller or Terminal checks. Every review
+per juror per question. Edge and Chrome admit all four providers. macOS Safari admits ChatGPT and
+Grok only, under one shared Safari context with one task-owned window per juror and same-thread,
+sequential submission against each round's frozen evidence packet. Safari Gemini and Claude fail
+closed before prompt submission, and no Safari path falls back to Edge. The Jury uses no workspace
+controller or Terminal checks. Every review
 pass consumes a frozen prior-pass packet; consensus requires explicit agreement on one exact
 candidate, not merely matching labels. A deterministic parsed-evidence signature includes each
 source URL and its stated support, while ignoring arbitrary candidate-ID churn. It ends stable

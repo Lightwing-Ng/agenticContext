@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.22.0-codex.1`
+Documentation version: `v1.23.0-codex.1`
 
 ## Windows host operating constraints
 
@@ -27,8 +27,9 @@ Documentation version: `v1.22.0-codex.1`
   cloning an Edge profile, so choosing Safari does not enter Edge's credential-storage path.
 - Safari Gemini and Claude remain valid source-only Agent routes: they may check the account and
   browse Recent sessions and Projects, and the selection persists without an Edge fallback. Full
-  Agent execution stays disabled; choose Edge or Chrome to start a Gemini or Claude task. Jury
-  remains Edge/Chrome only.
+  Agent execution stays disabled; choose Edge or Chrome to start a Gemini or Claude task. The same
+  boundary applies to Jury: macOS Safari supports ChatGPT and Grok jurors, while selected Gemini or
+  Claude jurors fail readiness explicitly before any prompt.
 - Safari automation still serializes owned windows across local processes and closes only the
   task-owned window at completion. While a Safari Agent owns that serialized context, account,
   source, Project-session, and history probes serve cached state or fail busy instead of waiting on

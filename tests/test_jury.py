@@ -1,6 +1,6 @@
 """Jury deliberation boundaries with deterministic, browser-free jurors.
 
-Code version: v1.2.1-codex.1
+Code version: v1.3.0-codex.1
 """
 
 from __future__ import annotations
@@ -137,6 +137,146 @@ def test_default_jurors_keep_claude_available_but_unselected():
         "grok": "grok-auto",
         "gemini": "gemini-3.1-pro",
     }
+
+
+def test_safari_selection_is_admitted_only_when_the_host_exposes_it(monkeypatch):
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    assert validate_selection("safari", ["chatgpt", "grok"]) == (
+        "safari",
+        ["chatgpt", "grok"],
+    )
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"},),
+    )
+    with pytest.raises(ValueError, match="supported browser"):
+        validate_selection("safari", ["chatgpt", "grok"])
+
+
+def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
+    tmp_path,
+    monkeypatch,
+):
+    from app.core import jury_browser, safari_automation
+
+    events = []
+    owner_threads = []
+    fail_grok = [False]
+
+    class SafariContext:
+        def __init__(self, initial_url, *, lock_blocking):
+            assert initial_url == "about:blank"
+            assert lock_blocking is False
+            self.primary_page = object()
+
+        def __enter__(self):
+            events.append("open:safari-context")
+            return self
+
+        def new_page(self):
+            events.append("new:safari-page")
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("close:safari-context")
+
+    class SafariSession:
+        def __init__(self, settings, platform, stop, **kwargs):
+            assert settings.browser == "safari"
+            assert kwargs["browser_page"] is not None
+            self.platform = platform
+            self.stop = stop
+            self.on_conversation = kwargs["on_conversation"]
+            self.conversation_url = f"https://{platform}.example/conversation/safari"
+
+        def __enter__(self):
+            events.append(f"open:{self.platform}")
+            owner_threads.append(get_ident())
+            return self
+
+        def ask(self, prompt, *, timeout_seconds=None):
+            assert timeout_seconds is not None and timeout_seconds > 0
+            packet = json.loads(prompt.split("Evidence packet (JSON):\n", 1)[1])
+            round_number = int(prompt.split("Round ", 1)[1].split(".", 1)[0])
+            events.append(f"ask:{self.platform}:{round_number}")
+            owner_threads.append(get_ident())
+            self.on_conversation(self.conversation_url)
+            if fail_grok[0] and self.platform == "grok":
+                raise RuntimeError("Grok failed after ChatGPT returned its vote.")
+            return json.dumps(vote(candidate=packet["candidate"]))
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append(f"close:{self.platform}")
+            owner_threads.append(get_ident())
+
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    monkeypatch.setattr(safari_automation, "SafariContext", SafariContext)
+    monkeypatch.setattr(jury_browser, "JuryBrowserSession", SafariSession)
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "safari-jury",
+        login_check=lambda *_args, **_kwargs: {"logged_in": True},
+    )
+    try:
+        session_id = service.start(
+            "safari",
+            ["chatgpt", "grok"],
+            "Check this factual claim.",
+        )["session_id"]
+        wait_until(lambda: not service.status(session_id)["running"])
+        final = service.status(session_id)
+    finally:
+        service.stop_at_exit()
+
+    assert final["phase"] == "consensus"
+    assert events.count("open:safari-context") == 1
+    assert events.count("new:safari-page") == 1
+    assert [event for event in events if event.startswith("ask:")] == [
+        "ask:chatgpt:1",
+        "ask:grok:1",
+        "ask:chatgpt:2",
+        "ask:grok:2",
+    ]
+    assert events[-3:] == ["close:grok", "close:chatgpt", "close:safari-context"]
+    assert len(set(owner_threads)) == 1
+
+    events.clear()
+    owner_threads.clear()
+    fail_grok[0] = True
+    failed_service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "failed-safari-jury",
+        login_check=lambda *_args, **_kwargs: {"logged_in": True},
+    )
+    try:
+        failed_session_id = failed_service.start(
+            "safari",
+            ["chatgpt", "grok"],
+            "Preserve the completed first vote.",
+        )["session_id"]
+        wait_until(lambda: not failed_service.status(failed_session_id)["running"])
+        failed = failed_service.status(failed_session_id)
+    finally:
+        failed_service.stop_at_exit()
+
+    assert failed["phase"] == "failed"
+    assert [item["provider"] for item in failed["rounds"][0]["opinions"]] == [
+        "chatgpt",
+    ]
+    assert next(
+        item for item in failed["providers"] if item["key"] == "grok"
+    )["status"] == "failed"
 
 
 def test_selected_model_tiers_are_persisted_and_given_to_each_single_worker(service_factory):

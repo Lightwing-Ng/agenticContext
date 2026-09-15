@@ -1,6 +1,6 @@
 """Verify isolated browser ownership and single-session jury exchanges.
 
-Code version: v1.1.4-codex.1
+Code version: v1.2.0-codex.1
 """
 
 from contextlib import contextmanager
@@ -17,7 +17,9 @@ from app.core.computer_use_agent import ComputerUseSettings
 def transport(monkeypatch):
     events = []
     page = SimpleNamespace(
-        url="about:blank", wait_for_timeout=lambda _milliseconds: events.append("wait"),
+        url="about:blank",
+        goto=lambda *_args, **_kwargs: events.append("safari-goto"),
+        wait_for_timeout=lambda _milliseconds: events.append("wait"),
     )
     context = SimpleNamespace(new_page=lambda: events.append("new_page") or page)
 
@@ -65,8 +67,10 @@ def transport(monkeypatch):
 
     selected_models = []
     submissions = []
+    browser_kinds = []
 
-    def select(_page, _kind, platform, model, observation, **kwargs):
+    def select(_page, kind, platform, model, observation, **kwargs):
+        browser_kinds.append(("select", kind))
         selected_models.append((platform, model, kwargs))
         observation.update(
             observed="Latest" if platform == "chatgpt" else kwargs["model_option"]["label"],
@@ -75,8 +79,9 @@ def transport(monkeypatch):
         )
         return True
 
-    def submit(selected_page, _kind, message, _stop, **kwargs):
+    def submit(selected_page, kind, message, _stop, **kwargs):
         assert selected_page is page
+        browser_kinds.append(("submit", kind))
         submissions.append((message, kwargs))
         return f"Verified response {len(submissions)}"
 
@@ -100,7 +105,13 @@ def transport(monkeypatch):
         "_attach_context_file",
         lambda *_args, **_kwargs: pytest.fail("Jury must not upload workspace context."),
     )
-    return SimpleNamespace(events=events, selected_models=selected_models, submissions=submissions)
+    return SimpleNamespace(
+        events=events,
+        page=page,
+        selected_models=selected_models,
+        submissions=submissions,
+        browser_kinds=browser_kinds,
+    )
 
 
 @pytest.mark.parametrize("platform", ["chatgpt", "grok", "gemini", "claude"])
@@ -346,7 +357,7 @@ def test_cross_thread_prompt_is_rejected_before_browser_io(transport):
         thread = Thread(target=wrong_thread)
         thread.start()
         thread.join()
-    assert failures == ["A jury browser session must stay on its owning worker thread."]
+    assert failures == ["A jury browser session must stay on its owning execution thread."]
     assert transport.submissions == []
 
 
@@ -367,6 +378,42 @@ def test_login_check_verifies_the_selected_model_tier(transport):
     )
     assert result["ready"] is True
     assert transport.selected_models[0][1] == "gemini-3.8-flash"
+
+
+def test_safari_login_check_uses_an_owned_safari_page_without_edge_fallback(
+    transport,
+    monkeypatch,
+):
+    class SafariContext:
+        def __init__(self, initial_url, *, lock_blocking):
+            assert initial_url == "https://grok.com/"
+            assert lock_blocking is False
+            self.primary_page = transport.page
+
+        def __enter__(self):
+            transport.events.append("open:safari-context")
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            transport.events.append("close:safari-context")
+
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    monkeypatch.setattr(jury, "SafariContext", SafariContext)
+    result = jury.jury_browser_login_check(
+        ComputerUseSettings(browser="safari"),
+        "grok",
+    )
+
+    assert result["ready"] is result["logged_in"] is True
+    assert transport.events == [
+        "open:safari-context",
+        "safari-goto",
+        "binding",
+        "prepare",
+        "close:safari-context",
+    ]
+    assert transport.browser_kinds == [("select", "safari")]
+    assert transport.submissions == []
 
 
 def test_human_verification_surfaces_and_retains_the_same_page(transport, monkeypatch):
@@ -428,9 +475,42 @@ def test_grok_login_check_does_not_accept_an_unverified_composer(transport, monk
 
 
 def test_unsupported_browser_is_rejected_without_launch(transport):
-    with pytest.raises(ValueError, match="Edge or Google Chrome"):
-        jury.JuryBrowserSession(ComputerUseSettings(browser="safari"), "chatgpt")
+    with pytest.raises(ValueError, match="Safari, Microsoft Edge, or Google Chrome"):
+        jury.JuryBrowserSession(ComputerUseSettings(browser="firefox"), "chatgpt")
     assert transport.events == []
+
+
+@pytest.mark.parametrize("platform", ["gemini", "claude"])
+def test_safari_source_only_providers_are_rejected_before_browser_activity(
+    transport,
+    platform,
+    monkeypatch,
+):
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    with pytest.raises(ValueError, match="Safari Jury supports ChatGPT and Grok"):
+        jury.JuryBrowserSession(ComputerUseSettings(browser="safari"), platform)
+    assert transport.events == []
+    assert transport.submissions == []
+
+
+@pytest.mark.parametrize("platform", ["chatgpt", "grok"])
+def test_safari_juror_uses_the_injected_owned_page_without_chromium_fallback(
+    transport,
+    platform,
+    monkeypatch,
+):
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    with jury.JuryBrowserSession(
+        ComputerUseSettings(browser="safari"),
+        platform,
+        browser_page=transport.page,
+    ) as session:
+        assert session.ask("Fact-check the claim.") == "Verified response 1"
+
+    assert transport.events.count("safari-goto") == 1
+    assert not any(event.startswith("open:") for event in transport.events)
+    assert not any(event == "new_page" for event in transport.events)
+    assert transport.browser_kinds[-2:] == [("select", "safari"), ("submit", "safari")]
 
 
 def test_explicit_grok_model_uses_existing_trusted_selector_without_changing_agent_catalog(monkeypatch):
