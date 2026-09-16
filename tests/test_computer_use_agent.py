@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.81.2-codex.1
+Code version: v3.81.4-codex.1
 """
 
 from __future__ import annotations
@@ -57,6 +57,7 @@ from app.core.computer_use_agent import (
     _chatgpt_find_effort_slider,
     _chatgpt_find_effort_slider_in_scope,
     _chatgpt_effort_slider_state,
+    _close_chatgpt_model_menu,
     _chatgpt_select_subscription_effort,
     _chatgpt_slider_effort_label,
     _chatgpt_set_model_view,
@@ -575,6 +576,83 @@ def test_chatgpt_compatibility_reader_rejects_model_without_live_effort_proof() 
     assert calls[0]["labels"][:2] == ["GPT-5.6 Sol", "5.6 Sol"]
 
 
+def test_chatgpt_model_menu_close_waits_for_collapsed_trigger_and_hidden_surface() -> None:
+    class _Control:
+        def __init__(self) -> None:
+            self.expanded = True
+            self.click_count = 0
+
+        def get_attribute(self, name: str, **_kwargs: object) -> str | None:
+            if name == "aria-expanded":
+                return "true" if self.expanded else "false"
+            if name == "aria-controls":
+                return "model-menu" if self.expanded else None
+            return None
+
+        def click(self) -> None:
+            self.click_count += 1
+
+    class _Page:
+        def __init__(self, control: _Control) -> None:
+            self.control = control
+            self.menu_visible = True
+            self.waits: list[int] = []
+            self.evaluated_ids: list[str] = []
+
+        def evaluate(self, _expression: str, controlled_id: str) -> bool:
+            assert controlled_id == "model-menu"
+            self.evaluated_ids.append(controlled_id)
+            return self.menu_visible
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            self.waits.append(milliseconds)
+            if len(self.waits) == 2:
+                self.control.expanded = False
+                self.menu_visible = False
+
+    control = _Control()
+    page = _Page(control)
+
+    assert _close_chatgpt_model_menu(page, control) is True
+    assert control.click_count == 1
+    assert page.waits == [100, 100]
+    assert page.evaluated_ids == ["model-menu"] * 3
+
+
+def test_chatgpt_model_menu_close_fails_when_controlled_surface_stays_visible() -> None:
+    class _Control:
+        def __init__(self) -> None:
+            self.click_count = 0
+
+        def get_attribute(self, name: str, **_kwargs: object) -> str | None:
+            if name == "aria-expanded":
+                return "true"
+            if name == "aria-controls":
+                return "model-menu"
+            return None
+
+        def click(self) -> None:
+            self.click_count += 1
+
+    class _Page:
+        def __init__(self) -> None:
+            self.waits: list[int] = []
+
+        def evaluate(self, _expression: str, controlled_id: str) -> bool:
+            assert controlled_id == "model-menu"
+            return True
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            self.waits.append(milliseconds)
+
+    control = _Control()
+    page = _Page()
+
+    assert _close_chatgpt_model_menu(page, control) is False
+    assert control.click_count == 1
+    assert page.waits == [100] * 30
+
+
 def test_chromium_model_selector_rejects_readback_without_live_effort_proof() -> None:
     class _EmptyLocator:
         def count(self) -> int:
@@ -1055,6 +1133,8 @@ def test_chromium_selector_uses_all_subscription_efforts_and_leaves_sol_at_maxim
         def get_attribute(self, name: str, **_kwargs: object) -> str | None:
             if name == "aria-expanded":
                 return "true" if self.expanded else "false"
+            if name == "aria-controls":
+                return "subscription-power-menu" if self.expanded else None
             if name == "aria-haspopup":
                 return "menu"
             return None
@@ -1102,6 +1182,7 @@ def test_chromium_selector_uses_all_subscription_efforts_and_leaves_sol_at_maxim
         def __init__(self) -> None:
             self.power = _PowerLocator()
             self.slider = _SliderLocator(self)
+            self.menu_stuck = False
 
         def get_by_role(
             self,
@@ -1118,7 +1199,9 @@ def test_chromium_selector_uses_all_subscription_efforts_and_leaves_sol_at_maxim
                 return self.slider
             return _EmptyLocator()
 
-        def evaluate(self, expression: str, *_args: object) -> dict[str, object]:
+        def evaluate(self, expression: str, *_args: object) -> object:
+            if "controlledId =>" in expression and "element.isConnected" in expression:
+                return self.power.expanded or self.menu_stuck
             if "expectedScope" in expression:
                 return {"ok": True, "scope": "menu"}
             if "current:" in expression:
@@ -1178,6 +1261,16 @@ def test_chromium_selector_uses_all_subscription_efforts_and_leaves_sol_at_maxim
         "Cruise review",
         "Landing proof",
     ]
+
+    page.menu_stuck = True
+    blocked_observation: dict[str, object] = {}
+    assert _select_chatgpt_model(
+        page,
+        "chromium",
+        "gpt-5.6-sol",
+        blocked_observation,
+    ) is False
+    assert blocked_observation["reason"] == "model-menu-close-unverified"
 
 
 def test_chatgpt_effort_discovery_rejects_subscription_range_drift() -> None:
@@ -16555,6 +16648,48 @@ def test_chromium_submission_waits_for_attachment_then_clicks_send() -> None:
     assert all("sendButton.click()" not in expression for expression in page.evaluate_calls)
 
 
+def test_chatgpt_follow_up_polls_until_composer_is_writable() -> None:
+    class _Composer:
+        def __init__(self) -> None:
+            self.value = ""
+            self.timeouts: list[int] = []
+
+        def fill(self, value: str, *, timeout: int) -> None:
+            self.timeouts.append(timeout)
+            if len(self.timeouts) < 3:
+                raise TimeoutError("Composer is still transitioning after the response.")
+            self.value = value
+
+    class _Page:
+        def __init__(self) -> None:
+            self.composer = _Composer()
+            self.send_control = _TrustedChatGPTSendControl()
+            self.url = "https://chatgpt.com/c/bound-session"
+
+        def locator(self, selector: str) -> object:
+            if selector == "#prompt-textarea":
+                return self.composer
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
+
+        def evaluate(self, expression: str, _argument: object = None) -> object:
+            assert "sendButton.click()" not in expression
+            return {"ready": True, "targetMismatch": False}
+
+    page = _Page()
+
+    _submit_chromium_prompt(
+        page,
+        "Continue with the controller observation",
+        lambda: False,
+        expected_target_url=page.url,
+    )
+
+    assert page.composer.value == "Continue with the controller observation"
+    assert page.composer.timeouts == [250, 250, 250]
+    assert page.send_control.clicks == 1
+
+
 def test_chromium_submission_reports_when_attachment_never_enables_send() -> None:
     class _Composer:
         def fill(self, _value: str) -> None:
@@ -16582,7 +16717,7 @@ def test_chromium_submission_reports_when_attachment_never_enables_send() -> Non
             return None
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        monotonic_values = iter((0, 0, 181))
+        monotonic_values = iter((0, 0, 0, 0, 0, 181))
         monkeypatch.setattr("app.core.computer_use_agent._web_count", lambda *_args: 0)
         monkeypatch.setattr(
             "app.core.computer_use_agent.time.monotonic",

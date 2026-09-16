@@ -1,4 +1,4 @@
-/* Code version: v3.49.1-codex.1 */
+/* Code version: v3.49.2-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -2126,7 +2126,9 @@
                     resetRemoteSessionHistory();
                     if (elements.projectUrl instanceof HTMLInputElement) elements.projectUrl.value = input.value;
                     resetProjectSessions(true);
-                    loadProjectSessions(input.value);
+                    // Project sessions are user-selected source data, so do not present a
+                    // still-fresh catalog from a prior selection as the current project view.
+                    void loadProjectSessions(input.value, {forceRefresh: true});
                     updateSessionChoiceInputs();
                 }
                 if (

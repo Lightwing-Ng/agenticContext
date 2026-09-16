@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.46.12-codex.1
+Code version: v1.46.13-codex.1
 """
 
 from __future__ import annotations
@@ -4523,7 +4523,9 @@ def test_agent_provider_projects_submit_agentic_task_target(
         assert captured_ask_payloads[0]["conversation_url"] == ""
         assert any(f"platform={platform}" in url for url in browser_status_requests)
         assert source_requests == []
-        assert any("project_url=" in url for url in project_session_requests)
+        assert len(project_session_requests) == 1
+        assert "project_url=" in project_session_requests[0]
+        assert "refresh=1" in project_session_requests[0]
     finally:
         context.close()
 
@@ -4695,7 +4697,8 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
         expect(session_option).to_have_attribute("aria-pressed", "true")
         expect(page.locator("#agent_response_question")).to_have_text("What changed?")
         assert len(project_session_requests) == 2
-        assert all("refresh=1" not in url for url in project_session_requests)
+        assert "refresh=1" in project_session_requests[0]
+        assert "refresh=1" not in project_session_requests[1]
         assert len(history_requests) == 2
         assert source_requests == []
     finally:

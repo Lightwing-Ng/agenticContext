@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.76.2-codex.1`
+Documentation version: `v3.76.5-codex.1`
 
 ## Purpose
 
@@ -99,8 +99,10 @@ catalog directly to the selector and seeds the shared L1 and Parquet L2 cache. A
 supersedes older in-memory or session-storage catalog state before loaded/loading guards run,
 aborting and invalidating any older request. The page therefore does not open a second browser for
 the Recent sessions step. Loading sessions inside a selected Project remains a later, separately
-keyed operation; an expired Project-session entry may return stale rows while one coalesced quiet
-refresh runs because this request is explicitly user-initiated, unlike passive status polling.
+keyed operation. An explicit Project choice clears the prior session rows and forces one serialized
+collection for that exact Project key even when an older cache entry is still fresh. Reload
+restoration first reuses the verified cache and escalates only a stale response to a forced refresh,
+so passive restoration does not unconditionally launch a browser collector.
 Grok's DOM fallback exposes only same-Project `?chat=<id>` sessions.
 Safari applies this same strict Grok readiness and source contract through a credentialed,
 same-origin request inside the owned page. It neither exports cookies nor falls back to the weaker
@@ -276,7 +278,10 @@ within 0.01px of its label. The user-owned service was not restarted.
    to the effort view before binding the slider. Inert alternate views are excluded from both
    model and effort evidence. If that trusted visible trigger is clicked but ChatGPT's Radix menu
    does not render, the controller closes any partial state and retries the control up to three
-   times. A readable menu
+   times. When the open trigger exposes `aria-controls`, a menu close is accepted only after the
+   refreshed trigger reports `aria-expanded=false` and that exact controlled surface is no longer visible.
+   This bounded proof covers slower macOS close animations; an unproved close fails before prompt
+   submission instead of leaving the run waiting behind an open menu. A readable menu
    that proves a different model still fails immediately; the retry applies only to an unreadable
    menu or a trigger replaced during the open transition.
    Chromium first reuses the matching official provider tab, without focusing it, before navigation.
@@ -376,8 +381,12 @@ within 0.01px of its label. The user-owned service was not restarted.
    structurally, rather than through layout-sensitive `innerText`; unsupported atomic content stays
    ambiguous and blocks Send. If hydration replaces the composer with one new, empty composer, the
    controller may refill that demonstrably uncommitted draft once and repeat the atomic check; a
-   second empty remount or any non-empty draft change blocks Send. Project-bound Send and Retry
-   controls require both the exact conversation ID and stable
+   second empty remount or any non-empty draft change blocks Send. Before every Chromium ChatGPT
+   draft fill, the controller waits through a bounded, Stop-aware post-response composer transition.
+   The wait uses short trusted-input attempts, reacquires a remounted composer every time, and
+   remains before `commit_attempted`, so a slow Extra High response cannot strand the next controller
+   observation at Playwright's shorter default action timeout. Project-bound Send and Retry controls
+   require both the exact conversation ID and stable
    `g-p-...` identity, while a root Recent selection retains ChatGPT's root-to-Project canonical
    redirect compatibility. Grok Build may replace its textarea with the exact visible `Ask Grok anything`
    contenteditable ProseMirror composer. Direct paragraph children are serialized with blank lines

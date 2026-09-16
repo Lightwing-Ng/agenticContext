@@ -1,7 +1,7 @@
 """Focused tests for controller hardening: model verification, action parser,
 directory picker, recent-session catalog, and browser interruption recovery.
 
-Code version: v3.50.3-codex.1
+Code version: v3.50.4-codex.1
 """
 
 from __future__ import annotations
@@ -1300,6 +1300,18 @@ class TestRecentSessionCatalog:
         assert 'elements.sessionMode.value = "project"' not in bind_chunk
         assert "selectSessionListValue(" not in bind_chunk
         assert "sessionTitleOverride =" not in bind_chunk
+
+    def test_selecting_a_project_forces_its_session_catalog_refresh(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "app/web/static/computer-use-agent.js"
+        ).read_text(encoding="utf-8")
+        selection_index = script.index(
+            "if (combobox === elements.projectCombobox) {\n"
+            "                    sessionTitleOverride = \"\";"
+        )
+        selection_chunk = script[selection_index:selection_index + 900]
+        assert "void loadProjectSessions(input.value, {forceRefresh: true});" in selection_chunk
 
     def test_catalog_tab_reconciliation_never_calls_bring_to_front(self) -> None:
         chatgpt = MagicMock()

@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.81.3-codex.1
+Code version: v3.81.5-codex.1
 """
 
 from __future__ import annotations
@@ -154,6 +154,8 @@ CHATGPT_MODEL_VERIFICATION_ATTEMPTS = 3
 CHATGPT_MODEL_CONTROL_RETRY_ATTEMPTS = 6
 CHATGPT_MODEL_CONTROL_RETRY_BACKOFF_MILLISECONDS = 500
 CHATGPT_MODEL_LOCATOR_TIMEOUT_MILLISECONDS = 1_000
+CHATGPT_MODEL_MENU_CLOSE_ATTEMPTS = 31
+CHATGPT_MODEL_MENU_CLOSE_POLL_MILLISECONDS = 100
 CHATGPT_MODEL_CONTROL_WAIT_ATTEMPTS = 61
 CHATGPT_MODEL_CONTROL_POLL_MILLISECONDS = 250
 CHATGPT_MODEL_VIEW_WAIT_ATTEMPTS = 20
@@ -15020,11 +15022,81 @@ def _chatgpt_model_menu_scope_for_control(control: Any | None) -> str:
 
 
 def _close_chatgpt_model_menu(page: Any, power_button: Any) -> bool:
-    """Close a menu whose trigger may have been re-rendered."""
+    """Close a model menu and prove its controlled surface is no longer visible."""
     refreshed, expanded = _chatgpt_power_button_state(page, power_button)
     if refreshed is None:
         return False
-    return not expanded or _click_chatgpt_control(refreshed)
+    controlled_scope = _chatgpt_model_menu_scope_for_control(refreshed)
+    controlled_id = (
+        controlled_scope.removeprefix("menu:")
+        if controlled_scope.startswith("menu:")
+        else ""
+    )
+    if expanded and not _click_chatgpt_control(refreshed):
+        return False
+
+    wait_for_timeout = getattr(page, "wait_for_timeout", None)
+    for attempt in range(CHATGPT_MODEL_MENU_CLOSE_ATTEMPTS):
+        refreshed, expanded = _chatgpt_power_button_state(page, refreshed)
+        if refreshed is None:
+            return False
+        menu_visible = _chatgpt_controlled_model_menu_visible(
+            page,
+            refreshed,
+            controlled_id=controlled_id,
+        )
+        if expanded is False and menu_visible is not True:
+            return True
+        if attempt + 1 < CHATGPT_MODEL_MENU_CLOSE_ATTEMPTS:
+            if callable(wait_for_timeout):
+                wait_for_timeout(CHATGPT_MODEL_MENU_CLOSE_POLL_MILLISECONDS)
+            else:
+                time.sleep(CHATGPT_MODEL_MENU_CLOSE_POLL_MILLISECONDS / 1_000)
+    return False
+
+
+def _chatgpt_controlled_model_menu_visible(
+    page: Any,
+    control: Any,
+    *,
+    controlled_id: str = "",
+) -> bool | None:
+    """Read visibility for the exact surface named by the trigger's ARIA contract."""
+    exact_controlled_id = str(controlled_id or "").strip()
+    if not exact_controlled_id:
+        scope = _chatgpt_model_menu_scope_for_control(control)
+        if not scope.startswith("menu:"):
+            return None
+        exact_controlled_id = scope.removeprefix("menu:")
+    evaluate = getattr(page, "evaluate", None)
+    if not callable(evaluate):
+        return True
+    try:
+        visible = evaluate(
+            r"""controlledId => {
+                const element = document.getElementById(controlledId);
+                if (!(element instanceof Element) || !element.isConnected) return false;
+                for (let node = element; node instanceof Element; node = node.parentElement) {
+                    if (node.hidden || node.inert || node.getAttribute('aria-hidden') === 'true') {
+                        return false;
+                    }
+                    const style = window.getComputedStyle(node);
+                    if (
+                        style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || Number.parseFloat(style.opacity || '1') === 0
+                    ) {
+                        return false;
+                    }
+                }
+                return element.getClientRects().length > 0;
+            }""",
+            exact_controlled_id,
+        )
+    except Exception:
+        return True
+    return visible if isinstance(visible, bool) else True
 
 
 def _chatgpt_control_has_model_menu_semantics(control: Any) -> bool:
@@ -15260,7 +15332,16 @@ def _select_chatgpt_model_chromium(
         ]
         if stop_requested():
             return False
-        _close_chatgpt_model_menu(page, power_button)
+        if not _close_chatgpt_model_menu(page, power_button):
+            _record_model_observation(
+                observation,
+                observed=str(result.get("selected_model") or current),
+                available=available or [current],
+                attempted_labels=remote_labels,
+                menu_text=current,
+                reason="model-menu-close-unverified",
+            )
+            return False
         effort_catalog_complete = bool(effort_selection_complete)
         if effort_selection_failed(effort_catalog_complete):
             _record_model_observation(
@@ -15313,7 +15394,16 @@ def _select_chatgpt_model_chromium(
             )
             return False
         result, effort_labels, effort_selection_complete = select_effort_catalog(result)
-        _close_chatgpt_model_menu(page, power_button)
+        if not _close_chatgpt_model_menu(page, power_button):
+            _record_model_observation(
+                observation,
+                observed=str(result.get("selected_model") or current),
+                available=available or [current],
+                attempted_labels=remote_labels,
+                menu_text=current,
+                reason="model-menu-close-unverified",
+            )
+            return False
         effort_catalog_complete = bool(effort_selection_complete)
         observed_value, available_values, effort_values = observation_values(
             result,
@@ -15402,8 +15492,10 @@ def _select_chatgpt_model_chromium(
             current = str(result.get("current") or current)
         if stop_requested():
             return False
-        _close_chatgpt_model_menu(page, power_button)
+        menu_closed = _close_chatgpt_model_menu(page, power_button)
         matched = bool(result.get("ok") and result_matches_after_selection(result, current))
+        if not menu_closed:
+            matched = False
         effort_catalog_complete = bool(effort_selection_complete)
         if effort_selection_failed(effort_catalog_complete):
             matched = False
@@ -15424,7 +15516,11 @@ def _select_chatgpt_model_chromium(
             reason=(
                 ""
                 if matched
-                else str(result.get("effort_selection_error") or "model-mismatch")
+                else (
+                    "model-menu-close-unverified"
+                    if not menu_closed
+                    else str(result.get("effort_selection_error") or "model-mismatch")
+                )
             ),
         )
         return matched
@@ -20598,20 +20694,57 @@ def _submit_chromium_prompt(
         session_check(False)
     if should_stop():
         return
-    composer = page.locator("#prompt-textarea")
-    if should_stop():
-        return
 
-    def fill_checked_composer() -> None:
-        if session_check is not None:
-            session_check(False)
-        composer.fill(message)
+    def fill_checked_composer_until_ready() -> bool:
+        """Wait through one bounded post-response composer transition."""
+        deadline = time.monotonic() + CHROMIUM_SEND_BUTTON_TIMEOUT_SECONDS
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            if should_stop():
+                return False
+            remaining_ms = max(1, int((deadline - time.monotonic()) * 1_000))
+            attempt_timeout = min(
+                WEB_SEND_BUTTON_POLL_MILLISECONDS,
+                remaining_ms,
+            )
 
-    filled, _result = _run_browser_action_unless_stopped(
-        should_stop,
-        fill_checked_composer,
-    )
-    if not filled or should_stop():
+            def fill_checked_composer() -> None:
+                if session_check is not None:
+                    session_check(False)
+                composer = page.locator("#prompt-textarea")
+                fill = getattr(composer, "fill", None)
+                if not callable(fill):
+                    raise RuntimeError(
+                        "The verified ChatGPT composer does not support trusted input."
+                    )
+                try:
+                    fill(message, timeout=attempt_timeout)
+                except TypeError as exc:
+                    if "timeout" not in str(exc):
+                        raise
+                    # Lightweight test doubles and compatibility adapters may
+                    # implement the older one-argument shape. Draft filling is
+                    # still before the external commit boundary.
+                    fill(message)
+
+            try:
+                executed, _result = _run_browser_action_unless_stopped(
+                    should_stop,
+                    fill_checked_composer,
+                )
+            except Exception as exc:
+                if not _is_composer_wait_timeout(exc):
+                    raise
+                last_error = exc
+                continue
+            if not executed or should_stop():
+                return False
+            return True
+        raise RuntimeError(
+            "The ChatGPT composer did not become writable after the previous response."
+        ) from last_error
+
+    if not fill_checked_composer_until_ready() or should_stop():
         return
 
     deadline = time.monotonic() + CHROMIUM_SEND_BUTTON_TIMEOUT_SECONDS
@@ -20885,11 +21018,7 @@ def _submit_chromium_prompt(
                     and not empty_composer_refilled
                 ):
                     empty_composer_refilled = True
-                    refilled, _result = _run_browser_action_unless_stopped(
-                        should_stop,
-                        fill_checked_composer,
-                    )
-                    if not refilled or should_stop():
+                    if not fill_checked_composer_until_ready() or should_stop():
                         return
                     continue
                 raise RuntimeError(
