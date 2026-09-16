@@ -1,6 +1,6 @@
 """Jury deliberation boundaries with deterministic, browser-free jurors.
 
-Code version: v1.7.0-codex.1
+Code version: v1.8.1-codex.1
 """
 
 from __future__ import annotations
@@ -36,6 +36,16 @@ def wait_until(predicate, timeout=5):
     assert predicate(), "The deterministic jury fixture did not settle."
 
 
+class _ThreadState:
+    """Expose a deterministic thread-liveness value for archive cleanup tests."""
+
+    def __init__(self, alive: bool) -> None:
+        self.alive = alive
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+
 def vote(*, verdict="supported", candidate=None, conclusion="Primary evidence supports the claim.", **changes):
     opinion = {
         "verdict": verdict,
@@ -52,9 +62,10 @@ def vote(*, verdict="supported", candidate=None, conclusion="Primary evidence su
 class FakeBrowserFactory:
     """Record each context lifetime, thread identity, and exact shared evidence packet."""
 
-    def __init__(self, answer=None, close_wait=None):
+    def __init__(self, answer=None, close_wait=None, close_error=None):
         self.answer = answer or (lambda key, packet, stop: vote(candidate=packet["candidate"]))
         self.close_wait = close_wait
+        self.close_error = close_error
         self.lock = Lock()
         self.opened = Counter()
         self.closed = Counter()
@@ -92,6 +103,8 @@ class FakeBrowserFactory:
                 with owner.lock:
                     owner.threads[platform].append(get_ident())
                     owner.closed[platform] += 1
+                if owner.close_error is not None:
+                    raise RuntimeError(str(owner.close_error))
 
         return Browser()
 
@@ -449,6 +462,105 @@ def test_safari_account_check_uses_one_context_three_tabs_and_keeps_collecting(
     assert "Grok composer is unavailable" in by_key["grok"]["message"]
     assert "ask:" not in "".join(events)
     assert not any("edge" in event for event in events)
+
+
+def test_safari_account_check_aligns_results_to_requested_provider_order(
+    tmp_path,
+    monkeypatch,
+):
+    from app.core import jury_browser, safari_automation
+
+    providers = ["gemini", "chatgpt", "grok"]
+    models = {
+        "gemini": "gemini-3.8-flash",
+        "chatgpt": "chatgpt-latest-instant",
+        "grok": "grok-build",
+    }
+
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    monkeypatch.setattr(
+        safari_automation,
+        "verify_safari_context_cleanup_ready",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        jury_browser,
+        "jury_safari_account_check",
+        lambda *_args, **_kwargs: [
+            {"logged_in": False, "message": "Gemini needs sign-in."},
+            {"platform": "", "logged_in": True, "message": "Signed in"},
+            {"platform": "chatgpt", "logged_in": False, "message": "Grok needs sign-in."},
+        ],
+    )
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "safari-check-order",
+    )
+
+    checked = service.check("safari", providers, models)
+
+    assert [item["key"] for item in checked["providers"]] == providers
+    assert [item["ready"] for item in checked["providers"]] == [False, True, False]
+    assert [item["message"] for item in checked["providers"]] == [
+        "Gemini needs sign-in.",
+        "Signed in",
+        "Grok needs sign-in.",
+    ]
+    assert [item["model_selection"] for item in checked["providers"]] == [
+        models[key] for key in providers
+    ]
+
+
+def test_macos_edge_account_check_receives_the_service_owned_profile_root(
+    tmp_path,
+    monkeypatch,
+):
+    from app.core import jury_browser
+
+    providers = ["gemini", "chatgpt", "grok"]
+    calls = []
+    monkeypatch.setattr(jury_module, "is_macos_host", lambda: True)
+
+    def shared_check(settings, selected, selections, **kwargs):
+        calls.append((settings.browser, selected, selections, kwargs))
+        return [
+            {
+                "platform": platform,
+                "browser": "edge",
+                "logged_in": True,
+                "message": "Signed in",
+            }
+            for platform in selected
+        ]
+
+    monkeypatch.setattr(jury_browser, "jury_macos_edge_account_check", shared_check)
+    monkeypatch.setattr(
+        jury_browser,
+        "jury_browser_login_check",
+        lambda *_args, **_kwargs: pytest.fail(
+            "macOS Edge account checks must use the shared project process."
+        ),
+    )
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "agent-runtime" / "jury",
+    )
+
+    checked = service.check("edge", providers)
+
+    assert checked["ready"] is True
+    assert [item["key"] for item in checked["providers"]] == providers
+    assert len(calls) == 1
+    assert calls[0][0:2] == ("edge", providers)
+    assert calls[0][3]["project_profile_root"] == (
+        tmp_path / "agent-runtime" / "agent_browser_profile"
+    )
 
 
 def test_safari_owned_window_closes_after_unavailable_jurors_and_stop(
@@ -871,6 +983,26 @@ def test_invalid_model_output_cannot_become_a_vote(response):
     assert build_candidate([opinion, opinion]) is None
 
 
+@pytest.mark.parametrize("label", ["JSON\n", "json\r\n", "Json \n", "JSON ", "json\t"])
+def test_rendered_json_language_label_preserves_a_strict_vote(label):
+    opinion = parse_opinion(label + json.dumps(vote()))
+    assert opinion["valid"] is True
+    assert opinion["verdict"] == "supported"
+    assert opinion["evidence"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "JSON explanation\n{}",
+        "Before\nJSON\n{}",
+        "JSON\n{}\nAfter",
+    ],
+)
+def test_json_language_label_never_extracts_an_object_from_prose(response):
+    assert parse_opinion(response)["valid"] is False
+
+
 def test_same_verdict_requires_explicit_acceptance_of_the_exact_candidate():
     initial = parse_opinion(json.dumps(vote()))
     candidate = build_candidate([initial, initial])
@@ -1172,6 +1304,35 @@ def test_malformed_first_vote_can_recover_in_the_same_provider_session(service_f
     assert final["rounds"][0]["opinions"][1]["valid"] is False
 
 
+def test_rendered_json_language_label_can_reach_exact_candidate_acceptance(
+    service_factory,
+):
+    factory = FakeBrowserFactory(lambda key, packet, stop: (
+        "JSON\n" + json.dumps(vote(candidate=packet["candidate"]))
+    ))
+    final = complete(service_factory(factory))
+    assert final["phase"] == "consensus"
+    assert final["termination_reason"] == "unanimous_acceptance"
+    assert final["round"] == 2
+    assert all(
+        opinion["valid"]
+        for round_record in final["rounds"]
+        for opinion in round_record["opinions"]
+    )
+
+
+def test_repeated_malformed_votes_are_not_reported_as_evidence_disagreement(
+    service_factory,
+):
+    factory = FakeBrowserFactory(lambda key, packet, stop: '{"verdict": {}}')
+    final = complete(service_factory(factory))
+    assert final["phase"] == "inconclusive"
+    assert final["termination_reason"] == "structured_vote_stalled"
+    assert final["round"] == 2
+    assert "structured votes" in final["response"]
+    assert "disagreement" not in final["message"].lower()
+
+
 def test_any_selected_login_failure_prevents_all_provider_messages(service_factory):
     factory = FakeBrowserFactory()
     service = service_factory(factory, lambda settings, key, **kwargs: {"logged_in": key != "gemini", "message": "Unavailable"})
@@ -1324,6 +1485,106 @@ def test_terminal_consensus_cannot_be_overwritten_while_browser_cleanup_is_pendi
     assert service.status(session_id)["termination_reason"] == "unanimous_acceptance"
 
 
+def test_project_edge_page_cleanup_failure_remains_visible(service_factory):
+    factory = FakeBrowserFactory(
+        close_error=RuntimeError("simulated project Edge Page close failure")
+    )
+    service = service_factory(factory)
+
+    final = complete(service)
+
+    assert final["phase"] == "consensus"
+    assert final["resource_cleanup_pending"] is True
+    assert "Jury browser Page cleanup failed" in final["resource_cleanup_warning"]
+    assert "simulated project Edge Page close failure" in final[
+        "resource_cleanup_warning"
+    ]
+    assert factory.opened == factory.closed == {"chatgpt": 1, "grok": 1}
+
+
+def test_project_edge_cleanup_failure_is_retained_with_provider_failure(
+    service_factory,
+):
+    def fail_provider(_key, _packet, _shutdown):
+        raise RuntimeError("simulated provider failure")
+
+    factory = FakeBrowserFactory(
+        fail_provider,
+        close_error=RuntimeError("simulated concurrent Page close failure"),
+    )
+    service = service_factory(factory)
+
+    final = complete(service)
+
+    assert final["phase"] == "failed"
+    assert "simulated provider failure" in final["message"]
+    assert final["resource_cleanup_pending"] is True
+    assert "simulated concurrent Page close failure" in final[
+        "resource_cleanup_warning"
+    ]
+    assert factory.opened == factory.closed == {"chatgpt": 1, "grok": 1}
+
+
+def test_project_edge_enter_failure_retains_initialization_cleanup_error(
+    service_factory,
+):
+    class EnterFailureFactory:
+        def __call__(self, _settings, platform, _stop, **_kwargs):
+            class Browser:
+                conversation_url = ""
+                cleanup_error = RuntimeError(
+                    f"simulated {platform} initialization Page close failure"
+                )
+
+                def __enter__(self):
+                    raise RuntimeError(f"simulated {platform} setup failure")
+
+                def __exit__(self, exc_type, exc, traceback):
+                    raise AssertionError("An unentered session must not exit twice.")
+
+            return Browser()
+
+    service = service_factory(EnterFailureFactory())
+
+    final = complete(service)
+
+    assert final["phase"] == "failed"
+    assert "setup failure" in final["message"]
+    assert final["resource_cleanup_pending"] is True
+    assert "initialization Page close failure" in final[
+        "resource_cleanup_warning"
+    ]
+
+
+def test_macos_edge_service_exit_waits_for_page_lease_cleanup(
+    service_factory,
+    monkeypatch,
+):
+    entered = Event()
+
+    def answer(_key, _packet, shutdown):
+        entered.set()
+        assert shutdown.wait(5)
+        raise RuntimeError("The macOS Edge Jury service is exiting.")
+
+    monkeypatch.setattr(jury_module, "is_macos_host", lambda: True)
+    factory = FakeBrowserFactory(answer)
+    service = service_factory(factory)
+    session_id = service.start("edge", ["chatgpt", "grok"], "Check the claim.")[
+        "session_id"
+    ]
+    assert entered.wait(5)
+
+    service.stop_at_exit()
+
+    final = service.status(session_id)
+    assert final["running"] is False
+    assert final["phase"] == "interrupted"
+    assert final["termination_reason"] == "service_shutdown"
+    assert factory.opened == factory.closed == {"chatgpt": 1, "grok": 1}
+    assert final["resource_cleanup_pending"] is False
+
+
 def test_service_shutdown_is_not_misreported_as_a_user_stop(service_factory):
     entered = Event()
 
@@ -1380,6 +1641,91 @@ def test_service_shutdown_during_readiness_failure_remains_interrupted(service_f
     final = service.status(session_id)
     assert final["phase"] == "interrupted"
     assert final["termination_reason"] == "service_shutdown"
+
+
+def test_reload_recovers_strict_legacy_votes_without_rewriting_the_archive(
+    service_factory,
+    tmp_path,
+):
+    root = tmp_path / "legacy-votes"
+    root.mkdir()
+    session_id = "d" * 32
+    raw_votes = (
+        "JSON\n" + json.dumps(vote(conclusion="Recovered ChatGPT vote.")),
+        "JSON " + json.dumps(vote(conclusion="Recovered Gemini vote.")),
+    )
+    legacy = {
+        "version": "1.5.0",
+        "session_id": session_id,
+        "browser": "safari",
+        "question": "Check the archived claim.",
+        "title": "Check the archived claim.",
+        "phase": "inconclusive",
+        "running": False,
+        "consensus": False,
+        "termination_reason": "evidence_stalled",
+        "message": "Automatic convergence stopped at a stable, visible disagreement.",
+        "response": "Review the preserved disagreement below.",
+        "round": 1,
+        "started_at": "2026-09-16T00:00:00Z",
+        "providers": [],
+        "rounds": [{
+            "round": 1,
+            "opinions": [
+                {
+                    "provider": provider,
+                    "valid": False,
+                    "verdict": "unverified",
+                    "conclusion": response,
+                    "evidence": [],
+                    "unresolved": ["The juror did not return a structured vote."],
+                    "accept_candidate": None,
+                    "candidate_id": None,
+                    "response": response,
+                    "conversation_url": (
+                        f"https://{provider}.example/conversation/legacy"
+                    ),
+                }
+                for provider, response in zip(
+                    ("chatgpt", "gemini"), raw_votes, strict=True
+                )
+            ],
+        }],
+    }
+    path = root / f"{session_id}.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    poison = FakeBrowserFactory(
+        lambda *_args: pytest.fail(
+            "Archive recovery must not send provider messages."
+        ),
+    )
+
+    restored = service_factory(poison, root=root)
+    state = restored.status(session_id)
+
+    opinions = state["rounds"][0]["opinions"]
+    assert [item["valid"] for item in opinions] == [True, True]
+    assert [item["verdict"] for item in opinions] == ["supported", "supported"]
+    assert [item["conclusion"] for item in opinions] == [
+        "Recovered ChatGPT vote.",
+        "Recovered Gemini vote.",
+    ]
+    assert all(item["evidence"] and item["unresolved"] == [] for item in opinions)
+    assert state["phase"] == "inconclusive"
+    assert state["consensus"] is False
+    assert state["recovered_structured_vote_count"] == 2
+    assert state["termination_reason"] == "archived_vote_recovery"
+    assert state["original_termination_reason"] == "evidence_stalled"
+    assert "does not rerun deliberation" in state["message"]
+    assert "no provider failure" in state["response"]
+    assert poison.opened == {}
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["termination_reason"] == "evidence_stalled"
+    assert all(
+        opinion["valid"] is False
+        for opinion in persisted["rounds"][0]["opinions"]
+    )
 
 
 def test_reload_preserves_completed_and_interrupted_juries_without_resending(
@@ -1484,3 +1830,65 @@ def test_bound_conversation_urls_are_durable_before_any_response_returns(service
     finally:
         released.set()
     wait_until(lambda: not service.status(session_id)["running"])
+
+
+def test_failed_jury_record_can_be_deleted_only_after_all_cleanup_finishes(tmp_path):
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "jury-dismissal",
+    )
+    session_id = "a" * 32
+    record = {
+        "version": "1.7.1",
+        "session_id": session_id,
+        "browser": "safari",
+        "question": "Check this claim.",
+        "title": "Failed Jury",
+        "phase": "failed",
+        "running": False,
+        "resource_cleanup_pending": True,
+        "safari_cleanup_pending": True,
+        "started_at": "2026-09-16T00:00:00+00:00",
+    }
+    service._save(record)
+    service.records[session_id] = record
+    service.stops[session_id] = Event()
+    service.shutdowns[session_id] = Event()
+    service.threads[session_id] = _ThreadState(True)
+
+    summary = service.sessions("safari")["sessions"][0]
+    assert summary["deletable"] is False
+    with pytest.raises(RuntimeError, match="cleanup to finish"):
+        service.dismiss_failed(session_id)
+
+    record.update(resource_cleanup_pending=False, safari_cleanup_pending=False)
+    service.threads[session_id].alive = False
+    assert service.sessions("safari")["sessions"][0]["deletable"] is True
+    assert service.dismiss_failed(session_id) == {"session_id": session_id}
+    assert not (service.root / f"{session_id}.json").exists()
+    assert session_id not in service.records
+    assert session_id not in service.stops
+    assert session_id not in service.shutdowns
+    assert session_id not in service.threads
+
+
+def test_jury_dismissal_rejects_unknown_and_nonfailed_records(tmp_path):
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "jury-dismissal-guard",
+    )
+    session_id = "b" * 32
+    service.records[session_id] = {
+        "session_id": session_id,
+        "browser": "edge",
+        "phase": "inconclusive",
+        "running": False,
+        "started_at": "2026-09-16T00:00:00+00:00",
+    }
+
+    with pytest.raises(RuntimeError, match="Only failed"):
+        service.dismiss_failed(session_id)
+    with pytest.raises(ValueError, match="Unknown jury session"):
+        service.dismiss_failed("missing")

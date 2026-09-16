@@ -1,4 +1,4 @@
-"""Native Windows launcher and fail-closed gate tests. Code version: v1.2.0-codex.1."""
+"""Native Windows launcher and fail-closed gate tests. Code version: v1.3.0-codex.1."""
 
 import os
 from pathlib import Path
@@ -108,8 +108,9 @@ def test_windows_test_selection_and_stale_launcher_arguments(tmp_path, marker, e
     """Direct interpreters must discard launcher arguments and honor safe marker selection."""
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    for name in ("test.ps1", "resolve_python.ps1"):
+    for name in ("test.ps1", "resolve_python.ps1", "check_python_requirements.py"):
         shutil.copy2(PROJECT_ROOT / "scripts" / name, scripts / name)
+    shutil.copy2(PROJECT_ROOT / "requirements.txt", tmp_path / "requirements.txt")
     shutil.copy2(PROJECT_ROOT / "pytest.ini", tmp_path / "pytest.ini")
     (tmp_path / "test_probe.py").write_text(
         "import pytest\nfrom pathlib import Path\n"

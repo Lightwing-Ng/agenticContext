@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.10.3-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.11.0-codex.1."""
 
 import re
 from copy import deepcopy
@@ -354,7 +354,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
         context.close()
 
 
-def test_agent_preference_save_retries_the_latest_failed_payload(
+def test_agent_preference_save_retries_an_unchanged_failed_payload(
     disposable_browser,
     agent_selection_server_url,
 ):
@@ -415,14 +415,107 @@ def test_agent_preference_save_retries_the_latest_failed_payload(
     page.route("**/api/agent/preferences", fulfill_preference)
     try:
         page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
-        page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
-        page.get_by_role("option", name="Grok", exact=True).click()
-        page.get_by_role("button", name="Browser: Edge", exact=True).click()
-        page.get_by_role("option", name="Safari", exact=True).click()
-        page.wait_for_function("() => window.location.pathname === '/agent/safari/grok'")
-        page.wait_for_timeout(1_500)
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+        ):
+            page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
+            page.get_by_role("option", name="Grok", exact=True).click()
+        page.wait_for_function("() => window.location.pathname === '/agent/edge/grok'")
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+        ):
+            page.wait_for_timeout(1_100)
         assert len(requests) >= 2
         assert requests[1] == requests[0]
+        assert requests[1]["platform"] == "grok"
+        assert requests[1]["browser"] == "edge"
+    finally:
+        context.close()
+
+
+def test_agent_preference_save_newer_selection_supersedes_failed_payload(
+    disposable_browser,
+    agent_selection_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
+    page = context.new_page()
+    requests = []
+    base = fixtures._finished_chatgpt_agent_payload()
+    base.pop("can_start", None)
+
+    def fulfill_agent_status(route):
+        headers = route.request.headers
+        route.fulfill(
+            json={
+                **base,
+                "agent": {
+                    "session_id": "new",
+                    "platform": headers.get("x-cachelikes-agent-platform", "chatgpt"),
+                    "browser": headers.get("x-cachelikes-agent-browser", "edge"),
+                    "running": False,
+                    "phase": "idle",
+                    "history": [],
+                },
+                "sessions": [],
+                "active_count": 0,
+                "can_start": True,
+            }
+        )
+
+    def fulfill_preference(route):
+        requests.append(route.request.post_data_json)
+        if len(requests) == 1:
+            route.fulfill(status=503, json={"error": "Temporary failure"})
+            return
+        route.fulfill(json={"settings": {}, "runtime": {}})
+
+    page.route("**/api/agent/status", fulfill_agent_status)
+    page.route(
+        "**/api/browser-session**",
+        lambda route: route.fulfill(
+            json={
+                "platform": "grok",
+                "browser": "safari",
+                "browser_label": "Safari",
+                "logged_in": True,
+                "can_download": True,
+                "account_name": "Signed in",
+                "message": "Ready",
+                "agent_sources": {"recent_sessions": [], "projects": []},
+            }
+        ),
+    )
+    page.route(
+        "**/api/agent/sources**",
+        lambda route: route.fulfill(
+            json={"platform": "grok", "recent_sessions": [], "projects": []}
+        ),
+    )
+    page.route("**/api/agent/preferences", fulfill_preference)
+    try:
+        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+        ):
+            page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
+            page.get_by_role("option", name="Grok", exact=True).click()
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+            and response.request.post_data_json.get("browser") == "safari"
+        ):
+            page.get_by_role("button", name="Browser: Edge", exact=True).click()
+            page.get_by_role("option", name="Safari", exact=True).click()
+        page.wait_for_function("() => window.location.pathname === '/agent/safari/grok'")
+        assert len(requests) >= 2
+        assert requests[0]["platform"] == "grok"
+        assert requests[0]["browser"] == "edge"
+        assert requests[1]["platform"] == "grok"
+        assert requests[1]["browser"] == "safari"
+        assert requests[1]["preference_revision"] > requests[0]["preference_revision"]
     finally:
         context.close()
 

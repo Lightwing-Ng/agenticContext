@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.68.1-codex.1
+Code version: v1.68.3-codex.1
 """
 
 import hashlib
@@ -13,10 +13,40 @@ from scripts.build_web_fonts import FACE_NAMES, checksum, extract_face
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FONT_PATH = PROJECT_ROOT / "app/web/static/fonts/UniversNextforHSBC.ttc"
 STYLE_PATH = PROJECT_ROOT / "app/web/static/style.css"
+AGENT_SESSIONS_STYLE_PATH = PROJECT_ROOT / "app/web/static/agent-sessions.css"
 
 
 def _stylesheet() -> str:
     return STYLE_PATH.read_text(encoding="utf-8")
+
+
+def _agent_sessions_stylesheet() -> str:
+    return AGENT_SESSIONS_STYLE_PATH.read_text(encoding="utf-8")
+
+
+def test_agent_session_scrollport_preserves_physical_effect_bleed() -> None:
+    """Keep session-pill shadows inside their owning scrollport and outside its body."""
+    stylesheet = _agent_sessions_stylesheet()
+    base_start = stylesheet.index(".agent-execution-session-list {")
+    base_rule = stylesheet[base_start:stylesheet.index("\n}", base_start)]
+    list_start = stylesheet.index(".jury-page .agent-execution-session-list {")
+    list_rule = stylesheet[list_start:stylesheet.index("\n}", list_start)]
+    body_start = stylesheet.index(".agent-session-collapse > .ui-collapse-body {")
+    body_rule = stylesheet[body_start:stylesheet.index("\n}", body_start)]
+
+    for token in (
+        "--agent-session-shadow-bleed-inline:",
+        "--agent-session-shadow-bleed-block-end:",
+        "padding: var(--agent-session-shadow-bleed-block-start)",
+        "overflow-x: hidden;",
+        "scroll-padding: var(--agent-session-shadow-bleed-block-start)",
+    ):
+        assert token in list_rule
+    assert "overflow-y: auto;" in base_rule
+    assert "margin-inline:" not in list_rule
+    assert "overflow: visible;" in body_rule
+    assert ".jury-page .secondary-button.agent-execution-session:hover," in stylesheet
+    assert "    transform: none;" in stylesheet
 
 
 def test_cache_metrics_reuse_the_foundation_surface_and_type_contract() -> None:

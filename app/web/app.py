@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.82.0-codex.1
+# Code version: v1.82.3-codex.1
 
 from __future__ import annotations
 
@@ -1911,6 +1911,8 @@ def create_app(
                 "traditional_handoff_message": "",
                 "traditional_handoff_opened": False,
                 "turn_count": 0,
+                "agentic_token_count": 0,
+                "agentic_transcript_tokens": 0,
                 "workspace_path": "",
                 "running": foreign_run_active,
             }
@@ -2092,6 +2094,24 @@ def create_app(
             return jury_snapshot_response(app.extensions["jury_service"].stop(session_id))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 404
+
+    @app.delete("/api/jury/session")
+    def delete_failed_jury_session():
+        """Dismiss one fully cleaned failed Jury session from the local archive."""
+        require_local_agent_request()
+        if not external_agent_operations_enabled():
+            return reject_external_agent_operation()
+        payload = jury_payload()
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            return jsonify({"error": "Choose a jury session."}), 400
+        try:
+            dismissed = app.extensions["jury_service"].dismiss_failed(session_id.strip())
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "code": "unknown_jury_session"}), 404
+        except (RuntimeError, OSError) as exc:
+            return jsonify({"error": str(exc), "code": "jury_session_not_deletable"}), 409
+        return jsonify({"deleted": True, **dismissed})
 
     @app.post("/agent/unlock")
     def unlock_agent():
@@ -2461,6 +2481,16 @@ def create_app(
         )
         if not conversation_url:
             return jsonify({"error": "Choose a valid ChatGPT conversation before loading its history."}), 400
+        conversation_id = urlsplit(conversation_url).path.rstrip("/").rsplit("/", 1)[-1]
+        if conversation_id.casefold().startswith("web:"):
+            return jsonify(
+                {
+                    "error": (
+                        "ChatGPT has not assigned this task a server conversation ID yet. "
+                        "History remains unavailable until the provider finishes that transition."
+                    )
+                }
+            ), 409
         ask_running = uses_exclusive_agent_browser(
             browser_name
         ) and agent_session_pool.has_active_worker(browser_name)

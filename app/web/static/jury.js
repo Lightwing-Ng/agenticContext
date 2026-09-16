@@ -1,4 +1,4 @@
-/* Code version: v1.3.1-codex.1 */
+/* Code version: v1.3.5-codex.1 */
 (() => {
     "use strict";
     const root = document.querySelector("[data-jury-root]");
@@ -21,6 +21,11 @@
     const browserTrigger = find("browser-trigger");
     const browserMenu = find("browser-menu");
     const providerLabels = {chatgpt: "ChatGPT", grok: "Grok", gemini: "Gemini", claude: "Claude"};
+    const providerIcons = Object.fromEntries(providerInputs.map((input) => [
+        input.value,
+        input.closest("[data-jury-provider-row]")
+            ?.querySelector(".browser-picker-option-icon")?.getAttribute("src") || "",
+    ]));
     const safariJurorKeys = new Set(["chatgpt", "grok", "gemini"]);
     const runtimePreferencesStorageKey = "cachelikes:jury-runtime-preferences:v1";
     const runtimePreferencesVersion = 1;
@@ -100,7 +105,16 @@
         providerInputs.forEach((input) => {
             const row = input.closest("[data-jury-provider-row]");
             const supported = safariJurorAllowed(input.value);
-            if (row instanceof HTMLElement) row.hidden = !supported;
+            if (row instanceof HTMLElement) {
+                row.hidden = false;
+                if (supported) {
+                    row.removeAttribute("aria-disabled");
+                    row.removeAttribute("title");
+                } else {
+                    row.setAttribute("aria-disabled", "true");
+                    row.title = "Claude Jury is available in Microsoft Edge or Google Chrome.";
+                }
+            }
             if (!supported) {
                 const picker = modelPickers.find((item) => item.provider === input.value);
                 if (picker) closeModelMenu(picker);
@@ -243,7 +257,18 @@
             detail.dataset.round = String(round.round || index + 1);
             detail.open = oldOpen.has(detail.dataset.round) ? oldOpen.get(detail.dataset.round) : index === rounds.length - 1;
             const summary = document.createElement("summary");
-            summary.textContent = "Round " + detail.dataset.round + (index ? " · Cross-review" : " · Independent checks");
+            const reviewLabel = index ? "Cross-review" : "Independent checks";
+            summary.setAttribute("aria-label", "Round " + detail.dataset.round + ": " + reviewLabel);
+            const summaryContent = document.createElement("span");
+            summaryContent.className = "jury-round-summary";
+            const roundNumber = document.createElement("span");
+            roundNumber.className = "agent-session-count jury-round-number";
+            roundNumber.setAttribute("aria-hidden", "true");
+            roundNumber.textContent = detail.dataset.round;
+            const roundLabel = document.createElement("span");
+            roundLabel.textContent = reviewLabel;
+            summaryContent.append(roundNumber, roundLabel);
+            summary.appendChild(summaryContent);
             const body = document.createElement("div");
             body.className = "ui-collapse-body";
             (round.opinions || []).forEach((opinion) => {
@@ -252,12 +277,29 @@
                 article.dataset.provider = opinion.provider;
                 const header = document.createElement("header");
                 header.className = "jury-opinion-header";
+                const provider = document.createElement("div");
+                provider.className = "jury-opinion-provider";
+                const iconSource = providerIcons[opinion.provider];
+                if (iconSource) {
+                    const iconShell = document.createElement("span");
+                    iconShell.className = "browser-picker-selected-icon-shell";
+                    iconShell.setAttribute("aria-hidden", "true");
+                    const icon = document.createElement("img");
+                    icon.className = "browser-picker-option-icon";
+                    icon.src = iconSource;
+                    icon.alt = "";
+                    iconShell.appendChild(icon);
+                    provider.appendChild(iconShell);
+                }
                 const heading = document.createElement("h4");
                 heading.textContent = providerLabels[opinion.provider] || opinion.provider;
-                header.appendChild(heading);
+                provider.appendChild(heading);
+                header.appendChild(provider);
                 if (opinion.verdict) {
                     const verdict = document.createElement("span");
-                    verdict.textContent = displayPhase(opinion.verdict);
+                    verdict.textContent = opinion.valid === false
+                        ? "invalid vote"
+                        : displayPhase(opinion.verdict);
                     header.appendChild(verdict);
                 }
                 const url = conversationLink(opinion.conversation_url);
@@ -299,7 +341,9 @@
                     const unresolved = document.createElement("div");
                     unresolved.className = "jury-unresolved";
                     const label = document.createElement("p");
-                    label.textContent = "Remaining objections";
+                    label.textContent = opinion.valid === false
+                        ? "Structured vote unavailable"
+                        : "Remaining objections";
                     const list = document.createElement("ul");
                     opinion.unresolved.forEach((objection) => {
                         const item = document.createElement("li");
@@ -382,9 +426,12 @@
         const list = find("session-list");
         const fragment = document.createDocumentFragment();
         sessions.forEach((session) => {
+            const row = document.createElement("div");
+            row.className = "agent-execution-session-row";
             const button = document.createElement("button");
             button.type = "button";
             button.className = "secondary-button agent-execution-session";
+            button.dataset.jurySessionId = session.session_id;
             button.setAttribute("aria-pressed", String(session.session_id === sessionId));
             button.disabled = isRunning() && session.session_id !== sessionId;
             const title = document.createElement("span");
@@ -396,7 +443,24 @@
             phase.textContent = displayPhase(session.phase);
             button.append(title, phase);
             button.addEventListener("click", () => selectSession(session.session_id));
-            fragment.appendChild(button);
+            row.appendChild(button);
+            const deletable = session.deletable === true
+                && !session.running
+                && String(session.phase || "").toLowerCase() === "failed";
+            row.classList.toggle("is-deletable", deletable);
+            if (deletable) {
+                const deleteButton = document.createElement("button");
+                deleteButton.type = "button";
+                deleteButton.className = "agent-execution-session-delete";
+                deleteButton.setAttribute("aria-label", `Delete failed Jury session: ${title.textContent}`);
+                deleteButton.title = "Delete failed Jury session";
+                deleteButton.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    void dismissFailedSession(session, deleteButton);
+                });
+                row.appendChild(deleteButton);
+            }
+            fragment.appendChild(row);
         });
         if (!sessions.length) {
             const empty = document.createElement("p");
@@ -422,6 +486,33 @@
             if (!sessionId && requestedBrowser === browser && !disposed) setMessage(error.message, "failed");
         } finally {
             if (!disposed) sessionsTimer = window.setTimeout(loadSessions, 5000);
+        }
+    }
+
+    async function dismissFailedSession(session, deleteButton) {
+        if (!session?.session_id || deleteButton.disabled) return;
+        deleteButton.disabled = true;
+        const deletedIndex = sessions.findIndex((item) => item.session_id === session.session_id);
+        try {
+            await requestJson("/api/jury/session", {
+                method: "DELETE",
+                body: JSON.stringify({session_id: session.session_id}),
+            });
+            sessions = sessions.filter((item) => item.session_id !== session.session_id);
+            if (sessionId === session.session_id) {
+                newSession();
+                return;
+            }
+            renderSessions();
+            const fallback = sessions[Math.min(deletedIndex, sessions.length - 1)];
+            const fallbackButton = fallback
+                ? Array.from(find("session-list").querySelectorAll("[data-jury-session-id]"))
+                    .find((button) => button.dataset.jurySessionId === fallback.session_id)
+                : find("new-session");
+            fallbackButton?.focus();
+        } catch (error) {
+            deleteButton.disabled = false;
+            setMessage(error.message, "failed");
         }
     }
 

@@ -1,6 +1,29 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.24.2-codex.1`
+Documentation version: `v1.24.4-codex.1`
+
+## Jury structured-vote normalization and round presentation on 16 Sep 2026
+
+- Safari can expose an otherwise valid provider code block as a standalone `JSON` language-label
+  line followed by the complete object. Jury now accepts only that exact renderer shape in addition
+  to raw or fenced JSON; arbitrary prose remains invalid and can never imply agreement.
+- Repeated invalid structured votes no longer become `evidence_stalled`. They stop with the explicit
+  `structured_vote_stalled` reason and preserve every raw response without inferring a factual
+  disagreement. Existing archives are not rewritten into retrospective consensus.
+- Safari displays Claude as unavailable and unchecked rather than removing it from the provider
+  catalog. Safari still rejects Claude execution; use Edge or Chrome when Claude should serve as a
+  juror.
+- Round summaries now use the Worthward Collapse geometry and trailing chevron, with the Agent
+  active-session count circle providing the round ordinal.
+
+## Jury failed-session cleanup and Recent sessions effects on 16 Sep 2026
+
+- Failed Jury sessions expose a trailing delete action only after all provider and Safari cleanup
+  owners have exited. Inconclusive, stopped, running, cleanup-pending, and still-finalizing records
+  remain preserved and cannot be deleted through that action.
+- The bounded Recent sessions scrollport now reserves internal space for the standard pill shadows,
+  while its disclosure body remains an overflow-visible effect host. Long histories still scroll
+  locally instead of expanding through the fixed sidebar Dock.
 
 ## Safari Jury single-window tabs on 16 Sep 2026
 

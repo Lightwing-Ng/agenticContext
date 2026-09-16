@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.14.0-codex.1`
+Documentation version: `v1.15.0-codex.1`
 
 ## Supported commands
 
@@ -13,6 +13,23 @@ Install the project dependencies with the supported Python 3.13 or newer workflo
 On Windows:
 
 ```powershell
+.\scripts\setup_python.ps1
+```
+
+Use an isolated project environment when the host interpreter has dependencies owned by another
+application:
+
+```bash
+python3 -m venv .venv
+export AGENTIC_CONTEXT_PYTHON="$PWD/.venv/bin/python"
+./scripts/setup_python.sh
+```
+
+On Windows:
+
+```powershell
+py -3 -m venv .venv
+$env:AGENTIC_CONTEXT_PYTHON = (Resolve-Path .venv\Scripts\python.exe)
 .\scripts\setup_python.ps1
 ```
 
@@ -154,11 +171,12 @@ check, as described in [Jury](JURY.md).
 The canonical local and CI quality gate is `scripts/check.sh` on macOS/Linux and
 `scripts/check.ps1` on Windows. The gates run, in order:
 
-1. Ruff static checks over `main.py`, `app/`, `tests/`, and `scripts/`.
-2. Offline Markdown file, image, and heading links in the repository documentation.
-3. `node --check` for every first-party JavaScript file in `app/web/static/`.
-4. Node unit tests for the shared Agent Optimization and Site tools runtime contract.
-5. The full pytest suite with branch coverage for `app/`, including the disposable-browser
+1. Installed requirement-version validation, `pip check`, and a local-environment `pip-audit` scan.
+2. Ruff static checks over `main.py`, `app/`, `tests/`, and `scripts/`.
+3. Offline Markdown file, image, and heading links in the repository documentation.
+4. `node --check` for every first-party JavaScript file in `app/web/static/`.
+5. Node unit tests for the shared Agent Optimization and Site tools runtime contract.
+6. The full pytest suite with branch coverage for `app/`, including the disposable-browser
    responsive sidebar E2E flow.
 
 The coverage report is written to `test-results/coverage.json`; all generated test artifacts are

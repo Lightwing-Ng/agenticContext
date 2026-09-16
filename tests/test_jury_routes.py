@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.4.0-codex.1
+Code version: v1.4.3-codex.1
 """
 
 from __future__ import annotations
@@ -23,7 +23,9 @@ def jury_app(tmp_path):
     )
     application.config.update(TESTING=True)
     real_service = application.extensions["jury_service"]
-    fake = Mock(spec=["check", "start", "status", "sessions", "stop", "stop_at_exit"])
+    fake = Mock(spec=[
+        "check", "dismiss_failed", "start", "status", "sessions", "stop", "stop_at_exit",
+    ])
     fake.status.return_value = {
         "session_id": "jury-example",
         "question": "Check the original claim against primary evidence.",
@@ -49,6 +51,7 @@ def jury_app(tmp_path):
     }
     fake.sessions.return_value = [fake.status.return_value]
     fake.stop.return_value = {**fake.status.return_value, "running": False, "phase": "stopped"}
+    fake.dismiss_failed.return_value = {"session_id": "jury-example"}
     application.extensions["jury_service"] = fake
     yield application, fake
     real_service.stop_at_exit()
@@ -68,6 +71,10 @@ def test_macos_jury_route_exposes_safari_as_a_persistable_browser(jury_app):
     assert 'data-jury-browser="safari"' in body
     assert 'name="browser" value="safari"' in body
     assert 'data-jury-browser-option="safari"' in body
+    assert 'agent-sessions.css?v=1.8.4' in body
+    assert 'jury.css?v=jury-v1.1.7-codex.1' in body
+    assert 'jury.js?v=jury-v1.3.5-codex.1' in body
+    assert 'data-jury-provider-row="claude" aria-disabled="true"' in body
     service.check.assert_not_called()
     service.start.assert_not_called()
 
@@ -157,6 +164,16 @@ def test_isolated_jury_app_blocks_browser_operations(jury_app, route):
     assert response.status_code == 409
     assert "disabled" in response.get_json()["error"].lower()
     getattr(service, route).assert_not_called()
+
+
+def test_isolated_jury_app_blocks_failed_session_deletion(jury_app):
+    application, service = jury_app
+    response = application.test_client().delete(
+        "/api/jury/session", json={"session_id": "jury-example"},
+    )
+    assert response.status_code == 409
+    assert "disabled" in response.get_json()["error"].lower()
+    service.dismiss_failed.assert_not_called()
 
 
 @pytest.mark.parametrize("route", ["check", "start"])
@@ -276,6 +293,38 @@ def test_jury_rejects_cross_site_writes_before_provider_dispatch(jury_app, route
     getattr(service, route).assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Origin": "https://attacker.example"},
+        {"Sec-Fetch-Site": "cross-site"},
+        {"Origin": "http://attacker@localhost"},
+    ],
+)
+def test_jury_rejects_cross_site_failed_session_deletion(jury_app, headers):
+    application, service = jury_app
+    enable_fake_operations(application)
+    response = application.test_client().delete(
+        "/api/jury/session",
+        headers=headers,
+        json={"session_id": "jury-example"},
+    )
+    assert response.status_code == 403
+    assert "no-store" in response.headers["Cache-Control"]
+    service.dismiss_failed.assert_not_called()
+
+
+@pytest.mark.parametrize("session_id", [None, "", "   ", 17])
+def test_jury_failed_session_deletion_requires_a_session_id(jury_app, session_id):
+    application, service = jury_app
+    enable_fake_operations(application)
+    response = application.test_client().delete(
+        "/api/jury/session", json={"session_id": session_id},
+    )
+    assert response.status_code == 400
+    service.dismiss_failed.assert_not_called()
+
+
 @pytest.mark.parametrize("path", ["/api/jury/status", "/api/jury/sessions"])
 def test_jury_lan_reads_require_the_existing_unlocked_session(jury_app, monkeypatch, path):
     application, service = jury_app
@@ -319,6 +368,39 @@ def test_jury_stop_targets_the_existing_session(jury_app):
     assert response.status_code == 200
     service.stop.assert_called_once_with("jury-example")
     service.start.assert_not_called()
+
+
+def test_jury_failed_session_delete_targets_one_local_archive(jury_app):
+    application, service = jury_app
+    enable_fake_operations(application)
+    response = application.test_client().delete(
+        "/api/jury/session", json={"session_id": "jury-example"},
+    )
+    assert response.status_code == 200
+    assert response.get_json() == {"deleted": True, "session_id": "jury-example"}
+    service.dismiss_failed.assert_called_once_with("jury-example")
+    service.start.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("side_effect", "status", "code"),
+    [
+        (ValueError("Unknown jury session."), 404, "unknown_jury_session"),
+        (RuntimeError("Only failed Jury sessions can be deleted."), 409,
+         "jury_session_not_deletable"),
+    ],
+)
+def test_jury_failed_session_delete_returns_typed_errors(
+    jury_app, side_effect, status, code,
+):
+    application, service = jury_app
+    enable_fake_operations(application)
+    service.dismiss_failed.side_effect = side_effect
+    response = application.test_client().delete(
+        "/api/jury/session", json={"session_id": "jury-example"},
+    )
+    assert response.status_code == status
+    assert response.get_json()["code"] == code
 
 
 def test_jury_status_sanitizes_provider_markdown_before_browser_rendering(jury_app):

@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.11.0-codex.1
+# Code version: v2.11.1-codex.1
 
 from __future__ import annotations
 
@@ -154,38 +154,6 @@ if shouldRestoreClosedWindowFocus then
                 set frontmost of process previousFrontmostProcessName to true
             end try
         end tell
-    end if
-end if
-""".strip()
-SAFARI_RESTORE_FRONT_WINDOW_IF_STILL_FOCUSED_APPLESCRIPT = f"""
-set shouldRestoreNativeFocus to false
-tell application "System Events"
-    try
-        set shouldRestoreNativeFocus to (name of first application process whose frontmost is true) is "Safari"
-    end try
-end tell
-if shouldRestoreNativeFocus then
-    try
-        set shouldRestoreNativeFocus to (id of front window) is (id of targetWindow)
-    on error
-        set shouldRestoreNativeFocus to false
-    end try
-    if shouldRestoreNativeFocus then
-        try
-            set shouldRestoreNativeFocus to (current tab of targetWindow) is targetTab
-        on error
-            set shouldRestoreNativeFocus to false
-        end try
-    end if
-    if shouldRestoreNativeFocus then
-        try
-            set shouldRestoreNativeFocus to do JavaScript "document.hasFocus()" in targetTab
-        on error
-            set shouldRestoreNativeFocus to false
-        end try
-    end if
-    if shouldRestoreNativeFocus then
-        {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
     end if
 end if
 """.strip()
@@ -1280,7 +1248,10 @@ return pageUrlValue & linefeed & pageStateValue
             if attempt_index:
                 if not self._native_input_transaction_depth:
                     with contextlib.suppress(RuntimeError):
-                        self.wake_for_javascript()
+                        if attempt_index == 1:
+                            self.keep_rendering_in_background()
+                        else:
+                            self.wake_for_javascript()
                 time.sleep(SAFARI_POLL_INTERVAL_SECONDS * attempt_index)
             try:
                 raw_result = self._run_in_window(statement, reveal_tab=True)
@@ -1587,7 +1558,7 @@ return receiptState
         """Hold native Safari focus for one short trusted-input sequence.
 
         Restoration is skipped when the user has already switched away from the
-        owned Safari tab, so cleanup cannot steal a different foreground app.
+        owned Safari window, so cleanup cannot steal a different foreground app.
         """
         if self._native_input_transaction_depth:
             self._native_input_transaction_depth += 1
@@ -1617,7 +1588,7 @@ set previousFrontmostProcessName to "{escape_applescript_text(previous_process)}
 set previousWindowId to {previous_window_id}
 set previousWindowWasVisible to {str(previous_window_visible).lower()}
 set previousWindowWasMiniaturized to {str(previous_window_miniaturized).lower()}
-{SAFARI_RESTORE_FRONT_WINDOW_IF_STILL_FOCUSED_APPLESCRIPT}
+{SAFARI_RESTORE_FRONT_WINDOW_IF_TARGET_STILL_FRONT_APPLESCRIPT}
 """.strip()
                 )
 

@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.3.1-codex.1
+Code version: v1.3.5-codex.1
 """
 
 from copy import deepcopy
@@ -74,12 +74,17 @@ def session_payload(*, running=True, phase="reviewing", providers=("chatgpt", "g
             "round": 1,
             "opinions": [{
                 "provider": key,
+                "valid": key != "grok",
                 "verdict": "supported" if key == "chatgpt" else "unverified",
                 "conclusion": "Primary evidence requires closer inspection.",
                 "response": "Original provider response.",
                 "conversation_url": f"https://{key}.com/c/one",
                 "evidence": [{"url": "https://example.com/original", "supports": "Original wording differs from the claim."}],
-                "unresolved": ["Publication date does not establish an agreement."],
+                "unresolved": [
+                    "Publication date does not establish an agreement."
+                    if key != "grok"
+                    else "The juror did not return a structured vote."
+                ],
             } for key in providers],
         }],
         "response": "" if running else "The available evidence does not establish the claim.",
@@ -183,6 +188,234 @@ def test_jury_model_menu_escapes_sidebar_clipping(jury_browser, sidebar_server_u
         expect(menu).to_be_hidden()
         expect(trigger).to_have_attribute("aria-expanded", "false")
         assert menu.evaluate("menu => menu.parentElement?.dataset.juryModelPicker === 'chatgpt'")
+        assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "summary_columns"),
+    ((1024, 900, "248px 34px"), (585, 1218, "240px 26px")),
+)
+def test_jury_recent_sessions_reuses_agent_disclosure_style(
+    jury_browser,
+    sidebar_server_url,
+    width,
+    height,
+    summary_columns,
+):
+    """Keep the Jury disclosure on the rendered Agent Recent sessions contract."""
+    context = jury_browser.new_context(
+        viewport={"width": width, "height": height},
+        color_scheme="light",
+        reduced_motion="reduce",
+    )
+    agent_page = context.new_page()
+    jury_page = context.new_page()
+    jury_page.route("**/api/jury/sessions**", lambda route: route.fulfill(json={"sessions": []}))
+
+    def disclosure_style(page, selector):
+        return page.locator(selector).evaluate("""details => {
+            const summary = details.querySelector(':scope > summary');
+            const body = details.querySelector(':scope > .ui-collapse-body');
+            const action = body.querySelector('.agent-new-session-button');
+            const value = (node, names, pseudo = null) => {
+                const style = getComputedStyle(node, pseudo);
+                return Object.fromEntries(names.map(name => [name, style[name]]));
+            };
+            return {
+                details: value(details, [
+                    'backgroundColor', 'borderBottomStyle', 'borderLeftStyle',
+                    'borderRightStyle', 'borderTopStyle', 'marginTop', 'minWidth',
+                    'overflowX', 'overflowY', 'padding',
+                ]),
+                summary: value(summary, [
+                    'alignItems', 'columnGap', 'cursor', 'display', 'fontSize',
+                    'fontWeight', 'gridTemplateColumns', 'height', 'minHeight',
+                    'padding',
+                ]),
+                chevron: value(summary, [
+                    'backgroundColor', 'height', 'maskImage', 'transform', 'width',
+                ], '::after'),
+                body: value(body, ['display', 'minWidth', 'overflowX', 'overflowY', 'padding']),
+                action: value(action, [
+                    'borderRadius', 'fontSize', 'fontWeight', 'height', 'minHeight',
+                    'paddingLeft',
+                ]),
+                horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+            };
+        }""")
+
+    try:
+        agent_page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        jury_page.goto(f"{sidebar_server_url}/jury/edge")
+        if width <= 900:
+            agent_page.locator("#sidebar_toggle").click()
+            jury_page.locator("#sidebar_toggle").click()
+
+        agent_style = disclosure_style(
+            agent_page,
+            "aside#agent_sidebar > details.agent-session-collapse",
+        )
+        jury_style = disclosure_style(
+            jury_page,
+            "aside#jury_sidebar > details.agent-session-collapse",
+        )
+
+        assert jury_style == agent_style
+        assert jury_style["details"] == {
+            "backgroundColor": "rgba(0, 0, 0, 0)",
+            "borderBottomStyle": "none",
+            "borderLeftStyle": "none",
+            "borderRightStyle": "none",
+            "borderTopStyle": "none",
+            "marginTop": "18px",
+            "minWidth": "0px",
+            "overflowX": "visible",
+            "overflowY": "visible",
+            "padding": "0px",
+        }
+        assert jury_style["summary"] == {
+            "alignItems": "center",
+            "columnGap": "8px",
+            "cursor": "pointer",
+            "display": "grid",
+            "fontSize": "15px",
+            "fontWeight": "400",
+            "gridTemplateColumns": summary_columns,
+            "height": "36px",
+            "minHeight": "36px",
+            "padding": "0px",
+        }
+        assert jury_style["chevron"]["width"] == "12px"
+        assert jury_style["chevron"]["height"] == "8px"
+        assert jury_style["chevron"]["transform"] == "matrix(-1, 0, 0, -1, 0, 0)"
+        assert jury_style["body"] == {
+            "display": "grid",
+            "minWidth": "0px",
+            "overflowX": "visible",
+            "overflowY": "visible",
+            "padding": "0px 0px 10px",
+        }
+        assert jury_style["horizontalOverflow"] is False
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1024, 390])
+def test_jury_failed_session_delete_and_shadow_bleed(
+    jury_browser, sidebar_server_url, width,
+):
+    context = jury_browser.new_context(
+        viewport={"width": width, "height": 1000 if width > 900 else 844},
+        color_scheme="light" if width > 900 else "dark",
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    errors = []
+    deleted = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    catalog = [
+        {
+            "session_id": "failed-0",
+            "title": "Failed Jury zero",
+            "phase": "failed",
+            "running": False,
+            "deletable": True,
+        },
+        {
+            "session_id": "inconclusive-1",
+            "title": "Inconclusive Jury",
+            "phase": "inconclusive",
+            "running": False,
+            "deletable": False,
+        },
+        *[
+            {
+                "session_id": f"failed-{index}",
+                "title": f"Failed Jury {index}",
+                "phase": "failed",
+                "running": False,
+                "deletable": True,
+            }
+            for index in range(2, 8)
+        ],
+    ]
+
+    def sessions(route):
+        route.fulfill(json={"sessions": deepcopy(catalog)})
+
+    def delete_session(route):
+        payload = route.request.post_data_json
+        deleted.append(payload)
+        catalog[:] = [item for item in catalog if item["session_id"] != payload["session_id"]]
+        route.fulfill(json={"deleted": True, "session_id": payload["session_id"]})
+
+    page.route("**/api/jury/sessions**", sessions)
+    page.route("**/api/jury/session", delete_session)
+    try:
+        page.goto(f"{sidebar_server_url}/jury/edge")
+        if width <= 900:
+            page.locator("#sidebar_toggle").click()
+        rows = page.locator("[data-jury-session-list] > .agent-execution-session-row")
+        expect(rows).to_have_count(8)
+        failed = page.locator('[data-jury-session-id="failed-0"]')
+        inconclusive = page.locator('[data-jury-session-id="inconclusive-1"]')
+        expect(failed.locator("xpath=..").locator(".agent-execution-session-delete")).to_have_count(1)
+        expect(inconclusive.locator("xpath=..").locator(".agent-execution-session-delete")).to_have_count(0)
+
+        geometry = page.locator("[data-jury-session-list]").evaluate("""list => {
+            const first = list.querySelector('.agent-execution-session').getBoundingClientRect();
+            const listRect = list.getBoundingClientRect();
+            const body = list.closest('.ui-collapse-body');
+            list.scrollTop = list.scrollHeight;
+            const last = list.querySelector(
+                '.agent-execution-session-row:last-child .agent-execution-session'
+            ).getBoundingClientRect();
+            return {
+                overflowY: getComputedStyle(list).overflowY,
+                bodyOverflow: getComputedStyle(body).overflow,
+                inlineStartBleed: first.left - listRect.left,
+                inlineEndBleed: listRect.right - first.right,
+                blockStartBleed: first.top - listRect.top,
+                blockEndBleed: listRect.bottom - last.bottom,
+                scrollable: list.scrollHeight > list.clientHeight,
+                horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+            };
+        }""")
+        assert geometry["overflowY"] == "auto"
+        assert geometry["bodyOverflow"] == "visible"
+        assert geometry["inlineStartBleed"] >= 15
+        assert geometry["inlineEndBleed"] >= 15
+        assert geometry["blockStartBleed"] >= 5
+        assert geometry["blockEndBleed"] >= 30
+        assert geometry["scrollable"]
+        assert not geometry["horizontalOverflow"]
+
+        page.locator("[data-jury-session-list]").evaluate("list => { list.scrollTop = 0; }")
+        failed.hover()
+        delete_button = failed.locator("xpath=..").locator(".agent-execution-session-delete")
+        expect(delete_button).to_be_visible()
+        expect(delete_button).to_have_attribute(
+            "aria-label", "Delete failed Jury session: Failed Jury zero",
+        )
+        centers = failed.locator("xpath=..").evaluate("""row => {
+            const pill = row.querySelector('.agent-execution-session').getBoundingClientRect();
+            const action = row.querySelector('.agent-execution-session-delete').getBoundingClientRect();
+            return {
+                pillRightCenterX: pill.right - pill.height / 2,
+                pillCenterY: pill.top + pill.height / 2,
+                actionCenterX: action.left + action.width / 2,
+                actionCenterY: action.top + action.height / 2,
+            };
+        }""")
+        assert centers["actionCenterX"] == pytest.approx(centers["pillRightCenterX"], abs=0.1)
+        assert centers["actionCenterY"] == pytest.approx(centers["pillCenterY"], abs=0.1)
+
+        delete_button.click()
+        expect(page.locator('[data-jury-session-id="failed-0"]')).to_have_count(0)
+        expect(inconclusive).to_be_focused()
+        assert deleted == [{"session_id": "failed-0"}]
         assert not errors
     finally:
         context.close()
@@ -503,8 +736,52 @@ def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sideba
         page.locator("[data-jury-submit]").click()
         expect(page.locator("[data-jury-submit]")).to_have_attribute("aria-label", "Stop Jury")
         expect(page.locator(".jury-opinion")).to_have_count(len(providers))
+        for provider in providers:
+            opinion = page.locator(
+                f'.jury-opinion[data-provider="{provider}"]'
+            ).first
+            icon_geometry = opinion.evaluate("""(article, providerKey) => {
+                const opinionIcon = article.querySelector(
+                    '.jury-opinion-provider .browser-picker-option-icon'
+                );
+                const shell = article.querySelector(
+                    '.jury-opinion-provider .browser-picker-selected-icon-shell'
+                );
+                const sidebarIcon = document.querySelector(
+                    `[data-jury-provider-row="${providerKey}"] .browser-picker-option-icon`
+                );
+                const shellStyle = getComputedStyle(shell);
+                const iconStyle = getComputedStyle(opinionIcon);
+                return {
+                    sameSource: opinionIcon.src === sidebarIcon.src,
+                    shellSize: [shellStyle.width, shellStyle.height],
+                    iconSize: [iconStyle.width, iconStyle.height],
+                    decorative: shell.getAttribute('aria-hidden'),
+                };
+            }""", provider)
+            assert icon_geometry == {
+                "sameSource": True,
+                "shellSize": ["24px", "24px"],
+                "iconSize": ["22px", "22px"],
+                "decorative": "true",
+            }
+        first_content = page.locator(
+            ".jury-opinion .agent-response-answer-content"
+        ).first
+        expect(first_content).to_have_text(
+            "Primary evidence requires closer inspection."
+        )
+        expect(first_content).not_to_contain_text("Original provider response.")
         expect(page.locator(".jury-evidence").first).to_contain_text("Original wording differs")
         expect(page.locator(".jury-unresolved").first).to_contain_text("Publication date")
+        grok = page.locator('.jury-opinion[data-provider="grok"]').first
+        expect(grok.locator(".jury-opinion-header > span")).to_have_text("invalid vote")
+        expect(grok.locator(".jury-unresolved > p")).to_have_text(
+            "Structured vote unavailable"
+        )
+        expect(grok.locator(".jury-unresolved")).to_contain_text(
+            "The juror did not return a structured vote."
+        )
         expect(page.locator(".jury-evidence a").first).to_have_attribute("href", "https://example.com/original")
         assert page.locator("[data-jury-provider]").evaluate_all("inputs => inputs.every(input => input.disabled)")
         continued_rounds = []
@@ -526,6 +803,64 @@ def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sideba
             response="The available evidence does not establish the claim.",
         )
         expect(page.locator(".jury-round")).to_have_count(4, timeout=7000)
+        rounds = page.locator(".jury-round")
+        expect(rounds.locator(".jury-round-number")).to_have_text(["1", "2", "3", "4"])
+        expect(rounds.first.locator("summary")).to_have_attribute(
+            "aria-label", "Round 1: Independent checks",
+        )
+        expect(rounds.nth(1).locator("summary")).to_have_attribute(
+            "aria-label", "Round 2: Cross-review",
+        )
+        collapse_geometry = rounds.evaluate_all("""items => {
+            const first = items[0];
+            const second = items[1];
+            const last = items.at(-1);
+            const summary = first.querySelector('summary');
+            const body = first.querySelector('.ui-collapse-body');
+            const number = first.querySelector('.jury-round-number');
+            const summaryStyle = getComputedStyle(summary);
+            const bodyStyle = getComputedStyle(body);
+            const numberStyle = getComputedStyle(number);
+            const closedChevron = getComputedStyle(second.querySelector('summary'), '::after');
+            const openChevron = getComputedStyle(last.querySelector('summary'), '::after');
+            return {
+                summaryDisplay: summaryStyle.display,
+                summaryColumns: summaryStyle.gridTemplateColumns,
+                summaryGap: summaryStyle.columnGap,
+                summaryPadding: [summaryStyle.paddingTop, summaryStyle.paddingRight,
+                    summaryStyle.paddingBottom, summaryStyle.paddingLeft],
+                summaryFont: [summaryStyle.fontSize, summaryStyle.fontWeight],
+                bodyPadding: [bodyStyle.paddingTop, bodyStyle.paddingRight,
+                    bodyStyle.paddingBottom, bodyStyle.paddingLeft],
+                siblingMargin: getComputedStyle(second).marginTop,
+                borderStyle: getComputedStyle(first).borderBottomStyle,
+                numberSize: [numberStyle.width, numberStyle.height],
+                numberBackground: numberStyle.backgroundColor,
+                numberBorderColor: numberStyle.borderColor,
+                numberColor: numberStyle.color,
+                closedChevron: [closedChevron.width, closedChevron.height,
+                    closedChevron.transform],
+                openChevron: [openChevron.width, openChevron.height,
+                    openChevron.transform],
+                pageFits: document.documentElement.scrollWidth <= innerWidth + 1,
+            };
+        }""")
+        assert collapse_geometry["summaryDisplay"] == "grid"
+        assert collapse_geometry["summaryColumns"].endswith(" 12px")
+        assert collapse_geometry["summaryGap"] == "8px"
+        assert collapse_geometry["summaryPadding"] == ["10px", "0px", "10px", "0px"]
+        assert collapse_geometry["summaryFont"] == ["15px", "500"]
+        assert collapse_geometry["bodyPadding"] == ["0px", "10px", "10px", "10px"]
+        assert collapse_geometry["siblingMargin"] == "8px"
+        assert collapse_geometry["borderStyle"] == "none"
+        assert collapse_geometry["numberSize"] == ["20px", "20px"]
+        assert collapse_geometry["numberBackground"] == "rgba(0, 0, 0, 0)"
+        assert collapse_geometry["numberBorderColor"] == collapse_geometry["numberColor"]
+        assert collapse_geometry["closedChevron"][:2] == ["12px", "8px"]
+        assert collapse_geometry["closedChevron"][2] == "matrix(1, 0, 0, 1, 0, 0)"
+        assert collapse_geometry["openChevron"][:2] == ["12px", "8px"]
+        assert collapse_geometry["openChevron"][2] == "matrix(-1, 0, 0, -1, 0, 0)"
+        assert collapse_geometry["pageFits"] is True
         expect(page.locator("[data-jury-conclusion-title]")).to_have_text("Review outcome")
         expect(page.locator("[data-jury-conclusion]")).to_contain_text("Agreement is not proof")
         if width <= 900:
@@ -551,7 +886,9 @@ def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sideba
         if width <= 900:
             page.locator("#sidebar_toggle").click()
         expect(page.locator(".jury-round").last).to_contain_text('<img src=x onerror="window.juryInjected=true">')
-        assert page.locator(".jury-round img").count() == 0
+        assert page.locator(
+            ".jury-round .agent-response-answer-content img"
+        ).count() == 0
         assert page.locator('.jury-round a[href^="javascript:"]').count() == 0
         assert page.evaluate("window.juryInjected || false") is False
         assert len(starts) == 1
@@ -638,7 +975,12 @@ def test_jury_mode_link_switches_into_and_out_of_safari_without_account_probe(
         page.locator('[data-jury-browser-option="safari"]').click()
         expect(page).to_have_url(f"{sidebar_server_url}/jury/safari")
         expect(agentic).to_have_attribute("href", re.compile(r"^/agent/safari/"))
-        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_hidden()
+        claude_row = page.locator('[data-jury-provider-row="claude"]')
+        expect(claude_row).to_be_visible()
+        expect(claude_row).to_have_attribute("aria-disabled", "true")
+        expect(claude_row).to_have_attribute(
+            "title", "Claude Jury is available in Microsoft Edge or Google Chrome.",
+        )
         expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
         expect(page.locator('[data-jury-provider][value="claude"]')).to_be_disabled()
         assert checks == []
@@ -646,7 +988,7 @@ def test_jury_mode_link_switches_into_and_out_of_safari_without_account_probe(
         context.close()
 
 
-def test_safari_jury_hides_claude_and_migrates_stale_preferences(
+def test_safari_jury_shows_disabled_claude_and_migrates_stale_preferences(
     jury_browser,
     sidebar_server_url,
 ):
@@ -663,7 +1005,10 @@ def test_safari_jury_hides_claude_and_migrates_stale_preferences(
         page.locator("[data-jury-browser-trigger]").click()
         page.locator('[data-jury-browser-option="safari"]').click()
         expect(page).to_have_url(f"{sidebar_server_url}/jury/safari")
-        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_hidden()
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_visible()
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_have_attribute(
+            "aria-disabled", "true",
+        )
         expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
         expect(page.locator('[data-jury-provider][value="claude"]')).to_be_disabled()
         remembered = page.evaluate(
@@ -693,7 +1038,10 @@ def test_safari_jury_hides_claude_and_migrates_stale_preferences(
         )
         page.goto(f"{sidebar_server_url}/jury/safari", wait_until="domcontentloaded")
         expect(page).to_have_url(f"{sidebar_server_url}/jury/safari")
-        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_hidden()
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_visible()
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_have_attribute(
+            "aria-disabled", "true",
+        )
         expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
         expect(page.locator('[data-jury-provider][value="chatgpt"]')).to_be_checked()
         migrated = page.evaluate(
@@ -715,7 +1063,7 @@ def test_safari_jury_hides_claude_and_migrates_stale_preferences(
         context.close()
 
 
-def test_new_session_drops_hidden_claude_from_a_legacy_safari_record(
+def test_new_session_drops_disabled_claude_from_a_legacy_safari_record(
     jury_browser,
     sidebar_server_url,
 ):
@@ -754,7 +1102,10 @@ def test_new_session_drops_hidden_claude_from_a_legacy_safari_record(
         if not page.locator('[data-jury-browser-option="safari"]').count():
             pytest.skip("Safari Jury is not exposed on this host.")
         page.get_by_role("button", name="Legacy Safari Jury").click()
-        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_hidden()
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_visible()
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_have_attribute(
+            "aria-disabled", "true",
+        )
         expect(page.locator('[data-jury-provider][value="claude"]')).to_be_checked()
 
         page.locator("[data-jury-new-session]").click()

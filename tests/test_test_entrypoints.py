@@ -1,6 +1,6 @@
 """Behavioral checks for the POSIX test and quality entrypoints.
 
-Code version: v1.2.1-codex.1
+Code version: v1.3.1-codex.1
 """
 
 import os
@@ -48,13 +48,77 @@ def test_resolver_enforces_only_the_minimum(tmp_path, version, accepted):
     assert result.stdout.strip() == (str(interpreter) if accepted else "")
 
 
+def test_requirements_checker_rejects_an_installed_version_outside_the_constraint(
+    tmp_path,
+):
+    """A present distribution must still satisfy the declared project constraint."""
+    requirements = tmp_path / "requirements.txt"
+    checker = PROJECT_ROOT / "scripts/check_python_requirements.py"
+    requirements.write_text("pytest<1\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(checker), "quality", str(requirements)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "pytest 9.0.3 does not satisfy <1" in result.stderr
+
+    requirements.write_text("pytest>=9,<10\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(checker), "quality", str(requirements)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_quality_resolver_rejects_importable_but_incompatible_dependencies(tmp_path):
+    """Import success must not hide a direct requirement-version mismatch."""
+    interpreter = tmp_path / "python probe"
+    interpreter.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        "if sys.argv[1] == '-c' and sys.argv[2].startswith('import sys;'):\n"
+        "    exec(sys.argv[2])\n"
+        "if sys.argv[1] == '-c' and 'runpy.run_path' in sys.argv[2]:\n"
+        "    print('Pillow 11.0.0 does not satisfy <13.0.0,>=12.3.0', file=sys.stderr)\n"
+        "    raise SystemExit(1)\n"
+        "if sys.argv[1] == '-c' and sys.argv[2].startswith('import '):\n"
+        "    raise SystemExit(0)\n"
+        "exec(sys.argv[2])\n",
+        encoding="utf-8",
+    )
+    interpreter.chmod(0o755)
+    environment = _environment()
+    environment["AGENTIC_CONTEXT_PYTHON"] = str(interpreter)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; resolve_python_bin quality',
+            "resolver",
+            str(PROJECT_ROOT / "scripts/resolve_python.sh"),
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "incompatible quality dependencies" in result.stderr
+    assert "Pillow 11.0.0 does not satisfy" in result.stderr
+
+
 @pytest.mark.parametrize("marker,expected", [(None, "offline"), ("live", "live")])
 def test_test_entrypoint_selects_safe_defaults_and_explicit_markers(tmp_path, marker, expected):
     """Selection must happen before a live test can execute."""
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    for name in ("test.sh", "resolve_python.sh"):
+    for name in ("test.sh", "resolve_python.sh", "check_python_requirements.py"):
         shutil.copy2(PROJECT_ROOT / "scripts" / name, scripts / name)
+    shutil.copy2(PROJECT_ROOT / "requirements.txt", tmp_path / "requirements.txt")
     shutil.copy2(PROJECT_ROOT / "pytest.ini", tmp_path / "pytest.ini")
     (tmp_path / "test_probe.py").write_text(
         "import pytest\nfrom pathlib import Path\n"
@@ -157,7 +221,7 @@ def test_quality_resolver_reports_missing_modules_before_fallback(tmp_path):
     result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0
     assert result.stdout.strip() == str(ready)
-    expected = "flask playwright yt_dlp pyarrow PIL markdown_it ruff pytest pytest_cov"
+    expected = "flask playwright yt_dlp pyarrow PIL markdown_it tiktoken ruff pytest pytest_cov"
     assert f"missing quality dependencies: {missing} ({expected})" in result.stderr
 
     environment["AGENTIC_CONTEXT_PYTHON"] = str(missing)
@@ -174,6 +238,7 @@ def test_runtime_resolver_skips_unprepared_host_but_respects_override(tmp_path):
     for path, available in ((missing, False), (ready, True)):
         path.write_text(
             f"#!{sys.executable}\nimport sys\n"
+            f"if 'runpy.run_path' in sys.argv[2]: raise SystemExit({0 if available else 1})\n"
             f"if 'import flask' in sys.argv[2]: raise SystemExit({0 if available else 1})\n"
             "exec(sys.argv[2])\n"
         )

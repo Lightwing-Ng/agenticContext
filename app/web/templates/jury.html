@@ -1,4 +1,4 @@
-<!-- Code version: v1.3.1-codex.1 -->
+<!-- Code version: v1.3.9-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -10,8 +10,8 @@
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.122.0-codex.1') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.8.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='jury.css', v='jury-v1.1.5-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.8.4') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='jury.css', v='jury-v1.1.7-codex.1') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
 </head>
@@ -36,7 +36,7 @@
                             {% set model_options = jury_model_options_by_provider[provider_key] %}
                             {% set selected_model = model_options[0] %}
                             {% set safari_unsupported = settings.browser == 'safari' and provider_key == 'claude' %}
-                            <div class="jury-provider-option" data-jury-provider-row="{{ provider_key }}"{% if safari_unsupported %} hidden{% endif %}>
+                            <div class="jury-provider-option" data-jury-provider-row="{{ provider_key }}"{% if safari_unsupported %} aria-disabled="true" title="Claude Jury is available in Microsoft Edge or Google Chrome."{% endif %}>
                                 <label class="jury-provider-identity" for="jury_provider_{{ provider_key }}">
                                     <input id="jury_provider_{{ provider_key }}" class="jury-provider-input" type="checkbox" name="providers" value="{{ provider_key }}" data-jury-provider aria-describedby="jury_model_trigger_{{ provider_key }}"{% if provider_key != 'claude' %} checked{% endif %}{% if safari_unsupported %} disabled{% endif %}>
                                     <span class="jury-provider-selection-mark" aria-hidden="true"></span>
@@ -163,9 +163,9 @@
     {% include "_sidebar_dock.html" %}
 </main>
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.24.0-codex.1') }}"></script>
-<script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.0') }}"></script>
+<script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
-<script src="{{ url_for('static', filename='jury.js', v='jury-v1.3.1-codex.1') }}"></script>
+<script src="{{ url_for('static', filename='jury.js', v='jury-v1.3.5-codex.1') }}"></script>
 </body>
 </html>

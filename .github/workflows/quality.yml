@@ -1,4 +1,4 @@
-# Code version: v1.4.0-codex.1
+# Code version: v1.5.0-codex.1
 name: Quality gate
 
 on:
@@ -87,6 +87,13 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '22'
+
+      - name: Verify the first Windows browser boundary
+        shell: pwsh
+        run: |
+          $env:AGENTIC_CONTEXT_PYTHON = (Get-Command python).Source
+          & $env:AGENTIC_CONTEXT_PYTHON -m pytest -vv -x --tb=short -p no:cacheprovider `
+            "tests/test_agent_activity_e2e.py::test_sidebar_icons_share_provider_axis_without_moving_dock"
 
       - name: Run the quality gate
         shell: pwsh

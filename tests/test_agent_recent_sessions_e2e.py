@@ -1,4 +1,6 @@
-"""Unified recent-session source and filtering. Code version: v1.3.0-codex.1."""
+"""Unified recent-session source and filtering. Code version: v1.3.2-codex.1."""
+
+from time import monotonic
 
 import pytest
 from playwright.sync_api import expect
@@ -6,6 +8,47 @@ from tests import test_sidebar_e2e as fixtures
 
 disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
+
+
+def _wait_for_session_geometry(page, *, timeout_seconds: float = 3.0):
+    """Return two consecutive aligned, stationary sidebar geometry samples."""
+    script = """() => {
+        const label = document.querySelector('[data-agent-session-platform-label]');
+        const summary = document.querySelector('[data-agent-execution-sessions] summary');
+        const trigger = document.querySelector('.agent-session-mode-combobox [data-agent-combobox-trigger]');
+        const row = document.querySelector('.agent-execution-session');
+        const font = el => { const s=getComputedStyle(el); return [s.fontFamily,s.fontSize,s.fontWeight,s.lineHeight]; };
+        const bounds = el => { const r=el.getBoundingClientRect(); return [r.left,r.right]; };
+        return {label:font(label),summary:font(summary),trigger:bounds(trigger),row:bounds(row)};
+    }"""
+    deadline = monotonic() + timeout_seconds
+    previous_bounds = None
+    last_geometry = None
+    stable_aligned_samples = 0
+    while monotonic() < deadline:
+        last_geometry = page.evaluate(script)
+        current_bounds = last_geometry['trigger'] + last_geometry['row']
+        aligned = all(
+            abs(trigger_edge - row_edge) < 1
+            for trigger_edge, row_edge in zip(
+                last_geometry['trigger'],
+                last_geometry['row'],
+            )
+        )
+        stationary = previous_bounds is not None and all(
+            abs(current - previous) < 0.25
+            for current, previous in zip(current_bounds, previous_bounds)
+        )
+        stable_aligned_samples = (
+            stable_aligned_samples + 1
+            if aligned and stationary
+            else 0
+        )
+        if stable_aligned_samples >= 2:
+            return last_geometry
+        previous_bounds = current_bounds
+        page.wait_for_timeout(50)
+    pytest.fail(f"Recent-session geometry did not settle: {last_geometry!r}")
 
 
 @pytest.mark.parametrize('width,theme', [(1008, 'light'), (733, 'light'), (390, 'dark')])
@@ -59,17 +102,8 @@ def test_unified_recent_sessions_filter_count_and_continue(disposable_browser, s
             expect(option).to_have_css('height', '36px')
         source.locator('[data-agent-combobox-option=new]').click()
         expect(rail.locator('.agent-execution-session')).to_have_count(4)
-        geometry = page.evaluate("""() => {
-            const label = document.querySelector('[data-agent-session-platform-label]');
-            const summary = document.querySelector('[data-agent-execution-sessions] summary');
-            const trigger = document.querySelector('.agent-session-mode-combobox [data-agent-combobox-trigger]');
-            const row = document.querySelector('.agent-execution-session');
-            const font = el => { const s=getComputedStyle(el); return [s.fontFamily,s.fontSize,s.fontWeight,s.lineHeight]; };
-            const bounds = el => { const r=el.getBoundingClientRect(); return [r.left,r.right]; };
-            return {label:font(label),summary:font(summary),trigger:bounds(trigger),row:bounds(row)};
-        }""")
+        geometry = _wait_for_session_geometry(page)
         assert geometry['label'] == geometry['summary']
-        assert all(abs(a-b) < 1 for a,b in zip(geometry['trigger'],geometry['row']))
 
         badge = rail.locator('[data-agent-session-capacity]')
         expect(badge).to_be_hidden()

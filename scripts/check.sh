@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Code version: v1.4.0-codex.1
+# Code version: v1.6.0-codex.1
 
 set -euo pipefail
 
@@ -30,13 +30,18 @@ export AGENTIC_CONTEXT_PYTHON="$PYTHON_BIN"
 
 echo "Quality gate configuration: Python=$PYTHON_BIN, branch coverage minimum=${COVERAGE_MINIMUM}%"
 
-echo "[1/5] Python static checks"
+echo "[1/6] Python environment checks"
+"$PYTHON_BIN" scripts/check_python_requirements.py quality requirements.txt
+"$PYTHON_BIN" -m pip check
+"$PYTHON_BIN" -m pip_audit --local --progress-spinner off
+
+echo "[2/6] Python static checks"
 "$PYTHON_BIN" -m ruff check main.py app tests scripts
 
-echo "[2/5] Local documentation checks"
+echo "[3/6] Local documentation checks"
 "$PYTHON_BIN" scripts/check_docs.py
 
-echo "[3/5] JavaScript syntax checks"
+echo "[4/6] JavaScript syntax checks"
 JS_FILE_COUNT=0
 while IFS= read -r script_file; do
 	JS_FILE_COUNT=$((JS_FILE_COUNT + 1))
@@ -48,10 +53,10 @@ if (( JS_FILE_COUNT == 0 )); then
 	exit 1
 fi
 
-echo "[4/5] JavaScript unit tests"
+echo "[5/6] JavaScript unit tests"
 node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs tests/test_select_controller.mjs
 
-echo "[5/5] Python tests with branch coverage"
+echo "[6/6] Python tests with branch coverage"
 COVERAGE_STARTED_AT="$(mktemp "$ROOT_DIR/test-results/coverage-start.XXXXXX")"
 trap 'rm -f "$COVERAGE_STARTED_AT"' EXIT
 "$ROOT_DIR/scripts/test.sh" \

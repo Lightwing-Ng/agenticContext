@@ -1,6 +1,6 @@
 """Verify isolated browser ownership and single-session jury exchanges.
 
-Code version: v1.6.1-codex.1
+Code version: v1.7.0-codex.2
 """
 
 from contextlib import contextmanager
@@ -15,7 +15,9 @@ from app.core.computer_use_agent import ComputerUseSettings
 
 @pytest.fixture
 def transport(monkeypatch):
+    monkeypatch.setattr(jury, "is_macos_host", lambda: False)
     events = []
+    launch_kwargs = []
     page = SimpleNamespace(
         url="about:blank",
         goto=lambda *_args, **_kwargs: events.append("safari-goto"),
@@ -32,8 +34,15 @@ def transport(monkeypatch):
             events.append(f"close:{label}")
 
     def launch(_playwright, _descriptor, **kwargs):
-        assert kwargs["clone_profile_first"] is True
-        assert kwargs["allow_cdp_attach"] is False
+        launch_kwargs.append(kwargs)
+        if jury.is_macos_host():
+            assert kwargs["clone_profile_first"] is False
+            assert kwargs["allow_cdp_attach"] is True
+            assert kwargs["use_project_debug_profile"] is True
+        else:
+            assert kwargs["clone_profile_first"] is True
+            assert kwargs["allow_cdp_attach"] is False
+            assert kwargs["use_project_debug_profile"] is False
         return resource("context", context)
 
     class Binding:
@@ -111,7 +120,49 @@ def transport(monkeypatch):
         selected_models=selected_models,
         submissions=submissions,
         browser_kinds=browser_kinds,
+        launch_kwargs=launch_kwargs,
     )
+
+
+def test_macos_edge_jury_requires_the_project_profile_without_daily_clone(
+    transport,
+    monkeypatch,
+    tmp_path,
+):
+    profile_root = tmp_path / "jury-profile"
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+
+    with jury.JuryBrowserSession(
+        ComputerUseSettings(browser="edge"),
+        "grok",
+        project_profile_root=profile_root,
+    ):
+        pass
+
+    launch = transport.launch_kwargs[-1]
+    assert launch["clone_profile_first"] is False
+    assert launch["allow_cdp_attach"] is True
+    assert launch["use_project_debug_profile"] is True
+    assert launch["project_profile_root"] == profile_root
+    assert transport.events.count("new_page") == 1
+
+
+def test_windows_edge_jury_keeps_the_existing_isolated_clone_path(
+    transport,
+    monkeypatch,
+):
+    monkeypatch.setattr(jury, "is_macos_host", lambda: False)
+
+    with jury.JuryBrowserSession(
+        ComputerUseSettings(browser="edge"),
+        "grok",
+    ):
+        pass
+
+    launch = transport.launch_kwargs[-1]
+    assert launch["clone_profile_first"] is True
+    assert launch["allow_cdp_attach"] is False
+    assert launch["use_project_debug_profile"] is False
 
 
 @pytest.mark.parametrize("platform", ["chatgpt", "grok", "gemini", "claude"])
@@ -524,6 +575,182 @@ def test_safari_account_check_fails_closed_when_its_window_cannot_close(
     assert all("simulated cleanup failure" in item["message"] for item in results)
 
 
+def test_macos_edge_account_check_initializes_only_the_project_profile(
+    transport,
+    monkeypatch,
+    tmp_path,
+):
+    from app.core import agent_debug_browser
+
+    profile_root = tmp_path / "jury-profile"
+    providers = ["chatgpt", "grok", "gemini"]
+    opened = []
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    monkeypatch.setattr(
+        agent_debug_browser,
+        "debug_browser_profile_initialized",
+        lambda browser_id, *, profile_root: False,
+    )
+    monkeypatch.setattr(
+        jury,
+        "_open_macos_edge_profile_setup_tabs",
+        lambda selected, *, project_profile_root: (
+            opened.append((selected, project_profile_root))
+            or {platform: None for platform in selected}
+        ),
+    )
+    monkeypatch.setattr(
+        jury,
+        "jury_browser_login_check",
+        lambda *_args, **_kwargs: pytest.fail(
+            "An uninitialized project profile must fail before provider admission."
+        ),
+    )
+
+    results = jury.jury_macos_edge_account_check(
+        ComputerUseSettings(browser="edge"),
+        providers,
+        {
+            "chatgpt": {"selection_key": "chatgpt-latest-extra-high"},
+            "grok": {"selection_key": "grok-auto"},
+            "gemini": {"selection_key": "gemini-3.1-pro"},
+        },
+        project_profile_root=profile_root,
+    )
+
+    assert opened == [(providers, profile_root)]
+    assert [item["platform"] for item in results] == providers
+    assert all(item["logged_in"] is False for item in results)
+    assert all("project-owned Edge Jury profile" in item["message"] for item in results)
+    assert all("daily Edge profile was not copied or opened" in item["message"] for item in results)
+    assert transport.submissions == []
+
+
+def test_macos_edge_profile_setup_opens_one_process_with_one_tab_per_provider(
+    monkeypatch,
+    tmp_path,
+):
+    from app.core import agent_debug_browser
+    from app.core.agent_debug_browser import DebugBrowserHandle
+
+    profile_root = tmp_path / "jury-profile"
+    providers = ["chatgpt", "grok", "gemini", "claude"]
+    navigated = []
+    pages = []
+
+    @contextmanager
+    def lock(browser_id):
+        assert browser_id == "edge"
+        yield
+
+    ensure = []
+
+    def ensure_browser(browser_id, *, profile_root):
+        ensure.append((browser_id, profile_root))
+        return DebugBrowserHandle(
+            browser_id="edge",
+            cdp_endpoint="http://127.0.0.1:42421",
+            user_data_dir=profile_root / "edge",
+        )
+
+    class Page:
+        def __init__(self) -> None:
+            self.front = False
+
+        def goto(self, url, **_kwargs):
+            navigated.append(url)
+
+        def bring_to_front(self):
+            self.front = True
+
+    class Context:
+        def new_page(self):
+            page = Page()
+            pages.append(page)
+            return page
+
+    browser_close = []
+    browser = SimpleNamespace(
+        contexts=[Context()],
+        close=lambda: browser_close.append(True),
+    )
+
+    @contextmanager
+    def playwright():
+        yield SimpleNamespace(
+            chromium=SimpleNamespace(
+                connect_over_cdp=lambda endpoint: (
+                    browser
+                    if endpoint == "http://127.0.0.1:42421"
+                    else pytest.fail("Unexpected CDP endpoint")
+                )
+            )
+        )
+
+    monkeypatch.setattr(agent_debug_browser, "debug_browser_lock", lock)
+    monkeypatch.setattr(agent_debug_browser, "ensure_debug_browser", ensure_browser)
+    monkeypatch.setattr(jury, "sync_playwright_or_error", playwright)
+
+    outcomes = jury._open_macos_edge_profile_setup_tabs(
+        providers,
+        project_profile_root=profile_root,
+    )
+
+    assert ensure == [("edge", profile_root)]
+    assert outcomes == {platform: None for platform in providers}
+    assert navigated == [jury.web_agent._platform_home_url(item) for item in providers]
+    assert len(pages) == len(providers)
+    assert pages[0].front is True
+    assert all(page.front is False for page in pages[1:])
+    assert browser_close == [True]
+
+
+def test_macos_edge_account_check_keeps_collecting_after_one_provider_failure(
+    monkeypatch,
+    tmp_path,
+):
+    from app.core import agent_debug_browser
+
+    providers = ["chatgpt", "grok", "gemini"]
+    checked = []
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    monkeypatch.setattr(
+        agent_debug_browser,
+        "debug_browser_profile_initialized",
+        lambda browser_id, *, profile_root: True,
+    )
+
+    def check(_settings, platform, **kwargs):
+        checked.append((platform, kwargs["project_profile_root"]))
+        if platform == "grok":
+            raise RuntimeError("Grok sign-in is unavailable.")
+        return {
+            "platform": platform,
+            "browser": "edge",
+            "logged_in": True,
+            "ready": True,
+            "can_download": False,
+            "message": "Signed in",
+        }
+
+    monkeypatch.setattr(jury, "jury_browser_login_check", check)
+    results = jury.jury_macos_edge_account_check(
+        ComputerUseSettings(browser="edge"),
+        providers,
+        {
+            "chatgpt": {"selection_key": "chatgpt-latest-extra-high"},
+            "grok": {"selection_key": "grok-auto"},
+            "gemini": {"selection_key": "gemini-3.1-pro"},
+        },
+        project_profile_root=tmp_path / "jury-profile",
+    )
+
+    assert [item["logged_in"] for item in results] == [True, False, True]
+    assert "Grok sign-in is unavailable" in results[1]["message"]
+    assert [platform for platform, _root in checked] == providers
+    assert len({root for _platform, root in checked}) == 1
+
+
 def test_safari_login_check_uses_an_owned_safari_page_without_edge_fallback(
     transport,
     monkeypatch,
@@ -616,6 +843,36 @@ def test_grok_login_check_does_not_accept_an_unverified_composer(transport, monk
         jury.jury_browser_login_check(ComputerUseSettings(), "grok")
     assert transport.submissions == []
     assert transport.events[-2:] == ["close:context", "close:playwright"]
+
+
+def test_session_enter_preserves_primary_error_and_exposes_cleanup_failure(
+    transport,
+    monkeypatch,
+):
+    class FailingCleanupContext:
+        def __enter__(self):
+            return SimpleNamespace(new_page=lambda: transport.page)
+
+        def __exit__(self, exc_type, exc, traceback):
+            raise RuntimeError("simulated Page lease cleanup failure")
+
+    monkeypatch.setattr(
+        jury,
+        "launch_chromium_context",
+        lambda *_args, **_kwargs: FailingCleanupContext(),
+    )
+    monkeypatch.setattr(jury.web_agent, "_verify_agent_page", lambda *_args: False)
+    session = jury.JuryBrowserSession(ComputerUseSettings(), "grok")
+
+    with pytest.raises(RuntimeError, match="authenticated browser composer") as error:
+        session.__enter__()
+
+    assert isinstance(session.cleanup_error, RuntimeError)
+    assert "Page lease cleanup failure" in str(session.cleanup_error)
+    assert any(
+        "initialization cleanup also failed" in note
+        for note in error.value.__notes__
+    )
 
 
 def test_unsupported_browser_is_rejected_without_launch(transport):

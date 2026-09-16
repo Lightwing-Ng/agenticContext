@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.26.0-codex.1
+# Code version: v1.27.0-codex.2
 
 from __future__ import annotations
 
@@ -228,6 +228,8 @@ TASK_STAGE_CHROMIUM_WINDOW_ARGS = (
 CHROMIUM_TEMP_PROFILE_STALE_AFTER_SECONDS = 24 * 60 * 60
 _ACTIVE_CHROMIUM_PROFILE_ROOTS: set[Path] = set()
 _PLAYWRIGHT_LAUNCH_LOCK = threading.Lock()
+_SHARED_PROJECT_CDP_ATTACHMENTS: dict[str, int] = {}
+_SHARED_PROJECT_CDP_ATTACHMENTS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1180,6 +1182,25 @@ def select_provider_tab(
     return chosen
 
 
+def _change_shared_project_attachment_count(browser_id: str, delta: int) -> int:
+    """Adjust and return the in-process Page-lease count for one project browser."""
+    with _SHARED_PROJECT_CDP_ATTACHMENTS_LOCK:
+        count = _SHARED_PROJECT_CDP_ATTACHMENTS.get(browser_id, 0) + delta
+        if count < 0:
+            raise RuntimeError("The project browser attachment count became invalid.")
+        if count:
+            _SHARED_PROJECT_CDP_ATTACHMENTS[browser_id] = count
+        else:
+            _SHARED_PROJECT_CDP_ATTACHMENTS.pop(browser_id, None)
+        return count
+
+
+def _shared_project_attachment_count(browser_id: str) -> int:
+    """Return the current in-process Page-lease count for regression tests."""
+    with _SHARED_PROJECT_CDP_ATTACHMENTS_LOCK:
+        return _SHARED_PROJECT_CDP_ATTACHMENTS.get(browser_id, 0)
+
+
 class _CdpAttachContext:
     """Wrap a CDP-attached browser/context so callers can use it like a launch.
 
@@ -1188,17 +1209,33 @@ class _CdpAttachContext:
     the next request can reattach to the same authenticated session.
     """
 
-    def __init__(self, browser: Any, context: Any, lock: Any | None = None) -> None:
+    def __init__(
+        self,
+        browser: Any,
+        context: Any,
+        lock: Any | None = None,
+        *,
+        browser_id: str = "",
+        close_created_pages: bool = False,
+        shared_attachment: bool = False,
+    ) -> None:
         self._browser = browser
         self._context = context
         self._lock = lock
+        self._browser_id = browser_id
+        self._close_created_pages = close_created_pages
+        self._shared_attachment = shared_attachment
+        self._created_pages: list[Any] = []
 
     @property
     def pages(self) -> Any:
         return self._context.pages
 
     def new_page(self, *args: Any, **kwargs: Any) -> Any:
-        return self._context.new_page(*args, **kwargs)
+        page = self._context.new_page(*args, **kwargs)
+        if self._close_created_pages:
+            self._created_pages.append(page)
+        return page
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._context, name)
@@ -1207,16 +1244,42 @@ class _CdpAttachContext:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        cleanup_error: BaseException | None = None
         try:
-            self._browser.close()
-        except Exception as close_error:
-            if not _is_idempotent_chromium_context_close_error(close_error):
-                LOGGER.warning("Closing the CDP attach connection failed: %s", close_error)
+            for page in reversed(self._created_pages):
+                try:
+                    is_closed = getattr(page, "is_closed", None)
+                    if not callable(is_closed) or not is_closed():
+                        page.close()
+                except Exception as page_close_error:
+                    cleanup_error = cleanup_error or page_close_error
+                    LOGGER.warning(
+                        "Closing a project browser Page lease failed: %s",
+                        page_close_error,
+                    )
+            try:
+                self._browser.close()
+            except Exception as close_error:
+                if not _is_idempotent_chromium_context_close_error(close_error):
+                    cleanup_error = cleanup_error or close_error
+                    LOGGER.warning("Closing the CDP attach connection failed: %s", close_error)
         finally:
+            if self._shared_attachment:
+                self._shared_attachment = False
+                _change_shared_project_attachment_count(self._browser_id, -1)
             lock = self._lock
             self._lock = None
             if lock is not None:
                 lock.release()
+        if cleanup_error is not None and self._close_created_pages:
+            if isinstance(exc, BaseException):
+                exc.add_note(
+                    "Project browser Page-lease cleanup also failed: "
+                    f"{cleanup_error}"
+                )
+            raise RuntimeError(
+                "The project browser Page lease did not close cleanly."
+            ) from cleanup_error
         return False
 
 
@@ -1231,6 +1294,8 @@ def launch_chromium_context(
     *,
     allow_cdp_attach: bool = True,
     prefer_initialized_debug_profile: bool = False,
+    use_project_debug_profile: bool = False,
+    project_profile_root: Path | None = None,
 ):
     """Launch an isolated Chromium-family browser with an explicit window mode.
 
@@ -1238,7 +1303,8 @@ def launch_chromium_context(
     profile and restart or reuse it over CDP. Other callers retain the existing
     clone-first behavior. A locked daily profile can still trigger the existing
     debug-browser fallback. Neither CDP path reads locked cookie files or opens
-    the daily profile for writing.
+    the daily profile for writing. macOS Edge Jury callers may explicitly require
+    the project profile; that branch never inspects or clones the daily profile.
     """
     user_data_dir = descriptor.user_data_dir
     if user_data_dir is None:
@@ -1297,20 +1363,73 @@ def launch_chromium_context(
         )
         return any(marker in normalized_error for marker in retry_markers)
 
-    def attach_debug_browser() -> Any:
-        """Attach while serializing the complete shared debug-browser use."""
+    def attach_debug_browser(*, shared_pages: bool = False) -> Any:
+        """Attach with either the Windows exclusive or macOS Page-lease policy."""
         from .agent_debug_browser import _acquire_debug_browser_lock, ensure_debug_browser
 
         browser_id = descriptor.browser_id
-        lock = _acquire_debug_browser_lock(browser_id)
+        lock = None if shared_pages else _acquire_debug_browser_lock(browser_id)
+        browser = None
         try:
-            endpoint = ensure_debug_browser(browser_id).cdp_endpoint
+            handle = (
+                ensure_debug_browser(browser_id)
+                if project_profile_root is None
+                else ensure_debug_browser(
+                    browser_id,
+                    profile_root=project_profile_root,
+                )
+            )
+            endpoint = handle.cdp_endpoint
             browser = playwright.chromium.connect_over_cdp(endpoint)
+            if shared_pages and not browser.contexts:
+                raise RuntimeError(
+                    "The project Edge profile has no persistent browser context."
+                )
             context = browser.contexts[0] if browser.contexts else browser.new_context()
         except BaseException:
-            lock.release()
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    browser.close()
+            if lock is not None:
+                lock.release()
             raise
-        return _CdpAttachContext(browser, context, lock=lock)
+        if shared_pages:
+            _change_shared_project_attachment_count(browser_id, 1)
+        return _CdpAttachContext(
+            browser,
+            context,
+            lock=lock,
+            browser_id=browser_id,
+            close_created_pages=shared_pages,
+            shared_attachment=shared_pages,
+        )
+
+    if use_project_debug_profile:
+        if not (
+            allow_cdp_attach
+            and is_macos_host()
+            and descriptor.browser_id == "edge"
+        ):
+            raise RuntimeError(
+                "The shared project browser profile is supported only for macOS Edge Jury."
+            )
+        from .agent_debug_browser import debug_browser_profile_initialized
+
+        initialized = (
+            debug_browser_profile_initialized("edge")
+            if project_profile_root is None
+            else debug_browser_profile_initialized(
+                "edge",
+                profile_root=project_profile_root,
+            )
+        )
+        if not initialized:
+            raise RuntimeError(
+                "The project-owned Edge Jury profile is not initialized. "
+                "Choose Check accounts once to open its provider tabs, sign in there, "
+                "then choose Check accounts again. The daily Edge profile will not be used."
+            )
+        return attach_debug_browser(shared_pages=True)
 
     if (
         allow_cdp_attach

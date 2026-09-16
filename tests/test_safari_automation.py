@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.11.0-codex.1
+# Code version: v2.11.1-codex.1
 
 from __future__ import annotations
 
@@ -409,9 +409,10 @@ def test_safari_native_activation_is_origin_bound_trusted_and_non_retried() -> N
     assert "nativeFocusReady" in script
     assert "(id of front window) is not (id of targetWindow)" in script
     assert "(current tab of targetWindow) is not targetTab" in script
-    assert "set shouldRestoreNativeFocus" not in script
-    assert "set shouldRestoreNativeFocus to (current tab of targetWindow) is targetTab" in restore_script
-    assert 'do JavaScript "document.hasFocus()" in targetTab' in restore_script
+    assert "set targetWindowStillFront" in restore_script
+    assert '(id of front window) is (id of targetWindow)' in restore_script
+    assert "(current tab of targetWindow) is targetTab" not in restore_script
+    assert 'do JavaScript "document.hasFocus()" in targetTab' not in restore_script
     final_verification = script.rindex("set finalActivationState")
     final_window_check = script.rindex(
         "if (id of front window) is not (id of targetWindow)"
@@ -508,7 +509,7 @@ def test_safari_native_activation_binds_the_requested_navigation_key() -> None:
     assert "key code 36" not in script
 
 
-def test_safari_native_input_transaction_restores_focus_after_the_sequence() -> None:
+def test_safari_native_input_transaction_restores_after_tab_or_document_focus_changes() -> None:
     page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123)
 
     with patch.object(
@@ -525,9 +526,16 @@ def test_safari_native_input_transaction_restores_focus_after_the_sequence() -> 
 
     activation_script = run.call_args_list[1].args[0]
     restore_script = run.call_args_list[2].args[0]
-    assert "set shouldRestoreNativeFocus" not in activation_script
-    assert "set shouldRestoreNativeFocus" in restore_script
-    assert '(name of first application process whose frontmost is true) is "Safari"' in restore_script
+    assert "set targetWindowStillFront" not in activation_script
+    assert "set targetWindowStillFront" in restore_script
+    assert 'currentFrontmostProcessName is "Safari"' in restore_script
+    assert '(id of front window) is (id of targetWindow)' in restore_script
+    assert "(current tab of targetWindow) is targetTab" not in restore_script
+    assert "set current tab of targetWindow" not in restore_script
+    assert 'do JavaScript "document.hasFocus()" in targetTab' not in restore_script
+    assert "set bounds of targetWindow" not in restore_script
+    assert "set miniaturized of targetWindow" not in restore_script
+    assert "set visible of targetWindow" not in restore_script
     assert 'set previousFrontmostProcessName to "Codex"' in restore_script
     assert "set previousWindowId to 456" in restore_script
     assert "set previousWindowWasVisible to true" in restore_script
@@ -547,11 +555,21 @@ def test_safari_native_input_transaction_does_not_steal_focus_if_user_switched()
             pass
 
     restore_script = run.call_args_list[1].args[0]
-    assert "set shouldRestoreNativeFocus" in restore_script
+    assert "set targetWindowStillFront" in restore_script
+    assert "set targetWindowStillFront to false" in restore_script
+    assert (
+        'if currentFrontmostProcessName is "Safari" then\n'
+        "    try\n"
+        "        set targetWindowStillFront to (id of front window) is (id of targetWindow)"
+    ) in restore_script
     assert restore_script.index(
-        '(name of first application process whose frontmost is true) is "Safari"'
+        'currentFrontmostProcessName is "Safari"'
     ) < restore_script.index("frontmost of process previousFrontmostProcessName")
-    assert "if shouldRestoreNativeFocus then" in restore_script
+    assert (
+        'if targetWindowStillFront and previousFrontmostProcessName is not "" '
+        'and previousFrontmostProcessName is not "Safari" then'
+    ) in restore_script
+    assert "if currentFrontmostProcessName is not \"Safari\" then" not in restore_script
 
 
 def test_safari_wake_for_javascript_uses_a_restorable_short_transaction() -> None:
@@ -567,7 +585,7 @@ def test_safari_wake_for_javascript_uses_a_restorable_short_transaction() -> Non
     scripts = [call.args[0] for call in run.call_args_list]
     assert any("nativeFocusReady" in script for script in scripts)
     restore_script = scripts[-1]
-    assert "set shouldRestoreNativeFocus" in restore_script
+    assert "set targetWindowStillFront" in restore_script
     assert 'set previousFrontmostProcessName to "Codex"' in restore_script
     assert page._native_input_transaction_depth == 0
 
@@ -602,7 +620,7 @@ def test_safari_native_activation_classifies_transport_uncertainty(
             )
 
     assert exc_info.value.input_attempted is input_attempted
-    assert "set shouldRestoreNativeFocus" in run.call_args_list[2].args[0]
+    assert "set targetWindowStillFront" in run.call_args_list[2].args[0]
 
 
 def test_safari_native_activation_preserves_uncertainty_when_focus_restore_fails(
@@ -1804,10 +1822,6 @@ def test_safari_page_evaluate_retries_an_unreadable_background_tab_result() -> N
 
     def run_window(statement: str, **_kwargs: object) -> str:
         scripts.append(statement)
-        if "return previousFrontmostProcessName & linefeed" in statement:
-            return "Codex\n1\ntrue\nfalse"
-        if "nativeFocusReady" in statement:
-            return ""
         if "return JSON.stringify({ok:true,value})" in statement:
             nonlocal evaluate_attempts
             evaluate_attempts += 1
@@ -1822,14 +1836,61 @@ def test_safari_page_evaluate_retries_an_unreadable_background_tab_result() -> N
         assert page.evaluate("() => 'ready'") == "ready"
 
     assert evaluate_attempts == 2
-    assert any("nativeFocusReady" in script for script in scripts)
-    restore_scripts = [
+    background_scripts = [
         script
         for script in scripts
-        if "set shouldRestoreNativeFocus" in script
-        and "frontmost of process previousFrontmostProcessName" in script
+        if "set canRestorePreviousSafariWindow" in script
+        and "set miniaturized of targetWindow to false" in script
     ]
-    assert restore_scripts
+    assert len(background_scripts) == 1
+    assert not any("nativeFocusReady" in script for script in scripts)
+    assert not any("\nactivate\n" in script for script in scripts)
+    assert page._native_input_transaction_depth == 0
+
+
+def test_safari_page_evaluate_uses_a_restorable_wake_only_after_background_retry() -> None:
+    page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123, tab_index=1)
+    encoded = '{"ok":true,"value":"ready"}'
+    events: list[str] = []
+    evaluate_attempts = 0
+
+    def run_window(statement: str, **_kwargs: object) -> str:
+        nonlocal evaluate_attempts
+        if "return previousFrontmostProcessName & linefeed" in statement:
+            events.append("capture")
+            return "Codex\n1\ntrue\nfalse"
+        if "nativeFocusReady" in statement:
+            events.append("wake")
+            return ""
+        if 'set previousFrontmostProcessName to "Codex"' in statement:
+            events.append("restore")
+            return ""
+        if "set canRestorePreviousSafariWindow" in statement:
+            events.append("keep")
+            return ""
+        if "return JSON.stringify({ok:true,value})" in statement:
+            evaluate_attempts += 1
+            events.append("evaluate")
+            if evaluate_attempts < 3:
+                return "missing value"
+            return encoded
+        return ""
+
+    with patch.object(page, "_run_in_window", side_effect=run_window), patch(
+        "app.core.safari_automation.time.sleep"
+    ):
+        assert page.evaluate("() => 'ready'") == "ready"
+
+    assert evaluate_attempts == 3
+    assert events == [
+        "evaluate",
+        "keep",
+        "evaluate",
+        "capture",
+        "wake",
+        "restore",
+        "evaluate",
+    ]
     assert page._native_input_transaction_depth == 0
 
 

@@ -1,4 +1,4 @@
-/* Code version: v3.48.1-codex.1 */
+/* Code version: v3.49.1-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -810,6 +810,31 @@
         return window.CACHELIKES_CHATGPT_PROJECT_ICONS?.projectIcon(item, fallback) || fallback;
     }
 
+    function projectDisplayTitle(item) {
+        const candidate = String(item?.title || item?.name || "").trim();
+        const projectUrl = String(item?.url || "").trim();
+        const projectId = String(item?.id || "").trim();
+        const exposesLocation = /^(?:https?:\/\/|(?:www\.)?chatgpt\.com\/|\/?g\/g-p-)/i.test(
+            candidate,
+        );
+        if (candidate && candidate !== projectUrl && candidate !== projectId && !exposesLocation) {
+            return candidate;
+        }
+        try {
+            const pathname = new URL(projectUrl).pathname;
+            const match = pathname.match(
+                /^\/g\/g-p-[0-9a-f]{32}-(.+)\/project\/?$/i,
+            );
+            const slug = decodeURIComponent(match?.[1] || "")
+                .replace(/[-_]+/g, " ")
+                .replace(/\s+/g, " ")
+                .trim();
+            if (slug) return slug;
+        } catch (_error) {
+        }
+        return "Untitled project";
+    }
+
     function agentRunIdentity(agent) {
         return String(agent?.run_id || agent?.started_at || "");
     }
@@ -1616,7 +1641,9 @@
                 : listIcon;
             const option = sourceOptionButton(
                 itemValue,
-                item.title || "Untitled",
+                combobox === elements.projectCombobox
+                    ? projectDisplayTitle(item)
+                    : item.title || "Untitled",
                 itemIcon,
                 Boolean(selectedValue && itemValue === selectedValue),
                 combobox === elements.projectCombobox ? String(item.icon || "").trim() : "",
@@ -2235,6 +2262,17 @@
     }
 
     function applyAgentSourcesError(message) {
+        const hasUsableCatalog = Boolean(
+            agentSources.recent_sessions?.length || agentSources.projects?.length,
+        );
+        if (hasUsableCatalog) {
+            catalogState = "ready";
+            catalogError = message || "Could not refresh Recent sessions";
+            sourcesLoaded = true;
+            clearCatalogLoadingState();
+            renderRecentSessionList();
+            return;
+        }
         agentSources = {recent_sessions: [], projects: []};
         catalogState = "error";
         catalogError = message || "Could not load Recent sessions";
@@ -2278,12 +2316,9 @@
         const platform = selectedPlatform();
         const platformLabel = selectedPlatformLabel();
         const bootstrappedSources = lastBrowserStatus?.agent_sources;
-        const bootstrappedError = lastBrowserStatus?.agent_sources_error;
         const supportsBootstrap = BOOTSTRAPPED_SOURCE_PLATFORMS.has(platform);
-        if (!forceRefresh && supportsBootstrap && (bootstrappedSources || bootstrappedError)) {
-            const bootstrapKind = bootstrappedSources ? "sources" : "error";
-            const bootstrapValue = bootstrappedSources || String(bootstrappedError || "");
-            const bootstrapSignature = `${browserName}|${platform}|${bootstrapKind}|${JSON.stringify(bootstrapValue)}`;
+        if (!forceRefresh && supportsBootstrap && bootstrappedSources) {
+            const bootstrapSignature = `${browserName}|${platform}|sources|${JSON.stringify(bootstrappedSources)}`;
             if (bootstrapSignature !== appliedBootstrapSignature) {
                 if (catalogAbort) {
                     catalogAbort.abort();
@@ -2293,8 +2328,7 @@
                 sourceBrowser = browserName;
                 sourcePlatform = platform;
                 appliedBootstrapSignature = bootstrapSignature;
-                if (bootstrappedSources) applyAgentSources(bootstrappedSources);
-                else applyAgentSourcesError(String(bootstrappedError));
+                applyAgentSources(bootstrappedSources);
             }
             return;
         }
@@ -2375,11 +2409,7 @@
     }
 
     function refreshAgentSessionSources() {
-        const hasBootstrap = Boolean(lastBrowserStatus)
-            && (
-                Object.prototype.hasOwnProperty.call(lastBrowserStatus, "agent_sources")
-                || Object.prototype.hasOwnProperty.call(lastBrowserStatus, "agent_sources_error")
-            );
+        const hasBootstrap = Boolean(lastBrowserStatus?.agent_sources);
         if (hasBootstrap && browserStatusController?.refresh) {
             void browserStatusController.refresh();
             return;
@@ -2549,12 +2579,21 @@
         return activity.length || null;
     }
 
+    function agenticTokenCount(agent) {
+        const rawCount = Number(agent?.agentic_token_count);
+        return Number.isSafeInteger(rawCount) && rawCount >= 0 ? rawCount : null;
+    }
+
     function runningResponseStatusCopy(agent, message) {
         const metrics = [];
         const elapsed = formatElapsedDuration(agent?.started_at);
         if (elapsed) metrics.push(elapsed);
         const turnCount = agentTurnCount(agent);
         if (turnCount !== null) metrics.push(`${turnCount.toLocaleString("en-US")} turns`);
+        const tokenCount = agenticTokenCount(agent);
+        if (tokenCount !== null) {
+            metrics.push(`${tokenCount.toLocaleString("en-US")} equiv. tokens`);
+        }
         const summary = ["Working", ...metrics].filter(Boolean).join(" · ");
         const detail = String(message || "").trim();
         return {

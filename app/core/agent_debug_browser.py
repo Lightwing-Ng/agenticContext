@@ -1,4 +1,4 @@
-"""Lifecycle management for the project-owned Chromium debug browser.
+"""Lifecycle management for project-owned Chromium debug browsers.
 
 On Windows a running Chrome or Edge keeps its sign-in cookies under an exclusive
 OS lock, so the standard clone-then-launch path cannot reuse the user's live
@@ -7,7 +7,11 @@ login state. This module owns a separate Chromium instance launched with
 can ``connect_over_cdp`` to it and read the authenticated session without ever
 touching the locked profile files.
 
-Code version: v1.23.0-codex.1
+On macOS, Edge Jury uses the same verified-CDP primitives with a caller-supplied
+project profile root. That path is deliberately separate from the daily Edge
+profile and never copies browser or Microsoft account identity data.
+
+Code version: v1.24.0-codex.2
 """
 
 from __future__ import annotations
@@ -26,7 +30,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import LOCAL_STORE_ROOT, is_windows_host
+from .config import LOCAL_STORE_ROOT, is_macos_host, is_windows_host
+from .platform_lock import lock_file, unlock_file
 
 
 LOGGER = logging.getLogger(__name__)
@@ -47,6 +52,8 @@ _BRAND_PREFIXES: dict[str, str] = {"edge": "Edg/", "chrome": "Chrome/"}
 # while clone-profile launches remain isolated and do not use these locks.
 _DEBUG_BROWSER_LOCKS: dict[str, threading.RLock] = {}
 _DEBUG_BROWSER_LOCKS_GUARD = threading.Lock()
+_DEBUG_BROWSER_START_LOCKS: dict[str, threading.RLock] = {}
+_DEBUG_BROWSER_START_LOCKS_GUARD = threading.Lock()
 
 
 def _debug_browser_lock(browser_id: str) -> threading.RLock:
@@ -120,23 +127,48 @@ class RecordedTarget:
     browser: str | None = None
 
 
-def _debug_profile_dir(browser_id: str) -> Path:
+def _debug_profile_dir(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> Path:
     """Return the persistent user-data directory for one debug browser."""
-    return DEBUG_BROWSER_ROOT / browser_id
+    return Path(profile_root or DEBUG_BROWSER_ROOT).expanduser() / browser_id
 
 
-def _debug_port_path(browser_id: str) -> Path:
+def _debug_port_path(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> Path:
     """Return the file that records the last-used debug port for one browser."""
-    return _debug_profile_dir(browser_id) / DEBUG_PORT_FILENAME
+    return _debug_profile_dir(browser_id, profile_root) / DEBUG_PORT_FILENAME
 
 
-def _devtools_active_port_path(browser_id: str) -> Path:
+def _devtools_active_port_path(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> Path:
     """Return Chromium's launch-owned endpoint marker for one profile."""
-    return _debug_profile_dir(browser_id) / DEVTOOLS_ACTIVE_PORT_FILENAME
+    return _debug_profile_dir(browser_id, profile_root) / DEVTOOLS_ACTIVE_PORT_FILENAME
 
 
 def _resolve_browser_executable(browser_id: str) -> str | None:
     """Resolve an installed Chromium executable without a circular import."""
+    if is_macos_host():
+        if browser_id != "edge":
+            return None
+        candidates = (
+            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            Path.home()
+            / "Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        )
+        return next(
+            (
+                str(candidate)
+                for candidate in candidates
+                if candidate.is_file() and os.access(candidate, os.X_OK)
+            ),
+            None,
+        )
     # Lazy import: computer_use_agent imports browser_sessions, which would form a
     # cycle if this module imported it at load time. The call below only runs after
     # the application has finished importing, so the deferred import is safe.
@@ -145,9 +177,12 @@ def _resolve_browser_executable(browser_id: str) -> str | None:
     return resolve_windows_browser_executable(browser_id)
 
 
-def _read_recorded_port(browser_id: str) -> int | None:
+def _read_recorded_port(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> int | None:
     """Return a previously recorded debug port, or None when it is absent."""
-    target = _read_recorded_target(browser_id)
+    target = _read_recorded_target(browser_id, profile_root)
     return target.port if target is not None else None
 
 
@@ -161,6 +196,8 @@ def _valid_port(value: object) -> int | None:
 def _read_small_text(path: Path) -> str | None:
     """Read one bounded runtime marker without accepting oversized content."""
     try:
+        if path.is_symlink():
+            return None
         if path.stat().st_size > 4_096:
             return None
         return path.read_text(encoding="utf-8").strip()
@@ -168,9 +205,12 @@ def _read_small_text(path: Path) -> str | None:
         return None
 
 
-def _read_recorded_target(browser_id: str) -> RecordedTarget | None:
+def _read_recorded_target(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> RecordedTarget | None:
     """Read the persisted CDP target, including legacy bare-port records."""
-    port_file = _debug_port_path(browser_id)
+    port_file = _debug_port_path(browser_id, profile_root)
     raw = _read_small_text(port_file)
     if not raw:
         return None
@@ -195,9 +235,14 @@ def _read_recorded_target(browser_id: str) -> RecordedTarget | None:
     )
 
 
-def _record_debug_target(browser_id: str, identity: CdpIdentity) -> None:
+def _record_debug_target(
+    browser_id: str,
+    identity: CdpIdentity,
+    profile_root: Path | None = None,
+) -> None:
     """Atomically persist a reachable endpoint and its browser instance identity."""
-    port_file = _debug_port_path(browser_id)
+    port_file = _debug_port_path(browser_id, profile_root)
+    strict_project_marker = profile_root is not None and is_macos_host()
     temp_path: Path | None = None
     try:
         port_file.parent.mkdir(parents=True, exist_ok=True)
@@ -222,12 +267,28 @@ def _record_debug_target(browser_id: str, identity: CdpIdentity) -> None:
             temp_file.flush()
             os.fsync(temp_file.fileno())
         temp_path.replace(port_file)
+        if os.name != "nt":
+            port_file.chmod(0o600)
     except OSError as exc:
+        if strict_project_marker:
+            raise RuntimeError(
+                "The project Edge debug endpoint could not be recorded safely."
+            ) from exc
         LOGGER.warning("Could not record the debug browser target at %s: %s", port_file, exc)
     finally:
         if temp_path is not None and temp_path.exists():
             with contextlib.suppress(OSError):
                 temp_path.unlink()
+    if strict_project_marker:
+        recorded = _read_recorded_target(browser_id, profile_root)
+        if recorded != RecordedTarget(
+            port=identity.port,
+            instance=identity.instance_guid,
+            browser=identity.browser_brand,
+        ):
+            raise RuntimeError(
+                "The project Edge debug endpoint could not be verified after it was recorded."
+            )
 
 
 def _instance_guid_from_websocket(websocket_url: object) -> str:
@@ -244,9 +305,12 @@ def _instance_guid_from_websocket(websocket_url: object) -> str:
     return segments[-1]
 
 
-def _read_devtools_active_target(browser_id: str) -> RecordedTarget | None:
+def _read_devtools_active_target(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> RecordedTarget | None:
     """Read the endpoint selected by the browser launched with port zero."""
-    raw = _read_small_text(_devtools_active_port_path(browser_id))
+    raw = _read_small_text(_devtools_active_port_path(browser_id, profile_root))
     if not raw:
         return None
     lines = raw.splitlines()
@@ -309,9 +373,12 @@ def _wait_for_cdp_ready(
     return None
 
 
-def _clear_devtools_active_port(browser_id: str) -> None:
+def _clear_devtools_active_port(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> None:
     """Remove the old launch marker before asking Chromium to choose a new port."""
-    marker = _devtools_active_port_path(browser_id)
+    marker = _devtools_active_port_path(browser_id, profile_root)
     try:
         marker.unlink()
     except FileNotFoundError:
@@ -322,23 +389,105 @@ def _clear_devtools_active_port(browser_id: str) -> None:
         ) from exc
 
 
-def _wait_for_launched_cdp(browser_id: str, timeout_seconds: float) -> CdpIdentity | None:
+def _wait_for_launched_cdp(
+    browser_id: str,
+    timeout_seconds: float,
+    profile_root: Path | None = None,
+) -> CdpIdentity | None:
     """Wait for the profile marker and live endpoint from this launch to agree."""
     deadline = time.time() + max(0.0, timeout_seconds)
     while time.time() < deadline:
-        target = _read_devtools_active_target(browser_id)
+        target = (
+            _read_devtools_active_target(browser_id)
+            if profile_root is None
+            else _read_devtools_active_target(browser_id, profile_root)
+        )
         if target is not None and target.instance is not None:
             identity = _probe_cdp_identity(target.port)
             if identity is not None and identity.instance_guid == target.instance:
+                if os.name != "nt":
+                    with contextlib.suppress(OSError):
+                        _devtools_active_port_path(
+                            browser_id,
+                            profile_root,
+                        ).chmod(0o600)
                 return identity
         time.sleep(0.4)
     return None
 
 
-def _launch_debug_browser(browser_id: str, executable: str, port: int) -> subprocess.Popen[bytes]:
+def _prepare_private_profile_directory(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> Path:
+    """Create an owner-only project profile without accepting link replacement."""
+    root = Path(profile_root or DEBUG_BROWSER_ROOT).expanduser()
+    profile_dir = _debug_profile_dir(browser_id, root)
+    for directory in (root, profile_dir):
+        if directory.is_symlink():
+            raise RuntimeError(
+                f"The project debug {browser_id} profile path must not be a symbolic link."
+            )
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            metadata = directory.stat()
+        except OSError as exc:
+            raise RuntimeError(
+                f"The project debug {browser_id} profile path is unavailable."
+            ) from exc
+        if not directory.is_dir():
+            raise RuntimeError(
+                f"The project debug {browser_id} profile path is not a directory."
+            )
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid) and metadata.st_uid != getuid():
+            raise RuntimeError(
+                f"The project debug {browser_id} profile is owned by another user."
+            )
+        if os.name != "nt":
+            directory.chmod(0o700)
+    return profile_dir
+
+
+@contextlib.contextmanager
+def _debug_browser_startup_lock(
+    browser_id: str,
+    profile_root: Path | None = None,
+):
+    """Serialize one profile launch across threads and macOS service processes."""
+    profile_dir = _prepare_private_profile_directory(browser_id, profile_root)
+    key = str(profile_dir.absolute())
+    with _DEBUG_BROWSER_START_LOCKS_GUARD:
+        thread_lock = _DEBUG_BROWSER_START_LOCKS.setdefault(key, threading.RLock())
+    with thread_lock:
+        if not is_macos_host():
+            yield
+            return
+        lock_path = profile_dir / ".launch.lock"
+        if lock_path.is_symlink():
+            raise RuntimeError(
+                f"The project debug {browser_id} launch lock must not be a symbolic link."
+            )
+        handle = lock_path.open("a+", encoding="utf-8")
+        try:
+            lock_path.chmod(0o600)
+            lock_file(handle)
+            try:
+                yield
+            finally:
+                unlock_file(handle)
+        finally:
+            handle.close()
+
+
+def _launch_debug_browser(
+    browser_id: str,
+    executable: str,
+    port: int,
+    profile_root: Path | None = None,
+) -> subprocess.Popen[bytes]:
     """Start one detached Chromium instance exposing a CDP debug endpoint."""
-    user_data_dir = _debug_profile_dir(browser_id)
-    user_data_dir.mkdir(parents=True, exist_ok=True)
+    user_data_dir = _prepare_private_profile_directory(browser_id, profile_root)
     command = [
         executable,
         f"--remote-debugging-port={port}",
@@ -357,6 +506,8 @@ def _launch_debug_browser(browser_id: str, executable: str, port: int) -> subpro
     }
     if creation_flags:
         popen_kwargs["creationflags"] = creation_flags
+    elif is_macos_host():
+        popen_kwargs["start_new_session"] = True
     LOGGER.info(
         "Starting debug %s with an OS-selected CDP port (profile: %s).",
         browser_id,
@@ -365,7 +516,11 @@ def _launch_debug_browser(browser_id: str, executable: str, port: int) -> subpro
     return subprocess.Popen(command, **popen_kwargs)  # type: ignore[arg-type]
 
 
-def ensure_debug_browser(browser_id: str) -> DebugBrowserHandle:
+def ensure_debug_browser(
+    browser_id: str,
+    *,
+    profile_root: Path | None = None,
+) -> DebugBrowserHandle:
     """Return a handle to a reachable debug browser, starting one if needed.
 
     A recorded endpoint is reused only when its live product and instance identity
@@ -374,12 +529,43 @@ def ensure_debug_browser(browser_id: str) -> DebugBrowserHandle:
     live endpoint, avoiding a free-port selection race. The browser intentionally
     remains running so subsequent requests can reattach.
     """
-    if not is_windows_host():
-        raise RuntimeError("The project-owned debug browser is only supported on Windows.")
+    supported = (
+        (is_windows_host() and browser_id in {"edge", "chrome"})
+        or (is_macos_host() and browser_id == "edge")
+    )
+    if not supported:
+        raise RuntimeError(
+            "The project-owned debug browser supports Edge on macOS and "
+            "Edge or Chrome on Windows."
+        )
+    with _debug_browser_startup_lock(browser_id, profile_root):
+        return _ensure_debug_browser_locked(browser_id, profile_root=profile_root)
+
+
+def _ensure_debug_browser_locked(
+    browser_id: str,
+    *,
+    profile_root: Path | None = None,
+) -> DebugBrowserHandle:
+    """Return one verified endpoint while its launch lock is held."""
     if browser_id not in {"edge", "chrome"}:
         raise RuntimeError(f"The debug browser does not support {browser_id!r}.")
 
-    recorded = _read_recorded_target(browser_id)
+    recorded = (
+        _read_recorded_target(browser_id)
+        if profile_root is None
+        else _read_recorded_target(browser_id, profile_root)
+    )
+    if (
+        recorded is not None
+        and profile_root is not None
+        and is_macos_host()
+        and recorded.instance is None
+    ):
+        LOGGER.warning(
+            "Ignoring a legacy debug Edge marker without a browser instance identity."
+        )
+        recorded = None
     if recorded is not None:
         identity = _wait_for_cdp_ready(
             recorded.port,
@@ -388,7 +574,10 @@ def ensure_debug_browser(browser_id: str) -> DebugBrowserHandle:
         )
         if identity is not None and _identity_matches_browser(identity, browser_id):
             if recorded.instance is None:
-                _record_debug_target(browser_id, identity)
+                if profile_root is None:
+                    _record_debug_target(browser_id, identity)
+                else:
+                    _record_debug_target(browser_id, identity, profile_root)
             LOGGER.info(
                 "Reusing the running debug %s on CDP port %s.",
                 browser_id,
@@ -397,7 +586,7 @@ def ensure_debug_browser(browser_id: str) -> DebugBrowserHandle:
             return DebugBrowserHandle(
                 browser_id=browser_id,
                 cdp_endpoint=f"http://127.0.0.1:{recorded.port}",
-                user_data_dir=_debug_profile_dir(browser_id),
+                user_data_dir=_debug_profile_dir(browser_id, profile_root),
             )
         LOGGER.warning(
             "The recorded debug %s target no longer reports its expected identity; "
@@ -411,10 +600,22 @@ def ensure_debug_browser(browser_id: str) -> DebugBrowserHandle:
             f"Could not find an installed {browser_id} executable to launch the debug browser."
         )
 
-    _debug_profile_dir(browser_id).mkdir(parents=True, exist_ok=True)
-    _clear_devtools_active_port(browser_id)
-    process = _launch_debug_browser(browser_id, executable, 0)
-    identity = _wait_for_launched_cdp(browser_id, CDP_READY_TIMEOUT_SECONDS)
+    _prepare_private_profile_directory(browser_id, profile_root)
+    if profile_root is None:
+        _clear_devtools_active_port(browser_id)
+        process = _launch_debug_browser(browser_id, executable, 0)
+        identity = _wait_for_launched_cdp(
+            browser_id,
+            CDP_READY_TIMEOUT_SECONDS,
+        )
+    else:
+        _clear_devtools_active_port(browser_id, profile_root)
+        process = _launch_debug_browser(browser_id, executable, 0, profile_root)
+        identity = _wait_for_launched_cdp(
+            browser_id,
+            CDP_READY_TIMEOUT_SECONDS,
+            profile_root,
+        )
     if identity is None:
         with contextlib.suppress(Exception):
             process.terminate()
@@ -430,20 +631,37 @@ def ensure_debug_browser(browser_id: str) -> DebugBrowserHandle:
             f"{identity.browser_brand!r}, which does not match the requested "
             f"{browser_id!r} identity."
         )
-    _record_debug_target(browser_id, identity)
+    try:
+        if profile_root is None:
+            _record_debug_target(browser_id, identity)
+        else:
+            _record_debug_target(browser_id, identity, profile_root)
+    except Exception:
+        with contextlib.suppress(Exception):
+            process.terminate()
+        raise
     return DebugBrowserHandle(
         browser_id=browser_id,
         cdp_endpoint=f"http://127.0.0.1:{identity.port}",
-        user_data_dir=_debug_profile_dir(browser_id),
+        user_data_dir=_debug_profile_dir(browser_id, profile_root),
     )
 
 
-def debug_browser_login_url(browser_id: str) -> str | None:
+def debug_browser_login_url(
+    browser_id: str,
+    *,
+    profile_root: Path | None = None,
+) -> str | None:
     """Return the recorded endpoint only while its complete identity still matches."""
-    if not is_windows_host() or browser_id not in _BRAND_PREFIXES:
+    if not (
+        (is_windows_host() and browser_id in _BRAND_PREFIXES)
+        or (is_macos_host() and browser_id == "edge")
+    ):
         return None
-    recorded = _read_recorded_target(browser_id)
+    recorded = _read_recorded_target(browser_id, profile_root)
     if recorded is None:
+        return None
+    if is_macos_host() and browser_id == "edge" and recorded.instance is None:
         return None
     identity = _wait_for_cdp_ready(
         recorded.port,
@@ -455,8 +673,21 @@ def debug_browser_login_url(browser_id: str) -> str | None:
     return f"http://127.0.0.1:{recorded.port}"
 
 
-def debug_browser_profile_initialized(browser_id: str) -> bool:
+def debug_browser_profile_initialized(
+    browser_id: str,
+    *,
+    profile_root: Path | None = None,
+) -> bool:
     """Return whether one debug profile completed a prior successful launch."""
-    if not is_windows_host() or browser_id not in {"edge", "chrome"}:
+    supported = (
+        (is_windows_host() and browser_id in {"edge", "chrome"})
+        or (is_macos_host() and browser_id == "edge")
+    )
+    if not supported:
         return False
-    return _read_recorded_port(browser_id) is not None
+    recorded = _read_recorded_target(browser_id, profile_root)
+    if recorded is None:
+        return False
+    if is_macos_host() and browser_id == "edge" and recorded.instance is None:
+        return False
+    return True

@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.46.8-codex.1
+Code version: v1.46.12-codex.1
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 import re
 from threading import Thread
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 import pytest
 from PIL import Image, ImageChops
@@ -59,6 +59,27 @@ DESKTOP_VIEWPORTS = (
     ("iPad landscape and compact desktop", 1_024, 768),
     ("wide desktop", 1_512, 982),
 )
+
+
+def _is_zhimg_request_url(url: str) -> bool:
+    """Match the exact zhimg.com host or one of its subdomains."""
+    hostname = (urlsplit(url).hostname or "").casefold().rstrip(".")
+    return hostname == "zhimg.com" or hostname.endswith(".zhimg.com")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    (
+        ("https://zhimg.com/image.png", True),
+        ("https://pic1.zhimg.com/image.png", True),
+        ("https://pic1.zhimg.com.:443/image.png", True),
+        ("https://notzhimg.com/image.png", False),
+        ("https://zhimg.com.evil.example/image.png", False),
+        ("https://example.test/?next=https://pic1.zhimg.com/image.png", False),
+    ),
+)
+def test_zhimg_request_url_requires_an_exact_host(url: str, expected: bool) -> None:
+    assert _is_zhimg_request_url(url) is expected
 
 
 @pytest.fixture(scope="module")
@@ -953,7 +974,7 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
     page.on(
         "request",
         lambda request: remote_media_requests.append(request.url)
-        if "zhimg.com" in request.url
+        if _is_zhimg_request_url(request.url)
         else None,
     )
     page.reload(wait_until="networkidle")
@@ -8049,6 +8070,51 @@ def test_chatgpt_retry_control_targets_only_provider_error_boundary(
             """
             <style>button { display: block; width: 160px; height: 32px; }</style>
             <article><div data-message-author-role="user">Current request</div></article>
+            <section class="provider-response-failure">
+              <p>Something went wrong</p><button id="plain-response-retry">Try again</button>
+            </section>
+            <script>
+              window.retryClicks = [];
+              document.querySelector('button').onclick = () => window.retryClicks.push('plain');
+            </script>
+            """
+        )
+        plain_response_retry = _chatgpt_retry_control(
+            page,
+            "",
+            click=True,
+            require_after_latest_user=True,
+        )
+        assert plain_response_retry["clicked"] is True
+        assert page.evaluate("window.retryClicks") == ["plain"]
+
+        page.set_content(
+            """
+            <style>button { display: block; width: 160px; height: 32px; }</style>
+            <article><div data-message-author-role="user">Current request</div></article>
+            <section class="unrelated-retry">
+              <p>Reconnect the optional preview.</p><button id="unrelated-retry">Retry</button>
+            </section>
+            <script>
+              window.retryClicks = [];
+              document.querySelector('button').onclick = () => window.retryClicks.push('unrelated');
+            </script>
+            """
+        )
+        unrelated_retry = _chatgpt_retry_control(
+            page,
+            "",
+            click=True,
+            require_after_latest_user=True,
+        )
+        assert unrelated_retry["clicked"] is False
+        assert unrelated_retry["ambiguous"] is True
+        assert page.evaluate("window.retryClicks") == []
+
+        page.set_content(
+            """
+            <style>button { display: block; width: 160px; height: 32px; }</style>
+            <article><div data-message-author-role="user">Current request</div></article>
             <section role="alert">
               <p>Something went wrong</p><button id="retry-one">Try again</button>
             </section>
@@ -9185,6 +9251,103 @@ def test_agent_bootstrap_replaces_ready_cache_without_catalog(
 
 @pytest.mark.integration
 @pytest.mark.slow
+def test_agent_catalog_error_falls_back_to_cached_project_names_and_icons(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+) -> None:
+    """A transient bootstrap failure must not hide the dedicated source catalog."""
+    source_requests: list[str] = []
+    project_url = (
+        "https://chatgpt.com/g/"
+        "g-p-6a978edb95308191a53d2bb113154c10-worthward/project"
+    )
+    browser_status = {
+        "platform": "chatgpt",
+        "browser": "edge",
+        "browser_label": "Edge",
+        "logged_in": True,
+        "can_download": True,
+        "account_name": "ChatGPT account",
+        "message": "Edge is ready for ChatGPT Web.",
+        "agent_sources_error": (
+            "ChatGPT is signed in, but Recent sessions could not be loaded "
+            "from this browser."
+        ),
+    }
+    catalog_payload = {
+        "platform": "chatgpt",
+        "browser_label": "Edge",
+        "recent_sessions": [],
+        "projects": [
+            {
+                "id": "g-p-6a978edb95308191a53d2bb113154c10",
+                "title": project_url,
+                "url": project_url,
+                "updated_at": "2026-09-16T00:00:00Z",
+                "icon": "currency-dollar",
+                "icon_color": "#53B559",
+            }
+        ],
+        "limit": 20,
+    }
+
+    def fulfill_sources(route) -> None:
+        source_requests.append(route.request.url)
+        if len(source_requests) == 1:
+            route.fulfill(json=catalog_payload)
+            return
+        route.fulfill(status=503, json={"error": "Temporary catalog failure"})
+
+    context = disposable_browser.new_context(
+        viewport={"width": 1_280, "height": 900},
+        has_touch=False,
+        is_mobile=False,
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    page.route(
+        "**/api/agent/status",
+        lambda route: route.fulfill(json=_finished_chatgpt_agent_payload()),
+    )
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json=browser_status))
+    page.route("**/api/agent/sources**", fulfill_sources)
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
+        project_trigger = page.locator(
+            '[data-agent-session-list="projects"] [data-agent-combobox-trigger]'
+        )
+        project_option = page.locator(
+            f'[data-agent-session-list="projects"] '
+            f'[data-agent-combobox-option="{project_url}"]'
+        )
+        expect(project_option).to_have_count(1)
+        expect(project_trigger).to_be_enabled()
+        expect(project_trigger).to_have_attribute(
+            "aria-label", "Projects: Choose a project"
+        )
+        expect(project_trigger).not_to_contain_text("unavailable")
+        expect(project_option).to_have_attribute("data-agent-combobox-label", "worthward")
+        expect(project_option).to_have_attribute(
+            "data-agent-combobox-icon-name", "currency-dollar"
+        )
+        expect(project_option.locator("img")).to_have_attribute(
+            "src", re.compile(r"^data:image/svg\+xml")
+        )
+        expect(project_option).not_to_contain_text("https://")
+        assert len(source_requests) == 1
+        assert "refresh=1" not in source_requests[0]
+        with page.expect_request(re.compile(r"/api/agent/sources\?.*refresh=1")):
+            project_trigger.evaluate("button => button.click()")
+        expect(project_option).to_have_count(1)
+        expect(project_option).to_have_attribute("data-agent-combobox-label", "worthward")
+        expect(project_trigger).not_to_contain_text("unavailable")
+        assert len(source_requests) == 2
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 def test_fresh_grok_bootstrap_supersedes_a_stale_cached_catalog_error(
     disposable_browser: Browser,
     sidebar_server_url: str,
@@ -9382,6 +9545,7 @@ def test_running_agent_status_shows_elapsed_turn_count_and_activity_time(
         "finished_at": "",
         "started_at": started_at,
         "turn_count": 3,
+        "agentic_token_count": 1_234_567,
         "activity": [
             {
                 "status": "running",
@@ -9418,9 +9582,13 @@ def test_running_agent_status_shows_elapsed_turn_count_and_activity_time(
         activity_meta = page.locator("#agent_activity_list .agent-activity-meta").first
         expect(status).to_contain_text("Working")
         expect(status).to_contain_text("3 turns")
+        expect(status).to_contain_text("1,234,567 equiv. tokens")
         expect(status_copy.locator("br")).to_have_count(1)
         expect(status_copy.locator("[data-agent-response-status-leading]")).to_have_text(
-            re.compile(r"^Working · \d{2}:\d{2}:\d{2} · 3 turns$")
+            re.compile(
+                r"^Working · \d{2}:\d{2}:\d{2} · 3 turns · "
+                r"1,234,567 equiv\. tokens$"
+            )
         )
         expect(status_copy.locator("[data-agent-response-status-detail]")).to_have_text(
             "Controller observation sent; waiting for the next ChatGPT action."
@@ -11030,19 +11198,29 @@ def test_text_source_selection_survives_global_search_form_submission(
         for source, label in [("claude", "Claude"), ("gemini", "Gemini"), ("grok", "Grok"), ("chatgpt", "ChatGPT")]:
             page.locator("[data-browser-source-filter-trigger]").click()
             page.locator(f'[data-browser-source-filter-option="{source}"]').click()
-            expect(page).to_have_url(re.compile(rf"[?&]source={source}(?:&|$)"))
+            page.wait_for_url(
+                re.compile(rf"[?&]source={source}(?:&|$)"),
+                wait_until="domcontentloaded",
+            )
             expect(page.locator("[data-browser-source-filter-trigger]")).to_have_attribute("aria-label", f"Source: {label}")
         page.locator("[data-browser-source-filter-trigger]").click()
         page.locator('[data-browser-source-filter-option="gemini"]').click()
+        page.wait_for_url(
+            re.compile(r"[?&]source=gemini(?:&|$)"),
+            wait_until="domcontentloaded",
+        )
         page.locator("#browser_search_input").fill("timestamp")
         page.locator("#browser_search_input").press("Enter")
-        expect(page).to_have_url(
-            re.compile(r"(?=.*[?&]source=gemini(?:&|$))(?=.*[?&]q=timestamp(?:&|$))")
+        page.wait_for_url(
+            re.compile(r"(?=.*[?&]source=gemini(?:&|$))(?=.*[?&]q=timestamp(?:&|$))"),
+            wait_until="domcontentloaded",
         )
-        page.wait_for_load_state("domcontentloaded")
         page.locator("[data-browser-source-filter-trigger]").click()
         page.locator('[data-browser-source-filter-option="chatgpt"]').click()
-        expect(page).to_have_url(re.compile(r"[?&]source=chatgpt(?:&|$)"))
+        page.wait_for_url(
+            re.compile(r"[?&]source=chatgpt(?:&|$)"),
+            wait_until="domcontentloaded",
+        )
         expect(page.get_by_role("table", name="Cached messages", exact=True)).to_contain_text("timestamp layout")
     finally:
         context.close()

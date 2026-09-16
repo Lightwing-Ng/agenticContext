@@ -1,7 +1,7 @@
-/* Code version: v1.1.0-codex.1 */
+/* Code version: v1.1.1-codex.1 */
 
 (() => {
-    const controllerUrl = new URL("select-controller.js?v=select-controller-v1.0.0", document.currentScript.src);
+    const controllerUrl = new URL("select-controller.js?v=select-controller-v1.0.1", document.currentScript.src);
     let selectIndex = 0;
 
     function closeOtherMenus(activeSelect) {

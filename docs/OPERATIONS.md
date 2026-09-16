@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.24.3-codex.1`
+Documentation version: `v1.25.0-codex.1`
 
 ## Launch
 
@@ -14,6 +14,25 @@ On Windows:
 
 ```powershell
 .\scripts\setup_python.ps1
+```
+
+If the host interpreter is shared with an application that requires incompatible package versions,
+use a project-local environment and retain the override for setup and launch:
+
+```bash
+python3 -m venv .venv
+export AGENTIC_CONTEXT_PYTHON="$PWD/.venv/bin/python"
+./scripts/setup_python.sh
+./scripts/run_app.sh
+```
+
+On Windows:
+
+```powershell
+py -3 -m venv .venv
+$env:AGENTIC_CONTEXT_PYTHON = (Resolve-Path .venv\Scripts\python.exe)
+.\scripts\setup_python.ps1
+.\scripts\run_app.ps1
 ```
 
 Start the Flask console:
@@ -62,6 +81,14 @@ publish it through a public tunnel or reverse proxy.
   and 6,500,000-byte durable-record safety boundaries. Cached legacy clients that explicitly send
   a valid two-to-six-round budget remain bounded. Do not replace these boundaries with an
   unbounded loop or admit another Jury before every owned browser context has closed.
+- A standalone `JSON` renderer label immediately before a complete object is a supported provider
+  response shape. Other malformed output remains invalid. Repeated invalid votes terminate as
+  `structured_vote_stalled`, never as a factual `evidence_stalled` disagreement; inspect the
+  preserved raw responses before retrying.
+- Recent sessions allows deletion only for a `failed` Jury archive whose coordinator, provider
+  workers, Safari window, and durable cleanup ownership have all finished. The local API rechecks
+  those conditions before unlinking the exact owner-only JSON record; never remove Jury records
+  directly while cleanup is pending.
 - Both Zhihu workflows support only Chrome and Edge. They use an isolated temporary clone of the
   selected signed-in profile and perform credentialed same-origin API reads; Safari and an
   unauthenticated standalone HTTP client are not supported.
@@ -90,6 +117,20 @@ publish it through a public tunnel or reverse proxy.
   the previous foreground app; macOS decides Stage Manager grouping. Human verification reuses
   the same clone and retains the existing Resume gate. Automated execution never opens the user's
   original profile for writing. First-run, crash, notification, and repost prompts remain disabled.
+- macOS Edge Jury is the explicit exception to that clone-backed Agent behavior. Its first
+  `Check accounts` creates `<agent-runtime>/agent_browser_profile/edge` with owner-only directory
+  permissions, starts one project Edge process, and opens one provider setup tab per selected
+  juror. Complete the web-service sign-ins in those tabs and choose `Check accounts` again. Do not
+  sign the Edge browser itself into a Microsoft account. The project Profile is never initialized
+  from the daily Edge Profile and never copies `Local State`, Cookies, passwords, OneAuth data, or
+  other browser identity material. Missing initialization and provider authentication both fail
+  closed with actionable diagnostics; neither condition falls back to the daily Profile.
+- Every macOS Edge Jury worker independently attaches over verified CDP to that one project process
+  and creates its own Page in the persistent default context. Page leases are reference-counted in
+  process; worker cleanup closes only its Page and connection. The last lease releases all task
+  ownership but leaves the project Edge process and Profile available for reuse. A profile launch
+  is serialized across threads and local service processes with an owner-only lock. The code does
+  not use mock Keychain, basic password storage, disabled encryption, or Keychain mutation.
 - Explicit login handoff opens the selected browser visibly. macOS login and Windows conversation
   handoff use the normal resolved browser. Windows login uses the project-owned persistent debug
   profile so Recheck and later tasks read the same authentication state. Opening the page does not
@@ -210,7 +251,8 @@ publish it through a public tunnel or reverse proxy.
   browser. They return a cached entry without background refresh, return `unprobed` on a
   catalog/bootstrap miss, or return HTTP 409 on a history miss. The Windows rule is browser-wide
   because every provider shares that browser's CDP context; the Safari rule protects its serialized
-  Apple Events context. macOS Edge and Chrome retain their isolated-context behavior.
+  Apple Events context. macOS Agent Edge and Chrome retain their isolated-context behavior; macOS
+  Edge Jury alone uses the project process and Page leases described above.
 - ChatGPT, Gemini, Grok, and Claude on `/agent` use one agent-scoped browser bootstrap through Recent sessions:
   the same bounded initial check verifies readiness, collects the root session/project catalog,
   returns it to the selector, and seeds the memory/Parquet cache. Cache reuse and task completion
@@ -372,6 +414,12 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   Agent falls back to the project-owned debug browser over CDP and the first sign-in on that
   debug profile is the only manual step. On macOS, close duplicate normal browser windows, then
   retry the session probe.
+- macOS Edge Jury setup: choose `Check accounts` once to open the owner-only project Profile, sign
+  in to each selected provider tab, then choose `Check accounts` again. Do not close or alter the
+  daily Edge Profile, do not approve or reset Keychain entries as a troubleshooting step, and do
+  not add `--use-mock-keychain`, `--password-store=basic`, or encryption-disabling flags. If a fresh
+  project Profile still produces a OneAuth prompt, stop and investigate Edge/OneAuth or Keychain
+  ACL behavior; do not hide or automate the prompt.
 - ChatGPT parallel sync: Cache Download workers retain their clone-first path and can use up to
   three isolated Edge contexts. If Windows profile copying reaches the existing Cookie-lock CDP
   fallback, that fallback is serialized through the single-owner project debug browser. Lower the

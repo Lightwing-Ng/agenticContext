@@ -1,4 +1,4 @@
-/* Code version: v1.0.0 */
+/* Code version: v1.0.2 */
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {test} from "node:test";
@@ -32,7 +32,9 @@ function fixture() {
         open() {menu.hidden = false;}, close() {menu.hidden = true;},
     });
     function key(method, key) {
-        const event = {key, prevented: false, preventDefault() {this.prevented = true;}};
+        const event = {key, prevented: false, propagationStopped: false,
+            preventDefault() {this.prevented = true;},
+            stopPropagation() {this.propagationStopped = true;}};
         controller[method](event);
         return event;
     }
@@ -55,10 +57,11 @@ test("Home/End open at boundaries; Escape restores trigger without selection", (
     const f = fixture();
     f.key("triggerKeydown", "End");
     assert.equal(f.doc.activeElement, f.items[2]);
-    f.key("menuKeydown", "Escape");
+    const escape = f.key("menuKeydown", "Escape");
     assert.equal(f.doc.activeElement, f.trigger);
     assert.equal(f.menu.hidden, true);
     assert.equal(f.items[2].clicked, 0);
+    assert.equal(escape.propagationStopped, true);
     f.key("triggerKeydown", "Home");
     assert.equal(f.doc.activeElement, f.items[0]);
 });
@@ -108,6 +111,12 @@ test("Tab after pointer opening closes without stealing focus; disabled trigger 
     const f = fixture();
     f.menu.hidden = false;
     f.trigger.focus();
+    const escape = f.key("triggerKeydown", "Escape");
+    assert.equal(escape.prevented, true);
+    assert.equal(escape.propagationStopped, true);
+    assert.equal(f.menu.hidden, true);
+    assert.equal(f.doc.activeElement, f.trigger);
+    f.menu.hidden = false;
     assert.equal(f.key("triggerKeydown", "Tab").prevented, false);
     assert.equal(f.menu.hidden, true);
     assert.equal(f.doc.activeElement, f.trigger);

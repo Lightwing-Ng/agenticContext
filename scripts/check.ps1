@@ -1,9 +1,9 @@
 # agenticContext Windows quality gate.
-# Code version: v1.3.2-codex.1
+# Code version: v1.5.0-codex.1
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-. (Join-Path $PSScriptRoot "resolve_python.ps1")
+. (Join-Path $PSScriptRoot "resolve_python.ps1") -Mode quality
 $Python = $env:AGENTIC_CONTEXT_RESOLVED_PYTHON
 [string[]]$PythonArgs = if ($env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS) {
     $env:AGENTIC_CONTEXT_RESOLVED_PYTHON_ARGS -split ' '
@@ -39,15 +39,23 @@ try {
 
     Write-Host "Quality gate configuration: Python=$Python $($PythonArgs -join ' '), branch coverage minimum=${CoverageMinimum}%"
 
-    Write-Host "[1/5] Python static checks"
+    Write-Host "[1/6] Python environment checks"
+    & $Python @PythonArgs scripts/check_python_requirements.py quality requirements.txt
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $Python @PythonArgs -m pip check
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $Python @PythonArgs -m pip_audit --local --progress-spinner off
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    Write-Host "[2/6] Python static checks"
     & $Python @PythonArgs -m ruff check main.py app tests scripts
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    Write-Host "[2/5] Local documentation checks"
+    Write-Host "[3/6] Local documentation checks"
     & $Python @PythonArgs scripts/check_docs.py
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    Write-Host "[3/5] JavaScript syntax checks"
+    Write-Host "[4/6] JavaScript syntax checks"
     $node = Get-Command node -ErrorAction SilentlyContinue
     if (-not $node) {
         Write-Error "Node.js is required for JavaScript syntax checks."
@@ -68,11 +76,11 @@ try {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 
-    Write-Host "[4/5] JavaScript unit tests"
+    Write-Host "[5/6] JavaScript unit tests"
     & node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs tests/test_select_controller.mjs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    Write-Host "[5/5] Python tests with branch coverage"
+    Write-Host "[6/6] Python tests with branch coverage"
     $CoverageStartedAt = [DateTime]::UtcNow
     & $Python @PythonArgs -m pytest `
         -q `

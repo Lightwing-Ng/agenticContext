@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.75.2-codex.1`
+Documentation version: `v3.76.1-codex.1`
 
 ## Purpose
 
@@ -155,6 +155,18 @@ collapsed heading and current-event preview. Wrapped detail lines start at the
 same text rail. Activity has no inline border offset. Opening retains the shared gel
 animation; closing uses its motion duration and bouncy easing. Reduced-motion
 users bypass closing animation.
+
+While a task is running, the lifecycle summary also shows elapsed time,
+completed controller turns, and cumulative `equiv. tokens`. The token metric
+uses OpenAI's `o200k_base` encoding and sums the locally observable text input
+and output for every provider exchange. Each later input includes the known
+task transcript accumulated before that request, matching OpenAI's aggregate
+input-plus-output usage semantics. A successfully attached Markdown context is
+included in that known transcript. Provider-owned hidden instructions, hidden
+reasoning, media processing, and internal truncation are unavailable through
+the Web UI and therefore excluded; the label says `equiv.` instead of implying
+an exact provider billing value. Interrupted-task continuation persists only
+the aggregate and transcript token integers, never provider or project text.
 
 Validation on 5 Sep 2026: focused Style/Web checks passed 225 tests and 539
 subtests; `tests/test_agent_activity_e2e.py` passed four desktop/narrow motion
@@ -394,7 +406,8 @@ within 0.01px of its label. The user-owned service was not restarted.
    ChatGPT may first expose a client `WEB:` conversation id and then replace it with a
    server-assigned `/c/<id>` in the same root or Project container. The controller may rebind that
    one conversation when the current transfer receipt is observed on the server URL; a different
-   server conversation still fails closed.
+   server conversation still fails closed. Session history does not call the browser-page API for
+   a remaining `WEB:` placeholder; it reports that the server conversation transition is unfinished.
    Gemini Notebook routes converge on their typed `/app/<id>` identity and use the same receipt gate even
    when the provider remains on that URL.
 7. The selected Web provider returns exactly one JSON action at a time inside a fenced `json` code block so
@@ -444,7 +457,9 @@ within 0.01px of its label. The user-owned service was not restarted.
    delimiters that are intentionally absent from the visible bubble without weakening message-ID,
    ordering, conversation-URL, or no-resend requirements.
    After exact delivery is proven, one unique current-response `Try again` error boundary is allowed without clicking Send or
-   resending the controller observation. A navigation or connection exception after that Retry click
+   resending the controller observation. The boundary may be a structured error surface or a compact
+   generic provider-error container after the exact current user turn; an exact Retry without that
+   co-located error text remains ambiguous and is never clicked. A navigation or connection exception after that Retry click
    begins is treated as an uncertain commit and never causes a second click. The controller gives the
    first Retry five seconds for stale DOM to settle, extending the response deadlines across measured
    connection, navigation, or verification pauses; the read-only Retry probe uses the same recoverable

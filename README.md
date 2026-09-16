@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.30.0-codex.1`
+Documentation version: `v1.30.1-codex.1`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -111,6 +111,23 @@ Set `AGENTIC_CONTEXT_SKIP_PLAYWRIGHT_INSTALL=1` only for an offline test-only de
 `AGENTIC_CONTEXT_PYTHON` is an explicit Python 3.13 or newer override intended primarily for CI or
 local runtime compatibility.
 
+When the host interpreter also serves unrelated applications with incompatible dependencies,
+prepare a project-local environment and keep the override for setup, checks, and launch:
+
+```bash
+python3 -m venv .venv
+export AGENTIC_CONTEXT_PYTHON="$PWD/.venv/bin/python"
+./scripts/setup_python.sh
+```
+
+On Windows:
+
+```powershell
+py -3 -m venv .venv
+$env:AGENTIC_CONTEXT_PYTHON = (Resolve-Path .venv\Scripts\python.exe)
+.\scripts\setup_python.ps1
+```
+
 ## Quality Checks
 
 Run the offline suite, including disposable Chromium tests, with:
@@ -137,9 +154,10 @@ On Windows:
 .\scripts\check.ps1
 ```
 
-The quality gate runs Ruff, local documentation link checks, JavaScript syntax checks, the shared Agent Optimization Node contract,
-the Python suite with branch coverage, and disposable Chromium browser flows. It is the same command
-executed by GitHub Actions.
+The quality gate verifies installed requirement versions, dependency consistency, and known
+vulnerabilities before it runs Ruff, local documentation link checks, JavaScript syntax checks,
+the shared Agent Optimization Node contract, the Python suite with branch coverage, and disposable
+Chromium browser flows. It is the same command executed by GitHub Actions.
 The browser flow uses a clean context against an isolated local server; the suite never opens
 an authenticated profile, downloads media, or writes to user-owned caches, the Beta archive, logs,
 or settings.

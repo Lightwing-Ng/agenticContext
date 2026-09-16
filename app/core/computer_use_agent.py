@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.80.0-codex.2
+Code version: v3.81.1-codex.1
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import binascii
 from collections import deque
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
+from functools import lru_cache
 from glob import translate as translate_glob
 import hashlib
 import ipaddress
@@ -32,6 +33,8 @@ import time
 import traceback
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 from urllib.parse import urlencode, urlsplit
+
+import tiktoken
 
 if os.name == "posix":
     import fcntl
@@ -180,6 +183,43 @@ RETRYABLE_WEB_MODEL_PROOF_REASONS = CHATGPT_RETRYABLE_MODEL_PROOF_REASONS | {
     "model-menu-reopen-failed",
     "model-menu-did-not-close-after-selection",
 }
+_MODEL_SELECTION_LOG_REASONS = (
+    "blocking-dialog",
+    "model-control-ambiguous",
+    "model-control-not-found",
+    "model-control-remounted",
+    "model-control-unavailable",
+    "model-controlled-surface-invalid",
+    "model-menu-close-failed",
+    "model-menu-open-failed",
+    "model-menu-reopen-failed",
+    "model-menu-unreadable",
+    "model-mismatch",
+    "model-not-exposed",
+    "model-readback-mismatch",
+    "model-selection-click-uncertain",
+    "model-selection-native-input-blocked",
+    "model-state-transition-unverified",
+    "model-surface-ambiguous",
+    "model-surface-not-found",
+    "power-control-not-found",
+    "selection-required",
+    "trusted-model-selector-unavailable",
+)
+_MODEL_SELECTION_LOG_BOOLEAN_FIELDS = (
+    ("powerExpanded", "power_expanded"),
+    ("menuTextHasModel", "menu_text_has_model"),
+    ("menuTextHasSol", "menu_text_has_expected_model"),
+)
+_MODEL_SELECTION_LOG_COUNT_FIELDS = (
+    ("visibleMenuCount", "visible_menu_count"),
+    ("menuItemCount", "menu_item_count"),
+    ("visible_button_count", "visible_button_count"),
+    ("visible_composer_count", "visible_composer_count"),
+    ("semantic_trigger_count", "semantic_trigger_count"),
+    ("visible_menu_count", "visible_menu_count"),
+)
+_MAX_MODEL_SELECTION_LOG_COUNT = 100_000
 SAFARI_COMPOSER_AMBIGUITY_GRACE_SECONDS = 5.0
 # ChatGPT can report a checked model before React mounts or replaces the
 # corresponding effort slider. Rebind only the already trusted semantic
@@ -971,6 +1011,8 @@ class AgentRunSnapshot:
     context_bytes: int = 0
     context_attached: bool = False
     turn_count: int = 0
+    agentic_token_count: int = 0
+    agentic_transcript_tokens: int = 0
     bodycheck_passed: bool = False
     session_mode: str = "new"
     operating_system: str = DEFAULT_OPERATING_SYSTEM
@@ -1008,6 +1050,51 @@ class AgentRunSnapshot:
     exchange_sequence: int = 0
     exchange_outbound_sha256: str = ""
     exchange_response_sha256: str = ""
+
+
+OPENAI_AGENTIC_TOKEN_ENCODING = "o200k_base"
+
+
+@lru_cache(maxsize=1)
+def _openai_agentic_token_encoding() -> Any:
+    """Return the shared OpenAI tokenizer used for provider-neutral estimates."""
+    return tiktoken.get_encoding(OPENAI_AGENTIC_TOKEN_ENCODING)
+
+
+def _openai_agentic_token_count(value: str) -> int:
+    """Count text with OpenAI's general-purpose o200k_base encoding."""
+    return len(
+        _openai_agentic_token_encoding().encode(
+            str(value or ""),
+            disallowed_special=(),
+        )
+    )
+
+
+@dataclass(slots=True)
+class OpenAIEquivalentTokenCounter:
+    """Accumulate auditable input-plus-output tokens for one Agent task.
+
+    Browser providers do not expose hidden system prompts, reasoning tokens,
+    or truncation decisions. This counter therefore covers only task text and
+    attachment content observable to the local controller.
+    """
+
+    total_tokens: int = 0
+    transcript_tokens: int = 0
+
+    def include_context(self, value: str) -> int:
+        """Add one text attachment to every subsequent request context."""
+        self.transcript_tokens += _openai_agentic_token_count(value)
+        return self.transcript_tokens
+
+    def record_exchange(self, outbound: str, inbound: str) -> int:
+        """Record one model request using OpenAI total-token semantics."""
+        input_tokens = self.transcript_tokens + _openai_agentic_token_count(outbound)
+        output_tokens = _openai_agentic_token_count(inbound)
+        self.total_tokens += input_tokens + output_tokens
+        self.transcript_tokens = input_tokens + output_tokens
+        return self.total_tokens
 
 
 _MAX_AGENT_RUN_REVISION = (1 << 53) - 1
@@ -7060,6 +7147,15 @@ class ComputerUseAgentService:
             snapshot.run_revision = 0
         if not 0 <= snapshot.run_revision < _MAX_AGENT_RUN_REVISION:
             snapshot.run_revision = 0
+        for field_name in ("agentic_token_count", "agentic_transcript_tokens"):
+            value = getattr(snapshot, field_name, 0)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value < _MAX_AGENT_RUN_REVISION
+            ):
+                value = 0
+            setattr(snapshot, field_name, value)
         if snapshot.running:
             snapshot.running = False
             snapshot.phase = "interrupted"
@@ -7106,6 +7202,8 @@ class ComputerUseAgentService:
             "started_at",
             "finished_at",
             "turn_count",
+            "agentic_token_count",
+            "agentic_transcript_tokens",
             "bodycheck_passed",
             "session_mode",
             "operating_system",
@@ -7295,6 +7393,9 @@ class ComputerUseAgentService:
                 "running": bool(self._snapshot.running),
                 "paused": bool(self._snapshot.paused),
                 "turn_count": int(self._snapshot.turn_count or 0),
+                "agentic_token_count": int(
+                    self._snapshot.agentic_token_count or 0
+                ),
                 "last_action_id": str(self._snapshot.last_action_id or ""),
                 "verification_passed": bool(self._snapshot.verification_passed),
                 "bodycheck_passed": bool(self._snapshot.bodycheck_passed),
@@ -7511,6 +7612,12 @@ class ComputerUseAgentService:
                 if continuation
                 else ActionState()
             )
+            continuation_agentic_token_count = (
+                self._snapshot.agentic_token_count if continuation else 0
+            )
+            continuation_agentic_transcript_tokens = (
+                self._snapshot.agentic_transcript_tokens if continuation else 0
+            )
             workspace_metadata = workspace.stat()
             observed_workspace_identity = (
                 int(workspace_metadata.st_dev),
@@ -7570,6 +7677,8 @@ class ComputerUseAgentService:
                 conversation_bound=False,
                 run_id=new_run_id(),
                 run_revision=run_revision,
+                agentic_token_count=continuation_agentic_token_count,
+                agentic_transcript_tokens=continuation_agentic_transcript_tokens,
                 bodycheck_passed=False,
                 verification_passed=False,
                 action_checkpoint=continuation_action_state.checkpoint(),
@@ -8506,6 +8615,12 @@ class ComputerUseAgentService:
                     runner_kwargs["expected_workspace_identity"] = (
                         expected_workspace_identity
                     )
+                    runner_kwargs["initial_agentic_token_count"] = int(
+                        self._snapshot.agentic_token_count or 0
+                    )
+                    runner_kwargs["initial_agentic_transcript_tokens"] = int(
+                        self._snapshot.agentic_transcript_tokens or 0
+                    )
                 response, conversation_url, turn_count, bodycheck_passed = self._runner(
                     **runner_kwargs,
                 )
@@ -8768,6 +8883,8 @@ def run_web_computer_use(
     checkpoint_update: Callable[..., None] | None = None,
     prepare_context_bundle: bool = False,
     expected_workspace_identity: tuple[int, int] | None = None,
+    initial_agentic_token_count: int = 0,
+    initial_agentic_transcript_tokens: int = 0,
 ) -> tuple[str, str, int, bool]:
     """Run one selected Web AI session as a local controller action loop."""
     descriptor = browser_descriptors(config)[settings.browser]
@@ -8880,6 +8997,8 @@ def run_web_computer_use(
                 event_chain=event_chain,
                 checkpoint_update=checkpoint_update,
                 monitor_screen_lock=(descriptor.engine == "safari" and sys.platform == "darwin"),
+                initial_agentic_token_count=initial_agentic_token_count,
+                initial_agentic_transcript_tokens=initial_agentic_transcript_tokens,
             )
 
     task_stage_window = settings.browser in {"edge", "chrome"} and sys.platform in {"darwin", "win32"}
@@ -8976,6 +9095,8 @@ def run_web_computer_use(
             monitor_screen_lock=(
                 descriptor.engine == "safari" and sys.platform == "darwin"
             ),
+            initial_agentic_token_count=initial_agentic_token_count,
+            initial_agentic_transcript_tokens=initial_agentic_transcript_tokens,
         )
 
 
@@ -10638,6 +10759,8 @@ def _run_web_action_loop(
     event_chain: AgentEventChain | None = None,
     checkpoint_update: Callable[..., None] | None = None,
     monitor_screen_lock: bool = False,
+    initial_agentic_token_count: int = 0,
+    initial_agentic_transcript_tokens: int = 0,
 ) -> tuple[str, str, int, bool]:
     """Exchange JSON actions and compact observations in one Web AI conversation."""
     session_binding = _ProviderSessionBinding(
@@ -10777,6 +10900,11 @@ def _run_web_action_loop(
 
     durable_checkpoint_update = checkpoint_update or update
     exchange_sequence = 0
+    _openai_agentic_token_encoding()
+    token_counter = OpenAIEquivalentTokenCounter(
+        total_tokens=max(0, int(initial_agentic_token_count or 0)),
+        transcript_tokens=max(0, int(initial_agentic_transcript_tokens or 0)),
+    )
 
     def submit_exchange(
         message: str,
@@ -10836,11 +10964,17 @@ def _run_web_action_loop(
             if response_recorded:
                 return
             response_recorded = True
+            agentic_token_count = token_counter.record_exchange(
+                submitted_message,
+                value,
+            )
             checkpoint(
                 "response_received",
                 exchange_response_sha256=hashlib.sha256(
                     value.encode("utf-8")
                 ).hexdigest(),
+                agentic_token_count=agentic_token_count,
+                agentic_transcript_tokens=token_counter.transcript_tokens,
             )
 
         checkpoint("prepared", exchange_response_sha256="")
@@ -11061,8 +11195,14 @@ def _run_web_action_loop(
             _current_agent_conversation_url(page, platform, page_url or selected_target_url),
             0,
             False,
-        )
+    )
     update(context_attached=attached)
+    if attached and context_path is not None:
+        token_counter.include_context(context_path.read_text(encoding="utf-8"))
+        durable_checkpoint_update(
+            agentic_token_count=token_counter.total_tokens,
+            agentic_transcript_tokens=token_counter.transcript_tokens,
+        )
     if should_stop():
         return (
             "",
@@ -12387,8 +12527,11 @@ def _chatgpt_retry_control(
                         '[role="alert"], [data-testid*="error" i], [data-error]'
                     );
                     if (ownsOnlyRetry && responseError.test(scopeText)) return true;
-                    if (ownsOnlyRetry && structured
-                        && genericProviderError.test(scopeText)) return true;
+                    const compactGenericError = genericProviderError.test(scopeText)
+                        && scopeText.length <= 500;
+                    if (ownsOnlyRetry
+                        && compactGenericError
+                        && (structured || requireAfterLatestUser)) return true;
                     if (scope === turn) break;
                 }
                 return false;
@@ -14000,6 +14143,69 @@ def _record_model_observation(
     )
 
 
+def _model_selection_log_projection(
+    *,
+    reason: object,
+    available: object = None,
+    diagnostic: object = None,
+) -> tuple[str, int, dict[str, bool | int]]:
+    """Project provider-controlled model details onto bounded logging fields."""
+    reason_text = str(reason or "").strip()
+    safe_reason = next(
+        (
+            allowed_reason
+            for allowed_reason in _MODEL_SELECTION_LOG_REASONS
+            if reason_text == allowed_reason
+        ),
+        "model-control-unavailable",
+    )
+    available_count = (
+        min(len(available), _MAX_MODEL_SELECTION_LOG_COUNT)
+        if isinstance(available, (list, tuple))
+        else 0
+    )
+    safe_diagnostic: dict[str, bool | int] = {}
+    if not isinstance(diagnostic, dict):
+        return safe_reason, available_count, safe_diagnostic
+    for source_key, output_key in _MODEL_SELECTION_LOG_BOOLEAN_FIELDS:
+        value = diagnostic.get(source_key)
+        if isinstance(value, bool):
+            safe_diagnostic[output_key] = value
+    for source_key, output_key in _MODEL_SELECTION_LOG_COUNT_FIELDS:
+        value = diagnostic.get(source_key)
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= _MAX_MODEL_SELECTION_LOG_COUNT
+        ):
+            safe_diagnostic[output_key] = value
+    return safe_reason, available_count, safe_diagnostic
+
+
+def _log_model_selection_failure(
+    *,
+    reason: object,
+    available: object = None,
+    diagnostic: object = None,
+    project_data_blocked: bool = False,
+) -> None:
+    """Log one model failure without provider-controlled labels or free-form text."""
+    safe_reason, available_count, safe_diagnostic = _model_selection_log_projection(
+        reason=reason,
+        available=available,
+        diagnostic=diagnostic,
+    )
+    if project_data_blocked:
+        safe_diagnostic["project_data_blocked"] = True
+    LOGGER.warning(
+        "event=model_selection_unverified reason=%s "
+        "available_count=%s diagnostic=%s",
+        safe_reason,
+        available_count,
+        safe_diagnostic,
+    )
+
+
 def _read_chatgpt_locator_attribute(
     control: Any,
     name: str,
@@ -14961,10 +15167,9 @@ def _select_chatgpt_model_chromium(
                 return False
     if power_button is None:
         controls = _chatgpt_visible_model_controls(page)
-        LOGGER.warning(
-            "ChatGPT Web could not find the visible power control for %s (visible=%s).",
-            option["label"],
-            controls.get("buttons") or [],
+        _log_model_selection_failure(
+            reason="power-control-not-found",
+            available=controls.get("buttons") or [],
         )
         _record_model_observation(
             observation,
@@ -15318,11 +15523,10 @@ def _select_chatgpt_model_chromium(
     if not _close_chatgpt_model_menu(page, power_button):
         return control_recycled()
     controls = _chatgpt_visible_model_controls(page)
-    LOGGER.warning(
-        "ChatGPT Web could not verify model %s through the Chromium power menu (current=%s; diagnostic=%s).",
-        option["label"],
-        current or "none",
-        result.get("diagnostic", {}),
+    _log_model_selection_failure(
+        reason="model-mismatch" if result.get("ok") else "model-menu-unreadable",
+        available=result.get("available") or ([current] if current else []),
+        diagnostic=result.get("diagnostic"),
     )
     _record_model_observation(
         observation,
@@ -16204,12 +16408,10 @@ def _select_chatgpt_model(
         reason = str(result.get("reason") or reason)
     diagnostic = result.get("diagnostic", {}) if isinstance(result, dict) else {}
     available_text = ", ".join(dict.fromkeys(available)) or "none"
-    LOGGER.warning(
-        "ChatGPT Web could not verify model %s (%s; available: %s; diagnostic: %s).",
-        option["label"],
-        reason,
-        available_text,
-        diagnostic,
+    _log_model_selection_failure(
+        reason=reason,
+        available=available,
+        diagnostic=diagnostic,
     )
     _record_model_observation(
         observation,
@@ -18058,13 +18260,11 @@ def _select_web_model(
                 in {"menu", "listbox", "dialog"}
             )
         )[:20]
-    LOGGER.warning(
-        "%s Web could not verify model %s (%s; available: %s; diagnostic: %s); project data transfer remains blocked.",
-        AGENT_PLATFORM_BY_KEY[platform]["label"],
-        remote_labels[0],
-        reason,
-        ", ".join(dict.fromkeys(available)) or "none",
-        diagnostic,
+    _log_model_selection_failure(
+        reason=reason,
+        available=available,
+        diagnostic=diagnostic,
+        project_data_blocked=True,
     )
     _record_model_observation(
         observation,
@@ -20569,7 +20769,6 @@ def _submit_chromium_prompt(
                             && currentComposerValue !== null
                             && !normalize(currentComposerValue)
                         ),
-                        composerTagName: currentComposer?.tagName || '',
                         composerTextLength: normalize(currentComposerValue).length,
                         expectedTextLength: normalize(expectedMessage).length,
                     };
@@ -20629,11 +20828,10 @@ def _submit_chromium_prompt(
                 )
             if result.get("composerMismatch"):
                 LOGGER.info(
-                    "event=chatgpt_composer_mismatch present=%s empty=%s tag=%s "
-                    "readable=%s text_length=%s expected_length=%s refill_attempted=%s",
+                    "event=chatgpt_composer_mismatch present=%s empty=%s readable=%s "
+                    "text_length=%s expected_length=%s refill_attempted=%s",
                     bool(result.get("composerPresent")),
                     bool(result.get("composerEmpty")),
-                    str(result.get("composerTagName") or "")[:20],
                     bool(result.get("composerReadable")),
                     int(result.get("composerTextLength") or 0),
                     int(result.get("expectedTextLength") or 0),

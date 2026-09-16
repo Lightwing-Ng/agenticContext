@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.12.0-codex.1
+Code version: v1.13.0-codex.2
 """
 
 from __future__ import annotations
@@ -1291,6 +1291,173 @@ def test_cdp_attach_failure_releases_the_debug_browser_lock(
     assert connect.call_count == 2
 
 
+def test_macos_jury_project_profile_fails_closed_before_daily_profile_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as agent_debug_browser
+    import app.core.browser_sessions as browser_sessions
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "daily-edge-must-not-be-read",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    monkeypatch.setattr(browser_sessions, "is_macos_host", lambda: True)
+    monkeypatch.setattr(
+        agent_debug_browser,
+        "debug_browser_profile_initialized",
+        lambda browser_id, *, profile_root: False,
+    )
+    monkeypatch.setattr(
+        browser_sessions,
+        "clone_browser_profile",
+        MagicMock(side_effect=AssertionError("The daily profile must not be cloned")),
+    )
+    monkeypatch.setattr(
+        agent_debug_browser,
+        "ensure_debug_browser",
+        MagicMock(side_effect=AssertionError("An uninitialized profile must not attach")),
+    )
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(connect_over_cdp=MagicMock())
+    )
+
+    with pytest.raises(RuntimeError, match="project-owned Edge Jury profile is not initialized"):
+        launch_chromium_context(
+            playwright,
+            descriptor,
+            headless=False,
+            clone_profile_first=False,
+            allow_cdp_attach=True,
+            use_project_debug_profile=True,
+            project_profile_root=tmp_path / "project-profile",
+        )
+
+    browser_sessions.clone_browser_profile.assert_not_called()
+    agent_debug_browser.ensure_debug_browser.assert_not_called()
+
+
+def test_macos_jury_project_profile_reuses_process_with_isolated_page_leases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as agent_debug_browser
+    import app.core.browser_sessions as browser_sessions
+    from app.core.agent_debug_browser import DebugBrowserHandle
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "daily-edge-must-not-be-read",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    profile_root = tmp_path / "project-profile"
+    monkeypatch.setattr(browser_sessions, "is_macos_host", lambda: True)
+    monkeypatch.setattr(
+        agent_debug_browser,
+        "debug_browser_profile_initialized",
+        lambda browser_id, *, profile_root: True,
+    )
+    ensure = MagicMock(
+        return_value=DebugBrowserHandle(
+            browser_id="edge",
+            cdp_endpoint="http://127.0.0.1:42421",
+            user_data_dir=profile_root / "edge",
+        )
+    )
+    monkeypatch.setattr(agent_debug_browser, "ensure_debug_browser", ensure)
+    clone = MagicMock(side_effect=AssertionError("The daily profile must not be cloned"))
+    monkeypatch.setattr(browser_sessions, "clone_browser_profile", clone)
+
+    class Page:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        def is_closed(self) -> bool:
+            return self.closed
+
+    pages: list[Page] = []
+
+    class Context:
+        def __init__(self) -> None:
+            self.pages = []
+
+        def new_page(self) -> Page:
+            page = Page(f"juror-{len(pages) + 1}")
+            pages.append(page)
+            self.pages.append(page)
+            return page
+
+    shared_context = Context()
+    browsers = []
+
+    def connect(endpoint: str) -> object:
+        assert endpoint == "http://127.0.0.1:42421"
+        browser = SimpleNamespace(
+            contexts=[shared_context],
+            close=MagicMock(),
+        )
+        browsers.append(browser)
+        return browser
+
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(connect_over_cdp=connect)
+    )
+
+    first = launch_chromium_context(
+        playwright,
+        descriptor,
+        headless=False,
+        clone_profile_first=False,
+        allow_cdp_attach=True,
+        use_project_debug_profile=True,
+        project_profile_root=profile_root,
+    )
+    second = launch_chromium_context(
+        playwright,
+        descriptor,
+        headless=False,
+        clone_profile_first=False,
+        allow_cdp_attach=True,
+        use_project_debug_profile=True,
+        project_profile_root=profile_root,
+    )
+
+    with first as first_context:
+        first_page = first_context.new_page()
+        assert browser_sessions._shared_project_attachment_count("edge") == 2
+        with second as second_context:
+            second_page = second_context.new_page()
+            assert first_page is not second_page
+            assert not first_page.closed
+            assert not second_page.closed
+        assert second_page.closed
+        assert not first_page.closed
+        assert browser_sessions._shared_project_attachment_count("edge") == 1
+    assert first_page.closed
+    assert browser_sessions._shared_project_attachment_count("edge") == 0
+    assert ensure.call_count == 2
+    assert all(
+        call.kwargs == {"profile_root": profile_root}
+        for call in ensure.call_args_list
+    )
+    assert len(browsers) == 2
+    assert all(browser.close.call_count == 1 for browser in browsers)
+    clone.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("windows_host", "prefer_initialized"),
     ((True, False), (False, True)),
@@ -1774,23 +1941,347 @@ def test_debug_browser_launch_records_instance_identity(
     }
 
 
-def test_debug_browser_identity_launch_stays_windows_only(
+def test_debug_browser_identity_launch_rejects_unsupported_hosts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """macOS never probes, launches, or exposes the Windows debug browser."""
+    """Unsupported hosts never probe, launch, or expose a project browser."""
     import app.core.agent_debug_browser as adb
 
     monkeypatch.setattr(adb, "is_windows_host", lambda: False)
+    monkeypatch.setattr(adb, "is_macos_host", lambda: False)
     monkeypatch.setattr(
         adb,
         "_read_recorded_target",
         lambda _browser_id: (_ for _ in ()).throw(AssertionError("must not read")),
     )
 
-    with pytest.raises(RuntimeError, match="only supported on Windows"):
+    with pytest.raises(RuntimeError, match="supports Edge on macOS"):
         adb.ensure_debug_browser("edge")
     assert adb.debug_browser_login_url("edge") is None
     assert adb.debug_browser_profile_initialized("edge") is False
+
+
+def test_macos_edge_debug_browser_uses_only_the_private_project_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "jury-browser-profile"
+    executable = tmp_path / "Microsoft Edge"
+    executable.write_bytes(b"")
+    monkeypatch.setattr(adb, "is_windows_host", lambda: False)
+    monkeypatch.setattr(adb, "is_macos_host", lambda: True)
+    captured = {}
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace()
+
+    monkeypatch.setattr(adb.subprocess, "Popen", popen)
+    adb._launch_debug_browser("edge", str(executable), 0, profile_root)
+
+    command = captured["command"]
+    assert f"--user-data-dir={profile_root / 'edge'}" in command
+    assert "--remote-debugging-port=0" in command
+    assert "--use-mock-keychain" not in command
+    assert "--password-store=basic" not in command
+    assert not any("Library/Application Support/Microsoft Edge" in item for item in command)
+    assert captured["kwargs"]["start_new_session"] is True
+    assert (profile_root.stat().st_mode & 0o777) == 0o700
+    assert ((profile_root / "edge").stat().st_mode & 0o777) == 0o700
+
+
+def test_ensure_debug_browser_supports_macos_edge_with_an_injected_profile_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "jury-browser-profile"
+    identity = adb.CdpIdentity(
+        port=50123,
+        browser_brand="Edg/140.0",
+        instance_guid="edge-guid-macos",
+    )
+    monkeypatch.setattr(adb, "is_windows_host", lambda: False)
+    monkeypatch.setattr(adb, "is_macos_host", lambda: True)
+    monkeypatch.setattr(adb, "_resolve_browser_executable", lambda _browser_id: "/Edge")
+    monkeypatch.setattr(adb, "_read_recorded_target", lambda _browser_id, _root: None)
+    monkeypatch.setattr(adb, "_clear_devtools_active_port", lambda _browser_id, _root: None)
+    launched = []
+    monkeypatch.setattr(
+        adb,
+        "_launch_debug_browser",
+        lambda browser_id, executable, port, root: (
+            launched.append((browser_id, executable, port, root))
+            or SimpleNamespace(terminate=lambda: None)
+        ),
+    )
+    monkeypatch.setattr(
+        adb,
+        "_wait_for_launched_cdp",
+        lambda _browser_id, _timeout, _root: identity,
+    )
+    recorded = []
+    monkeypatch.setattr(
+        adb,
+        "_record_debug_target",
+        lambda browser_id, current, root: recorded.append((browser_id, current, root)),
+    )
+
+    handle = adb.ensure_debug_browser("edge", profile_root=profile_root)
+
+    assert handle.cdp_endpoint == "http://127.0.0.1:50123"
+    assert handle.user_data_dir == profile_root / "edge"
+    assert launched == [("edge", "/Edge", 0, profile_root)]
+    assert recorded == [("edge", identity, profile_root)]
+    assert (profile_root / "edge" / ".launch.lock").exists()
+    assert ((profile_root / "edge" / ".launch.lock").stat().st_mode & 0o777) == 0o600
+
+
+def test_concurrent_macos_edge_ensure_calls_launch_one_project_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "jury-browser-profile"
+    identity = adb.CdpIdentity(
+        port=50123,
+        browser_brand="Edg/140.0",
+        instance_guid="edge-guid-shared",
+    )
+    state: dict[str, adb.RecordedTarget | None] = {"target": None}
+    launch_calls = []
+    monkeypatch.setattr(adb, "is_windows_host", lambda: False)
+    monkeypatch.setattr(adb, "is_macos_host", lambda: True)
+    monkeypatch.setattr(adb, "_resolve_browser_executable", lambda _browser_id: "/Edge")
+    monkeypatch.setattr(
+        adb,
+        "_read_recorded_target",
+        lambda _browser_id, _root: state["target"],
+    )
+    monkeypatch.setattr(adb, "_clear_devtools_active_port", lambda _browser_id, _root: None)
+    monkeypatch.setattr(
+        adb,
+        "_launch_debug_browser",
+        lambda browser_id, executable, port, root: (
+            launch_calls.append((browser_id, executable, port, root))
+            or SimpleNamespace(terminate=lambda: None)
+        ),
+    )
+    monkeypatch.setattr(
+        adb,
+        "_wait_for_launched_cdp",
+        lambda _browser_id, _timeout, _root: identity,
+    )
+    monkeypatch.setattr(
+        adb,
+        "_wait_for_cdp_ready",
+        lambda port, _timeout, *, expected_guid=None: (
+            identity
+            if port == identity.port and expected_guid == identity.instance_guid
+            else None
+        ),
+    )
+
+    def record(_browser_id, current, _root):
+        state["target"] = adb.RecordedTarget(
+            port=current.port,
+            instance=current.instance_guid,
+            browser=current.browser_brand,
+        )
+
+    monkeypatch.setattr(adb, "_record_debug_target", record)
+    barrier = threading.Barrier(4)
+    handles = []
+    failures = []
+
+    def ensure_once() -> None:
+        try:
+            barrier.wait(timeout=5)
+            handles.append(
+                adb.ensure_debug_browser("edge", profile_root=profile_root)
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=ensure_once) for _index in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not failures
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(launch_calls) == 1
+    assert len(handles) == 4
+    assert {handle.cdp_endpoint for handle in handles} == {
+        "http://127.0.0.1:50123"
+    }
+
+
+def test_macos_edge_ignores_legacy_marker_without_instance_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "jury-browser-profile"
+    legacy = adb.RecordedTarget(port=42421)
+    identity = adb.CdpIdentity(
+        port=50123,
+        browser_brand="Edg/140.0",
+        instance_guid="edge-guid-current",
+    )
+    monkeypatch.setattr(adb, "is_windows_host", lambda: False)
+    monkeypatch.setattr(adb, "is_macos_host", lambda: True)
+    monkeypatch.setattr(
+        adb,
+        "_read_recorded_target",
+        lambda _browser_id, _root: legacy,
+    )
+    monkeypatch.setattr(
+        adb,
+        "_wait_for_cdp_ready",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("A bare port must not be trusted on macOS.")
+        ),
+    )
+    monkeypatch.setattr(adb, "_resolve_browser_executable", lambda _browser_id: "/Edge")
+    monkeypatch.setattr(adb, "_clear_devtools_active_port", lambda *_args: None)
+    launched = []
+    monkeypatch.setattr(
+        adb,
+        "_launch_debug_browser",
+        lambda *args: launched.append(args) or SimpleNamespace(terminate=lambda: None),
+    )
+    monkeypatch.setattr(adb, "_wait_for_launched_cdp", lambda *_args: identity)
+    recorded = []
+    monkeypatch.setattr(
+        adb,
+        "_record_debug_target",
+        lambda *args: recorded.append(args),
+    )
+
+    assert adb.debug_browser_profile_initialized(
+        "edge",
+        profile_root=profile_root,
+    ) is False
+    assert adb.debug_browser_login_url("edge", profile_root=profile_root) is None
+
+    handle = adb.ensure_debug_browser("edge", profile_root=profile_root)
+
+    assert handle.cdp_endpoint == "http://127.0.0.1:50123"
+    assert len(launched) == 1
+    assert recorded == [("edge", identity, profile_root)]
+
+
+def test_project_cdp_cleanup_error_is_reported_with_a_primary_error() -> None:
+    import app.core.browser_sessions as browser_sessions
+
+    primary_error = RuntimeError("provider failed")
+    page = SimpleNamespace(
+        is_closed=lambda: False,
+        close=lambda: (_ for _ in ()).throw(RuntimeError("Page close failed")),
+    )
+    browser = SimpleNamespace(close=MagicMock())
+    context = SimpleNamespace(pages=[], new_page=MagicMock(return_value=page))
+    manager = browser_sessions._CdpAttachContext(
+        browser,
+        context,
+        browser_id="edge",
+        close_created_pages=True,
+        shared_attachment=False,
+    )
+    manager.new_page()
+
+    with pytest.raises(RuntimeError, match="Page lease did not close cleanly"):
+        manager.__exit__(RuntimeError, primary_error, primary_error.__traceback__)
+
+    assert any("Page-lease cleanup also failed" in note for note in primary_error.__notes__)
+    browser.close.assert_called_once_with()
+    assert browser_sessions._shared_project_attachment_count("edge") == 0
+
+
+def test_exclusive_windows_cdp_cleanup_keeps_the_warning_only_contract() -> None:
+    import app.core.browser_sessions as browser_sessions
+
+    browser = SimpleNamespace(
+        close=MagicMock(side_effect=RuntimeError("Windows CDP disconnect failed"))
+    )
+    manager = browser_sessions._CdpAttachContext(
+        browser,
+        SimpleNamespace(pages=[]),
+        close_created_pages=False,
+    )
+
+    assert manager.__exit__(None, None, None) is False
+    browser.close.assert_called_once_with()
+
+
+def test_macos_edge_marker_write_failure_terminates_the_new_project_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "jury-browser-profile"
+    identity = adb.CdpIdentity(
+        port=50123,
+        browser_brand="Edg/140.0",
+        instance_guid="edge-guid-current",
+    )
+    terminated = threading.Event()
+    monkeypatch.setattr(adb, "is_windows_host", lambda: False)
+    monkeypatch.setattr(adb, "is_macos_host", lambda: True)
+    monkeypatch.setattr(adb, "_read_recorded_target", lambda *_args: None)
+    monkeypatch.setattr(adb, "_resolve_browser_executable", lambda _browser_id: "/Edge")
+    monkeypatch.setattr(adb, "_clear_devtools_active_port", lambda *_args: None)
+    monkeypatch.setattr(
+        adb,
+        "_launch_debug_browser",
+        lambda *_args: SimpleNamespace(terminate=terminated.set),
+    )
+    monkeypatch.setattr(adb, "_wait_for_launched_cdp", lambda *_args: identity)
+    monkeypatch.setattr(
+        adb,
+        "_record_debug_target",
+        lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("The project Edge marker could not be saved.")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="marker could not be saved"):
+        adb.ensure_debug_browser("edge", profile_root=profile_root)
+
+    assert terminated.is_set()
+
+
+def test_macos_edge_marker_write_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "jury-browser-profile"
+    profile_dir = profile_root / "edge"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / adb.DEBUG_PORT_FILENAME).mkdir()
+    monkeypatch.setattr(adb, "is_macos_host", lambda: True)
+
+    with pytest.raises(RuntimeError, match="could not be recorded safely"):
+        adb._record_debug_target(
+            "edge",
+            adb.CdpIdentity(
+                port=50123,
+                browser_brand="Edg/140.0",
+                instance_guid="edge-guid-current",
+            ),
+            profile_root,
+        )
 
 
 def test_debug_browser_profile_initialized_requires_a_recorded_successful_port(
@@ -1801,6 +2292,7 @@ def test_debug_browser_profile_initialized_requires_a_recorded_successful_port(
 
     monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
     monkeypatch.setattr(adb, "is_windows_host", lambda: True)
+    monkeypatch.setattr(adb, "is_macos_host", lambda: False)
     profile_root = tmp_path / "agent_browser_profile" / "edge"
     profile_root.mkdir(parents=True)
 

@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.80.0-codex.2
+Code version: v3.81.0-codex.1
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from app.core.computer_use_agent import (
     DEFAULT_CHATGPT_MODEL,
     MAX_CONTROLLER_DELETE_BYTES,
     MAX_MAX_TURNS,
+    OpenAIEquivalentTokenCounter,
     PROVIDER_SESSION_BIND_TIMEOUT_SECONDS,
     SEARCH_MAX_FILE_BYTES,
     ComputerUseAgentService,
@@ -85,6 +86,8 @@ from app.core.computer_use_agent import (
     _web_last_text,
     _web_is_generating,
     _is_web_response_complete,
+    _model_selection_log_projection,
+    _openai_agentic_token_count,
     _format_binary_size,
     build_context_markdown,
     detect_host_operating_system,
@@ -518,16 +521,33 @@ def test_default_model_for_platform_reads_the_current_catalog_strength(
     assert default_model_for_platform("chatgpt") == "flagship"
 
 
-def test_model_selection_keeps_the_remote_default_when_the_menu_is_not_exposed() -> None:
+def test_model_selection_keeps_the_remote_default_when_the_menu_is_not_exposed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    private_label = "private-model-label\r\nforged=true"
+
     class _Page:
         def evaluate(self, _expression: str, _argument: dict[str, str]) -> dict[str, object]:
             return {
                 "ok": False,
-                "reason": "power-control-not-found",
-                "available": [],
+                "reason": "private-provider-reason",
+                "available": [private_label],
+                "diagnostic": {
+                    "visibleMenuCount": 2,
+                    "menuTextHasModel": True,
+                    "privateText": private_label,
+                },
             }
 
-    assert _select_chatgpt_model(_Page(), "chromium", DEFAULT_CHATGPT_MODEL) is False
+    with caplog.at_level("WARNING", logger="app.core.computer_use_agent"):
+        assert _select_chatgpt_model(_Page(), "chromium", DEFAULT_CHATGPT_MODEL) is False
+
+    assert "reason=model-control-unavailable" in caplog.text
+    assert "available_count=1" in caplog.text
+    assert "'visible_menu_count': 2" in caplog.text
+    assert "'menu_text_has_model': True" in caplog.text
+    assert private_label not in caplog.text
+    assert "private-provider-reason" not in caplog.text
 
 
 def test_chatgpt_compatibility_reader_rejects_model_without_live_effort_proof() -> None:
@@ -1447,11 +1467,22 @@ def test_chromium_selector_rejects_legacy_effort_choice_without_slider() -> None
     assert observation["observed"] == "GPT-5.6 Sol"
 
 
-def test_chromium_wrong_model_readback_fails_closed() -> None:
-    page = _chromium_model_page("Instant", current="GPT-4o")
+def test_chromium_wrong_model_readback_fails_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    private_current = "GPT-private-DOM-model"
+    page = _chromium_model_page("Instant", current=private_current)
     observation: dict[str, object] = {}
-    assert _select_chatgpt_model(page, "chromium", "gpt-5.6-sol", observation) is False
+    with caplog.at_level("WARNING", logger="app.core.computer_use_agent"):
+        assert _select_chatgpt_model(
+            page,
+            "chromium",
+            "gpt-5.6-sol",
+            observation,
+        ) is False
     assert observation.get("reason") == "model-mismatch"
+    assert "reason=model-mismatch" in caplog.text
+    assert private_current not in caplog.text
 
 
 def test_chromium_medium_trigger_rejects_missing_effort_slider() -> None:
@@ -2688,14 +2719,25 @@ def test_chromium_high_without_a_live_effort_slider_fails_closed() -> None:
     assert observation["observed"] == "GPT-5.6 Sol"
 
 
-def test_chromium_switch_model_control_is_not_a_click_target() -> None:
+def test_chromium_switch_model_control_is_not_a_click_target(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     page = _chromium_model_page("Switch model")
     observation: dict[str, object] = {}
-    assert _select_chatgpt_model(page, "chromium", "gpt-5.6-sol", observation) is False
+    with caplog.at_level("WARNING", logger="app.core.computer_use_agent"):
+        assert _select_chatgpt_model(
+            page,
+            "chromium",
+            "gpt-5.6-sol",
+            observation,
+        ) is False
     assert observation.get("reason") == "power-control-not-found"
     assert page.power.click_count == 0
     assert ("button", "Switch model", True) not in page.role_calls
     assert observation.get("visible_buttons") == ["Switch model"]
+    assert "reason=power-control-not-found" in caplog.text
+    assert "available_count=1" in caplog.text
+    assert "Switch model" not in caplog.text
 
 
 def test_chromium_unrelated_pro_button_is_not_a_click_target() -> None:
@@ -2824,6 +2866,31 @@ def test_chatgpt_model_diagnostics_are_filtered_bounded_and_deduplicated() -> No
     assert len(result["buttons"]) == 20
     assert all(len(label) <= 160 for label in result["buttons"])
     assert result["menus"] == ["menu", "listbox"]
+
+
+def test_model_selection_log_projection_keeps_only_bounded_numeric_and_boolean_fields() -> None:
+    private_value = "private DOM content"
+
+    reason, available_count, diagnostic = _model_selection_log_projection(
+        reason="private-provider-reason",
+        available=[private_value, "second private label"],
+        diagnostic={
+            "powerExpanded": True,
+            "visibleMenuCount": 3,
+            "menuItemCount": 100_001,
+            "visible_button_count": False,
+            "ready_state": "complete",
+            "privateText": private_value,
+        },
+    )
+
+    assert reason == "model-control-unavailable"
+    assert available_count == 2
+    assert diagnostic == {
+        "power_expanded": True,
+        "visible_menu_count": 3,
+    }
+    assert private_value not in repr((reason, available_count, diagnostic))
 
 
 def test_chromium_model_selector_returns_false_without_a_visible_power_control() -> None:
@@ -3271,6 +3338,7 @@ def test_non_chatgpt_model_selection_honors_stop_during_control_hydration_wait()
 
 def test_non_chatgpt_model_control_hydration_wait_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
@@ -3283,6 +3351,7 @@ def test_non_chatgpt_model_control_hydration_wait_is_bounded(
             return {
                 "ok": False,
                 "reason": "model-control-not-found",
+                "available": ["Confidential model label"],
                 "visibleButtons": ["Project confidential-alpha"],
                 "menuRoles": ["menu", "MENU", "malicious-role"],
                 "diagnostic": {
@@ -3303,16 +3372,17 @@ def test_non_chatgpt_model_control_hydration_wait_is_bounded(
     )
     observation: dict[str, object] = {}
 
-    assert (
-        _select_web_model(
-            _Page(),
-            "chromium",
-            "gemini",
-            "gemini-3.1-pro",
-            observation,
+    with caplog.at_level("WARNING", logger="app.core.computer_use_agent"):
+        assert (
+            _select_web_model(
+                _Page(),
+                "chromium",
+                "gemini",
+                "gemini-3.1-pro",
+                observation,
+            )
+            is False
         )
-        is False
-    )
     assert evaluations == 3
     assert observation["reason"] == "model-control-not-found"
     assert observation["visible_buttons"] == []
@@ -3322,6 +3392,12 @@ def test_non_chatgpt_model_control_hydration_wait_is_bounded(
         "visible_button_count": 0,
         "visible_composer_count": 1,
     }
+    assert "reason=model-control-not-found" in caplog.text
+    assert "available_count=1" in caplog.text
+    assert "'project_data_blocked': True" in caplog.text
+    assert "Confidential model label" not in caplog.text
+    assert "Confidential project title" not in caplog.text
+    assert "must not persist" not in caplog.text
 
 
 def test_gemini_model_gate_allows_cold_edge_hydration_budget() -> None:
@@ -7811,6 +7887,14 @@ def test_action_loop_does_not_spend_the_turn_budget_on_one_format_retry(
     assert "Controller observation for turn 1" in submitted[1]
     assert "fenced code block labelled json" in submitted[1]
     assert "JSON-escape embedded double quotes" in submitted[1]
+    token_updates = [
+        int(change["agentic_token_count"])
+        for change in updates
+        if "agentic_token_count" in change
+    ]
+    assert len(token_updates) == 3
+    assert token_updates == sorted(token_updates)
+    assert len(set(token_updates)) == 3
     assert {
         "conversation_url": "https://chatgpt.com/c/example",
         "conversation_bound": True,
@@ -8402,6 +8486,8 @@ def test_grok_action_loop_attaches_context_only_to_prebound_sessions(
     )
     stop_requested = Event()
     controller = WorkspaceController(workspace, settings, stop_requested.is_set)
+    context_path = tmp_path / "context.md"
+    context_path.write_text("# Flight context\n", encoding="utf-8")
     attachment_calls = 0
     context_updates: list[object] = []
 
@@ -8440,7 +8526,7 @@ def test_grok_action_loop_attaches_context_only_to_prebound_sessions(
         browser_kind="chromium",
         initial_message="Audit the flight project.",
         controller=controller,
-        context_path=tmp_path / "context.md",
+        context_path=context_path,
         settings=settings,
         session_mode=session_mode,
         selected_target_url=selected_target,
@@ -8479,6 +8565,8 @@ def test_completed_action_loop_reports_attachment_and_normalizes_conversation_ur
         )
     )
     updates: list[dict[str, object]] = []
+    context_path = tmp_path / "context.md"
+    context_path.write_text("# Project context\n", encoding="utf-8")
 
     monkeypatch.setattr(computer_use_agent, "_verify_agent_page", lambda *_args: None)
     monkeypatch.setattr(computer_use_agent, "_select_chat_mode", lambda *_args: None)
@@ -8499,7 +8587,7 @@ def test_completed_action_loop_reports_attachment_and_normalizes_conversation_ur
         browser_kind="chromium",
         initial_message="Inspect the project.",
         controller=controller,
-        context_path=tmp_path / "context.md",
+        context_path=context_path,
         settings=ComputerUseSettings(workspace_path=str(workspace)),
         session_mode="recent",
         selected_target_url="https://chatgpt.com/c/url-stable",
@@ -14931,6 +15019,8 @@ def test_agent_service_reports_browser_result_without_api_credentials(
         assert snapshot["response"] == "Verified result"
         assert snapshot["conversation_url"] == "https://chatgpt.com/c/example"
         assert snapshot["turn_count"] == 4
+        assert snapshot["agentic_token_count"] == 0
+        assert snapshot["agentic_transcript_tokens"] == 0
         assert snapshot["bodycheck_passed"]
         assert snapshot["session_mode"] == "new"
         assert snapshot["browser"] == "edge"
@@ -15359,6 +15449,8 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
     payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
     assert set(payload) == {
         "actual_model",
+        "agentic_token_count",
+        "agentic_transcript_tokens",
         "action_checkpoint",
         "bodycheck_passed",
         "browser",
@@ -15561,6 +15653,41 @@ def test_snapshot_defaults_are_safe_and_idle() -> None:
     assert not snapshot["running"]
     assert snapshot["engine"] == "computer_use"
     assert snapshot["run_revision"] == 0
+    assert snapshot["agentic_token_count"] == 0
+    assert snapshot["agentic_transcript_tokens"] == 0
+
+
+def test_openai_equivalent_token_counter_accumulates_input_and_output() -> None:
+    context = "# Context\nShared project evidence containing <|endoftext|>."
+    first_outbound = "Inspect the workspace."
+    first_inbound = '{"action":"read","path":"README.md"}'
+    second_outbound = "Controller observation for turn 1."
+    second_inbound = '{"action":"final","summary":"Done."}'
+    counter = OpenAIEquivalentTokenCounter(
+        total_tokens=1_000,
+        transcript_tokens=200,
+    )
+
+    counter.include_context(context)
+    first_input_tokens = (
+        200
+        + _openai_agentic_token_count(context)
+        + _openai_agentic_token_count(first_outbound)
+    )
+    first_output_tokens = _openai_agentic_token_count(first_inbound)
+    assert counter.record_exchange(first_outbound, first_inbound) == (
+        1_000 + first_input_tokens + first_output_tokens
+    )
+
+    first_total = counter.total_tokens
+    first_transcript = counter.transcript_tokens
+    second_input_tokens = first_transcript + _openai_agentic_token_count(
+        second_outbound
+    )
+    second_output_tokens = _openai_agentic_token_count(second_inbound)
+    assert counter.record_exchange(second_outbound, second_inbound) == (
+        first_total + second_input_tokens + second_output_tokens
+    )
 
 
 def test_read_only_controller_rejects_mutating_actions(tmp_path: Path) -> None:
@@ -16565,6 +16692,7 @@ def test_chatgpt_atomic_send_accepts_same_project_id_after_slug_redirect(
 
 def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     target_url = "https://chatgpt.com/c/composer-drift"
 
@@ -16601,7 +16729,16 @@ def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
             )
             assert "directParagraphs" in expression
             assert "selection.toString()" in expression
-            return {"clicked": False, "composerMismatch": True}
+            return {
+                "clicked": False,
+                "composerMismatch": True,
+                "composerPresent": True,
+                "composerEmpty": False,
+                "composerReadable": True,
+                "composerTagName": "PRIVATE-COMPOSER-TAG",
+                "composerTextLength": 7,
+                "expectedTextLength": 19,
+            }
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
             raise AssertionError("Composer drift must fail before another send scan.")
@@ -16609,16 +16746,22 @@ def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
     page = _Page()
     monkeypatch.setattr("app.core.computer_use_agent._web_count", lambda *_args: 0)
 
-    with pytest.raises(RuntimeError, match="composer changed before Send"):
-        _submit_chromium_prompt(
-            page,
-            "Inspect the project",
-            lambda: False,
-            expected_target_url=target_url,
-        )
+    with caplog.at_level("INFO", logger="app.core.computer_use_agent"):
+        with pytest.raises(RuntimeError, match="composer changed before Send"):
+            _submit_chromium_prompt(
+                page,
+                "Inspect the project",
+                lambda: False,
+                expected_target_url=target_url,
+            )
 
     assert page.composer.fills == ["Inspect the project"]
     assert page.send_scans == 1
+    assert "event=chatgpt_composer_mismatch" in caplog.text
+    assert "present=True empty=False readable=True" in caplog.text
+    assert "text_length=7 expected_length=19" in caplog.text
+    assert "tag=" not in caplog.text
+    assert "PRIVATE-COMPOSER-TAG" not in caplog.text
 
 
 def test_chatgpt_atomic_send_refills_one_empty_remounted_composer() -> None:

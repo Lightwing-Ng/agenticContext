@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# Code version: v1.4.1-codex.1
+# Code version: v1.5.1-codex.1
 
 _python_required_modules() {
 	local mode="${1:-version}"
 	case "$mode" in
 		runtime|test|quality)
-			printf '%s\n' flask playwright yt_dlp pyarrow PIL markdown_it
+			printf '%s\n' flask playwright yt_dlp pyarrow PIL markdown_it tiktoken
 			;;
 	esac
 	case "$mode" in
@@ -31,6 +31,18 @@ _python_platform_candidates() {
 			printf '%s\n' "/usr/local/bin/python3"
 			;;
 	esac
+}
+
+_python_requirements_compatible() {
+	local candidate="$1"
+	local mode="$2"
+	local scripts_dir
+	scripts_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	local checker="$scripts_dir/check_python_requirements.py"
+	local requirements="$scripts_dir/../requirements.txt"
+	"$candidate" -c \
+		'import runpy, sys; checker = sys.argv[1]; sys.argv = sys.argv[1:]; runpy.run_path(checker, run_name="__main__")' \
+		"$checker" "$mode" "$requirements"
 }
 
 resolve_python_bin() {
@@ -81,6 +93,18 @@ resolve_python_bin() {
 				"$mode" "$candidate" "${missing_modules[*]}" >&2
 			continue
 		fi
+
+		case "$mode" in
+			runtime|test|quality)
+				local requirements_error
+				if ! requirements_error="$(_python_requirements_compatible "$candidate" "$mode" 2>&1)"; then
+					requirements_error="${requirements_error//$'\n'/; }"
+					printf 'Skipping Python with incompatible %s dependencies: %s (%s)\n' \
+						"$mode" "$candidate" "${requirements_error:-requirements check failed}" >&2
+					continue
+				fi
+				;;
+		esac
 
 		printf '%s\n' "$candidate"
 		return 0

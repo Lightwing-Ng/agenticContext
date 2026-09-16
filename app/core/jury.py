@@ -1,4 +1,4 @@
-"""Evidence-convergent browser-only fact-checking. Code version: v1.7.0-codex.1."""
+"""Evidence-convergent browser-only fact-checking. Code version: v1.8.1-codex.1."""
 
 from __future__ import annotations
 
@@ -24,9 +24,10 @@ from .computer_use_agent import (
     _path_is_unsafe_file_leaf,
     browser_options_for_host,
 )
+from .config import is_macos_host
 from .state import utc_now
 
-JURY_VERSION = "1.7.0"
+JURY_VERSION = "1.8.1"
 AUTOMATIC_CONVERGENCE_TIMEOUT_SECONDS = 3_600
 AUTOMATIC_CONVERGENCE_STORAGE_SOFT_LIMIT_BYTES = 6_500_000
 MAX_PERSISTED_JURY_RECORD_BYTES = 8_000_000
@@ -94,6 +95,13 @@ def parse_opinion(response: str) -> dict[str, Any]:
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text, count=1)
         text = re.sub(r"\s*```$", "", text, count=1)
+    text = re.sub(
+        r"^json(?=[ \t\r\n]+\{)[ \t\r\n]+",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
     try:
         opinion = json.loads(text)
     except (ValueError, TypeError):
@@ -125,6 +133,51 @@ def parse_opinion(response: str) -> dict[str, Any]:
         "accept_candidate": opinion.get("accept_candidate") is True,
         "candidate_id": opinion.get("candidate_id", ""),
     }
+
+
+def _recover_archived_structured_votes(record: dict[str, Any]) -> int:
+    """Reparse strict legacy vote envelopes without reopening provider conversations."""
+    recovered = 0
+    rounds = record.get("rounds")
+    if not isinstance(rounds, list):
+        return 0
+    for round_record in rounds:
+        if not isinstance(round_record, dict):
+            continue
+        opinions = round_record.get("opinions")
+        if not isinstance(opinions, list):
+            continue
+        for opinion in opinions:
+            if not isinstance(opinion, dict) or opinion.get("valid") is True:
+                continue
+            response = opinion.get("response")
+            if not isinstance(response, str) or not response.strip():
+                continue
+            reparsed = parse_opinion(response)
+            if reparsed.get("valid") is not True:
+                continue
+            opinion.update(reparsed)
+            recovered += 1
+    if not recovered:
+        return 0
+    record["recovered_structured_vote_count"] = recovered
+    if record.get("phase") == "inconclusive" and record.get("consensus") is not True:
+        record["original_termination_reason"] = str(
+            record.get("termination_reason") or ""
+        )
+        record.update(
+            termination_reason="archived_vote_recovery",
+            message=(
+                "Archived structured votes were recovered. This completed jury remains "
+                "inconclusive because archive recovery does not rerun deliberation."
+            ),
+            response=(
+                "The archived juror responses were recovered as structured votes. This run "
+                "cannot retroactively establish consensus because its original terminal decision "
+                "is preserved. Review the recovered votes below; no provider failure was inferred."
+            ),
+        )
+    return recovered
 
 
 def build_candidate(opinions: list[dict[str, Any]]) -> dict[str, str] | None:
@@ -237,42 +290,74 @@ class _JurorWorker:
 
     def __init__(self, factory: Callable, settings: ComputerUseSettings, platform: str,
                  stop: Event, config: Any, on_conversation: Callable,
-                 model_selection: str) -> None:
+                 model_selection: str,
+                 session_kwargs: dict[str, Any] | None = None) -> None:
         self.requests: Queue = Queue()
         self.stop = stop
         self.closed = False
         self.closed_event = Event()
         self.error: BaseException | None = None
+        self.cleanup_error: BaseException | None = None
         self.conversation_url = ""
         self.thread = Thread(target=self._run, args=(factory, settings, platform, config,
-                                                    on_conversation, model_selection),
+                                                    on_conversation, model_selection,
+                                                    session_kwargs or {}),
                              name=f"jury-{platform}", daemon=True)
         self.thread.start()
 
     def _run(self, factory: Callable, settings: ComputerUseSettings, platform: str,
-             config: Any, on_conversation: Callable, model_selection: str) -> None:
+             config: Any, on_conversation: Callable, model_selection: str,
+             session_kwargs: dict[str, Any]) -> None:
+        manager: Any = None
+        entered = False
+        body_error: BaseException | None = None
         try:
-            with factory(settings, platform, self.stop, config=config,
-                         on_conversation=on_conversation,
-                         model_selection=model_selection) as browser:
-                while not self.stop.is_set():
-                    try:
-                        request = self.requests.get(timeout=0.2)
-                    except Empty:
-                        continue
-                    if request is None:
-                        break
-                    prompt, timeout_seconds, future = request
-                    try:
-                        response = browser.ask(prompt, timeout_seconds=timeout_seconds)
-                        future.set_result((response, browser.conversation_url))
-                    except Exception as exc:
-                        self.conversation_url = browser.conversation_url
-                        future.set_exception(exc)
-                        raise
+            manager = factory(
+                settings,
+                platform,
+                self.stop,
+                config=config,
+                on_conversation=on_conversation,
+                model_selection=model_selection,
+                **session_kwargs,
+            )
+            browser = manager.__enter__()
+            entered = True
+            while not self.stop.is_set():
+                try:
+                    request = self.requests.get(timeout=0.2)
+                except Empty:
+                    continue
+                if request is None:
+                    break
+                prompt, timeout_seconds, future = request
+                try:
+                    response = browser.ask(prompt, timeout_seconds=timeout_seconds)
+                    future.set_result((response, browser.conversation_url))
+                except Exception as exc:
+                    self.conversation_url = browser.conversation_url
+                    future.set_exception(exc)
+                    raise
         except Exception as exc:
+            body_error = exc
             self.error = exc
+            manager_cleanup_error = getattr(manager, "cleanup_error", None)
+            if isinstance(manager_cleanup_error, BaseException):
+                self.cleanup_error = manager_cleanup_error
         finally:
+            if entered:
+                try:
+                    suppressed = manager.__exit__(
+                        type(body_error) if body_error is not None else None,
+                        body_error,
+                        body_error.__traceback__ if body_error is not None else None,
+                    )
+                    if suppressed and self.error is body_error:
+                        self.error = None
+                except Exception as cleanup_error:
+                    self.cleanup_error = cleanup_error
+                    if self.error is None:
+                        self.error = cleanup_error
             self.closed = True
             self.closed_event.set()
 
@@ -313,12 +398,17 @@ class JuryService:
 
     def __init__(self, settings_provider: Callable, config_provider: Callable,
                  root: Path, *, session_factory: Callable | None = None,
-                 login_check: Callable | None = None) -> None:
+                 login_check: Callable | None = None,
+                 project_browser_profile_root: Path | None = None) -> None:
         self.settings_provider = settings_provider
         self.config_provider = config_provider
         self.root = Path(root)
         self.session_factory = session_factory
         self.login_check = login_check
+        self.project_browser_profile_root = Path(
+            project_browser_profile_root
+            or self.root.parent / "agent_browser_profile"
+        )
         self.lock = RLock()
         self._shutdown_condition = Condition(self.lock)
         self._shutdown_started = False
@@ -343,14 +433,21 @@ class JuryService:
                 record = json.loads(path.read_text())
                 if not isinstance(record, dict) or record.get("session_id") != path.stem:
                     continue
+                _recover_archived_structured_votes(record)
                 if record.get("running"):
                     safari_cleanup_pending = bool(
                         record.get("safari_cleanup_pending")
                     )
+                    cleanup_warning = str(
+                        record.get("resource_cleanup_warning") or ""
+                    ).strip()
+                    cleanup_pending = bool(
+                        safari_cleanup_pending or cleanup_warning
+                    )
                     if record.get("phase") in TERMINAL_PHASES:
                         record.update(
                             running=False,
-                            resource_cleanup_pending=safari_cleanup_pending,
+                            resource_cleanup_pending=cleanup_pending,
                         )
                     else:
                         record.update(
@@ -358,7 +455,7 @@ class JuryService:
                             phase="interrupted",
                             consensus=False,
                             termination_reason="service_restarted",
-                            resource_cleanup_pending=safari_cleanup_pending,
+                            resource_cleanup_pending=cleanup_pending,
                             message=(
                                 "The service restarted. This jury is preserved for review; "
                                 "no messages were resent."
@@ -434,7 +531,11 @@ class JuryService:
         shutdown: Event,
     ) -> dict:
         """Run an admitted account check without opening another admission race."""
-        from .jury_browser import jury_browser_login_check, jury_safari_account_check
+        from .jury_browser import (
+            jury_browser_login_check,
+            jury_macos_edge_account_check,
+            jury_safari_account_check,
+        )
         settings = replace(self.settings_provider(), browser=browser)
         raw_results: list[tuple[str, dict[str, Any] | BaseException]] = []
         if self.login_check is not None:
@@ -457,14 +558,32 @@ class JuryService:
                 except Exception as exc:
                     raw_results.append((key, exc))
         elif browser == "safari":
-            for item in jury_safari_account_check(
-                settings,
+            for key, item in zip(
                 providers,
-                selections,
-                config=self.config_provider(),
-                stop_event=shutdown,
+                jury_safari_account_check(
+                    settings,
+                    providers,
+                    selections,
+                    config=self.config_provider(),
+                    stop_event=shutdown,
+                ),
+                strict=True,
             ):
-                raw_results.append((str(item.get("platform") or ""), item))
+                raw_results.append((key, item))
+        elif browser == "edge" and is_macos_host():
+            for key, item in zip(
+                providers,
+                jury_macos_edge_account_check(
+                    settings,
+                    providers,
+                    selections,
+                    config=self.config_provider(),
+                    stop_event=shutdown,
+                    project_profile_root=self.project_browser_profile_root,
+                ),
+                strict=True,
+            ):
+                raw_results.append((key, item))
         else:
             for key in providers:
                 if shutdown.is_set():
@@ -689,7 +808,7 @@ class JuryService:
                         item["model_selection"] for item in provider_states
                         if item["key"] == key
                     )
-                    worker = _JurorWorker(
+                    worker_args = (
                         self.session_factory or JuryBrowserSession,
                         settings,
                         key,
@@ -698,6 +817,21 @@ class JuryService:
                         lambda url, key=key: record_conversation(key, url),
                         model_selection,
                     )
+                    if (
+                        self.session_factory is None
+                        and state["browser"] == "edge"
+                        and is_macos_host()
+                    ):
+                        worker = _JurorWorker(
+                            *worker_args,
+                            session_kwargs={
+                                "project_profile_root": (
+                                    self.project_browser_profile_root
+                                )
+                            },
+                        )
+                    else:
+                        worker = _JurorWorker(*worker_args)
                     workers[key] = worker
                     jurors[key] = worker
             previous: list[dict] = []
@@ -890,6 +1024,7 @@ class JuryService:
                     continue
                 signature = deliberation_signature(opinions, candidate)
                 signature_occurrences[signature] = signature_occurrences.get(signature, 0) + 1
+                all_opinions_valid = all(item.get("valid") for item in opinions)
                 candidate_needs_review = bool(
                     next_candidate
                     and (
@@ -903,12 +1038,31 @@ class JuryService:
                     and not candidate_needs_review
                 )
                 stalled = bool(
-                    (
-                        signature_occurrences[signature] >= 2
-                        and not candidate_needs_review
+                    all_opinions_valid
+                    and (
+                        (
+                            signature_occurrences[signature] >= 2
+                            and not candidate_needs_review
+                        )
+                        or signature_occurrences[signature] >= 3
                     )
-                    or signature_occurrences[signature] >= 3
                 )
+                if not all_opinions_valid and signature_occurrences[signature] >= 2:
+                    self._commit_outcome(
+                        session_id,
+                        phase="inconclusive",
+                        candidate=next_candidate,
+                        termination_reason="structured_vote_stalled",
+                        response=(
+                            "One or more jurors repeatedly returned responses that could not be "
+                            "validated as structured votes. No factual disagreement or consensus "
+                            "was inferred. Review the preserved raw responses below."
+                        ),
+                        message=(
+                            "Automatic convergence stopped after repeated invalid structured votes."
+                        ),
+                    )
+                    break
                 if settled_without_candidate or stalled:
                     reason = "cross_review_complete" if settled_without_candidate else "evidence_stalled"
                     response = (
@@ -967,7 +1121,7 @@ class JuryService:
                 self._update(session_id, resource_cleanup_pending=True)
                 finalizer = Thread(
                     target=self._await_worker_shutdown,
-                    args=(session_id, tuple(workers.values())),
+                    args=(session_id, dict(workers)),
                     name="jury-finalizer",
                     daemon=True,
                 )
@@ -975,15 +1129,38 @@ class JuryService:
                     self.threads[session_id] = finalizer
                 finalizer.start()
             else:
+                self._record_worker_cleanup_errors(session_id, workers)
                 self._finalize_record(session_id)
 
     def _await_worker_shutdown(self, session_id: str,
-                               workers: tuple[_JurorWorker, ...]) -> None:
-        for worker in workers:
+                               workers: dict[str, _JurorWorker]) -> None:
+        for worker in workers.values():
             while not worker.closed_event.wait(1.0):
                 pass
             worker.thread.join(timeout=0.2)
+        self._record_worker_cleanup_errors(session_id, workers)
         self._finalize_record(session_id)
+
+    def _record_worker_cleanup_errors(
+        self,
+        session_id: str,
+        workers: dict[str, _JurorWorker],
+    ) -> None:
+        """Persist Page-lease cleanup failures instead of reporting false success."""
+        failures = [
+            f"{key}: {getattr(worker, 'cleanup_error', None)}"
+            for key, worker in workers.items()
+            if getattr(worker, "cleanup_error", None) is not None
+        ]
+        if not failures:
+            return
+        self._update(
+            session_id,
+            resource_cleanup_pending=True,
+            resource_cleanup_warning=(
+                "Jury browser Page cleanup failed: " + "; ".join(failures)
+            ),
+        )
 
     def _finalize_record(self, session_id: str) -> None:
         with self.lock:
@@ -995,6 +1172,7 @@ class JuryService:
                 "finished_at": utc_now(),
                 "resource_cleanup_pending": bool(
                     record.get("safari_cleanup_pending")
+                    or record.get("resource_cleanup_warning")
                 ),
             }
             if record.get("phase") not in TERMINAL_PHASES:
@@ -1024,9 +1202,52 @@ class JuryService:
     def sessions(self, browser: str) -> dict:
         with self.lock:
             keys = ("session_id", "browser", "question", "title", "phase", "running", "started_at")
-            records = [{key: item.get(key) for key in keys} for item in self.records.values()
-                       if item.get("browser") == browser]
+            records = []
+            for session_id, item in self.records.items():
+                if item.get("browser") != browser:
+                    continue
+                summary = {key: item.get(key) for key in keys}
+                summary["deletable"] = self._failed_session_deletable(session_id, item)
+                records.append(summary)
             return {"sessions": sorted(records, key=lambda item: item["started_at"], reverse=True)}
+
+    def _failed_session_deletable(self, session_id: str, record: dict) -> bool:
+        thread = self.threads.get(session_id)
+        return bool(
+            str(record.get("phase") or "").strip().lower() == "failed"
+            and not record.get("running")
+            and not record.get("resource_cleanup_pending")
+            and not record.get("safari_cleanup_pending")
+            and not (thread is not None and thread.is_alive())
+        )
+
+    def dismiss_failed(self, session_id: str) -> dict:
+        """Delete one fully cleaned failed Jury record from the local archive."""
+        normalized_id = str(session_id or "").strip()
+        with self.lock:
+            if normalized_id not in self.records:
+                raise ValueError("Unknown jury session.")
+            record = self.records[normalized_id]
+            if str(record.get("phase") or "").strip().lower() != "failed":
+                raise RuntimeError("Only failed Jury sessions can be deleted.")
+            if not self._failed_session_deletable(normalized_id, record):
+                raise RuntimeError(
+                    "Wait for Jury browser cleanup to finish before deleting this session."
+                )
+            path = self.root / f"{normalized_id}.json"
+            if _path_crosses_link_like_component(self.root) or _path_is_unsafe_file_leaf(path):
+                raise RuntimeError("The failed Jury session record is not a safe regular file.")
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise RuntimeError(
+                    "The failed Jury session record could not be deleted safely."
+                ) from exc
+            self.records.pop(normalized_id, None)
+            self.stops.pop(normalized_id, None)
+            self.shutdowns.pop(normalized_id, None)
+            self.threads.pop(normalized_id, None)
+            return {"session_id": normalized_id}
 
     def stop(self, session_id: str) -> dict:
         with self.lock:
@@ -1052,26 +1273,33 @@ class JuryService:
                 event.set()
             for event in tuple(self.shutdowns.values()):
                 event.set()
-            safari_threads = [
-                (session_id, self.threads.get(session_id))
+            cleanup_threads = [
+                (session_id, str(record.get("browser") or ""), self.threads.get(session_id))
                 for session_id, record in self.records.items()
-                if record.get("browser") == "safari" and record.get("running")
+                if record.get("running")
+                and (
+                    record.get("browser") == "safari"
+                    or (record.get("browser") == "edge" and is_macos_host())
+                )
             ]
             while self._active_account_checks:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     break
                 self._shutdown_condition.wait(timeout=min(0.2, remaining))
-        for session_id, thread in safari_threads:
+        for session_id, browser, thread in cleanup_threads:
             if thread is None or thread is current_thread():
                 continue
             thread.join(timeout=max(0.0, deadline - monotonic()))
             if thread.is_alive():
-                self._update(
-                    session_id,
-                    resource_cleanup_pending=True,
-                    safari_cleanup_pending=True,
-                    resource_cleanup_warning=(
+                changes: dict[str, Any] = {
+                    "resource_cleanup_pending": True,
+                    "resource_cleanup_warning": (
                         "Safari cleanup did not finish before service exit."
+                        if browser == "safari"
+                        else "Project Edge Jury Page cleanup did not finish before service exit."
                     ),
-                )
+                }
+                if browser == "safari":
+                    changes["safari_cleanup_pending"] = True
+                self._update(session_id, **changes)

@@ -1,4 +1,4 @@
-/* Code version: v1.8.0-codex.1 */
+/* Code version: v1.8.4-codex.1 */
 .agent-sidebar {
     --agent-sidebar-inline-padding-end: var(--layout-edge-gap);
     --agent-sidebar-border-inline-width: 1px;
@@ -35,6 +35,26 @@
     max-height: 24vh;
     overflow-y: auto;
 }
+.jury-page .agent-execution-session-list {
+    --agent-session-shadow-bleed-inline: min(16px, var(--layout-physical-effect-bleed));
+    --agent-session-shadow-bleed-block-start: 6px;
+    --agent-session-shadow-bleed-block-end: min(32px, var(--layout-physical-effect-bleed));
+    box-sizing: border-box;
+    max-height: calc(
+        24vh
+        + var(--agent-session-shadow-bleed-block-start)
+        + var(--agent-session-shadow-bleed-block-end)
+    );
+    padding: var(--agent-session-shadow-bleed-block-start)
+        var(--agent-session-shadow-bleed-inline)
+        var(--agent-session-shadow-bleed-block-end);
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scroll-padding: var(--agent-session-shadow-bleed-block-start)
+        var(--agent-session-shadow-bleed-inline)
+        var(--agent-session-shadow-bleed-block-end);
+    -webkit-overflow-scrolling: touch;
+}
 .agent-execution-session-row {
     position: relative;
     min-width: 0;
@@ -61,6 +81,10 @@
     transition: opacity 140ms var(--motion-standard);
 }
 .agent-execution-session[aria-pressed="true"] { color: var(--accent-text); }
+.jury-page .secondary-button.agent-execution-session:hover,
+.jury-page .secondary-button.agent-execution-session:focus-visible {
+    transform: none;
+}
 .agent-execution-session-delete {
     position: absolute;
     z-index: 1;
@@ -178,6 +202,7 @@ details.agent-session-collapse[open] > summary::after {
     display: grid;
     min-width: 0;
     padding: var(--collapse-body-padding);
+    overflow: visible;
 }
 
 @media (prefers-reduced-motion: reduce) {

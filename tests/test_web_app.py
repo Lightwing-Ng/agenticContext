@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.119.0-codex.1
+# Code version: v1.119.4-codex.1
 
 from __future__ import annotations
 
@@ -237,6 +237,26 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(restarted["cache"]["status"], "stale")
         self.assertEqual(restarted["history"][0]["response"], source)
         self.assertIn("<strong>Restored</strong>", restarted["history"][0]["response_html"])
+
+    def test_agent_history_rejects_client_placeholder_without_live_collection(self) -> None:
+        url = (
+            "/api/agent/chatgpt-session-history?browser=edge&conversation_url="
+            "https://chatgpt.com/c/WEB:06e00f92-a12e-4896-8eac-816b6a3a8920"
+        )
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            with patch("app.web.app.fetch_chatgpt_conversation_history") as fetch:
+                response = app.test_client().get(url)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.get_json()["error"],
+            (
+                "ChatGPT has not assigned this task a server conversation ID yet. "
+                "History remains unavailable until the provider finishes that transition."
+            ),
+        )
+        fetch.assert_not_called()
 
     def test_agent_history_humanizes_cached_controller_transport_prompt(self) -> None:
         conversation_url = "https://chatgpt.com/c/cached-controller-history"
@@ -954,7 +974,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Cached media browser", browser_body)
         self.assertIn('data-browser-source-filter', browser_body)
         self.assertEqual(browser_body.count('data-browser-source-filter-option='), 4)
-        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.5.0-codex.1', browser_body)
+        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.5.1-codex.1', browser_body)
         self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"', browser_body)
 
         self.assertIn('class="trade-strategy-dropdown-option browser-source-filter-option', browser_body)
@@ -1275,11 +1295,11 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('style-v2.122.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
-        self.assertIn('agent-sessions.css?v=1.8.0', local_body)
+        self.assertIn('agent-sessions.css?v=1.8.4', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.48.1-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.49.1-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -2154,6 +2174,8 @@ class WebAppTests(unittest.TestCase):
                 "activity": [{"label": "FOREIGN_STATUS_ACTIVITY_SENTINEL"}],
                 "history": [{"prompt": "FOREIGN_STATUS_HISTORY_SENTINEL"}],
                 "run_id": "FOREIGN_STATUS_RUN_SENTINEL",
+                "agentic_token_count": 1_234_567,
+                "agentic_transcript_tokens": 765_432,
             }
         )
 
@@ -2181,6 +2203,8 @@ class WebAppTests(unittest.TestCase):
         ):
             self.assertNotIn(sentinel, isolated_agent)
         self.assertEqual(payload["agent"]["run_id"], "")
+        self.assertEqual(payload["agent"]["agentic_token_count"], 0)
+        self.assertEqual(payload["agent"]["agentic_transcript_tokens"], 0)
         self.assertEqual(
             payload["agent"]["stop_target_run_id"],
             "FOREIGN_STATUS_RUN_SENTINEL",
@@ -2709,7 +2733,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.48.1-codex.1',
+            'computer-use-agent-v3.49.1-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -3756,7 +3780,8 @@ class WebAppTests(unittest.TestCase):
             "isolatedForeignRunningAgent(persistedAgent)",
             "function applyAgentSources(payload)",
             "lastBrowserStatus?.agent_sources",
-            "lastBrowserStatus?.agent_sources_error",
+            "if (!forceRefresh && supportsBootstrap && bootstrappedSources)",
+            "const hasBootstrap = Boolean(lastBrowserStatus?.agent_sources);",
             'let appliedBootstrapSignature = ""',
             "bootstrapSignature !== appliedBootstrapSignature",
             "sourceRequestId += 1",
@@ -4214,9 +4239,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('type="module"', body)
         self.assertIn("browser-search.js?v=browser-search-v2.2.1-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
-        self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.1.0-codex.1", body)
+        self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.1.1-codex.1", body)
         self.assertLess(
-            body.index("select-controller.js?v=select-controller-v1.0.0"),
+            body.index("select-controller.js?v=select-controller-v1.0.1"),
             body.index("browser-filter-select.js"),
         )
         self.assertIn("data-browser-local-resources-header-actions", body)
