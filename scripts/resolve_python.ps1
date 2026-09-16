@@ -1,5 +1,5 @@
 # agenticContext Python resolver.
-# Code version: v1.2.0-codex.1
+# Code version: v1.2.2-codex.1
 
 param(
     [ValidateSet("version", "runtime", "test", "quality")]
@@ -21,9 +21,17 @@ function Test-SupportedPython([string]$Executable, [string[]]$Arguments = @()) {
         }
         $checker = Join-Path $PSScriptRoot "check_python_requirements.py"
         $requirements = Join-Path (Split-Path -Parent $PSScriptRoot) "requirements.txt"
-        $checkerCode = 'import runpy, sys; checker = sys.argv[1]; sys.argv = sys.argv[1:]; runpy.run_path(checker, run_name="__main__")'
-        $requirementOutput = & $Executable @Arguments -c $checkerCode $checker $Mode $requirements 2>&1
-        if ($LASTEXITCODE -ne 0) {
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            # Windows PowerShell can promote redirected native stderr to a
+            # terminating NativeCommandError when the caller uses Stop.
+            $ErrorActionPreference = "Continue"
+            $requirementOutput = & $Executable @Arguments $checker $Mode $requirements 2>&1
+            $requirementExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($requirementExitCode -ne 0) {
             Write-Warning (
                 "Skipping Python with incompatible $Mode dependencies: " +
                 "$Executable ($($requirementOutput -join '; '))"

@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.81.0-codex.1
+Code version: v3.81.2-codex.1
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Thread
 import time
 from types import SimpleNamespace
+from typing import Callable
 
 import pytest
 
@@ -87,6 +88,7 @@ from app.core.computer_use_agent import (
     _web_is_generating,
     _is_web_response_complete,
     _model_selection_log_projection,
+    _openai_agentic_token_encoding,
     _openai_agentic_token_count,
     _format_binary_size,
     build_context_markdown,
@@ -15690,6 +15692,28 @@ def test_openai_equivalent_token_counter_accumulates_input_and_output() -> None:
     )
 
 
+def test_openai_token_metric_degrades_when_encoding_cache_is_unavailable(monkeypatch) -> None:
+    """A missing remote tokenizer cache must not prevent a provider exchange."""
+    calls = 0
+
+    def unavailable_encoding(_name: str):
+        nonlocal calls
+        calls += 1
+        raise OSError("certificate verify failed")
+
+    _openai_agentic_token_encoding.cache_clear()
+    monkeypatch.setattr(
+        "app.core.computer_use_agent.tiktoken.get_encoding",
+        unavailable_encoding,
+    )
+    try:
+        assert _openai_agentic_token_count("Continue the Agent task.") > 0
+        assert _openai_agentic_token_count("Do not retry the failed download.") > 0
+        assert calls == 1
+    finally:
+        _openai_agentic_token_encoding.cache_clear()
+
+
 def test_read_only_controller_rejects_mutating_actions(tmp_path: Path) -> None:
     target = tmp_path / "README.md"
     target.write_text("Before\n", encoding="utf-8")
@@ -16448,6 +16472,22 @@ def test_chatgpt_composer_fill_is_linearized_with_stop_signal(
     assert stop_requested.is_set()
 
 
+class _TrustedChatGPTSendControl:
+    def __init__(self, on_click: Callable[[], None] | None = None) -> None:
+        self.on_click = on_click
+        self.clicks = 0
+        self.timeouts: list[int | None] = []
+
+    def count(self) -> int:
+        return 1
+
+    def click(self, timeout: int | None = None) -> None:
+        self.clicks += 1
+        self.timeouts.append(timeout)
+        if self.on_click is not None:
+            self.on_click()
+
+
 def test_chromium_submission_waits_for_attachment_then_clicks_send() -> None:
     class _Composer:
         def __init__(self) -> None:
@@ -16463,18 +16503,22 @@ def test_chromium_submission_waits_for_attachment_then_clicks_send() -> None:
             self.evaluate_calls: list[str] = []
             self.waits: list[int] = []
             self.send_attempts = 0
+            self.send_control = _TrustedChatGPTSendControl()
 
-        def locator(self, selector: str) -> _Composer:
-            assert selector == "#prompt-textarea"
-            return self.composer
+        def locator(self, selector: str) -> object:
+            if selector == "#prompt-textarea":
+                return self.composer
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
 
         def evaluate(self, expression: str, _argument: object = None) -> object:
             self.evaluate_calls.append(expression)
-            if "sendButton.click()" in expression:
+            assert "sendButton.click()" not in expression
+            if "sendButton.setAttribute(bindingAttribute, bindingToken)" in expression:
                 self.send_attempts += 1
                 if self.send_attempts == 1:
                     return {
-                        "clicked": False,
+                        "ready": False,
                         "sendButtons": [
                             {
                                 "ariaLabel": "Send prompt",
@@ -16484,7 +16528,7 @@ def test_chromium_submission_waits_for_attachment_then_clicks_send() -> None:
                         ],
                     }
                 return {
-                    "clicked": True,
+                    "ready": True,
                     "ariaLabel": "Send prompt",
                     "dataTestId": "send-button",
                 }
@@ -16506,8 +16550,9 @@ def test_chromium_submission_waits_for_attachment_then_clicks_send() -> None:
 
     assert page.composer.value == "Inspect the project"
     assert page.send_attempts == 2
+    assert page.send_control.clicks == 1
     assert page.waits == [250]
-    assert any("sendButton.click()" in expression for expression in page.evaluate_calls)
+    assert all("sendButton.click()" not in expression for expression in page.evaluate_calls)
 
 
 def test_chromium_submission_reports_when_attachment_never_enables_send() -> None:
@@ -16521,9 +16566,9 @@ def test_chromium_submission_reports_when_attachment_never_enables_send() -> Non
             return _Composer()
 
         def evaluate(self, expression: str, _argument: object = None) -> object:
-            assert "sendButton.click()" in expression
+            assert "sendButton.click()" not in expression
             return {
-                "clicked": False,
+                "ready": False,
                 "sendButtons": [
                     {
                         "ariaLabel": "Send prompt",
@@ -16586,12 +16631,14 @@ def test_chatgpt_send_target_check_is_atomic_and_rejects_url_drift(
             argument: dict[str, str] | None = None,
         ) -> object:
             self.evaluate_calls += 1
-            assert argument == {
-                "expectedTargetUrl": expected_target_url,
-                "expectedMessage": "Inspect the project",
-            }
+            assert argument is not None
+            assert argument["expectedTargetUrl"] == expected_target_url
+            assert argument["expectedMessage"] == "Inspect the project"
+            assert argument["bindingAttribute"] == "data-cachelikes-agent-send-binding"
+            assert str(argument["bindingToken"]).startswith("chatgpt-send-")
+            assert "sendButton.click()" not in expression
             assert expression.index("if (!targetMatches())") < expression.index(
-                "sendButton.click()"
+                "sendButton.setAttribute(bindingAttribute, bindingToken)"
             )
             for origin_guard in (
                 "expected.port",
@@ -16602,13 +16649,14 @@ def test_chatgpt_send_target_check_is_atomic_and_rejects_url_drift(
                 "current.password",
             ):
                 assert origin_guard in expression
-            return {"clicked": False, "targetMismatch": True}
+            return {"ready": False, "targetMismatch": True}
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
             raise AssertionError("A target mismatch must abort without another wait.")
 
     page = _Page()
     session_checks: list[bool] = []
+    commit_attempts: list[bool] = []
 
     def check_session(allow_transition: bool) -> str:
         session_checks.append(allow_transition)
@@ -16623,11 +16671,13 @@ def test_chatgpt_send_target_check_is_atomic_and_rejects_url_drift(
             lambda: False,
             session_check=check_session,
             expected_target_url=expected_target_url,
+            on_commit_attempted=lambda: commit_attempts.append(True),
         )
 
     assert page.composer.value == "Inspect the project"
     assert page.evaluate_calls == 1
     assert session_checks == [False, False, False]
+    assert commit_attempts == []
 
 
 def test_chatgpt_atomic_send_accepts_same_project_id_after_slug_redirect(
@@ -16645,29 +16695,31 @@ def test_chatgpt_atomic_send_accepts_same_project_id_after_slug_redirect(
 
         def __init__(self) -> None:
             self.send_attempts = 0
+            self.send_control = _TrustedChatGPTSendControl()
 
-        def locator(self, selector: str) -> _Composer:
-            assert selector == "#prompt-textarea"
-            return _Composer()
+        def locator(self, selector: str) -> object:
+            if selector == "#prompt-textarea":
+                return _Composer()
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
 
         def evaluate(
             self,
             expression: str,
             argument: dict[str, str] | None = None,
         ) -> object:
-            if "sendButton.click()" not in expression:
+            if "sendButton.setAttribute(bindingAttribute, bindingToken)" not in expression:
                 return True
             self.send_attempts += 1
-            assert argument == {
-                "expectedTargetUrl": expected_target_url,
-                "expectedMessage": "Inspect the project",
-            }
+            assert argument is not None
+            assert argument["expectedTargetUrl"] == expected_target_url
+            assert argument["expectedMessage"] == "Inspect the project"
             assert "g-p-[0-9a-f]{32}" in expression
             assert "expectedProject === currentProject" in expression
             assert expression.index("if (!targetMatches())") < expression.index(
-                "sendButton.click()"
+                "sendButton.setAttribute(bindingAttribute, bindingToken)"
             )
-            return {"clicked": True, "targetMismatch": False}
+            return {"ready": True, "targetMismatch": False}
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
             return None
@@ -16688,6 +16740,7 @@ def test_chatgpt_atomic_send_accepts_same_project_id_after_slug_redirect(
     )
 
     assert page.send_attempts == 1
+    assert page.send_control.clicks == 1
 
 
 def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
@@ -16720,12 +16773,12 @@ def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
             argument: dict[str, str] | None = None,
         ) -> object:
             self.send_scans += 1
-            assert argument == {
-                "expectedTargetUrl": target_url,
-                "expectedMessage": "Inspect the project",
-            }
+            assert argument is not None
+            assert argument["expectedTargetUrl"] == target_url
+            assert argument["expectedMessage"] == "Inspect the project"
+            assert "sendButton.click()" not in expression
             assert expression.index("composerMismatch") < expression.index(
-                "sendButton.click()"
+                "sendButton.setAttribute(bindingAttribute, bindingToken)"
             )
             assert "directParagraphs" in expression
             assert "selection.toString()" in expression
@@ -16780,31 +16833,33 @@ def test_chatgpt_atomic_send_refills_one_empty_remounted_composer() -> None:
         def __init__(self) -> None:
             self.composer = _Composer()
             self.send_scans = 0
+            self.send_control = _TrustedChatGPTSendControl()
 
-        def locator(self, selector: str) -> _Composer:
-            assert selector == "#prompt-textarea"
-            return self.composer
+        def locator(self, selector: str) -> object:
+            if selector == "#prompt-textarea":
+                return self.composer
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
 
         def evaluate(
             self,
             expression: str,
             argument: dict[str, str] | None = None,
         ) -> object:
-            assert "sendButton.click()" in expression
-            assert argument == {
-                "expectedTargetUrl": target_url,
-                "expectedMessage": "Inspect the project",
-            }
+            assert "sendButton.click()" not in expression
+            assert argument is not None
+            assert argument["expectedTargetUrl"] == target_url
+            assert argument["expectedMessage"] == "Inspect the project"
             self.send_scans += 1
             if self.send_scans == 1:
                 return {
-                    "clicked": False,
+                    "ready": False,
                     "composerMismatch": True,
                     "composerPresent": True,
                     "composerReadable": True,
                     "composerEmpty": True,
                 }
-            return {"clicked": True, "targetMismatch": False}
+            return {"ready": True, "targetMismatch": False}
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
             raise AssertionError("An empty remount can be refilled without polling.")
@@ -16820,6 +16875,7 @@ def test_chatgpt_atomic_send_refills_one_empty_remounted_composer() -> None:
 
     assert page.composer.fills == ["Inspect the project", "Inspect the project"]
     assert page.send_scans == 2
+    assert page.send_control.clicks == 1
 
 
 def test_chatgpt_atomic_send_never_refills_a_second_empty_remount() -> None:
@@ -16917,18 +16973,22 @@ def test_chatgpt_navigation_commit_error_waits_for_receipt_without_resending(
         url = target_url
 
         def __init__(self) -> None:
-            self.send_attempts = 0
+            def fail_after_click() -> None:
+                raise RuntimeError(
+                    "Execution context was destroyed, most likely because of a navigation"
+                )
 
-        def locator(self, selector: str) -> _Composer:
-            assert selector == "#prompt-textarea"
-            return _Composer()
+            self.send_control = _TrustedChatGPTSendControl(fail_after_click)
+
+        def locator(self, selector: str) -> object:
+            if selector == "#prompt-textarea":
+                return _Composer()
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
 
         def evaluate(self, expression: str, _argument: object = None) -> object:
-            assert "sendButton.click()" in expression
-            self.send_attempts += 1
-            raise RuntimeError(
-                "Execution context was destroyed, most likely because of a navigation"
-            )
+            assert "sendButton.click()" not in expression
+            return {"ready": True, "targetMismatch": False}
 
     page = _Page()
     monkeypatch.setattr(computer_use_agent, "_web_count", lambda *_args: 1)
@@ -16964,7 +17024,7 @@ def test_chatgpt_navigation_commit_error_waits_for_receipt_without_resending(
         submission_target_url=target_url,
         session_mode="recent",
     ) == response
-    assert page.send_attempts == 1
+    assert page.send_control.clicks == 1
 
 
 def test_chatgpt_clicked_send_defers_acceptance_to_exact_receipt(
@@ -17012,15 +17072,18 @@ def test_chatgpt_clicked_send_defers_acceptance_to_exact_receipt(
 
         def __init__(self) -> None:
             self.evaluate_calls = 0
+            self.send_control = _TrustedChatGPTSendControl()
 
-        def locator(self, selector: str) -> _Composer:
-            assert selector == "#prompt-textarea"
-            return _Composer()
+        def locator(self, selector: str) -> object:
+            if selector == "#prompt-textarea":
+                return _Composer()
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
 
         def evaluate(self, expression: str, _argument: object = None) -> object:
             self.evaluate_calls += 1
-            assert "sendButton.click()" in expression
-            return {"clicked": True, "targetMismatch": False}
+            assert "sendButton.click()" not in expression
+            return {"ready": True, "targetMismatch": False}
 
     page = _Page()
     monkeypatch.setattr(computer_use_agent, "_web_count", lambda *_args: 1)
@@ -17058,6 +17121,7 @@ def test_chatgpt_clicked_send_defers_acceptance_to_exact_receipt(
         on_delivered=lambda: delivered.append(True),
     ) == response
     assert page.evaluate_calls == 1
+    assert page.send_control.clicks == 1
     assert delivered == [True]
 
 
@@ -17095,18 +17159,22 @@ def test_chatgpt_navigation_commit_error_without_receipt_times_out_without_resen
 
         def __init__(self, clock: _Clock) -> None:
             self.clock = clock
-            self.send_attempts = 0
+            def fail_after_click() -> None:
+                raise RuntimeError(
+                    "Execution context was destroyed, most likely because of a navigation"
+                )
 
-        def locator(self, selector: str) -> _Composer:
-            assert selector == "#prompt-textarea"
-            return _Composer()
+            self.send_control = _TrustedChatGPTSendControl(fail_after_click)
+
+        def locator(self, selector: str) -> object:
+            if selector == "#prompt-textarea":
+                return _Composer()
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
 
         def evaluate(self, expression: str, _argument: object = None) -> object:
-            assert "sendButton.click()" in expression
-            self.send_attempts += 1
-            raise RuntimeError(
-                "Execution context was destroyed, most likely because of a navigation"
-            )
+            assert "sendButton.click()" not in expression
+            return {"ready": True, "targetMismatch": False}
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
             self.clock.value = 2.0
@@ -17136,7 +17204,7 @@ def test_chatgpt_navigation_commit_error_without_receipt_times_out_without_resen
             submission_target_url=target_url,
             session_mode="recent",
         )
-    assert page.send_attempts == 1
+    assert page.send_control.clicks == 1
 
 
 def test_chatgpt_non_navigation_send_error_is_not_treated_as_committed(
@@ -17147,13 +17215,21 @@ def test_chatgpt_non_navigation_send_error_is_not_treated_as_committed(
             return None
 
     class _Page:
-        def locator(self, selector: str) -> _Composer:
-            assert selector == "#prompt-textarea"
-            return _Composer()
+        def __init__(self) -> None:
+            def fail_after_click() -> None:
+                raise RuntimeError("Unexpected application error")
+
+            self.send_control = _TrustedChatGPTSendControl(fail_after_click)
+
+        def locator(self, selector: str) -> object:
+            if selector == "#prompt-textarea":
+                return _Composer()
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
 
         def evaluate(self, expression: str, _argument: object = None) -> object:
-            assert "sendButton.click()" in expression
-            raise RuntimeError("Unexpected application error")
+            assert "sendButton.click()" not in expression
+            return {"ready": True, "targetMismatch": False}
 
     monkeypatch.setattr("app.core.computer_use_agent._web_count", lambda *_args: 0)
 
@@ -17177,12 +17253,21 @@ def test_chatgpt_send_click_is_linearized_with_stop_signal(
             return None
 
     class _Page:
-        def locator(self, selector: str) -> _Composer:
-            assert selector == "#prompt-textarea"
-            return _Composer()
+        def __init__(self) -> None:
+            def fail_after_click() -> None:
+                raise AssertionError("Stop must win before the trusted Send click.")
 
-        def evaluate(self, _expression: str, _argument: object = None) -> object:
-            raise AssertionError("Stop must win before the atomic Send action.")
+            self.send_control = _TrustedChatGPTSendControl(fail_after_click)
+
+        def locator(self, selector: str) -> object:
+            if selector == "#prompt-textarea":
+                return _Composer()
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
+
+        def evaluate(self, expression: str, _argument: object = None) -> object:
+            assert "sendButton.click()" not in expression
+            return {"ready": True, "targetMismatch": False}
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
             raise AssertionError("Stop must return before another browser wait.")
@@ -17192,7 +17277,7 @@ def test_chatgpt_send_click_is_linearized_with_stop_signal(
     def stop_at_send_gate(action: object) -> tuple[bool, object]:
         nonlocal gate_calls
         gate_calls += 1
-        if gate_calls == 2:
+        if gate_calls == 3:
             stop_requested.set()
         assert callable(action)
         return original_gate(action)
@@ -17207,7 +17292,7 @@ def test_chatgpt_send_click_is_linearized_with_stop_signal(
         expected_target_url="https://chatgpt.com/",
     )
 
-    assert gate_calls == 2
+    assert gate_calls == 3
     assert stop_requested.is_set()
 
 
@@ -23672,7 +23757,13 @@ def test_chatgpt_delivery_callbacks_require_exact_new_user_receipt(monkeypatch) 
     )
     phases: list[str] = []
     monkeypatch.setattr(agent, "_chatgpt_response_snapshot", lambda *_args: next(snapshots))
-    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+
+    def submit_with_checkpoint(*_args: object, **kwargs: object) -> None:
+        checkpoint = kwargs.get("on_commit_attempted")
+        assert callable(checkpoint)
+        checkpoint()
+
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", submit_with_checkpoint)
     monkeypatch.setattr(agent, "WEB_RESPONSE_MINIMUM_SECONDS", 0)
     monkeypatch.setattr(agent, "WEB_RESPONSE_STABLE_SECONDS", 0)
     monkeypatch.setattr(agent.time, "monotonic", lambda: 0)
@@ -23734,7 +23825,13 @@ def test_chatgpt_unrelated_new_user_never_marks_controller_delivered(monkeypatch
     stopped = Event()
     phases: list[str] = []
     monkeypatch.setattr(agent, "_chatgpt_response_snapshot", lambda *_args: next(snapshots))
-    monkeypatch.setattr(agent, "_submit_chromium_prompt", lambda *_args, **_kwargs: None)
+
+    def submit_with_checkpoint(*_args: object, **kwargs: object) -> None:
+        checkpoint = kwargs.get("on_commit_attempted")
+        assert callable(checkpoint)
+        checkpoint()
+
+    monkeypatch.setattr(agent, "_submit_chromium_prompt", submit_with_checkpoint)
     monkeypatch.setattr(agent, "_stop_web_generation", lambda *_args: None)
     monkeypatch.setattr(agent, "_web_wait", lambda *_args: stopped.set())
     monkeypatch.setattr(agent, "WEB_RESPONSE_MINIMUM_SECONDS", 0)

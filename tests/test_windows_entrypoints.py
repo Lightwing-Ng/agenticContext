@@ -1,4 +1,4 @@
-"""Native Windows launcher and fail-closed gate tests. Code version: v1.3.0-codex.1."""
+"""Native Windows launcher and fail-closed gate tests. Code version: v1.3.1-codex.1."""
 
 import os
 from pathlib import Path
@@ -201,3 +201,37 @@ def test_windows_resolver_minimum_version(tmp_path, version, accepted):
         errors="replace",
     )
     assert (result.returncode == 0) == accepted, result.stdout + result.stderr
+
+
+def test_windows_resolver_reports_incompatible_runtime_dependencies(tmp_path):
+    """Preserve dependency diagnostics emitted on native stderr under fail-fast mode."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(PROJECT_ROOT / "scripts" / "resolve_python.ps1", scripts)
+    (scripts / "check_python_requirements.py").write_text(
+        "import sys\nprint('Pillow is incompatible', file=sys.stderr)\nraise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.txt").write_text("Pillow>=12.3.0\n", encoding="utf-8")
+    environment = _windows_environment()
+    environment["AGENTIC_CONTEXT_PYTHON"] = sys.executable
+    result = subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-File",
+            str(scripts / "resolve_python.ps1"),
+            "-Mode",
+            "runtime",
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        encoding="utf-8",
+        errors="replace",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "Pillow is incompatible" in output
+    assert "compatible runtime dependencies" in output

@@ -1,6 +1,6 @@
 """Behavioral checks for the POSIX test and quality entrypoints.
 
-Code version: v1.3.1-codex.1
+Code version: v1.3.2-codex.1
 """
 
 import os
@@ -72,6 +72,21 @@ def test_requirements_checker_rejects_an_installed_version_outside_the_constrain
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_requirements_checker_validates_tiktoken_for_runtime(tmp_path):
+    """The runtime gate must cover dependencies imported during application startup."""
+    requirements = tmp_path / "requirements.txt"
+    checker = PROJECT_ROOT / "scripts/check_python_requirements.py"
+    requirements.write_text("tiktoken<0\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(checker), "runtime", str(requirements)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "tiktoken" in result.stderr
 
 
 def test_quality_resolver_rejects_importable_but_incompatible_dependencies(tmp_path):

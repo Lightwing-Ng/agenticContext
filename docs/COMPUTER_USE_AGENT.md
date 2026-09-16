@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.76.1-codex.1`
+Documentation version: `v3.76.2-codex.1`
 
 ## Purpose
 
@@ -366,11 +366,13 @@ within 0.01px of its label. The user-owned service was not restarted.
    response wait, a transient provider remount that exposes an older user node without increasing the
    user-row count is treated as incomplete hydration. A later user-row count still proves supersession
    and fails closed, while a response is accepted only after the current receipt is again the latest
-   visible user turn. In the same browser
-   evaluation that clicks Send, the controller first checks the official host and exact selected
-   landing or bound conversation identity; a tab switch to an old conversation therefore cannot race
-   the final click. The same atomic transaction rereads the live ChatGPT composer and requires the
-   exact filled message before clicking. Contenteditable paragraphs and inline breaks are serialized
+   visible user turn. Immediately before ChatGPT Send, one browser-side preflight checks the official
+   host, exact selected landing or bound conversation identity, complete composer value, and one
+   unique enabled semantic Send control. The preflight marks only that live control with a
+   high-entropy ephemeral binding; Playwright then reacquires that exact binding and performs a
+   trusted click. A tab switch or provider remount drops the binding and blocks the click. The
+   controller still accepts delivery only after the exact current receipt appears. Contenteditable
+   paragraphs and inline breaks are serialized
    structurally, rather than through layout-sensitive `innerText`; unsupported atomic content stays
    ambiguous and blocks Send. If hydration replaces the composer with one new, empty composer, the
    controller may refill that demonstrably uncommitted draft once and repeat the atomic check; a
@@ -443,9 +445,11 @@ within 0.01px of its label. The user-owned service was not restarted.
    appended. Its observation must likewise be durable before the next provider message is sent.
    Provider submission records `prepared`, `commit_attempted`, `delivered`, `response_received`,
    and `response_consumed` boundaries using only an exchange ID, sequence, and SHA-256 identities.
+   Chromium ChatGPT records `commit_attempted` only at the final trusted-click boundary; target,
+   composer, or Send-control preflight failures remain safely before that checkpoint.
    ChatGPT delivery in Chromium requires the exact new user turn in the same canonical conversation;
    an empty composer or generating indicator is not accepted as a delivery receipt. An ambiguous
-   ChatGPT send, including a transient navigation exception after the atomic Send evaluation begins,
+   ChatGPT send, including a transient navigation exception after the trusted Send click begins,
    remains `commit_attempted` while the controller waits up to 30 seconds for that exact receipt; the
    controller never refills or resends the turn. Message IDs are authoritative when both baseline
    and current turns expose them. A first visible current ID may prove a first turn only when the

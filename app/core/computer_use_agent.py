@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.81.1-codex.1
+Code version: v3.81.3-codex.1
 """
 
 from __future__ import annotations
@@ -269,6 +269,7 @@ CHATGPT_PROJECT_SIDEBAR_RECOVERY_TOTAL_SECONDS = 45
 CHATGPT_PROJECT_SIDEBAR_SCAN_LIMIT = 20
 CHATGPT_PROJECT_ROW_HYDRATION_ATTEMPTS = 12
 CHATGPT_TURN_RECEIPT_TIMEOUT_SECONDS = 30
+CHATGPT_SEND_CLICK_TIMEOUT_MILLISECONDS = 5_000
 SAFARI_SEND_BUTTON_TIMEOUT_SECONDS = 15
 CHROMIUM_SEND_BUTTON_TIMEOUT_SECONDS = 180
 CHROMIUM_SUBMISSION_ACCEPT_TIMEOUT_SECONDS = 15
@@ -1056,19 +1057,21 @@ OPENAI_AGENTIC_TOKEN_ENCODING = "o200k_base"
 
 
 @lru_cache(maxsize=1)
-def _openai_agentic_token_encoding() -> Any:
-    """Return the shared OpenAI tokenizer used for provider-neutral estimates."""
-    return tiktoken.get_encoding(OPENAI_AGENTIC_TOKEN_ENCODING)
+def _openai_agentic_token_encoding() -> Any | None:
+    """Return the optional tokenizer without blocking an Agent run on its cache download."""
+    try:
+        return tiktoken.get_encoding(OPENAI_AGENTIC_TOKEN_ENCODING)
+    except Exception:  # A metric must not depend on external TLS trust or reachability.
+        return None
 
 
 def _openai_agentic_token_count(value: str) -> int:
-    """Count text with OpenAI's general-purpose o200k_base encoding."""
-    return len(
-        _openai_agentic_token_encoding().encode(
-            str(value or ""),
-            disallowed_special=(),
-        )
-    )
+    """Count text with o200k_base, or use a local estimate when its cache is unavailable."""
+    text = str(value or "")
+    encoding = _openai_agentic_token_encoding()
+    if encoding is None:
+        return (len(text.encode("utf-8")) + 3) // 4
+    return len(encoding.encode(text, disallowed_special=()))
 
 
 @dataclass(slots=True)
@@ -18693,7 +18696,10 @@ def _submit_and_wait(
         user_receipt_contract = False
     if should_stop():
         return ""
-    if on_commit_attempted is not None:
+    defer_chatgpt_commit_checkpoint = bool(
+        browser_kind != "safari" and platform == "chatgpt"
+    )
+    if on_commit_attempted is not None and not defer_chatgpt_commit_checkpoint:
         on_commit_attempted()
     if browser_kind == "safari":
         if platform not in SUPPORTED_SAFARI_WEB_SESSION_PLATFORMS:
@@ -18717,6 +18723,11 @@ def _submit_and_wait(
             should_stop,
             session_check=session_check,
             expected_target_url=atomic_target_url,
+            **(
+                {"on_commit_attempted": on_commit_attempted}
+                if on_commit_attempted is not None
+                else {}
+            ),
         )
     else:
         submission_accepted = _submit_chromium_web_prompt(
@@ -20576,6 +20587,7 @@ def _submit_chromium_prompt(
     should_stop: Callable[[], bool],
     session_check: Callable[[bool], str] | None = None,
     expected_target_url: str = "",
+    on_commit_attempted: Callable[[], None] | None = None,
 ) -> None:
     """Fill Chromium's composer and click Send after any attachment is ready."""
     if should_stop():
@@ -20605,18 +20617,18 @@ def _submit_chromium_prompt(
     deadline = time.monotonic() + CHROMIUM_SEND_BUTTON_TIMEOUT_SECONDS
     last_state: dict[str, Any] = {}
     empty_composer_refilled = False
+    send_binding_attribute = "data-cachelikes-agent-send-binding"
     while time.monotonic() < deadline:
         if should_stop():
             return
         send_mutation_started = False
+        send_binding_token = f"chatgpt-send-{secrets.token_hex(16)}"
 
-        def scan_and_submit() -> Any:
-            nonlocal send_mutation_started
+        def scan_and_bind_send() -> Any:
             if session_check is not None:
                 session_check(False)
-            send_mutation_started = True
             return page.evaluate(
-                r"""({expectedTargetUrl, expectedMessage}) => {
+                r"""({expectedTargetUrl, expectedMessage, bindingAttribute, bindingToken}) => {
                 const isVisible = (element) => {
                     const style = window.getComputedStyle(element);
                     return element.getClientRects().length > 0
@@ -20756,6 +20768,9 @@ def _submit_chromium_prompt(
                 };
                 const currentComposer = document.querySelector('#prompt-textarea');
                 const currentComposerValue = composerValue(currentComposer);
+                document.querySelectorAll(`[${bindingAttribute}]`).forEach((element) => {
+                    element.removeAttribute(bindingAttribute);
+                });
                 if (!currentComposer
                     || currentComposerValue === null
                     || normalize(currentComposerValue) !== normalize(expectedMessage)) {
@@ -20780,19 +20795,21 @@ def _submit_chromium_prompt(
                     return button.getAttribute('data-testid') === 'send-button'
                         || /^(send|send prompt)$/i.test(label);
                 });
-                const sendButton = sendButtons.find((button) =>
+                const enabledSendButtons = sendButtons.filter((button) =>
                     !button.disabled && button.getAttribute('aria-disabled') !== 'true'
                 );
-                if (sendButton) {
-                    sendButton.click();
+                if (enabledSendButtons.length === 1) {
+                    const sendButton = enabledSendButtons[0];
+                    sendButton.setAttribute(bindingAttribute, bindingToken);
                     return {
-                        clicked: true,
+                        ready: true,
                         ariaLabel: sendButton.getAttribute('aria-label') || '',
                         dataTestId: sendButton.getAttribute('data-testid') || '',
                     };
                 }
                 return {
-                    clicked: false,
+                    ready: false,
+                    ambiguous: enabledSendButtons.length > 1,
                     sendButtons: sendButtons.map((button) => ({
                         ariaLabel: button.getAttribute('aria-label') || '',
                         dataTestId: button.getAttribute('data-testid') || '',
@@ -20803,13 +20820,37 @@ def _submit_chromium_prompt(
                 {
                     "expectedTargetUrl": expected_target_url,
                     "expectedMessage": message,
+                    "bindingAttribute": send_binding_attribute,
+                    "bindingToken": send_binding_token,
                 },
             )
+
+        def trusted_submit() -> None:
+            nonlocal send_mutation_started
+            if session_check is not None:
+                session_check(False)
+            send_control = page.locator(
+                f'[{send_binding_attribute}="{send_binding_token}"]'
+            )
+            count = getattr(send_control, "count", None)
+            if not callable(count) or count() != 1:
+                raise RuntimeError(
+                    "The verified ChatGPT Send control changed before the trusted click."
+                )
+            click = getattr(send_control, "click", None)
+            if not callable(click):
+                raise RuntimeError(
+                    "The verified ChatGPT Send control does not support a trusted click."
+                )
+            if on_commit_attempted is not None:
+                on_commit_attempted()
+            send_mutation_started = True
+            click(timeout=CHATGPT_SEND_CLICK_TIMEOUT_MILLISECONDS)
 
         try:
             executed, result = _run_browser_action_unless_stopped(
                 should_stop,
-                scan_and_submit,
+                scan_and_bind_send,
             )
         except Exception as exc:
             if send_mutation_started and (
@@ -20855,7 +20896,25 @@ def _submit_chromium_prompt(
                     "The ChatGPT composer changed before Send. Nothing was clicked; "
                     "automatic refill was not safe or did not stabilize."
                 )
-            if result.get("clicked"):
+            if result.get("ambiguous"):
+                raise RuntimeError(
+                    "The Chromium browser exposed multiple enabled ChatGPT Send controls."
+                )
+            if result.get("ready"):
+                try:
+                    executed, _result = _run_browser_action_unless_stopped(
+                        should_stop,
+                        trusted_submit,
+                    )
+                except Exception as exc:
+                    if send_mutation_started and (
+                        _is_transient_browser_navigation_error(exc)
+                        or _is_provider_connection_error(exc)
+                    ):
+                        return
+                    raise
+                if not executed:
+                    return
                 return
         page.wait_for_timeout(WEB_SEND_BUTTON_POLL_MILLISECONDS)
     else:

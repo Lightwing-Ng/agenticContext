@@ -1,6 +1,6 @@
 """Validate installed distributions against the project's declared constraints.
 
-Code version: v1.0.0-codex.1
+Code version: v1.0.1-codex.1
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ RUNTIME_DISTRIBUTIONS = frozenset(
         "Pillow",
         "markdown-it-py",
         "packaging",
+        "tiktoken",
         "tzdata",
     )
 )
