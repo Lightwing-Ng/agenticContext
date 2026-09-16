@@ -9,6 +9,6 @@ packaging>=24.1,<27.0
 tiktoken>=0.9.0,<1.0.0
 tzdata; sys_platform == "win32"
 pip-audit==2.10.1
-pytest==9.0.3
+pytest==9.1.1
 pytest-cov==7.1.0
 ruff==0.15.21
