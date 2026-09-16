@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.79.0-codex.1
+Code version: v3.80.0-codex.2
 """
 
 from __future__ import annotations
@@ -9874,9 +9874,13 @@ class _ProviderSessionBinding:
             self.session_mode,
         ):
             receipt_url = self._current_submission_receipt_url()
-            if not receipt_url and normalize_agent_conversation_url(
-                self.platform,
-                current_url,
+            if (
+                not receipt_url
+                and self.platform == "gemini"
+                and normalize_agent_conversation_url(
+                    self.platform,
+                    current_url,
+                )
             ):
                 # Safari Gemini can expose the canonical /app/<id> URL before the
                 # user-turn receipt is readable in the serialized tab.
@@ -15551,7 +15555,7 @@ def _chatgpt_safari_click(
     return True, ""
 
 
-def _select_chatgpt_model_safari_in_transaction(
+def _select_chatgpt_model_safari_controls(
     page: Any,
     option: dict[str, Any],
     remote_labels: tuple[str, ...],
@@ -15884,22 +15888,15 @@ def _select_chatgpt_model_safari(
     should_stop: Callable[[], bool] | None = None,
     thinking_effort: str = CHATGPT_EFFORT_POLICY_HIGHEST,
 ) -> bool:
-    """Keep the multi-step Safari model proof within one native focus lease."""
-    transaction_factory = getattr(page, "native_input_transaction", None)
-    transaction = (
-        transaction_factory()
-        if callable(transaction_factory)
-        else nullcontext()
+    """Verify ChatGPT while each trusted Safari input restores focus independently."""
+    return _select_chatgpt_model_safari_controls(
+        page,
+        option,
+        remote_labels,
+        observation=observation,
+        should_stop=should_stop,
+        thinking_effort=thinking_effort,
     )
-    with transaction:
-        return _select_chatgpt_model_safari_in_transaction(
-            page,
-            option,
-            remote_labels,
-            observation=observation,
-            should_stop=should_stop,
-            thinking_effort=thinking_effort,
-        )
 
 
 def _select_chatgpt_model(
@@ -17190,7 +17187,7 @@ def _safari_web_model_click(
     return True, ""
 
 
-def _select_safari_web_model_in_transaction(
+def _select_safari_web_model_controls(
     page: Any,
     platform: str,
     option: dict[str, Any],
@@ -17406,18 +17403,15 @@ def _select_safari_web_model(
     observation: dict[str, Any] | None,
     should_stop: Callable[[], bool],
 ) -> bool:
-    """Hold one Safari focus lease across provider-model inspection and selection."""
-    transaction_factory = getattr(page, "native_input_transaction", None)
-    transaction = transaction_factory() if callable(transaction_factory) else nullcontext()
-    with transaction:
-        return _select_safari_web_model_in_transaction(
-            page,
-            platform,
-            option,
-            remote_labels,
-            observation,
-            should_stop,
-        )
+    """Verify a provider while each trusted Safari input restores focus independently."""
+    return _select_safari_web_model_controls(
+        page,
+        platform,
+        option,
+        remote_labels,
+        observation,
+        should_stop,
+    )
 
 
 def _select_web_model(
@@ -17526,21 +17520,14 @@ def _select_web_model(
                 )
                 return False
         def select_grok_model() -> bool:
-            transaction_factory = getattr(page, "native_input_transaction", None)
-            transaction = (
-                transaction_factory()
-                if browser_kind == "safari" and callable(transaction_factory)
-                else nullcontext()
+            return _select_grok_model_with_trusted_clicks(
+                page,
+                browser_kind,
+                remote_labels,
+                trigger_labels,
+                observation,
+                stop_requested,
             )
-            with transaction:
-                return _select_grok_model_with_trusted_clicks(
-                    page,
-                    browser_kind,
-                    remote_labels,
-                    trigger_labels,
-                    observation,
-                    stop_requested,
-                )
 
         executed, selected = _run_browser_action_unless_stopped(
             stop_requested,

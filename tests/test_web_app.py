@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.118.5-codex.1
+# Code version: v1.119.0-codex.1
 
 from __future__ import annotations
 
@@ -87,6 +87,36 @@ MAGNIFYING_GLASS_ASSET_PATH = Path(__file__).resolve().parents[1] / "app/web/sta
 
 
 class WebAppTests(unittest.TestCase):
+    def test_runtime_shutdown_callback_stops_browser_services_once(self) -> None:
+        """Signals and atexit share one idempotent browser cleanup callback."""
+        events: list[str] = []
+        with TemporaryDirectory() as raw_root, patch(
+            "app.web.app.atexit.register"
+        ) as register:
+            root = Path(raw_root)
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+            )
+            callback = app.extensions["runtime_shutdown"]
+            jury_service = app.extensions["jury_service"]
+            agent_session_pool = app.extensions["agent_session_pool"]
+            with patch.object(
+                jury_service,
+                "stop_at_exit",
+                side_effect=lambda: events.append("jury"),
+            ), patch.object(
+                agent_session_pool,
+                "stop_at_exit",
+                side_effect=lambda: events.append("agent"),
+            ):
+                callback()
+                callback()
+
+        register.assert_called_once_with(callback)
+        self.assertEqual(events, ["jury", "agent"])
+
     def test_agent_final_envelopes_share_safe_live_and_history_rendering(self) -> None:
         source = json.dumps({
             "action": "final",

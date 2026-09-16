@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.3.1-codex.1
+Code version: v1.4.0-codex.1
 """
 
 from __future__ import annotations
@@ -97,6 +97,49 @@ def test_safari_jury_sessions_catalog_uses_the_selected_browser(jury_app):
 
     assert response.status_code == 200
     service.sessions.assert_called_once_with("safari")
+
+
+@pytest.mark.parametrize("route", ["check", "start"])
+def test_safari_api_rejects_claude_before_service_browser_activity(tmp_path, monkeypatch, route):
+    from app.core import jury as jury_module
+
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    application = create_app(
+        tmp_path / "local-store",
+        computer_use_settings_path=tmp_path / "settings" / "agent.json",
+        computer_use_runtime_root=tmp_path / "agent-runtime",
+        agent_external_operations_enabled=True,
+    )
+    application.config.update(TESTING=True)
+    probed = []
+    real_service = application.extensions["jury_service"]
+    real_service.login_check = lambda *_args, **_kwargs: probed.append("probed") or {
+        "logged_in": True,
+    }
+    try:
+        response = application.test_client().post(
+            f"/api/jury/{route}",
+            json={
+                "browser": "safari",
+                "providers": ["chatgpt", "claude"],
+                "question": "Do not send this fixture to a provider.",
+                "models": {
+                    "chatgpt": "chatgpt-latest-extra-high",
+                    "claude": "claude-auto",
+                },
+            },
+        )
+        assert response.status_code == 400
+        assert "ChatGPT, Grok, and Gemini" in response.get_json()["error"]
+        assert probed == []
+        assert real_service.records == {}
+    finally:
+        real_service.stop_at_exit()
+        application.extensions["agent_session_pool"].stop_at_exit()
 
 
 @pytest.mark.parametrize("route", ["check", "start"])

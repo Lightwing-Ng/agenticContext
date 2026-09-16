@@ -1,8 +1,8 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.24.0-codex.1`
+Documentation version: `v1.24.2-codex.1`
 
-## Safari Jury single-window tabs on 15 Sep 2026
+## Safari Jury single-window tabs on 16 Sep 2026
 
 - Safari Jury now runs ChatGPT, Grok, and Gemini in one task-owned Safari window with one tab per
   selected juror. Additional SOTA selections add tabs, not windows. After each window-affecting
@@ -10,8 +10,12 @@ Documentation version: `v1.24.0-codex.1`
   window off the user's current stage.
 - Gemini model proof uses the same trusted native-input lease as ChatGPT and Grok. A Stage Manager
   animation can delay document focus; native activation now waits for that focus instead of failing
-  closed on the first unfocused attempt. Claude remains optional and is not part of the default
-  three-juror set.
+  closed on the first unfocused attempt. Safari Jury does not admit Claude; Claude remains optional
+  only when Jury uses Edge or Chrome.
+- A timed-out Safari window creation remains fail-closed for a persisted settle interval and two
+  stable inventories. During that interval a new Safari task reports cleanup pending instead of
+  risking a delayed second window. Exact-window cleanup uses Safari's own close command and never
+  clicks the user's current front Safari window.
 
 ## Safari Grok Agent model-tier selection on 15 Sep 2026
 
@@ -49,7 +53,7 @@ Documentation version: `v1.24.0-codex.1`
   browse Recent sessions and Projects, and the selection persists without an Edge fallback. Full
   Agent execution stays disabled; choose Edge or Chrome to start a Gemini or Claude task. Safari
   Jury is a separate runtime: ChatGPT, Grok, and Gemini jurors can submit prompts from one owned
-  Safari window, while Claude remains optional.
+  Safari window, while Claude is available only to an Edge- or Chrome-backed Jury.
 - Safari automation still serializes owned windows across local processes and closes only the
   task-owned window at completion. While a Safari Agent owns that serialized context, account,
   source, Project-session, and history probes serve cached state or fail busy instead of waiting on

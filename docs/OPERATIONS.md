@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.23.0-codex.1`
+Documentation version: `v1.24.3-codex.1`
 
 ## Launch
 
@@ -52,6 +52,8 @@ publish it through a public tunnel or reverse proxy.
 - Opening or restoring a blank Jury page, choosing another browser, changing a juror or model,
   and choosing `New session` do not launch a browser clone. `Check accounts` is the explicit
   readiness probe; Start performs the required server-side recheck before it sends a prompt.
+  Safari account checks use one task-owned window and one tab per selected juror, send no prompt,
+  and reject Claude. Edge and Chrome continue to admit Claude when it is explicitly checked.
 - Jury remembers only the last browser, juror keys, and model-tier keys in same-origin local
   browser storage. It validates them against the current rendered options before reuse and never
   persists readiness, account diagnostics, prompts, or session content in that record.
@@ -133,8 +135,21 @@ publish it through a public tunnel or reverse proxy.
   selected authenticated browser session. On macOS, Safari supports ChatGPT and Grok Agent
   execution; Safari Gemini and Claude remain valid source-only routes for account, Recent sessions,
   and Project browsing, while their full execution uses Edge or Chrome. macOS Safari Jury runs
-  ChatGPT, Grok, and Gemini in one owned window with one tab per juror and does not fall back to
-  Edge. Claude remains optional.
+  ChatGPT, Grok, and Gemini in one owned window with one tab per juror, including the account
+  check, and does not fall back to Edge. Safari Jury rejects Claude; Edge and Chrome still admit
+  it when explicitly checked. Each native model-menu or Send action restores focus independently;
+  model discovery and response polling do not hold a long focus transaction. Window operations
+  preserve a later user app switch. A failed task-window close retains the Safari lease and blocks
+  another Safari Jury until tracked cleanup succeeds. A durable ownership token, pre-creation
+  window/tab inventory, and owned window ID survive an app restart: admission remains blocked while
+  that window exists or creation is ambiguous, then clears automatically once absence is proven.
+  An uncertain create waits through a 40-second persisted settle interval and two stable read-only
+  inventories 0.5 seconds apart before the lease can clear. Cleanup closes only the exact owned
+  window through Safari itself; it never clicks whichever Safari window happens to be frontmost.
+  SIGINT, SIGTERM, and process exit share one idempotent cleanup callback. Shutdown first closes
+  Jury admission, cancels and waits for active account checks, then waits for the Safari coordinator
+  to close its owned window. Restoring the previous frontmost app remains best-effort and does not
+  control Stage Manager grouping.
   Browser/provider/model/workspace preferences are queued as one revisioned snapshot and restored
   before the first status or source request after reload. A retired or wrong-provider model invalidates
   the pending snapshot without a POST or retry loop. A selected Safari route is retained rather than

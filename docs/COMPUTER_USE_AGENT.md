@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.75.0-codex.1`
+Documentation version: `v3.75.2-codex.1`
 
 ## Purpose
 
@@ -9,9 +9,14 @@ pool is constrained. It uses an already signed-in Web session for ChatGPT, Gemin
 Edge or Chrome supports all four providers through the background Chromium controller, while macOS
 Safari supports ChatGPT and Grok Agent execution through an owned Apple Events window. Full Gemini
 and Claude Agent execution continues to require Edge or Chrome. macOS Safari Jury supports ChatGPT,
-Grok, and Gemini under one shared Apple Events window with one tab per juror; Claude remains
-optional. Edge remains the default because its Chromium controller does not depend on desktop
-clicks; Chrome uses the same isolated controller.
+Grok, and Gemini under one shared Apple Events window with one tab per juror; Safari Jury rejects
+Claude, which remains optional on Edge and Chrome. Edge remains the default because its Chromium
+controller does not depend on desktop clicks; Chrome uses the same isolated controller.
+
+Each Safari trusted-input action owns only a short focus transaction. A separate guarded restore
+runs even when the mutating Apple Event times out, while discovery and response polling remain in
+the background. Window cleanup binds the exact task-owned ID and does not click the current front
+Safari window.
 
 Safari Gemini and Claude canonical routes remain available for source-only Recent sessions and
 Project browsing. Their status payload explicitly disables Agent execution, so Ask remains

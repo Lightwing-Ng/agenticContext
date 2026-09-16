@@ -1,4 +1,4 @@
-<!-- Code version: v1.2.1-codex.1 -->
+<!-- Code version: v1.3.1-codex.1 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -35,9 +35,10 @@
                             {% set provider = platform_options | selectattr('key', 'equalto', provider_key) | list | first %}
                             {% set model_options = jury_model_options_by_provider[provider_key] %}
                             {% set selected_model = model_options[0] %}
-                            <div class="jury-provider-option" data-jury-provider-row="{{ provider_key }}">
+                            {% set safari_unsupported = settings.browser == 'safari' and provider_key == 'claude' %}
+                            <div class="jury-provider-option" data-jury-provider-row="{{ provider_key }}"{% if safari_unsupported %} hidden{% endif %}>
                                 <label class="jury-provider-identity" for="jury_provider_{{ provider_key }}">
-                                    <input id="jury_provider_{{ provider_key }}" class="jury-provider-input" type="checkbox" name="providers" value="{{ provider_key }}" data-jury-provider aria-describedby="jury_model_trigger_{{ provider_key }}"{% if provider_key != 'claude' %} checked{% endif %}>
+                                    <input id="jury_provider_{{ provider_key }}" class="jury-provider-input" type="checkbox" name="providers" value="{{ provider_key }}" data-jury-provider aria-describedby="jury_model_trigger_{{ provider_key }}"{% if provider_key != 'claude' %} checked{% endif %}{% if safari_unsupported %} disabled{% endif %}>
                                     <span class="jury-provider-selection-mark" aria-hidden="true"></span>
                                     <span class="browser-picker-selected-icon-shell"><img class="browser-picker-option-icon" src="{{ url_for('static', filename=provider.icon_filename) }}" alt="" aria-hidden="true"></span>
                                     <span class="jury-provider-name">{{ provider.label }}</span>
@@ -47,7 +48,7 @@
                                         {% for option in model_options %}<option value="{{ option.selection_key }}"{% if option.selection_key == selected_model.selection_key %} selected{% endif %}>{{ option.display_label }}</option>{% endfor %}
                                     </select>
                                     <div class="trade-strategy-combobox">
-                                        <button type="button" class="trade-strategy-select form-select trade-strategy-trigger backtest-shared-select-trigger jury-model-trigger" id="jury_model_trigger_{{ provider_key }}" data-jury-model-trigger="{{ provider_key }}" data-shared-select-trigger aria-haspopup="listbox" aria-expanded="false" aria-controls="jury_model_options_{{ provider_key }}" aria-label="{{ provider.label }} model tier: {{ selected_model.display_label }}" title="Choose {{ provider.label }} model tier">
+                                        <button type="button" class="trade-strategy-select form-select trade-strategy-trigger backtest-shared-select-trigger jury-model-trigger" id="jury_model_trigger_{{ provider_key }}" data-jury-model-trigger="{{ provider_key }}" data-shared-select-trigger aria-haspopup="listbox" aria-expanded="false" aria-controls="jury_model_options_{{ provider_key }}" aria-label="{{ provider.label }} model tier: {{ selected_model.display_label }}" title="Choose {{ provider.label }} model tier"{% if safari_unsupported %} disabled{% endif %}>
                                             <span class="trade-strategy-trigger-label" data-jury-model-label="{{ provider_key }}" data-shared-select-trigger-label data-fallback-label="{{ selected_model.display_label }}">{{ selected_model.display_label }}</span>
                                             <span class="browser-picker-trigger-chevron" aria-hidden="true"></span>
                                         </button>
@@ -165,6 +166,6 @@
 <script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.0') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
-<script src="{{ url_for('static', filename='jury.js', v='jury-v1.2.0-codex.1') }}"></script>
+<script src="{{ url_for('static', filename='jury.js', v='jury-v1.3.1-codex.1') }}"></script>
 </body>
 </html>

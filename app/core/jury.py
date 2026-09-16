@@ -1,9 +1,9 @@
-"""Evidence-convergent browser-only fact-checking. Code version: v1.5.0-codex.1."""
+"""Evidence-convergent browser-only fact-checking. Code version: v1.7.0-codex.1."""
 
 from __future__ import annotations
 
 from concurrent.futures import Future
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import replace
 import hashlib
@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from queue import Empty, Queue
 import re
-from threading import Event, RLock, Thread
+from threading import Condition, Event, RLock, Thread, current_thread
 from time import monotonic
 from typing import Any, Callable
 from uuid import uuid4
@@ -26,13 +26,15 @@ from .computer_use_agent import (
 )
 from .state import utc_now
 
-JURY_VERSION = "1.5.0"
+JURY_VERSION = "1.7.0"
 AUTOMATIC_CONVERGENCE_TIMEOUT_SECONDS = 3_600
 AUTOMATIC_CONVERGENCE_STORAGE_SOFT_LIMIT_BYTES = 6_500_000
 MAX_PERSISTED_JURY_RECORD_BYTES = 8_000_000
 MAX_JUROR_RESPONSE_BYTES = 50_000
 WORKER_SHUTDOWN_TIMEOUT_SECONDS = 30
 DEFAULT_JURORS = ("chatgpt", "grok", "gemini")
+SAFARI_JURY_PROVIDERS = frozenset(DEFAULT_JURORS)
+SAFARI_JURY_PROVIDER_ERROR = "Safari Jury supports ChatGPT, Grok, and Gemini."
 JUROR_LABELS = {item["key"]: item["label"] for item in AGENT_PLATFORM_OPTIONS}
 VERDICTS = {"supported", "refuted", "misleading", "unverified"}
 TERMINAL_PHASES = frozenset({"consensus", "inconclusive", "failed", "interrupted", "stopped"})
@@ -67,6 +69,8 @@ def validate_selection(browser: object, providers: object) -> tuple[str, list[st
         or len(set(providers)) != len(providers)
     ):
         raise ValueError("Choose two to four distinct jurors.")
+    if browser == "safari" and any(key not in SAFARI_JURY_PROVIDERS for key in providers):
+        raise ValueError(SAFARI_JURY_PROVIDER_ERROR)
     return browser, list(providers)
 
 
@@ -316,6 +320,9 @@ class JuryService:
         self.session_factory = session_factory
         self.login_check = login_check
         self.lock = RLock()
+        self._shutdown_condition = Condition(self.lock)
+        self._shutdown_started = False
+        self._active_account_checks: dict[str, tuple[str, Event]] = {}
         self.records: dict[str, dict] = {}
         self.stops: dict[str, Event] = {}
         self.shutdowns: dict[str, Event] = {}
@@ -337,10 +344,13 @@ class JuryService:
                 if not isinstance(record, dict) or record.get("session_id") != path.stem:
                     continue
                 if record.get("running"):
+                    safari_cleanup_pending = bool(
+                        record.get("safari_cleanup_pending")
+                    )
                     if record.get("phase") in TERMINAL_PHASES:
                         record.update(
                             running=False,
-                            resource_cleanup_pending=False,
+                            resource_cleanup_pending=safari_cleanup_pending,
                         )
                     else:
                         record.update(
@@ -348,7 +358,7 @@ class JuryService:
                             phase="interrupted",
                             consensus=False,
                             termination_reason="service_restarted",
-                            resource_cleanup_pending=False,
+                            resource_cleanup_pending=safari_cleanup_pending,
                             message=(
                                 "The service restarted. This jury is preserved for review; "
                                 "no messages were resent."
@@ -366,25 +376,125 @@ class JuryService:
         self.root.chmod(0o700)
         _atomic_write_owner_only_text(path, json.dumps(record, ensure_ascii=False))
 
+    def _require_safari_cleanup_ready(self) -> None:
+        """Prove the durable Safari owner is gone before admitting another task."""
+        from .safari_automation import verify_safari_context_cleanup_ready
+
+        verify_safari_context_cleanup_ready()
+        with self.lock:
+            recorded = [
+                record
+                for record in self.records.values()
+                if record.get("safari_cleanup_pending") is True
+            ]
+            for record in recorded:
+                record.update(
+                    safari_cleanup_pending=False,
+                    safari_cleanup_owner_pid=None,
+                    resource_cleanup_pending=False,
+                )
+                self._save(record)
+
+    @contextmanager
+    def _account_check_admission(self, browser: str):
+        """Track one cancellable account check and reject it during shutdown."""
+        check_id = uuid4().hex
+        shutdown = Event()
+        with self._shutdown_condition:
+            if self._shutdown_started:
+                raise RuntimeError(
+                    "The Jury service is shutting down. No account check was opened."
+                )
+            self._active_account_checks[check_id] = (browser, shutdown)
+        try:
+            yield shutdown
+        finally:
+            with self._shutdown_condition:
+                self._active_account_checks.pop(check_id, None)
+                self._shutdown_condition.notify_all()
+
     def check(self, browser: object, providers: object, models: object = None) -> dict:
         browser, providers = validate_selection(browser, providers)
         selections = validate_model_selections(providers, models)
-        from .jury_browser import jury_browser_login_check
-        probe = self.login_check or jury_browser_login_check
+        with self._account_check_admission(browser) as shutdown:
+            if browser == "safari":
+                self._require_safari_cleanup_ready()
+            return self._check_selected_accounts(
+                browser,
+                providers,
+                selections,
+                shutdown,
+            )
+
+    def _check_selected_accounts(
+        self,
+        browser: str,
+        providers: list[str],
+        selections: dict[str, dict[str, Any]],
+        shutdown: Event,
+    ) -> dict:
+        """Run an admitted account check without opening another admission race."""
+        from .jury_browser import jury_browser_login_check, jury_safari_account_check
         settings = replace(self.settings_provider(), browser=browser)
+        raw_results: list[tuple[str, dict[str, Any] | BaseException]] = []
+        if self.login_check is not None:
+            for key in providers:
+                if shutdown.is_set():
+                    raw_results.append(
+                        (key, RuntimeError("Jury shutdown canceled the account check."))
+                    )
+                    continue
+                try:
+                    raw_results.append((
+                        key,
+                        self.login_check(
+                            settings,
+                            key,
+                            config=self.config_provider(),
+                            model_selection=selections[key]["selection_key"],
+                        ),
+                    ))
+                except Exception as exc:
+                    raw_results.append((key, exc))
+        elif browser == "safari":
+            for item in jury_safari_account_check(
+                settings,
+                providers,
+                selections,
+                config=self.config_provider(),
+                stop_event=shutdown,
+            ):
+                raw_results.append((str(item.get("platform") or ""), item))
+        else:
+            for key in providers:
+                if shutdown.is_set():
+                    raw_results.append(
+                        (key, RuntimeError("Jury shutdown canceled the account check."))
+                    )
+                    continue
+                try:
+                    raw_results.append((
+                        key,
+                        jury_browser_login_check(
+                            settings,
+                            key,
+                            config=self.config_provider(),
+                            model_selection=selections[key]["selection_key"],
+                            stop_event=shutdown,
+                        ),
+                    ))
+                except Exception as exc:
+                    raw_results.append((key, exc))
         results = []
-        for key in providers:
-            try:
-                result = probe(
-                    settings,
-                    key,
-                    config=self.config_provider(),
-                    model_selection=selections[key]["selection_key"],
+        for key, outcome in raw_results:
+            if isinstance(outcome, BaseException):
+                ready, message = False, str(outcome)
+            else:
+                ready = outcome.get("logged_in") is True
+                message = (
+                    "Signed in" if ready
+                    else str(outcome.get("message") or "Sign-in could not be verified.")
                 )
-                ready = result.get("logged_in") is True
-                message = "Signed in" if ready else str(result.get("message") or "Sign-in could not be verified.")
-            except Exception as exc:
-                ready, message = False, str(exc)
             model = selections[key]
             results.append({"key": key, "label": JUROR_LABELS[key], "ready": ready,
                             "message": message, "model": model["display_label"],
@@ -397,6 +507,8 @@ class JuryService:
     def start(self, browser: object, providers: object, question: object,
               max_rounds: object = None, models: object = None) -> dict:
         browser, providers = validate_selection(browser, providers)
+        if browser == "safari":
+            self._require_safari_cleanup_ready()
         selections = validate_model_selections(providers, models)
         if not isinstance(question, str) or not question.strip() or len(question) > 20_000:
             raise ValueError("Enter a question containing 1 to 20,000 characters.")
@@ -405,6 +517,10 @@ class JuryService:
         ):
             raise ValueError("Choose two to six discussion rounds.")
         with self.lock:
+            if self._shutdown_started:
+                raise RuntimeError(
+                    "The Jury service is shutting down. No jury session was opened."
+                )
             if any(record.get("running") for record in self.records.values()):
                 raise RuntimeError("A jury is already running. Wait for it to finish or stop it.")
             session_id = uuid4().hex
@@ -416,6 +532,7 @@ class JuryService:
                 "candidate": None,
                 "convergence_mode": "automatic" if max_rounds is None else "bounded",
                 "termination_reason": "", "resource_cleanup_pending": False,
+                "safari_cleanup_pending": False,
                 "started_at": utc_now(),
                 "providers": [{"key": key, "label": JUROR_LABELS[key], "ready": False,
                                "status": "checking", "message": "", "conversation_url": "",
@@ -841,6 +958,9 @@ class JuryService:
             except Exception as cleanup_error:
                 self._update(
                     session_id,
+                    resource_cleanup_pending=True,
+                    safari_cleanup_pending=True,
+                    safari_cleanup_owner_pid=None,
                     resource_cleanup_warning=str(cleanup_error),
                 )
             if any(worker.thread.is_alive() for worker in workers.values()):
@@ -873,7 +993,9 @@ class JuryService:
             changes: dict[str, Any] = {
                 "running": False,
                 "finished_at": utc_now(),
-                "resource_cleanup_pending": False,
+                "resource_cleanup_pending": bool(
+                    record.get("safari_cleanup_pending")
+                ),
             }
             if record.get("phase") not in TERMINAL_PHASES:
                 if self.stops[session_id].is_set():
@@ -923,5 +1045,33 @@ class JuryService:
             return deepcopy(record)
 
     def stop_at_exit(self) -> None:
-        for event in tuple(self.shutdowns.values()):
-            event.set()
+        deadline = monotonic() + WORKER_SHUTDOWN_TIMEOUT_SECONDS
+        with self._shutdown_condition:
+            self._shutdown_started = True
+            for _browser, event in tuple(self._active_account_checks.values()):
+                event.set()
+            for event in tuple(self.shutdowns.values()):
+                event.set()
+            safari_threads = [
+                (session_id, self.threads.get(session_id))
+                for session_id, record in self.records.items()
+                if record.get("browser") == "safari" and record.get("running")
+            ]
+            while self._active_account_checks:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                self._shutdown_condition.wait(timeout=min(0.2, remaining))
+        for session_id, thread in safari_threads:
+            if thread is None or thread is current_thread():
+                continue
+            thread.join(timeout=max(0.0, deadline - monotonic()))
+            if thread.is_alive():
+                self._update(
+                    session_id,
+                    resource_cleanup_pending=True,
+                    safari_cleanup_pending=True,
+                    resource_cleanup_warning=(
+                        "Safari cleanup did not finish before service exit."
+                    ),
+                )

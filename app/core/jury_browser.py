@@ -1,11 +1,11 @@
 """Keep each juror in one authenticated browser conversation for an entire question.
 
-Code version: v1.5.0-codex.1
+Code version: v1.7.0-codex.1
 """
 
 from __future__ import annotations
 
-from contextlib import ExitStack, nullcontext, suppress
+from contextlib import ExitStack
 from dataclasses import replace
 import json
 import re
@@ -169,14 +169,35 @@ def normalize_jury_response(response: str, platform: str) -> str:
 
 
 def _validate_provider(settings: ComputerUseSettings, platform: str) -> None:
+    from .jury import SAFARI_JURY_PROVIDER_ERROR, SAFARI_JURY_PROVIDERS
+
     if platform not in JURY_MODEL_OPTIONS:
         raise ValueError(f"Unsupported jury provider: {platform}")
     if settings.browser == "safari":
         if not is_macos_host():
             raise ValueError("Safari Jury sessions require macOS.")
+        if platform not in SAFARI_JURY_PROVIDERS:
+            raise ValueError(SAFARI_JURY_PROVIDER_ERROR)
         return
     if settings.browser not in {"edge", "chrome"}:
         raise ValueError("Choose Safari, Microsoft Edge, or Google Chrome for Jury.")
+
+
+def _login_check_result(
+    settings: ComputerUseSettings,
+    platform: str,
+    *,
+    logged_in: bool,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "platform": platform,
+        "browser": settings.browser,
+        "logged_in": logged_in,
+        "ready": logged_in,
+        "can_download": False,
+        "message": message,
+    }
 
 
 def jury_browser_login_check(
@@ -185,23 +206,109 @@ def jury_browser_login_check(
     *,
     config: CrawlConfig | None = None,
     model_selection: str | None = None,
+    browser_page: Any = None,
+    stop_event: Event | None = None,
 ) -> dict[str, Any]:
     """Check the selected provider in its headed Jury browser without a prompt."""
     _validate_provider(settings, platform)
+    shutdown = stop_event or Event()
+    if shutdown.is_set():
+        raise JuryBrowserStopped("Jury shutdown canceled the account check.")
     with JuryBrowserSession(
         settings,
         platform,
+        shutdown,
         config=config,
         model_selection=model_selection,
+        browser_page=browser_page,
     ):
-        return {
-            "platform": platform,
-            "browser": settings.browser,
-            "logged_in": True,
-            "ready": True,
-            "can_download": False,
-            "message": f"{platform} chat is signed in and ready.",
-        }
+        return _login_check_result(
+            settings,
+            platform,
+            logged_in=True,
+            message=f"{platform} chat is signed in and ready.",
+        )
+
+
+def jury_safari_account_check(
+    settings: ComputerUseSettings,
+    providers: list[str],
+    selections: dict[str, dict[str, Any]],
+    *,
+    config: CrawlConfig | None = None,
+    stop_event: Event | None = None,
+) -> list[dict[str, Any]]:
+    """Check every selected Safari juror in one task-owned window without a prompt."""
+    for platform in providers:
+        _validate_provider(settings, platform)
+    shutdown = stop_event or Event()
+    outcomes: dict[str, dict[str, Any] | BaseException] = {}
+    context = SafariContext("about:blank", lock_blocking=False)
+    entered = False
+    try:
+        if shutdown.is_set():
+            raise JuryBrowserStopped("Jury shutdown canceled the account check.")
+        context.__enter__()
+        entered = True
+        pages = [context.primary_page]
+        try:
+            for _index in range(1, len(providers)):
+                if shutdown.is_set():
+                    raise JuryBrowserStopped(
+                        "Jury shutdown canceled the account check."
+                    )
+                pages.append(context.new_page())
+        except Exception as exc:
+            for platform in providers[len(pages):]:
+                outcomes[platform] = exc
+        for platform, page in zip(providers, pages):
+            try:
+                if shutdown.is_set():
+                    raise JuryBrowserStopped(
+                        "Jury shutdown canceled the account check."
+                    )
+                outcomes[platform] = jury_browser_login_check(
+                    settings,
+                    platform,
+                    config=config,
+                    model_selection=selections[platform]["selection_key"],
+                    browser_page=page,
+                    stop_event=shutdown,
+                )
+            except Exception as exc:
+                outcomes[platform] = exc
+    except Exception as exc:
+        for platform in providers:
+            outcomes.setdefault(platform, exc)
+    finally:
+        if entered:
+            try:
+                context.__exit__(None, None, None)
+            except Exception as exc:
+                for platform in providers:
+                    outcomes[platform] = RuntimeError(
+                        "Safari could not close its task-owned account-check "
+                        f"window: {exc}"
+                    )
+    results = []
+    for platform in providers:
+        outcome = outcomes.get(platform)
+        if isinstance(outcome, dict):
+            results.append(outcome)
+            continue
+        results.append(
+            _login_check_result(
+                settings,
+                platform,
+                logged_in=False,
+                message=(
+                    str(outcome)
+                    if outcome is not None
+                    else "Sign-in could not be verified."
+                ),
+            )
+        )
+    return results
 
 
 class JuryBrowserSession:
@@ -493,35 +600,24 @@ class JuryBrowserSession:
                 if self.platform == "chatgpt" and self._turn_count == 0
                 else f"agent-turn-{secrets.token_hex(16)}"
             )
-            transaction_factory = getattr(self._page, "native_input_transaction", None)
-            transaction = (
-                transaction_factory()
-                if self._browser_kind == "safari" and callable(transaction_factory)
-                else nullcontext()
+            # Safari native focus is only the trusted Send click, not the wait.
+            response = web_agent._submit_and_wait(
+                self._page,
+                self._browser_kind,
+                message,
+                self.stop_event.is_set,
+                platform=self.platform,
+                session_check=self._binding.check,
+                session_recover=lambda should_stop: self._recover_response_session(
+                    marker, should_stop,
+                ),
+                submission_target_url=self._conversation_url or self.settings.target_url,
+                session_mode="new" if self._turn_count == 0 else "recent",
+                availability_check=self._availability_check,
+                turn_receipt_marker=marker,
+                on_response_state=self._record_response_state,
+                timeout_seconds=timeout_seconds,
             )
-            with transaction:
-                if self._browser_kind == "safari":
-                    wake = getattr(self._page, "wake_for_javascript", None)
-                    if callable(wake):
-                        with suppress(RuntimeError):
-                            wake()
-                response = web_agent._submit_and_wait(
-                    self._page,
-                    self._browser_kind,
-                    message,
-                    self.stop_event.is_set,
-                    platform=self.platform,
-                    session_check=self._binding.check,
-                    session_recover=lambda should_stop: self._recover_response_session(
-                        marker, should_stop,
-                    ),
-                    submission_target_url=self._conversation_url or self.settings.target_url,
-                    session_mode="new" if self._turn_count == 0 else "recent",
-                    availability_check=self._availability_check,
-                    turn_receipt_marker=marker,
-                    on_response_state=self._record_response_state,
-                    timeout_seconds=timeout_seconds,
-                )
             self._require_running()
             if not response.strip():
                 raise RuntimeError("The juror returned no complete response.")

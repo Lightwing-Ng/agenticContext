@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.73.0-codex.1
+Code version: v3.80.0-codex.2
 """
 
 from __future__ import annotations
@@ -3517,7 +3517,7 @@ def test_grok_model_selection_linearizes_the_entire_trusted_click_transaction(
         ("grok-auto", ("Auto",), ("Auto",)),
     ),
 )
-def test_safari_grok_model_selection_uses_one_native_input_transaction(
+def test_safari_grok_model_selection_restores_each_native_input_independently(
     monkeypatch: pytest.MonkeyPatch,
     model: str,
     expected_labels: tuple[str, ...],
@@ -3527,19 +3527,12 @@ def test_safari_grok_model_selection_uses_one_native_input_transaction(
 
     events: list[str] = []
 
-    class _Transaction:
-        def __enter__(self) -> None:
-            events.append("enter")
-
-        def __exit__(self, *_args: object) -> None:
-            events.append("exit")
-
     class _Page:
         def locator(self, _selector: str) -> object:
             return object()
 
-        def native_input_transaction(self) -> _Transaction:
-            return _Transaction()
+        def native_input_transaction(self) -> None:
+            raise AssertionError("Model polling must not hold one native focus transaction.")
 
     def select(
         _page: object,
@@ -3566,11 +3559,44 @@ def test_safari_grok_model_selection_uses_one_native_input_transaction(
         "grok",
         model,
     ) is True
-    assert events == [
-        "enter",
-        f"select:safari:{expected_labels!r}:{expected_trigger_labels!r}",
-        "exit",
-    ]
+    assert events == [f"select:safari:{expected_labels!r}:{expected_trigger_labels!r}"]
+
+
+def test_safari_chatgpt_and_gemini_model_polling_do_not_hold_focus_transactions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _Page:
+        def native_input_transaction(self) -> None:
+            raise AssertionError("Model polling must not hold one native focus transaction.")
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_select_chatgpt_model_safari_controls",
+        lambda *_args, **_kwargs: events.append("chatgpt") or True,
+    )
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_select_safari_web_model_controls",
+        lambda *_args, **_kwargs: events.append("gemini") or True,
+    )
+
+    assert computer_use_agent._select_chatgpt_model_safari(
+        _Page(),
+        {"key": "latest"},
+        ("Latest",),
+    ) is True
+    assert computer_use_agent._select_safari_web_model(
+        _Page(),
+        "gemini",
+        {"key": "gemini-3.1-pro"},
+        ("3.1 Pro",),
+        {},
+        lambda: False,
+    ) is True
+    assert events == ["chatgpt", "gemini"]
 
 
 def test_non_chatgpt_model_failure_records_the_current_trigger_readback() -> None:

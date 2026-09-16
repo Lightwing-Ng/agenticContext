@@ -1,6 +1,6 @@
 """Verify isolated browser ownership and single-session jury exchanges.
 
-Code version: v1.5.0-codex.1
+Code version: v1.6.1-codex.1
 """
 
 from contextlib import contextmanager
@@ -396,6 +396,134 @@ def test_login_check_verifies_the_selected_model_tier(transport):
     assert transport.selected_models[0][1] == "gemini-3.8-flash"
 
 
+def test_safari_account_check_shares_one_context_without_prompts_or_edge(
+    transport,
+    monkeypatch,
+):
+    pages = [transport.page, object(), object()]
+    created = []
+
+    class SafariContext:
+        def __init__(self, initial_url, *, lock_blocking):
+            assert initial_url == "about:blank"
+            assert lock_blocking is False
+            created.append(self)
+            self.primary_page = pages[0]
+            self.created_pages = 1
+
+        def __enter__(self):
+            transport.events.append("open:safari-context")
+            return self
+
+        def new_page(self):
+            page = pages[self.created_pages]
+            self.created_pages += 1
+            transport.events.append("new:safari-page")
+            return page
+
+        def __exit__(self, exc_type, exc, traceback):
+            transport.events.append("close:safari-context")
+
+    sessions = []
+
+    class Session:
+        def __init__(self, settings, platform, stop_event=None, **kwargs):
+            assert settings.browser == "safari"
+            assert kwargs["browser_page"] is pages[len(sessions)]
+            sessions.append(platform)
+            self.platform = platform
+
+        def __enter__(self):
+            transport.events.append(f"open:{self.platform}")
+            if self.platform == "gemini":
+                raise RuntimeError("Gemini composer is unavailable.")
+            return self
+
+        def ask(self, *_args, **_kwargs):
+            raise AssertionError("Safari account check must not send a prompt.")
+
+        def __exit__(self, exc_type, exc, traceback):
+            transport.events.append(f"close:{self.platform}")
+
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    monkeypatch.setattr(jury, "SafariContext", SafariContext)
+    monkeypatch.setattr(jury, "JuryBrowserSession", Session)
+    monkeypatch.setattr(
+        jury,
+        "launch_chromium_context",
+        lambda *_args, **_kwargs: pytest.fail("Safari Jury must not fall back to Edge."),
+    )
+    results = jury.jury_safari_account_check(
+        ComputerUseSettings(browser="safari"),
+        ["chatgpt", "grok", "gemini"],
+        {
+            "chatgpt": {"selection_key": "chatgpt-latest-extra-high"},
+            "grok": {"selection_key": "grok-auto"},
+            "gemini": {"selection_key": "gemini-3.1-pro"},
+        },
+    )
+
+    assert len(created) == 1
+    assert sessions == ["chatgpt", "grok", "gemini"]
+    assert [item["platform"] for item in results] == ["chatgpt", "grok", "gemini"]
+    assert [item["logged_in"] for item in results] == [True, True, False]
+    assert "Gemini composer is unavailable" in results[2]["message"]
+    assert transport.events.count("open:safari-context") == 1
+    assert transport.events.count("new:safari-page") == 2
+    assert transport.events.count("close:safari-context") == 1
+    assert transport.submissions == []
+
+
+def test_safari_account_check_fails_closed_when_its_window_cannot_close(
+    monkeypatch,
+):
+    pages = [object(), object(), object()]
+
+    class SafariContext:
+        def __init__(self, initial_url, *, lock_blocking):
+            assert initial_url == "about:blank"
+            assert lock_blocking is False
+            self.primary_page = pages[0]
+            self.page_count = 1
+
+        def __enter__(self):
+            return self
+
+        def new_page(self):
+            page = pages[self.page_count]
+            self.page_count += 1
+            return page
+
+        def __exit__(self, exc_type, exc, traceback):
+            raise RuntimeError("simulated cleanup failure")
+
+    monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    monkeypatch.setattr(jury, "SafariContext", SafariContext)
+    monkeypatch.setattr(
+        jury,
+        "jury_browser_login_check",
+        lambda settings, platform, **_kwargs: {
+            "platform": platform,
+            "browser": settings.browser,
+            "logged_in": True,
+            "message": "Signed in",
+        },
+    )
+
+    results = jury.jury_safari_account_check(
+        ComputerUseSettings(browser="safari"),
+        ["chatgpt", "grok", "gemini"],
+        {
+            "chatgpt": {"selection_key": "chatgpt-latest-extra-high"},
+            "grok": {"selection_key": "grok-auto"},
+            "gemini": {"selection_key": "gemini-3.1-pro"},
+        },
+    )
+
+    assert [item["logged_in"] for item in results] == [False, False, False]
+    assert all("simulated cleanup failure" in item["message"] for item in results)
+
+
 def test_safari_login_check_uses_an_owned_safari_page_without_edge_fallback(
     transport,
     monkeypatch,
@@ -496,7 +624,7 @@ def test_unsupported_browser_is_rejected_without_launch(transport):
     assert transport.events == []
 
 
-@pytest.mark.parametrize("platform", ["chatgpt", "grok", "gemini", "claude"])
+@pytest.mark.parametrize("platform", ["chatgpt", "grok", "gemini"])
 def test_safari_jurors_use_the_injected_owned_page_without_chromium_fallback(
     transport,
     platform,
@@ -516,7 +644,7 @@ def test_safari_jurors_use_the_injected_owned_page_without_chromium_fallback(
     assert transport.browser_kinds[-2:] == [("select", "safari"), ("submit", "safari")]
 
 
-def test_safari_ask_holds_one_native_focus_lease_for_the_turn(transport, monkeypatch):
+def test_safari_ask_releases_native_focus_before_response_polling(transport, monkeypatch):
     monkeypatch.setattr(jury, "is_macos_host", lambda: True)
     lease = []
 
@@ -528,8 +656,13 @@ def test_safari_ask_holds_one_native_focus_lease_for_the_turn(transport, monkeyp
         finally:
             lease.append("restore")
 
+    def submit(*_args, **_kwargs):
+        lease.append("poll")
+        return "Verified response 1"
+
     transport.page.native_input_transaction = transaction
     transport.page.wake_for_javascript = lambda: lease.append("wake")
+    monkeypatch.setattr(jury.web_agent, "_submit_and_wait", submit)
     with jury.JuryBrowserSession(
         ComputerUseSettings(browser="safari"),
         "chatgpt",
@@ -537,15 +670,32 @@ def test_safari_ask_holds_one_native_focus_lease_for_the_turn(transport, monkeyp
     ) as session:
         session.ask("Fact-check the claim.")
 
-    assert lease == ["focus", "wake", "restore"]
+    assert lease == ["poll"]
+    assert "wake" not in lease
 
 
-def test_claude_auto_accepts_the_verified_current_provider_model(transport, monkeypatch):
+def test_safari_rejects_claude_before_opening_a_page(transport, monkeypatch):
     monkeypatch.setattr(jury, "is_macos_host", lambda: True)
+    with pytest.raises(ValueError, match="ChatGPT, Grok, and Gemini"):
+        jury.JuryBrowserSession(
+            ComputerUseSettings(browser="safari"),
+            "claude",
+            browser_page=transport.page,
+        )
+    with pytest.raises(ValueError, match="ChatGPT, Grok, and Gemini"):
+        jury.jury_browser_login_check(
+            ComputerUseSettings(browser="safari"),
+            "claude",
+            browser_page=transport.page,
+        )
+    assert transport.events == []
+    assert transport.submissions == []
+
+
+def test_claude_auto_accepts_the_verified_current_provider_model(transport):
     with jury.JuryBrowserSession(
-        ComputerUseSettings(browser="safari"),
+        ComputerUseSettings(browser="edge"),
         "claude",
-        browser_page=transport.page,
     ):
         pass
 

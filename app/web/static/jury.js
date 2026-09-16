@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.1 */
+/* Code version: v1.3.1-codex.1 */
 (() => {
     "use strict";
     const root = document.querySelector("[data-jury-root]");
@@ -21,6 +21,7 @@
     const browserTrigger = find("browser-trigger");
     const browserMenu = find("browser-menu");
     const providerLabels = {chatgpt: "ChatGPT", grok: "Grok", gemini: "Gemini", claude: "Claude"};
+    const safariJurorKeys = new Set(["chatgpt", "grok", "gemini"]);
     const runtimePreferencesStorageKey = "cachelikes:jury-runtime-preferences:v1";
     const runtimePreferencesVersion = 1;
     let browser = root.dataset.juryBrowser;
@@ -41,7 +42,9 @@
     let modelMenuPositionFrame = 0;
     let sidebarTransitioning = false;
 
-    const selectedProviders = () => providerInputs.filter((input) => input.checked).map((input) => input.value);
+    const selectedProviders = () => providerInputs
+        .filter((input) => input.checked && safariJurorAllowed(input.value))
+        .map((input) => input.value);
     const selectedModels = () => Object.fromEntries(modelPickers
         .filter((picker) => selectedProviders().includes(picker.provider))
         .map((picker) => [picker.provider, picker.input.value]));
@@ -89,13 +92,33 @@
         find("run-spinner").hidden = !isRunning();
     }
 
+    function safariJurorAllowed(key) {
+        return browser !== "safari" || safariJurorKeys.has(key);
+    }
+
+    function syncSafariJurors() {
+        providerInputs.forEach((input) => {
+            const row = input.closest("[data-jury-provider-row]");
+            const supported = safariJurorAllowed(input.value);
+            if (row instanceof HTMLElement) row.hidden = !supported;
+            if (!supported) {
+                const picker = modelPickers.find((item) => item.provider === input.value);
+                if (picker) closeModelMenu(picker);
+                if (!sessionId && input.checked) input.checked = false;
+            }
+        });
+    }
+
     function syncControls() {
         const locked = busy || Boolean(sessionId);
-        providerInputs.forEach((input) => { input.disabled = locked; });
+        providerInputs.forEach((input) => {
+            input.disabled = locked || !safariJurorAllowed(input.value);
+        });
         modelPickers.forEach((picker) => {
-            picker.input.disabled = locked;
-            picker.trigger.disabled = locked;
-            if (locked) closeModelMenu(picker);
+            const blocked = locked || !safariJurorAllowed(picker.provider);
+            picker.input.disabled = blocked;
+            picker.trigger.disabled = blocked;
+            if (blocked) closeModelMenu(picker);
         });
         browserTrigger.disabled = locked;
         prompt.disabled = locked;
@@ -422,6 +445,7 @@
         selectionGeneration += 1;
         sessionId = "";
         snapshot = {};
+        syncSafariJurors();
         window.clearTimeout(pollTimer);
         prompt.value = "";
         find("introduction").hidden = false;
@@ -617,6 +641,7 @@
         }
         const juryLink = root.querySelector('.agent-mode-control a[href^="/jury/"]');
         if (juryLink) juryLink.setAttribute("href", "/jury/" + value);
+        syncSafariJurors();
     }
 
     function readRuntimePreferences() {
@@ -651,8 +676,14 @@
             setBrowser(remembered.browser);
         }
         if (Array.isArray(remembered.providers)) {
-            const allowed = new Set(providerInputs.map((input) => input.value));
-            const selected = new Set(remembered.providers.filter((provider) => allowed.has(provider)));
+            const allowed = new Set(
+                providerInputs
+                    .map((input) => input.value)
+                    .filter((value) => safariJurorAllowed(value)),
+            );
+            const selected = new Set(
+                remembered.providers.filter((provider) => allowed.has(provider)),
+            );
             providerInputs.forEach((input) => { input.checked = selected.has(input.value); });
         }
         if (remembered.models && typeof remembered.models === "object" && !Array.isArray(remembered.models)) {
@@ -661,6 +692,7 @@
                 if (typeof model === "string") setModel(picker.provider, model);
             });
         }
+        syncSafariJurors();
         rememberRuntimePreferences();
         updateLocation();
     }
@@ -729,6 +761,7 @@
     window.visualViewport?.addEventListener("scroll", scheduleModelMenuPosition);
     document.fonts?.ready.then(scheduleModelMenuPosition);
     providerInputs.forEach((input) => input.addEventListener("change", () => {
+        if (!safariJurorAllowed(input.value)) input.checked = false;
         rememberRuntimePreferences();
         resetAccountCheck();
     }));
@@ -809,6 +842,7 @@
     });
     const initialSession = new URL(window.location.href).searchParams.get("session_id");
     if (!initialSession) restoreRuntimePreferences();
+    syncSafariJurors();
     loadSessions();
     if (initialSession) selectSession(initialSession);
     else resetAccountCheck();

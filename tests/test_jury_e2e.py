@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.2.0-codex.1
+Code version: v1.3.1-codex.1
 """
 
 from copy import deepcopy
@@ -209,17 +209,12 @@ def test_jury_runtime_preferences_restore_without_account_probe(
         ):
             page.locator(f'[data-jury-model-trigger="{provider}"]').click()
             page.locator(f'[data-jury-model-option="{model}"]').click()
-        target_key = (
-            "safari"
-            if page.locator('[data-jury-browser-option="safari"]').count()
-            else "edge"
-        )
         page.locator("[data-jury-browser-trigger]").click()
-        page.locator(f'[data-jury-browser-option="{target_key}"]').click()
+        page.locator('[data-jury-browser-option="edge"]').click()
 
         expected = {
             "version": 1,
-            "browser": target_key,
+            "browser": "edge",
             "providers": ["chatgpt", "claude"],
             "models": {
                 "chatgpt": "chatgpt-latest-medium",
@@ -234,13 +229,13 @@ def test_jury_runtime_preferences_restore_without_account_probe(
         ) == expected
         expect(page.locator('[aria-label="Agent modes"] a').first).to_have_attribute(
             "href",
-            re.compile(rf"^/agent/{target_key}/"),
+            re.compile(r"^/agent/edge/"),
         )
         expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
         assert checks == []
 
         page.goto(f"{sidebar_server_url}/jury/edge", wait_until="domcontentloaded")
-        expect(page).to_have_url(f"{sidebar_server_url}/jury/{target_key}")
+        expect(page).to_have_url(f"{sidebar_server_url}/jury/edge")
         assert page.locator("[data-jury-provider]:checked").evaluate_all(
             "inputs => inputs.map(input => input.value)"
         ) == ["chatgpt", "claude"]
@@ -643,7 +638,137 @@ def test_jury_mode_link_switches_into_and_out_of_safari_without_account_probe(
         page.locator('[data-jury-browser-option="safari"]').click()
         expect(page).to_have_url(f"{sidebar_server_url}/jury/safari")
         expect(agentic).to_have_attribute("href", re.compile(r"^/agent/safari/"))
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_hidden()
+        expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
+        expect(page.locator('[data-jury-provider][value="claude"]')).to_be_disabled()
         assert checks == []
+    finally:
+        context.close()
+
+
+def test_safari_jury_hides_claude_and_migrates_stale_preferences(
+    jury_browser,
+    sidebar_server_url,
+):
+    checks = []
+    page, context = open_jury(jury_browser, sidebar_server_url, 1007, checks, height=1232)
+    storage_key = "cachelikes:jury-runtime-preferences:v1"
+    try:
+        if not page.locator('[data-jury-browser-option="safari"]').count():
+            pytest.skip("Safari Jury is not exposed on this host.")
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_visible()
+        page.locator('label[for="jury_provider_claude"]').click()
+        expect(page.locator('[data-jury-provider][value="claude"]')).to_be_checked()
+
+        page.locator("[data-jury-browser-trigger]").click()
+        page.locator('[data-jury-browser-option="safari"]').click()
+        expect(page).to_have_url(f"{sidebar_server_url}/jury/safari")
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_hidden()
+        expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
+        expect(page.locator('[data-jury-provider][value="claude"]')).to_be_disabled()
+        remembered = page.evaluate(
+            "key => JSON.parse(window.localStorage.getItem(key))",
+            storage_key,
+        )
+        assert remembered["browser"] == "safari"
+        assert "claude" not in remembered["providers"]
+        assert checks == []
+
+        page.evaluate(
+            """({key, value}) => window.localStorage.setItem(key, JSON.stringify(value))""",
+            {
+                "key": storage_key,
+                "value": {
+                    "version": 1,
+                    "browser": "safari",
+                    "providers": ["chatgpt", "claude"],
+                    "models": {
+                        "chatgpt": "chatgpt-latest-medium",
+                        "grok": "grok-auto",
+                        "gemini": "gemini-3.1-pro",
+                        "claude": "claude-auto",
+                    },
+                },
+            },
+        )
+        page.goto(f"{sidebar_server_url}/jury/safari", wait_until="domcontentloaded")
+        expect(page).to_have_url(f"{sidebar_server_url}/jury/safari")
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_hidden()
+        expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
+        expect(page.locator('[data-jury-provider][value="chatgpt"]')).to_be_checked()
+        migrated = page.evaluate(
+            "key => JSON.parse(window.localStorage.getItem(key))",
+            storage_key,
+        )
+        assert migrated["browser"] == "safari"
+        assert migrated["providers"] == ["chatgpt"]
+        assert "claude" not in migrated["providers"]
+        assert checks == []
+
+        page.locator("[data-jury-browser-trigger]").click()
+        page.locator('[data-jury-browser-option="edge"]').click()
+        expect(page).to_have_url(f"{sidebar_server_url}/jury/edge")
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_visible()
+        expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
+        expect(page.locator('[data-jury-provider][value="claude"]')).to_be_enabled()
+    finally:
+        context.close()
+
+
+def test_new_session_drops_hidden_claude_from_a_legacy_safari_record(
+    jury_browser,
+    sidebar_server_url,
+):
+    checks = []
+    context = jury_browser.new_context(
+        viewport={"width": 1007, "height": 1232},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    legacy = session_payload(
+        running=False,
+        phase="failed",
+        providers=("chatgpt", "grok", "gemini", "claude"),
+    )
+    legacy.update(session_id="legacy-safari-four", browser="safari")
+    summary = {
+        "session_id": legacy["session_id"],
+        "title": "Legacy Safari Jury",
+        "phase": "failed",
+        "running": False,
+    }
+    page.route(
+        "**/api/jury/check",
+        lambda route: account_check(route, checks),
+    )
+    page.route(
+        "**/api/jury/sessions**",
+        lambda route: route.fulfill(json={"sessions": [summary]}),
+    )
+    page.route(
+        "**/api/jury/status?**",
+        lambda route: route.fulfill(json=legacy),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/jury/safari")
+        if not page.locator('[data-jury-browser-option="safari"]').count():
+            pytest.skip("Safari Jury is not exposed on this host.")
+        page.get_by_role("button", name="Legacy Safari Jury").click()
+        expect(page.locator('[data-jury-provider-row="claude"]')).to_be_hidden()
+        expect(page.locator('[data-jury-provider][value="claude"]')).to_be_checked()
+
+        page.locator("[data-jury-new-session]").click()
+        expect(page.locator('[data-jury-provider][value="claude"]')).not_to_be_checked()
+        page.locator("[data-jury-check]").click()
+        expect(page.locator("[data-jury-check-label]")).to_have_text(
+            "All selected signed in"
+        )
+        expect(page.locator("[data-jury-ready-check]")).to_be_visible()
+
+        assert len(checks) == 1
+        assert checks[0]["browser"] == "safari"
+        assert checks[0]["providers"] == ["chatgpt", "grok", "gemini"]
+        assert "claude" not in checks[0]["models"]
     finally:
         context.close()
 

@@ -1,6 +1,6 @@
 """Jury deliberation boundaries with deterministic, browser-free jurors.
 
-Code version: v1.5.0-codex.1
+Code version: v1.7.0-codex.1
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from concurrent.futures import Future
 import json
-from threading import Barrier, Event, Lock, get_ident
+from threading import Barrier, Event, Lock, Thread, get_ident
 import time
 
 import pytest
@@ -18,6 +18,7 @@ from app.core.computer_use_agent import ComputerUseSettings
 from app.core.config import CrawlConfig
 from app.core.jury import (
     DEFAULT_JURORS,
+    SAFARI_JURY_PROVIDERS,
     JuryService,
     build_candidate,
     deliberation_signature,
@@ -130,7 +131,12 @@ def complete(service, providers=None, max_rounds=None, models=None):
 
 def test_default_jurors_keep_claude_available_but_unselected():
     assert DEFAULT_JURORS == ("chatgpt", "grok", "gemini")
+    assert SAFARI_JURY_PROVIDERS == frozenset(DEFAULT_JURORS)
     assert validate_selection("edge", ["chatgpt", "claude"]) == ("edge", ["chatgpt", "claude"])
+    assert validate_selection("chrome", ["chatgpt", "grok", "gemini", "claude"]) == (
+        "chrome",
+        ["chatgpt", "grok", "gemini", "claude"],
+    )
     defaults = validate_model_selections(list(DEFAULT_JURORS), None)
     assert {key: value["selection_key"] for key, value in defaults.items()} == {
         "chatgpt": "chatgpt-latest-extra-high",
@@ -156,6 +162,54 @@ def test_safari_selection_is_admitted_only_when_the_host_exposes_it(monkeypatch)
     )
     with pytest.raises(ValueError, match="supported browser"):
         validate_selection("safari", ["chatgpt", "grok"])
+
+
+def test_safari_rejects_claude_while_edge_and_chrome_keep_it(monkeypatch):
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "chrome"}, {"key": "safari"}),
+    )
+    with pytest.raises(ValueError, match="ChatGPT, Grok, and Gemini"):
+        validate_selection("safari", ["chatgpt", "claude"])
+    with pytest.raises(ValueError, match="ChatGPT, Grok, and Gemini"):
+        validate_selection("safari", ["chatgpt", "grok", "gemini", "claude"])
+    assert validate_selection("safari", ["chatgpt", "grok", "gemini"]) == (
+        "safari",
+        ["chatgpt", "grok", "gemini"],
+    )
+    assert validate_selection("edge", ["chatgpt", "claude"])[1] == ["chatgpt", "claude"]
+    assert validate_selection("chrome", ["grok", "claude"])[1] == ["grok", "claude"]
+
+
+def test_safari_check_and_start_reject_claude_before_browser_activity(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    probed = []
+
+    def probe(*_args, **_kwargs):
+        probed.append("probed")
+        return {"logged_in": True}
+
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "safari-claude",
+        session_factory=FakeBrowserFactory(),
+        login_check=probe,
+    )
+    with pytest.raises(ValueError, match="ChatGPT, Grok, and Gemini"):
+        service.check("safari", ["chatgpt", "claude"])
+    with pytest.raises(ValueError, match="ChatGPT, Grok, and Gemini"):
+        service.start("safari", ["chatgpt", "claude"], "Do not send this.")
+    assert probed == []
+    assert service.records == {}
 
 
 def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
@@ -219,6 +273,11 @@ def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
         "browser_options_for_host",
         lambda: ({"key": "edge"}, {"key": "safari"}),
     )
+    monkeypatch.setattr(
+        safari_automation,
+        "verify_safari_context_cleanup_ready",
+        lambda: None,
+    )
     monkeypatch.setattr(safari_automation, "SafariContext", SafariContext)
     monkeypatch.setattr(jury_browser, "JuryBrowserSession", SafariSession)
     service = JuryService(
@@ -243,6 +302,15 @@ def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
     assert final["phase"] == "consensus"
     assert events.count("open:safari-context") == 1
     assert events.count("new:safari-page") == 2
+    assert {
+        (opinion["provider"], opinion["conversation_url"])
+        for round_record in final["rounds"]
+        for opinion in round_record["opinions"]
+    } == {
+        ("chatgpt", "https://chatgpt.example/conversation/safari"),
+        ("grok", "https://grok.example/conversation/safari"),
+        ("gemini", "https://gemini.example/conversation/safari"),
+    }
     assert [event for event in events if event.startswith("ask:")] == [
         "ask:chatgpt:1",
         "ask:grok:1",
@@ -288,6 +356,474 @@ def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
     assert next(
         item for item in failed["providers"] if item["key"] == "grok"
     )["status"] == "failed"
+    assert events.count("open:safari-context") == 1
+    assert events.count("close:safari-context") == 1
+    assert not any("edge" in event for event in events)
+
+
+def test_safari_account_check_uses_one_context_three_tabs_and_keeps_collecting(
+    tmp_path,
+    monkeypatch,
+):
+    from app.core import jury_browser, safari_automation
+
+    events = []
+    contexts = []
+
+    class SafariContext:
+        def __init__(self, initial_url, *, lock_blocking):
+            assert initial_url == "about:blank"
+            assert lock_blocking is False
+            self.primary_page = object()
+            contexts.append(self)
+
+        def __enter__(self):
+            events.append("open:safari-context")
+            return self
+
+        def new_page(self):
+            events.append("new:safari-page")
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("close:safari-context")
+
+    class SafariSession:
+        def __init__(self, settings, platform, stop=None, **kwargs):
+            assert settings.browser == "safari"
+            assert kwargs["browser_page"] is not None
+            assert kwargs.get("on_conversation") is None
+            self.platform = platform
+
+        def __enter__(self):
+            events.append(f"open:{self.platform}")
+            if self.platform == "grok":
+                raise RuntimeError("Grok composer is unavailable.")
+            return self
+
+        def ask(self, prompt, *, timeout_seconds=None):
+            raise AssertionError("Safari account check must not send a prompt.")
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append(f"close:{self.platform}")
+
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    monkeypatch.setattr(
+        safari_automation,
+        "verify_safari_context_cleanup_ready",
+        lambda: None,
+    )
+    monkeypatch.setattr(jury_browser, "SafariContext", SafariContext)
+    monkeypatch.setattr(jury_browser, "JuryBrowserSession", SafariSession)
+    monkeypatch.setattr(
+        jury_browser,
+        "launch_chromium_context",
+        lambda *_args, **_kwargs: pytest.fail("Safari Jury must not fall back to Edge."),
+    )
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "safari-check",
+    )
+    checked = service.check("safari", ["chatgpt", "grok", "gemini"])
+
+    assert len(contexts) == 1
+    assert events.count("open:safari-context") == 1
+    assert events.count("new:safari-page") == 2
+    assert events.count("close:safari-context") == 1
+    assert [event for event in events if event.startswith("open:") and event != "open:safari-context"] == [
+        "open:chatgpt",
+        "open:grok",
+        "open:gemini",
+    ]
+    assert checked["ready"] is False
+    assert [item["key"] for item in checked["providers"]] == ["chatgpt", "grok", "gemini"]
+    by_key = {item["key"]: item for item in checked["providers"]}
+    assert by_key["chatgpt"]["ready"] is True
+    assert by_key["gemini"]["ready"] is True
+    assert by_key["grok"]["ready"] is False
+    assert "Grok composer is unavailable" in by_key["grok"]["message"]
+    assert "ask:" not in "".join(events)
+    assert not any("edge" in event for event in events)
+
+
+def test_safari_owned_window_closes_after_unavailable_jurors_and_stop(
+    tmp_path,
+    monkeypatch,
+):
+    from app.core import jury_browser, safari_automation
+
+    events = []
+    entered = Event()
+
+    class SafariContext:
+        def __init__(self, initial_url, *, lock_blocking):
+            assert lock_blocking is False
+            self.primary_page = object()
+
+        def __enter__(self):
+            events.append("open:safari-context")
+            return self
+
+        def new_page(self):
+            events.append("new:safari-page")
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("close:safari-context")
+
+    class UnavailableSession:
+        def __init__(self, settings, platform, stop, **kwargs):
+            assert settings.browser == "safari"
+            self.platform = platform
+
+        def __enter__(self):
+            events.append(f"open:{self.platform}")
+            raise RuntimeError(f"{self.platform} composer is unavailable.")
+
+        def ask(self, prompt, *, timeout_seconds=None):
+            raise AssertionError("Unavailable Safari jurors must not receive a prompt.")
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append(f"close:{self.platform}")
+
+    class StoppableSession:
+        def __init__(self, settings, platform, stop, **kwargs):
+            assert settings.browser == "safari"
+            self.platform = platform
+            self.stop = stop
+            self.on_conversation = kwargs["on_conversation"]
+            self.conversation_url = f"https://{platform}.example/conversation/safari"
+
+        def __enter__(self):
+            events.append(f"open:{self.platform}")
+            return self
+
+        def ask(self, prompt, *, timeout_seconds=None):
+            events.append(f"ask:{self.platform}")
+            entered.set()
+            assert self.stop.wait(5)
+            raise RuntimeError("The jury was stopped.")
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append(f"close:{self.platform}")
+
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    monkeypatch.setattr(
+        safari_automation,
+        "verify_safari_context_cleanup_ready",
+        lambda: None,
+    )
+    monkeypatch.setattr(safari_automation, "SafariContext", SafariContext)
+    monkeypatch.setattr(jury_browser, "SafariContext", SafariContext)
+    monkeypatch.setattr(jury_browser, "JuryBrowserSession", UnavailableSession)
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "safari-unavailable",
+    )
+    try:
+        session_id = service.start(
+            "safari",
+            ["chatgpt", "grok"],
+            "Do not send this.",
+        )["session_id"]
+        wait_until(lambda: not service.status(session_id)["running"])
+        failed = service.status(session_id)
+    finally:
+        service.stop_at_exit()
+
+    assert failed["phase"] == "failed"
+    assert events.count("open:safari-context") == 1
+    assert events.count("close:safari-context") == 1
+    assert not any(event.startswith("ask:") for event in events)
+
+    events.clear()
+    monkeypatch.setattr(jury_browser, "JuryBrowserSession", StoppableSession)
+    stopped_service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "safari-stop",
+    )
+    try:
+        stopped_id = stopped_service.start(
+            "safari",
+            ["chatgpt", "grok"],
+            "Stop before the first vote.",
+        )["session_id"]
+        assert entered.wait(5)
+        stopped_service.stop(stopped_id)
+        wait_until(lambda: not stopped_service.status(stopped_id)["running"])
+        stopped = stopped_service.status(stopped_id)
+    finally:
+        stopped_service.stop_at_exit()
+
+    assert stopped["phase"] == "stopped"
+    assert events.count("open:safari-context") == 1
+    assert events.count("close:safari-context") == 1
+    assert events[-1] == "close:safari-context"
+
+
+def test_safari_cleanup_failure_blocks_a_second_jury_before_window_creation(
+    tmp_path,
+    monkeypatch,
+):
+    from app.core import jury_browser, safari_automation
+
+    events = []
+    cleanup_checks = iter((None, RuntimeError("previous Jury window is still open")))
+
+    def verify_cleanup_ready():
+        outcome = next(cleanup_checks)
+        if isinstance(outcome, BaseException):
+            raise outcome
+
+    class SafariContext:
+        def __init__(self, initial_url, *, lock_blocking):
+            assert initial_url == "about:blank"
+            assert lock_blocking is False
+            self.primary_page = object()
+
+        def __enter__(self):
+            events.append("open:safari-context")
+            return self
+
+        def new_page(self):
+            events.append("new:safari-page")
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("failed-close:safari-context")
+            raise RuntimeError("simulated Safari cleanup failure")
+
+    class UnavailableSession:
+        def __init__(self, settings, platform, stop, **_kwargs):
+            assert settings.browser == "safari"
+            self.platform = platform
+
+        def __enter__(self):
+            raise RuntimeError(f"{self.platform} composer is unavailable.")
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    monkeypatch.setattr(safari_automation, "SafariContext", SafariContext)
+    monkeypatch.setattr(jury_browser, "JuryBrowserSession", UnavailableSession)
+    monkeypatch.setattr(
+        safari_automation,
+        "verify_safari_context_cleanup_ready",
+        verify_cleanup_ready,
+    )
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "safari-cleanup-failure",
+    )
+    try:
+        session_id = service.start(
+            "safari",
+            ["chatgpt", "grok"],
+            "Do not send this.",
+        )["session_id"]
+        wait_until(lambda: not service.status(session_id)["running"])
+        failed = service.status(session_id)
+
+        with pytest.raises(RuntimeError, match="previous Jury window"):
+            service.start(
+                "safari",
+                ["chatgpt", "grok"],
+                "Do not create a second task window.",
+            )
+    finally:
+        service.stop_at_exit()
+
+    assert failed["phase"] == "failed"
+    assert failed["resource_cleanup_pending"] is True
+    assert failed["safari_cleanup_pending"] is True
+    assert "simulated Safari cleanup failure" in failed["resource_cleanup_warning"]
+    assert events.count("open:safari-context") == 1
+    assert len(service.records) == 1
+
+
+def test_service_exit_waits_for_active_safari_window_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    from app.core import jury_browser, safari_automation
+
+    events = []
+    entered = Event()
+
+    class SafariContext:
+        def __init__(self, initial_url, *, lock_blocking):
+            assert initial_url == "about:blank"
+            assert lock_blocking is False
+            self.primary_page = object()
+
+        def __enter__(self):
+            events.append("open:safari-context")
+            return self
+
+        def new_page(self):
+            events.append("new:safari-page")
+            return object()
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("close:safari-context")
+
+    class StoppableSession:
+        def __init__(self, settings, platform, stop, **kwargs):
+            assert settings.browser == "safari"
+            self.platform = platform
+            self.stop = stop
+            self.conversation_url = ""
+
+        def __enter__(self):
+            events.append(f"open:{self.platform}")
+            return self
+
+        def ask(self, prompt, *, timeout_seconds=None):
+            events.append(f"ask:{self.platform}")
+            entered.set()
+            assert self.stop.wait(5)
+            raise RuntimeError("The service is exiting.")
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append(f"close:{self.platform}")
+
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    monkeypatch.setattr(
+        safari_automation,
+        "verify_safari_context_cleanup_ready",
+        lambda: None,
+    )
+    monkeypatch.setattr(safari_automation, "SafariContext", SafariContext)
+    monkeypatch.setattr(jury_browser, "JuryBrowserSession", StoppableSession)
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "safari-exit",
+    )
+    session_id = service.start(
+        "safari",
+        ["chatgpt", "grok"],
+        "Stop during the first vote.",
+    )["session_id"]
+    assert entered.wait(5)
+
+    service.stop_at_exit()
+
+    final = service.status(session_id)
+    assert final["running"] is False
+    assert final["phase"] == "interrupted"
+    assert final["termination_reason"] == "service_shutdown"
+    assert events.count("open:safari-context") == 1
+    assert events.count("close:safari-context") == 1
+    assert events[-1] == "close:safari-context"
+
+
+def test_service_exit_closes_admission_and_waits_for_safari_account_check(
+    tmp_path,
+    monkeypatch,
+):
+    from app.core import jury_browser, safari_automation
+
+    entered = Event()
+    canceled = Event()
+    release = Event()
+    check_finished = Event()
+    shutdown_finished = Event()
+    check_results = []
+
+    def safari_check(settings, providers, selections, *, config, stop_event):
+        assert settings.browser == "safari"
+        assert providers == ["chatgpt", "grok", "gemini"]
+        assert set(selections) == set(providers)
+        assert config is not None
+        entered.set()
+        assert stop_event.wait(5)
+        canceled.set()
+        assert release.wait(5)
+        return [
+            {
+                "platform": provider,
+                "logged_in": False,
+                "message": "Jury shutdown canceled the account check.",
+            }
+            for provider in providers
+        ]
+
+    monkeypatch.setattr(
+        jury_module,
+        "browser_options_for_host",
+        lambda: ({"key": "edge"}, {"key": "safari"}),
+    )
+    monkeypatch.setattr(
+        safari_automation,
+        "verify_safari_context_cleanup_ready",
+        lambda: None,
+    )
+    monkeypatch.setattr(jury_browser, "jury_safari_account_check", safari_check)
+    service = JuryService(
+        lambda: ComputerUseSettings(browser="edge"),
+        CrawlConfig,
+        tmp_path / "safari-check-shutdown",
+        session_factory=FakeBrowserFactory(),
+    )
+
+    def run_check():
+        try:
+            check_results.append(
+                service.check("safari", ["chatgpt", "grok", "gemini"])
+            )
+        finally:
+            check_finished.set()
+
+    def run_shutdown():
+        try:
+            service.stop_at_exit()
+        finally:
+            shutdown_finished.set()
+
+    check_thread = Thread(target=run_check)
+    shutdown_thread = Thread(target=run_shutdown)
+    check_thread.start()
+    assert entered.wait(5)
+    shutdown_thread.start()
+    try:
+        assert canceled.wait(5)
+        assert shutdown_finished.is_set() is False
+        with pytest.raises(RuntimeError, match="shutting down"):
+            service.check("edge", ["chatgpt", "grok"])
+        with pytest.raises(RuntimeError, match="shutting down"):
+            service.start("edge", ["chatgpt", "grok"], "Do not start.")
+    finally:
+        release.set()
+    check_thread.join(timeout=5)
+    shutdown_thread.join(timeout=5)
+
+    assert check_finished.is_set()
+    assert shutdown_finished.is_set()
+    assert check_results[0]["ready"] is False
+    assert service._active_account_checks == {}
+    assert service.records == {}
 
 
 def test_selected_model_tiers_are_persisted_and_given_to_each_single_worker(service_factory):
@@ -822,18 +1358,35 @@ def test_service_shutdown_during_readiness_failure_remains_interrupted(service_f
     session_id = service.start("edge", ["chatgpt", "grok"], "Check the claim.")[
         "session_id"
     ]
+    shutdown_finished = Event()
+
+    def shutdown_service():
+        try:
+            service.stop_at_exit()
+        finally:
+            shutdown_finished.set()
+
+    shutdown_thread = Thread(target=shutdown_service)
     try:
         assert entered.wait(5)
-        service.stop_at_exit()
+        shutdown_thread.start()
+        wait_until(lambda: service._shutdown_started)
+        assert shutdown_finished.is_set() is False
     finally:
         released.set()
+    shutdown_thread.join(timeout=5)
+    assert shutdown_finished.is_set()
     wait_until(lambda: not service.status(session_id)["running"])
     final = service.status(session_id)
     assert final["phase"] == "interrupted"
     assert final["termination_reason"] == "service_shutdown"
 
 
-def test_reload_preserves_completed_and_interrupted_juries_without_resending(service_factory, tmp_path):
+def test_reload_preserves_completed_and_interrupted_juries_without_resending(
+    service_factory,
+    tmp_path,
+    monkeypatch,
+):
     root = tmp_path / "durable"
     final = complete(service_factory(root=root))
     interrupted_id = "a" * 32
@@ -859,6 +1412,20 @@ def test_reload_preserves_completed_and_interrupted_juries_without_resending(ser
     (root / f"{cleanup_id}.json").write_text(
         json.dumps(cleanup_pending), encoding="utf-8",
     )
+    safari_cleanup_id = "c" * 32
+    safari_cleanup_pending = {
+        **final,
+        "session_id": safari_cleanup_id,
+        "browser": "safari",
+        "running": True,
+        "phase": "consensus",
+        "resource_cleanup_pending": True,
+        "safari_cleanup_pending": True,
+        "safari_cleanup_owner_pid": 123,
+    }
+    (root / f"{safari_cleanup_id}.json").write_text(
+        json.dumps(safari_cleanup_pending), encoding="utf-8",
+    )
     poison = FakeBrowserFactory(lambda *args: pytest.fail("Reload must not send provider messages."))
     restored = service_factory(poison, root=root)
     assert restored.status(final["session_id"])["response"] == final["response"]
@@ -873,6 +1440,22 @@ def test_reload_preserves_completed_and_interrupted_juries_without_resending(ser
     assert recovered_cleanup["consensus"] is True
     assert recovered_cleanup["termination_reason"] == "unanimous_acceptance"
     assert recovered_cleanup["resource_cleanup_pending"] is False
+    recovered_safari_cleanup = restored.status(safari_cleanup_id)
+    assert recovered_safari_cleanup["safari_cleanup_pending"] is True
+    assert recovered_safari_cleanup["resource_cleanup_pending"] is True
+
+    from app.core import safari_automation
+
+    monkeypatch.setattr(
+        safari_automation,
+        "verify_safari_context_cleanup_ready",
+        lambda: None,
+    )
+    restored._require_safari_cleanup_ready()
+    recovered_safari_cleanup = restored.status(safari_cleanup_id)
+    assert recovered_safari_cleanup["safari_cleanup_pending"] is False
+    assert recovered_safari_cleanup["resource_cleanup_pending"] is False
+    assert recovered_safari_cleanup["safari_cleanup_owner_pid"] is None
     assert poison.opened == {}
     assert restored.threads == {}
     snapshot = restored.status(final["session_id"])

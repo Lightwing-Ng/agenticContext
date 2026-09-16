@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.7.0-codex.1
+# Code version: v2.11.0-codex.1
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import base64
 import contextlib
 import json
 import logging
+import os
 import re
 import secrets
 import subprocess
@@ -41,8 +42,15 @@ SAFARI_JAVASCRIPT_ARGUMENT_CHUNK_SIZE = 1_000
 SAFARI_WINDOW_CREATION_LOCK = RLock()
 SAFARI_WINDOW_CREATION_LOCK_PATH = Path(tempfile.gettempdir()) / "cachelikes-safari-window-creation.lock"
 SAFARI_CONTEXT_LOCK_PATH = Path(tempfile.gettempdir()) / "cachelikes-safari-context.lock"
+SAFARI_CONTEXT_LEASE_VERSION = 2
+SAFARI_CONTEXT_LEASE_MAX_BYTES = 4_096
+SAFARI_CONTEXT_CREATION_SETTLE_SECONDS = SAFARI_APPLESCRIPT_TIMEOUT_SECONDS * 2
+SAFARI_CONTEXT_INVENTORY_STABILITY_SECONDS = 0.5
+SAFARI_OWNED_WINDOW_REMAINS_MARKER = "SAFARI_OWNED_WINDOW_REMAINS:"
 SAFARI_NATIVE_INPUT_LOCK = RLock()
 SAFARI_NATIVE_INPUT_LOCK_PATH = Path(tempfile.gettempdir()) / "cachelikes-safari-native-input.lock"
+SAFARI_PENDING_CONTEXT_LOCK = RLock()
+SAFARI_PENDING_CONTEXTS: dict[int, "SafariContext"] = {}
 SAFARI_NATIVE_INPUT_HOSTS = frozenset(
     {
         "chatgpt.com",
@@ -100,8 +108,90 @@ if previousFrontmostProcessName is not "" and previousFrontmostProcessName is no
     end tell
 end if
 """.strip()
+SAFARI_RESTORE_FRONT_WINDOW_IF_TARGET_STILL_FRONT_APPLESCRIPT = """
+set currentFrontmostProcessName to ""
+tell application "System Events"
+    try
+        set currentFrontmostProcessName to name of first application process whose frontmost is true
+    end try
+end tell
+set targetWindowStillFront to false
+if currentFrontmostProcessName is "Safari" then
+    try
+        set targetWindowStillFront to (id of front window) is (id of targetWindow)
+    end try
+end if
+set canRestorePreviousSafariWindow to (currentFrontmostProcessName is not "Safari") or targetWindowStillFront
+if canRestorePreviousSafariWindow and previousWindowId is not 0 and previousWindowWasVisible and not previousWindowWasMiniaturized then
+    try
+        set index of (first window whose id is previousWindowId) to 1
+    end try
+end if
+if targetWindowStillFront and previousFrontmostProcessName is not "" and previousFrontmostProcessName is not "Safari" then
+    tell application "System Events"
+        try
+            set frontmost of process previousFrontmostProcessName to true
+        end try
+    end tell
+end if
+""".strip()
+SAFARI_RESTORE_FRONT_APP_IF_STILL_SAFARI_APPLESCRIPT = """
+set shouldRestoreClosedWindowFocus to false
+tell application "System Events"
+    try
+        set shouldRestoreClosedWindowFocus to (name of first application process whose frontmost is true) is "Safari"
+    end try
+end tell
+if shouldRestoreClosedWindowFocus then
+    if previousWindowId is not 0 and previousWindowWasVisible and not previousWindowWasMiniaturized then
+        try
+            set index of (first window whose id is previousWindowId) to 1
+        end try
+    end if
+    if previousFrontmostProcessName is not "" and previousFrontmostProcessName is not "Safari" then
+        tell application "System Events"
+            try
+                set frontmost of process previousFrontmostProcessName to true
+            end try
+        end tell
+    end if
+end if
+""".strip()
+SAFARI_RESTORE_FRONT_WINDOW_IF_STILL_FOCUSED_APPLESCRIPT = f"""
+set shouldRestoreNativeFocus to false
+tell application "System Events"
+    try
+        set shouldRestoreNativeFocus to (name of first application process whose frontmost is true) is "Safari"
+    end try
+end tell
+if shouldRestoreNativeFocus then
+    try
+        set shouldRestoreNativeFocus to (id of front window) is (id of targetWindow)
+    on error
+        set shouldRestoreNativeFocus to false
+    end try
+    if shouldRestoreNativeFocus then
+        try
+            set shouldRestoreNativeFocus to (current tab of targetWindow) is targetTab
+        on error
+            set shouldRestoreNativeFocus to false
+        end try
+    end if
+    if shouldRestoreNativeFocus then
+        try
+            set shouldRestoreNativeFocus to do JavaScript "document.hasFocus()" in targetTab
+        on error
+            set shouldRestoreNativeFocus to false
+        end try
+    end if
+    if shouldRestoreNativeFocus then
+        {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+    end if
+end if
+""".strip()
 SAFARI_BACKGROUND_WINDOW_APPLESCRIPT = (
-    f"{SAFARI_KEEP_WINDOW_AVAILABLE_APPLESCRIPT}\n{SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}"
+    f"{SAFARI_KEEP_WINDOW_AVAILABLE_APPLESCRIPT}\n"
+    f"{SAFARI_RESTORE_FRONT_WINDOW_IF_TARGET_STILL_FRONT_APPLESCRIPT}"
 )
 SAFARI_WAIT_FOR_NATIVE_FOCUS_APPLESCRIPT = f"""
 set current tab of targetWindow to targetTab
@@ -230,6 +320,8 @@ def run_applescript(source: str, *, retry_transient: bool = True) -> str:
         if attempt_index >= retry_limit:
             break
         lowered = last_error.lower()
+        if SAFARI_OWNED_WINDOW_REMAINS_MARKER.lower() in lowered:
+            break
         if not any(
             marker in lowered
             for marker in ("-1712", "-1719", "-609", "-600", "timed out", "connection is invalid")
@@ -237,6 +329,51 @@ def run_applescript(source: str, *, retry_transient: bool = True) -> str:
             break
         time.sleep(SAFARI_APPLESCRIPT_RETRY_DELAY_SECONDS * (attempt_index + 1))
     raise RuntimeError(last_error or "Safari automation failed.")
+
+
+def _safari_window_inventory() -> dict[int, int]:
+    """Return Safari window IDs and tab counts without launching or activating it."""
+    raw = run_applescript(
+        """
+tell application "System Events"
+    set safariIsRunning to exists application process "Safari"
+end tell
+if not safariIsRunning then return "not-running"
+tell application "Safari"
+    set safariWindowRows to {}
+    repeat with candidateWindow in every window
+        set end of safariWindowRows to ((id of candidateWindow) as text) & ":" & ((count of tabs of candidateWindow) as text)
+    end repeat
+end tell
+set previousDelimiters to AppleScript's text item delimiters
+set AppleScript's text item delimiters to linefeed
+set serializedWindowRows to safariWindowRows as text
+set AppleScript's text item delimiters to previousDelimiters
+return "windows:" & serializedWindowRows
+""".strip(),
+        retry_transient=False,
+    ).strip()
+    if raw == "not-running":
+        return {}
+    if not raw.startswith("windows:"):
+        raise RuntimeError("Safari returned an invalid window inventory.")
+    payload = raw.removeprefix("windows:").strip()
+    if not payload:
+        return {}
+    inventory: dict[int, int] = {}
+    for row in payload.splitlines():
+        window_id, separator, tab_count = row.strip().partition(":")
+        if not separator or not window_id.isdigit() or not tab_count.isdigit():
+            raise RuntimeError("Safari returned an invalid window inventory row.")
+        inventory[int(window_id)] = int(tab_count)
+    return inventory
+
+
+def _safari_context_lease_path() -> Path:
+    """Derive durable state beside the separately locked coordination file."""
+    return SAFARI_CONTEXT_LOCK_PATH.with_name(
+        f"{SAFARI_CONTEXT_LOCK_PATH.name}.state"
+    )
 
 
 @contextlib.contextmanager
@@ -1360,53 +1497,7 @@ return pageUrlValue & linefeed & pageStateValue
     return 'ready';
 }})()
 """.strip()
-        restore_after_input = """
-set shouldRestoreNativeFocus to false
-tell application "System Events"
-    try
-        set shouldRestoreNativeFocus to (name of first application process whose frontmost is true) is "Safari"
-    end try
-end tell
-if shouldRestoreNativeFocus then
-    try
-        set shouldRestoreNativeFocus to (id of front window) is (id of targetWindow)
-    on error
-        set shouldRestoreNativeFocus to false
-    end try
-    if shouldRestoreNativeFocus then
-        try
-            set shouldRestoreNativeFocus to (current tab of targetWindow) is targetTab
-        on error
-            set shouldRestoreNativeFocus to false
-        end try
-    end if
-    if shouldRestoreNativeFocus then
-        try
-            set shouldRestoreNativeFocus to do JavaScript "document.hasFocus()" in targetTab
-        on error
-            set shouldRestoreNativeFocus to false
-        end try
-    end if
-    if shouldRestoreNativeFocus then
-        if previousWindowId is not 0 and previousWindowWasVisible and not previousWindowWasMiniaturized then
-            try
-                set index of (first window whose id is previousWindowId) to 1
-            end try
-        end if
-        if previousFrontmostProcessName is not "" and previousFrontmostProcessName is not "Safari" then
-            tell application "System Events"
-                try
-                    set frontmost of process previousFrontmostProcessName to true
-                end try
-            end tell
-        end if
-    end if
-end if
-""".strip()
-        if self._native_input_transaction_depth:
-            restore_after_input = ""
         statement = f"""
-{SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
 {SAFARI_WAIT_FOR_NATIVE_FOCUS_APPLESCRIPT}
 set nativeInputAttempted to false
 try
@@ -1454,21 +1545,14 @@ try
         error "Safari did not deliver a trusted activation event to the marked control."
     end if
 on error errorMessage number errorNumber
-    {restore_after_input}
     if nativeInputAttempted then
         error "SAFARI_NATIVE_INPUT_UNCERTAIN: " & errorMessage number errorNumber
     end if
     error "SAFARI_NATIVE_INPUT_NOT_ATTEMPTED: " & errorMessage number errorNumber
 end try
-{restore_after_input}
 return receiptState
 """.strip()
-        input_guard = (
-            contextlib.nullcontext()
-            if self._native_input_transaction_depth
-            else safari_native_input_guard()
-        )
-        with input_guard:
+        with self.native_input_transaction():
             try:
                 self._run_in_window(statement, retry_transient=False, reveal_tab=True)
             except RuntimeError as exc:
@@ -1491,15 +1575,20 @@ return receiptState
                 ) from exc
 
     def wake_for_javascript(self) -> None:
-        """Bring the owned tab forward so page JavaScript can run, then leave it focused."""
-        self._run_in_window(
-            SAFARI_WAIT_FOR_NATIVE_FOCUS_APPLESCRIPT,
-            reveal_tab=True,
-        )
+        """Briefly activate the owned tab so page JavaScript can run, then restore focus."""
+        with self.native_input_transaction():
+            self._run_in_window(
+                SAFARI_WAIT_FOR_NATIVE_FOCUS_APPLESCRIPT,
+                reveal_tab=True,
+            )
 
     @contextlib.contextmanager
     def native_input_transaction(self):
-        """Keep one owned Safari window focused across a serialized input sequence."""
+        """Hold native Safari focus for one short trusted-input sequence.
+
+        Restoration is skipped when the user has already switched away from the
+        owned Safari tab, so cleanup cannot steal a different foreground app.
+        """
         if self._native_input_transaction_depth:
             self._native_input_transaction_depth += 1
             try:
@@ -1520,20 +1609,41 @@ return previousFrontmostProcessName & linefeed & (previousWindowId as text) & li
             previous_window_id = int(focus_state[1])
             previous_window_visible = focus_state[2].strip().lower() == "true"
             previous_window_miniaturized = focus_state[3].strip().lower() == "true"
-            self._native_input_transaction_depth = 1
-            try:
-                yield
-            finally:
-                self._native_input_transaction_depth = 0
+
+            def restore_native_focus() -> None:
                 self._run_in_window(
                     f"""
 set previousFrontmostProcessName to "{escape_applescript_text(previous_process)}"
 set previousWindowId to {previous_window_id}
 set previousWindowWasVisible to {str(previous_window_visible).lower()}
 set previousWindowWasMiniaturized to {str(previous_window_miniaturized).lower()}
-{SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+{SAFARI_RESTORE_FRONT_WINDOW_IF_STILL_FOCUSED_APPLESCRIPT}
 """.strip()
                 )
+
+            self._native_input_transaction_depth = 1
+            try:
+                yield
+            except BaseException:
+                self._native_input_transaction_depth = 0
+                try:
+                    restore_native_focus()
+                except RuntimeError as restore_error:
+                    logger.error(
+                        "Safari could not restore native focus after input failed: %s",
+                        restore_error,
+                    )
+                raise
+            finally:
+                if self._native_input_transaction_depth:
+                    self._native_input_transaction_depth = 0
+                    try:
+                        restore_native_focus()
+                    except RuntimeError as restore_error:
+                        logger.error(
+                            "Safari could not restore native focus after input completed: %s",
+                            restore_error,
+                        )
 
     def bring_to_front(self) -> None:
         """Bring the owned Safari window forward."""
@@ -1583,10 +1693,9 @@ set previousWindowWasMiniaturized to {str(previous_window_miniaturized).lower()}
                 self.window_id,
                 last_error,
             )
+            raise last_error
         self._closed = True
         self._context._forget_page(self)
-        if last_error is not None:
-            raise last_error
 
     def _close_owned_tab(self) -> RuntimeError | None:
         """Close this tab without activating Safari or closing sibling tabs."""
@@ -1599,10 +1708,10 @@ set previousWindowWasMiniaturized to {str(previous_window_miniaturized).lower()}
 try
     close targetTab
 on error errorMessage number errorNumber
-    {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+    {SAFARI_RESTORE_FRONT_WINDOW_IF_TARGET_STILL_FRONT_APPLESCRIPT}
     error errorMessage number errorNumber
 end try
-{SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+{SAFARI_RESTORE_FRONT_WINDOW_IF_TARGET_STILL_FRONT_APPLESCRIPT}
 return "closed"
 """.strip(),
                     recover_missing=False,
@@ -1630,16 +1739,9 @@ return "closed"
             try:
                 close_state = self._run_in_window(
                     f"""
-{SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
-set index of targetWindow to 1
 try
-    tell application "System Events"
-        tell process "Safari"
-            click button 1 of front window
-        end tell
-    end tell
+    close targetWindow
 on error errorMessage number errorNumber
-    {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
     error errorMessage number errorNumber
 end try
 repeat with closePollIndex from 1 to 20
@@ -1647,13 +1749,13 @@ repeat with closePollIndex from 1 to 20
     delay 0.1
 end repeat
 if exists (first window whose id is {self.window_id}) then
-    {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
     return "still-open"
 end if
-{SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
 return "closed"
 """.strip(),
                     recover_missing=False,
+                    retry_transient=False,
+                    bind_tab=False,
                 ).strip()
                 if close_state == "closed":
                     last_error = None
@@ -1873,13 +1975,15 @@ return "closed"
         recover_missing: bool = True,
         retry_transient: bool = True,
         reveal_tab: bool = False,
+        bind_tab: bool = True,
     ) -> str:
         if self._closed:
             raise RuntimeError("Safari window is already closed.")
+        tab_binding = self._owned_tab_script(reveal=reveal_tab) if bind_tab else ""
         source = f"""
 tell application "Safari"
     set targetWindow to first window whose id is {self.window_id}
-    {self._owned_tab_script(reveal=reveal_tab)}
+    {tab_binding}
     {statement}
 end tell
         """
@@ -1905,7 +2009,275 @@ class SafariContext:
         self.request = SafariRequestClient(self)
         self.request_lock = RLock()
         self.download_lock = RLock()
+        self._close_lock = RLock()
         self._context_lock_handle: Any | None = None
+        self._ownership_token = secrets.token_hex(16)
+        self._creation_baseline_inventory: dict[int, int] = {}
+        self._durable_lease_started = False
+
+    def _read_context_lease_state(self) -> dict[str, Any] | None:
+        """Read the atomically replaced ownership record while its lock is held."""
+        if self._context_lock_handle is None:
+            return {}
+        lease_path = _safari_context_lease_path()
+        try:
+            with lease_path.open(encoding="utf-8") as lease_handle:
+                raw = lease_handle.read(SAFARI_CONTEXT_LEASE_MAX_BYTES + 1)
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError("Safari context ownership state could not be read.") from exc
+        if len(raw.encode("utf-8")) > SAFARI_CONTEXT_LEASE_MAX_BYTES:
+            raise RuntimeError("Safari context ownership state is oversized.")
+        if not raw.strip():
+            raise RuntimeError("Safari context ownership state is invalid.")
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Safari context ownership state is invalid.") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("Safari context ownership state is invalid.")
+        return payload
+
+    def _write_context_lease_state(self, payload: dict[str, Any]) -> None:
+        """Atomically persist one ownership transition before changing Safari."""
+        if self._context_lock_handle is None:
+            return
+        serialized = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        if len(serialized.encode("utf-8")) > SAFARI_CONTEXT_LEASE_MAX_BYTES:
+            raise RuntimeError("Safari context ownership state is oversized.")
+        lease_path = _safari_context_lease_path()
+        temporary_path = lease_path.with_name(
+            f".{lease_path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        )
+        file_descriptor: int | None = None
+        try:
+            file_descriptor = os.open(
+                temporary_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(file_descriptor, "w", encoding="utf-8") as temporary:
+                file_descriptor = None
+                temporary.write(serialized)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, lease_path)
+            if os.name == "posix":
+                directory_descriptor = os.open(lease_path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_descriptor)
+                finally:
+                    os.close(directory_descriptor)
+        except OSError as exc:
+            raise RuntimeError("Safari context ownership state could not be saved.") from exc
+        finally:
+            if file_descriptor is not None:
+                os.close(file_descriptor)
+            with contextlib.suppress(FileNotFoundError):
+                temporary_path.unlink()
+
+    def _clear_context_lease_state(self) -> None:
+        """Clear durable ownership only after the owned window is proven absent."""
+        if self._context_lock_handle is None:
+            return
+        self._write_context_lease_state(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "clear",
+            }
+        )
+        self._durable_lease_started = False
+        self._creation_baseline_inventory = {}
+
+    @staticmethod
+    def _validated_baseline_inventory(payload: object) -> dict[int, int]:
+        """Validate and decode a persisted pre-creation Safari inventory."""
+        if not isinstance(payload, list):
+            raise RuntimeError("Safari context ownership baseline is invalid.")
+        inventory: dict[int, int] = {}
+        for item in payload:
+            if not isinstance(item, dict):
+                raise RuntimeError("Safari context ownership baseline is invalid.")
+            window_id = item.get("window_id")
+            tab_count = item.get("tab_count")
+            if (
+                type(window_id) is not int
+                or window_id <= 0
+                or type(tab_count) is not int
+                or tab_count < 0
+                or window_id in inventory
+            ):
+                raise RuntimeError("Safari context ownership baseline is invalid.")
+            inventory[window_id] = tab_count
+        return inventory
+
+    @staticmethod
+    def _serialized_window_inventory(
+        inventory: dict[int, int],
+    ) -> list[dict[str, int]]:
+        """Serialize a deterministic pre-creation window inventory."""
+        return [
+            {"window_id": window_id, "tab_count": inventory[window_id]}
+            for window_id in sorted(inventory)
+        ]
+
+    def _reconcile_context_lease_state(self) -> None:
+        """Clear a stale lease only when its Safari window is proven absent."""
+        if self._context_lock_handle is None:
+            return
+        try:
+            payload = self._read_context_lease_state()
+        except RuntimeError as exc:
+            try:
+                current_inventory = _safari_window_inventory()
+            except RuntimeError:
+                raise RuntimeError(
+                    "Safari has an unreadable prior ownership record and its windows "
+                    "could not be verified. No new task window was opened."
+                ) from exc
+            if current_inventory:
+                raise RuntimeError(
+                    "Safari has an unreadable prior ownership record. Close any leftover "
+                    "task window before starting another Safari task."
+                ) from exc
+            self._clear_context_lease_state()
+            return
+        if payload is None:
+            return
+        if payload == {"version": 1, "state": "clear"}:
+            self._clear_context_lease_state()
+            return
+        if (
+            payload.get("version") == SAFARI_CONTEXT_LEASE_VERSION
+            and payload.get("state") == "clear"
+        ):
+            self._durable_lease_started = False
+            self._creation_baseline_inventory = {}
+            return
+        legacy_owned_state = (
+            payload.get("version") == 1 and payload.get("state") == "owned"
+        )
+        if (
+            (
+                payload.get("version") != SAFARI_CONTEXT_LEASE_VERSION
+                and not legacy_owned_state
+            )
+            or payload.get("state") not in {"creating", "owned"}
+            or not isinstance(payload.get("ownership_token"), str)
+            or not re.fullmatch(r"[0-9a-f]{32}", payload["ownership_token"])
+            or type(payload.get("owner_pid")) is not int
+            or payload["owner_pid"] <= 0
+        ):
+            if not _safari_window_inventory():
+                self._clear_context_lease_state()
+                return
+            raise RuntimeError(
+                "Safari has an invalid prior ownership record. No new task window was opened."
+            )
+        try:
+            baseline = self._validated_baseline_inventory(
+                payload.get("baseline_windows")
+            )
+        except RuntimeError:
+            if not _safari_window_inventory():
+                self._clear_context_lease_state()
+                return
+            raise
+        if payload["state"] == "creating":
+            creation_started_at_ns = payload.get("creation_started_at_ns")
+            now_ns = time.time_ns()
+            if (
+                type(creation_started_at_ns) is not int
+                or creation_started_at_ns <= 0
+                or creation_started_at_ns > now_ns
+            ):
+                raise RuntimeError(
+                    "Safari context creation timing state is invalid. "
+                    "No new task window was opened."
+                )
+            settle_ns = int(SAFARI_CONTEXT_CREATION_SETTLE_SECONDS * 1_000_000_000)
+            if now_ns - creation_started_at_ns < settle_ns:
+                raise RuntimeError(
+                    "Safari is still verifying an uncertain prior window creation. "
+                    "No new task window was opened."
+                )
+        current_inventory = _safari_window_inventory()
+        if payload["state"] == "owned":
+            window_id = payload.get("window_id")
+            if type(window_id) is not int or window_id <= 0:
+                if not current_inventory:
+                    self._clear_context_lease_state()
+                    return
+                raise RuntimeError("Safari context owned-window state is invalid.")
+            if window_id in current_inventory:
+                raise RuntimeError(
+                    "Safari still has a task-owned window from a previous process. "
+                    "Close that window before starting another Safari task."
+                )
+        else:
+            if self._uncertain_creation_candidates(current_inventory, baseline):
+                raise RuntimeError(
+                    "Safari may still have a task window whose creation was interrupted. "
+                    "Close that window before starting another Safari task."
+                )
+            time.sleep(SAFARI_CONTEXT_INVENTORY_STABILITY_SECONDS)
+            stable_inventory = _safari_window_inventory()
+            if self._uncertain_creation_candidates(stable_inventory, baseline):
+                raise RuntimeError(
+                    "Safari may still have a task window whose creation was interrupted. "
+                    "Close that window before starting another Safari task."
+                )
+        self._clear_context_lease_state()
+
+    @staticmethod
+    def _uncertain_creation_candidates(
+        inventory: dict[int, int],
+        baseline: dict[int, int],
+    ) -> set[int]:
+        """Return windows that could be an interrupted task-window creation."""
+        return {
+            window_id
+            for window_id, tab_count in inventory.items()
+            if window_id not in baseline
+            or (baseline[window_id] == 0 and tab_count > 0)
+        }
+
+    def _begin_context_window_creation(self) -> None:
+        """Persist Safari's window baseline before asking it to create a window."""
+        if self._context_lock_handle is None:
+            return
+        inventory = _safari_window_inventory()
+        self._creation_baseline_inventory = inventory
+        self._write_context_lease_state(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "creating",
+                "ownership_token": self._ownership_token,
+                "owner_pid": os.getpid(),
+                "baseline_windows": self._serialized_window_inventory(inventory),
+                "creation_started_at_ns": time.time_ns(),
+            }
+        )
+        self._durable_lease_started = True
+
+    def _mark_context_window_owned(self, window_id: int) -> None:
+        """Bind the durable ownership record to the newly created Safari window."""
+        if self._context_lock_handle is None:
+            return
+        self._write_context_lease_state(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "owned",
+                "ownership_token": self._ownership_token,
+                "owner_pid": os.getpid(),
+                "baseline_windows": self._serialized_window_inventory(
+                    self._creation_baseline_inventory
+                ),
+                "window_id": int(window_id),
+            }
+        )
+        self._durable_lease_started = True
 
     @property
     def primary_page(self) -> SafariPage:
@@ -1918,8 +2290,31 @@ class SafariContext:
         self._acquire_context_lock()
         try:
             self._create_page(self.initial_url)
-        except Exception:
-            self._release_context_lock()
+        except Exception as creation_error:
+            with SAFARI_PENDING_CONTEXT_LOCK:
+                cleanup_pending = id(self) in SAFARI_PENDING_CONTEXTS
+            cleanup_error: BaseException | None = None
+            if cleanup_pending:
+                try:
+                    self.close()
+                    cleanup_pending = False
+                except Exception as exc:
+                    cleanup_error = exc
+            if not cleanup_pending and self._durable_lease_started:
+                try:
+                    self._reconcile_context_lease_state()
+                except Exception as exc:
+                    cleanup_error = exc
+                    cleanup_pending = True
+                    with SAFARI_PENDING_CONTEXT_LOCK:
+                        SAFARI_PENDING_CONTEXTS[id(self)] = self
+            if not cleanup_pending:
+                self._release_context_lock()
+            if cleanup_error is not None:
+                raise RuntimeError(
+                    "Safari could not verify cleanup after its task window failed "
+                    "to initialize. No second Safari task will be opened."
+                ) from creation_error
             raise
         return self
 
@@ -1945,16 +2340,33 @@ class SafariContext:
         return []
 
     def close(self) -> None:
-        """Close the Safari window and tabs owned by this sync."""
-        try:
-            self.housekeep()
-        finally:
+        """Close every owned page, retaining the lease until cleanup succeeds."""
+        with self._close_lock:
+            had_tracked_pages = bool(self.pages)
+            try:
+                self.housekeep()
+                if had_tracked_pages:
+                    self._clear_context_lease_state()
+                elif self._durable_lease_started:
+                    self._reconcile_context_lease_state()
+            except Exception:
+                with SAFARI_PENDING_CONTEXT_LOCK:
+                    SAFARI_PENDING_CONTEXTS[id(self)] = self
+                raise
             self._release_context_lock()
+            with SAFARI_PENDING_CONTEXT_LOCK:
+                SAFARI_PENDING_CONTEXTS.pop(id(self), None)
 
     def _acquire_context_lock(self) -> None:
         """Serialize Safari contexts so no task can repurpose another task's window."""
         if self._context_lock_handle is not None:
             return
+        _attempted_cleanup, pending_cleanup = retry_pending_safari_context_cleanup()
+        if pending_cleanup:
+            raise RuntimeError(
+                "Safari is waiting for a previous task-owned window to close. "
+                "Review that window before starting another browser task."
+            )
         handle = SAFARI_CONTEXT_LOCK_PATH.open("a+")
         try:
             lock_file(handle, blocking=self.lock_blocking)
@@ -1964,6 +2376,17 @@ class SafariContext:
                 "Safari is busy with another active browser task. Try again after it finishes."
             ) from exc
         self._context_lock_handle = handle
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(handle.fileno(), 0o600)
+            self._reconcile_context_lease_state()
+        except Exception:
+            self._context_lock_handle = None
+            try:
+                unlock_file(handle)
+            finally:
+                handle.close()
+            raise
 
     def _release_context_lock(self) -> None:
         """Release the cross-process Safari context lease."""
@@ -2000,16 +2423,23 @@ class SafariContext:
             tab_index = self._create_tab(window_id, url)
             page = SafariPage(self, window_id, tab_index=tab_index)
         else:
-            raw_window_id = self._create_window(url)
+            with safari_window_creation_guard():
+                self._begin_context_window_creation()
+                raw_window_id = self._create_window(url)
             if not raw_window_id.isdigit():
                 raise RuntimeError("Safari did not return a usable window identifier.")
             page = SafariPage(self, int(raw_window_id), tab_index=1)
         self.pages.append(page)
         try:
+            if len(self.pages) == 1:
+                self._mark_context_window_owned(page.window_id)
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         except Exception:
-            with contextlib.suppress(Exception):
+            try:
                 page.close()
+            except Exception:
+                with SAFARI_PENDING_CONTEXT_LOCK:
+                    SAFARI_PENDING_CONTEXTS[id(self)] = self
             raise
         return page
 
@@ -2027,6 +2457,7 @@ class SafariContext:
         source = f"""
 tell application "Safari"
     set targetWindow to missing value
+    set targetDocument to missing value
     set previousFrontmostProcessName to ""
     set previousWindowId to 0
     set previousWindowWasVisible to false
@@ -2034,43 +2465,80 @@ tell application "Safari"
     {SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
     try
         launch
-        set existingWindowIds to id of every window
-        set emptyWindowIds to {{}}
+        set targetDocument to make new document
         repeat with candidateWindow in every window
-            if (count of tabs of candidateWindow) is 0 then set end of emptyWindowIds to id of candidateWindow
-        end repeat
-        make new document
-        repeat with candidateWindow in every window
-            if existingWindowIds does not contain (id of candidateWindow) then
-                set targetWindow to candidateWindow
-                exit repeat
-            end if
-        end repeat
-        if targetWindow is missing value then
-            repeat with candidateWindow in every window
-                if emptyWindowIds contains (id of candidateWindow) and (count of tabs of candidateWindow) > 0 then
+            try
+                if (document of candidateWindow) is targetDocument then
                     set targetWindow to candidateWindow
                     exit repeat
                 end if
-            end repeat
-        end if
+            end try
+        end repeat
         if targetWindow is missing value then error "Safari did not create an owned window." number -1719
         set URL of current tab of targetWindow to "{escape_applescript_text(url)}"
         {SAFARI_BACKGROUND_WINDOW_APPLESCRIPT}
         return id of targetWindow
     on error errorMessage number errorNumber
+        set failedWindowId to 0
+        set failedWindowStillOpen to false
+        if targetWindow is missing value and targetDocument is not missing value then
+            repeat with candidateWindow in every window
+                try
+                    if (document of candidateWindow) is targetDocument then
+                        set targetWindow to candidateWindow
+                        exit repeat
+                    end if
+                end try
+            end repeat
+        end if
         if targetWindow is not missing value then
             try
-                close targetWindow
+                set failedWindowId to id of targetWindow
+            on error
+                set failedWindowStillOpen to true
             end try
+            {SAFARI_RESTORE_FRONT_WINDOW_IF_TARGET_STILL_FRONT_APPLESCRIPT}
+            try
+                close targetWindow
+                delay 0.1
+            on error
+                set failedWindowStillOpen to true
+            end try
+            if failedWindowId is not 0 then
+                try
+                    set failedWindowStillOpen to exists (first window whose id is failedWindowId)
+                on error
+                    set failedWindowStillOpen to true
+                end try
+            end if
         end if
-        {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+        if failedWindowStillOpen and failedWindowId is not 0 then
+            error "{SAFARI_OWNED_WINDOW_REMAINS_MARKER}" & (failedWindowId as text) & ":" & errorMessage number errorNumber
+        end if
         error errorMessage number errorNumber
     end try
 end tell
 """
-        with safari_window_creation_guard():
-            return run_applescript(source).strip()
+        try:
+            return run_applescript(source, retry_transient=False).strip()
+        except RuntimeError as exc:
+            marker = re.search(
+                rf"{re.escape(SAFARI_OWNED_WINDOW_REMAINS_MARKER)}(\d+):",
+                str(exc),
+            )
+            if marker:
+                page = SafariPage(self, int(marker.group(1)), tab_index=1)
+                self.pages.append(page)
+                try:
+                    self._mark_context_window_owned(page.window_id)
+                except Exception as lease_error:
+                    logger.error(
+                        "Safari could not persist its failed window ownership: %s",
+                        lease_error,
+                    )
+                with SAFARI_PENDING_CONTEXT_LOCK:
+                    SAFARI_PENDING_CONTEXTS[id(self)] = self
+            raise
 
     def _create_tab(self, window_id: int, url: str) -> int:
         """Add one tab to the already owned Safari window without activating it."""
@@ -2095,13 +2563,16 @@ tell application "Safari"
                 close newTab
             end try
         end if
-        {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+        {SAFARI_RESTORE_FRONT_WINDOW_IF_TARGET_STILL_FRONT_APPLESCRIPT}
         error errorMessage number errorNumber
     end try
 end tell
 """
         with safari_window_creation_guard():
-            raw_tab_index = run_applescript(source).strip()
+            raw_tab_index = run_applescript(
+                source,
+                retry_transient=False,
+            ).strip()
         if not raw_tab_index.isdigit():
             raise RuntimeError("Safari did not return a usable tab identifier.")
         return int(raw_tab_index)
@@ -2109,6 +2580,38 @@ end tell
     def _forget_page(self, page: SafariPage) -> None:
         with contextlib.suppress(ValueError):
             self.pages.remove(page)
+
+
+def retry_pending_safari_context_cleanup() -> tuple[int, int]:
+    """Retry tracked task-window cleanup and return attempted and pending counts."""
+    with SAFARI_PENDING_CONTEXT_LOCK:
+        pending_contexts = tuple(SAFARI_PENDING_CONTEXTS.values())
+    for context in pending_contexts:
+        try:
+            context.close()
+        except Exception as exc:
+            logger.warning(
+                "Safari task-window cleanup remains pending: %s",
+                exc,
+            )
+    with SAFARI_PENDING_CONTEXT_LOCK:
+        pending_count = len(SAFARI_PENDING_CONTEXTS)
+    return len(pending_contexts), pending_count
+
+
+def verify_safari_context_cleanup_ready() -> None:
+    """Prove no active or stale Safari ownership remains without opening a window."""
+    _attempted, pending = retry_pending_safari_context_cleanup()
+    if pending:
+        raise RuntimeError(
+            "Safari is waiting for a previous task-owned window to close. "
+            "No new task window was opened."
+        )
+    probe = SafariContext("about:blank", lock_blocking=False)
+    try:
+        probe._acquire_context_lock()
+    finally:
+        probe._release_context_lock()
 
 
 def _split_fetch_headers(headers: dict[str, str]) -> tuple[dict[str, str], str]:

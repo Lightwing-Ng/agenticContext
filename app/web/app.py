@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.81.1-codex.1
+# Code version: v1.82.0-codex.1
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, replace
 from html import escape as escape_html
 from html.parser import HTMLParser
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from time import monotonic
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -855,14 +855,38 @@ def create_app(
     app.extensions["computer_use_agent_service"] = computer_use_agent_service
     agent_session_pool = AgentSessionPool(computer_use_agent_service)
     app.extensions["agent_session_pool"] = agent_session_pool
-    atexit.register(agent_session_pool.stop_at_exit)
     jury_service = JuryService(
         lambda: computer_use_settings.settings,
         lambda: saved_config,
         Path(computer_use_runtime_root or effective_local_store_root / "agent") / "jury",
     )
     app.extensions["jury_service"] = jury_service
-    atexit.register(jury_service.stop_at_exit)
+
+    runtime_shutdown_lock = RLock()
+    runtime_shutdown_started = False
+
+    def stop_runtime_services() -> None:
+        """Stop browser-owning services exactly once before process exit."""
+        nonlocal runtime_shutdown_started
+        with runtime_shutdown_lock:
+            if runtime_shutdown_started:
+                return
+            runtime_shutdown_started = True
+        for label, service in (
+            ("jury_service", jury_service),
+            ("agent_session_pool", agent_session_pool),
+        ):
+            try:
+                service.stop_at_exit()
+            except Exception as exc:
+                app.logger.error(
+                    "Could not stop %s during service shutdown: %s",
+                    label,
+                    exc,
+                )
+
+    app.extensions["runtime_shutdown"] = stop_runtime_services
+    atexit.register(stop_runtime_services)
 
     def available_agent_browser_keys() -> set[str]:
         """Return Agent browsers supported by the current host."""

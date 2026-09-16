@@ -1,19 +1,21 @@
 # Browser Jury
 
-Documentation version: `v1.4.0-codex.1`
+Documentation version: `v1.5.3-codex.1`
 
 ## Workflow
 
 Agentic retains the existing project controller. Jurors opens `/jury/edge` by default and uses only
 authenticated provider websites. There is no project picker, context upload, or Terminal
-readiness check. Edge and Chrome admit all four providers. On macOS, Safari is also a Jury runtime
-for ChatGPT, Grok, and Gemini, using the same Browser control and persisted selection. Claude
-remains available when explicitly checked; the default three-juror set does not include it. Safari
-does not fall back to Edge.
+readiness check. Edge and Chrome admit all four providers, including Claude when it is explicitly
+checked. On macOS, Safari is also a Jury runtime for ChatGPT, Grok, and Gemini only, using the
+same Browser control and persisted selection. Safari never admits Claude: switching to Safari
+clears it, the Safari page does not offer it, restored Safari preferences drop it, and
+`/api/jury/check` plus `/api/jury/start` reject the combination. Safari does not fall back to Edge.
 
 ChatGPT Latest / Extra High, Grok Auto, and Gemini 3.1 Pro are selected by default.
-Claude is available only when explicitly checked. Requested model labels are verified on the
-live provider page before any question is submitted; an unavailable label fails visibly.
+On Edge and Chrome, Claude is available only when explicitly checked. Requested model labels are
+verified on the live provider page before any question is submitted; an unavailable label fails
+visibly.
 Grok readiness uses the same authenticated chat endpoint, composer, and exact model as Jury;
 it does not depend on Cache's Files synchronization page or download capability.
 Opening a blank Jury page and changing its browser, provider, or model selection do not launch a
@@ -38,13 +40,29 @@ match; every juror must explicitly accept that exact candidate identifier, suppl
 shown. Agreement is a recorded outcome, not a guarantee of truth or independent source quality.
 
 Safari holds one nonblocking global automation lease for the Jury and creates one task-owned Safari
-window with one tab per selected juror inside that context. Native Safari input is serialized, so
-the coordinator asks ChatGPT, Grok, and Gemini sequentially on one owning thread. Every juror still
-receives the same frozen evidence packet for a given round: round 1 contains no peer result, and
-later rounds contain only the complete prior-round barrier. After each window-affecting step the
-controller restores the previous frontmost application so the owned window can sit in Stage Manager
-instead of covering the user's work. Closing, stopping, or failing the Jury closes only that
-task-owned window and never falls back to Edge or enters its credential-storage path.
+window with one tab per selected juror inside that context. Account checks use that same shape: one
+window, one tab per selected juror, login/composer/model verification only, and no prompt or remote
+conversation. Native Safari input is serialized, so the coordinator asks ChatGPT, Grok, and Gemini
+sequentially on one owning thread. Every juror still receives the same frozen evidence packet for a
+given round: round 1 contains no peer result, and later rounds contain only the complete prior-round
+barrier. Each trusted model-menu or Send action captures and restores focus independently; model
+discovery and response polling run outside that native-input interval. Window creation, tab
+creation, and cleanup restore the prior app only while the task still owns the foreground, so a
+later user switch is not overwritten. If the task-owned window cannot be closed, readiness fails
+closed, its page and Safari lease remain tracked for retry, and another Safari Jury is rejected
+until cleanup succeeds. The lease durably records a random ownership token, the pre-creation window
+and tab-count inventory, and the exact owned window ID. After a service restart, Safari admission
+checks that record without opening a window: an existing or ambiguous orphan remains blocked, while
+a window proven absent clears the record automatically. An uncertain creation remains quarantined
+through a bounded settle interval and two stable read-only window inventories, so a delayed Safari
+Apple Event cannot silently create a second task window. Cleanup closes the exact owned Safari
+window directly without activating or clicking the current front window. SIGINT, SIGTERM, and
+process exit share one idempotent browser-service shutdown callback. Shutdown closes admission,
+cancels and waits for any synchronous account check, and waits for the Safari coordinator to close
+its window. Restoring the previous app is best-effort; macOS Stage
+Manager grouping is not programmatically controlled. Closing, stopping, or failing a check or Jury
+closes only that task-owned window and never falls back to Edge or enters its credential-storage
+path.
 
 The current Web workflow does not send or infer a fixed turn count. It continues automatically
 while parsed verdicts, source URLs and their stated support, exact candidate acceptance, or
@@ -80,7 +98,8 @@ test or caller supplies an isolated Agent runtime root. Records contain the expl
 provider opinions, citations, and conversation links. Reloading a page resumes observation,
 never submission. After a service restart, unfinished records become interrupted archives;
 no browser sessions or prompts are recreated. Admission is process-local, so run one app
-process for this local feature.
+process for this local feature. Safari's separate file lease and durable ownership record also
+prevent a restarted app process from opening a second task window over an unresolved orphan.
 
 Gemini can acknowledge its first prompt before exposing a conversation URL. Jury waits on
 that same page for at most 60 seconds only while the exact current submission receipt remains
@@ -97,8 +116,9 @@ The focused offline layer is:
 
 It uses fake provider boundaries and disposable local browser contexts. Live acceptance requires
 explicit authorization, an already signed-in profile for the selected browser, and the requested
-model choices. A Safari acceptance run should select ChatGPT, Grok, and Gemini and must verify that one
-Safari window owns those provider tabs without opening Edge or a second Safari window.
-Use one explicit question, record each provider conversation URL across rounds, and confirm
-cleanup without starting Claude. An unavailable account or exact model is reported before any
-prompt. Never treat an offline test as provider acceptance.
+model choices. A Safari acceptance run should select ChatGPT, Grok, and Gemini and must verify that
+one Safari window owns those provider tabs for both account check and the formal Jury, without
+opening Edge, a second Safari window, or Claude. Use one explicit question, record each provider
+conversation URL across rounds, and confirm cleanup. An unavailable account or exact model is
+reported before any prompt. Never treat an offline test as provider acceptance, and never treat
+restoring the previous frontmost app as a Stage Manager grouping guarantee.

@@ -1,10 +1,11 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.7.0-codex.1
+# Code version: v2.11.0-codex.1
 
 from __future__ import annotations
 
 import base64
+import json
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -15,9 +16,12 @@ from unittest.mock import patch
 import pytest
 
 from app.core.safari_automation import (
+    SAFARI_CONTEXT_CREATION_SETTLE_SECONDS,
+    SAFARI_CONTEXT_LEASE_VERSION,
     SafariContext,
     SafariNativeActivationError,
     SafariPage,
+    retry_pending_safari_context_cleanup,
     run_applescript,
     safari_navigation_matches,
 )
@@ -379,16 +383,21 @@ def test_safari_native_activation_is_origin_bound_trusted_and_non_retried() -> N
     context = SafariContext("https://grok.com/")
     page = SafariPage(context, window_id=123)
 
-    with patch.object(page, "_run_in_window", return_value="trusted") as run:
+    with patch.object(
+        page,
+        "_run_in_window",
+        side_effect=["Codex\n456\ntrue\nfalse", "trusted", ""],
+    ) as run:
         page._activate_marked_element("safari-native-abc", "https://grok.com/")
 
-    script = run.call_args.args[0]
+    script = run.call_args_list[1].args[0]
+    restore_script = run.call_args_list[2].args[0]
     assert "key code 36" in script
     assert "event.isTrusted" in script
     assert "expected.port" in script
     assert "current.port" in script
     assert "expected.href !== current.href" in script
-    assert script.count("document.hasFocus()") == 5
+    assert script.count("document.hasFocus()") == 3
     assert script.count("document.elementFromPoint") == 2
     assert "currentFrontmostProcessName is not \"Safari\"" in script
     assert "count of sheets of front window" in script
@@ -400,8 +409,9 @@ def test_safari_native_activation_is_origin_bound_trusted_and_non_retried() -> N
     assert "nativeFocusReady" in script
     assert "(id of front window) is not (id of targetWindow)" in script
     assert "(current tab of targetWindow) is not targetTab" in script
-    assert "set shouldRestoreNativeFocus to (current tab of targetWindow) is targetTab" in script
-    assert 'do JavaScript "document.hasFocus()" in targetTab' in script
+    assert "set shouldRestoreNativeFocus" not in script
+    assert "set shouldRestoreNativeFocus to (current tab of targetWindow) is targetTab" in restore_script
+    assert 'do JavaScript "document.hasFocus()" in targetTab' in restore_script
     final_verification = script.rindex("set finalActivationState")
     final_window_check = script.rindex(
         "if (id of front window) is not (id of targetWindow)"
@@ -411,7 +421,10 @@ def test_safari_native_activation_is_origin_bound_trusted_and_non_retried() -> N
     assert script.index("nativeFocusReady") < native_return
     assert script.index("count of sheets of front window") < native_return
     assert script.index("repeat with safariWindow in windows") < native_return
-    assert run.call_args.kwargs == {"retry_transient": False, "reveal_tab": True}
+    assert run.call_args_list[1].kwargs == {
+        "retry_transient": False,
+        "reveal_tab": True,
+    }
 
 
 def test_safari_locator_press_uses_one_bounded_trusted_navigation_key() -> None:
@@ -476,14 +489,18 @@ def test_safari_locator_evaluate_binds_one_selected_element() -> None:
 def test_safari_native_activation_binds_the_requested_navigation_key() -> None:
     page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123)
 
-    with patch.object(page, "_run_in_window", return_value="trusted") as run:
+    with patch.object(
+        page,
+        "_run_in_window",
+        side_effect=["Codex\n456\ntrue\nfalse", "trusted", ""],
+    ) as run:
         page._activate_marked_element(
             "safari-native-slider",
             "https://chatgpt.com/",
             key="ArrowRight",
         )
 
-    script = run.call_args.args[0]
+    script = run.call_args_list[1].args[0]
     assert "expectedKey" in script
     assert "ArrowRight" in script
     assert "event.key === request.expectedKey" in script
@@ -509,10 +526,49 @@ def test_safari_native_input_transaction_restores_focus_after_the_sequence() -> 
     activation_script = run.call_args_list[1].args[0]
     restore_script = run.call_args_list[2].args[0]
     assert "set shouldRestoreNativeFocus" not in activation_script
+    assert "set shouldRestoreNativeFocus" in restore_script
+    assert '(name of first application process whose frontmost is true) is "Safari"' in restore_script
     assert 'set previousFrontmostProcessName to "Codex"' in restore_script
     assert "set previousWindowId to 456" in restore_script
     assert "set previousWindowWasVisible to true" in restore_script
     assert "set previousWindowWasMiniaturized to false" in restore_script
+    assert page._native_input_transaction_depth == 0
+
+
+def test_safari_native_input_transaction_does_not_steal_focus_if_user_switched() -> None:
+    page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123)
+
+    with patch.object(
+        page,
+        "_run_in_window",
+        side_effect=["Codex\n456\ntrue\nfalse", ""],
+    ) as run:
+        with page.native_input_transaction():
+            pass
+
+    restore_script = run.call_args_list[1].args[0]
+    assert "set shouldRestoreNativeFocus" in restore_script
+    assert restore_script.index(
+        '(name of first application process whose frontmost is true) is "Safari"'
+    ) < restore_script.index("frontmost of process previousFrontmostProcessName")
+    assert "if shouldRestoreNativeFocus then" in restore_script
+
+
+def test_safari_wake_for_javascript_uses_a_restorable_short_transaction() -> None:
+    page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123)
+
+    with patch.object(
+        page,
+        "_run_in_window",
+        side_effect=["Codex\n456\ntrue\nfalse", "", ""],
+    ) as run:
+        page.wake_for_javascript()
+
+    scripts = [call.args[0] for call in run.call_args_list]
+    assert any("nativeFocusReady" in script for script in scripts)
+    restore_script = scripts[-1]
+    assert "set shouldRestoreNativeFocus" in restore_script
+    assert 'set previousFrontmostProcessName to "Codex"' in restore_script
     assert page._native_input_transaction_depth == 0
 
 
@@ -530,7 +586,15 @@ def test_safari_native_activation_classifies_transport_uncertainty(
 ) -> None:
     page = SafariPage(SafariContext("https://grok.com/"), window_id=123)
 
-    with patch.object(page, "_run_in_window", side_effect=RuntimeError(message)):
+    with patch.object(
+        page,
+        "_run_in_window",
+        side_effect=[
+            "Codex\n456\ntrue\nfalse",
+            RuntimeError(message),
+            "",
+        ],
+    ) as run:
         with pytest.raises(SafariNativeActivationError) as exc_info:
             page._activate_marked_element(
                 "safari-native-abc",
@@ -538,6 +602,54 @@ def test_safari_native_activation_classifies_transport_uncertainty(
             )
 
     assert exc_info.value.input_attempted is input_attempted
+    assert "set shouldRestoreNativeFocus" in run.call_args_list[2].args[0]
+
+
+def test_safari_native_activation_preserves_uncertainty_when_focus_restore_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    page = SafariPage(SafariContext("https://grok.com/"), window_id=123)
+
+    with patch.object(
+        page,
+        "_run_in_window",
+        side_effect=[
+            "Codex\n456\ntrue\nfalse",
+            RuntimeError("Apple event timed out"),
+            RuntimeError("focus restore timed out"),
+        ],
+    ):
+        with pytest.raises(SafariNativeActivationError) as exc_info:
+            page._activate_marked_element(
+                "safari-native-abc",
+                "https://grok.com/",
+            )
+
+    assert exc_info.value.input_attempted is True
+    assert "Apple event timed out" in str(exc_info.value)
+    assert "could not restore native focus" in caplog.text
+
+
+def test_safari_native_activation_keeps_success_when_focus_restore_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    page = SafariPage(SafariContext("https://grok.com/"), window_id=123)
+
+    with patch.object(
+        page,
+        "_run_in_window",
+        side_effect=[
+            "Codex\n456\ntrue\nfalse",
+            "trusted",
+            RuntimeError("focus restore timed out"),
+        ],
+    ):
+        page._activate_marked_element(
+            "safari-native-abc",
+            "https://grok.com/",
+        )
+
+    assert "could not restore native focus after input completed" in caplog.text
 
 
 def test_safari_locator_rejects_url_drift_before_any_native_input() -> None:
@@ -676,6 +788,8 @@ def test_safari_page_compatibility_background_method_keeps_window_available() ->
     assert "set miniaturized of targetWindow to false" in script
     assert "set bounds of targetWindow" not in script
     assert "set index of targetWindow" not in script
+    assert "targetWindowStillFront" in script
+    assert "canRestorePreviousSafariWindow" in script
 
 
 def test_safari_page_does_not_spawn_a_replacement_when_closed_externally() -> None:
@@ -707,8 +821,8 @@ def test_safari_page_reports_a_window_that_cannot_be_closed() -> None:
     ):
         page.close()
 
-    assert page not in context.pages
-    assert page._closed is True
+    assert page in context.pages
+    assert page._closed is False
 
 
 def test_run_applescript_retries_transient_safari_errors() -> None:
@@ -785,9 +899,39 @@ def test_safari_context_housekeeping_continues_after_one_close_failure() -> None
         with pytest.raises(RuntimeError, match="housekeeping failed"):
             context.housekeep()
 
-    assert context.pages == []
-    assert first_page._closed is True
+    assert context.pages == [first_page]
+    assert first_page._closed is False
     assert second_page._closed is True
+
+
+def test_safari_context_retains_its_lease_until_failed_cleanup_retries(
+    tmp_path: Path,
+) -> None:
+    context = SafariContext("https://chatgpt.com/")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    close_error = RuntimeError("Safari window 123 remained open.")
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        tmp_path / "safari-context.lock",
+    ), patch.object(
+        page,
+        "_close_owned_window",
+        side_effect=[close_error, None],
+    ):
+        context._acquire_context_lock()
+        with pytest.raises(RuntimeError, match="housekeeping failed"):
+            context.close()
+
+        assert context._context_lock_handle is not None
+        assert context.pages == [page]
+        assert page._closed is False
+        assert retry_pending_safari_context_cleanup() == (1, 0)
+
+    assert context._context_lock_handle is None
+    assert context.pages == []
+    assert page._closed is True
 
 
 def test_safari_context_creates_a_standard_visible_background_window() -> None:
@@ -800,6 +944,7 @@ def test_safari_context_creates_a_standard_visible_background_window() -> None:
         page = context._create_page("https://grok.com/files")
 
     script = run.call_args.args[0]
+    assert run.call_args.kwargs == {"retry_transient": False}
     assert page.window_id == 123
     assert page.tab_index == 1
     goto.assert_called_once_with(
@@ -812,17 +957,18 @@ def test_safari_context_creates_a_standard_visible_background_window() -> None:
     assert "set previousWindowWasVisible to visible of front window" in script
     assert "set previousWindowWasMiniaturized to miniaturized of front window" in script
     assert script.index("set previousFrontmostProcessName") < script.index("launch")
-    assert "existingWindowIds" in script
+    assert "set targetDocument to make new document" in script
+    assert "(document of candidateWindow) is targetDocument" in script
     assert "set targetWindow to candidateWindow" in script
-    assert "emptyWindowIds" in script
+    assert "existingWindowIds" not in script
+    assert "emptyWindowIds" not in script
     assert "set visible of targetWindow to true" in script
     assert "set miniaturized of targetWindow to false" in script
+    assert "targetWindowStillFront" in script
+    assert "canRestorePreviousSafariWindow" in script
     assert "set bounds of targetWindow" not in script
     assert 'Safari did not create an owned window.' in script
-    assert (
-        "if previousWindowId is not 0 and previousWindowWasVisible and not "
-        "previousWindowWasMiniaturized then"
-    ) in script
+    assert "canRestorePreviousSafariWindow and previousWindowId is not 0" in script
     assert script.index("set URL of current tab of targetWindow") < script.index(
         "set miniaturized of targetWindow to false"
     )
@@ -898,13 +1044,42 @@ def test_safari_page_close_closes_the_owned_window() -> None:
         page.close()
 
     script = run.call_args.args[0]
-    assert "click button 1 of front window" in script
+    assert "close targetWindow" in script
+    assert "System Events" not in script
+    assert "set index of targetWindow" not in script
     assert "if not (exists (first window whose id is 123))" in script
     assert 'return "closed"' in script
     assert "set URL of targetTab" not in script
     assert "close targetTab" not in script
+    assert run.call_args.kwargs == {
+        "recover_missing": False,
+        "retry_transient": False,
+        "bind_tab": False,
+    }
     assert page._closed is True
     assert context.pages == []
+
+
+def test_safari_window_only_operation_does_not_require_a_tab() -> None:
+    """A residual zero-tab task window remains closable by its exact ID."""
+    page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123)
+
+    with patch(
+        "app.core.safari_automation.run_applescript",
+        return_value="closed",
+    ) as run:
+        result = page._run_in_window(
+            "close targetWindow",
+            bind_tab=False,
+            retry_transient=False,
+        )
+
+    source = run.call_args.args[0]
+    assert result == "closed"
+    assert "first window whose id is 123" in source
+    assert "targetTab" not in source
+    assert "Safari target tab is missing" not in source
+    assert run.call_args.kwargs == {"retry_transient": False}
 
 
 def test_safari_context_serializes_concurrent_window_creation() -> None:
@@ -917,7 +1092,7 @@ def test_safari_context_serializes_concurrent_window_creation() -> None:
     maximum_active_calls = 0
     next_window_id = 100
 
-    def create_window(_source: str) -> str:
+    def create_window(_source: str, **_kwargs: object) -> str:
         nonlocal active_calls, maximum_active_calls, next_window_id
         with counter_lock:
             active_calls += 1
@@ -988,6 +1163,554 @@ def test_safari_context_can_fail_fast_when_another_task_owns_the_lease(
     assert probe_context._context_lock_handle is None
 
 
+def test_safari_context_blocks_a_stale_owned_window_until_it_is_absent(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "owned",
+                "ownership_token": "a" * 32,
+                "owner_pid": 123,
+                "baseline_windows": [],
+                "window_id": 456,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://chatgpt.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        side_effect=({456: 3}, {}),
+    ):
+        with pytest.raises(RuntimeError, match="previous process"):
+            context._acquire_context_lock()
+        assert context._context_lock_handle is None
+
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_migrates_a_legacy_clear_lease_without_inventory(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps({"version": 1, "state": "clear"}),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://chatgpt.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+    ) as inventory:
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    inventory.assert_not_called()
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {
+        "version": SAFARI_CONTEXT_LEASE_VERSION,
+        "state": "clear",
+    }
+
+
+def test_safari_context_reconciles_a_legacy_owned_window_by_exact_id(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "state": "owned",
+                "ownership_token": "a" * 32,
+                "owner_pid": 123,
+                "baseline_windows": [],
+                "window_id": 456,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://chatgpt.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        side_effect=({10: 2, 456: 1}, {10: 2}),
+    ):
+        with pytest.raises(RuntimeError, match="previous process"):
+            context._acquire_context_lock()
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_clears_malformed_owned_state_when_safari_has_no_windows(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "owned",
+                "ownership_token": "a" * 32,
+                "owner_pid": 123,
+                "baseline_windows": [],
+                "window_id": "not-an-int",
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://chatgpt.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={},
+    ):
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_recovers_non_utf8_state_only_without_safari_windows(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_bytes(b"\xff\xfe")
+    context = SafariContext("https://chatgpt.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={},
+    ):
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+@pytest.mark.parametrize("raw_state", (b"", b"   \n", b"\xff\xfe", b"{invalid"))
+def test_safari_context_keeps_unreadable_state_fail_closed_when_windows_exist(
+    tmp_path: Path,
+    raw_state: bytes,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_bytes(raw_state)
+    context = SafariContext("https://chatgpt.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={10: 1},
+    ):
+        with pytest.raises(RuntimeError, match="unreadable prior ownership"):
+            context._acquire_context_lock()
+
+    assert state_path.read_bytes() == raw_state
+
+
+def test_safari_context_keeps_malformed_owned_state_fail_closed_when_windows_exist(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    payload = {
+        "version": SAFARI_CONTEXT_LEASE_VERSION,
+        "state": "owned",
+        "ownership_token": "a" * 32,
+        "owner_pid": 123,
+        "baseline_windows": [],
+        "window_id": "not-an-int",
+    }
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+    context = SafariContext("https://chatgpt.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={10: 1},
+    ):
+        with pytest.raises(RuntimeError, match="owned-window state is invalid"):
+            context._acquire_context_lock()
+
+    assert json.loads(state_path.read_text(encoding="utf-8")) == payload
+
+
+def test_safari_context_blocks_an_interrupted_creation_until_inventory_recovers(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "creating",
+                "ownership_token": "b" * 32,
+                "owner_pid": 321,
+                "baseline_windows": [{"window_id": 10, "tab_count": 0}],
+                "creation_started_at_ns": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://grok.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        side_effect=({10: 1}, {10: 0}, {10: 0}),
+    ), patch(
+        "app.core.safari_automation.time.time_ns",
+        return_value=int((SAFARI_CONTEXT_CREATION_SETTLE_SECONDS + 1) * 1_000_000_000),
+    ), patch(
+        "app.core.safari_automation.time.sleep",
+    ):
+        with pytest.raises(RuntimeError, match="creation was interrupted"):
+            context._acquire_context_lock()
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_keeps_a_recent_interrupted_creation_fail_closed(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    creation_started_at_ns = 5_000_000_000
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "creating",
+                "ownership_token": "e" * 32,
+                "owner_pid": 321,
+                "baseline_windows": [],
+                "creation_started_at_ns": creation_started_at_ns,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://grok.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation.time.time_ns",
+        return_value=creation_started_at_ns + 1_000_000_000,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+    ) as inventory:
+        with pytest.raises(RuntimeError, match="still verifying"):
+            context._acquire_context_lock()
+
+    inventory.assert_not_called()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "creating"
+
+
+def test_safari_context_requires_two_safe_inventories_after_creation_settles(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "creating",
+                "ownership_token": "f" * 32,
+                "owner_pid": 321,
+                "baseline_windows": [],
+                "creation_started_at_ns": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://grok.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation.time.time_ns",
+        return_value=int((SAFARI_CONTEXT_CREATION_SETTLE_SECONDS + 1) * 1_000_000_000),
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        side_effect=({}, {456: 1}),
+    ), patch(
+        "app.core.safari_automation.time.sleep",
+    ) as sleep:
+        with pytest.raises(RuntimeError, match="creation was interrupted"):
+            context._acquire_context_lock()
+
+    sleep.assert_called_once()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "creating"
+
+
+def test_safari_context_rejects_a_future_creation_timestamp(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "creating",
+                "ownership_token": "0" * 32,
+                "owner_pid": 321,
+                "baseline_windows": [],
+                "creation_started_at_ns": 10_000_000_000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://grok.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation.time.time_ns",
+        return_value=5_000_000_000,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+    ) as inventory:
+        with pytest.raises(RuntimeError, match="timing state is invalid"):
+            context._acquire_context_lock()
+
+    inventory.assert_not_called()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "creating"
+
+
+def test_safari_context_ignores_user_tab_changes_in_a_nonempty_baseline_window(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "creating",
+                "ownership_token": "d" * 32,
+                "owner_pid": 654,
+                "baseline_windows": [{"window_id": 10, "tab_count": 2}],
+                "creation_started_at_ns": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://chatgpt.com/", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        side_effect=({10: 2}, {10: 3}),
+    ), patch(
+        "app.core.safari_automation.time.time_ns",
+        return_value=int((SAFARI_CONTEXT_CREATION_SETTLE_SECONDS + 1) * 1_000_000_000),
+    ), patch(
+        "app.core.safari_automation.time.sleep",
+    ):
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_tracks_a_window_left_open_during_initial_creation_failure(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    context = SafariContext("https://chatgpt.com/")
+    creation_error = RuntimeError(
+        "SAFARI_OWNED_WINDOW_REMAINS:456:simulated create failure (-1719)"
+    )
+    close_error = RuntimeError("Safari window 456 remained open.")
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation.run_applescript",
+        side_effect=("windows:10:1", creation_error),
+    ), patch.object(
+        SafariPage,
+        "_close_owned_window",
+        side_effect=(close_error, None),
+    ):
+        with pytest.raises(RuntimeError, match="could not verify cleanup"):
+            context.__enter__()
+
+        assert context._context_lock_handle is not None
+        assert [page.window_id for page in context.pages] == [456]
+        persisted = json.loads(state_path.read_text(encoding="utf-8"))
+        assert persisted["state"] == "owned"
+        assert persisted["window_id"] == 456
+        assert retry_pending_safari_context_cleanup() == (1, 0)
+
+    assert context._context_lock_handle is None
+    assert context.pages == []
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_non_numeric_window_result_remains_fail_closed(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    context = SafariContext("https://gemini.google.com/app")
+    clock_ns = [1_000_000_000]
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation.run_applescript",
+        side_effect=(
+            "windows:10:0",
+            "not-a-window-id",
+            "windows:10:0",
+            "windows:10:0",
+        ),
+    ), patch(
+        "app.core.safari_automation.time.time_ns",
+        side_effect=lambda: clock_ns[0],
+    ), patch(
+        "app.core.safari_automation.time.sleep",
+    ):
+        with pytest.raises(RuntimeError, match="could not verify cleanup"):
+            context.__enter__()
+        assert context._context_lock_handle is not None
+        assert context.pages == []
+        assert retry_pending_safari_context_cleanup() == (1, 1)
+        clock_ns[0] += int(
+            (SAFARI_CONTEXT_CREATION_SETTLE_SECONDS + 1) * 1_000_000_000
+        )
+        assert retry_pending_safari_context_cleanup() == (1, 0)
+
+    assert context._context_lock_handle is None
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_unknown_creation_timeout_remains_fail_closed(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    context = SafariContext("https://grok.com/")
+    clock_ns = [1_000_000_000]
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation.run_applescript",
+        side_effect=(
+            "windows:10:0",
+            RuntimeError("Safari automation timed out after 20 seconds."),
+            "windows:10:0\n456:1",
+            "windows:10:0",
+            "windows:10:0",
+        ),
+    ), patch(
+        "app.core.safari_automation.time.time_ns",
+        side_effect=lambda: clock_ns[0],
+    ), patch(
+        "app.core.safari_automation.time.sleep",
+    ):
+        with pytest.raises(RuntimeError, match="could not verify cleanup"):
+            context.__enter__()
+        assert context._context_lock_handle is not None
+        assert context.pages == []
+        persisted = json.loads(state_path.read_text(encoding="utf-8"))
+        assert persisted["state"] == "creating"
+        assert retry_pending_safari_context_cleanup() == (1, 1)
+        clock_ns[0] += int(
+            (SAFARI_CONTEXT_CREATION_SETTLE_SECONDS + 1) * 1_000_000_000
+        )
+        assert retry_pending_safari_context_cleanup() == (1, 1)
+        assert retry_pending_safari_context_cleanup() == (1, 0)
+
+    assert context._context_lock_handle is None
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_lease_replacement_failure_preserves_prior_state(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    prior_state = {
+        "version": 1,
+        "state": "owned",
+        "ownership_token": "c" * 32,
+        "owner_pid": 123,
+        "baseline_windows": [],
+        "window_id": 456,
+    }
+    state_path.write_text(json.dumps(prior_state), encoding="utf-8")
+    context = SafariContext("https://chatgpt.com/")
+
+    with lock_path.open("a+") as handle, patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation.os.replace",
+        side_effect=OSError("simulated atomic replacement failure"),
+    ):
+        context._context_lock_handle = handle
+        with pytest.raises(RuntimeError, match="could not be saved"):
+            context._write_context_lease_state(
+                {"version": 1, "state": "clear"}
+            )
+        context._context_lock_handle = None
+
+    assert json.loads(state_path.read_text(encoding="utf-8")) == prior_state
+    assert list(tmp_path.glob(".safari-context.lock.state.*.tmp")) == []
+
+
 def test_safari_context_adds_additional_pages_as_tabs_in_the_owned_window() -> None:
     context = SafariContext("https://chatgpt.com/")
     first = SafariPage(context, window_id=123, tab_index=1)
@@ -1000,17 +1723,37 @@ def test_safari_context_adds_additional_pages_as_tabs_in_the_owned_window() -> N
         page = context._create_page("about:blank")
 
     script = run.call_args.args[0]
+    assert run.call_args.kwargs == {"retry_transient": False}
     assert page.window_id == 123
     assert page.tab_index == 2
     assert "make new tab at end of tabs of targetWindow" in script
     assert "make new document" not in script
     assert "frontmost of process previousFrontmostProcessName" in script
+    assert "targetWindowStillFront" in script
+    assert "canRestorePreviousSafariWindow" in script
     assert "set current tab of targetWindow to newTab" in script
     goto.assert_called_once_with(
         "about:blank",
         wait_until="domcontentloaded",
         timeout=60_000,
     )
+
+
+def test_safari_context_does_not_replay_an_uncertain_tab_creation() -> None:
+    context = SafariContext("https://chatgpt.com/")
+    first = SafariPage(context, window_id=123, tab_index=1)
+    context.pages.append(first)
+
+    with patch(
+        "app.core.safari_automation.run_applescript",
+        side_effect=RuntimeError("Safari automation timed out after 20 seconds."),
+    ) as run:
+        with pytest.raises(RuntimeError, match="timed out"):
+            context._create_page("about:blank")
+
+    assert run.call_count == 1
+    assert run.call_args.kwargs == {"retry_transient": False}
+    assert context.pages == [first]
 
 
 def test_safari_page_closes_a_sibling_tab_without_closing_the_window() -> None:
@@ -1056,17 +1799,38 @@ def test_safari_page_evaluate_binds_the_owned_tab() -> None:
 def test_safari_page_evaluate_retries_an_unreadable_background_tab_result() -> None:
     page = SafariPage(SafariContext("https://chatgpt.com/"), window_id=123, tab_index=1)
     encoded = '{"ok":true,"value":"ready"}'
+    scripts: list[str] = []
+    evaluate_attempts = 0
 
-    with patch.object(
-        page,
-        "_run_in_window",
-        side_effect=["missing value", "", encoded],
-    ) as run, patch("app.core.safari_automation.time.sleep"):
+    def run_window(statement: str, **_kwargs: object) -> str:
+        scripts.append(statement)
+        if "return previousFrontmostProcessName & linefeed" in statement:
+            return "Codex\n1\ntrue\nfalse"
+        if "nativeFocusReady" in statement:
+            return ""
+        if "return JSON.stringify({ok:true,value})" in statement:
+            nonlocal evaluate_attempts
+            evaluate_attempts += 1
+            if evaluate_attempts == 1:
+                return "missing value"
+            return encoded
+        return ""
+
+    with patch.object(page, "_run_in_window", side_effect=run_window), patch(
+        "app.core.safari_automation.time.sleep"
+    ):
         assert page.evaluate("() => 'ready'") == "ready"
 
-    assert run.call_count == 3
-    assert "nativeFocusReady" in run.call_args_list[1].args[0]
-    assert "in current tab of targetWindow" in run.call_args_list[2].args[0]
+    assert evaluate_attempts == 2
+    assert any("nativeFocusReady" in script for script in scripts)
+    restore_scripts = [
+        script
+        for script in scripts
+        if "set shouldRestoreNativeFocus" in script
+        and "frontmost of process previousFrontmostProcessName" in script
+    ]
+    assert restore_scripts
+    assert page._native_input_transaction_depth == 0
 
 
 def test_safari_page_evaluate_stages_a_large_argument_in_chunks() -> None:
