@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.81.18-codex.0
+Code version: v3.81.18-codex.1
 """
 
 from __future__ import annotations
@@ -9088,6 +9088,7 @@ def run_web_computer_use(
                         else CHROMIUM_WINDOW_MODE_OFFSCREEN
                     ),
                     prefer_initialized_debug_profile=True,
+                    native_clone_cdp=(sys.platform == "darwin" and settings.browser == "edge"),
                 )
             )
             if should_stop():

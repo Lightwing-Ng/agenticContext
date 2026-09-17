@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.24.7-codex.0`
+Documentation version: `v1.24.8-codex.0`
 
 ## macOS ChatGPT Agent Cloudflare loop on 17 Sep 2026
 
@@ -94,10 +94,12 @@ Documentation version: `v1.24.7-codex.0`
   Jury is a separate runtime: ChatGPT, Grok, and Gemini jurors can submit prompts from one owned
   Safari window, while Claude is available only to an Edge- or Chrome-backed Jury.
 - Safari automation still serializes owned windows across local processes and closes only the
-  task-owned window at completion. While a Safari Agent owns that serialized context, account,
-  source, Project-session, and history probes serve cached state or fail busy instead of waiting on
-  the same lock. Admission is bidirectional: a Safari Cache task also blocks a new Safari Agent,
-  and an active Safari Agent blocks a new Safari Cache task.
+  task-owned window at completion. A leftover task window from a dead or same-process owner is
+  closed when possible, otherwise reused for the next Recheck; a live foreign owner still blocks.
+  Daily Safari is never closed to recover that lease. While a Safari Agent owns that serialized
+  context, account, source, Project-session, and history probes serve cached state or fail busy
+  instead of waiting on the same lock. Admission is bidirectional: a Safari Cache task also blocks
+  a new Safari Agent, and an active Safari Agent blocks a new Safari Cache task.
 - Safari activates one exact marked control with one trusted native Return only after
   official-origin, window, tab, exact-URL, document/element focus, center hit-test, and
   no-sheet/no-dialog checks. A post-input transport or receipt failure is uncertain: callers use

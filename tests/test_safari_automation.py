@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.11.1-codex.1
+# Code version: v2.11.3-codex.0
 
 from __future__ import annotations
 
@@ -1205,6 +1205,12 @@ def test_safari_context_blocks_a_stale_owned_window_until_it_is_absent(
         "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
         lock_path,
     ), patch(
+        "app.core.safari_automation._safari_pid_is_alive",
+        return_value=True,
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=AssertionError("A live foreign owner must not close the window"),
+    ), patch(
         "app.core.safari_automation._safari_window_inventory",
         side_effect=({456: 3}, {}),
     ):
@@ -1216,6 +1222,197 @@ def test_safari_context_blocks_a_stale_owned_window_until_it_is_absent(
         context._release_context_lock()
 
     assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_closes_leftover_window_when_owner_process_is_gone(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "owned",
+                "ownership_token": "a" * 32,
+                "owner_pid": 123,
+                "baseline_windows": [],
+                "window_id": 456,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://grok.com/files", lock_blocking=False)
+    closed: list[int] = []
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_pid_is_alive",
+        return_value=False,
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=lambda window_id: closed.append(window_id) or True,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        side_effect=({456: 1}, {}),
+    ):
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert closed == [456]
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_closes_same_process_stale_owned_window(
+    tmp_path: Path,
+) -> None:
+    import os
+
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "owned",
+                "ownership_token": "a" * 32,
+                "owner_pid": os.getpid(),
+                "baseline_windows": [],
+                "window_id": 789,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://grok.com/files", lock_blocking=False)
+    closed: list[int] = []
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=lambda window_id: closed.append(window_id) or True,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        side_effect=({789: 1}, {}),
+    ):
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert closed == [789]
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_adopts_leftover_window_when_close_fails(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "owned",
+                "ownership_token": "a" * 32,
+                "owner_pid": 123,
+                "baseline_windows": [{"window_id": 10, "tab_count": 2}],
+                "window_id": 456,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://grok.com/files", lock_blocking=False)
+    closed: list[int] = []
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_pid_is_alive",
+        return_value=False,
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=lambda window_id: closed.append(window_id) or False,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={10: 2, 456: 1},
+    ):
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert closed == [456]
+    assert context._adopted_window_id == 456
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "owned"
+
+
+def test_safari_context_clears_stale_lease_for_a_pre_existing_window(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "owned",
+                "ownership_token": "a" * 32,
+                "owner_pid": 123,
+                "baseline_windows": [{"window_id": 456, "tab_count": 3}],
+                "window_id": 456,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://grok.com/files", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=AssertionError("Daily Safari must not be closed"),
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={456: 3},
+    ):
+        context._acquire_context_lock()
+        context._release_context_lock()
+
+    assert context._adopted_window_id is None
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+
+
+def test_safari_context_reuses_an_adopted_window_instead_of_creating_another() -> None:
+    context = SafariContext("https://grok.com/files")
+    context._adopted_window_id = 456
+
+    with patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={10: 2, 456: 1},
+    ), patch.object(
+        context,
+        "_create_window",
+        side_effect=AssertionError("must not create another Safari window"),
+    ), patch.object(
+        context,
+        "_mark_context_window_owned",
+    ) as mark, patch.object(
+        SafariPage,
+        "goto",
+    ) as goto:
+        page = context._create_page("https://grok.com/files")
+
+    assert page.window_id == 456
+    assert page.tab_index == 1
+    assert context._adopted_window_id is None
+    mark.assert_called_once_with(456)
+    goto.assert_called_once_with(
+        "https://grok.com/files",
+        wait_until="domcontentloaded",
+        timeout=60_000,
+    )
 
 
 def test_safari_context_migrates_a_legacy_clear_lease_without_inventory(
@@ -1268,6 +1465,12 @@ def test_safari_context_reconciles_a_legacy_owned_window_by_exact_id(
     with patch(
         "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
         lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_pid_is_alive",
+        return_value=True,
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=AssertionError("A live foreign owner must not close the window"),
     ), patch(
         "app.core.safari_automation._safari_window_inventory",
         side_effect=({10: 2, 456: 1}, {10: 2}),

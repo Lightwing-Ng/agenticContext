@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.81.13-codex.1
+Code version: v3.81.13-codex.2
 """
 
 from __future__ import annotations
@@ -6358,6 +6358,9 @@ def test_chromium_agent_selects_the_provider_tab_before_navigation(
     assert launch_options[0]["headless"] is False
     assert launch_options[0]["background_window"] is True
     assert launch_options[0]["silent"] is (host_platform == "darwin")
+    assert launch_options[0]["native_clone_cdp"] is (
+        host_platform == "darwin" and browser_name == "edge"
+    )
     assert captured_frontmost_apps == ([True] if host_platform == "darwin" else [])
     assert restored_frontmost_apps == ([("WeChat", expected_app)] if host_platform == "darwin" else [])
 

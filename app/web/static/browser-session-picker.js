@@ -1,4 +1,4 @@
-/* Code version: v1.8.0-codex.1 */
+/* Code version: v1.8.1-codex.0 */
 
 (() => {
     function closeOtherMenus(activePanel) {
@@ -51,6 +51,32 @@
             }
         }
 
+        function cacheSelectionFromUrl() {
+            const match = window.location.pathname.match(
+                /^\/cache\/[^/]+\/(?:text|media)\/(safari|edge|chrome)$/,
+            );
+            return match ? match[1] : "";
+        }
+
+        function syncCacheBrowserUrl(browserId) {
+            const page = document.querySelector("[data-cache-page]");
+            if (!page || !page.querySelector("[data-cache-content-mode]") || !browserId) return;
+            const source = page.dataset.cacheSource || "";
+            const mode = page.dataset.cacheContentMode === "media" ? "media" : "text";
+            if (!source) return;
+            page.querySelectorAll("[data-cache-content-mode-option]").forEach((option) => {
+                const optionMode = option.dataset.cacheContentModeOption === "media" ? "media" : "text";
+                option.setAttribute("href", `/cache/${source}/${optionMode}/${browserId}`);
+            });
+            const nextPath = `/cache/${source}/${mode}/${browserId}`;
+            if (window.location.pathname === nextPath) {
+                page.dataset.cacheBrowser = browserId;
+                return;
+            }
+            window.history.replaceState(null, "", nextPath);
+            page.dataset.cacheBrowser = browserId;
+        }
+
         function setSelectedBrowser(browserId) {
             activeBrowser = browserId || "";
             if (hiddenInput) {
@@ -94,6 +120,7 @@
                     window.sessionStorage.setItem(selectionStorageKey, browserId);
                 } catch (_error) {
                 }
+                syncCacheBrowserUrl(browserId);
                 statusController?.setBrowser(browserId);
             });
         });
@@ -117,10 +144,13 @@
                 return "";
             }
         })();
+        const urlSelection = cacheSelectionFromUrl();
         const hiddenInputSelection = hiddenInput ? (hiddenInput.value || "").trim() : "";
         const defaultBrowserId = optionButtons.length === 1 ? (optionButtons[0].dataset.browserOption || "") : "";
-        const initialBrowserId = optionButtons.some((button) => button.dataset.browserOption === storedSelection)
-            ? storedSelection
+        const initialBrowserId = optionButtons.some((button) => button.dataset.browserOption === urlSelection)
+            ? urlSelection
+            : optionButtons.some((button) => button.dataset.browserOption === storedSelection)
+                ? storedSelection
             : optionButtons.some((button) => button.dataset.browserOption === hiddenInputSelection)
                 ? hiddenInputSelection
             : defaultBrowserId;
@@ -131,6 +161,7 @@
                 window.sessionStorage.setItem(selectionStorageKey, initialBrowserId);
             } catch (_error) {
             }
+            syncCacheBrowserUrl(initialBrowserId);
             statusController?.setBrowser(initialBrowserId);
             return;
         }

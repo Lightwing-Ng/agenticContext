@@ -1,4 +1,4 @@
-{# Code version: v1.33.11-codex.0 #}
+{# Code version: v1.33.12-codex.0 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -13,15 +13,24 @@
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.13.2-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.8.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.8.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.15.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.15.1-codex.0') }}"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
 {% include "_sidebar_bootstrap.html" %}
 {% from "_cache_page_components.html" import render_browser_session, render_metric, render_progress_metric %}
 {% set current_phase = snapshot.phase or "idle" %}
+{% set cache_mode = cache_content_mode if cache_content_mode is defined and cache_content_mode in ["text", "media"] else "text" %}
+{% set cache_browser = selected_browser_id if selected_browser_id is defined and selected_browser_id else saved_config|attr(cache_source.browser_config_field) %}
+{% if cache_source.show_content_mode and cache_browser %}
+{% set cache_text_href = url_for("cache_source_selected", source_key=cache_source.key, content_mode="text", browser=cache_browser) %}
+{% set cache_media_href = url_for("cache_source_selected", source_key=cache_source.key, content_mode="media", browser=cache_browser) %}
+{% else %}
+{% set cache_text_href = url_for("cache_source", source_key=cache_source.key) %}
+{% set cache_media_href = url_for("cache_source", source_key=cache_source.key) %}
+{% endif %}
 <main
     class="page"
     data-cache-page
@@ -29,6 +38,8 @@
     data-cache-source-label="{{ cache_source.label }}"
     data-cache-status-url="{{ url_for('api_cache_status', source_key=cache_source.key) }}"
     data-cache-progress-strategy="{{ cache_source.progress_strategy }}"
+    data-cache-content-mode="{{ cache_mode }}"
+    data-cache-browser="{{ cache_browser }}"
 >
     <div class="ambient ambient-left" aria-hidden="true"></div>
     <div class="ambient ambient-right" aria-hidden="true"></div>
@@ -60,24 +71,24 @@
                     aria-label="Cache content type"
                     data-cache-content-mode
                     data-option-count="2"
-                    data-segmented-active-index="0"
-                    style="--segmented-option-count: 2; --segmented-active-index: 0;"
+                    data-segmented-active-index="{{ 1 if cache_mode == 'media' else 0 }}"
+                    style="--segmented-option-count: 2; --segmented-active-index: {{ 1 if cache_mode == 'media' else 0 }};"
                 >
                     <a
-                        class="segmented-control-option browser-content-mode-option is-active"
-                        href="{{ url_for('cache_source', source_key=cache_source.key) }}"
+                        class="segmented-control-option browser-content-mode-option{% if cache_mode != 'media' %} is-active{% endif %}"
+                        href="{{ cache_text_href }}"
                         data-cache-content-mode-option="text"
                         role="radio"
-                        aria-checked="true"
+                        aria-checked="{{ 'true' if cache_mode != 'media' else 'false' }}"
                     >
                         <span>Text</span>
                     </a>
                     <a
-                        class="segmented-control-option browser-content-mode-option"
-                        href="{{ url_for('cache_source', source_key=cache_source.key) }}"
+                        class="segmented-control-option browser-content-mode-option{% if cache_mode == 'media' %} is-active{% endif %}"
+                        href="{{ cache_media_href }}"
                         data-cache-content-mode-option="media"
                         role="radio"
-                        aria-checked="false"
+                        aria-checked="{{ 'true' if cache_mode == 'media' else 'false' }}"
                     >
                         <span>Media</span>
                     </a>
@@ -167,9 +178,9 @@
                         type="hidden"
                         name="{{ cache_source.browser_config_field }}"
                         id="{{ cache_source.browser_input_id }}"
-                        value="{{ saved_config|attr(cache_source.browser_config_field) }}"
+                        value="{{ cache_browser }}"
                     >
-                    <input type="hidden" name="cache_content_mode" value="text" data-cache-runtime-mode>
+                    <input type="hidden" name="cache_content_mode" value="{{ cache_mode }}" data-cache-runtime-mode>
                     {% block source_fields %}{% endblock %}
                 </form>
                 {% if cache_source.show_shared_settings_link %}
@@ -191,7 +202,7 @@
                         data-wait-title="{{ cache_source.stop_wait_title }}"
                         data-wait-copy="{{ cache_source.stop_wait_copy }}"
                     >
-                        <input type="hidden" name="cache_content_mode" value="text" data-cache-runtime-mode>
+                        <input type="hidden" name="cache_content_mode" value="{{ cache_mode }}" data-cache-runtime-mode>
                         <button type="submit" class="danger-button stop-button sidebar-action-button" id="stop_button" {% if not snapshot.running %}disabled{% endif %}>Stop</button>
                     </form>
                     <div class="sidebar-form sidebar-form-start" {% if snapshot.running %}hidden{% endif %}>
@@ -256,7 +267,7 @@
 </main>
 
 {% include "_waiting_modal.html" %}
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.24.0-codex.1') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.24.1-codex.0') }}"></script>
 {% block tail %}{% endblock %}
 </body>
 </html>

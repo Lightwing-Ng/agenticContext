@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.82.3-codex.1
+# Code version: v1.82.4-codex.0
 
 from __future__ import annotations
 
@@ -156,7 +156,12 @@ from app.web.cache_sources import (
     get_cache_source_label,
     get_cache_source_view,
 )
-from app.web.navigation import build_agent_path, is_supported_agent_selection
+from app.web.navigation import (
+    build_agent_path,
+    is_supported_agent_selection,
+    is_supported_cache_browser,
+    normalize_cache_content_mode,
+)
 from app.web.token_registry import (
     build_style_token_component_rows,
 )
@@ -996,7 +1001,27 @@ def create_app(
             or target_source.key not in cache_runtimes
         ):
             return ""
-        return url_for("cache_source", source_key=target_source.key)
+        view_args = request.view_args or {}
+        content_mode = normalize_cache_content_mode(view_args.get("content_mode"))
+        browser = str(
+            view_args.get("browser")
+            or getattr(saved_config, target_source.browser_config_field, "")
+            or ""
+        ).strip().lower()
+        if target_source.supported_browsers and browser not in target_source.supported_browsers:
+            browser = str(
+                getattr(saved_config, target_source.browser_config_field, "") or ""
+            ).strip().lower()
+            if browser not in target_source.supported_browsers:
+                browser = target_source.supported_browsers[0]
+        if not target_source.show_content_mode or not is_supported_cache_browser(browser):
+            return url_for("cache_source", source_key=target_source.key)
+        return url_for(
+            "cache_source_selected",
+            source_key=target_source.key,
+            content_mode=content_mode,
+            browser=browser,
+        )
 
     @app.context_processor
     def inject_cache_source_views() -> dict[str, Any]:
@@ -1253,7 +1278,12 @@ def create_app(
             ).expanduser(),
         )
 
-    def render_cache_source_page(source_key: str):
+    def render_cache_source_page(
+        source_key: str,
+        *,
+        content_mode: str | None = None,
+        browser: str | None = None,
+    ):
         """Render one source through the shared cache-page contract."""
         cache_source = get_cache_source_view(source_key)
         if cache_source is None or source_key not in cache_runtimes:
@@ -1265,8 +1295,17 @@ def create_app(
                 for option in browser_options
                 if option["id"] in cache_source.supported_browsers
             ]
+        available_browser_ids = {option["id"] for option in browser_options}
+        requested_browser = str(browser or "").strip().lower()
         selected_browser_id = str(
             getattr(saved_config, cache_source.browser_config_field, "") or ""
+        )
+        if requested_browser:
+            if requested_browser not in available_browser_ids:
+                abort(404)
+            selected_browser_id = requested_browser
+        cache_content_mode = normalize_cache_content_mode(
+            content_mode or request.args.get("content_mode")
         )
         selected_browser_label = next(
             (
@@ -1284,13 +1323,15 @@ def create_app(
                 for source in cache_source_views_for_page(source_key)
                 if source.key in cache_runtimes
             ),
-            snapshot=build_reconciled_cache_snapshot(source_key, request.args.get("content_mode", "text")),
+            snapshot=build_reconciled_cache_snapshot(source_key, cache_content_mode),
             history_snapshot=(
                 build_reconciled_grok_history_snapshot() if source_key == "grok" else None
             ),
             saved_config=saved_config,
             browser_options=browser_options,
+            selected_browser_id=selected_browser_id,
             selected_browser_label=selected_browser_label,
+            cache_content_mode=cache_content_mode,
             file_manager_label=local_file_manager_label(),
             version=APP_VERSION,
             default_host=DEFAULT_HOST,
@@ -1301,6 +1342,33 @@ def create_app(
 
     def cache_source_url(source_key: str) -> str:
         """Build the canonical page URL for one registered cache source."""
+        cache_source = get_cache_source_view(source_key)
+        if cache_source is None:
+            return url_for("cache_source", source_key=source_key)
+        view_args = request.view_args or {}
+        content_mode = normalize_cache_content_mode(
+            request.form.get("cache_content_mode")
+            or request.form.get("chatgpt_content_mode")
+            or request.args.get("content_mode")
+            or view_args.get("content_mode")
+        )
+        browser = str(
+            request.form.get(cache_source.browser_config_field)
+            or view_args.get("browser")
+            or getattr(saved_config, cache_source.browser_config_field, "")
+            or ""
+        ).strip().lower()
+        if cache_source.supported_browsers and browser not in cache_source.supported_browsers:
+            browser = str(
+                getattr(saved_config, cache_source.browser_config_field, "") or ""
+            ).strip().lower()
+        if cache_source.show_content_mode and is_supported_cache_browser(browser):
+            return url_for(
+                "cache_source_selected",
+                source_key=source_key,
+                content_mode=content_mode,
+                browser=browser,
+            )
         return url_for("cache_source", source_key=source_key)
 
     def legacy_cache_source_redirect(source_key: str):
@@ -1315,6 +1383,23 @@ def create_app(
         if get_cache_source_view(source_key) is None or source_key not in cache_runtimes:
             abort(404)
         return render_cache_source_page(source_key)
+
+    @app.get("/cache/<source_key>/<content_mode>/<browser>")
+    def cache_source_selected(source_key: str, content_mode: str, browser: str):
+        cache_source = get_cache_source_view(source_key)
+        if (
+            cache_source is None
+            or source_key not in cache_runtimes
+            or not cache_source.show_content_mode
+            or content_mode not in {"text", "media"}
+            or not is_supported_cache_browser(browser)
+        ):
+            abort(404)
+        return render_cache_source_page(
+            source_key,
+            content_mode=content_mode,
+            browser=browser,
+        )
 
     @app.get("/")
     def index():

@@ -359,7 +359,7 @@ class WebAppTests(unittest.TestCase):
             for source in ("chatgpt", "claude", "gemini", "grok", "x", "zhihu")
         ]
         assert option_ids == sorted(option_ids)
-        self.assertIn('data-cache-source-switcher-path="/cache/gemini"', body)
+        self.assertIn('data-cache-source-switcher-path="/cache/gemini/text/edge"', body)
 
     def test_cache_source_switcher_never_routes_to_an_agent_surface(self) -> None:
         app = create_app()
@@ -372,7 +372,7 @@ class WebAppTests(unittest.TestCase):
         self.assertTrue(all(path.startswith("/cache/") for path in paths))
         self.assertTrue(all(not path.startswith("/agent/") for path in paths))
         self.assertIn('id="cache_source_switcher_option_claude"', body)
-        self.assertIn('data-cache-source-switcher-path="/cache/claude"', body)
+        self.assertIn('data-cache-source-switcher-path="/cache/claude/text/edge"', body)
 
     def test_gemini_logo_asset_is_square_symbol_only_and_full_color(self) -> None:
         markup = GEMINI_LOGO_ASSET_PATH.read_text(encoding="utf-8")
@@ -599,7 +599,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<p class="workspace-kicker">Live snapshot</p>', index_body)
         self.assertNotIn('<p class="workspace-kicker">Live snapshot</p>', chatgpt_body)
         self.assertIn('data-section-link="settings"', grok_body)
-        self.assertIn('data-cache-source-switcher-path="/cache/chatgpt"', grok_body)
+        self.assertIn('data-cache-source-switcher-path="/cache/chatgpt/text/edge"', grok_body)
         self.assertIn('data-section-link="local-resources"', browser_body)
         self.assertIn("Gemini history cache overview", gemini_body)
         self.assertIn("Claude history cache overview", claude_body)
@@ -667,7 +667,8 @@ class WebAppTests(unittest.TestCase):
             chatgpt_body.index('id="overview"'),
         )
         self.assertIn("Sessions discovered", chatgpt_body)
-        self.assertGreaterEqual(chatgpt_body.count('href="/cache/chatgpt"'), 2)
+        self.assertGreaterEqual(chatgpt_body.count('href="/cache/chatgpt/text/edge"'), 1)
+        self.assertGreaterEqual(chatgpt_body.count('href="/cache/chatgpt/media/edge"'), 1)
         self.assertIn(
             'chatgpt-page.js?v=chatgpt-page-v1.4.0-codex.1',
             chatgpt_body,
@@ -712,31 +713,32 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.15.0-codex.1', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.15.1-codex.0', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
-        self.assertIn('href="/cache/chatgpt"', chatgpt_body)
+        self.assertIn('href="/cache/chatgpt/text/edge"', chatgpt_body)
+        self.assertIn('href="/cache/chatgpt/media/edge"', chatgpt_body)
         self.assertIn('data-cache-content-mode', grok_body)
         self.assertIn(
-            'href="/cache/grok"',
+            'href="/cache/grok/text/edge"',
             grok_body,
         )
-        self.assertIn('href="/cache/grok"', grok_body)
+        self.assertIn('href="/cache/grok/media/edge"', grok_body)
         self.assertNotIn('class="cache-secondary-action"', grok_body)
         self.assertNotIn('action="/cache/grok/text/start"', grok_body)
         self.assertNotIn('action="/cache/grok/text/stop"', grok_body)
         self.assertIn('data-cache-content-mode', gemini_body)
         self.assertIn(
-            'href="/cache/gemini"',
+            'href="/cache/gemini/text/edge"',
             gemini_body,
         )
-        self.assertIn('href="/cache/gemini"', gemini_body)
+        self.assertIn('href="/cache/gemini/media/edge"', gemini_body)
         self.assertIn('data-cache-content-mode', claude_body)
         self.assertIn(
-            'href="/cache/claude"',
+            'href="/cache/claude/text/edge"',
             claude_body,
         )
-        self.assertIn('href="/cache/claude"', claude_body)
+        self.assertIn('href="/cache/claude/media/edge"', claude_body)
         for body in (index_body, grok_body, chatgpt_body, gemini_body, claude_body, zhihu_body):
             with self.subTest(cache_action_state=body[:40]):
                 self.assertIn('data-cache-action-row', body)
@@ -746,7 +748,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', chatgpt_body)
-        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.8.0-codex.1', chatgpt_body)
+        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.8.1-codex.0', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
         chatgpt_form_end = chatgpt_body.index("</form>", chatgpt_form_start)
@@ -762,6 +764,17 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("function initializeNumberSteppers()", cache_page_script)
         self.assertIn("data.progress_unit", cache_page_script)
         self.assertIn('const cacheActionRow = document.querySelector("[data-cache-action-row]");', cache_page_script)
+        self.assertIn(
+            "const cacheSelectionPathPattern = /^\\/cache\\/([^/]+)\\/(text|media)\\/(safari|edge|chrome)$/;",
+            cache_page_script,
+        )
+        self.assertIn("function cacheCanonicalPath(mode, browserId)", cache_page_script)
+        self.assertIn("function syncCacheSelectionUrl(mode, browserId, { replace = false } = {})", cache_page_script)
+        picker_script = BROWSER_SESSION_PICKER_SCRIPT_PATH.read_text(encoding="utf-8")
+        self.assertIn("function cacheSelectionFromUrl()", picker_script)
+        self.assertIn("function syncCacheBrowserUrl(browserId)", picker_script)
+        self.assertIn("const urlSelection = cacheSelectionFromUrl();", picker_script)
+        self.assertIn('option.setAttribute("href", `/cache/${source}/${optionMode}/${browserId}`);', picker_script)
         self.assertIn('cacheActionRow.dataset.actionRunning = String(isRunning);', cache_page_script)
         self.assertIn('const startAction = document.querySelector(".sidebar-form-start");', cache_page_script)
         self.assertIn('startAction.hidden = isRunning;', cache_page_script)
@@ -850,7 +863,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.0-codex.1"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = "style-v2.122.1-codex.1"
                 self.assertIn(expected_style_version, body)
@@ -874,6 +887,7 @@ class WebAppTests(unittest.TestCase):
             'const agentRoutePattern = /^\\/agent\\/(?:safari|edge|chrome)\\/(?:chatgpt|gemini|grok|claude)$/;',
             'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view"];',
             'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/zhihu"]);',
+            'const cacheSelectionPathPattern = /^\\/cache\\/(x|grok|chatgpt|gemini|claude|zhihu)(?:\\/(text|media)\\/(safari|edge|chrome))?$/;',
             'if (targetUrl.pathname === "/browser") return "/cache/chatgpt";',
             'const legacyCachePathMap = new Map([',
             'window.sessionStorage.getItem(dockLocationMemoryKey(section))',
@@ -885,7 +899,7 @@ class WebAppTests(unittest.TestCase):
             'link.setAttribute("aria-current", "page");',
             'link.removeAttribute("aria-current");',
             'document.querySelector(".browser-filter-form")',
-            'return cacheSectionPaths.has(normalizedPath) ? normalizedPath : "/cache/chatgpt";',
+            'return cacheSelectionPathPattern.test(normalizedPath) ? normalizedPath : "/cache/chatgpt";',
             'data-settings-category][aria-current="page"]',
             'localResourceFilterForm?.addEventListener("input", rememberCurrentDockLocation);',
             'sidebarDock?.addEventListener("click", (event) => {',
@@ -931,32 +945,12 @@ class WebAppTests(unittest.TestCase):
                     if f'data-cache-source="{source}"' in body
                 )
                 expected_paths = (
-                    (
-                        "/cache/chatgpt",
-                        "/cache/claude",
-                        "/cache/gemini",
-                        "/cache/grok",
-                        "/cache/x",
-                        "/cache/zhihu",
-                    )
-                    if current_source == "gemini"
-                    else (
-                        "/cache/chatgpt",
-                        "/cache/claude",
-                        "/cache/gemini",
-                        "/cache/grok",
-                        "/cache/x",
-                        "/cache/zhihu",
-                    )
-                    if current_source == "claude"
-                    else (
-                        "/cache/chatgpt",
-                        "/cache/claude",
-                        "/cache/gemini",
-                        "/cache/grok",
-                        "/cache/x",
-                        "/cache/zhihu",
-                    )
+                    "/cache/chatgpt/text/edge",
+                    "/cache/claude/text/edge",
+                    "/cache/gemini/text/edge",
+                    "/cache/grok/text/edge",
+                    "/cache/x",
+                    "/cache/zhihu/text/edge",
                 )
                 for expected_path in expected_paths:
                     self.assertIn(f'data-cache-source-switcher-path="{expected_path}"', heading_markup)
@@ -1058,44 +1052,44 @@ class WebAppTests(unittest.TestCase):
         expected_options = ("chatgpt", "claude", "gemini", "grok", "x", "zhihu")
         expected_paths_by_page = {
             "chatgpt": (
-                "/cache/chatgpt",
-                "/cache/claude",
-                "/cache/gemini",
-                "/cache/grok",
+                "/cache/chatgpt/text/edge",
+                "/cache/claude/text/edge",
+                "/cache/gemini/text/edge",
+                "/cache/grok/text/edge",
                 "/cache/x",
-                "/cache/zhihu",
+                "/cache/zhihu/text/edge",
             ),
             "gemini": (
-                "/cache/chatgpt",
-                "/cache/claude",
-                "/cache/gemini",
-                "/cache/grok",
+                "/cache/chatgpt/text/edge",
+                "/cache/claude/text/edge",
+                "/cache/gemini/text/edge",
+                "/cache/grok/text/edge",
                 "/cache/x",
-                "/cache/zhihu",
+                "/cache/zhihu/text/edge",
             ),
             "grok": (
-                "/cache/chatgpt",
-                "/cache/claude",
-                "/cache/gemini",
-                "/cache/grok",
+                "/cache/chatgpt/text/edge",
+                "/cache/claude/text/edge",
+                "/cache/gemini/text/edge",
+                "/cache/grok/text/edge",
                 "/cache/x",
-                "/cache/zhihu",
+                "/cache/zhihu/text/edge",
             ),
             "claude": (
-                "/cache/chatgpt",
-                "/cache/claude",
-                "/cache/gemini",
-                "/cache/grok",
+                "/cache/chatgpt/text/edge",
+                "/cache/claude/text/edge",
+                "/cache/gemini/text/edge",
+                "/cache/grok/text/edge",
                 "/cache/x",
-                "/cache/zhihu",
+                "/cache/zhihu/text/edge",
             ),
             "zhihu": (
-                "/cache/chatgpt",
-                "/cache/claude",
-                "/cache/gemini",
-                "/cache/grok",
+                "/cache/chatgpt/text/edge",
+                "/cache/claude/text/edge",
+                "/cache/gemini/text/edge",
+                "/cache/grok/text/edge",
                 "/cache/x",
-                "/cache/zhihu",
+                "/cache/zhihu/text/edge",
             ),
         }
         for page_source, body in bodies.items():
@@ -5560,9 +5554,34 @@ def test_grok_remembered_text_submission_cannot_start_media(tmp_path: Path) -> N
     with patch("app.core.grok_service.GrokDownloadService.start") as start, patch("app.core.grok_history_service.GrokHistoryService.start") as text_start:
         response = application.test_client().post("/cache/grok/start", data={"cache_content_mode": "text"})
     assert response.status_code == 302
-    assert response.location == "/cache/grok"
+    assert response.location == "/cache/grok/text/edge"
     text_start.assert_called_once()
     start.assert_not_called()
+
+
+def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path) -> None:
+    with patch("app.core.browser_sessions.is_macos_host", return_value=True):
+        client = create_app(tmp_path / "local_store").test_client()
+        safari = client.get("/cache/grok/text/safari")
+        media = client.get("/cache/grok/media/safari")
+        invalid_mode = client.get("/cache/grok/notes/safari")
+        x_selected = client.get("/cache/x/text/safari")
+        zhihu_safari = client.get("/cache/zhihu/text/safari")
+
+    assert safari.status_code == 200
+    body = safari.get_data(as_text=True)
+    assert 'data-cache-source="grok"' in body
+    assert 'data-cache-content-mode="text"' in body
+    assert 'data-cache-browser="safari"' in body
+    assert 'href="/cache/grok/text/safari"' in body
+    assert 'href="/cache/grok/media/safari"' in body
+    assert 'name="grok_browser"' in body
+    assert 'value="safari"' in body
+    assert media.status_code == 200
+    assert 'data-cache-content-mode="media"' in media.get_data(as_text=True)
+    assert invalid_mode.status_code == 404
+    assert x_selected.status_code == 404
+    assert zhihu_safari.status_code == 404
 
 
 def test_chatgpt_text_counters_survive_app_recreation(tmp_path: Path) -> None:

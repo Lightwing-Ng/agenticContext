@@ -466,12 +466,12 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
             expect(page.locator('[data-dock-section="cache"]')).to_have_class(re.compile(r"\bis-active\b"))
             expect(page.locator('[data-dock-section="agent"]')).not_to_have_class(re.compile(r"\bis-active\b"))
             expected_paths = [
-                "/cache/chatgpt",
-                "/cache/claude",
-                "/cache/gemini",
-                "/cache/grok",
+                "/cache/chatgpt/text/edge",
+                "/cache/claude/text/edge",
+                "/cache/gemini/text/edge",
+                "/cache/grok/text/edge",
                 "/cache/x",
-                "/cache/zhihu",
+                "/cache/zhihu/text/edge",
             ]
             assert options.evaluate_all(
                 "elements => elements.map(element => element.dataset.cacheSourceSwitcherPath)"
@@ -1920,55 +1920,13 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
 ) -> None:
     """Verify every source option lands on its intentional local destination."""
     expected_paths = {
-        "chatgpt": {
-            "chatgpt": "/cache/chatgpt",
-            "claude": "/cache/claude",
-            "gemini": "/cache/gemini",
-            "grok": "/cache/grok",
-            "x": "/cache/x",
-            "zhihu": "/cache/zhihu",
-        },
-        "gemini": {
-            "chatgpt": "/cache/chatgpt",
-            "claude": "/cache/claude",
-            "gemini": "/cache/gemini",
-            "grok": "/cache/grok",
-            "x": "/cache/x",
-            "zhihu": "/cache/zhihu",
-        },
-        "grok": {
-            "chatgpt": "/cache/chatgpt",
-            "claude": "/cache/claude",
-            "gemini": "/cache/gemini",
-            "grok": "/cache/grok",
-            "x": "/cache/x",
-            "zhihu": "/cache/zhihu",
-        },
-        "x": {
-            "chatgpt": "/cache/chatgpt",
-            "claude": "/cache/claude",
-            "gemini": "/cache/gemini",
-            "grok": "/cache/grok",
-            "x": "/cache/x",
-            "zhihu": "/cache/zhihu",
-        },
-        "claude": {
-            "chatgpt": "/cache/chatgpt",
-            "claude": "/cache/claude",
-            "gemini": "/cache/gemini",
-            "grok": "/cache/grok",
-            "x": "/cache/x",
-            "zhihu": "/cache/zhihu",
-        },
-        "zhihu": {
-            "chatgpt": "/cache/chatgpt",
-            "claude": "/cache/claude",
-            "gemini": "/cache/gemini",
-            "grok": "/cache/grok",
-            "x": "/cache/x",
-            "zhihu": "/cache/zhihu",
-        },
-    }[page_source]
+        "chatgpt": "/cache/chatgpt/text/edge",
+        "claude": "/cache/claude/text/edge",
+        "gemini": "/cache/gemini/text/edge",
+        "grok": "/cache/grok/text/edge",
+        "x": "/cache/x",
+        "zhihu": "/cache/zhihu/text/edge",
+    }
     page, context = _open_page(
         disposable_browser,
         f"{sidebar_server_url}/cache/{page_source}",
@@ -2018,7 +1976,9 @@ def test_cache_dock_click_preserves_the_current_cache_source(
     )
     try:
         page.get_by_role("link", name="Cache", exact=True).click()
-        expect(page).to_have_url(re.compile(rf"/cache/{page_source}$"))
+        expect(page).to_have_url(
+            re.compile(rf"/cache/{page_source}(?:/(?:text|media)/(?:safari|edge|chrome))?$")
+        )
     finally:
         context.close()
 
@@ -4732,7 +4692,9 @@ def test_agent_connection_selection_survives_cache_navigation(
         expect(page.get_by_role("button", name="Browser: Chrome", exact=True)).to_be_visible()
 
         page.get_by_role("link", name="Cache", exact=True).click()
-        expect(page).to_have_url(re.compile(r"/cache/chatgpt$"))
+        expect(page).to_have_url(
+            re.compile(r"/cache/chatgpt(?:/(?:text|media)/(?:safari|edge|chrome))?$")
+        )
         expect(page.locator('[data-dock-section="cache"]')).to_have_attribute("aria-current", "page")
         expect(page.locator('[data-dock-section="agent"]')).not_to_have_attribute("aria-current", "page")
         page.get_by_role("link", name="Agent", exact=True).click()
@@ -4840,12 +4802,16 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
 
         page.locator('[data-cache-content-mode-option="text"]').click()
         if source_key == "chatgpt":
-            expect(page).to_have_url(re.compile(r"/cache/chatgpt$"))
+            expect(page).to_have_url(
+                re.compile(r"/cache/chatgpt(?:/(?:text|media)/(?:safari|edge|chrome))?$")
+            )
             expect(page.locator("[data-chatgpt-media-config]")).to_be_hidden()
             expect(page.locator("[data-chatgpt-content-mode-input]")).to_have_value("text")
             expect(page.locator('[name="chatgpt_project_url"]')).to_be_disabled()
         else:
-            expect(page).to_have_url(re.compile(rf"/cache/{source_key}$"))
+            expect(page).to_have_url(
+                re.compile(rf"/cache/{source_key}(?:/(?:text|media)/(?:safari|edge|chrome))?$")
+            )
             expect(page.locator('#start_button')).to_have_text("Start")
     finally:
         context.close()
@@ -4949,7 +4915,9 @@ def test_gemini_cache_source_switcher_opens_chatgpt_cache_page(
     try:
         page.locator("[data-cache-source-switcher-trigger]").click()
         page.locator('[data-cache-source-switcher-option="chatgpt"]').click()
-        expect(page).to_have_url(re.compile(r"/cache/chatgpt$"))
+        expect(page).to_have_url(
+            re.compile(r"/cache/chatgpt(?:/(?:text|media)/(?:safari|edge|chrome))?$")
+        )
     finally:
         context.close()
 

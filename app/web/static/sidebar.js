@@ -1,4 +1,4 @@
-/* Code version: v1.24.0-codex.1 */
+/* Code version: v1.24.1-codex.0 */
 
 (function initializeSidebar() {
     "use strict";
@@ -15,6 +15,7 @@
     const dockLocationMemoryPrefix = "cachelikes:dock-location:v1:";
     const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);
     const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/zhihu"]);
+    const cacheSelectionPathPattern = /^\/cache\/(x|grok|chatgpt|gemini|claude|zhihu)(?:\/(text|media)\/(safari|edge|chrome))?$/;
     const reducedMotionMedia = window.matchMedia("(prefers-reduced-motion: reduce)");
     const sidebarGelAnimationNames = new Set([
         "workspace-sidebar-gel-open",
@@ -92,7 +93,7 @@
             // at the local browser, to the first cache source page.
             if (targetUrl.pathname === "/browser") return "/cache/chatgpt";
             const normalizedPath = legacyCachePathMap.get(targetUrl.pathname) || targetUrl.pathname;
-            return cacheSectionPaths.has(normalizedPath) ? normalizedPath : "";
+            return cacheSelectionPathPattern.test(normalizedPath) ? normalizedPath : "";
         }
         if (section === "settings") {
             if (targetUrl.pathname !== "/settings") return "";
@@ -177,7 +178,7 @@
         }
         if (section === "cache") {
             const normalizedPath = legacyCachePathMap.get(window.location.pathname) || window.location.pathname;
-            return cacheSectionPaths.has(normalizedPath) ? normalizedPath : "/cache/chatgpt";
+            return cacheSelectionPathPattern.test(normalizedPath) ? normalizedPath : "/cache/chatgpt";
         }
         if (section === "local-resources") return currentLocalResourcesLocation();
         if (section === "settings") return currentSettingsLocation();
@@ -187,7 +188,7 @@
     function dockSectionForCurrentPath() {
         const normalizedPath = legacyCachePathMap.get(window.location.pathname) || window.location.pathname;
         if (normalizedPath === "/agent" || agentRoutePattern.test(window.location.pathname) || juryRoutePattern.test(window.location.pathname)) return "agent";
-        if (cacheSectionPaths.has(normalizedPath)) return "cache";
+        if (cacheSelectionPathPattern.test(normalizedPath)) return "cache";
         if (window.location.pathname === "/browser") return "local-resources";
         if (window.location.pathname === "/settings") return "settings";
         return "";

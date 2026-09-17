@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.11.1-codex.1
+# Code version: v2.11.3-codex.0
 
 from __future__ import annotations
 
@@ -335,6 +335,67 @@ return "windows:" & serializedWindowRows
             raise RuntimeError("Safari returned an invalid window inventory row.")
         inventory[int(window_id)] = int(tab_count)
     return inventory
+
+
+def _safari_pid_is_alive(pid: int) -> bool:
+    """Return whether a recorded Safari-task owner process still exists."""
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _close_safari_window_id(window_id: int) -> bool:
+    """Close one leftover task window without activating Safari.
+
+    Returns True when the window is absent afterward.
+    """
+    if type(window_id) is not int or window_id <= 0:
+        return False
+    source = f"""
+tell application "System Events"
+    set safariIsRunning to exists application process "Safari"
+end tell
+if not safariIsRunning then return "absent"
+tell application "Safari"
+    {SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
+    if not (exists (first window whose id is {window_id})) then
+        return "absent"
+    end if
+    try
+        close (first window whose id is {window_id})
+    end try
+    repeat with closePollIndex from 1 to 20
+        if not (exists (first window whose id is {window_id})) then exit repeat
+        delay 0.1
+    end repeat
+    {SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT}
+    if exists (first window whose id is {window_id}) then
+        return "still-open"
+    end if
+end tell
+return "closed"
+""".strip()
+    with safari_window_creation_guard():
+        try:
+            result = run_applescript(source, retry_transient=False).strip()
+        except RuntimeError as exc:
+            if is_missing_safari_window_error(exc):
+                return True
+            logger.warning(
+                "Safari could not close leftover task window %s: %s",
+                window_id,
+                exc,
+            )
+            return False
+    return result in {"absent", "closed"}
 
 
 def _safari_context_lease_path() -> Path:
@@ -1985,6 +2046,7 @@ class SafariContext:
         self._ownership_token = secrets.token_hex(16)
         self._creation_baseline_inventory: dict[int, int] = {}
         self._durable_lease_started = False
+        self._adopted_window_id: int | None = None
 
     def _read_context_lease_state(self) -> dict[str, Any] | None:
         """Read the atomically replaced ownership record while its lock is held."""
@@ -2182,10 +2244,38 @@ class SafariContext:
                     return
                 raise RuntimeError("Safari context owned-window state is invalid.")
             if window_id in current_inventory:
-                raise RuntimeError(
-                    "Safari still has a task-owned window from a previous process. "
-                    "Close that window before starting another Safari task."
+                if window_id in baseline:
+                    logger.info(
+                        "Ignoring stale Safari ownership of pre-existing window %s.",
+                        window_id,
+                    )
+                    self._clear_context_lease_state()
+                    return
+                foreign_owner = (
+                    _safari_pid_is_alive(payload["owner_pid"])
+                    and payload["owner_pid"] != os.getpid()
                 )
+                if foreign_owner:
+                    raise RuntimeError(
+                        "Safari still has a task-owned window from a previous process. "
+                        "Close that window before starting another Safari task."
+                    )
+                logger.info(
+                    "Closing leftover Safari task window %s after owner pid %s exited.",
+                    window_id,
+                    payload["owner_pid"],
+                )
+                _close_safari_window_id(window_id)
+                current_inventory = _safari_window_inventory()
+                if window_id not in current_inventory:
+                    self._clear_context_lease_state()
+                    return
+                logger.info(
+                    "Adopting leftover Safari task window %s because it could not be closed.",
+                    window_id,
+                )
+                self._adopted_window_id = window_id
+                return
         else:
             if self._uncertain_creation_candidates(current_inventory, baseline):
                 raise RuntimeError(
@@ -2394,12 +2484,24 @@ class SafariContext:
             tab_index = self._create_tab(window_id, url)
             page = SafariPage(self, window_id, tab_index=tab_index)
         else:
-            with safari_window_creation_guard():
-                self._begin_context_window_creation()
-                raw_window_id = self._create_window(url)
-            if not raw_window_id.isdigit():
-                raise RuntimeError("Safari did not return a usable window identifier.")
-            page = SafariPage(self, int(raw_window_id), tab_index=1)
+            adopted_window_id = self._adopted_window_id
+            self._adopted_window_id = None
+            if adopted_window_id is not None:
+                try:
+                    current_inventory = _safari_window_inventory()
+                except RuntimeError:
+                    current_inventory = {}
+                if adopted_window_id not in current_inventory:
+                    adopted_window_id = None
+            if adopted_window_id is not None:
+                page = SafariPage(self, adopted_window_id, tab_index=1)
+            else:
+                with safari_window_creation_guard():
+                    self._begin_context_window_creation()
+                    raw_window_id = self._create_window(url)
+                if not raw_window_id.isdigit():
+                    raise RuntimeError("Safari did not return a usable window identifier.")
+                page = SafariPage(self, int(raw_window_id), tab_index=1)
         self.pages.append(page)
         try:
             if len(self.pages) == 1:

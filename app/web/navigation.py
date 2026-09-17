@@ -1,6 +1,6 @@
 """Canonical local-console navigation helpers.
 
-Code version: v1.3.0-codex.1
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,9 @@ from app.core.agent import (
     SUPPORTED_AGENT_PLATFORMS,
     SUPPORTED_BROWSERS,
 )
+
+
+CACHE_CONTENT_MODES = frozenset({"text", "media"})
 
 
 def is_supported_agent_selection(browser: str | None, platform: str | None) -> bool:
@@ -28,3 +31,28 @@ def build_agent_path(browser: str, platform: str) -> str:
     if not is_supported_agent_selection(selected_browser, selected_platform):
         raise ValueError("Unsupported Agent browser/provider selection.")
     return f"/agent/{selected_browser}/{selected_platform}"
+
+
+def normalize_cache_content_mode(value: str | None) -> str:
+    """Return text or media, defaulting to text."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in CACHE_CONTENT_MODES else "text"
+
+
+def is_supported_cache_browser(browser: str | None) -> bool:
+    """Return whether one browser id can appear in a Cache URL."""
+    return str(browser or "").strip().lower() in SUPPORTED_BROWSERS
+
+
+def build_cache_path(
+    source_key: str,
+    *,
+    content_mode: str | None = None,
+    browser: str | None = None,
+) -> str:
+    """Return the canonical Cache path for one source, mode, and browser."""
+    source = str(source_key or "").strip().lower()
+    selected_browser = str(browser or "").strip().lower()
+    if selected_browser in SUPPORTED_BROWSERS:
+        return f"/cache/{source}/{normalize_cache_content_mode(content_mode)}/{selected_browser}"
+    return f"/cache/{source}"

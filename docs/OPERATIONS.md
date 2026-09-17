@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.25.4-codex.0`
+Documentation version: `v1.25.6-codex.0`
 
 ## Launch
 
@@ -95,7 +95,13 @@ publish it through a public tunnel or reverse proxy.
 - A Safari-backed Cache task is macOS-only, opt-in, and owns one standard, visible background window
   with native window controls. It restores the user's previous frontmost application after
   every window-affecting operation, then closes and verifies that exact window at task end;
-  it must not hide, minimize, move offscreen, reuse, or accumulate Safari windows.
+  it must not hide, minimize, move offscreen, or accumulate Safari windows.
+  If a previous process left a recorded task window behind, Recheck closes that leftover window
+  when its owner pid is gone or belongs to this process. If Safari refuses to close it, Recheck
+  reuses that same task window instead of blocking Account status. A lease that points at a
+  pre-existing window (the daily Safari login window) is cleared without closing or navigating it.
+  Cache pages that support text/media use `/cache/<source>/<text|media>/<browser>`, for example
+  `/cache/grok/text/safari`. The short `/cache/grok` path still renders.
 - Chrome, Edge, and Safari support differs by source and automation engine; use the session probe
   in the console before a long sync.
 - Passive Agent checks use a quiet, isolated Chromium context. ChatGPT source checks use a

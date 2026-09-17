@@ -98,10 +98,10 @@ def test_web_pages_and_status_apis_are_available(client) -> None:
 def test_legacy_cache_page_paths_redirect_to_canonical_namespace(client) -> None:
     for legacy_path, canonical_path in (
         ("/", "/cache/x"),
-        ("/grok", "/cache/grok"),
-        ("/chatgpt", "/cache/chatgpt"),
-        ("/gemini", "/cache/gemini"),
-        ("/claude", "/cache/claude"),
+        ("/grok", "/cache/grok/text/edge"),
+        ("/chatgpt", "/cache/chatgpt/text/edge"),
+        ("/gemini", "/cache/gemini/text/edge"),
+        ("/claude", "/cache/claude/text/edge"),
     ):
         response = client.get(legacy_path)
         assert response.status_code == 302
@@ -109,7 +109,7 @@ def test_legacy_cache_page_paths_redirect_to_canonical_namespace(client) -> None
 
     query_response = client.get("/chatgpt?agent_platform=gemini")
     assert query_response.status_code == 302
-    assert query_response.headers["Location"] == "/cache/chatgpt?agent_platform=gemini"
+    assert query_response.headers["Location"] == "/cache/chatgpt/text/edge?agent_platform=gemini"
 
 
 def test_browser_empty_cache_isolated_from_repository_cache(tmp_path: Path) -> None:

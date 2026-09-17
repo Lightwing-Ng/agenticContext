@@ -63,7 +63,7 @@ def test_zhihu_cache_page_uses_edge_login_and_text_first_controls(tmp_path: Path
     assert "Answers available" in body
     assert "Answers queued" not in body
     assert "Answers found" not in body
-    assert 'cache-page.js?v=cache-page-v1.15.0-codex.1' in body
+    assert 'cache-page.js?v=cache-page-v1.15.1-codex.0' in body
 
 
 def test_zhihu_routes_probe_and_dispatch_the_selected_edge_session(tmp_path: Path) -> None:
@@ -115,7 +115,7 @@ def test_legacy_zhihu_route_and_status_use_the_formal_cache(tmp_path: Path) -> N
     status = client.get("/api/zhihu/status").get_json()
 
     assert redirect_response.status_code == 302
-    assert redirect_response.headers["Location"].endswith("/cache/zhihu?from=legacy")
+    assert redirect_response.headers["Location"].endswith("/cache/zhihu/text/edge?from=legacy")
     assert status["downloaded_posts"] == 0
     assert status["progress_unit"] == "answers"
     assert status["output_dir"].endswith("/llm/zhihu")

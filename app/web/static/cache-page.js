@@ -1,4 +1,4 @@
-/* Code version: v1.15.0-codex.1 */
+/* Code version: v1.15.1-codex.0 */
 
 (() => {
     "use strict";
@@ -118,16 +118,74 @@
         }
     }
 
+    const cacheSelectionPathPattern = /^\/cache\/([^/]+)\/(text|media)\/(safari|edge|chrome)$/;
+
+    function contentModeFromCacheUrl() {
+        const match = cacheSelectionPathPattern.exec(window.location.pathname);
+        return match ? match[2] : "";
+    }
+
+    function browserFromCacheUrl() {
+        const match = cacheSelectionPathPattern.exec(window.location.pathname);
+        return match ? match[3] : "";
+    }
+
+    function currentCacheBrowser() {
+        return browserFromCacheUrl()
+            || page.dataset.cacheBrowser
+            || "";
+    }
+
+    function cacheCanonicalPath(mode, browserId) {
+        const source = page.dataset.cacheSource || "";
+        const selectedBrowser = browserId || currentCacheBrowser();
+        if (!source || !cacheContentModeControl || !selectedBrowser) {
+            return source ? `/cache/${source}` : "";
+        }
+        const normalizedMode = mode === "media" ? "media" : "text";
+        return `/cache/${source}/${normalizedMode}/${selectedBrowser}`;
+    }
+
+    function syncCacheSelectionUrl(mode, browserId, { replace = false } = {}) {
+        const selectedBrowser = browserId || currentCacheBrowser();
+        const nextPath = cacheCanonicalPath(mode, selectedBrowser);
+        if (cacheContentModeControl && selectedBrowser && sourceKey) {
+            cacheContentModeControl.querySelectorAll("[data-cache-content-mode-option]").forEach((option) => {
+                const optionMode = option.dataset.cacheContentModeOption === "media" ? "media" : "text";
+                option.setAttribute("href", `/cache/${sourceKey}/${optionMode}/${selectedBrowser}`);
+            });
+        }
+        if (!nextPath || window.location.pathname === nextPath) return;
+        if (replace) {
+            window.history.replaceState(null, "", nextPath);
+        } else {
+            window.history.pushState(null, "", nextPath);
+        }
+        page.dataset.cacheContentMode = mode === "media" ? "media" : "text";
+        if (selectedBrowser) page.dataset.cacheBrowser = selectedBrowser;
+    }
+
     function initializeCacheContentMode() {
         if (!cacheContentModeControl) return;
-        syncCacheContentMode(readRememberedContentMode());
+        const urlMode = contentModeFromCacheUrl();
+        const mode = urlMode || page.dataset.cacheContentMode || readRememberedContentMode();
+        rememberCacheContentMode(mode);
+        page.dataset.cacheContentMode = mode === "media" ? "media" : "text";
+        syncCacheContentMode(mode);
         cacheContentModeControl.addEventListener("click", (event) => {
             const option = event.target.closest("[data-cache-content-mode-option]");
             if (!option || !cacheContentModeControl.contains(option)) return;
             event.preventDefault();
-            const mode = option.dataset.cacheContentModeOption;
-            rememberCacheContentMode(mode);
-            syncCacheContentMode(mode);
+            const nextMode = option.dataset.cacheContentModeOption;
+            rememberCacheContentMode(nextMode);
+            syncCacheContentMode(nextMode);
+            syncCacheSelectionUrl(nextMode, currentCacheBrowser());
+            void refreshStatus();
+        });
+        window.addEventListener("popstate", () => {
+            const poppedMode = contentModeFromCacheUrl() || readRememberedContentMode();
+            rememberCacheContentMode(poppedMode);
+            syncCacheContentMode(poppedMode);
             void refreshStatus();
         });
     }
