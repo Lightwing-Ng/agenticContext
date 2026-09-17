@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.15.0-codex.1`
+Documentation version: `v1.15.1-codex.0`
 
 ## Supported commands
 
@@ -299,7 +299,7 @@ suite or CI; an automated equivalent must be marked `live`.
 
 | Scenario | Required evidence |
 | --- | --- |
-| Edge and Chrome project debug profiles | Login handoff, Recheck, window close/restart, and task retain the same project-owned authentication state; copying and launching alone do not establish authentication. |
+| Edge and Chrome project debug profiles | Windows login handoff, Recheck, window close/restart, and task retain the same project-owned authentication state; copying and launching alone do not establish authentication. macOS Edge Agent clones daily Edge like Cache ChatGPT and must not use the empty project debug profile. |
 | Concurrent requests | A second Windows Agent is rejected immediately; source/history probes return cached, `unprobed`, or busy responses without driving the active browser. |
 | Source browser open during clone creation | Record copy success or an actionable access/copy error; do not silently switch to writable automation of the real profile. |
 | Passive readiness/source checks | Windows probes remain offscreen/minimized and do not activate the browser. |

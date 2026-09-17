@@ -1,6 +1,22 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.24.6-codex.1`
+Documentation version: `v1.24.7-codex.0`
+
+## macOS ChatGPT Agent Cloudflare loop on 17 Sep 2026
+
+- Cache ChatGPT at `/cache/chatgpt` succeeded by cloning the daily signed-in Edge profile.
+  Agent ChatGPT at `/agent/edge/chatgpt` looped on Cloudflare while it used the empty project
+  debug Edge under `local_store/agent_browser_profile/edge`. The durable lesson is
+  [`CHATGPT_AGENT_CLOUDFLARE.md`](CHATGPT_AGENT_CLOUDFLARE.md).
+- macOS Edge Agent probes now reuse the Cache clone path. Login opens daily Edge. Agent
+  tasks clone that same profile, then send through native Edge over CDP like Windows.
+  Playwright-launched clones can read ChatGPT but fail Project Send with "Something went
+  wrong" and never leave the `/project` URL. Do not complete Cloudflare in the project
+  debug window, do not `connect_over_cdp` onto an `auth.openai.com` challenge, and do not
+  `open -n` a second Edge against that occupied profile.
+- Windows Agent ChatGPT remains on the project debug Chrome or Edge. A live debug Chrome session
+  was verified by reading `/api/auth/session` from the ChatGPT tab with
+  [`scripts/tmp_probe_chrome_tab.py`](../scripts/tmp_probe_chrome_tab.py).
 
 ## Jury structured-vote normalization and round presentation on 16 Sep 2026
 
@@ -182,7 +198,8 @@ Documentation version: `v1.24.6-codex.1`
   surfaced for the user, restored afterward, and the run continues only after the challenge clears
   and Resume is selected. The Agent aside Account status uses the same fail-closed reminder so a
   sidebar probe does not keep launching Edge against Cloudflare, including ChatGPT's
-  `auth.openai.com` authorize popup. Conversation text that merely mentions verification does not
+  `auth.openai.com` authorize popup. macOS does not start a second project Edge while that
+  profile is still occupied. Conversation text that merely mentions verification does not
   pause while the normal composer remains usable.
 - Grok's authenticated browser fetches use a 30-second `AbortController` timeout before entering
   the existing bounded retry path, so an unresponsive provider request cannot block Stop forever.

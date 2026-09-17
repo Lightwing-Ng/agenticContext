@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.27.4-codex.0
+# Code version: v1.27.8-codex.0
 
 from __future__ import annotations
 
@@ -24,6 +24,14 @@ from .safari_automation import SafariContext
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+class DebugBrowserHumanVerificationError(RuntimeError):
+    """Raised when Playwright must not attach because a challenge page is open."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(str(payload.get("message") or "Human verification required."))
+        self.payload = payload
 
 try:  # pragma: no cover - depends on local runtime
     from playwright.sync_api import Error as PlaywrightError
@@ -536,25 +544,28 @@ def _probe_claude_session(
             "account_name": "",
             "message": f"Claude Web sessions do not support {descriptor.label}.",
         }
-    with _serialized_sync_playwright() as playwright:
-        with launch_chromium_context(
-            playwright,
-            descriptor,
-            # Match the headed background context used by Claude history and Agent sources.
-            headless=False,
-            clone_profile_first=True,
-            background_window=True,
-            silent=silent,
-            prefer_initialized_debug_profile=prefer_initialized_debug_profile,
-        ) as context:
-            page = context.pages[0] if context.pages else context.new_page()
-            goto_with_retry(page, CLAUDE_HOME_URL, attempts=2, timeout_ms=60_000)
-            challenge = _security_verification_status_if_present(
-                page, descriptor.label, "Claude"
-            )
-            if challenge is not None:
-                return challenge
-            return inspect(page)
+    try:
+        with _serialized_sync_playwright() as playwright:
+            with launch_chromium_context(
+                playwright,
+                descriptor,
+                # Match the headed background context used by Claude history and Agent sources.
+                headless=False,
+                clone_profile_first=True,
+                background_window=True,
+                silent=silent,
+                prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+            ) as context:
+                page = context.pages[0] if context.pages else context.new_page()
+                goto_with_retry(page, CLAUDE_HOME_URL, attempts=2, timeout_ms=60_000)
+                challenge = _security_verification_status_if_present(
+                    page, descriptor.label, "Claude"
+                )
+                if challenge is not None:
+                    return challenge
+                return inspect(page)
+    except DebugBrowserHumanVerificationError as exc:
+        return exc.payload
 
 
 def _probe_gemini_session(
@@ -605,19 +616,22 @@ def _probe_gemini_session(
             goto_with_retry(page, GEMINI_HOME_URL, attempts=2, timeout_ms=60_000)
             return inspect_or_challenge(page)
     elif descriptor.engine == "chromium":
-        with _serialized_sync_playwright() as playwright:
-            with launch_chromium_context(
-                playwright,
-                descriptor,
-                headless=False,
-                clone_profile_first=True,
-                background_window=True,
-                silent=silent,
-                prefer_initialized_debug_profile=prefer_initialized_debug_profile,
-            ) as context:
-                page = context.pages[0] if context.pages else context.new_page()
-                goto_with_retry(page, GEMINI_HOME_URL, attempts=2, timeout_ms=60_000)
-                return inspect_or_challenge(page)
+        try:
+            with _serialized_sync_playwright() as playwright:
+                with launch_chromium_context(
+                    playwright,
+                    descriptor,
+                    headless=False,
+                    clone_profile_first=True,
+                    background_window=True,
+                    silent=silent,
+                    prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+                ) as context:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    goto_with_retry(page, GEMINI_HOME_URL, attempts=2, timeout_ms=60_000)
+                    return inspect_or_challenge(page)
+        except DebugBrowserHumanVerificationError as exc:
+            return exc.payload
     else:
         return {
             "logged_in": False,
@@ -661,40 +675,45 @@ def _probe_chromium_grok_session(
     prefer_initialized_debug_profile: bool = False,
 ) -> dict[str, Any]:
     """Probe a Grok session from a Chromium-family browser profile."""
-    with _serialized_sync_playwright() as playwright:
-        with launch_chromium_context(
-            playwright,
-            descriptor,
-            headless=True,
-            clone_profile_first=True,
-            background_window=True,
-            silent=silent,
-            prefer_initialized_debug_profile=prefer_initialized_debug_profile,
-        ) as context:
-            page = context.pages[0] if context.pages else context.new_page()
-            goto_with_retry(page, GROK_FILES_URL)
-            page.wait_for_timeout(8_000)
-            title = page.title()
-            body_text = page.locator("body").inner_text(timeout=10_000)
-            html = page.content()
-            account_name = parse_grok_account_label(html)
-            if account_name:
-                return {
-                    "logged_in": True,
-                    "can_download": True,
-                    "account_name": account_name,
-                    "message": f"{descriptor.label} is ready to sync Grok.",
-                }
-            if is_grok_security_verification_page(title, body_text, html):
-                return human_verification_probe_status(descriptor.label, "Grok")
-            if any(marker in body_text for marker in ("Sign in", "Log in")):
-                return {
-                    "logged_in": False,
-                    "can_download": False,
-                    "account_name": "",
-                    "message": f"{descriptor.label} is not signed in to Grok.",
-                }
-            raise RuntimeError(f"Could not detect the signed-in Grok account from {descriptor.label}.")
+    try:
+        with _serialized_sync_playwright() as playwright:
+            with launch_chromium_context(
+                playwright,
+                descriptor,
+                headless=True,
+                clone_profile_first=True,
+                background_window=True,
+                silent=silent,
+                prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+            ) as context:
+                page = context.pages[0] if context.pages else context.new_page()
+                goto_with_retry(page, GROK_FILES_URL)
+                page.wait_for_timeout(8_000)
+                title = page.title()
+                body_text = page.locator("body").inner_text(timeout=10_000)
+                html = page.content()
+                account_name = parse_grok_account_label(html)
+                if account_name:
+                    return {
+                        "logged_in": True,
+                        "can_download": True,
+                        "account_name": account_name,
+                        "message": f"{descriptor.label} is ready to sync Grok.",
+                    }
+                if is_grok_security_verification_page(title, body_text, html):
+                    return human_verification_probe_status(descriptor.label, "Grok")
+                if any(marker in body_text for marker in ("Sign in", "Log in")):
+                    return {
+                        "logged_in": False,
+                        "can_download": False,
+                        "account_name": "",
+                        "message": f"{descriptor.label} is not signed in to Grok.",
+                    }
+                raise RuntimeError(
+                    f"Could not detect the signed-in Grok account from {descriptor.label}."
+                )
+    except DebugBrowserHumanVerificationError as exc:
+        return exc.payload
 
 
 def _read_chatgpt_auth_payload(page: Any, browser_label: str) -> dict[str, Any]:
@@ -796,39 +815,42 @@ def _probe_chatgpt_session(
             )
             payload = _parse_chatgpt_auth_response(response.ok, response.text())
     elif descriptor.engine == "chromium":
-        with _serialized_sync_playwright() as playwright:
-            with launch_chromium_context(
-                playwright,
-                descriptor,
-                headless=False,
-                clone_profile_first=True,
-                background_window=True,
-                silent=silent,
-                prefer_initialized_debug_profile=prefer_initialized_debug_profile,
-            ) as context:
-                challenge = context_security_verification_status(
-                    context, descriptor.label, "ChatGPT"
-                )
-                if challenge is not None:
-                    return challenge
-                page = context.pages[0] if context.pages else context.new_page()
-                current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
-                if current_url != project_url.rstrip("/"):
-                    goto_with_retry(page, project_url, attempts=2, timeout_ms=30_000)
-                    challenge = _security_verification_status_if_present(
-                        page, descriptor.label, "ChatGPT"
+        try:
+            with _serialized_sync_playwright() as playwright:
+                with launch_chromium_context(
+                    playwright,
+                    descriptor,
+                    headless=False,
+                    clone_profile_first=True,
+                    background_window=True,
+                    silent=silent,
+                    prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+                ) as context:
+                    challenge = context_security_verification_status(
+                        context, descriptor.label, "ChatGPT"
                     )
                     if challenge is not None:
                         return challenge
-                try:
-                    payload = _read_chatgpt_auth_payload(page, descriptor.label)
-                except Exception:
-                    challenge = _security_verification_status_if_present(
-                        page, descriptor.label, "ChatGPT"
-                    )
-                    if challenge is not None:
-                        return challenge
-                    raise
+                    page = context.pages[0] if context.pages else context.new_page()
+                    current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
+                    if current_url != project_url.rstrip("/"):
+                        goto_with_retry(page, project_url, attempts=2, timeout_ms=30_000)
+                        challenge = _security_verification_status_if_present(
+                            page, descriptor.label, "ChatGPT"
+                        )
+                        if challenge is not None:
+                            return challenge
+                    try:
+                        payload = _read_chatgpt_auth_payload(page, descriptor.label)
+                    except Exception:
+                        challenge = _security_verification_status_if_present(
+                            page, descriptor.label, "ChatGPT"
+                        )
+                        if challenge is not None:
+                            return challenge
+                        raise
+        except DebugBrowserHumanVerificationError as exc:
+            return exc.payload
     else:
         return {
             "logged_in": False,
@@ -1361,18 +1383,17 @@ def launch_chromium_context(
     prefer_initialized_debug_profile: bool = False,
     use_project_debug_profile: bool = False,
     project_profile_root: Path | None = None,
+    native_clone_cdp: bool = False,
 ):
     """Launch an isolated Chromium-family browser with an explicit window mode.
 
-    On Windows, and for macOS Edge, Agent callers prefer the project debug
-    profile over CDP. macOS Edge skips the daily-profile clone entirely so the
-    aside status probe does not start and stop a new Edge for every check. Other
-    callers retain the existing clone-first behavior. A locked daily profile can
-    still trigger the existing debug-browser fallback. Neither CDP path reads
-    locked cookie files or opens the daily profile for writing. macOS Edge Jury
-    callers may explicitly require the project profile; that branch never inspects
-    or clones the daily profile. An already authorized debug window is left running
-    so later Agent tasks reattach, including when that window sits in Stage Manager.
+    On Windows, Agent callers prefer the project debug profile over CDP. macOS
+    Edge Agent probes and tasks use the same isolated daily-profile clone as
+    Cache ChatGPT, because that signed-in clone already clears Cloudflare.
+    A locked daily profile can still trigger the existing debug-browser fallback.
+    Neither CDP path reads locked cookie files or opens the daily profile for
+    writing. macOS Edge Jury callers may explicitly require the project profile;
+    that branch never inspects or clones the daily profile.
     """
     user_data_dir = descriptor.user_data_dir
     if user_data_dir is None:
@@ -1385,6 +1406,61 @@ def launch_chromium_context(
             if silent and not headless and is_macos_host()
             else CHROMIUM_WINDOW_MODE_OFFSCREEN
         )
+
+    owned_native_cdp: dict[str, Any] = {
+        "process": None,
+        "browser": None,
+        "user_data_dir": None,
+    }
+
+    def should_launch_native_clone_over_cdp() -> bool:
+        """macOS Edge Agent tasks match Windows: native Edge plus CDP on a clone."""
+        return (
+            allow_cdp_attach
+            and native_clone_cdp
+            and is_macos_host()
+            and descriptor.browser_id == "edge"
+        )
+
+    def launch_native_clone_over_cdp(target_user_data_dir: Path):
+        from .agent_debug_browser import launch_owned_user_data_over_cdp
+        from .computer_use_agent import (
+            _capture_macos_frontmost_application,
+            _restore_macos_frontmost_application_after_task_stage,
+        )
+
+        extra_args = tuple(
+            argument
+            for argument in build_chromium_launch_args(
+                descriptor,
+                background_window=False,
+                window_mode=window_mode,
+            )
+            if str(argument).startswith("--profile-directory=")
+        )
+        previous = _capture_macos_frontmost_application()
+        try:
+            process, identity = launch_owned_user_data_over_cdp(
+                descriptor.browser_id,
+                target_user_data_dir,
+                extra_args=extra_args,
+            )
+        finally:
+            _restore_macos_frontmost_application_after_task_stage(
+                previous,
+                "Microsoft Edge",
+            )
+        browser = playwright.chromium.connect_over_cdp(
+            f"http://127.0.0.1:{identity.port}"
+        )
+        owned_native_cdp["process"] = process
+        owned_native_cdp["browser"] = browser
+        owned_native_cdp["user_data_dir"] = target_user_data_dir
+        LOGGER.info(
+            "Using a native %s clone over CDP for the Agent task.",
+            descriptor.label,
+        )
+        return browser.contexts[0] if browser.contexts else browser.new_context()
 
     def do_launch(target_user_data_dir: Path):
         effective_headless = headless
@@ -1448,6 +1524,13 @@ def launch_chromium_context(
                 )
             )
             endpoint = handle.cdp_endpoint
+            challenge = debug_browser_http_verification_status(
+                browser_id,
+                descriptor.label,
+                "the open site",
+            )
+            if challenge is not None:
+                raise DebugBrowserHumanVerificationError(challenge)
             browser = playwright.chromium.connect_over_cdp(endpoint)
             if shared_pages and not browser.contexts:
                 raise RuntimeError(
@@ -1505,9 +1588,10 @@ def launch_chromium_context(
             debug_browser_supported,
         )
 
-        if debug_browser_supported(descriptor.browser_id) and (
-            debug_browser_profile_initialized(descriptor.browser_id)
-            or (is_macos_host() and descriptor.browser_id == "edge")
+        if (
+            is_windows_host()
+            and debug_browser_supported(descriptor.browser_id)
+            and debug_browser_profile_initialized(descriptor.browser_id)
         ):
             LOGGER.info(
                 "Using the project debug %s over CDP.",
@@ -1530,8 +1614,18 @@ def launch_chromium_context(
                 return attach_debug_browser()
             raise
         try:
-            context = do_launch(temp_user_data_dir)
+            context = (
+                launch_native_clone_over_cdp(temp_user_data_dir)
+                if should_launch_native_clone_over_cdp()
+                else do_launch(temp_user_data_dir)
+            )
         except Exception as exc:
+            from .agent_debug_browser import terminate_owned_chromium
+
+            terminate_owned_chromium(
+                temp_user_data_dir,
+                owned_native_cdp.get("process"),
+            )
             _cleanup_cloned_browser_profile(temp_profile_dir, original_error=exc)
             raise
     else:
@@ -1552,8 +1646,18 @@ def launch_chromium_context(
                     return attach_debug_browser()
                 raise
             try:
-                context = do_launch(temp_user_data_dir)
+                context = (
+                    launch_native_clone_over_cdp(temp_user_data_dir)
+                    if should_launch_native_clone_over_cdp()
+                    else do_launch(temp_user_data_dir)
+                )
             except Exception as exc:
+                from .agent_debug_browser import terminate_owned_chromium
+
+                terminate_owned_chromium(
+                    temp_user_data_dir,
+                    owned_native_cdp.get("process"),
+                )
                 _cleanup_cloned_browser_profile(temp_profile_dir, original_error=exc)
                 raise
 
@@ -1578,7 +1682,19 @@ def launch_chromium_context(
                         LOGGER.warning("Browser context cleanup also failed: %s", close_error)
                     else:
                         LOGGER.info("Chromium context was already closed during cleanup.")
+                owned_browser = owned_native_cdp.get("browser")
+                if owned_browser is not None:
+                    with contextlib.suppress(Exception):
+                        owned_browser.close()
             finally:
+                owned_dir = owned_native_cdp.get("user_data_dir")
+                if owned_dir is not None:
+                    from .agent_debug_browser import terminate_owned_chromium
+
+                    terminate_owned_chromium(
+                        owned_dir,
+                        owned_native_cdp.get("process"),
+                    )
                 _cleanup_cloned_browser_profile(temp_profile_dir, original_error=primary_error)
             return False
 
@@ -1785,10 +1901,15 @@ def page_shows_security_verification(page: Any) -> bool:
 
 def context_shows_security_verification(context: Any) -> bool:
     """Return whether any open tab or popup is a login or Cloudflare challenge."""
-    return any(
-        page_shows_security_verification(page)
-        for page in _iter_open_context_pages(context)
-    )
+    return first_security_verification_page(context) is not None
+
+
+def first_security_verification_page(context: Any) -> Any | None:
+    """Return the first open tab or popup that needs a human check."""
+    for page in _iter_open_context_pages(context):
+        if page_shows_security_verification(page):
+            return page
+    return None
 
 
 def context_security_verification_status(
@@ -1803,6 +1924,45 @@ def context_security_verification_status(
         )
         if status is not None:
             return status
+    return None
+
+
+def http_target_shows_security_verification(target: dict[str, Any]) -> bool:
+    """Return whether one CDP HTTP target is a login or Cloudflare challenge."""
+    kind = str(target.get("type") or "").strip().lower()
+    if kind and kind not in {"page", "iframe"}:
+        return False
+    url = str(target.get("url") or "")
+    title = str(target.get("title") or "")
+
+    class _HttpTarget:
+        def __init__(self) -> None:
+            self.url = url
+
+        def title(self) -> str:
+            return title
+
+    return page_shows_security_verification(_HttpTarget())
+
+
+def debug_browser_http_verification_status(
+    browser_id: str,
+    browser_label: str,
+    platform_label: str,
+) -> dict[str, Any] | None:
+    """Detect a challenge from ``/json/list`` without attaching Playwright.
+
+    ``connect_over_cdp`` enables Runtime on every page and restarts Turnstile.
+    """
+    from .agent_debug_browser import list_debug_browser_page_targets
+
+    try:
+        targets = list_debug_browser_page_targets(browser_id)
+    except Exception:
+        return None
+    for target in targets:
+        if http_target_shows_security_verification(target):
+            return human_verification_probe_status(browser_label, platform_label)
     return None
 
 

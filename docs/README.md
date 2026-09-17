@@ -1,6 +1,6 @@
 # Documentation index
 
-Documentation version: `v1.0.0-codex.1`
+Documentation version: `v1.0.1-codex.0`
 
 Use the current contracts below for implementation and operation. Dated evidence records describe
 the checkout and environment observed at that time; they do not establish current behavior.
@@ -18,6 +18,7 @@ the checkout and environment observed at that time; they do not establish curren
 | Operate the local application | [Operations](OPERATIONS.md) |
 | Cache routes, source behavior, and recovery | [Cache runbook](CACHE_HANDOFF.md) |
 | Agent execution and browser boundaries | [Computer Use Agent](COMPUTER_USE_AGENT.md) |
+| ChatGPT Agent Cloudflare on macOS Edge | [ChatGPT Agent Cloudflare lessons](CHATGPT_AGENT_CLOUDFLARE.md) |
 | Site tools and automated verification | [Agent Optimization](AGENT_OPTIMIZATION.md) |
 | UI authority and sibling synchronization | [Style reference](STYLE_REFERENCE.md) and [UI workflow](SHARED_UI_WORKFLOW.md) |
 | Numbered-copy review and protected data | [Static-file housekeeping](STATIC_FILE_HOUSEKEEPING.md) |
@@ -26,6 +27,7 @@ the checkout and environment observed at that time; they do not establish curren
 
 ## Dated evidence
 
+- [ChatGPT Agent Cloudflare lessons](CHATGPT_AGENT_CLOUDFLARE.md)
 - [Local documentation and test-system audit](DOCUMENTATION_TEST_AUDIT.md)
 - [Test and CI history](TEST_HISTORY.md)
 - [Cache Text audit](CACHE_TEXT_AUDIT_REVIEW.md)

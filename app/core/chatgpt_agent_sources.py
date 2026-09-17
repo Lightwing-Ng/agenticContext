@@ -1,6 +1,6 @@
 """Read ChatGPT Web sessions, projects, and conversation history for the local Agent.
 
-Code version: v1.6.10-codex.0
+Code version: v1.6.11-codex.0
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from .browser_sessions import (
     _security_verification_status_if_present,
     browser_descriptors,
     context_security_verification_status,
+    DebugBrowserHumanVerificationError,
     goto_with_retry,
     launch_chromium_context,
     select_provider_tab,
@@ -268,6 +269,9 @@ def probe_and_collect_chatgpt_sources(
                     # A session-list error must not discard model/effort proof.
                     sources = None
                 return status, sources
+    except DebugBrowserHumanVerificationError as exc:
+        status.update(exc.payload)
+        return status, None
     except Exception as exc:  # pragma: no cover - depends on local browser state
         status["probe_error"] = True
         status["message"] = f"Could not verify the ChatGPT account in {descriptor.label}. {exc}"

@@ -4389,35 +4389,23 @@ def test_open_browser_for_login_windows_uses_resolved_executable(
         "app.core.agent_debug_browser.ensure_debug_browser",
         fake_ensure_debug_browser,
     )
-
-    navigated: list[str] = []
-    page = SimpleNamespace(
-        url="https://chatgpt.com/",
-        goto=lambda url, **_kwargs: navigated.append(url),
+    opened: list[str] = []
+    monkeypatch.setattr(
+        "app.core.browser_sessions.debug_browser_http_verification_status",
+        lambda *_args, **_kwargs: None,
     )
-    context = SimpleNamespace(pages=[page], new_page=lambda: page)
-    close_calls: list[bool] = []
-    browser = SimpleNamespace(
-        contexts=[context],
-        new_context=lambda: context,
-        close=lambda: close_calls.append(True),
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.open_debug_browser_url",
+        lambda _browser_id, url, profile_root=None: opened.append(url) or True,
     )
-
-    class _SyncPlaywright:
-        def __enter__(self) -> "_SyncPlaywright":
-            return self
-
-        def __exit__(self, *_args: object) -> bool:
-            return False
-
-        @property
-        def chromium(self) -> object:
-            return SimpleNamespace(connect_over_cdp=lambda _endpoint: browser)
-
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.bring_debug_browser_to_front",
+        lambda *_args, **_kwargs: True,
+    )
     monkeypatch.setattr(
         computer_use_agent,
         "sync_playwright_or_error",
-        lambda: _SyncPlaywright(),
+        lambda: (_ for _ in ()).throw(AssertionError("Login must not attach Playwright")),
     )
 
     config = CrawlConfig(
@@ -4430,77 +4418,35 @@ def test_open_browser_for_login_windows_uses_resolved_executable(
     assert result["opened"] is True
     assert result["browser"] == browser_name
     assert result["debug_browser"] is True
-    assert navigated == ["https://chatgpt.com/"]
-    assert close_calls == [True]
+    assert opened == ["https://chatgpt.com/"]
 
 
-def test_open_browser_for_login_macos_edge_uses_debug_browser(
+def test_open_browser_for_login_macos_edge_uses_daily_browser_like_cache(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
-    """macOS Edge login writes into the same persistent debug profile Agent reuses."""
-    import app.core.computer_use_agent as computer_use_agent
-    from app.core.agent_debug_browser import DebugBrowserHandle
+    """macOS Edge login opens the daily browser Cache ChatGPT already uses."""
+    from unittest.mock import Mock
 
+    import app.core.computer_use_agent as computer_use_agent
+
+    expected = {"opened": True, "browser": "edge", "debug_browser": False}
+    handoff = Mock(return_value=expected)
     monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
     monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
     monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
     monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
-
-    ensure_calls: list[str] = []
-
-    def fake_ensure_debug_browser(browser_id: str) -> DebugBrowserHandle:
-        ensure_calls.append(browser_id)
-        return DebugBrowserHandle(
-            browser_id=browser_id,
-            cdp_endpoint="http://127.0.0.1:9223",
-            user_data_dir=tmp_path / "debug-profile",
-        )
-
+    monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", handoff)
     monkeypatch.setattr(
         "app.core.agent_debug_browser.ensure_debug_browser",
-        fake_ensure_debug_browser,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("macOS Edge login must not use the empty debug profile")
+        ),
     )
-    navigated: list[str] = []
-    page = SimpleNamespace(
-        url="https://chatgpt.com/",
-        goto=lambda url, **_kwargs: navigated.append(url),
-    )
-    context = SimpleNamespace(pages=[page], new_page=lambda: page)
-    close_calls: list[bool] = []
-    browser = SimpleNamespace(
-        contexts=[context],
-        new_context=lambda: context,
-        close=lambda: close_calls.append(True),
-    )
-
-    class _SyncPlaywright:
-        def __enter__(self) -> "_SyncPlaywright":
-            return self
-
-        def __exit__(self, *_args: object) -> bool:
-            return False
-
-        @property
-        def chromium(self) -> object:
-            return SimpleNamespace(connect_over_cdp=lambda _endpoint: browser)
-
-    monkeypatch.setattr(
-        computer_use_agent,
-        "sync_playwright_or_error",
-        lambda: _SyncPlaywright(),
-    )
-    handoff = SimpleNamespace()
-    monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", handoff)
 
     result = open_browser_for_login("chatgpt", "edge", config=CrawlConfig())
 
-    assert ensure_calls == ["edge"]
-    assert result["opened"] is True
-    assert result["browser"] == "edge"
-    assert result["debug_browser"] is True
-    assert navigated == ["https://chatgpt.com/"]
-    assert close_calls == [True]
+    assert result is expected
+    handoff.assert_called_once()
 
 
 def test_open_browser_for_login_does_not_reload_a_cloudflare_challenge(
@@ -4510,10 +4456,10 @@ def test_open_browser_for_login_does_not_reload_a_cloudflare_challenge(
     import app.core.computer_use_agent as computer_use_agent
     from app.core.agent_debug_browser import DebugBrowserHandle
 
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
-    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
-    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
     monkeypatch.setattr(
         "app.core.agent_debug_browser.ensure_debug_browser",
         lambda browser_id: DebugBrowserHandle(
@@ -4522,44 +4468,60 @@ def test_open_browser_for_login_does_not_reload_a_cloudflare_challenge(
             user_data_dir=tmp_path / "debug-profile",
         ),
     )
-    navigated: list[str] = []
-    page = SimpleNamespace(
-        url="https://chatgpt.com/",
-        title=lambda: "Just a moment...",
-        content=lambda: "<html>performance and security by cloudflare</html>",
-        locator=lambda selector: SimpleNamespace(
-            inner_text=lambda timeout=1_000: "Checking your browser before accessing"
-        ),
-        goto=lambda url, **_kwargs: navigated.append(url),
+    opened: list[str] = []
+    restarted: list[str] = []
+    monkeypatch.setattr(
+        "app.core.browser_sessions.debug_browser_http_verification_status",
+        lambda *_args, **_kwargs: {
+            "logged_in": False,
+            "can_download": False,
+            "account_name": "Human verification required",
+            "human_verification": True,
+            "message": "Complete that check in the open browser window now",
+        },
     )
-    context = SimpleNamespace(pages=[page], new_page=lambda: page)
-    browser = SimpleNamespace(
-        contexts=[context],
-        new_context=lambda: context,
-        close=lambda: None,
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_command_line",
+        lambda *_args, **_kwargs: "--remote-debugging-port=0 --window-size=1280,900",
     )
-
-    class _SyncPlaywright:
-        def __enter__(self) -> "_SyncPlaywright":
-            return self
-
-        def __exit__(self, *_args: object) -> bool:
-            return False
-
-        @property
-        def chromium(self) -> object:
-            return SimpleNamespace(connect_over_cdp=lambda _endpoint: browser)
-
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.restart_debug_browser",
+        lambda *_args, **_kwargs: restarted.append("restarted"),
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.open_debug_browser_url",
+        lambda *_args, **_kwargs: opened.append("chatgpt.com") or True,
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.list_debug_browser_page_targets",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "page-1",
+                "type": "page",
+                "title": "Just a moment...",
+                "url": "https://chatgpt.com/",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.activate_debug_browser_target",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.bring_debug_browser_to_front",
+        lambda *_args, **_kwargs: True,
+    )
     monkeypatch.setattr(
         computer_use_agent,
         "sync_playwright_or_error",
-        lambda: _SyncPlaywright(),
+        lambda: (_ for _ in ()).throw(AssertionError("Login must not attach Playwright")),
     )
 
     result = open_browser_for_login("chatgpt", "edge", config=CrawlConfig())
 
     assert result["opened"] is True
-    assert navigated == []
+    assert opened == []
+    assert restarted == []
 
 
 def test_open_browser_for_login_does_not_reopen_chatgpt_over_an_authorize_popup(
@@ -4569,10 +4531,10 @@ def test_open_browser_for_login_does_not_reopen_chatgpt_over_an_authorize_popup(
     import app.core.computer_use_agent as computer_use_agent
     from app.core.agent_debug_browser import DebugBrowserHandle
 
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
-    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
-    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
     monkeypatch.setattr(
         "app.core.agent_debug_browser.ensure_debug_browser",
         lambda browser_id: DebugBrowserHandle(
@@ -4581,53 +4543,91 @@ def test_open_browser_for_login_does_not_reopen_chatgpt_over_an_authorize_popup(
             user_data_dir=tmp_path / "debug-profile",
         ),
     )
-    navigated: list[str] = []
-    home = SimpleNamespace(
-        url="https://chatgpt.com/",
-        title=lambda: "ChatGPT",
-        content=lambda: "<html>ChatGPT</html>",
-        locator=lambda selector: SimpleNamespace(
-            inner_text=lambda timeout=1_000: "ChatGPT"
+    opened: list[str] = []
+    activated: list[str] = []
+    monkeypatch.setattr(
+        "app.core.browser_sessions.debug_browser_http_verification_status",
+        lambda *_args, **_kwargs: {
+            "logged_in": False,
+            "can_download": False,
+            "account_name": "Human verification required",
+            "human_verification": True,
+            "message": "Complete that check in the open browser window now",
+        },
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_command_line",
+        lambda *_args, **_kwargs: "--remote-debugging-port=0",
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.restart_debug_browser",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("A clean debug Edge must not be relaunched")
         ),
-        goto=lambda url, **_kwargs: navigated.append(url),
     )
-    auth = SimpleNamespace(
-        url="https://auth.openai.com/api/accounts/authorize?prompt=login",
-        title=lambda: (_ for _ in ()).throw(AssertionError("Do not read the authorize DOM")),
-        content=lambda: (_ for _ in ()).throw(AssertionError("Do not read the authorize DOM")),
-        locator=lambda selector: (_ for _ in ()).throw(
-            AssertionError("Do not read the authorize DOM")
-        ),
-        goto=lambda url, **_kwargs: navigated.append(url),
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.open_debug_browser_url",
+        lambda *_args, **_kwargs: opened.append("chatgpt.com") or True,
     )
-    context = SimpleNamespace(pages=[home, auth], new_page=lambda: home)
-    browser = SimpleNamespace(
-        contexts=[context],
-        new_context=lambda: context,
-        close=lambda: None,
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.list_debug_browser_page_targets",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "auth-1",
+                "type": "page",
+                "title": "Just a moment...",
+                "url": "https://auth.openai.com/api/accounts/authorize?prompt=login",
+            }
+        ],
     )
-
-    class _SyncPlaywright:
-        def __enter__(self) -> "_SyncPlaywright":
-            return self
-
-        def __exit__(self, *_args: object) -> bool:
-            return False
-
-        @property
-        def chromium(self) -> object:
-            return SimpleNamespace(connect_over_cdp=lambda _endpoint: browser)
-
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.activate_debug_browser_target",
+        lambda _browser_id, target_id, profile_root=None: activated.append(target_id) or True,
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.bring_debug_browser_to_front",
+        lambda *_args, **_kwargs: True,
+    )
     monkeypatch.setattr(
         computer_use_agent,
         "sync_playwright_or_error",
-        lambda: _SyncPlaywright(),
+        lambda: (_ for _ in ()).throw(AssertionError("Login must not attach Playwright")),
     )
 
     result = open_browser_for_login("chatgpt", "edge", config=CrawlConfig())
 
     assert result["opened"] is True
-    assert navigated == []
+    assert opened == []
+    assert activated == ["auth-1"]
+
+
+def test_open_browser_for_login_macos_edge_does_not_restart_debug_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS Edge login must not recycle the empty debug profile that Cloudflare loops."""
+    from unittest.mock import Mock
+
+    import app.core.computer_use_agent as computer_use_agent
+
+    expected = {"opened": True, "browser": "edge"}
+    handoff = Mock(return_value=expected)
+    monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
+    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.config.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", handoff)
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.restart_debug_browser",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("macOS Edge login must not recycle the debug profile")
+        ),
+    )
+
+    result = open_browser_for_login("chatgpt", "edge", config=CrawlConfig())
+
+    assert result is expected
+    handoff.assert_called_once()
 
 
 def test_open_browser_for_login_macos_chrome_keeps_standard_handoff(
@@ -19989,21 +19989,13 @@ def test_chatgpt_composer_wait_fails_when_retry_leaves_chatgpt(
         )
 
 
-def test_macos_reused_debug_edge_keeps_the_authorized_window_visible(
+def test_macos_cloned_agent_edge_restores_the_previous_app(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
     monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        "app.core.agent_debug_browser.debug_browser_supported",
-        lambda browser_id: browser_id == "edge",
-    )
-    monkeypatch.setattr(
-        "app.core.agent_debug_browser.debug_browser_profile_initialized",
-        lambda browser_id: browser_id == "edge",
-    )
-    assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("edge") is False
+    assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("edge") is True
     assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("chrome") is True
     monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
     assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("edge") is False

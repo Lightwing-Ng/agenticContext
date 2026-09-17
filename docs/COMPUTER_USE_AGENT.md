@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.76.13-codex.1`
+Documentation version: `v3.76.14-codex.0`
 
 ## Purpose
 
@@ -902,14 +902,15 @@ run. For bounded verification commands, if a Windows group leader exits before i
 terminal state until its process count reaches zero. Safari remains
 macOS-only. The selected operating system must match the host running the local service.
 
-On macOS, Chrome still runs through an isolated clone of the selected signed-in profile. macOS Edge
-and Windows Edge or Chrome reuse the project debug profile over CDP, including the first Agent
-readiness probe, so debugging the Agent aside does not start and stop a new Edge window. An already
-authorized window is left running for later reattach, including in Stage Manager. After that profile
-exists, Agent readiness, source, Project, and history probes and Agent tasks reattach to the same
-process and operate the selected provider's DOM directly. macOS launches that Edge with
-`open -n` against the project profile so a daily Edge window is not activated in place of the
-debuggable instance. A fresh debug
+On macOS, Chrome and Edge Agent both run through an isolated clone of the selected signed-in
+profile. That is the same path Cache ChatGPT already proved. The empty project debug Edge under
+`local_store/agent_browser_profile/edge` looped Cloudflare on `auth.openai.com`; do not send macOS
+Edge Agent probes, login, or tasks through that profile. Windows Edge or Chrome still reuse the
+project debug profile over CDP. After that Windows profile exists, Agent readiness, source,
+Project, and history probes and Agent tasks reattach to the same process and operate the selected
+provider's DOM directly. The lesson record is [`CHATGPT_AGENT_CLOUDFLARE.md`](CHATGPT_AGENT_CLOUDFLARE.md).
+macOS Edge Jury remains the exception: it launches project Edge with `open -n` against the project
+profile so a daily Edge window is not activated in place of the debuggable instance. A fresh debug
 browser asks Chromium to choose the port with `--remote-debugging-port=0`, then accepts the launch
 only when the profile-owned `DevToolsActivePort` marker and `/json/version` identify the same
 browser process. The durable `debug_port` record stores the selected port, browser-process GUID,
@@ -929,11 +930,12 @@ page's window. Windows requests normal
 state and fixed bounds `(80, 80, 1280, 900)` through CDP without requesting activation; it does not
 run macOS foreground-app capture or restore. Missing CDP window control or a failed window command
 stops the task before provider prompt submission. Fixed geometry does not verify the available
-display work area, and a cloned context may restore more than one native window. On macOS, a cloned Chrome or first-time Edge launch restores the previous
-foreground app if the browser took focus. An already initialized debug Edge stays
-visible like Windows, including in Stage Manager, and is reattached over CDP instead of
-being launched again. A brief CDP gap after Playwright disconnects is retried before a
-replacement Edge is started. macOS ultimately determines Stage Manager grouping.
+display work area, and a cloned context may restore more than one native window. On macOS, a cloned
+Chrome or Edge Agent launch restores the previous foreground app if the browser took focus. Windows
+debug Edge or Chrome stays visible, including after a window close and relaunch, and is reattached
+over CDP. macOS Edge Jury keeps that same project debug window for later reattach, including in
+Stage Manager. A brief CDP gap after Playwright disconnects is retried before a replacement
+browser is started. macOS ultimately determines Stage Manager grouping.
 Automated execution never opens the user's original profile for writing. Chromium still suppresses first-run,
 crash, notification, and repost prompts; a clone-backed task exit closes the isolated context and
 removes its temporary profile. A Windows CDP-backed exit disconnects Playwright while leaving the
@@ -968,18 +970,20 @@ When an Agent browser status is not signed in, the status card exposes an `Open 
 action. It opens the selected browser visibly at the provider home page; the user must then choose the
 existing recheck action to verify the new session. On Windows, login initializes the project-owned
 debug profile under `local_store/agent_browser_profile/<browser>`; later Recheck and Agent tasks use
-that same profile and restart its browser after a window close. macOS Edge login uses that same
-project profile. The daily Edge or Chrome profile is
-not opened for writing. Copying or launching alone does not prove authentication. Opening the browser
-does not imply sign-in and does not add automatic login polling. Windows runtime behavior for this
-workflow remains not locally verified.
+that same profile and restart its browser after a window close. macOS Edge login opens the daily
+Edge profile that Cache ChatGPT already uses; Recheck and Agent tasks clone that signed-in
+profile instead of the empty project debug profile. Copying or launching alone does not prove
+authentication. Opening the browser does not imply sign-in and does not add automatic login polling.
+Windows runtime behavior for this workflow remains not locally verified.
 A Cloudflare or CAPTCHA interstitial is fail-closed: the sidebar Account row says
 `Complete verification now`, the status message tells the user to finish that check in the open
 browser immediately, and the controller does not click, fill, or reload the challenge page. The
 status card does not auto-refresh that probe, because another navigation is itself a challenge
 attempt. ChatGPT's `auth.openai.com` authorize popup is included: the Agent must not reopen
 `chatgpt.com` while that URL is still showing, because a new authorize request mints a new
-Cloudflare loop. Choose Recheck only after the human check is complete and the window has
+Cloudflare loop. macOS also must not launch a second project Edge against that occupied
+profile, and must not attach Playwright while that challenge is visible.
+Choose Recheck only after the human check is complete and the window has
 returned to ChatGPT.
 
 Independently of browser capacity, admission permits one write-capable Agent for any overlapping

@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.81.14-codex.0
+Code version: v3.81.18-codex.0
 """
 
 from __future__ import annotations
@@ -65,7 +65,6 @@ from .browser_sessions import (
     CHROMIUM_WINDOW_MODE_TASK_STAGE,
     GROK_COMPOSER_SELECTOR,
     browser_descriptors,
-    context_shows_security_verification,
     grok_composer_snapshot,
     goto_with_retry,
     is_grok_security_verification_page,
@@ -1651,38 +1650,49 @@ def _open_login_in_debug_browser(
 ) -> dict[str, Any]:
     """Open the login destination in the project-owned debug browser window.
 
-    Ensures the debug browser is running, attaches over CDP, and navigates a
-    visible page to the login URL so the user can sign in. The CDP connection
-    is dropped afterwards, but the debug browser process keeps running so the
-    Agent can reattach to the same authenticated session.
+    Playwright ``connect_over_cdp`` enables Runtime on every page and restarts
+    Cloudflare Turnstile. Login therefore uses Chromium's HTTP endpoints and
+    leaves an in-progress challenge page untouched.
     """
-    from .agent_debug_browser import debug_browser_lock, ensure_debug_browser
+    from .agent_debug_browser import (
+        activate_debug_browser_target,
+        bring_debug_browser_to_front,
+        debug_browser_command_line,
+        debug_browser_lock,
+        ensure_debug_browser,
+        list_debug_browser_page_targets,
+        open_debug_browser_url,
+        restart_debug_browser,
+    )
+    from .browser_sessions import (
+        debug_browser_http_verification_status,
+        http_target_shows_security_verification,
+    )
+    from .config import is_macos_host
 
     application = "Microsoft Edge" if selected_browser == "edge" else "Google Chrome"
     with debug_browser_lock(selected_browser):
-        handle = ensure_debug_browser(selected_browser)
-        with sync_playwright_or_error() as playwright:
-            browser = playwright.chromium.connect_over_cdp(handle.cdp_endpoint)
-            try:
-                context = browser.contexts[0] if browser.contexts else browser.new_context()
-                try:
-                    # Reloading chatgpt.com while auth.openai.com or Cloudflare is
-                    # already open starts a new authorize URL and a new Turnstile loop.
-                    if not context_shows_security_verification(context):
-                        page = (
-                            context.pages[0] if context.pages else context.new_page()
+        ensure_debug_browser(selected_browser)
+        challenge = debug_browser_http_verification_status(
+            selected_browser,
+            application,
+            AGENT_PLATFORM_BY_KEY.get(selected_platform, {}).get("label", "the open site"),
+        )
+        if challenge is not None:
+            command = debug_browser_command_line(selected_browser)
+            if is_macos_host() and "--disable-extensions" in command:
+                restart_debug_browser(selected_browser, start_url=destination)
+            else:
+                for target in list_debug_browser_page_targets(selected_browser):
+                    if http_target_shows_security_verification(target):
+                        activate_debug_browser_target(
+                            selected_browser,
+                            str(target.get("id") or ""),
                         )
-                        page.goto(
-                            destination,
-                            wait_until="domcontentloaded",
-                            timeout=60_000,
-                        )
-                except Exception as exc:  # pragma: no cover - depends on local browser state
-                    raise RuntimeError(
-                        f"Could not open the {application} login page in the debug browser: {exc}"
-                    ) from exc
-            finally:
-                browser.close()
+                        break
+        else:
+            open_debug_browser_url(selected_browser, destination)
+        bring_debug_browser_to_front(selected_browser)
     return {
         "opened": True,
         "platform": selected_platform,
@@ -1823,12 +1833,12 @@ def open_browser_for_login(
         raise ValueError("The Agent browser must be Safari, Edge, or Chrome.")
     if sys.platform != "darwin" and not is_windows_host():
         raise RuntimeError("Browser login handoff is only supported on macOS and Windows.")
-    # Windows Edge/Chrome and macOS Edge reuse a project-owned debug browser
-    # over CDP. The login handoff must write into that same debug profile so
-    # later Agent tasks reattach instead of launching another authorized window.
+    # Windows Edge/Chrome reuse a project-owned debug browser over CDP.
+    # macOS Edge login opens the daily browser, matching Cache ChatGPT, so
+    # later Agent clones read the same signed-in cookies.
     from .agent_debug_browser import debug_browser_supported
 
-    if debug_browser_supported(selected_browser):
+    if debug_browser_supported(selected_browser) and is_windows_host():
         return _open_login_in_debug_browser(
             selected_platform,
             selected_browser,
@@ -8852,19 +8862,9 @@ def _capture_macos_frontmost_application() -> str:
 
 
 def _should_restore_macos_frontmost_after_task_browser(browser_id: str) -> bool:
-    """Keep a reused debug Edge/Chrome visible, matching the Windows CDP path."""
-    if sys.platform != "darwin":
-        return False
-    from .agent_debug_browser import (
-        debug_browser_profile_initialized,
-        debug_browser_supported,
-    )
-
-    selected = str(browser_id or "").strip().lower()
-    return not (
-        debug_browser_supported(selected)
-        and debug_browser_profile_initialized(selected)
-    )
+    """Restore the previous macOS app after a cloned Agent window launches."""
+    del browser_id
+    return sys.platform == "darwin"
 
 
 def _restore_macos_frontmost_application_after_task_stage(

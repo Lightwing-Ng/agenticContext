@@ -1,6 +1,6 @@
 # ChatGPT Agent Cloudflare lessons
 
-Documentation version: `v1.0.0-codex.0`
+Documentation version: `v1.0.1-codex.0`
 Observed: `17 Sep 2026` on this macOS host
 Windows evidence: debug Chrome over CDP, same day
 
@@ -47,8 +47,14 @@ endpoint; do not reuse an old port.
 
 ## Current contract
 
-- macOS Edge Agent probes, login, and tasks clone the daily signed-in Edge profile, matching
-  Cache ChatGPT. Login opens daily Edge. Recheck reads that clone.
+- macOS Edge Agent probes clone the daily signed-in Edge profile, matching Cache ChatGPT.
+  Login opens daily Edge. Recheck reads that clone.
+- macOS Edge Agent **tasks** clone the same daily profile, then launch native Edge with
+  `--remote-debugging-port` and attach over CDP. Playwright `launch_persistent_context` on that
+  clone can read ChatGPT APIs (Cache) but ChatGPT Send then stays on the Project landing with
+  "Something went wrong while generating the response" and never proves a `/c/<id>` URL.
+  Windows already succeeds by connecting to a native debug browser; the task path matches that
+  shape while keeping Cache cookies.
 - Windows Edge and Chrome Agent keep the project debug browser over CDP.
 - macOS Edge Jury still uses the project debug profile and never copies daily Edge identity.
 - Do not auto-solve Cloudflare. Do not click the checkbox from this application.

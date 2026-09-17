@@ -15,7 +15,7 @@ Windows, so an already authorized window stays running even in Stage Manager.
 macOS launches a new Edge instance against the project profile instead of
 activating the daily browser, and leaves that window open for later reattach.
 
-Code version: v1.24.3-codex.1
+Code version: v1.24.6-codex.0
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import subprocess
 import tempfile
 import threading
@@ -33,6 +34,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .config import LOCAL_STORE_ROOT, is_macos_host, is_windows_host
 from .platform_lock import lock_file, unlock_file
@@ -46,6 +48,7 @@ DEVTOOLS_ACTIVE_PORT_FILENAME = "DevToolsActivePort"
 CDP_READY_TIMEOUT_SECONDS = 20.0
 CDP_PROBE_TIMEOUT_SECONDS = 3.0
 CDP_REATTACH_TIMEOUT_SECONDS = 8.0
+CDP_OCCUPIED_REATTACH_TIMEOUT_SECONDS = 20.0
 CDP_CALLER_LOCK_TIMEOUT_SECONDS = 5.0
 
 # Values reported by Chromium's ``/json/version`` ``Browser`` field. Microsoft
@@ -95,7 +98,6 @@ def debug_browser_lock(browser_id: str):
 _DEFAULT_VIEWPORT_ARGS = (
     "--no-first-run",
     "--no-default-browser-check",
-    "--disable-extensions",
     "--disable-session-crashed-bubble",
     "--disable-notifications",
     "--remote-allow-origins=*",
@@ -355,10 +357,349 @@ def _cdp_endpoint_alive(port: int) -> bool:
     return _probe_cdp_identity(port) is not None
 
 
+def _fetch_cdp_json(port: int, path: str) -> Any:
+    """Return one JSON payload from the browser-level CDP HTTP endpoint."""
+    endpoint = f"http://127.0.0.1:{int(port)}{path}"
+    with urllib.request.urlopen(endpoint, timeout=CDP_PROBE_TIMEOUT_SECONDS) as response:
+        payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    return payload
+
+
+def _live_debug_port(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> int | None:
+    """Return a reachable project debug port without attaching Playwright."""
+    recorded = (
+        _read_recorded_target(browser_id)
+        if profile_root is None
+        else _read_recorded_target(browser_id, profile_root)
+    )
+    if recorded is not None and _cdp_endpoint_alive(recorded.port):
+        return recorded.port
+    live = (
+        _read_devtools_active_target(browser_id)
+        if profile_root is None
+        else _read_devtools_active_target(browser_id, profile_root)
+    )
+    if live is not None and _cdp_endpoint_alive(live.port):
+        return live.port
+    return None
+
+
+def list_debug_browser_page_targets(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return open page targets via HTTP ``/json/list`` without enabling Runtime."""
+    port = _live_debug_port(browser_id, profile_root)
+    if port is None:
+        return []
+    try:
+        payload = _fetch_cdp_json(port, "/json/list")
+    except (urllib.error.URLError, OSError, ValueError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def open_debug_browser_url(
+    browser_id: str,
+    url: str,
+    profile_root: Path | None = None,
+) -> bool:
+    """Open one URL through Chromium's HTTP ``/json/new`` endpoint.
+
+    This avoids Playwright ``connect_over_cdp``, which enables Runtime on every
+    page and restarts Cloudflare Turnstile.
+    """
+    port = _live_debug_port(browser_id, profile_root)
+    destination = str(url or "").strip()
+    if port is None or not destination:
+        return False
+    encoded = urllib.parse.quote(destination, safe=":/?&=%#")
+    try:
+        _fetch_cdp_json(port, f"/json/new?{encoded}")
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    return True
+
+
+def activate_debug_browser_target(
+    browser_id: str,
+    target_id: str,
+    profile_root: Path | None = None,
+) -> bool:
+    """Focus one existing tab through Chromium's HTTP ``/json/activate`` endpoint."""
+    port = _live_debug_port(browser_id, profile_root)
+    token = str(target_id or "").strip()
+    if port is None or not token or "/" in token or "\\" in token:
+        return False
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{int(port)}/json/activate/{token}",
+            timeout=CDP_PROBE_TIMEOUT_SECONDS,
+        ) as response:
+            response.read()
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    return True
+
+
 def _identity_matches_browser(identity: CdpIdentity, browser_id: str) -> bool:
     """Return whether a CDP product token matches the requested browser."""
     prefix = _BRAND_PREFIXES.get(browser_id)
     return prefix is not None and identity.browser_brand.startswith(prefix)
+
+
+def _debug_profile_is_occupied(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> bool:
+    """Return whether Chromium still holds the project profile singleton."""
+    profile_dir = _debug_profile_dir(browser_id, profile_root)
+    for name in ("SingletonLock", "SingletonSocket"):
+        marker = profile_dir / name
+        try:
+            if marker.is_symlink() or marker.exists():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _chromium_user_data_pid(user_data_dir: Path) -> int | None:
+    """Return the Chromium PID encoded in a profile SingletonLock."""
+    lock = Path(user_data_dir) / "SingletonLock"
+    try:
+        if not lock.is_symlink():
+            return None
+        target = os.readlink(lock)
+    except OSError:
+        return None
+    suffix = str(target).rsplit("-", 1)[-1]
+    if not suffix.isdigit():
+        return None
+    pid = int(suffix)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return None
+    return pid
+
+
+def _debug_profile_browser_pid(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> int | None:
+    """Return the project browser PID encoded in Chromium's SingletonLock."""
+    return _chromium_user_data_pid(_debug_profile_dir(browser_id, profile_root))
+
+
+def debug_browser_command_line(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> str:
+    """Return the project browser command line, or an empty string."""
+    pid = _debug_profile_browser_pid(browser_id, profile_root)
+    if pid is None:
+        return ""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return str(result.stdout or "").strip()
+
+
+def bring_debug_browser_to_front(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> bool:
+    """Raise the project debug process by PID without activating daily Edge."""
+    pid = _debug_profile_browser_pid(browser_id, profile_root)
+    if pid is None or not is_macos_host():
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/osascript",
+                "-e",
+                (
+                    'tell application "System Events" to set frontmost of '
+                    f"(first process whose unix id is {pid}) to true"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def restart_debug_browser(
+    browser_id: str,
+    *,
+    start_url: str = "",
+    profile_root: Path | None = None,
+) -> DebugBrowserHandle:
+    """Quit the occupied project browser and start a replacement in-place.
+
+    Used only for a human login window that still carries ``--disable-extensions``,
+    which Cloudflare treats as automation. The same profile is reused.
+    """
+    if not debug_browser_supported(browser_id):
+        raise RuntimeError(
+            "The project-owned debug browser supports Edge on macOS and "
+            "Edge or Chrome on Windows."
+        )
+    with _debug_browser_startup_lock(browser_id, profile_root):
+        pid = _debug_profile_browser_pid(browser_id, profile_root)
+        if pid is not None:
+            LOGGER.info(
+                "Stopping debug %s pid %s so login can continue without --disable-extensions.",
+                browser_id,
+                pid,
+            )
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGTERM)
+            deadline = time.time() + 12.0
+            while time.time() < deadline and _debug_profile_is_occupied(
+                browser_id, profile_root
+            ):
+                time.sleep(0.4)
+            if _debug_profile_is_occupied(browser_id, profile_root):
+                with contextlib.suppress(OSError):
+                    os.kill(pid, signal.SIGKILL)
+                deadline = time.time() + 5.0
+                while time.time() < deadline and _debug_profile_is_occupied(
+                    browser_id, profile_root
+                ):
+                    time.sleep(0.4)
+        if profile_root is None:
+            _clear_devtools_active_port(browser_id)
+        else:
+            _clear_devtools_active_port(browser_id, profile_root)
+        port_file = _debug_port_path(browser_id, profile_root)
+        with contextlib.suppress(FileNotFoundError, OSError):
+            port_file.unlink()
+    handle = ensure_debug_browser(browser_id, profile_root=profile_root)
+    destination = str(start_url or "").strip()
+    if destination:
+        open_debug_browser_url(browser_id, destination, profile_root)
+    return handle
+
+
+def _debug_browser_handle(
+    browser_id: str,
+    identity: CdpIdentity,
+    profile_root: Path | None = None,
+) -> DebugBrowserHandle:
+    """Return a handle for one verified debug-browser identity."""
+    return DebugBrowserHandle(
+        browser_id=browser_id,
+        cdp_endpoint=f"http://127.0.0.1:{identity.port}",
+        user_data_dir=_debug_profile_dir(browser_id, profile_root),
+    )
+
+
+def _record_debug_browser_handle(
+    browser_id: str,
+    identity: CdpIdentity,
+    profile_root: Path | None = None,
+) -> DebugBrowserHandle:
+    """Persist one live identity and return its handle."""
+    if profile_root is None:
+        _record_debug_target(browser_id, identity)
+    else:
+        _record_debug_target(browser_id, identity, profile_root)
+    return _debug_browser_handle(browser_id, identity, profile_root)
+
+
+def _adopt_running_debug_browser(
+    browser_id: str,
+    profile_root: Path | None = None,
+) -> DebugBrowserHandle | None:
+    """Reuse a still-running project browser instead of launching a replacement.
+
+    ``open -n`` against an occupied profile starts a second Edge, fights the
+    singleton lock, and restarts ChatGPT's Cloudflare loop.
+    """
+    live = (
+        _read_devtools_active_target(browser_id)
+        if profile_root is None
+        else _read_devtools_active_target(browser_id, profile_root)
+    )
+    recorded = (
+        _read_recorded_target(browser_id)
+        if profile_root is None
+        else _read_recorded_target(browser_id, profile_root)
+    )
+    if (
+        recorded is not None
+        and profile_root is not None
+        and is_macos_host()
+        and recorded.instance is None
+    ):
+        recorded = None
+    candidates: list[tuple[int, str | None]] = []
+    seen_ports: set[int] = set()
+    if live is not None:
+        candidates.append((live.port, live.instance))
+        seen_ports.add(live.port)
+    if recorded is not None and recorded.port not in seen_ports:
+        candidates.append((recorded.port, None))
+
+    occupied = _debug_profile_is_occupied(browser_id, profile_root)
+    for port, guid in candidates:
+        identity = _wait_for_cdp_ready(
+            port,
+            CDP_REATTACH_TIMEOUT_SECONDS if occupied else CDP_PROBE_TIMEOUT_SECONDS,
+            expected_guid=guid,
+        )
+        if identity is None and guid is not None:
+            identity = _wait_for_cdp_ready(
+                port,
+                CDP_PROBE_TIMEOUT_SECONDS,
+                expected_guid=None,
+            )
+        if identity is not None and _identity_matches_browser(identity, browser_id):
+            LOGGER.info(
+                "Reusing the running debug %s on CDP port %s without launching a replacement.",
+                browser_id,
+                identity.port,
+            )
+            return _record_debug_browser_handle(browser_id, identity, profile_root)
+
+    if not occupied:
+        return None
+    wait_port = live.port if live is not None else (
+        recorded.port if recorded is not None else None
+    )
+    if wait_port is None:
+        return None
+    identity = _wait_for_cdp_ready(
+        wait_port,
+        CDP_OCCUPIED_REATTACH_TIMEOUT_SECONDS,
+        expected_guid=None,
+    )
+    if identity is None or not _identity_matches_browser(identity, browser_id):
+        return None
+    LOGGER.info(
+        "Reusing the occupied debug %s on CDP port %s after a CDP gap.",
+        browser_id,
+        identity.port,
+    )
+    return _record_debug_browser_handle(browser_id, identity, profile_root)
 
 
 def _wait_for_cdp_ready(
@@ -544,6 +885,118 @@ def _launch_debug_browser(
     return subprocess.Popen(command, **popen_kwargs)  # type: ignore[arg-type]
 
 
+def _wait_for_user_data_cdp(
+    user_data_dir: Path,
+    browser_id: str,
+    timeout_seconds: float,
+) -> CdpIdentity:
+    """Wait until a launched user-data directory publishes a matching CDP endpoint."""
+    marker = Path(user_data_dir) / DEVTOOLS_ACTIVE_PORT_FILENAME
+    deadline = time.time() + max(0.0, timeout_seconds)
+    while time.time() < deadline:
+        raw = _read_small_text(marker)
+        if raw:
+            lines = raw.splitlines()
+            if len(lines) >= 2 and lines[0].strip().isdigit():
+                port = _valid_port(int(lines[0].strip()))
+                instance = _instance_guid_from_websocket(lines[1].strip())
+                if port is not None and instance:
+                    identity = _probe_cdp_identity(port)
+                    if (
+                        identity is not None
+                        and identity.instance_guid == instance
+                        and _identity_matches_browser(identity, browser_id)
+                    ):
+                        return identity
+        time.sleep(0.4)
+    raise RuntimeError(
+        f"The cloned {browser_id} did not publish a verified CDP endpoint "
+        f"within {int(timeout_seconds)} seconds."
+    )
+
+
+def launch_owned_user_data_over_cdp(
+    browser_id: str,
+    user_data_dir: Path,
+    *,
+    extra_args: tuple[str, ...] = (),
+) -> tuple[subprocess.Popen[bytes], CdpIdentity]:
+    """Launch one native Chromium against a clone directory and expose CDP.
+
+    Playwright ``launch_persistent_context`` injects automation that ChatGPT can
+    reject on Send. Windows Agent tasks succeed by connecting to a native Edge
+    over CDP; macOS Agent tasks reuse that shape on a daily-profile clone.
+    """
+    executable = _resolve_browser_executable(browser_id)
+    if not executable:
+        raise RuntimeError(f"Could not find an installed {browser_id} executable.")
+    marker = Path(user_data_dir) / DEVTOOLS_ACTIVE_PORT_FILENAME
+    with contextlib.suppress(FileNotFoundError, OSError):
+        marker.unlink()
+    launch_args = [
+        "--remote-debugging-port=0",
+        f"--user-data-dir={user_data_dir}",
+        *_DEFAULT_VIEWPORT_ARGS,
+        *extra_args,
+    ]
+    macos_bundle = _macos_application_bundle(executable) if is_macos_host() else None
+    if macos_bundle is not None:
+        command = [
+            "/usr/bin/open",
+            "-n",
+            "-a",
+            str(macos_bundle),
+            "--args",
+            *launch_args,
+        ]
+    else:
+        command = [executable, *launch_args]
+    popen_kwargs: dict[str, object] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if is_macos_host():
+        popen_kwargs["start_new_session"] = True
+    LOGGER.info(
+        "Starting a native %s clone over CDP (profile: %s).",
+        browser_id,
+        user_data_dir,
+    )
+    process = subprocess.Popen(command, **popen_kwargs)  # type: ignore[arg-type]
+    try:
+        identity = _wait_for_user_data_cdp(
+            user_data_dir,
+            browser_id,
+            CDP_READY_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        terminate_owned_chromium(user_data_dir, process)
+        raise
+    return process, identity
+
+
+def terminate_owned_chromium(
+    user_data_dir: Path,
+    process: subprocess.Popen[bytes] | None = None,
+) -> None:
+    """Stop one owned Chromium clone without touching the daily browser."""
+    pid = _chromium_user_data_pid(user_data_dir)
+    if pid is not None:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+        deadline = time.time() + 8.0
+        while time.time() < deadline and _chromium_user_data_pid(user_data_dir) == pid:
+            time.sleep(0.2)
+        if _chromium_user_data_pid(user_data_dir) == pid:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+    if process is not None and process.poll() is None:
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            process.terminate()
+            process.wait(timeout=3)
+
+
 def debug_browser_supported(browser_id: str) -> bool:
     """Return whether this host owns a persistent debug browser for the id."""
     if browser_id not in _BRAND_PREFIXES:
@@ -641,6 +1094,21 @@ def _ensure_debug_browser_locked(
                 cdp_endpoint=f"http://127.0.0.1:{recorded.port}",
                 user_data_dir=_debug_profile_dir(browser_id, profile_root),
             )
+        LOGGER.info(
+            "The recorded debug %s target is not reachable; looking for the existing project process.",
+            browser_id,
+        )
+
+    adopted = _adopt_running_debug_browser(browser_id, profile_root)
+    if adopted is not None:
+        return adopted
+    if _debug_profile_is_occupied(browser_id, profile_root):
+        raise RuntimeError(
+            f"The project debug {browser_id} is still running. "
+            "Complete any human verification in that open window, then Recheck. "
+            "A second instance will not be launched against the same profile."
+        )
+    if recorded is not None:
         LOGGER.warning(
             "The recorded debug %s target no longer reports its expected identity; "
             "launching a fresh project browser.",

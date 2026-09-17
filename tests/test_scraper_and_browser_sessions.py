@@ -31,8 +31,10 @@ from app.core.browser_sessions import (
     fetch_safari_page_snapshot,
     goto_with_retry,
     _housekeep_stale_chromium_profiles,
+    DebugBrowserHumanVerificationError,
     is_grok_security_verification_page,
     launch_chromium_context,
+    http_target_shows_security_verification,
     page_shows_security_verification,
     page_url_indicates_human_verification,
     parse_grok_account_label,
@@ -1613,34 +1615,33 @@ def test_launch_chromium_context_restarts_initialized_debug_browser_before_clone
     browser_close.assert_called_once_with()
 
 
-def test_macos_edge_reuses_initialized_debug_browser_over_cdp(
+def test_macos_edge_agent_clones_daily_profile_like_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """macOS Edge Agent tasks reattach to the authorized debug window."""
+    """macOS Edge Agent ChatGPT reuses the Cache clone of the signed-in daily profile."""
     import app.core.browser_sessions as browser_sessions
-    from app.core.agent_debug_browser import DebugBrowserHandle
 
+    source = tmp_path / "Edge"
+    source.mkdir()
+    (source / "Default").mkdir()
+    cloned_root = tmp_path / "clone"
+    cloned_root.mkdir()
+    profile = SimpleNamespace(name=str(cloned_root), cleanup=MagicMock())
     descriptor = BrowserDescriptor(
         browser_id="edge",
         label="Edge",
         icon_filename="images/browser.edge.png",
         engine="chromium",
-        user_data_dir=tmp_path / "missing-daily-profile",
+        user_data_dir=source,
         profile_directory="Default",
         channel="msedge",
     )
-    attached_page = SimpleNamespace(url="https://chatgpt.com/")
-    attached_context = SimpleNamespace(pages=[attached_page], new_page=MagicMock())
-    browser_close = MagicMock()
-    attached_browser = SimpleNamespace(
-        contexts=[attached_context],
-        new_context=MagicMock(),
-        close=browser_close,
+    context = MagicMock()
+    launch = MagicMock(return_value=context)
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(launch_persistent_context=launch)
     )
-    connect = MagicMock(return_value=attached_browser)
-    playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=connect))
-
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: False)
     monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
     monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
@@ -1649,16 +1650,17 @@ def test_macos_edge_reuses_initialized_debug_browser_over_cdp(
         "app.core.agent_debug_browser.debug_browser_profile_initialized",
         lambda browser_id: browser_id == "edge",
     )
-    ensure = MagicMock(
-        return_value=DebugBrowserHandle(
-            browser_id="edge",
-            cdp_endpoint="http://127.0.0.1:42421",
-            user_data_dir=tmp_path / "debug-profile",
-        )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.ensure_debug_browser",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("macOS Edge Agent must clone the daily profile like Cache")
+        ),
     )
-    monkeypatch.setattr("app.core.agent_debug_browser.ensure_debug_browser", ensure)
-    clone = MagicMock(side_effect=AssertionError("A running debug profile must be reused"))
-    monkeypatch.setattr(browser_sessions, "clone_browser_profile", clone)
+    monkeypatch.setattr(
+        browser_sessions,
+        "clone_browser_profile",
+        lambda _descriptor: (cloned_root, profile),
+    )
 
     with launch_chromium_context(
         playwright,
@@ -1666,41 +1668,135 @@ def test_macos_edge_reuses_initialized_debug_browser_over_cdp(
         headless=False,
         clone_profile_first=True,
         prefer_initialized_debug_profile=True,
-    ) as context:
-        assert context.pages == [attached_page]
+    ) as launched_context:
+        assert launched_context is context
 
-    clone.assert_not_called()
-    ensure.assert_called_once_with("edge")
-    connect.assert_called_once_with("http://127.0.0.1:42421")
-    browser_close.assert_called_once_with()
+    launch.assert_called_once()
+    profile.cleanup.assert_called_once_with()
 
 
-def test_macos_edge_uses_debug_browser_before_the_profile_is_initialized(
+def test_macos_edge_agent_task_uses_native_cdp_on_daily_clone(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """macOS Agent probes must not clone the daily Edge profile on first use."""
+    """macOS Agent tasks send through native Edge over CDP, matching Windows."""
     import app.core.browser_sessions as browser_sessions
-    from app.core.agent_debug_browser import DebugBrowserHandle
+    from app.core.agent_debug_browser import CdpIdentity
 
+    source = tmp_path / "Edge"
+    source.mkdir()
+    (source / "Default").mkdir()
+    cloned_root = tmp_path / "clone"
+    cloned_root.mkdir()
+    profile = SimpleNamespace(name=str(cloned_root), cleanup=MagicMock())
     descriptor = BrowserDescriptor(
         browser_id="edge",
         label="Edge",
         icon_filename="images/browser.edge.png",
         engine="chromium",
-        user_data_dir=tmp_path / "daily-edge-must-not-be-cloned",
+        user_data_dir=source,
         profile_directory="Default",
         channel="msedge",
     )
     attached_page = SimpleNamespace(url="https://chatgpt.com/")
-    attached_context = SimpleNamespace(pages=[attached_page], new_page=MagicMock())
+    attached_context = SimpleNamespace(
+        pages=[attached_page],
+        new_page=MagicMock(),
+        close=MagicMock(),
+    )
     attached_browser = SimpleNamespace(
         contexts=[attached_context],
         new_context=MagicMock(),
         close=MagicMock(),
     )
+    connect = MagicMock(return_value=attached_browser)
+    persistent = MagicMock(side_effect=AssertionError("Agent tasks must not Playwright-launch Edge"))
     playwright = SimpleNamespace(
-        chromium=SimpleNamespace(connect_over_cdp=MagicMock(return_value=attached_browser))
+        chromium=SimpleNamespace(
+            connect_over_cdp=connect,
+            launch_persistent_context=persistent,
+        )
+    )
+    launched: list[Path] = []
+    terminated: list[Path] = []
+    process = SimpleNamespace(poll=lambda: 0, terminate=lambda: None)
+    identity = CdpIdentity(
+        port=51228,
+        browser_brand="Edg/153.0",
+        instance_guid="clone-guid",
+    )
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
+    monkeypatch.setattr(
+        browser_sessions,
+        "clone_browser_profile",
+        lambda _descriptor: (cloned_root, profile),
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.launch_owned_user_data_over_cdp",
+        lambda browser_id, user_data_dir, extra_args=(): (
+            launched.append(Path(user_data_dir)) or (process, identity)
+        ),
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.terminate_owned_chromium",
+        lambda user_data_dir, owned_process=None: terminated.append(Path(user_data_dir)),
+    )
+    monkeypatch.setattr(
+        "app.core.computer_use_agent._capture_macos_frontmost_application",
+        lambda: "Finder",
+    )
+    monkeypatch.setattr(
+        "app.core.computer_use_agent._restore_macos_frontmost_application_after_task_stage",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with launch_chromium_context(
+        playwright,
+        descriptor,
+        headless=False,
+        clone_profile_first=True,
+        window_mode=CHROMIUM_WINDOW_MODE_TASK_STAGE,
+        native_clone_cdp=True,
+    ) as context:
+        assert context.pages == [attached_page]
+
+    assert launched == [cloned_root]
+    assert connect.call_args.args == ("http://127.0.0.1:51228",)
+    persistent.assert_not_called()
+    assert terminated == [cloned_root]
+    attached_browser.close.assert_called_once()
+    profile.cleanup.assert_called_once_with()
+
+
+def test_macos_edge_agent_still_clones_when_debug_profile_is_uninitialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS Edge Agent does not fall back to an empty debug profile on first use."""
+    import app.core.browser_sessions as browser_sessions
+
+    source = tmp_path / "daily-edge"
+    source.mkdir()
+    (source / "Default").mkdir()
+    cloned_root = tmp_path / "clone"
+    cloned_root.mkdir()
+    profile = SimpleNamespace(name=str(cloned_root), cleanup=MagicMock())
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=source,
+        profile_directory="Default",
+        channel="msedge",
+    )
+    context = MagicMock()
+    launch = MagicMock(return_value=context)
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(launch_persistent_context=launch)
     )
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: False)
     monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
@@ -1710,16 +1806,17 @@ def test_macos_edge_uses_debug_browser_before_the_profile_is_initialized(
         "app.core.agent_debug_browser.debug_browser_profile_initialized",
         lambda browser_id: False,
     )
-    ensure = MagicMock(
-        return_value=DebugBrowserHandle(
-            browser_id="edge",
-            cdp_endpoint="http://127.0.0.1:42421",
-            user_data_dir=tmp_path / "debug-profile",
-        )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.ensure_debug_browser",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("macOS Edge Agent must clone the daily profile like Cache")
+        ),
     )
-    monkeypatch.setattr("app.core.agent_debug_browser.ensure_debug_browser", ensure)
-    clone = MagicMock(side_effect=AssertionError("A first macOS Edge probe must not clone"))
-    monkeypatch.setattr(browser_sessions, "clone_browser_profile", clone)
+    monkeypatch.setattr(
+        browser_sessions,
+        "clone_browser_profile",
+        lambda _descriptor: (cloned_root, profile),
+    )
 
     with launch_chromium_context(
         playwright,
@@ -1727,11 +1824,10 @@ def test_macos_edge_uses_debug_browser_before_the_profile_is_initialized(
         headless=False,
         clone_profile_first=True,
         prefer_initialized_debug_profile=True,
-    ) as context:
-        assert context.pages == [attached_page]
+    ) as launched_context:
+        assert launched_context is context
 
-    clone.assert_not_called()
-    ensure.assert_called_once_with("edge")
+    launch.assert_called_once()
 
 
 def test_macos_edge_app_bundle_launch_opens_a_new_instance(
@@ -1762,6 +1858,90 @@ def test_macos_edge_app_bundle_launch_opens_a_new_instance(
     assert f"--user-data-dir={profile_root / 'edge'}" in command
     assert "--remote-debugging-port=0" in command
     assert "--remote-allow-origins=*" in command
+    assert "--disable-extensions" not in command
+
+
+def test_http_target_cloudflare_authorize_page_is_human_verification() -> None:
+    assert http_target_shows_security_verification(
+        {
+            "id": "auth-1",
+            "type": "page",
+            "title": "Just a moment...",
+            "url": "https://auth.openai.com/api/accounts/authorize?prompt=login",
+        }
+    )
+    assert not http_target_shows_security_verification(
+        {
+            "id": "worker-1",
+            "type": "worker",
+            "title": "Just a moment...",
+            "url": "https://auth.openai.com/api/accounts/authorize?prompt=login",
+        }
+    )
+
+
+def test_debug_attach_skips_playwright_when_http_list_shows_cloudflare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.browser_sessions as browser_sessions
+    from app.core.agent_debug_browser import DebugBrowserHandle
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "daily-edge",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_supported",
+        lambda browser_id: browser_id == "edge",
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_profile_initialized",
+        lambda browser_id: True,
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.ensure_debug_browser",
+        lambda browser_id: DebugBrowserHandle(
+            browser_id=browser_id,
+            cdp_endpoint="http://127.0.0.1:51228",
+            user_data_dir=tmp_path / "debug-profile",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.list_debug_browser_page_targets",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "auth-1",
+                "type": "page",
+                "title": "Just a moment...",
+                "url": "https://auth.openai.com/api/accounts/authorize?prompt=login",
+            }
+        ],
+    )
+    connect = MagicMock(side_effect=AssertionError("Playwright must not attach"))
+    playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=connect))
+
+    with pytest.raises(DebugBrowserHumanVerificationError) as exc:
+        launch_chromium_context(
+            playwright,
+            descriptor,
+            headless=False,
+            clone_profile_first=True,
+            prefer_initialized_debug_profile=True,
+        )
+
+    assert exc.value.payload["human_verification"] is True
+    connect.assert_not_called()
+    del browser_sessions
 
 
 def test_auth_openai_url_is_human_verification_without_dom_access() -> None:
@@ -2208,6 +2388,105 @@ def test_ensure_debug_browser_relaunches_when_recorded_port_has_wrong_instance(
     assert recorded == [fresh]
 
 
+def test_ensure_debug_browser_adopts_live_devtools_port_instead_of_relaunching(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A still-running project Edge is reattached even if the recorded GUID drifted."""
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "agent_browser_profile" / "edge"
+    profile_root.mkdir(parents=True)
+    (profile_root / "debug_port").write_text(
+        json.dumps(
+            {
+                "port": 42421,
+                "instance": "edge-guid-aaa",
+                "browser": "Edg/119.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (profile_root / "DevToolsActivePort").write_text(
+        "50123\n/devtools/browser/edge-guid-ccc\n",
+        encoding="utf-8",
+    )
+    (profile_root / "SingletonLock").symlink_to("host-4242")
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
+    live = adb.CdpIdentity(
+        port=50123,
+        browser_brand="Edg/119.0",
+        instance_guid="edge-guid-ccc",
+    )
+
+    def wait_for_identity(
+        port: int,
+        timeout: float,
+        *,
+        expected_guid: str | None = None,
+    ) -> adb.CdpIdentity | None:
+        if port == 50123 and expected_guid in {None, "edge-guid-ccc"}:
+            return live
+        return None
+
+    monkeypatch.setattr(adb, "_wait_for_cdp_ready", wait_for_identity)
+    monkeypatch.setattr(
+        adb,
+        "_launch_debug_browser",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("An occupied project Edge must not be relaunched")
+        ),
+    )
+    recorded: list[adb.CdpIdentity] = []
+    monkeypatch.setattr(
+        adb,
+        "_record_debug_target",
+        lambda _browser_id, item: recorded.append(item),
+    )
+
+    handle = adb.ensure_debug_browser("edge")
+    assert handle.cdp_endpoint == "http://127.0.0.1:50123"
+    assert recorded == [live]
+
+
+def test_ensure_debug_browser_does_not_relaunch_an_occupied_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS must not open -n a second Edge while Cloudflare is still in that window."""
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "agent_browser_profile" / "edge"
+    profile_root.mkdir(parents=True)
+    (profile_root / "debug_port").write_text(
+        json.dumps(
+            {
+                "port": 42421,
+                "instance": "edge-guid-aaa",
+                "browser": "Edg/119.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (profile_root / "SingletonLock").symlink_to("host-4242")
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
+    monkeypatch.setattr(adb, "_wait_for_cdp_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        adb,
+        "_launch_debug_browser",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("An occupied project Edge must not be relaunched")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="still running"):
+        adb.ensure_debug_browser("edge")
+
+
 def test_ensure_debug_browser_fails_closed_when_launch_reports_wrong_brand(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2364,6 +2643,7 @@ def test_macos_edge_debug_browser_uses_only_the_private_project_profile(
     assert f"--user-data-dir={profile_root / 'edge'}" in command
     assert "--remote-debugging-port=0" in command
     assert "--remote-allow-origins=*" in command
+    assert "--disable-extensions" not in command
     assert "--use-mock-keychain" not in command
     assert "--password-store=basic" not in command
     assert not any("Library/Application Support/Microsoft Edge" in item for item in command)
