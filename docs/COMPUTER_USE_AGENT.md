@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.76.5-codex.1`
+Documentation version: `v3.76.9-codex.1`
 
 ## Purpose
 
@@ -383,10 +383,18 @@ within 0.01px of its label. The user-owned service was not restarted.
    controller may refill that demonstrably uncommitted draft once and repeat the atomic check; a
    second empty remount or any non-empty draft change blocks Send. Before every Chromium ChatGPT
    draft fill, the controller waits through a bounded, Stop-aware post-response composer transition.
-   The wait uses short trusted-input attempts, reacquires a remounted composer every time, and
-   remains before `commit_attempted`, so a slow Extra High response cannot strand the next controller
-   observation at Playwright's shorter default action timeout. Project-bound Send and Retry controls
-   require both the exact conversation ID and stable
+   Chromium draft input first focuses exactly one visible, enabled, editable `#prompt-textarea`, then
+   fills that bound control with a 30-second Playwright timeout so a 9k-character ProseMirror draft
+   can finish rendering instead of dying at the 250ms send-button poll. Native `insertText` remains
+   the fallback when the page adapter has no locator fill. The writer and the Send
+   guard share one structural ProseMirror serializer and the same Unicode-space normalization, so
+   provider hydration that preserves words while substituting NBSP or other Unicode spaces cannot
+   turn a just-filled draft into a false composer mismatch. Send binds that unique visible composer,
+   not the first DOM match. A different non-empty draft remains fail-closed, and structural readback
+   after Unicode-space normalization is required before Send can be bound. The trusted Send click
+   remains the only external commit boundary. The wait remains before `commit_attempted`, so a slow Extra High
+   response cannot strand the next controller observation at a browser action timeout. Project-bound
+   Send and Retry controls require both the exact conversation ID and stable
    `g-p-...` identity, while a root Recent selection retains ChatGPT's root-to-Project canonical
    redirect compatibility. Grok Build may replace its textarea with the exact visible `Ask Grok anything`
    contenteditable ProseMirror composer. Direct paragraph children are serialized with blank lines
@@ -862,8 +870,9 @@ Former `text or regex` query fields are normalized even when their JSON whitespa
 authoritative literal-only instruction is added when absent. User-authored guidance outside
 generated protocol sections and unrelated settings remain intact. Settings are
 written through an owner-only, same-directory temporary file, flushed with `fsync`, and atomically
-replaced. POSIX also fsyncs the parent directory after publication. A failed write preserves the
-complete previous file. Successful migrations are immediate and idempotent across later service
+replaced. A Windows scanner or indexer that briefly holds the destination open is retried for a
+bounded 500ms instead of failing the checkpoint. POSIX also fsyncs the parent directory after
+publication. A failed write preserves the complete previous file. Successful migrations are immediate and idempotent across later service
 starts.
 
 The selected provider's file-upload limit remains authoritative. ChatGPT documents a 512 MB hard

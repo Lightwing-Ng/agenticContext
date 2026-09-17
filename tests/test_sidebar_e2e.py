@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.46.13-codex.1
+Code version: v1.46.14-codex.1
 """
 
 from __future__ import annotations
@@ -8286,7 +8286,9 @@ def test_chatgpt_atomic_send_rejects_browser_composer_drift(
                   window.sendClicks = 0;
                   const composer = document.querySelector('#prompt-textarea');
                   composer.addEventListener('input', () => {
-                    composer.textContent = 'tampered in page';
+                    composer.replaceChildren(
+                      document.createTextNode('tampered in page')
+                    );
                   }, {once: true});
                   document.querySelector('button').onclick = () => {
                     window.sendClicks += 1;
@@ -8297,7 +8299,10 @@ def test_chatgpt_atomic_send_rejects_browser_composer_drift(
     )
     try:
         page.goto(target_url, wait_until="domcontentloaded")
-        with pytest.raises(RuntimeError, match="composer changed before Send"):
+        with pytest.raises(
+            RuntimeError,
+            match="different draft|composer changed before Send",
+        ):
             _submit_chromium_prompt(
                 page,
                 "Inspect the project",
@@ -8305,7 +8310,77 @@ def test_chatgpt_atomic_send_rejects_browser_composer_drift(
                 expected_target_url=target_url,
             )
         assert page.evaluate("window.sendClicks") == 0
-        assert page.locator("#prompt-textarea").inner_text() == "tampered in page"
+        assert "tampered in page" in page.locator("#prompt-textarea").inner_text()
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_chatgpt_atomic_send_accepts_nbsp_hydration_in_visible_composer(
+    disposable_browser: Browser,
+) -> None:
+    """Unicode-space hydration and a hidden duplicate composer must not block Send."""
+    target_url = "https://chatgpt.com/c/nbsp-hydration"
+    context = disposable_browser.new_context(
+        viewport={"width": 1_024, "height": 768},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    page.route(
+        "https://chatgpt.com/**",
+        lambda route: route.fulfill(
+            content_type="text/html",
+            body="""
+                <meta charset="utf-8">
+                <style>button, #prompt-textarea { display: block; width: 220px; height: 32px; }</style>
+                <div id="prompt-textarea" style="display:none" aria-hidden="true">stale other draft</div>
+                <div id="prompt-textarea" contenteditable="true"></div>
+                <button data-testid="send-button" aria-label="Send prompt">Send</button>
+                <script>
+                  window.sendClicks = 0;
+                  const composers = document.querySelectorAll('#prompt-textarea');
+                  const composer = composers[1];
+                  const convertSpaces = () => {
+                    const walker = document.createTreeWalker(
+                      composer,
+                      NodeFilter.SHOW_TEXT
+                    );
+                    const nodes = [];
+                    while (walker.nextNode()) nodes.push(walker.currentNode);
+                    nodes.forEach((node) => {
+                      node.nodeValue = (node.nodeValue || '').replace(/ /g, '\\u00A0');
+                    });
+                  };
+                  composer.addEventListener('input', convertSpaces);
+                  document.querySelector('button').onclick = () => {
+                    window.sendClicks += 1;
+                  };
+                </script>
+            """,
+        ),
+    )
+    try:
+        page.goto(target_url, wait_until="domcontentloaded")
+        _submit_chromium_prompt(
+            page,
+            "Inspect the project",
+            lambda: False,
+            expected_target_url=target_url,
+        )
+        assert page.evaluate("window.sendClicks") == 1
+        assert page.evaluate(
+            """() => {
+                const composers = document.querySelectorAll('#prompt-textarea');
+                return {
+                    hidden: composers[0].textContent,
+                    visibleHasNbsp: (composers[1].textContent || '').includes('\u00a0'),
+                };
+            }"""
+        ) == {
+            "hidden": "stale other draft",
+            "visibleHasNbsp": True,
+        }
     finally:
         context.close()
 

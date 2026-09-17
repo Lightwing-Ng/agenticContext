@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.81.5-codex.1
+Code version: v3.81.9-codex.1
 """
 
 from __future__ import annotations
@@ -276,6 +276,11 @@ SAFARI_SEND_BUTTON_TIMEOUT_SECONDS = 15
 CHROMIUM_SEND_BUTTON_TIMEOUT_SECONDS = 180
 CHROMIUM_SUBMISSION_ACCEPT_TIMEOUT_SECONDS = 15
 WEB_SEND_BUTTON_POLL_MILLISECONDS = 250
+# Playwright's fill() runs its actionability gates and the DOM write under one
+# timeout. Replacing a large provider draft (observed 9k+ characters) can take
+# several seconds of ProseMirror/React re-rendering, so the per-attempt fill
+# timeout must stay well above the send-button poll interval.
+CHATGPT_COMPOSER_FILL_TIMEOUT_MILLISECONDS = 30_000
 PROVIDER_SESSION_BIND_TIMEOUT_SECONDS = 5
 CHATGPT_SESSION_BIND_TIMEOUT_SECONDS = 30
 PROVIDER_SESSION_BIND_POLL_MILLISECONDS = 100
@@ -2043,6 +2048,26 @@ def _fsync_directory_path(directory: Path) -> None:
         os.close(descriptor)
 
 
+# Windows real-time scanners or indexers can hold the replace target open for
+# a few milliseconds, which makes os.replace fail with transient access-denied
+# errors even though both paths are regular owner-only files. Retry the rename
+# briefly instead of failing a durable Agent checkpoint on that race.
+ATOMIC_WRITE_REPLACE_ATTEMPTS = 10
+ATOMIC_WRITE_REPLACE_RETRY_SECONDS = 0.05
+
+
+def _replace_with_transient_retry(temporary_path: Path, path: Path) -> None:
+    """Replace one file, riding out bounded Windows access-denied races."""
+    for attempt in range(1, ATOMIC_WRITE_REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(temporary_path, path)
+            return
+        except PermissionError:
+            if attempt >= ATOMIC_WRITE_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(ATOMIC_WRITE_REPLACE_RETRY_SECONDS)
+
+
 def _atomic_write_owner_only_text(path: Path, content: str) -> None:
     """Atomically replace one local text file through an owner-only unique sibling."""
     if (
@@ -2064,7 +2089,7 @@ def _atomic_write_owner_only_text(path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
+        _replace_with_transient_retry(temporary_path, path)
         _fsync_directory_path(path.parent)
     finally:
         if descriptor >= 0:
@@ -20677,6 +20702,302 @@ def _submit_safari_prompt(
     )
 
 
+_CHATGPT_COMPOSER_TEXT_HELPERS_JS = r"""
+            const normalize = (value) => String(value || '')
+                .replace(/\r\n?/g, '\n')
+                .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]/g, ' ')
+                .trim();
+            const composerTextsMatch = (left, right) => (
+                left !== null
+                && right !== null
+                && normalize(left) === normalize(right)
+            );
+            const firstComposerDiff = (left, right) => {
+                const actual = normalize(left);
+                const expected = normalize(right);
+                const limit = Math.min(actual.length, expected.length);
+                for (let index = 0; index < limit; index += 1) {
+                    if (actual.charCodeAt(index) !== expected.charCodeAt(index)) {
+                        return index;
+                    }
+                }
+                return actual.length === expected.length ? -1 : limit;
+            };
+            const visiblePromptComposer = (element) => {
+                if (!element || !element.isConnected || !element.getClientRects().length) {
+                    return false;
+                }
+                for (let node = element; node instanceof Element; node = node.parentElement) {
+                    const style = getComputedStyle(node);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (node.hidden
+                        || node.inert
+                        || node.getAttribute('aria-hidden') === 'true'
+                        || style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return !element.disabled
+                    && element.getAttribute('aria-disabled') !== 'true';
+            };
+            const promptComposers = () => [...document.querySelectorAll('#prompt-textarea')]
+                .filter(visiblePromptComposer);
+            const composerValue = (element) => {
+                if (!element) return '';
+                if (element instanceof HTMLTextAreaElement
+                    || element instanceof HTMLInputElement) return element.value;
+                const directNodes = [...element.childNodes];
+                const directParagraphs = directNodes.filter((node) => (
+                    node.nodeType === Node.ELEMENT_NODE && node.tagName === 'P'
+                ));
+                const paragraphOnly = directParagraphs.length
+                    && directNodes.every((node) => (
+                        (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'P')
+                        || (node.nodeType === Node.TEXT_NODE
+                            && !(node.textContent || '').trim())
+                    ));
+                const serializeParagraph = (paragraph) => {
+                    const paragraphNodes = [...paragraph.childNodes];
+                    if (paragraphNodes.length === 1
+                        && paragraphNodes[0].nodeType === Node.ELEMENT_NODE
+                        && paragraphNodes[0].tagName === 'BR') return '';
+                    let supported = true;
+                    const parts = [];
+                    const visit = (node) => {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            parts.push(node.nodeValue || '');
+                            return;
+                        }
+                        if (node.nodeType !== Node.ELEMENT_NODE
+                            || node.getAttribute('contenteditable') === 'false'
+                            || /^(?:IMG|AUDIO|VIDEO|IFRAME|OBJECT|EMBED)$/.test(node.tagName)) {
+                            supported = false;
+                            return;
+                        }
+                        if (node.tagName === 'BR') {
+                            parts.push('\n');
+                            return;
+                        }
+                        [...node.childNodes].forEach(visit);
+                    };
+                    paragraphNodes.forEach(visit);
+                    return supported ? parts.join('') : null;
+                };
+                if (paragraphOnly) {
+                    const paragraphs = directParagraphs.map(serializeParagraph);
+                    return paragraphs.every((value) => value !== null)
+                        ? paragraphs.join('\n')
+                        : null;
+                }
+                const selection = element.ownerDocument.defaultView?.getSelection();
+                if (!selection) return element.innerText || element.textContent || '';
+                const savedRanges = [];
+                for (let index = 0; index < selection.rangeCount; index += 1) {
+                    savedRanges.push(selection.getRangeAt(index).cloneRange());
+                }
+                const range = element.ownerDocument.createRange();
+                range.selectNodeContents(element);
+                try {
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    return selection.toString();
+                } finally {
+                    selection.removeAllRanges();
+                    savedRanges.forEach((savedRange) => {
+                        try {
+                            selection.addRange(savedRange);
+                        } catch (_) {
+                            // A provider remount invalidates only the stale saved range.
+                        }
+                    });
+                }
+            };
+"""
+
+
+def _fill_chatgpt_composer_draft(page: Any, message: str) -> dict[str, Any]:
+    """Fill one exact ChatGPT draft through native input without clicking Send."""
+    evaluate = getattr(page, "evaluate", None)
+    if not callable(evaluate):
+        return {}
+    binding_attribute = "data-cachelikes-agent-draft-binding"
+    binding_token = f"chatgpt-draft-{secrets.token_hex(16)}"
+    prepare_result = evaluate(
+        r"""({value, bindingAttribute, bindingToken}) => {
+            const contract = 'chatgpt-draft-fill-v2';
+__CHATGPT_COMPOSER_TEXT_HELPERS__
+            const candidates = promptComposers();
+            if (candidates.length !== 1) {
+                return {
+                    contract,
+                    ready: false,
+                    retryable: true,
+                    composerCount: candidates.length,
+                };
+            }
+            const composer = candidates[0];
+            const valueElement = composer instanceof HTMLTextAreaElement
+                || composer instanceof HTMLInputElement;
+            if (!valueElement && !composer.isContentEditable) {
+                return {
+                    contract,
+                    ready: false,
+                    retryable: true,
+                    composerCount: 1,
+                    editable: false,
+                };
+            }
+            const expected = normalize(value);
+            const beforeValue = composerValue(composer);
+            const before = normalize(beforeValue);
+            if (beforeValue === null) {
+                return {
+                    contract,
+                    ready: false,
+                    conflict: true,
+                    composerCount: 1,
+                    readable: false,
+                };
+            }
+            if (before && !composerTextsMatch(beforeValue, value)) {
+                return {
+                    contract,
+                    ready: false,
+                    conflict: true,
+                    composerCount: 1,
+                    currentLength: before.length,
+                    expectedLength: expected.length,
+                };
+            }
+            if (before && composerTextsMatch(beforeValue, value)) {
+                return {
+                    contract,
+                    ready: true,
+                    composerCount: 1,
+                    readbackLength: before.length,
+                };
+            }
+            document.querySelectorAll(`[${bindingAttribute}]`).forEach((element) => {
+                element.removeAttribute(bindingAttribute);
+            });
+            composer.setAttribute(bindingAttribute, bindingToken);
+            composer.focus();
+            if (document.activeElement !== composer) {
+                composer.removeAttribute(bindingAttribute);
+                return {
+                    contract,
+                    ready: false,
+                    retryable: true,
+                    composerCount: 1,
+                    focused: false,
+                };
+            }
+            return {
+                contract,
+                ready: false,
+                prepared: true,
+                composerCount: 1,
+                expectedLength: expected.length,
+            };
+        }""".replace(
+            "__CHATGPT_COMPOSER_TEXT_HELPERS__",
+            _CHATGPT_COMPOSER_TEXT_HELPERS_JS,
+        ),
+        {
+            "value": message,
+            "bindingAttribute": binding_attribute,
+            "bindingToken": binding_token,
+        },
+    )
+    if not isinstance(prepare_result, dict):
+        return {}
+    if prepare_result.get("contract") != "chatgpt-draft-fill-v2":
+        return {}
+    if not prepare_result.get("prepared"):
+        return prepare_result
+
+    written = False
+    locator_fn = getattr(page, "locator", None)
+    if callable(locator_fn):
+        bound = locator_fn(f'[{binding_attribute}="{binding_token}"]')
+        count = getattr(bound, "count", None)
+        fill = getattr(bound, "fill", None)
+        if callable(fill) and (not callable(count) or count() == 1):
+            try:
+                fill(message, timeout=CHATGPT_COMPOSER_FILL_TIMEOUT_MILLISECONDS)
+            except TypeError as exc:
+                if "timeout" not in str(exc):
+                    raise
+                fill(message)
+            written = True
+    if not written:
+        keyboard = getattr(page, "keyboard", None)
+        insert_text = getattr(keyboard, "insert_text", None)
+        if not callable(insert_text):
+            return {}
+        insert_text(message)
+
+    verify_result = evaluate(
+        r"""({value, bindingAttribute, bindingToken}) => {
+            const contract = 'chatgpt-draft-fill-v2';
+__CHATGPT_COMPOSER_TEXT_HELPERS__
+            const candidates = promptComposers();
+            const bound = document.querySelector(
+                `[${bindingAttribute}="${CSS.escape(bindingToken)}"]`
+            );
+            document.querySelectorAll(`[${bindingAttribute}]`).forEach((element) => {
+                element.removeAttribute(bindingAttribute);
+            });
+            if (candidates.length !== 1) {
+                return {
+                    contract,
+                    ready: false,
+                    retryable: true,
+                    composerCount: candidates.length,
+                    bindingPreserved: Boolean(bound),
+                };
+            }
+            const currentValue = composerValue(candidates[0]);
+            const expected = normalize(value);
+            const current = normalize(currentValue);
+            if (currentValue === null) {
+                return {
+                    contract,
+                    ready: false,
+                    conflict: true,
+                    composerCount: 1,
+                    readable: false,
+                };
+            }
+            const exact = composerTextsMatch(currentValue, value);
+            return {
+                contract,
+                ready: exact,
+                retryable: !current,
+                conflict: Boolean(current && !exact),
+                composerCount: 1,
+                bindingPreserved: candidates[0] === bound,
+                readbackLength: current.length,
+                expectedLength: expected.length,
+            };
+        }""".replace(
+            "__CHATGPT_COMPOSER_TEXT_HELPERS__",
+            _CHATGPT_COMPOSER_TEXT_HELPERS_JS,
+        ),
+        {
+            "value": message,
+            "bindingAttribute": binding_attribute,
+            "bindingToken": binding_token,
+        },
+    )
+    if not isinstance(verify_result, dict):
+        return {}
+    if verify_result.get("contract") != "chatgpt-draft-fill-v2":
+        return {}
+    return verify_result
+
+
 def _submit_chromium_prompt(
     page: Any,
     message: str,
@@ -20697,20 +21018,39 @@ def _submit_chromium_prompt(
 
     def fill_checked_composer_until_ready() -> bool:
         """Wait through one bounded post-response composer transition."""
-        deadline = time.monotonic() + CHROMIUM_SEND_BUTTON_TIMEOUT_SECONDS
+        deadline = time.monotonic() + CHATGPT_COMPOSER_TIMEOUT_SECONDS
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             if should_stop():
                 return False
             remaining_ms = max(1, int((deadline - time.monotonic()) * 1_000))
             attempt_timeout = min(
-                WEB_SEND_BUTTON_POLL_MILLISECONDS,
+                CHATGPT_COMPOSER_FILL_TIMEOUT_MILLISECONDS,
                 remaining_ms,
             )
 
             def fill_checked_composer() -> None:
                 if session_check is not None:
                     session_check(False)
+                draft_result = _fill_chatgpt_composer_draft(page, message)
+                if draft_result:
+                    if draft_result.get("ready"):
+                        return
+                    if draft_result.get("conflict"):
+                        raise RuntimeError(
+                            "The ChatGPT composer already contains a different draft. "
+                            "Nothing was overwritten or sent."
+                        )
+                    if draft_result.get("retryable"):
+                        raise _ComposerReadinessTimeout(
+                            "The ChatGPT composer is still transitioning before draft input."
+                        )
+                    raise RuntimeError(
+                        "ChatGPT did not accept an exact controller draft. Nothing was sent."
+                    )
+
+                # Compatibility fallback for lightweight adapters that do not
+                # implement the atomic browser-evaluation contract.
                 composer = page.locator("#prompt-textarea")
                 fill = getattr(composer, "fill", None)
                 if not callable(fill):
@@ -20827,98 +21167,48 @@ def _submit_chromium_prompt(
                         targetMismatch: true,
                     };
                 }
-                const normalize = (value) => String(value || '')
-                    .replace(/\r\n?/g, '\n')
-                    .trim();
-                const composerValue = (element) => {
-                    if (!element) return '';
-                    if ('value' in element) return element.value;
-                    const directNodes = [...element.childNodes];
-                    const directParagraphs = directNodes.filter((node) => (
-                        node.nodeType === Node.ELEMENT_NODE && node.tagName === 'P'
-                    ));
-                    const paragraphOnly = directParagraphs.length
-                        && directNodes.every((node) => (
-                            (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'P')
-                            || (node.nodeType === Node.TEXT_NODE
-                                && !(node.textContent || '').trim())
-                        ));
-                    const serializeParagraph = (paragraph) => {
-                        const paragraphNodes = [...paragraph.childNodes];
-                        if (paragraphNodes.length === 1
-                            && paragraphNodes[0].nodeType === Node.ELEMENT_NODE
-                            && paragraphNodes[0].tagName === 'BR') return '';
-                        let supported = true;
-                        const parts = [];
-                        const visit = (node) => {
-                            if (node.nodeType === Node.TEXT_NODE) {
-                                parts.push(node.nodeValue || '');
-                                return;
-                            }
-                            if (node.nodeType !== Node.ELEMENT_NODE
-                                || node.getAttribute('contenteditable') === 'false'
-                                || /^(?:IMG|AUDIO|VIDEO|IFRAME|OBJECT|EMBED)$/.test(node.tagName)) {
-                                supported = false;
-                                return;
-                            }
-                            if (node.tagName === 'BR') {
-                                parts.push('\n');
-                                return;
-                            }
-                            [...node.childNodes].forEach(visit);
-                        };
-                        paragraphNodes.forEach(visit);
-                        return supported ? parts.join('') : null;
-                    };
-                    if (paragraphOnly) {
-                        const paragraphs = directParagraphs.map(serializeParagraph);
-                        return paragraphs.every((value) => value !== null)
-                            ? paragraphs.join('\n')
-                            : null;
-                    }
-                    const selection = element.ownerDocument.defaultView?.getSelection();
-                    if (!selection) return element.innerText || element.textContent || '';
-                    const savedRanges = [];
-                    for (let index = 0; index < selection.rangeCount; index += 1) {
-                        savedRanges.push(selection.getRangeAt(index).cloneRange());
-                    }
-                    const range = element.ownerDocument.createRange();
-                    range.selectNodeContents(element);
-                    try {
-                        selection.removeAllRanges();
-                        selection.addRange(range);
-                        return selection.toString();
-                    } finally {
-                        selection.removeAllRanges();
-                        savedRanges.forEach((savedRange) => {
-                            try {
-                                selection.addRange(savedRange);
-                            } catch (_) {
-                                // A provider remount invalidates only the stale saved range.
-                            }
-                        });
-                    }
-                };
-                const currentComposer = document.querySelector('#prompt-textarea');
-                const currentComposerValue = composerValue(currentComposer);
+__CHATGPT_COMPOSER_TEXT_HELPERS__
+                const candidates = promptComposers();
+                const currentComposer = candidates.length === 1 ? candidates[0] : null;
+                const currentComposerValue = currentComposer
+                    ? composerValue(currentComposer)
+                    : null;
                 document.querySelectorAll(`[${bindingAttribute}]`).forEach((element) => {
                     element.removeAttribute(bindingAttribute);
                 });
                 if (!currentComposer
                     || currentComposerValue === null
-                    || normalize(currentComposerValue) !== normalize(expectedMessage)) {
+                    || !composerTextsMatch(currentComposerValue, expectedMessage)) {
+                    const normalizedCurrent = normalize(currentComposerValue);
+                    const normalizedExpected = normalize(expectedMessage);
+                    const firstDiff = firstComposerDiff(
+                        currentComposerValue,
+                        expectedMessage,
+                    );
                     return {
                         clicked: false,
                         composerMismatch: true,
-                        composerPresent: Boolean(currentComposer),
+                        composerPresent: Boolean(currentComposer) || candidates.length > 0,
                         composerReadable: currentComposerValue !== null,
                         composerEmpty: Boolean(
                             currentComposer
                             && currentComposerValue !== null
-                            && !normalize(currentComposerValue)
+                            && !normalizedCurrent
                         ),
-                        composerTextLength: normalize(currentComposerValue).length,
-                        expectedTextLength: normalize(expectedMessage).length,
+                        composerTextLength: normalizedCurrent.length,
+                        expectedTextLength: normalizedExpected.length,
+                        firstDiff,
+                        leftCode: firstDiff >= 0
+                            && firstDiff < normalizedCurrent.length
+                            ? normalizedCurrent.charCodeAt(firstDiff)
+                            : -1,
+                        rightCode: firstDiff >= 0
+                            && firstDiff < normalizedExpected.length
+                            ? normalizedExpected.charCodeAt(firstDiff)
+                            : -1,
+                        collapsedMatch: normalizedCurrent.replace(/\s+/g, ' ')
+                            === normalizedExpected.replace(/\s+/g, ' '),
+                        visibleCount: candidates.length,
                     };
                 }
                 const labelFor = (button) => `${button.getAttribute('aria-label') || ''} ${button.innerText || button.textContent || ''}`.trim();
@@ -20949,7 +21239,10 @@ def _submit_chromium_prompt(
                         disabled: Boolean(button.disabled || button.getAttribute('aria-disabled') === 'true'),
                     })),
                 };
-                }""",
+                }""".replace(
+                    "__CHATGPT_COMPOSER_TEXT_HELPERS__",
+                    _CHATGPT_COMPOSER_TEXT_HELPERS_JS,
+                ),
                 {
                     "expectedTargetUrl": expected_target_url,
                     "expectedMessage": message,
@@ -21001,15 +21294,22 @@ def _submit_chromium_prompt(
                     "The selected ChatGPT tab changed before the prompt could be sent."
                 )
             if result.get("composerMismatch"):
+                first_diff = result.get("firstDiff")
                 LOGGER.info(
                     "event=chatgpt_composer_mismatch present=%s empty=%s readable=%s "
-                    "text_length=%s expected_length=%s refill_attempted=%s",
+                    "text_length=%s expected_length=%s refill_attempted=%s "
+                    "first_diff=%s diff_codes=%s/%s collapsed_match=%s visible_count=%s",
                     bool(result.get("composerPresent")),
                     bool(result.get("composerEmpty")),
                     bool(result.get("composerReadable")),
                     int(result.get("composerTextLength") or 0),
                     int(result.get("expectedTextLength") or 0),
                     empty_composer_refilled,
+                    int(first_diff) if first_diff is not None else -1,
+                    int(result["leftCode"]) if result.get("leftCode") is not None else -1,
+                    int(result["rightCode"]) if result.get("rightCode") is not None else -1,
+                    bool(result.get("collapsedMatch")),
+                    int(result.get("visibleCount") or 0),
                 )
                 if (
                     result.get("composerPresent")

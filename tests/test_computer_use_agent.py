@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.81.4-codex.1
+Code version: v3.81.8-codex.1
 """
 
 from __future__ import annotations
@@ -58,6 +58,7 @@ from app.core.computer_use_agent import (
     _chatgpt_find_effort_slider_in_scope,
     _chatgpt_effort_slider_state,
     _close_chatgpt_model_menu,
+    _fill_chatgpt_composer_draft,
     _chatgpt_select_subscription_effort,
     _chatgpt_slider_effort_label,
     _chatgpt_set_model_view,
@@ -5363,6 +5364,64 @@ def test_atomic_settings_fsyncs_parent_after_replacing_the_file(
         ("replace", settings_path),
         ("directory_fsync", tmp_path),
     ]
+
+
+def test_atomic_settings_replace_rides_out_transient_access_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    settings_path = tmp_path / "computer-use-agent.json"
+    original = b'{"preserve":"the complete prior settings"}\n'
+    settings_path.write_bytes(original)
+    monkeypatch.setattr(computer_use_agent.time, "sleep", lambda _seconds: None)
+
+    replace_calls = 0
+    original_replace = os.replace
+
+    def flaky_replace(source: object, destination: object) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls < 3:
+            raise PermissionError(
+                5, "Transient Windows scanner handle during checkpoint persist."
+            )
+        original_replace(source, destination)
+
+    monkeypatch.setattr(computer_use_agent.os, "replace", flaky_replace)
+    save_computer_use_settings(ComputerUseSettings(), settings_path)
+
+    assert replace_calls == 3
+    assert json.loads(settings_path.read_text(encoding="utf-8"))
+    assert list(tmp_path.glob(".computer-use-agent.json.*.tmp")) == []
+
+
+def test_atomic_settings_replace_gives_up_after_bounded_access_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    settings_path = tmp_path / "computer-use-agent.json"
+    original = b'{"preserve":"the complete prior settings"}\n'
+    settings_path.write_bytes(original)
+    monkeypatch.setattr(computer_use_agent.time, "sleep", lambda _seconds: None)
+
+    replace_calls = 0
+
+    def deny_replace(_source: object, _destination: object) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        raise PermissionError(5, "Access is denied.")
+
+    monkeypatch.setattr(computer_use_agent.os, "replace", deny_replace)
+    with pytest.raises(PermissionError, match="Access is denied."):
+        save_computer_use_settings(ComputerUseSettings(), settings_path)
+
+    assert replace_calls == computer_use_agent.ATOMIC_WRITE_REPLACE_ATTEMPTS
+    assert settings_path.read_bytes() == original
+    assert list(tmp_path.glob(".computer-use-agent.json.*.tmp")) == []
 
 
 LEGACY_MACOS_SYSTEM_PROMPT = (
@@ -16649,6 +16708,8 @@ def test_chromium_submission_waits_for_attachment_then_clicks_send() -> None:
 
 
 def test_chatgpt_follow_up_polls_until_composer_is_writable() -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
     class _Composer:
         def __init__(self) -> None:
             self.value = ""
@@ -16686,8 +16747,203 @@ def test_chatgpt_follow_up_polls_until_composer_is_writable() -> None:
     )
 
     assert page.composer.value == "Continue with the controller observation"
-    assert page.composer.timeouts == [250, 250, 250]
+    assert page.composer.timeouts == [
+        computer_use_agent.CHATGPT_COMPOSER_FILL_TIMEOUT_MILLISECONDS
+    ] * 3
     assert page.send_control.clicks == 1
+
+
+def test_chatgpt_atomic_draft_fill_accepts_exact_browser_readback() -> None:
+    class _Keyboard:
+        def __init__(self) -> None:
+            self.insertions: list[str] = []
+
+        def insert_text(self, value: str) -> None:
+            self.insertions.append(value)
+
+    class _Page:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.keyboard = _Keyboard()
+
+        def evaluate(self, expression: str, argument: dict[str, str]) -> dict[str, object]:
+            self.calls += 1
+            assert "chatgpt-draft-fill-v2" in expression
+            assert "composerTextsMatch" in expression
+            assert "promptComposers" in expression
+            assert argument["value"] == "Controller draft"
+            assert argument["bindingAttribute"] == "data-cachelikes-agent-draft-binding"
+            assert str(argument["bindingToken"]).startswith("chatgpt-draft-")
+            if self.calls == 1:
+                return {
+                    "contract": "chatgpt-draft-fill-v2",
+                    "ready": False,
+                    "prepared": True,
+                    "composerCount": 1,
+                    "expectedLength": 16,
+                }
+            return {
+                "contract": "chatgpt-draft-fill-v2",
+                "ready": True,
+                "composerCount": 1,
+                "readbackLength": 16,
+            }
+
+    page = _Page()
+    assert _fill_chatgpt_composer_draft(page, "Controller draft") == {
+        "contract": "chatgpt-draft-fill-v2",
+        "ready": True,
+        "composerCount": 1,
+        "readbackLength": 16,
+    }
+    assert page.calls == 2
+    assert page.keyboard.insertions == ["Controller draft"]
+
+
+def test_chatgpt_atomic_draft_fill_uses_bound_fill_timeout() -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    class _BoundComposer:
+        def __init__(self) -> None:
+            self.fills: list[tuple[str, int]] = []
+
+        def count(self) -> int:
+            return 1
+
+        def fill(self, value: str, *, timeout: int) -> None:
+            self.fills.append((value, timeout))
+
+    class _Page:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.composer = _BoundComposer()
+
+        def locator(self, selector: str) -> _BoundComposer:
+            assert selector.startswith('[data-cachelikes-agent-draft-binding="')
+            return self.composer
+
+        def evaluate(self, expression: str, argument: dict[str, str]) -> dict[str, object]:
+            self.calls += 1
+            assert "chatgpt-draft-fill-v2" in expression
+            if self.calls == 1:
+                return {
+                    "contract": "chatgpt-draft-fill-v2",
+                    "ready": False,
+                    "prepared": True,
+                    "composerCount": 1,
+                    "expectedLength": 16,
+                }
+            return {
+                "contract": "chatgpt-draft-fill-v2",
+                "ready": True,
+                "composerCount": 1,
+                "readbackLength": 16,
+            }
+
+    page = _Page()
+    assert _fill_chatgpt_composer_draft(page, "Controller draft") == {
+        "contract": "chatgpt-draft-fill-v2",
+        "ready": True,
+        "composerCount": 1,
+        "readbackLength": 16,
+    }
+    assert page.calls == 2
+    assert page.composer.fills == [
+        (
+            "Controller draft",
+            computer_use_agent.CHATGPT_COMPOSER_FILL_TIMEOUT_MILLISECONDS,
+        )
+    ]
+
+
+def test_chromium_submission_uses_atomic_draft_fill_before_trusted_send() -> None:
+    class _Keyboard:
+        def __init__(self) -> None:
+            self.insertions: list[str] = []
+
+        def insert_text(self, value: str) -> None:
+            self.insertions.append(value)
+
+    class _Page:
+        def __init__(self) -> None:
+            self.send_control = _TrustedChatGPTSendControl()
+            self.url = "https://chatgpt.com/c/bound-session"
+            self.atomic_fill_count = 0
+            self.keyboard = _Keyboard()
+
+        def locator(self, selector: str) -> object:
+            if selector.startswith('[data-cachelikes-agent-draft-binding="'):
+                return object()
+            assert selector.startswith('[data-cachelikes-agent-send-binding="')
+            return self.send_control
+
+        def evaluate(self, expression: str, argument: object = None) -> object:
+            if "chatgpt-draft-fill-v2" in expression:
+                self.atomic_fill_count += 1
+                argument_dict = argument if isinstance(argument, dict) else {}
+                if self.atomic_fill_count == 1:
+                    return {
+                        "contract": "chatgpt-draft-fill-v2",
+                        "ready": False,
+                        "prepared": True,
+                        "composerCount": 1,
+                        "expectedLength": len(str(argument_dict.get("value") or "")),
+                    }
+                return {
+                    "contract": "chatgpt-draft-fill-v2",
+                    "ready": True,
+                    "composerCount": 1,
+                    "readbackLength": len(str(argument_dict.get("value") or "")),
+                }
+            assert "sendButton.click()" not in expression
+            return {"ready": True, "targetMismatch": False}
+
+    page = _Page()
+
+    _submit_chromium_prompt(
+        page,
+        "Controller draft",
+        lambda: False,
+        expected_target_url=page.url,
+    )
+
+    assert page.atomic_fill_count == 2
+    assert page.keyboard.insertions == ["Controller draft"]
+    assert page.send_control.clicks == 1
+
+
+def test_chromium_atomic_draft_fill_refuses_different_existing_draft() -> None:
+    class _Page:
+        url = "https://chatgpt.com/c/bound-session"
+
+        def __init__(self) -> None:
+            self.send_control = _TrustedChatGPTSendControl()
+
+        def locator(self, _selector: str) -> object:
+            raise AssertionError("A conflicting draft must stop before locator fallback.")
+
+        def evaluate(self, expression: str, _argument: object = None) -> object:
+            assert "chatgpt-draft-fill-v2" in expression
+            return {
+                "contract": "chatgpt-draft-fill-v2",
+                "ready": False,
+                "conflict": True,
+                "composerCount": 1,
+                "currentLength": 10,
+                "expectedLength": 16,
+            }
+
+    page = _Page()
+
+    with pytest.raises(RuntimeError, match="different draft"):
+        _submit_chromium_prompt(
+            page,
+            "Controller draft",
+            lambda: False,
+            expected_target_url=page.url,
+        )
+
+    assert page.send_control.clicks == 0
 
 
 def test_chromium_submission_reports_when_attachment_never_enables_send() -> None:
@@ -16765,6 +17021,8 @@ def test_chatgpt_send_target_check_is_atomic_and_rejects_url_drift(
             expression: str,
             argument: dict[str, str] | None = None,
         ) -> object:
+            if "chatgpt-draft-fill-v2" in expression:
+                return {}
             self.evaluate_calls += 1
             assert argument is not None
             assert argument["expectedTargetUrl"] == expected_target_url
@@ -16907,6 +17165,8 @@ def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
             expression: str,
             argument: dict[str, str] | None = None,
         ) -> object:
+            if "chatgpt-draft-fill-v2" in expression:
+                return {}
             self.send_scans += 1
             assert argument is not None
             assert argument["expectedTargetUrl"] == target_url
@@ -16917,6 +17177,10 @@ def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
             )
             assert "directParagraphs" in expression
             assert "selection.toString()" in expression
+            assert "composerTextsMatch" in expression
+            assert "promptComposers" in expression
+            assert r"[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]" in expression
+            assert "querySelectorAll('#prompt-textarea')" in expression
             return {
                 "clicked": False,
                 "composerMismatch": True,
@@ -16926,6 +17190,11 @@ def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
                 "composerTagName": "PRIVATE-COMPOSER-TAG",
                 "composerTextLength": 7,
                 "expectedTextLength": 19,
+                "firstDiff": 0,
+                "leftCode": 116,
+                "rightCode": 73,
+                "collapsedMatch": False,
+                "visibleCount": 1,
             }
 
         def wait_for_timeout(self, _milliseconds: int) -> None:
@@ -16948,6 +17217,7 @@ def test_chatgpt_atomic_send_rejects_composer_drift_without_refill_or_click(
     assert "event=chatgpt_composer_mismatch" in caplog.text
     assert "present=True empty=False readable=True" in caplog.text
     assert "text_length=7 expected_length=19" in caplog.text
+    assert "first_diff=0 diff_codes=116/73 collapsed_match=False visible_count=1" in caplog.text
     assert "tag=" not in caplog.text
     assert "PRIVATE-COMPOSER-TAG" not in caplog.text
 
@@ -16981,6 +17251,8 @@ def test_chatgpt_atomic_send_refills_one_empty_remounted_composer() -> None:
             expression: str,
             argument: dict[str, str] | None = None,
         ) -> object:
+            if "chatgpt-draft-fill-v2" in expression:
+                return {}
             assert "sendButton.click()" not in expression
             assert argument is not None
             assert argument["expectedTargetUrl"] == target_url
@@ -17036,9 +17308,11 @@ def test_chatgpt_atomic_send_never_refills_a_second_empty_remount() -> None:
 
         def evaluate(
             self,
-            _expression: str,
+            expression: str,
             _argument: dict[str, str] | None = None,
         ) -> object:
+            if "chatgpt-draft-fill-v2" in expression:
+                return {}
             self.send_scans += 1
             return {
                 "clicked": False,
@@ -17216,6 +17490,8 @@ def test_chatgpt_clicked_send_defers_acceptance_to_exact_receipt(
             return self.send_control
 
         def evaluate(self, expression: str, _argument: object = None) -> object:
+            if "chatgpt-draft-fill-v2" in expression:
+                return {}
             self.evaluate_calls += 1
             assert "sendButton.click()" not in expression
             return {"ready": True, "targetMismatch": False}
