@@ -1,4 +1,4 @@
-/* Code version: v2.122.0-codex.1 */
+/* Code version: v2.122.1-codex.1 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -3512,6 +3512,16 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     white-space: normal;
+}
+
+.agent-response-status-copy .workspace-metric-value-major {
+    display: inline;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    line-height: inherit;
+    white-space: nowrap;
 }
 
 .agent-response-status[data-status="loading"] .agent-response-status-dot,

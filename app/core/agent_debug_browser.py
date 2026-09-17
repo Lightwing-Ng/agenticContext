@@ -9,9 +9,13 @@ touching the locked profile files.
 
 On macOS, Edge Jury uses the same verified-CDP primitives with a caller-supplied
 project profile root. That path is deliberately separate from the daily Edge
-profile and never copies browser or Microsoft account identity data.
+profile and never copies browser or Microsoft account identity data. macOS Edge
+Agent login and tasks reuse this same persistent debug browser over CDP, matching
+Windows, so an already authorized window stays running even in Stage Manager.
+macOS launches a new Edge instance against the project profile instead of
+activating the daily browser, and leaves that window open for later reattach.
 
-Code version: v1.24.0-codex.2
+Code version: v1.24.3-codex.1
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ DEBUG_PORT_FILENAME = "debug_port"
 DEVTOOLS_ACTIVE_PORT_FILENAME = "DevToolsActivePort"
 CDP_READY_TIMEOUT_SECONDS = 20.0
 CDP_PROBE_TIMEOUT_SECONDS = 3.0
+CDP_REATTACH_TIMEOUT_SECONDS = 8.0
 CDP_CALLER_LOCK_TIMEOUT_SECONDS = 5.0
 
 # Values reported by Chromium's ``/json/version`` ``Browser`` field. Microsoft
@@ -93,6 +98,7 @@ _DEFAULT_VIEWPORT_ARGS = (
     "--disable-extensions",
     "--disable-session-crashed-bubble",
     "--disable-notifications",
+    "--remote-allow-origins=*",
     "--window-size=1280,900",
 )
 
@@ -480,6 +486,15 @@ def _debug_browser_startup_lock(
             handle.close()
 
 
+def _macos_application_bundle(executable: str) -> Path | None:
+    """Return the enclosing .app bundle for one macOS browser executable."""
+    path = Path(executable)
+    for candidate in (path, *path.parents):
+        if candidate.suffix == ".app":
+            return candidate
+    return None
+
+
 def _launch_debug_browser(
     browser_id: str,
     executable: str,
@@ -488,12 +503,25 @@ def _launch_debug_browser(
 ) -> subprocess.Popen[bytes]:
     """Start one detached Chromium instance exposing a CDP debug endpoint."""
     user_data_dir = _prepare_private_profile_directory(browser_id, profile_root)
-    command = [
-        executable,
+    launch_args = [
         f"--remote-debugging-port={port}",
         f"--user-data-dir={user_data_dir}",
         *_DEFAULT_VIEWPORT_ARGS,
     ]
+    macos_bundle = _macos_application_bundle(executable) if is_macos_host() else None
+    if macos_bundle is not None:
+        # ``open -n`` starts a second Edge against the project profile instead of
+        # activating the already-running daily browser, which has no CDP port.
+        command = [
+            "/usr/bin/open",
+            "-n",
+            "-a",
+            str(macos_bundle),
+            "--args",
+            *launch_args,
+        ]
+    else:
+        command = [executable, *launch_args]
     creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
         subprocess,
         "DETACHED_PROCESS",
@@ -516,6 +544,15 @@ def _launch_debug_browser(
     return subprocess.Popen(command, **popen_kwargs)  # type: ignore[arg-type]
 
 
+def debug_browser_supported(browser_id: str) -> bool:
+    """Return whether this host owns a persistent debug browser for the id."""
+    if browser_id not in _BRAND_PREFIXES:
+        return False
+    if is_windows_host():
+        return True
+    return is_macos_host() and browser_id == "edge"
+
+
 def ensure_debug_browser(
     browser_id: str,
     *,
@@ -529,11 +566,7 @@ def ensure_debug_browser(
     live endpoint, avoiding a free-port selection race. The browser intentionally
     remains running so subsequent requests can reattach.
     """
-    supported = (
-        (is_windows_host() and browser_id in {"edge", "chrome"})
-        or (is_macos_host() and browser_id == "edge")
-    )
-    if not supported:
+    if not debug_browser_supported(browser_id):
         raise RuntimeError(
             "The project-owned debug browser supports Edge on macOS and "
             "Edge or Chrome on Windows."
@@ -580,6 +613,26 @@ def _ensure_debug_browser_locked(
                     _record_debug_target(browser_id, identity, profile_root)
             LOGGER.info(
                 "Reusing the running debug %s on CDP port %s.",
+                browser_id,
+                recorded.port,
+            )
+            return DebugBrowserHandle(
+                browser_id=browser_id,
+                cdp_endpoint=f"http://127.0.0.1:{recorded.port}",
+                user_data_dir=_debug_profile_dir(browser_id, profile_root),
+            )
+        LOGGER.info(
+            "Retrying CDP attach to the recorded debug %s before launching a replacement.",
+            browser_id,
+        )
+        identity = _wait_for_cdp_ready(
+            recorded.port,
+            CDP_REATTACH_TIMEOUT_SECONDS,
+            expected_guid=recorded.instance,
+        )
+        if identity is not None and _identity_matches_browser(identity, browser_id):
+            LOGGER.info(
+                "Reusing the running debug %s on CDP port %s after a brief CDP gap.",
                 browser_id,
                 recorded.port,
             )
@@ -653,10 +706,7 @@ def debug_browser_login_url(
     profile_root: Path | None = None,
 ) -> str | None:
     """Return the recorded endpoint only while its complete identity still matches."""
-    if not (
-        (is_windows_host() and browser_id in _BRAND_PREFIXES)
-        or (is_macos_host() and browser_id == "edge")
-    ):
+    if not debug_browser_supported(browser_id):
         return None
     recorded = _read_recorded_target(browser_id, profile_root)
     if recorded is None:
@@ -679,11 +729,7 @@ def debug_browser_profile_initialized(
     profile_root: Path | None = None,
 ) -> bool:
     """Return whether one debug profile completed a prior successful launch."""
-    supported = (
-        (is_windows_host() and browser_id in {"edge", "chrome"})
-        or (is_macos_host() and browser_id == "edge")
-    )
-    if not supported:
+    if not debug_browser_supported(browser_id):
         return False
     recorded = _read_recorded_target(browser_id, profile_root)
     if recorded is None:

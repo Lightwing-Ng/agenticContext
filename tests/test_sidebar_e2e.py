@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.46.14-codex.1
+Code version: v1.46.16-codex.1
 """
 
 from __future__ import annotations
@@ -9127,6 +9127,57 @@ def test_agent_browser_status_login_action_matches_probe_state(
 
 @pytest.mark.integration
 @pytest.mark.slow
+def test_agent_aside_reminds_the_user_to_complete_human_verification_now(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+) -> None:
+    """The Account row must tell the user to act in Edge, not retry Cloudflare."""
+    browser_status = {
+        "platform": "chatgpt",
+        "browser": "edge",
+        "browser_label": "Edge",
+        "logged_in": False,
+        "can_download": False,
+        "account_name": "Human verification required",
+        "human_verification": True,
+        "message": (
+            "ChatGPT is showing a human verification page in Edge. "
+            "Complete that check in the open browser window now, then choose Recheck. "
+            "Do not retry, reload, or click the Cloudflare challenge from this app."
+        ),
+        "agent_sources": _chatgpt_catalog_sessions(),
+    }
+    context = disposable_browser.new_context(
+        viewport={"width": 1_280, "height": 720},
+        has_touch=False,
+        is_mobile=False,
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    page.route(
+        "**/api/agent/status",
+        lambda route: route.fulfill(json=_finished_chatgpt_agent_payload()),
+    )
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json=browser_status))
+    page.route(
+        "**/api/agent/sources**",
+        lambda route: route.fulfill(json=_chatgpt_catalog_sessions()),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
+        account = page.locator('[data-role="browser-session-account"]')
+        message = page.locator('[data-role="browser-session-message"]')
+        login_button = page.locator('[data-role="browser-session-login"]')
+        expect(account).to_have_text("Complete verification now")
+        expect(message).to_contain_text("Complete that check in the open browser window now")
+        expect(message).to_contain_text("Do not retry, reload, or click the Cloudflare challenge")
+        expect(login_button).to_have_text("Open Edge to complete verification now")
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 def test_agent_status_stays_objective_while_browser_verification_is_pending(
     disposable_browser: Browser,
     sidebar_server_url: str,
@@ -9660,14 +9711,18 @@ def test_running_agent_status_shows_elapsed_turn_count_and_activity_time(
         activity_meta = page.locator("#agent_activity_list .agent-activity-meta").first
         expect(status).to_contain_text("Working")
         expect(status).to_contain_text("3 turns")
-        expect(status).to_contain_text("1,234,567 equiv. tokens")
+        expect(status).to_contain_text("Tokens: 1,234,567")
+        expect(status).not_to_contain_text("equiv.")
         expect(status_copy.locator("br")).to_have_count(1)
         expect(status_copy.locator("[data-agent-response-status-leading]")).to_have_text(
             re.compile(
                 r"^Working · \d{2}:\d{2}:\d{2} · 3 turns · "
-                r"1,234,567 equiv\. tokens$"
+                r"Tokens: 1,234,567$"
             )
         )
+        expect(
+            status_copy.locator("[data-agent-response-status-leading] .workspace-metric-value-major")
+        ).to_have_text("1,234,567")
         expect(status_copy.locator("[data-agent-response-status-detail]")).to_have_text(
             "Controller observation sent; waiting for the next ChatGPT action."
         )
@@ -9705,6 +9760,71 @@ def test_running_agent_status_shows_elapsed_turn_count_and_activity_time(
         assert layout["copy"]["clientHeight"] <= layout["copy"]["lineHeight"] * 2 + 2
         assert layout["copy"]["scrollWidth"] <= layout["copy"]["clientWidth"] + 1
         assert layout["detail"]["scrollWidth"] <= layout["detail"]["clientWidth"] + 1
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_sidebar_source_changes_keep_an_unsubmitted_prompt(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+) -> None:
+    """Left-sidebar source changes must not wipe an unsubmitted composer draft."""
+    payload = _finished_chatgpt_agent_payload()
+    browser_status = {
+        "platform": "chatgpt",
+        "browser": "edge",
+        "browser_label": "Edge",
+        "logged_in": True,
+        "can_download": True,
+        "account_name": "ChatGPT account",
+        "message": "Edge is ready for ChatGPT Web.",
+        "agent_sources": {
+            "platform": "chatgpt",
+            "browser_label": "Edge",
+            "recent_sessions": [],
+            "projects": [],
+            "limit": 20,
+        },
+    }
+
+    def fulfill_browser_status(route) -> None:
+        request_url = route.request.url
+        platform = "grok" if "platform=grok" in request_url else "chatgpt"
+        body = {
+            **browser_status,
+            "platform": platform,
+            "message": f"Edge is ready for {platform.title()} Web.",
+            "agent_sources": {
+                **browser_status["agent_sources"],
+                "platform": platform,
+            },
+        }
+        if platform == "grok":
+            body["account_name"] = "Grok account"
+        route.fulfill(json=body)
+
+    context = disposable_browser.new_context(
+        viewport={"width": 1_280, "height": 720},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    page.route("**/api/agent/status", lambda route: route.fulfill(json=payload))
+    page.route("**/api/browser-session**", fulfill_browser_status)
+    page.route("**/api/agent/sources**", lambda route: route.fulfill(json=browser_status["agent_sources"]))
+    page.route(
+        "**/api/agent/preferences",
+        lambda route: route.fulfill(json={"ok": True, "preference_revision": 1}),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt", wait_until="domcontentloaded")
+        prompt = page.locator("#agent_prompt_input")
+        prompt.fill("Keep this unsubmitted sidebar draft")
+        page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
+        page.locator('.agent-platform-combobox [data-agent-combobox-option="grok"]').click()
+        expect(page.get_by_role("button", name="Web service: Grok", exact=True)).to_be_visible()
+        expect(prompt).to_have_value("Keep this unsubmitted sidebar draft")
     finally:
         context.close()
 

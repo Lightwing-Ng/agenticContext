@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.24.4-codex.1`
+Documentation version: `v1.24.6-codex.1`
 
 ## Jury structured-vote normalization and round presentation on 16 Sep 2026
 
@@ -177,10 +177,13 @@ Documentation version: `v1.24.4-codex.1`
   excluded. Grok Build's `Ask Grok anything` ProseMirror composer is read from its direct paragraph
   structure so blank lines remain canonical. Non-empty text beside those paragraphs, unsupported
   atomic nodes, or any other extra content makes the proof ambiguous and prevents Send.
-- Gemini CAPTCHA and Grok Cloudflare or human-verification pages pause the same in-flight browser
-  turn. The same isolated Edge or Chrome clone is surfaced for the user, restored afterward, and
-  the run continues only after the challenge clears and Resume is selected. Conversation text that
-  merely mentions verification does not pause while the normal composer remains usable.
+- ChatGPT, Gemini, Grok, and Claude CAPTCHA or Cloudflare pages pause the same in-flight browser
+  turn. The controller does not click or reload the challenge. The same Edge or Chrome window is
+  surfaced for the user, restored afterward, and the run continues only after the challenge clears
+  and Resume is selected. The Agent aside Account status uses the same fail-closed reminder so a
+  sidebar probe does not keep launching Edge against Cloudflare, including ChatGPT's
+  `auth.openai.com` authorize popup. Conversation text that merely mentions verification does not
+  pause while the normal composer remains usable.
 - Grok's authenticated browser fetches use a 30-second `AbortController` timeout before entering
   the existing bounded retry path, so an unresponsive provider request cannot block Stop forever.
 - Gemini `New session in project` remains a receipt-isolated task on one selected Notebook route.

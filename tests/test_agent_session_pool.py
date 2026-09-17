@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.4-codex.1."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.5-codex.1."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -21,6 +21,7 @@ from app.core.foundation import CrawlConfig
 def sessions(tmp_path, monkeypatch):
     monkeypatch.setattr("app.core.computer_use_agent._start_macos_idle_sleep_assertion", lambda: None)
     monkeypatch.setattr("app.core.agent.session_pool.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent.session_pool.is_macos_host", lambda: False)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "README.md").write_text("Test workspace", encoding="utf-8")
@@ -215,6 +216,23 @@ def test_windows_debug_browser_admits_only_one_worker(sessions, monkeypatch):
     assert catalog["can_start"] is False
 
 
+def test_macos_edge_debug_browser_admits_only_one_worker(sessions, monkeypatch):
+    pool, workspace, entered = sessions
+    monkeypatch.setattr("app.core.agent.session_pool.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent.session_pool.is_macos_host", lambda: True)
+    start(pool, workspace, "first")
+    wait_until(lambda: "first" in entered)
+
+    with pytest.raises(RuntimeError, match="one active Agent task"):
+        start(pool, workspace, "second")
+
+    catalog = pool.catalog("edge", "chatgpt", str(workspace))
+    assert catalog["concurrency_limit"] == 1
+    assert catalog["can_start"] is False
+    chrome_catalog = pool.catalog("chrome", "chatgpt", str(workspace))
+    assert chrome_catalog["concurrency_limit"] == 2
+
+
 def test_failure_frees_capacity_and_shutdown_rejects_new_work(sessions, monkeypatch):
     pool, workspace, _ = sessions
     second_workspace = sibling_workspace(workspace, "workspace-two")
@@ -285,6 +303,8 @@ def test_api_targets_only_selected_session_and_rejects_unknown(tmp_path, monkeyp
     from app.web.app import create_app
 
     monkeypatch.setattr("app.core.computer_use_agent._start_macos_idle_sleep_assertion", lambda: None)
+    monkeypatch.setattr("app.core.agent.session_pool.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent.session_pool.is_macos_host", lambda: False)
     application = create_app(tmp_path / "store", computer_use_settings_path=tmp_path / "settings.json", computer_use_runtime_root=tmp_path / "runtime")
     application.config["TESTING"] = True
     pool = application.extensions["agent_session_pool"]

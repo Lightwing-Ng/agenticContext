@@ -1,6 +1,6 @@
 """Focused tests for the provider-neutral Agent session source adapter.
 
-Code version: v1.13.0-codex.1
+Code version: v1.13.1-codex.1
 """
 
 from __future__ import annotations
@@ -616,7 +616,9 @@ def test_grok_agent_status_rejects_cloudflare_before_composer_access() -> None:
 
     assert status["logged_in"] is False
     assert status["can_download"] is False
-    assert status["account_name"] == "Security verification required"
+    assert status["account_name"] == "Human verification required"
+    assert status["human_verification"] is True
+    assert "Complete that check in the open browser window now" in status["message"]
 
 
 def test_grok_agent_bootstrap_collects_readiness_and_sources_in_one_context() -> None:

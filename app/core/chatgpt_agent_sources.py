@@ -1,6 +1,6 @@
 """Read ChatGPT Web sessions, projects, and conversation history for the local Agent.
 
-Code version: v1.6.8-codex.1
+Code version: v1.6.10-codex.0
 """
 
 from __future__ import annotations
@@ -16,7 +16,9 @@ from .browser_sessions import (
     _chatgpt_status_payload,
     _parse_chatgpt_auth_response,
     _read_chatgpt_auth_payload,
+    _security_verification_status_if_present,
     browser_descriptors,
+    context_security_verification_status,
     goto_with_retry,
     launch_chromium_context,
     select_provider_tab,
@@ -166,8 +168,22 @@ def probe_and_collect_chatgpt_sources(
         if descriptor.engine == "safari":
             with SafariContext(CHATGPT_HOME_URL, lock_blocking=False) as context:
                 page = context.primary_page
-                page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
-                page.wait_for_load_state("domcontentloaded", 90_000)
+                challenge = _security_verification_status_if_present(
+                    page, descriptor.label, "ChatGPT"
+                )
+                if challenge is not None:
+                    status.update(challenge)
+                    return status, None
+                current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
+                if current_url != CHATGPT_HOME_URL.rstrip("/"):
+                    page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
+                    page.wait_for_load_state("domcontentloaded", 90_000)
+                    challenge = _security_verification_status_if_present(
+                        page, descriptor.label, "ChatGPT"
+                    )
+                    if challenge is not None:
+                        status.update(challenge)
+                        return status, None
                 response = context.request.get(
                     CHATGPT_AUTH_SESSION_URL,
                     timeout=60_000,
@@ -201,16 +217,43 @@ def probe_and_collect_chatgpt_sources(
                 silent=silent,
                 prefer_initialized_debug_profile=True,
             ) as context:
+                challenge = context_security_verification_status(
+                    context, descriptor.label, "ChatGPT"
+                )
+                if challenge is not None:
+                    status.update(challenge)
+                    return status, None
                 page = select_provider_tab(
                     context,
                     home_url=CHATGPT_HOME_URL,
                     hosts=CHATGPT_HOSTS,
                     title="ChatGPT",
                 )
+                challenge = _security_verification_status_if_present(
+                    page, descriptor.label, "ChatGPT"
+                )
+                if challenge is not None:
+                    status.update(challenge)
+                    return status, None
                 current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
                 if current_url != CHATGPT_HOME_URL.rstrip("/"):
                     goto_with_retry(page, CHATGPT_HOME_URL, attempts=2, timeout_ms=90_000)
-                payload = _read_chatgpt_auth_payload(page, descriptor.label)
+                    challenge = _security_verification_status_if_present(
+                        page, descriptor.label, "ChatGPT"
+                    )
+                    if challenge is not None:
+                        status.update(challenge)
+                        return status, None
+                try:
+                    payload = _read_chatgpt_auth_payload(page, descriptor.label)
+                except Exception:
+                    challenge = _security_verification_status_if_present(
+                        page, descriptor.label, "ChatGPT"
+                    )
+                    if challenge is not None:
+                        status.update(challenge)
+                        return status, None
+                    raise
                 status.update(_chatgpt_status_payload(descriptor.label, payload))
                 if not status["can_download"]:
                     return status, None
@@ -245,7 +288,14 @@ def list_chatgpt_agent_sources(
     if descriptor.engine == "safari":
         with SafariContext(CHATGPT_HOME_URL, lock_blocking=False) as context:
             page = context.primary_page
-            page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
+            challenge = _security_verification_status_if_present(
+                page, descriptor.label, "ChatGPT"
+            )
+            if challenge is not None:
+                raise RuntimeError(challenge["message"])
+            current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
+            if current_url != CHATGPT_HOME_URL.rstrip("/"):
+                page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
             page.wait_for_timeout(1_000)
             return _collect_sources(context, page, descriptor.label)
 
@@ -262,6 +312,11 @@ def list_chatgpt_agent_sources(
             silent=silent,
             prefer_initialized_debug_profile=True,
         ) as context:
+            challenge = context_security_verification_status(
+                context, descriptor.label, "ChatGPT"
+            )
+            if challenge is not None:
+                raise RuntimeError(challenge["message"])
             page = select_provider_tab(
                 context,
                 home_url=CHATGPT_HOME_URL,
@@ -294,7 +349,14 @@ def list_chatgpt_project_sessions(
     if descriptor.engine == "safari":
         with SafariContext(CHATGPT_HOME_URL, lock_blocking=False) as context:
             page = context.primary_page
-            page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
+            challenge = _security_verification_status_if_present(
+                page, descriptor.label, "ChatGPT"
+            )
+            if challenge is not None:
+                raise RuntimeError(challenge["message"])
+            current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
+            if current_url != CHATGPT_HOME_URL.rstrip("/"):
+                page.goto(CHATGPT_HOME_URL, wait_until="domcontentloaded", timeout=90_000)
             page.wait_for_timeout(500)
             sessions = _collect_project_sessions(
                 context,
@@ -312,6 +374,11 @@ def list_chatgpt_project_sessions(
                 silent=silent,
                 prefer_initialized_debug_profile=True,
             ) as context:
+                challenge = context_security_verification_status(
+                    context, descriptor.label, "ChatGPT"
+                )
+                if challenge is not None:
+                    raise RuntimeError(challenge["message"])
                 page = select_provider_tab(
                     context,
                     home_url=CHATGPT_HOME_URL,
@@ -359,7 +426,14 @@ def fetch_chatgpt_conversation_history(
             lock_blocking=False,
         ) as context:
             page = context.primary_page
-            page.goto(normalized_conversation_url, wait_until="domcontentloaded", timeout=90_000)
+            challenge = _security_verification_status_if_present(
+                page, descriptor.label, "ChatGPT"
+            )
+            if challenge is not None:
+                raise RuntimeError(challenge["message"])
+            current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
+            if current_url != normalized_conversation_url.rstrip("/"):
+                page.goto(normalized_conversation_url, wait_until="domcontentloaded", timeout=90_000)
             page.wait_for_timeout(500)
             return _fetch_conversation_history(
                 context,
@@ -380,6 +454,11 @@ def fetch_chatgpt_conversation_history(
             silent=silent,
             prefer_initialized_debug_profile=True,
         ) as context:
+            challenge = context_security_verification_status(
+                context, descriptor.label, "ChatGPT"
+            )
+            if challenge is not None:
+                raise RuntimeError(challenge["message"])
             page = select_provider_tab(
                 context,
                 home_url=normalized_conversation_url,

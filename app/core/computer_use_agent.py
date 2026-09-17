@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.81.9-codex.1
+Code version: v3.81.14-codex.0
 """
 
 from __future__ import annotations
@@ -65,10 +65,12 @@ from .browser_sessions import (
     CHROMIUM_WINDOW_MODE_TASK_STAGE,
     GROK_COMPOSER_SELECTOR,
     browser_descriptors,
+    context_shows_security_verification,
     grok_composer_snapshot,
     goto_with_retry,
     is_grok_security_verification_page,
     launch_chromium_context,
+    page_url_indicates_human_verification,
     select_provider_tab,
     sync_playwright_or_error,
     visible_claude_composer_selector,
@@ -247,6 +249,7 @@ BROWSER_INTERRUPTION_TIMEOUT_SECONDS = 300
 BROWSER_INTERRUPTION_POLL_SECONDS = 1.0
 MACOS_SCREEN_LOCK_PROBE_INTERVAL_SECONDS = 1.0
 HUMAN_VERIFICATION_REASON_PREFIX = "Human verification required: "
+HUMAN_VERIFICATION_PLATFORMS = frozenset({"chatgpt", "gemini", "grok", "claude"})
 SCREEN_LOCK_INTERRUPTION_REASON = "The screen is locked."
 CONTINUE_INTERRUPTED_AGENT_PROMPT = (
     "Continue the unfinished Agent task in this existing conversation. Do not repeat "
@@ -1662,9 +1665,18 @@ def _open_login_in_debug_browser(
             browser = playwright.chromium.connect_over_cdp(handle.cdp_endpoint)
             try:
                 context = browser.contexts[0] if browser.contexts else browser.new_context()
-                page = context.pages[0] if context.pages else context.new_page()
                 try:
-                    page.goto(destination, wait_until="domcontentloaded", timeout=60_000)
+                    # Reloading chatgpt.com while auth.openai.com or Cloudflare is
+                    # already open starts a new authorize URL and a new Turnstile loop.
+                    if not context_shows_security_verification(context):
+                        page = (
+                            context.pages[0] if context.pages else context.new_page()
+                        )
+                        page.goto(
+                            destination,
+                            wait_until="domcontentloaded",
+                            timeout=60_000,
+                        )
                 except Exception as exc:  # pragma: no cover - depends on local browser state
                     raise RuntimeError(
                         f"Could not open the {application} login page in the debug browser: {exc}"
@@ -1811,11 +1823,12 @@ def open_browser_for_login(
         raise ValueError("The Agent browser must be Safari, Edge, or Chrome.")
     if sys.platform != "darwin" and not is_windows_host():
         raise RuntimeError("Browser login handoff is only supported on macOS and Windows.")
-    # On Windows the Agent reuses a project-owned debug browser (reached over
-    # CDP) whenever the host browser keeps its sign-in cookies locked. The login
-    # handoff must write into that same debug profile, otherwise the Agent could
-    # never reuse the session, so route the sign-in page through it directly.
-    if is_windows_host() and selected_browser in {"edge", "chrome"}:
+    # Windows Edge/Chrome and macOS Edge reuse a project-owned debug browser
+    # over CDP. The login handoff must write into that same debug profile so
+    # later Agent tasks reattach instead of launching another authorized window.
+    from .agent_debug_browser import debug_browser_supported
+
+    if debug_browser_supported(selected_browser):
         return _open_login_in_debug_browser(
             selected_platform,
             selected_browser,
@@ -8838,6 +8851,22 @@ def _capture_macos_frontmost_application() -> str:
     return str(result.stdout or "").strip()
 
 
+def _should_restore_macos_frontmost_after_task_browser(browser_id: str) -> bool:
+    """Keep a reused debug Edge/Chrome visible, matching the Windows CDP path."""
+    if sys.platform != "darwin":
+        return False
+    from .agent_debug_browser import (
+        debug_browser_profile_initialized,
+        debug_browser_supported,
+    )
+
+    selected = str(browser_id or "").strip().lower()
+    return not (
+        debug_browser_supported(selected)
+        and debug_browser_profile_initialized(selected)
+    )
+
+
 def _restore_macos_frontmost_application_after_task_stage(
     previous_application: str,
     browser_application: str,
@@ -9032,7 +9061,10 @@ def run_web_computer_use(
             )
 
     task_stage_window = settings.browser in {"edge", "chrome"} and sys.platform in {"darwin", "win32"}
-    restore_macos_focus = task_stage_window and sys.platform == "darwin"
+    restore_macos_focus = (
+        task_stage_window
+        and _should_restore_macos_frontmost_after_task_browser(settings.browser)
+    )
     previous_frontmost_application = (
         _capture_macos_frontmost_application() if restore_macos_focus else ""
     )
@@ -10239,10 +10271,36 @@ def _is_screen_lock_interruption(reason: str) -> bool:
     return str(reason or "").strip() == SCREEN_LOCK_INTERRUPTION_REASON
 
 
+def _cloudflare_interstitial_visible(page: Any) -> bool:
+    """Detect a Cloudflare interstitial from title/body when the DOM is not executable."""
+    title = ""
+    body_text = ""
+    html = ""
+    try:
+        title = str(page.title() or "")
+    except Exception:
+        title = ""
+    try:
+        body_text = str(page.locator("body").inner_text(timeout=1_000) or "")
+    except Exception:
+        body_text = ""
+    try:
+        html = str(page.content() or "")
+    except Exception:
+        html = ""
+    return is_grok_security_verification_page(title, body_text, html)
+
+
 def _provider_human_verification_reason(page: Any, platform: str) -> str:
     """Return a structured human-verification reason without scanning live chat text alone."""
-    if platform not in {"gemini", "grok", "claude"}:
+    if platform not in HUMAN_VERIFICATION_PLATFORMS:
         return ""
+    provider_label = AGENT_PLATFORM_BY_KEY[platform]["label"]
+    if page_url_indicates_human_verification(page):
+        return (
+            f"{HUMAN_VERIFICATION_REASON_PREFIX}{provider_label} requires "
+            "sign-in or security verification."
+        )
     try:
         result = page.evaluate(
             r"""({composerSelector}) => {
@@ -10323,28 +10381,33 @@ def _provider_human_verification_reason(page: Any, platform: str) -> str:
     except Exception:
         result = None
     if isinstance(result, dict) and result.get("detected"):
-        provider_label = AGENT_PLATFORM_BY_KEY[platform]["label"]
         detail = str(result.get("reason") or "security challenge").strip()
         return f"{HUMAN_VERIFICATION_REASON_PREFIX}{provider_label} requires {detail}."
-    if platform == "grok":
-        try:
-            title = str(page.title() or "")
-        except Exception:
-            title = ""
-        try:
-            body_text = str(page.locator("body").inner_text(timeout=1_000) or "")
-        except Exception:
-            body_text = ""
-        try:
-            html = str(page.content() or "")
-        except Exception:
-            html = ""
-        if is_grok_security_verification_page(title, body_text, html):
-            return (
-                f"{HUMAN_VERIFICATION_REASON_PREFIX}Grok requires "
-                "Cloudflare security verification."
-            )
+    if _cloudflare_interstitial_visible(page):
+        return (
+            f"{HUMAN_VERIFICATION_REASON_PREFIX}{provider_label} requires "
+            "Cloudflare security verification."
+        )
     return ""
+
+
+def _retry_composer_wait_without_challenge_reload(
+    page: Any,
+    platform: str,
+    availability_check: Callable[[], bool | tuple[bool, float]] | None,
+    should_stop: Callable[[], bool],
+) -> str:
+    """Skip reloading a Cloudflare or CAPTCHA page; hand that challenge to the user."""
+    if should_stop():
+        return "stopped"
+    if not _provider_human_verification_reason(page, platform):
+        return "reload"
+    if not callable(availability_check):
+        return "raise"
+    available, _paused_seconds = _run_availability_gate(availability_check)
+    if not available:
+        return "stopped"
+    return "retry"
 
 
 def _is_human_verification_reason(reason: str) -> bool:
@@ -12242,9 +12305,17 @@ def _wait_for_web_composer(
             return True
         except _ComposerReadinessTimeout as exc:
             last_error = exc
-            if callable(should_stop) and should_stop():
+            challenge_action = _retry_composer_wait_without_challenge_reload(
+                page,
+                platform,
+                availability_check,
+                stop_requested,
+            )
+            if challenge_action == "stopped":
                 return False
-            if attempt >= CHATGPT_COMPOSER_RELOAD_ATTEMPTS:
+            if challenge_action == "retry":
+                continue
+            if challenge_action == "raise" or attempt >= CHATGPT_COMPOSER_RELOAD_ATTEMPTS:
                 break
             reload_started, _result = _run_browser_action_unless_stopped(
                 stop_requested,
@@ -13231,6 +13302,29 @@ def _wait_for_chromium_composer(
             or not callable(getattr(page, "evaluate", None))
         ):
             return paused_seconds
+        current_url = str(getattr(page, "url", "") or "").strip()
+        expected_url = str(expected_target_url or current_url).strip()
+        if _provider_human_verification_reason(page, "chatgpt"):
+            if callable(availability_check):
+                available, extra_paused = _run_availability_gate(availability_check)
+                if not available:
+                    return paused_seconds + extra_paused
+                return paused_seconds + extra_paused
+            return paused_seconds
+        if expected_url and current_url and not (
+            _chatgpt_target_is_open(expected_url, current_url)
+            or _chatgpt_fresh_navigation_allowed(expected_url, current_url)
+        ):
+            if _chatgpt_url_has_official_origin(current_url):
+                LOGGER.info(
+                    "event=chatgpt_retry_deferred_same_origin_mismatch expected=%s current=%s",
+                    expected_url,
+                    current_url,
+                )
+                return paused_seconds
+            raise RuntimeError(
+                "The selected ChatGPT tab changed before its provider retry could be handled."
+            )
         try:
             executed, retry_state = _run_browser_action_unless_stopped(
                 stop_requested,
@@ -13269,9 +13363,17 @@ def _wait_for_chromium_composer(
             return True
         except _ComposerReadinessTimeout as exc:
             last_error = exc
-            if callable(should_stop) and should_stop():
+            challenge_action = _retry_composer_wait_without_challenge_reload(
+                page,
+                "chatgpt",
+                availability_check,
+                stop_requested,
+            )
+            if challenge_action == "stopped":
                 return False
-            if attempt >= CHATGPT_COMPOSER_RELOAD_ATTEMPTS:
+            if challenge_action == "retry":
+                continue
+            if challenge_action == "raise" or attempt >= CHATGPT_COMPOSER_RELOAD_ATTEMPTS:
                 break
             reload_started, _result = _run_browser_action_unless_stopped(
                 stop_requested,

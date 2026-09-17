@@ -1,6 +1,6 @@
 """Focused tests for the Agent's ChatGPT Web source catalog.
 
-Code version: v1.3.0-codex.1
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -175,6 +175,50 @@ def test_chatgpt_status_and_sources_share_one_chromium_context() -> None:
     assert launch_context.call_args.kwargs["background_window"] is True
     collect_sources.assert_called_once_with(context, page, "Edge")
     discover_efforts.assert_called_once_with(page)
+
+
+def test_chatgpt_bootstrap_leaves_an_openai_authorize_popup_untouched() -> None:
+    def fail(*_args, **_kwargs):
+        raise AssertionError("The authorize popup must not be navigated or evaluated")
+
+    home = SimpleNamespace(
+        url="https://chatgpt.com/",
+        title=lambda: "ChatGPT",
+        content=lambda: "<html>ChatGPT</html>",
+        locator=lambda selector: SimpleNamespace(inner_text=lambda timeout=1_000: "ChatGPT"),
+        goto=fail,
+        evaluate=fail,
+        wait_for_timeout=fail,
+    )
+    auth = SimpleNamespace(
+        url="https://auth.openai.com/api/accounts/authorize?client_id=app_X&prompt=login",
+        title=fail,
+        content=fail,
+        locator=fail,
+        goto=fail,
+        evaluate=fail,
+        wait_for_timeout=fail,
+    )
+    context = SimpleNamespace(pages=[home, auth], new_page=fail)
+    with patch(
+        "app.core.chatgpt_agent_sources.sync_playwright_or_error",
+        return_value=nullcontext(object()),
+    ), patch(
+        "app.core.chatgpt_agent_sources.launch_chromium_context",
+        return_value=nullcontext(context),
+    ), patch(
+        "app.core.chatgpt_agent_sources._collect_sources",
+        return_value={"recent_sessions": []},
+    ) as collect_sources, patch(
+        "app.core.chatgpt_agent_sources.goto_with_retry",
+        side_effect=fail,
+    ):
+        status, sources = probe_and_collect_chatgpt_sources("edge", CrawlConfig())
+
+    assert status["human_verification"] is True
+    assert status["logged_in"] is False
+    assert sources is None
+    collect_sources.assert_not_called()
 
 
 def test_chatgpt_safari_source_entrypoints_use_nonblocking_owned_context() -> None:

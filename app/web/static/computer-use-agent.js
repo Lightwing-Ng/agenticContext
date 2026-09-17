@@ -1,4 +1,4 @@
-/* Code version: v3.49.2-codex.1 */
+/* Code version: v3.49.3-codex.1 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -712,7 +712,8 @@
 
     async function selectExecutionSession(sessionId, {routeChanged = false, previousScope = executionScope, preserveSourceSelection = false} = {}) {
         if (!routeChanged && (promptSubmissionPending || sessionId === executionSessionId)) return;
-        executionDrafts.set(JSON.stringify([previousScope, executionSessionId]), elements.promptInput?.value || "");
+        const currentDraft = elements.promptInput?.value || "";
+        executionDrafts.set(JSON.stringify([previousScope, executionSessionId]), currentDraft);
         executionSessionId = sessionId;
         restoredExecutionConfiguration = "";
         projectSessionRequestId += 1;
@@ -731,8 +732,16 @@
         if (elements.doctorPanel) elements.doctorPanel.open = false;
         sessionTitleOverride = "";
         if (elements.sessionMode && !preserveSourceSelection) elements.sessionMode.value = "new";
-        if (elements.promptInput) elements.promptInput.value = executionDrafts.get(JSON.stringify([executionScope, sessionId])) || "";
-        promptHasLocalDraft = Boolean(elements.promptInput?.value);
+        if (elements.promptInput) {
+            const nextDraftKey = JSON.stringify([executionScope, sessionId]);
+            if (promptHasLocalDraft && currentDraft) {
+                elements.promptInput.value = currentDraft;
+                executionDrafts.set(nextDraftKey, currentDraft);
+            } else {
+                elements.promptInput.value = executionDrafts.get(nextDraftKey) || "";
+                promptHasLocalDraft = Boolean(elements.promptInput.value);
+            }
+        }
         // Clear the old stop target immediately; stale network responses cannot restore it.
         render({...lastPayload, agent: {session_id: sessionId}});
         if (elements.ask) elements.ask.disabled = true;
@@ -2558,6 +2567,7 @@
             status,
             copy,
             lines: runningCopy?.lines || null,
+            tokenValue: runningCopy?.tokenValue || "",
             loading: ["loading", "running", "reconnecting"].includes(status),
         };
     }
@@ -2593,15 +2603,23 @@
         const turnCount = agentTurnCount(agent);
         if (turnCount !== null) metrics.push(`${turnCount.toLocaleString("en-US")} turns`);
         const tokenCount = agenticTokenCount(agent);
-        if (tokenCount !== null) {
-            metrics.push(`${tokenCount.toLocaleString("en-US")} equiv. tokens`);
-        }
+        const tokenValue = tokenCount === null ? "" : tokenCount.toLocaleString("en-US");
+        if (tokenValue) metrics.push(`Tokens: ${tokenValue}`);
         const summary = ["Working", ...metrics].filter(Boolean).join(" · ");
         const detail = String(message || "").trim();
         return {
             text: [summary, detail].filter(Boolean).join(" · "),
             lines: [summary, detail].filter(Boolean),
+            tokenValue,
         };
+    }
+
+    function appendGroupedTokenMetric(target, tokenValue) {
+        target.append("Tokens: ");
+        const major = document.createElement("span");
+        major.className = "workspace-metric-value-major";
+        major.textContent = tokenValue;
+        target.append(major);
     }
 
     function renderResponseStatusCopy(presentation) {
@@ -2609,7 +2627,15 @@
         if (presentation.lines?.length === 2) {
             const summary = document.createElement("span");
             summary.dataset.agentResponseStatusLeading = "";
-            summary.textContent = presentation.lines[0];
+            const leading = String(presentation.lines[0] || "");
+            const tokenValue = String(presentation.tokenValue || "");
+            const tokenSuffix = tokenValue ? `Tokens: ${tokenValue}` : "";
+            if (tokenSuffix && leading.endsWith(tokenSuffix)) {
+                summary.append(leading.slice(0, -tokenSuffix.length));
+                appendGroupedTokenMetric(summary, tokenValue);
+            } else {
+                summary.textContent = leading;
+            }
             const detail = document.createElement("span");
             detail.dataset.agentResponseStatusDetail = "";
             detail.textContent = presentation.lines[1];

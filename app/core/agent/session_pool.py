@@ -1,6 +1,6 @@
 """Bounded, independently controlled Web Agent sessions.
 
-Code version: v1.8.2-codex.1
+Code version: v1.8.3-codex.1
 """
 
 from contextlib import contextmanager
@@ -19,7 +19,7 @@ from app.core.agent.compute_jobs import (
     compute_job_workspace_identity,
     scan_compute_job_metadata,
 )
-from app.core.config import is_windows_host
+from app.core.config import is_macos_host, is_windows_host
 from app.core.computer_use_agent import (
     ComputerUseAgentService,
     normalize_agent_conversation_url,
@@ -374,7 +374,7 @@ class AgentSessionPool:
         if len(active) >= effective_limit:
             if effective_limit == 1:
                 return (
-                    "The Windows debug browser supports one active Agent task at a time. "
+                    "The project debug browser supports one active Agent task at a time. "
                     "Wait for it to finish or stop it."
                 )
             return "Both Agent slots are in use (2 of 2). Wait for a task to finish or stop one session."
@@ -386,8 +386,10 @@ class AgentSessionPool:
         return ""
 
     def _concurrency_limit(self, browser):
-        """Keep the shared Windows CDP browser single-owner."""
+        """Keep the shared project CDP browser single-owner."""
         if is_windows_host() and browser in {"edge", "chrome"}:
+            return 1
+        if is_macos_host() and browser == "edge":
             return 1
         return self.limit
 

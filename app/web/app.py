@@ -1678,7 +1678,12 @@ def create_app(
 
     def uses_windows_debug_browser(browser: str) -> bool:
         """Return whether this host/browser can share one project CDP context."""
-        return is_windows_host() and browser in {"edge", "chrome"}
+        selected = str(browser or "").strip().lower()
+        if selected not in {"edge", "chrome"}:
+            return False
+        if is_windows_host():
+            return True
+        return is_macos_host() and selected == "edge"
 
     def uses_exclusive_agent_browser(browser: str) -> bool:
         """Return whether live probes would contend with an active Agent browser."""

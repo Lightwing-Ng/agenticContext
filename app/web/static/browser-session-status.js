@@ -1,4 +1,4 @@
-/* Code version: v1.13.0-codex.1 */
+/* Code version: v1.13.2-codex.0 */
 
 (() => {
     const SESSION_CACHE_PREFIX = "cachelikes:browser-session:v8:";
@@ -169,6 +169,9 @@
                 "zhihu account",
                 `${platformLabel} account`.toLowerCase(),
             ]);
+            if (payload?.human_verification) {
+                return "Complete verification now";
+            }
             if (payload?.can_download) {
                 return accountName && !genericNames.has(accountName.toLowerCase())
                     ? accountName
@@ -229,7 +232,9 @@
             const browserLabel = String(
                 payload.browser_label || browserLabels[browserId] || browserId,
             ).trim();
-            loginButton.textContent = `Open ${browserLabel} to sign in`;
+            loginButton.textContent = payload.human_verification
+                ? `Open ${browserLabel} to complete verification now`
+                : `Open ${browserLabel} to sign in`;
             loginButton.hidden = false;
             loginButton.disabled = false;
             loginButton.removeAttribute("aria-busy");
@@ -367,6 +372,16 @@
             const cacheKey = `${SESSION_CACHE_PREFIX}${scope || "default"}:${requestPlatform}:${activeBrowser}`;
             const cachedStatus = readCachedStatus(cacheKey);
             const cachedPayload = cachedStatus?.payload;
+            // A human-verification page must not be probed again for missing
+            // ChatGPT catalogs. Re-opening chatgpt.com mints a new authorize
+            // URL and restarts Cloudflare's Turnstile loop.
+            if (cachedPayload?.human_verification && options.force !== true) {
+                setStatus(
+                    clientCachedPayload(cachedStatus.payload, cachedStatus.ageMs),
+                    activeBrowser,
+                );
+                return;
+            }
             const requiresChatgptCapabilities = scope === "agent" && requestPlatform === "chatgpt"
                 && !(cachedPayload?.model_catalog_complete
                     && cachedPayload?.model_options?.length
@@ -405,6 +420,7 @@
                     removeSessionValue(cacheKey);
                 }
                 setStatus(payload, browserId);
+                if (payload.human_verification) return;
             } catch (error) {
                 if (
                     activeBrowser !== browserId

@@ -753,16 +753,12 @@ def _grok_page_status(page: Any, browser_label: str) -> dict[str, Any]:
     except Exception:
         pass
     if is_grok_security_verification_page(title, body_text, html):
+        from .browser_sessions import human_verification_probe_status
+
         return {
             "platform": "grok",
             "browser_label": browser_label,
-            "logged_in": False,
-            "can_download": False,
-            "account_name": "Security verification required",
-            "message": (
-                f"Grok showed a security verification page in {browser_label}, "
-                "so the signed-in account could not be verified."
-            ),
+            **human_verification_probe_status(browser_label, "Grok"),
         }
 
     normalized_body = body_text.casefold()

@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.76.9-codex.1`
+Documentation version: `v3.76.13-codex.1`
 
 ## Purpose
 
@@ -133,11 +133,11 @@ revisions from the same client in the current server process. Duplicate Tab may 
 and revision, so this ordering is not a durable cross-tab transaction.
 
 Completed UI state is bound to both the provider and browser recorded by the run. Opening or
-switching to another canonical route renders an idle phase with an empty activity list, response,
-and composer instead of relabeling an older provider's result. The API keeps the global persisted
+switching to another canonical route renders an idle phase with an empty activity list and response
+instead of relabeling an older provider's result. The API keeps the global persisted
 snapshot for recovery, but the server-rendered first frame and subsequent client polling both apply
-the same provenance check. Changing the provider or browser also clears the current composer so an
-older task cannot be submitted accidentally through a different Web session.
+the same provenance check. An unsubmitted composer draft stays in the textarea while the user
+operates the left sidebar, including browser, provider, Project, and session-source changes.
 
 ## Activity history
 
@@ -159,16 +159,16 @@ animation; closing uses its motion duration and bouncy easing. Reduced-motion
 users bypass closing animation.
 
 While a task is running, the lifecycle summary also shows elapsed time,
-completed controller turns, and cumulative `equiv. tokens`. The token metric
-uses OpenAI's `o200k_base` encoding and sums the locally observable text input
-and output for every provider exchange. Each later input includes the known
-task transcript accumulated before that request, matching OpenAI's aggregate
-input-plus-output usage semantics. A successfully attached Markdown context is
-included in that known transcript. Provider-owned hidden instructions, hidden
-reasoning, media processing, and internal truncation are unavailable through
-the Web UI and therefore excluded; the label says `equiv.` instead of implying
-an exact provider billing value. Interrupted-task continuation persists only
-the aggregate and transcript token integers, never provider or project text.
+completed controller turns, and cumulative `Tokens: 12,345`. The integer uses
+`en-US` grouping and the holdings metric major span, without an `equiv.` label.
+The count uses OpenAI's `o200k_base` encoding and sums the locally observable
+text input and output for every provider exchange. Each later input includes the
+known task transcript accumulated before that request. A successfully attached
+Markdown context is included in that known transcript. Provider-owned hidden
+instructions, hidden reasoning, media processing, and internal truncation are
+unavailable through the Web UI and therefore excluded from the integer.
+Interrupted-task continuation persists only the aggregate and transcript token
+integers, never provider or project text.
 
 Validation on 5 Sep 2026: focused Style/Web checks passed 225 tests and 539
 subtests; `tests/test_agent_activity_e2e.py` passed four desktop/narrow motion
@@ -335,13 +335,17 @@ within 0.01px of its label. The user-owned service was not restarted.
    when a stop is already pending. Grok's bounded Enter fallback is unavailable for an unbound fresh run;
    a reused or already bound session rechecks Stop after its last DOM send-button scan and before
    pressing Enter, so a Stop accepted during that scan cannot submit another controller observation.
-   Gemini CAPTCHA and Grok Cloudflare or human-verification interstitials are detected separately
+   ChatGPT, Gemini, Grok, and Claude CAPTCHA or Cloudflare interstitials are detected separately
    from conversation text. A visible challenge control always pauses; marker-only detection also
    requires the normal composer to be unavailable, so a prompt or response that mentions a CAPTCHA
-   cannot self-trigger the pause. The controller surfaces the same isolated Chromium clone once,
-   preserves the outstanding submit, and waits for both the challenge to clear and an explicit
-   Resume. Stop remains effective, provider deadlines exclude the paused interval, and the clone's
-   prior off-screen or minimized bounds are restored after the pause ends.
+   cannot self-trigger the pause. The controller never clicks, fills, or reloads that challenge
+   page, because those mutations trip Cloudflare's punishment path. While the ChatGPT composer is
+   still opening, a same-origin URL difference (home versus an existing `/c/...` tab) does not
+   fail as a tab change and does not click Retry. Leaving chatgpt.com remains fail-closed. It
+   surfaces the same controlled Chromium window once, hands the human check to the user, preserves
+   the outstanding submit, and waits for both the challenge to clear and an explicit Resume. Stop
+   remains effective, provider deadlines exclude the paused interval, and the window's prior bounds
+   are restored after the pause ends.
    A detected macOS lock screen is also a recoverable interruption throughout initial page/model
    preparation and provider-response waits, including the initial ChatGPT composer verification
    before any transfer. It remains paused without consuming the ordinary five-minute interruption
@@ -898,10 +902,14 @@ run. For bounded verification commands, if a Windows group leader exits before i
 terminal state until its process count reaches zero. Safari remains
 macOS-only. The selected operating system must match the host running the local service.
 
-On macOS, Edge and Chrome run through an isolated clone of the selected signed-in profile. On
-Windows, that clone remains the pre-initialization fallback; after the project debug profile is
-initialized, Agent readiness, source, Project, and history probes and Agent tasks restart or reuse
-that persistent profile over CDP and operate the selected provider's DOM directly. A fresh debug
+On macOS, Chrome still runs through an isolated clone of the selected signed-in profile. macOS Edge
+and Windows Edge or Chrome reuse the project debug profile over CDP, including the first Agent
+readiness probe, so debugging the Agent aside does not start and stop a new Edge window. An already
+authorized window is left running for later reattach, including in Stage Manager. After that profile
+exists, Agent readiness, source, Project, and history probes and Agent tasks reattach to the same
+process and operate the selected provider's DOM directly. macOS launches that Edge with
+`open -n` against the project profile so a daily Edge window is not activated in place of the
+debuggable instance. A fresh debug
 browser asks Chromium to choose the port with `--remote-debugging-port=0`, then accepts the launch
 only when the profile-owned `DevToolsActivePort` marker and `/json/version` identify the same
 browser process. The durable `debug_port` record stores the selected port, browser-process GUID,
@@ -921,9 +929,11 @@ page's window. Windows requests normal
 state and fixed bounds `(80, 80, 1280, 900)` through CDP without requesting activation; it does not
 run macOS foreground-app capture or restore. Missing CDP window control or a failed window command
 stops the task before provider prompt submission. Fixed geometry does not verify the available
-display work area, and a cloned context may restore more than one native window. On macOS, the previous
-foreground app is restored if the browser took focus, leaving the task window available for the user to
-inspect through macOS window management. macOS ultimately determines Stage Manager grouping.
+display work area, and a cloned context may restore more than one native window. On macOS, a cloned Chrome or first-time Edge launch restores the previous
+foreground app if the browser took focus. An already initialized debug Edge stays
+visible like Windows, including in Stage Manager, and is reattached over CDP instead of
+being launched again. A brief CDP gap after Playwright disconnects is retried before a
+replacement Edge is started. macOS ultimately determines Stage Manager grouping.
 Automated execution never opens the user's original profile for writing. Chromium still suppresses first-run,
 crash, notification, and repost prompts; a clone-backed task exit closes the isolated context and
 removes its temporary profile. A Windows CDP-backed exit disconnects Playwright while leaving the
@@ -958,10 +968,19 @@ When an Agent browser status is not signed in, the status card exposes an `Open 
 action. It opens the selected browser visibly at the provider home page; the user must then choose the
 existing recheck action to verify the new session. On Windows, login initializes the project-owned
 debug profile under `local_store/agent_browser_profile/<browser>`; later Recheck and Agent tasks use
-that same profile and restart its browser after a window close. The daily Edge or Chrome profile is
+that same profile and restart its browser after a window close. macOS Edge login uses that same
+project profile. The daily Edge or Chrome profile is
 not opened for writing. Copying or launching alone does not prove authentication. Opening the browser
 does not imply sign-in and does not add automatic login polling. Windows runtime behavior for this
 workflow remains not locally verified.
+A Cloudflare or CAPTCHA interstitial is fail-closed: the sidebar Account row says
+`Complete verification now`, the status message tells the user to finish that check in the open
+browser immediately, and the controller does not click, fill, or reload the challenge page. The
+status card does not auto-refresh that probe, because another navigation is itself a challenge
+attempt. ChatGPT's `auth.openai.com` authorize popup is included: the Agent must not reopen
+`chatgpt.com` while that URL is still showing, because a new authorize request mints a new
+Cloudflare loop. Choose Recheck only after the human check is complete and the window has
+returned to ChatGPT.
 
 Independently of browser capacity, admission permits one write-capable Agent for any overlapping
 workspace roots. It fixes the admitted root identity, passes that identity into the worker and
@@ -973,10 +992,11 @@ write boundary for its selected workspace. This coordination does not change bro
 selection, login handoff, tab reuse, or foreground-app restoration.
 
 The Windows Agent session pool exposes one active slot because all providers in one Edge or Chrome
-debug browser share a rendered context. While that slot is active, live source, Project-session,
-history, and bootstrap collection for the same browser is suppressed: cached data may be served
-without background refresh, a catalog/bootstrap miss is `unprobed`, and a history miss returns HTTP
-409. macOS does not enter this suppression path and retains its existing isolated-browser behavior.
+debug browser share a rendered context. macOS Edge uses the same single-owner slot. While that slot
+is active, live source, Project-session, history, and bootstrap collection for the same browser is
+suppressed: cached data may be served without background refresh, a catalog/bootstrap miss is
+`unprobed`, and a history miss returns HTTP 409. macOS Chrome and Safari keep their existing
+isolated-browser behavior.
 
 Chromium cleanup treats only the known Playwright already-closed and driver-disconnected close
 errors as an idempotent second close, while still removing the temporary profile. Unexpected

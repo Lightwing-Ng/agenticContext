@@ -1,10 +1,11 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.13.0-codex.2
+Code version: v1.13.4-codex.0
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -32,6 +33,8 @@ from app.core.browser_sessions import (
     _housekeep_stale_chromium_profiles,
     is_grok_security_verification_page,
     launch_chromium_context,
+    page_shows_security_verification,
+    page_url_indicates_human_verification,
     parse_grok_account_label,
     probe_browser_session,
     sync_playwright_or_error,
@@ -986,17 +989,19 @@ def test_clone_browser_profile_reports_windows_running_browser_shutil_error(
             clone_browser_profile(descriptor)
 
 
-def test_clone_browser_profile_preserves_macos_shutil_error(
+def test_clone_browser_profile_maps_macos_cookie_lock_to_debug_browser(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The Windows Cookie-lock adaptation must not alter the macOS copy path."""
+    """A locked Cookies file on macOS falls back to the project debug browser."""
     import shutil
 
     source_user_data_dir = tmp_path / "Edge"
     source_profile_dir = source_user_data_dir / "Default"
     source_profile_dir.mkdir(parents=True)
     locked_cookies = source_profile_dir / "Network" / "Cookies"
+    locked_cookies.parent.mkdir(parents=True, exist_ok=True)
+    locked_cookies.write_bytes(b"")
     descriptor = BrowserDescriptor(
         browser_id="edge",
         label="Edge",
@@ -1010,17 +1015,15 @@ def test_clone_browser_profile_preserves_macos_shutil_error(
         (
             str(locked_cookies),
             str(tmp_path / "clone" / "Cookies"),
-            "[WinError 32] The process cannot access the file because it is being used by another process",
+            "[Errno 13] Permission denied",
         ),
     ])
 
     monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: False)
     with patch("app.core.browser_sessions.shutil.copytree", side_effect=copy_error):
-        with pytest.raises(shutil.Error) as caught:
+        with pytest.raises(RuntimeError, match="project debug browser will be used instead"):
             clone_browser_profile(descriptor)
-
-    assert caught.value is copy_error
 
 
 def test_clone_browser_profile_reraises_non_lock_shutil_error(
@@ -1458,17 +1461,11 @@ def test_macos_jury_project_profile_reuses_process_with_isolated_page_leases(
     clone.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("windows_host", "prefer_initialized"),
-    ((True, False), (False, True)),
-)
-def test_initialized_debug_browser_requires_windows_and_explicit_preference(
+def test_cache_launch_does_not_adopt_initialized_debug_browser(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    windows_host: bool,
-    prefer_initialized: bool,
 ) -> None:
-    """Normal Cache launches and macOS never adopt the persistent Agent profile."""
+    """Normal Cache launches never adopt the persistent Agent profile."""
     import app.core.agent_debug_browser as agent_debug_browser
 
     descriptor = BrowserDescriptor(
@@ -1484,7 +1481,9 @@ def test_initialized_debug_browser_requires_windows_and_explicit_preference(
     ensure = MagicMock(
         side_effect=AssertionError("The persistent Agent profile must not be attached")
     )
-    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: windows_host)
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
     monkeypatch.setattr(
         agent_debug_browser,
         "debug_browser_profile_initialized",
@@ -1501,7 +1500,54 @@ def test_initialized_debug_browser_requires_windows_and_explicit_preference(
             descriptor,
             headless=False,
             clone_profile_first=True,
-            prefer_initialized_debug_profile=prefer_initialized,
+            prefer_initialized_debug_profile=False,
+        )
+
+    initialized.assert_not_called()
+    ensure.assert_not_called()
+
+
+def test_macos_chrome_does_not_adopt_initialized_debug_browser(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS Chrome Agent launches stay clone-first."""
+    import app.core.agent_debug_browser as agent_debug_browser
+
+    descriptor = BrowserDescriptor(
+        browser_id="chrome",
+        label="Chrome",
+        icon_filename="images/browser.chrome.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "missing-daily-profile",
+        profile_directory="Default",
+        channel="chrome",
+    )
+    initialized = MagicMock(return_value=True)
+    ensure = MagicMock(
+        side_effect=AssertionError("The persistent Agent profile must not be attached")
+    )
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
+    monkeypatch.setattr(
+        agent_debug_browser,
+        "debug_browser_profile_initialized",
+        initialized,
+    )
+    monkeypatch.setattr(agent_debug_browser, "ensure_debug_browser", ensure)
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(connect_over_cdp=MagicMock())
+    )
+
+    with pytest.raises(RuntimeError, match="user data directory was not found"):
+        launch_chromium_context(
+            playwright,
+            descriptor,
+            headless=False,
+            clone_profile_first=True,
+            prefer_initialized_debug_profile=True,
         )
 
     initialized.assert_not_called()
@@ -1565,6 +1611,283 @@ def test_launch_chromium_context_restarts_initialized_debug_browser_before_clone
     ensure.assert_called_once_with("edge")
     connect.assert_called_once_with("http://127.0.0.1:42421")
     browser_close.assert_called_once_with()
+
+
+def test_macos_edge_reuses_initialized_debug_browser_over_cdp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS Edge Agent tasks reattach to the authorized debug window."""
+    import app.core.browser_sessions as browser_sessions
+    from app.core.agent_debug_browser import DebugBrowserHandle
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "missing-daily-profile",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    attached_page = SimpleNamespace(url="https://chatgpt.com/")
+    attached_context = SimpleNamespace(pages=[attached_page], new_page=MagicMock())
+    browser_close = MagicMock()
+    attached_browser = SimpleNamespace(
+        contexts=[attached_context],
+        new_context=MagicMock(),
+        close=browser_close,
+    )
+    connect = MagicMock(return_value=attached_browser)
+    playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=connect))
+
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_profile_initialized",
+        lambda browser_id: browser_id == "edge",
+    )
+    ensure = MagicMock(
+        return_value=DebugBrowserHandle(
+            browser_id="edge",
+            cdp_endpoint="http://127.0.0.1:42421",
+            user_data_dir=tmp_path / "debug-profile",
+        )
+    )
+    monkeypatch.setattr("app.core.agent_debug_browser.ensure_debug_browser", ensure)
+    clone = MagicMock(side_effect=AssertionError("A running debug profile must be reused"))
+    monkeypatch.setattr(browser_sessions, "clone_browser_profile", clone)
+
+    with launch_chromium_context(
+        playwright,
+        descriptor,
+        headless=False,
+        clone_profile_first=True,
+        prefer_initialized_debug_profile=True,
+    ) as context:
+        assert context.pages == [attached_page]
+
+    clone.assert_not_called()
+    ensure.assert_called_once_with("edge")
+    connect.assert_called_once_with("http://127.0.0.1:42421")
+    browser_close.assert_called_once_with()
+
+
+def test_macos_edge_uses_debug_browser_before_the_profile_is_initialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS Agent probes must not clone the daily Edge profile on first use."""
+    import app.core.browser_sessions as browser_sessions
+    from app.core.agent_debug_browser import DebugBrowserHandle
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "daily-edge-must-not-be-cloned",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    attached_page = SimpleNamespace(url="https://chatgpt.com/")
+    attached_context = SimpleNamespace(pages=[attached_page], new_page=MagicMock())
+    attached_browser = SimpleNamespace(
+        contexts=[attached_context],
+        new_context=MagicMock(),
+        close=MagicMock(),
+    )
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(connect_over_cdp=MagicMock(return_value=attached_browser))
+    )
+    monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_profile_initialized",
+        lambda browser_id: False,
+    )
+    ensure = MagicMock(
+        return_value=DebugBrowserHandle(
+            browser_id="edge",
+            cdp_endpoint="http://127.0.0.1:42421",
+            user_data_dir=tmp_path / "debug-profile",
+        )
+    )
+    monkeypatch.setattr("app.core.agent_debug_browser.ensure_debug_browser", ensure)
+    clone = MagicMock(side_effect=AssertionError("A first macOS Edge probe must not clone"))
+    monkeypatch.setattr(browser_sessions, "clone_browser_profile", clone)
+
+    with launch_chromium_context(
+        playwright,
+        descriptor,
+        headless=False,
+        clone_profile_first=True,
+        prefer_initialized_debug_profile=True,
+    ) as context:
+        assert context.pages == [attached_page]
+
+    clone.assert_not_called()
+    ensure.assert_called_once_with("edge")
+
+
+def test_macos_edge_app_bundle_launch_opens_a_new_instance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    bundle = tmp_path / "Microsoft Edge.app"
+    executable = bundle / "Contents" / "MacOS" / "Microsoft Edge"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"")
+    profile_root = tmp_path / "project-profile"
+    monkeypatch.setattr(adb, "is_windows_host", lambda: False)
+    monkeypatch.setattr(adb, "is_macos_host", lambda: True)
+    captured: dict[str, object] = {}
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace()
+
+    monkeypatch.setattr(adb.subprocess, "Popen", popen)
+    adb._launch_debug_browser("edge", str(executable), 0, profile_root)
+
+    command = captured["command"]
+    assert command[:5] == ["/usr/bin/open", "-n", "-a", str(bundle), "--args"]
+    assert f"--user-data-dir={profile_root / 'edge'}" in command
+    assert "--remote-debugging-port=0" in command
+    assert "--remote-allow-origins=*" in command
+
+
+def test_auth_openai_url_is_human_verification_without_dom_access() -> None:
+    page = SimpleNamespace(
+        url="https://auth.openai.com/api/accounts/authorize?client_id=app_X&prompt=login",
+        title=lambda: (_ for _ in ()).throw(AssertionError("Do not read the authorize DOM")),
+        content=lambda: (_ for _ in ()).throw(AssertionError("Do not read the authorize DOM")),
+        locator=lambda selector: (_ for _ in ()).throw(
+            AssertionError("Do not read the authorize DOM")
+        ),
+    )
+
+    assert page_url_indicates_human_verification(page) is True
+    assert page_shows_security_verification(page) is True
+
+
+def test_chatgpt_probe_reports_human_verification_without_retrying(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.browser_sessions as browser_sessions
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "edge-profile",
+        profile_directory="Default",
+        channel="msedge",
+    )
+    page = SimpleNamespace(
+        title=lambda: "Just a moment...",
+        content=lambda: "<html>performance and security by cloudflare</html>",
+        locator=lambda selector: SimpleNamespace(
+            inner_text=lambda timeout=1_000: "Checking your browser before accessing"
+        ),
+        evaluate=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("A Cloudflare page must not be fetched or clicked")
+        ),
+        goto=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("A Cloudflare page must not be navigated")
+        ),
+    )
+    context = SimpleNamespace(pages=[page], new_page=MagicMock())
+    navigated: list[str] = []
+    monkeypatch.setattr(
+        browser_sessions,
+        "launch_chromium_context",
+        lambda *_args, **_kwargs: contextlib.nullcontext(context),
+    )
+    monkeypatch.setattr(browser_sessions, "_serialized_sync_playwright", contextlib.nullcontext)
+    monkeypatch.setattr(
+        browser_sessions,
+        "goto_with_retry",
+        lambda *_args, **_kwargs: navigated.append("chatgpt.com"),
+    )
+
+    result = browser_sessions._probe_chatgpt_session(descriptor, CrawlConfig())
+
+    assert result["human_verification"] is True
+    assert result["logged_in"] is False
+    assert result["account_name"] == "Human verification required"
+    assert "Complete that check in the open browser window now" in result["message"]
+    assert navigated == []
+
+
+def test_chatgpt_probe_does_not_navigate_an_openai_authorize_popup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.browser_sessions as browser_sessions
+
+    descriptor = BrowserDescriptor(
+        browser_id="edge",
+        label="Edge",
+        icon_filename="images/browser.edge.png",
+        engine="chromium",
+        user_data_dir=tmp_path / "edge-profile",
+        profile_directory="Default",
+        channel="msedge",
+    )
+
+    def fail(message: str):
+        raise AssertionError(message)
+
+    home = SimpleNamespace(
+        url="https://chatgpt.com/",
+        title=lambda: "ChatGPT",
+        content=lambda: "<html>ChatGPT</html>",
+        locator=lambda selector: SimpleNamespace(
+            inner_text=lambda timeout=1_000: "ChatGPT"
+        ),
+        evaluate=lambda *_args, **_kwargs: fail("The authorize popup must not trigger a fetch"),
+        goto=lambda *_args, **_kwargs: fail("chatgpt.com must not be reopened"),
+    )
+    auth = SimpleNamespace(
+        url=(
+            "https://auth.openai.com/api/accounts/authorize"
+            "?client_id=app_X8zY6vW2pQ9tR3dE7nK1jL5gH&prompt=login"
+        ),
+        title=lambda: fail("The authorize popup must not be read"),
+        content=lambda: fail("The authorize popup must not be read"),
+        locator=lambda selector: fail("The authorize popup must not be read"),
+        evaluate=lambda *_args, **_kwargs: fail("The authorize popup must not be evaluated"),
+        goto=lambda *_args, **_kwargs: fail("The authorize popup must not be navigated"),
+    )
+    context = SimpleNamespace(pages=[home, auth], new_page=lambda: fail("No new page"))
+    navigated: list[str] = []
+    monkeypatch.setattr(
+        browser_sessions,
+        "launch_chromium_context",
+        lambda *_args, **_kwargs: contextlib.nullcontext(context),
+    )
+    monkeypatch.setattr(browser_sessions, "_serialized_sync_playwright", contextlib.nullcontext)
+    monkeypatch.setattr(
+        browser_sessions,
+        "goto_with_retry",
+        lambda *_args, **_kwargs: navigated.append("chatgpt.com"),
+    )
+
+    result = browser_sessions._probe_chatgpt_session(descriptor, CrawlConfig())
+
+    assert result["human_verification"] is True
+    assert "Complete that check in the open browser window now" in result["message"]
+    assert navigated == []
 
 
 def test_launch_chromium_context_reraises_non_lock_clone_error_without_cdp(
@@ -1718,6 +2041,61 @@ def test_ensure_debug_browser_reuses_recorded_port_when_alive(
     assert handle.browser_id == "edge"
     assert handle.cdp_endpoint == "http://127.0.0.1:42421"
     assert handle.user_data_dir == profile_root
+
+
+def test_ensure_debug_browser_reattaches_after_a_brief_cdp_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    profile_root = tmp_path / "agent_browser_profile" / "edge"
+    profile_root.mkdir(parents=True)
+    (profile_root / "debug_port").write_text(
+        json.dumps(
+            {
+                "port": 42421,
+                "instance": "edge-guid-aaa",
+                "browser": "Edg/119.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adb, "DEBUG_BROWSER_ROOT", tmp_path / "agent_browser_profile")
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    identity = adb.CdpIdentity(
+        port=42421,
+        browser_brand="Edg/119.0",
+        instance_guid="edge-guid-aaa",
+    )
+    timeouts: list[float] = []
+
+    def wait_for_identity(
+        port: int,
+        timeout: float,
+        *,
+        expected_guid: str | None = None,
+    ) -> adb.CdpIdentity | None:
+        assert port == 42421
+        assert expected_guid == "edge-guid-aaa"
+        timeouts.append(timeout)
+        if timeout == adb.CDP_REATTACH_TIMEOUT_SECONDS:
+            return identity
+        return None
+
+    monkeypatch.setattr(adb, "_wait_for_cdp_ready", wait_for_identity)
+    monkeypatch.setattr(
+        adb,
+        "_resolve_browser_executable",
+        lambda _browser_id: (_ for _ in ()).throw(AssertionError("must not relaunch")),
+    )
+
+    handle = adb.ensure_debug_browser("edge")
+    assert handle.cdp_endpoint == "http://127.0.0.1:42421"
+    assert timeouts == [
+        adb.CDP_PROBE_TIMEOUT_SECONDS,
+        adb.CDP_REATTACH_TIMEOUT_SECONDS,
+    ]
 
 
 def test_probe_cdp_identity_uses_edge_product_token_and_browser_guid(
@@ -1985,6 +2363,7 @@ def test_macos_edge_debug_browser_uses_only_the_private_project_profile(
     command = captured["command"]
     assert f"--user-data-dir={profile_root / 'edge'}" in command
     assert "--remote-debugging-port=0" in command
+    assert "--remote-allow-origins=*" in command
     assert "--use-mock-keychain" not in command
     assert "--password-store=basic" not in command
     assert not any("Library/Application Support/Microsoft Edge" in item for item in command)

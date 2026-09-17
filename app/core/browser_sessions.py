@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.27.0-codex.2
+# Code version: v1.27.4-codex.0
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ class _CdpAttachCleanupNoiseFilter(logging.Filter):
         return not any(marker in combined for marker in self._PLAYWRIGHT_TRANSPORT_MARKERS)
 
 
-if is_windows_host():
+if is_windows_host() or is_macos_host():
     logging.getLogger("asyncio").addFilter(_CdpAttachCleanupNoiseFilter())
 
 
@@ -73,6 +73,8 @@ X_HOME_URL = "https://x.com/home"
 GROK_FILES_URL = "https://grok.com/files"
 CHATGPT_HOME_URL = "https://chatgpt.com/"
 CHATGPT_AUTH_SESSION_URL = "https://chatgpt.com/api/auth/session"
+CHATGPT_AUTH_HOSTS = frozenset({"auth.openai.com", "auth0.openai.com"})
+CLOUDFLARE_CHALLENGE_HOSTS = frozenset({"challenges.cloudflare.com"})
 GEMINI_HOME_URL = "https://gemini.google.com/app"
 CLAUDE_HOME_URL = "https://claude.ai/new"
 ZHIHU_HOME_URL = "https://www.zhihu.com/"
@@ -521,6 +523,11 @@ def _probe_claude_session(
         with SafariContext(CLAUDE_HOME_URL, lock_blocking=False) as context:
             page = context.primary_page
             goto_with_retry(page, CLAUDE_HOME_URL, attempts=2, timeout_ms=60_000)
+            challenge = _security_verification_status_if_present(
+                page, descriptor.label, "Claude"
+            )
+            if challenge is not None:
+                return challenge
             return inspect(page)
     if descriptor.engine != "chromium":
         return {
@@ -542,6 +549,11 @@ def _probe_claude_session(
         ) as context:
             page = context.pages[0] if context.pages else context.new_page()
             goto_with_retry(page, CLAUDE_HOME_URL, attempts=2, timeout_ms=60_000)
+            challenge = _security_verification_status_if_present(
+                page, descriptor.label, "Claude"
+            )
+            if challenge is not None:
+                return challenge
             return inspect(page)
 
 
@@ -555,11 +567,43 @@ def _probe_gemini_session(
     """Verify that the selected browser exposes an authenticated Gemini page."""
     from .gemini_downloader import _wait_for_gemini_ready
 
+    def inspect_or_challenge(page: Any) -> dict[str, Any]:
+        challenge = _security_verification_status_if_present(
+            page, descriptor.label, "Gemini"
+        )
+        if challenge is not None:
+            return challenge
+        from .gemini_downloader import inspect_gemini_bot_check
+
+        try:
+            bot_check = inspect_gemini_bot_check(page)
+        except Exception:
+            bot_check = {}
+        if bot_check.get("detected"):
+            return human_verification_probe_status(descriptor.label, "Gemini")
+        snapshot = _wait_for_gemini_ready(page)
+        if snapshot.get("signedOut"):
+            return {
+                "logged_in": False,
+                "can_download": False,
+                "account_name": "",
+                "message": f"{descriptor.label} is not signed in to Gemini.",
+            }
+        return {
+            "logged_in": True,
+            "can_download": True,
+            "account_name": "Google account",
+            "message": (
+                f"{descriptor.label} verified an authenticated Gemini session. "
+                "A background browser window will cache rendered sessions to Parquet."
+            ),
+        }
+
     if descriptor.engine == "safari":
         with SafariContext(GEMINI_HOME_URL, lock_blocking=False) as context:
             page = context.primary_page
             goto_with_retry(page, GEMINI_HOME_URL, attempts=2, timeout_ms=60_000)
-            snapshot = _wait_for_gemini_ready(page)
+            return inspect_or_challenge(page)
     elif descriptor.engine == "chromium":
         with _serialized_sync_playwright() as playwright:
             with launch_chromium_context(
@@ -573,7 +617,7 @@ def _probe_gemini_session(
             ) as context:
                 page = context.pages[0] if context.pages else context.new_page()
                 goto_with_retry(page, GEMINI_HOME_URL, attempts=2, timeout_ms=60_000)
-                snapshot = _wait_for_gemini_ready(page)
+                return inspect_or_challenge(page)
     else:
         return {
             "logged_in": False,
@@ -581,23 +625,6 @@ def _probe_gemini_session(
             "account_name": "",
             "message": f"Gemini history sync does not support {descriptor.label}.",
         }
-
-    if snapshot.get("signedOut"):
-        return {
-            "logged_in": False,
-            "can_download": False,
-            "account_name": "",
-            "message": f"{descriptor.label} is not signed in to Gemini.",
-        }
-    return {
-        "logged_in": True,
-        "can_download": True,
-        "account_name": "Google account",
-        "message": (
-            f"{descriptor.label} verified an authenticated Gemini session. "
-            "A background browser window will cache rendered sessions to Parquet."
-        ),
-    }
 
 
 def _probe_chromium_x_session(
@@ -659,15 +686,7 @@ def _probe_chromium_grok_session(
                     "message": f"{descriptor.label} is ready to sync Grok.",
                 }
             if is_grok_security_verification_page(title, body_text, html):
-                return {
-                    "logged_in": False,
-                    "can_download": False,
-                    "account_name": "Security verification required",
-                    "message": (
-                        f"Grok showed a Cloudflare security verification page in {descriptor.label}, "
-                        "so the signed-in account could not be verified."
-                    ),
-                }
+                return human_verification_probe_status(descriptor.label, "Grok")
             if any(marker in body_text for marker in ("Sign in", "Log in")):
                 return {
                     "logged_in": False,
@@ -756,8 +775,20 @@ def _probe_chatgpt_session(
     if descriptor.engine == "safari":
         with SafariContext(project_url, lock_blocking=False) as context:
             page = context.primary_page
-            page.goto(project_url, wait_until="domcontentloaded", timeout=60_000)
-            page.wait_for_load_state("domcontentloaded", 60_000)
+            challenge = _security_verification_status_if_present(
+                page, descriptor.label, "ChatGPT"
+            )
+            if challenge is not None:
+                return challenge
+            current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
+            if current_url != project_url.rstrip("/"):
+                page.goto(project_url, wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_load_state("domcontentloaded", 60_000)
+                challenge = _security_verification_status_if_present(
+                    page, descriptor.label, "ChatGPT"
+                )
+                if challenge is not None:
+                    return challenge
             response = context.request.get(
                 CHATGPT_AUTH_SESSION_URL,
                 timeout=60_000,
@@ -775,9 +806,29 @@ def _probe_chatgpt_session(
                 silent=silent,
                 prefer_initialized_debug_profile=prefer_initialized_debug_profile,
             ) as context:
+                challenge = context_security_verification_status(
+                    context, descriptor.label, "ChatGPT"
+                )
+                if challenge is not None:
+                    return challenge
                 page = context.pages[0] if context.pages else context.new_page()
-                goto_with_retry(page, project_url, attempts=2, timeout_ms=30_000)
-                payload = _read_chatgpt_auth_payload(page, descriptor.label)
+                current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
+                if current_url != project_url.rstrip("/"):
+                    goto_with_retry(page, project_url, attempts=2, timeout_ms=30_000)
+                    challenge = _security_verification_status_if_present(
+                        page, descriptor.label, "ChatGPT"
+                    )
+                    if challenge is not None:
+                        return challenge
+                try:
+                    payload = _read_chatgpt_auth_payload(page, descriptor.label)
+                except Exception:
+                    challenge = _security_verification_status_if_present(
+                        page, descriptor.label, "ChatGPT"
+                    )
+                    if challenge is not None:
+                        return challenge
+                    raise
     else:
         return {
             "logged_in": False,
@@ -1092,16 +1143,21 @@ def _is_browser_running_copy_error(error: BaseException) -> bool:
 
     On Windows a running Chrome or Edge keeps ``Network/Cookies`` under an exclusive
     SQLite lock, so ``shutil.copytree`` aggregates a ``WinError 32`` sharing
-    violation into a ``shutil.Error``. That error is an ``OSError`` subclass but not
-    a ``PermissionError``, so it bypasses the friendlier message below unless we
-    recognize it explicitly. We match on the locked file ending in ``Cookies`` to
-    avoid mistaking unrelated transient copy errors for a running-browser lock.
+    violation into a ``shutil.Error``. On macOS the same running browser causes a
+    plain ``PermissionError`` (errno 13) on the Cookies file without a ``winerror``
+    attribute. Both platforms are recognized here so the caller can fall back to the
+    project debug browser over CDP instead of asking the user to quit Edge.
     """
     lock_markers = ("winerror 32", "being used by another process")
+    macos_lock_markers = ("permission denied", "errno 13", "[errno 13]")
 
     def message_indicates_lock(message: object) -> bool:
         normalized = str(message or "").casefold()
         return any(marker in normalized for marker in lock_markers)
+
+    def message_indicates_macos_lock(message: object) -> bool:
+        normalized = str(message or "").casefold()
+        return any(marker in normalized for marker in macos_lock_markers)
 
     def source_is_cookie_file(source: object) -> bool:
         name = Path(str(source or "")).name.lower()
@@ -1114,13 +1170,22 @@ def _is_browser_running_copy_error(error: BaseException) -> bool:
                 source, _destination, message = entry
             except (TypeError, ValueError):
                 continue
-            if message_indicates_lock(message) and source_is_cookie_file(source):
+            if source_is_cookie_file(source) and (
+                message_indicates_lock(message)
+                or message_indicates_macos_lock(message)
+            ):
                 return True
         return False
 
-    if isinstance(error, PermissionError) and getattr(error, "winerror", None) == 32:
-        denied_path = getattr(error, "filename", None) or ""
-        return source_is_cookie_file(denied_path)
+    if isinstance(error, PermissionError):
+        # Windows: WinError 32 sharing violation on the Cookies file.
+        if getattr(error, "winerror", None) == 32:
+            denied_path = getattr(error, "filename", None) or ""
+            return source_is_cookie_file(denied_path)
+        # macOS: plain PermissionError (errno 13) on the Cookies file.
+        if getattr(error, "errno", None) == 13:
+            denied_path = getattr(error, "filename", None) or ""
+            return source_is_cookie_file(denied_path)
 
     return False
 
@@ -1299,12 +1364,15 @@ def launch_chromium_context(
 ):
     """Launch an isolated Chromium-family browser with an explicit window mode.
 
-    On Windows, Agent callers can explicitly prefer an initialized project debug
-    profile and restart or reuse it over CDP. Other callers retain the existing
-    clone-first behavior. A locked daily profile can still trigger the existing
-    debug-browser fallback. Neither CDP path reads locked cookie files or opens
-    the daily profile for writing. macOS Edge Jury callers may explicitly require
-    the project profile; that branch never inspects or clones the daily profile.
+    On Windows, and for macOS Edge, Agent callers prefer the project debug
+    profile over CDP. macOS Edge skips the daily-profile clone entirely so the
+    aside status probe does not start and stop a new Edge for every check. Other
+    callers retain the existing clone-first behavior. A locked daily profile can
+    still trigger the existing debug-browser fallback. Neither CDP path reads
+    locked cookie files or opens the daily profile for writing. macOS Edge Jury
+    callers may explicitly require the project profile; that branch never inspects
+    or clones the daily profile. An already authorized debug window is left running
+    so later Agent tasks reattach, including when that window sits in Stage Manager.
     """
     user_data_dir = descriptor.user_data_dir
     if user_data_dir is None:
@@ -1431,16 +1499,18 @@ def launch_chromium_context(
             )
         return attach_debug_browser(shared_pages=True)
 
-    if (
-        allow_cdp_attach
-        and prefer_initialized_debug_profile
-        and is_windows_host()
-    ):
-        from .agent_debug_browser import debug_browser_profile_initialized
+    if allow_cdp_attach and prefer_initialized_debug_profile:
+        from .agent_debug_browser import (
+            debug_browser_profile_initialized,
+            debug_browser_supported,
+        )
 
-        if debug_browser_profile_initialized(descriptor.browser_id):
+        if debug_browser_supported(descriptor.browser_id) and (
+            debug_browser_profile_initialized(descriptor.browser_id)
+            or (is_macos_host() and descriptor.browser_id == "edge")
+        ):
             LOGGER.info(
-                "Using the initialized project debug %s over CDP.",
+                "Using the project debug %s over CDP.",
                 descriptor.label,
             )
             return attach_debug_browser()
@@ -1452,7 +1522,7 @@ def launch_chromium_context(
         try:
             temp_user_data_dir, temp_profile_dir = clone_browser_profile(descriptor)
         except RuntimeError as exc:
-            if allow_cdp_attach and is_windows_host() and _is_browser_running_copy_error(exc.__cause__ or exc):
+            if allow_cdp_attach and (is_windows_host() or is_macos_host()) and _is_browser_running_copy_error(exc.__cause__ or exc):
                 LOGGER.info(
                     "%s keeps its sign-in cookies locked; attaching the project debug browser over CDP.",
                     descriptor.label,
@@ -1474,7 +1544,7 @@ def launch_chromium_context(
             try:
                 temp_user_data_dir, temp_profile_dir = clone_browser_profile(descriptor)
             except RuntimeError as clone_exc:
-                if allow_cdp_attach and is_windows_host() and _is_browser_running_copy_error(clone_exc.__cause__ or clone_exc):
+                if allow_cdp_attach and (is_windows_host() or is_macos_host()) and _is_browser_running_copy_error(clone_exc.__cause__ or clone_exc):
                     LOGGER.info(
                         "%s keeps its sign-in cookies locked; attaching the project debug browser over CDP.",
                         descriptor.label,
@@ -1583,6 +1653,11 @@ def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile
         denied_path = getattr(exc, "filename", None) or source_profile_dir
         _cleanup_cloned_browser_profile(temp_dir, original_error=exc)
         if is_macos_host():
+            if _is_browser_running_copy_error(exc):
+                raise RuntimeError(
+                    f"{descriptor.label} keeps its sign-in cookies locked while it is running. "
+                    "The project debug browser will be used instead."
+                ) from exc
             raise RuntimeError(
                 f"macOS denied access to the {descriptor.label} profile at {denied_path}. "
                 "Open System Settings > Privacy & Security > Full Disk Access and enable "
@@ -1596,10 +1671,10 @@ def clone_browser_profile(descriptor: BrowserDescriptor) -> tuple[Path, tempfile
         raise
     except shutil.Error as exc:
         _cleanup_cloned_browser_profile(temp_dir, original_error=exc)
-        if is_windows_host() and _is_browser_running_copy_error(exc):
+        if _is_browser_running_copy_error(exc):
             raise RuntimeError(
                 f"{descriptor.label} keeps its sign-in cookies locked while it is running. "
-                "Close all Edge or Chrome windows, then retry the browser session check."
+                "The project debug browser will be used instead."
             ) from exc
         raise
     except OSError as exc:
@@ -1645,6 +1720,120 @@ def is_grok_security_verification_page(title: str, body_text: str, html: str = "
         if marker in normalized_body or marker in normalized_html:
             marker_hits += 1
     return marker_hits >= 2
+
+
+def page_url_indicates_human_verification(page: Any) -> bool:
+    """Return whether the page URL is a login or Cloudflare challenge without reading the DOM.
+
+    ChatGPT's authorize popup lives on auth.openai.com. Navigating, reloading, or
+    evaluating that document restarts Cloudflare's Turnstile loop.
+    """
+    url = str(getattr(page, "url", "") or "")
+    host = (urlsplit(url).hostname or "").lower()
+    if host in CHATGPT_AUTH_HOSTS or host in CLOUDFLARE_CHALLENGE_HOSTS:
+        return True
+    lowered = url.lower()
+    return "cdn-cgi/challenge" in lowered or "cdn-cgi/chl" in lowered
+
+
+def _iter_open_context_pages(context: Any) -> list[Any]:
+    """Return live pages in one browser context, including authorize popups."""
+    pages = list(getattr(context, "pages", None) or [])
+    if not pages:
+        primary = getattr(context, "primary_page", None)
+        if primary is not None:
+            pages = [primary]
+    open_pages: list[Any] = []
+    for page in pages:
+        is_closed = getattr(page, "is_closed", None)
+        if callable(is_closed):
+            try:
+                if is_closed():
+                    continue
+            except Exception:
+                continue
+        open_pages.append(page)
+    return open_pages
+
+
+def page_shows_security_verification(page: Any) -> bool:
+    """Return whether the current page is a Cloudflare, CAPTCHA, or ChatGPT login challenge.
+
+    Prefer URL and title so a Turnstile page is not evaluated or reloaded.
+    """
+    if page_url_indicates_human_verification(page):
+        return True
+    title = ""
+    try:
+        title = str(page.title() or "")
+    except Exception:
+        title = ""
+    if is_grok_security_verification_page(title, "", ""):
+        return True
+    body_text = ""
+    html = ""
+    try:
+        body_text = str(page.locator("body").inner_text(timeout=1_000) or "")
+    except Exception:
+        body_text = ""
+    try:
+        html = str(page.content() or "")
+    except Exception:
+        html = ""
+    return is_grok_security_verification_page(title, body_text, html)
+
+
+def context_shows_security_verification(context: Any) -> bool:
+    """Return whether any open tab or popup is a login or Cloudflare challenge."""
+    return any(
+        page_shows_security_verification(page)
+        for page in _iter_open_context_pages(context)
+    )
+
+
+def context_security_verification_status(
+    context: Any,
+    browser_label: str,
+    platform_label: str,
+) -> dict[str, Any] | None:
+    """Return the fail-closed probe payload when any open page needs a human check."""
+    for page in _iter_open_context_pages(context):
+        status = _security_verification_status_if_present(
+            page, browser_label, platform_label
+        )
+        if status is not None:
+            return status
+    return None
+
+
+def human_verification_probe_status(browser_label: str, platform_label: str) -> dict[str, Any]:
+    """Return a fail-closed probe payload that asks the user to authenticate now.
+
+    The controller must not click, fill, or reload the challenge page. Completing
+    Cloudflare from automation trips its punishment path.
+    """
+    return {
+        "logged_in": False,
+        "can_download": False,
+        "account_name": "Human verification required",
+        "human_verification": True,
+        "message": (
+            f"{platform_label} is showing a human verification page in {browser_label}. "
+            "Complete that check in the open browser window now, then choose Recheck. "
+            "Do not retry, reload, or click the Cloudflare challenge from this app."
+        ),
+    }
+
+
+def _security_verification_status_if_present(
+    page: Any,
+    browser_label: str,
+    platform_label: str,
+) -> dict[str, Any] | None:
+    """Return the human-verification payload when a challenge page is visible."""
+    if page_shows_security_verification(page):
+        return human_verification_probe_status(browser_label, platform_label)
+    return None
 
 
 def extract_json_string_field(text: str, field_name: str) -> str:

@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.119.5-codex.1
+# Code version: v1.119.7-codex.1
 
 from __future__ import annotations
 
@@ -745,7 +745,7 @@ class WebAppTests(unittest.TestCase):
                 stop_form_end = body.index(">", stop_form_start)
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.0-codex.1', chatgpt_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', chatgpt_body)
         self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.8.0-codex.1', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
@@ -852,7 +852,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.0-codex.1"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.122.0-codex.1"
+                expected_style_version = "style-v2.122.1-codex.1"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1289,17 +1289,17 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', local_body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.0-codex.1', local_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.122.0-codex.1', local_body)
+        self.assertIn('style-v2.122.1-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.8.4', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.49.2-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.49.3-codex.1', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1594,26 +1594,19 @@ class WebAppTests(unittest.TestCase):
         active.assert_called_once_with("edge")
         probe.assert_not_called()
 
-    def test_macos_active_agent_does_not_change_browser_session_probe(self) -> None:
-        status_payload = {
-            "platform": "chatgpt",
-            "browser": "edge",
-            "browser_label": "Edge",
-            "logged_in": True,
-            "can_download": True,
-            "account_name": "ChatGPT account",
-            "message": "Ready",
-        }
+    def test_macos_active_edge_agent_suppresses_browser_session_probe(self) -> None:
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             pool = app.extensions["agent_session_pool"]
-            with patch("app.web.app.is_windows_host", return_value=False), patch.object(
+            with patch("app.web.app.is_windows_host", return_value=False), patch(
+                "app.web.app.is_macos_host",
+                return_value=True,
+            ), patch.object(
                 pool,
                 "has_active_worker",
-                side_effect=AssertionError("macOS must not use Windows probe suppression"),
+                return_value=True,
             ) as active, patch(
-                "app.web.app.probe_and_collect_chatgpt_sources",
-                return_value=(status_payload, None),
+                "app.web.app.probe_and_collect_chatgpt_sources"
             ) as probe:
                 with app.test_client() as client:
                     response = client.get(
@@ -1622,11 +1615,48 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
+            response.get_json()["browser_session_freshness"]["cache_status"],
+            "unprobed",
+        )
+        active.assert_called_once_with("edge")
+        probe.assert_not_called()
+
+    def test_macos_active_chrome_agent_does_not_change_browser_session_probe(self) -> None:
+        status_payload = {
+            "platform": "chatgpt",
+            "browser": "chrome",
+            "browser_label": "Chrome",
+            "logged_in": True,
+            "can_download": True,
+            "account_name": "ChatGPT account",
+            "message": "Ready",
+        }
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            pool = app.extensions["agent_session_pool"]
+            with patch("app.web.app.is_windows_host", return_value=False), patch(
+                "app.web.app.is_macos_host",
+                return_value=True,
+            ), patch.object(
+                pool,
+                "has_active_worker",
+                side_effect=AssertionError("macOS Chrome must not use debug-browser probe suppression"),
+            ) as active, patch(
+                "app.web.app.probe_and_collect_chatgpt_sources",
+                return_value=(status_payload, None),
+            ) as probe:
+                with app.test_client() as client:
+                    response = client.get(
+                        "/api/browser-session?platform=chatgpt&browser=chrome&scope=agent"
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
             response.get_json()["browser_session_freshness"]["kind"],
             "live_browser",
         )
         active.assert_not_called()
-        probe.assert_called_once_with("edge", ANY, silent=True)
+        probe.assert_called_once_with("chrome", ANY, silent=True)
 
     def test_macos_active_safari_agent_suppresses_browser_session_probe(self) -> None:
         with TemporaryDirectory() as raw_root:
@@ -2593,7 +2623,11 @@ class WebAppTests(unittest.TestCase):
             "payload.logged_in === false",
             'fetch("/api/browser-session/open-login"',
             'body: JSON.stringify({platform: requestPlatform, browser: requestBrowser})',
-            'loginButton.textContent = `Open ${browserLabel} to sign in`',
+            'loginButton.textContent = payload.human_verification',
+            '`Open ${browserLabel} to complete verification now`',
+            '`Open ${browserLabel} to sign in`',
+            'return "Complete verification now"',
+            'cachedPayload?.human_verification && options.force !== true',
             "loginButton.hidden = true",
         ):
             with self.subTest(fragment=fragment):
@@ -2733,7 +2767,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.49.2-codex.1',
+            'computer-use-agent-v3.49.3-codex.1',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -4484,7 +4518,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.122.0-codex.1", body)
+            self.assertIn("style-v2.122.1-codex.1", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)

@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.68.3-codex.1
+Code version: v1.68.4-codex.1
 """
 
 import hashlib
@@ -2251,7 +2251,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.122.0-codex.1 */",
+        "/* Code version: v2.122.1-codex.1 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2565,6 +2565,13 @@ def test_agent_response_toolbar_owns_the_compact_lifecycle_status() -> None:
         "white-space: normal;",
     ):
         assert token in status_copy_rule
+
+    token_metric_start = stylesheet.index(
+        ".agent-response-status-copy .workspace-metric-value-major {"
+    )
+    token_metric_rule = stylesheet[token_metric_start:stylesheet.index("\n}", token_metric_start)]
+    assert "font-variant-numeric: tabular-nums;" in token_metric_rule
+    assert "white-space: nowrap;" in token_metric_rule
 
     detail_start = stylesheet.index(".agent-activity-detail {")
     detail_rule = stylesheet[detail_start:stylesheet.index("\n}", detail_start)]
