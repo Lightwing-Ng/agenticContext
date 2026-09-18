@@ -862,7 +862,7 @@ def test_corrupt_compute_job_metadata_fails_closed_for_writers(sessions):
 
 def test_session_catalog_preserves_project_filter_metadata(sessions):
     pool, workspace, entered = sessions
-    project = 'https://chatgpt.com/g/g-p-demo/project'
+    project = 'https://chatgpt.com/g/g-p-demo'
     session_id = start(pool, workspace, 'project-scope', session_mode='project_new', project_url=project)
     wait_until(lambda: 'project-scope' in entered)
     catalog = pool.catalog('edge', 'chatgpt', str(workspace))

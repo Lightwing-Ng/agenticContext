@@ -106,6 +106,123 @@ def test_safari_page_restarts_when_a_stale_partial_gets_http_416(tmp_path: Path)
     assert destination.read_bytes() == content
 
 
+def test_safari_page_finishes_when_cross_origin_hides_content_range(tmp_path: Path) -> None:
+    context = SafariContext("https://grok.com/files")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    destination = tmp_path / "asset.part"
+    content = b"short-tail"
+    hidden_range = {
+        "state": "ready",
+        "status": 206,
+        "contentType": "video/mp4",
+        "contentRange": "",
+        "contentLength": str(len(content)),
+        "bytes": len(content),
+        "error": "",
+    }
+
+    with patch.object(page, "keep_rendering_in_background"), patch.object(
+        page,
+        "evaluate",
+        side_effect=[True, hidden_range, base64.b64encode(content).decode(), True],
+    ) as evaluate:
+        content_type, resumed = page.download_to_path(
+            "https://assets.grok.com/example/generated_video.mp4",
+            destination,
+            lambda: False,
+        )
+
+    assert content_type == "video/mp4"
+    assert resumed is False
+    assert destination.read_bytes() == content
+    assert evaluate.call_count == 4
+
+
+def test_safari_page_treats_http_416_after_full_chunks_as_eof(tmp_path: Path) -> None:
+    context = SafariContext("https://grok.com/files")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    destination = tmp_path / "asset.part"
+    content = b"abcd"
+    full_chunk = {
+        "state": "ready",
+        "status": 206,
+        "contentType": "video/mp4",
+        "contentRange": "",
+        "bytes": len(content),
+        "error": "",
+    }
+    past_eof = {"state": "ready", "status": 416, "contentRange": "", "bytes": 0, "error": ""}
+
+    with patch("app.core.safari_automation.SAFARI_DOWNLOAD_RANGE_BYTES", len(content)), patch.object(
+        page, "keep_rendering_in_background"
+    ), patch.object(
+        page,
+        "evaluate",
+        side_effect=[True, full_chunk, base64.b64encode(content).decode(), True, True, past_eof, True],
+    ):
+        content_type, resumed = page.download_to_path(
+            "https://assets.grok.com/example/generated_video.mp4",
+            destination,
+            lambda: False,
+        )
+
+    assert content_type == "video/mp4"
+    assert resumed is False
+    assert destination.read_bytes() == content
+
+
+def test_safari_page_uses_expected_size_when_content_range_is_hidden(tmp_path: Path) -> None:
+    context = SafariContext("https://grok.com/files")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    destination = tmp_path / "asset.part"
+    content = b"abcd"
+    full_chunk = {
+        "state": "ready",
+        "status": 206,
+        "contentType": "image/jpeg",
+        "contentRange": "",
+        "bytes": len(content),
+        "error": "",
+    }
+
+    with patch("app.core.safari_automation.SAFARI_DOWNLOAD_RANGE_BYTES", len(content)), patch.object(
+        page, "keep_rendering_in_background"
+    ), patch.object(
+        page,
+        "evaluate",
+        side_effect=[True, full_chunk, base64.b64encode(content).decode(), True],
+    ):
+        page.download_to_path(
+            "https://assets.grok.com/example/content",
+            destination,
+            lambda: False,
+            expected_bytes=len(content),
+        )
+
+    assert destination.read_bytes() == content
+
+
+def test_safari_page_download_retries_never_activate_safari(tmp_path: Path) -> None:
+    context = SafariContext("https://grok.com/files")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    page._background_only_depth = 1
+
+    with patch.object(page, "keep_rendering_in_background") as keep_background, patch.object(
+        page, "wake_for_javascript"
+    ) as wake, patch.object(
+        page, "_run_in_window", side_effect=RuntimeError("Safari automation timed out")
+    ), patch("app.core.safari_automation.time.sleep"):
+        with pytest.raises(RuntimeError):
+            page.evaluate("() => true")
+
+    wake.assert_not_called()
+    assert keep_background.call_count >= 1
+
+
 def test_safari_page_evaluate_invokes_page_function_and_decodes_value() -> None:
     context = SafariContext("https://grok.com/files")
     page = SafariPage(context, window_id=123)

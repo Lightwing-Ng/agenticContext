@@ -81,7 +81,15 @@ def test_agent_project_url_normalization_hides_provider_specific_routes() -> Non
     assert normalize_agent_project_url(
         "chatgpt",
         "https://chatgpt.com/g/g-p-demo/project?tab=chat",
-    ) == "https://chatgpt.com/g/g-p-demo/project"
+    ) == "https://chatgpt.com/g/g-p-demo"
+    assert normalize_agent_project_url(
+        "chatgpt",
+        "https://chatgpt.com/g/g-p-demo",
+    ) == "https://chatgpt.com/g/g-p-demo"
+    assert normalize_agent_project_url(
+        "chatgpt",
+        "https://chatgpt.com/g/g-p-demo/c/session-1",
+    ) == ""
     assert normalize_agent_project_url(
         "gemini",
         "https://gemini.google.com/notebook/notebook-1/?hl=en",
@@ -220,8 +228,8 @@ def test_cached_source_catalog_sorts_current_sessions_and_projects() -> None:
     assert [row["id"] for row in payload["recent_sessions"]] == ["new-session", "old-session"]
     assert payload["recent_sessions"][0]["title"] == "Renamed session"
     assert [row["url"] for row in payload["projects"]] == [
-        "https://chatgpt.com/g/g-p-new/project",
-        "https://chatgpt.com/g/g-p-old/project",
+        "https://chatgpt.com/g/g-p-new",
+        "https://chatgpt.com/g/g-p-old",
     ]
     assert [row["id"] for row in payload["projects"]] == ["g-p-new", "g-p-old"]
     assert payload["projects"][0]["title"] == "Renamed project"
@@ -249,7 +257,7 @@ def test_cached_chatgpt_project_icon_metadata_survives_revalidation() -> None:
         {
             "id": project_id,
             "title": "worthward",
-            "url": f"https://chatgpt.com/g/{project_id}-worthward/project",
+            "url": f"https://chatgpt.com/g/{project_id}-worthward",
             "updated_at": "",
             "icon": "currency-dollar",
             "icon_color": "#53B559",
@@ -288,7 +296,7 @@ def test_cached_chatgpt_project_aliases_use_one_stable_identity() -> None:
         {
             "id": project_id,
             "title": "worthward",
-            "url": current_url,
+            "url": f"https://chatgpt.com/g/{project_id}-worthward",
             "updated_at": "2026-09-08T00:00:00Z",
         }
     ]

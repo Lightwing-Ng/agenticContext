@@ -3165,7 +3165,12 @@ def sync_grok_media(
                             return "", True
                         temp_path.unlink()
                     try:
-                        return page.download_to_path(candidate.source_url, temp_path, stop_requested)
+                        return page.download_to_path(
+                            candidate.source_url,
+                            temp_path,
+                            stop_requested,
+                            expected_bytes=candidate.expected_bytes,
+                        )
                     except RuntimeError as exc:
                         if stop_requested():
                             raise DownloadStoppedError(str(exc)) from exc

@@ -42,7 +42,7 @@ AGENT_SOURCE_CACHE_SCHEMA = pa.schema(
 
 LOGGER = logging.getLogger(__name__)
 CHATGPT_PROJECT_PATH_PATTERN = re.compile(
-    r"^/g/(g-p-[0-9a-f]{32})(?:-[^/]*)?/project/?$",
+    r"^/g/(g-p-[0-9a-f]{32})(?:-[^/]*)?(?:/project)?/?$",
     re.IGNORECASE,
 )
 
@@ -578,7 +578,7 @@ def _canonical_project_url(value: str, *, platform: str = "") -> str:
             and parsed.port in {None, 443}
             and (match := CHATGPT_PROJECT_PATH_PATTERN.fullmatch(parsed.path))
         ):
-            return f"https://chatgpt.com/g/{match.group(1).lower()}/project"
+            return f"https://chatgpt.com/g/{match.group(1).lower()}"
         query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
         return urlunsplit(
             (

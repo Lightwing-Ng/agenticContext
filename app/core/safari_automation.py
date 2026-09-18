@@ -1093,6 +1093,7 @@ class SafariPage:
         self._closed = False
         self._rendering_active = False
         self._native_input_transaction_depth = 0
+        self._background_only_depth = 0
         self._recovery_url = context.initial_url if not context.pages else "about:blank"
 
     @property
@@ -1309,7 +1310,10 @@ return pageUrlValue & linefeed & pageStateValue
             if attempt_index:
                 if not self._native_input_transaction_depth:
                     with contextlib.suppress(RuntimeError):
-                        if attempt_index == 1:
+                        if attempt_index == 1 or self._background_only_depth:
+                            # Background transfers must never activate Safari:
+                            # restoring the previous app afterward flashes
+                            # other windows (such as Terminal) to the front.
                             self.keep_rendering_in_background()
                         else:
                             self.wake_for_javascript()
@@ -1804,15 +1808,25 @@ return "closed"
                 time.sleep(SAFARI_APPLESCRIPT_RETRY_DELAY_SECONDS * (attempt_index + 1))
         return last_error
 
+    @contextlib.contextmanager
+    def _background_only_transfer(self):
+        """Keep JavaScript retries from activating Safari during a transfer."""
+        self._background_only_depth += 1
+        try:
+            yield
+        finally:
+            self._background_only_depth -= 1
+
     def download_to_path(
         self,
         source_url: str,
         destination_path: Path,
         should_stop,
         headers: dict[str, str] | None = None,
+        expected_bytes: int = 0,
     ) -> tuple[str, bool]:
         """Stream an authenticated media URL from Safari into a local file."""
-        with self._context.download_lock:
+        with self._context.download_lock, self._background_only_transfer():
             if not self._rendering_active:
                 with contextlib.suppress(RuntimeError):
                     self.keep_rendering_in_background()
@@ -1823,6 +1837,9 @@ return "closed"
             expected_total = 0
 
             restarted_after_range_error = False
+            # Bytes written by this call. Cross-origin media hosts often hide
+            # Content-Range from fetch(), so the total size can stay unknown.
+            received_this_call = 0
             while expected_total == 0 or range_start < expected_total:
                 if should_stop():
                     raise RuntimeError("Stop requested while downloading browser media.")
@@ -1868,6 +1885,16 @@ return "closed"
                 metadata = self._wait_for_download_chunk(should_stop)
                 status = int(metadata.get("status") or 0)
                 chunk_bytes = int(metadata.get("bytes") or 0)
+                if status == 416 and received_this_call > 0 and expected_total == 0:
+                    # The previous chunk ended exactly at EOF but the size was
+                    # not readable, so the follow-up range is unsatisfiable.
+                    self.evaluate(
+                        """() => {
+                            delete window.__cachelikesSafariDownload;
+                            return true;
+                        }"""
+                    )
+                    break
                 if status == 416 and range_start > 0 and not restarted_after_range_error:
                     # A stale partial file can be exactly at the remote EOF, or the
                     # asset may have changed since the partial was written. Safari
@@ -1877,6 +1904,7 @@ return "closed"
                     expected_total = 0
                     content_type = ""
                     restarted_after_range_error = True
+                    received_this_call = 0
                     self.evaluate(
                         """() => {
                             delete window.__cachelikesSafariDownload;
@@ -1895,6 +1923,7 @@ return "closed"
                         expected_total = 0
                         content_type = ""
                         restarted_after_range_error = True
+                        received_this_call = 0
                         continue
                     raise RuntimeError("Safari media server did not honor the resume range.")
 
@@ -1909,6 +1938,7 @@ return "closed"
                             expected_total = 0
                             content_type = ""
                             restarted_after_range_error = True
+                            received_this_call = 0
                             continue
                         raise RuntimeError(
                             f"Safari media server resumed at byte {response_start:,}, expected {range_start:,}."
@@ -1916,6 +1946,11 @@ return "closed"
                     expected_total = int(range_match.group(3))
                 elif status == 200:
                     expected_total = chunk_bytes
+                elif expected_bytes > 0:
+                    expected_total = expected_bytes
+                elif chunk_bytes < SAFARI_DOWNLOAD_RANGE_BYTES:
+                    # A short 206 without a readable Content-Range is the tail.
+                    expected_total = range_start + chunk_bytes
 
                 content_type = str(metadata.get("contentType") or content_type)
                 mode = "ab" if range_start > 0 else "wb"
@@ -1940,6 +1975,7 @@ return "closed"
                         slice_start = slice_end
 
                 range_start += chunk_bytes
+                received_this_call += chunk_bytes
                 self.evaluate(
                     """() => {
                         delete window.__cachelikesSafariDownload;

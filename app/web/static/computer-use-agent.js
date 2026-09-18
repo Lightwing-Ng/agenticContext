@@ -454,9 +454,10 @@
     }
 
     function recentSessionConversationUrl(session) {
-        return session.conversation_url
+        const url = session.conversation_url
             || executionConversationUrls.get(session.session_id)
             || "";
+        return /^https:\/\/chatgpt\.com\/(?:g\/[^/]+\/)?c\/web:/i.test(url) ? "" : url;
     }
 
     function recentSessionRowKey(session, index, conversationCounts) {
@@ -666,15 +667,16 @@
         await selectExecutionSession("new", {preserveSourceSelection: true});
         if (requestId !== recentSelectionRequestId || scope !== executionScope
             || project !== selectedProjectUrl() || executionSessionId !== "new") return;
-        selectedRemoteConversationUrl = session.conversation_url;
+        const conversationUrl = recentSessionConversationUrl(session);
+        selectedRemoteConversationUrl = conversationUrl;
         sessionTitleOverride = session.session_title || "";
         if (selectedSessionMode() === "project") {
-            selectedProjectConversationUrl = session.conversation_url;
+            selectedProjectConversationUrl = conversationUrl;
         }
         updateSessionChoiceInputs();
         rememberSessionSelection();
         render(lastPayload);
-        void loadSelectedSessionHistory(session.conversation_url);
+        void loadSelectedSessionHistory(conversationUrl);
     }
 
     async function beginNewSession() {
@@ -832,7 +834,7 @@
         try {
             const pathname = new URL(projectUrl).pathname;
             const match = pathname.match(
-                /^\/g\/g-p-[0-9a-f]{32}-(.+)\/project\/?$/i,
+                /^\/g\/g-p-[0-9a-f]{32}-(.+?)(?:\/project)?\/?$/i,
             );
             const slug = decodeURIComponent(match?.[1] || "")
                 .replace(/[-_]+/g, " ")
@@ -987,7 +989,11 @@
     }
 
     function isChatgptConversationUrl(value) {
-        return /^https:\/\/chatgpt\.com\/(?:g\/[^/]+\/)?c\/[^/]+\/?$/i.test(String(value || "").trim());
+        const candidate = String(value || "").trim();
+        // ChatGPT's transient /c/WEB:<id> URL is replaced by the server id and
+        // cannot be reopened, so it is never a resumable conversation.
+        return /^https:\/\/chatgpt\.com\/(?:g\/[^/]+\/)?c\/[^/]+\/?$/i.test(candidate)
+            && !/\/c\/web:/i.test(candidate);
     }
 
     function isAgentConversationUrl(platform, value) {
@@ -1119,7 +1125,7 @@
             const parsed = new URL(normalized);
             const allowedHost = ["chatgpt.com", "www.chatgpt.com"].includes(parsed.hostname);
             const projectPath = parsed.pathname.match(
-                /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?(\/(?:project|c\/[^/]+))\/?$/i,
+                /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?(?:\/(project|c\/[^/]+))?\/?$/i,
             );
             const rootConversationPath = parsed.pathname.match(/^\/c\/([^/]+)\/?$/i);
             if (parsed.protocol === "https:"
@@ -1128,7 +1134,11 @@
                 && !parsed.username
                 && !parsed.password) {
                 if (projectPath) {
-                    return `https://chatgpt.com/g/${projectPath[1]}${projectPath[2]}`;
+                    const sub = projectPath[2];
+                    if (sub && sub.startsWith("c/")) {
+                        return `https://chatgpt.com/g/${projectPath[1]}/${sub}`;
+                    }
+                    return `https://chatgpt.com/g/${projectPath[1]}`;
                 }
                 if (rootConversationPath) {
                     return `https://chatgpt.com/c/${rootConversationPath[1]}`;

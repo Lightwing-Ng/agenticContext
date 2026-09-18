@@ -99,7 +99,12 @@ _DEFAULT_VIEWPORT_ARGS = (
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-session-crashed-bubble",
+    "--noerrdialogs",
     "--disable-notifications",
+    "--disable-prompt-on-repost",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
     "--remote-allow-origins=*",
     "--window-size=1280,900",
 )

@@ -1858,7 +1858,47 @@ def test_macos_edge_app_bundle_launch_opens_a_new_instance(
     assert f"--user-data-dir={profile_root / 'edge'}" in command
     assert "--remote-debugging-port=0" in command
     assert "--remote-allow-origins=*" in command
+    assert "--disable-background-timer-throttling" in command
+    assert "--disable-backgrounding-occluded-windows" in command
+    assert "--disable-renderer-backgrounding" in command
     assert "--disable-extensions" not in command
+
+
+def test_launch_owned_user_data_over_cdp_includes_background_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.agent_debug_browser as adb
+
+    captured: dict[str, Any] = {}
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        return SimpleNamespace()
+
+    monkeypatch.setattr(adb.subprocess, "Popen", popen)
+    monkeypatch.setattr(adb, "is_macos_host", lambda: False)
+    monkeypatch.setattr(adb, "_resolve_browser_executable", lambda browser_id: "/bin/edge")
+    monkeypatch.setattr(
+        adb,
+        "_wait_for_user_data_cdp",
+        lambda _user_data_dir, _browser_id, _timeout: adb.CdpIdentity(
+            port=12345,
+            browser_brand="Edg/153.0",
+            instance_guid="test-guid",
+        ),
+    )
+
+    user_data = tmp_path / "cloned_profile"
+    user_data.mkdir()
+    adb.launch_owned_user_data_over_cdp("edge", user_data, extra_args=("--profile-directory=Default",))
+
+    command = captured["command"]
+    assert "--disable-background-timer-throttling" in command
+    assert "--disable-backgrounding-occluded-windows" in command
+    assert "--disable-renderer-backgrounding" in command
+    assert "--profile-directory=Default" in command
+
 
 
 def test_http_target_cloudflare_authorize_page_is_human_verification() -> None:

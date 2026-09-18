@@ -4860,7 +4860,7 @@ def test_open_chatgpt_in_default_browser_falls_back_to_chatgpt_home(
 
 def test_agent_session_target_resolves_root_and_project_choices() -> None:
     project_id = "g-p-6a978edb95308191a53d2bb113154c10"
-    project_url = f"https://chatgpt.com/g/{project_id}-worthward/project"
+    project_url = f"https://chatgpt.com/g/{project_id}-worthward"
     project_session_url = f"https://chatgpt.com/g/{project_id}-older-slug/c/session-123"
 
     assert resolve_agent_session_target("new") == "https://chatgpt.com/"
@@ -4868,6 +4868,10 @@ def test_agent_session_target_resolves_root_and_project_choices() -> None:
     assert resolve_agent_session_target(
         "project_new",
         project_url=project_url,
+    ) == project_url
+    assert resolve_agent_session_target(
+        "project_new",
+        project_url=f"{project_url}/project",
     ) == project_url
     assert resolve_agent_session_target(
         "project_session",
@@ -4937,6 +4941,22 @@ def test_chatgpt_target_check_requires_the_selected_conversation_path() -> None:
     assert not _chatgpt_target_is_open(
         f"https://chatgpt.com/g/{project_id}-old-name/project",
         "https://chatgpt.com/g/g-p-11111111111111111111111111111111-current-name/project",
+    )
+    web_placeholder = "https://chatgpt.com/c/WEB:bb004d8a-a091-4f0f-a049-0476ae7a906a"
+    canonical_promoted = "https://chatgpt.com/c/bb004d8a-a091-4f0f-a049-0476ae7a906a"
+    assert _chatgpt_target_is_open(web_placeholder, canonical_promoted)
+    assert _chatgpt_target_is_open(canonical_promoted, web_placeholder)
+    assert _chatgpt_target_is_open(
+        f"https://chatgpt.com/g/{project_id}-agentic-context/project",
+        f"https://chatgpt.com/g/{project_id}-agentic-context",
+    )
+    assert _chatgpt_target_is_open(
+        f"https://chatgpt.com/g/{project_id}-agentic-context",
+        f"https://chatgpt.com/g/{project_id}-agentic-context/project",
+    )
+    assert _chatgpt_target_is_open(
+        f"https://chatgpt.com/g/{project_id}/project",
+        f"https://chatgpt.com/g/{project_id}",
     )
     assert not _chatgpt_target_is_open(
         project_alias,
@@ -11058,7 +11078,7 @@ def test_fresh_gemini_binding_latches_app_id_url_without_a_visible_receipt() -> 
     assert binding.require_created_conversation() == created_url
 
 
-def test_fresh_chatgpt_binding_rejects_client_id_promotion_after_confirmation() -> None:
+def test_fresh_chatgpt_binding_promotes_client_id_after_confirmation() -> None:
     client_url = "https://chatgpt.com/c/WEB:06e00f92-a12e-4896-8eac-816b6a3a8920"
     server_url = "https://chatgpt.com/c/6a92fdcc-7e54-83ee-be15-eb538b7bec35"
 
@@ -11088,8 +11108,25 @@ def test_fresh_chatgpt_binding_rejects_client_id_promotion_after_confirmation() 
     assert binding.require_created_conversation() == client_url
     page.url = server_url
 
-    with pytest.raises(RuntimeError, match="navigated away from the newly created session"):
-        binding.check(allow_transition=True)
+    # ChatGPT may swap WEB:<client-id> for the server id after the first response.
+    assert binding.check(allow_transition=True) == server_url
+    assert binding.bound_conversation_url == server_url
+
+
+def test_agent_snapshot_never_records_a_chatgpt_client_placeholder_url() -> None:
+    from app.core.computer_use_agent import _without_placeholder_conversation_url
+
+    placeholder = {
+        "phase": "running",
+        "conversation_url": "https://chatgpt.com/g/g-p-demo/c/WEB:06e00f92-a12e-4896-8eac-816b6a3a8920",
+        "conversation_bound": True,
+    }
+    assert _without_placeholder_conversation_url(placeholder) == {"phase": "running"}
+    server = {
+        "conversation_url": "https://chatgpt.com/c/6a92fdcc-7e54-83ee-be15-eb538b7bec35",
+        "conversation_bound": True,
+    }
+    assert _without_placeholder_conversation_url(server) == server
 
 
 def test_fresh_chatgpt_binding_waits_for_transient_navigation_to_settle() -> None:

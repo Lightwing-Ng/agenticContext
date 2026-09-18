@@ -7951,7 +7951,9 @@ class ComputerUseAgentService:
             "chatgpt",
             snapshot.conversation_url,
         )
-        if not conversation_url:
+        if not conversation_url or _chatgpt_conversation_url_is_client_placeholder(
+            conversation_url
+        ):
             return None, "The interrupted task has no valid recorded ChatGPT conversation."
         try:
             chatgpt_effort = normalize_chatgpt_effort(snapshot.chatgpt_effort)
@@ -8502,7 +8504,7 @@ class ComputerUseAgentService:
         self._release_sleep_assertion(owned_sleep_assertion)
         self._forget_claimed_sleep_assertion(sleep_assertion)
         with self._lock:
-            for key, value in completion.items():
+            for key, value in _without_placeholder_conversation_url(completion).items():
                 if hasattr(self._snapshot, key):
                     setattr(self._snapshot, key, value)
             if context_removed:
@@ -8802,7 +8804,7 @@ class ComputerUseAgentService:
                 and self._snapshot.phase == "stopping"
             ):
                 return
-            for key, value in changes.items():
+            for key, value in _without_placeholder_conversation_url(changes).items():
                 if hasattr(self._snapshot, key):
                     setattr(self._snapshot, key, value)
             self._record_agent_status_observation_locked(
@@ -8814,7 +8816,7 @@ class ComputerUseAgentService:
     def _checkpoint_update(self, **changes: Any) -> None:
         """Persist a delivery boundary before the next external side effect."""
         with self._lock:
-            for key, value in changes.items():
+            for key, value in _without_placeholder_conversation_url(changes).items():
                 if hasattr(self._snapshot, key):
                     setattr(self._snapshot, key, value)
             if not self._record_agent_status_observation_locked(
@@ -9314,9 +9316,10 @@ def _chatgpt_fresh_navigation_allowed(expected_url: str, current_url: str) -> bo
     if expected_path == "/" and re.fullmatch(r"/c/[^/]+/?", current_path, re.IGNORECASE):
         return True
     if expected_path.endswith("/project"):
-        project_prefix = expected_path[: -len("/project")]
+        expected_path = expected_path[: -len("/project")]
+    if expected_path.startswith("/g/"):
         exact_project_conversation = re.fullmatch(
-            re.escape(project_prefix) + r"/c/[^/]+/?",
+            re.escape(expected_path) + r"/c/[^/]+/?",
             current_path,
             re.IGNORECASE,
         )
@@ -9366,7 +9369,15 @@ def _chatgpt_conversation_ids_match(left_url: str, right_url: str) -> bool:
     """True when two ChatGPT URLs name the same conversation id."""
     _left_container, left_id = _chatgpt_conversation_path_parts(left_url)
     _right_container, right_id = _chatgpt_conversation_path_parts(right_url)
-    return bool(left_id) and left_id.casefold() == right_id.casefold()
+    if not left_id or not right_id:
+        return False
+    left_case = left_id.casefold()
+    right_case = right_id.casefold()
+    if left_case == right_case:
+        return True
+    return left_case.removeprefix(
+        CHATGPT_CLIENT_CONVERSATION_ID_PREFIX
+    ) == right_case.removeprefix(CHATGPT_CLIENT_CONVERSATION_ID_PREFIX)
 
 
 def _chatgpt_same_project_conversation(left_url: str, right_url: str) -> bool:
@@ -9384,6 +9395,25 @@ def _chatgpt_conversation_id_is_client_placeholder(conversation_id: str) -> bool
     return str(conversation_id or "").strip().casefold().startswith(
         CHATGPT_CLIENT_CONVERSATION_ID_PREFIX
     )
+
+
+def _chatgpt_conversation_url_is_client_placeholder(url: str) -> bool:
+    """True for ChatGPT's transient /c/WEB:<id> URL, which cannot be reopened."""
+    _container, conversation_id = _chatgpt_conversation_path_parts(url)
+    return _chatgpt_conversation_id_is_client_placeholder(conversation_id)
+
+
+def _without_placeholder_conversation_url(changes: dict[str, Any]) -> dict[str, Any]:
+    """Keep transient ChatGPT client URLs out of the durable session snapshot."""
+    if not _chatgpt_conversation_url_is_client_placeholder(
+        str(changes.get("conversation_url") or "")
+    ):
+        return changes
+    return {
+        key: value
+        for key, value in changes.items()
+        if key not in {"conversation_url", "conversation_bound"}
+    }
 
 
 def _grok_fresh_navigation_allowed(expected_url: str, current_url: str) -> bool:
@@ -9708,9 +9738,10 @@ class _ProviderSessionBinding:
             self.platform != "chatgpt"
             or self.session_mode not in {"new", "project_new"}
             or not self.bound_conversation_url
-            or self.initial_transition_confirmed
             or not self.submission_marker
         ):
+            # ChatGPT can swap WEB:<client-id> for the server id after the first
+            # transition was confirmed, so promotion must stay available.
             return ""
         bound_container, bound_id = _chatgpt_conversation_path_parts(
             self.bound_conversation_url
@@ -9879,18 +9910,26 @@ class _ProviderSessionBinding:
             current_url,
         )
         if receipt_conversation or current_conversation:
-            chatgpt_project_alias_match = bool(
+            if (
                 self.platform == "chatgpt"
                 and receipt_conversation
                 and current_conversation
-                and _chatgpt_same_project_conversation(
-                    receipt_conversation,
-                    current_conversation,
-                )
-            )
+            ):
+                if chatgpt_project_id(receipt_conversation):
+                    chatgpt_alias_match = _chatgpt_same_project_conversation(
+                        receipt_conversation,
+                        current_conversation,
+                    )
+                else:
+                    chatgpt_alias_match = _chatgpt_conversation_ids_match(
+                        receipt_conversation,
+                        current_conversation,
+                    )
+            else:
+                chatgpt_alias_match = False
             if not receipt_conversation or (
                 receipt_conversation != current_conversation
-                and not chatgpt_project_alias_match
+                and not chatgpt_alias_match
             ):
                 if self._chatgpt_receipt_landing_race_allowed(
                     receipt_url,
@@ -12513,7 +12552,7 @@ def _chatgpt_retry_control(
             };
             const projectLandingId = (path) => {
                 const match = path.match(
-                    /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?\/project$/i
+                    /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?(?:\/project)?$/i
                 );
                 return match ? match[1].toLowerCase() : '';
             };
@@ -21256,7 +21295,7 @@ def _submit_chromium_prompt(
                     }
                     const projectLandingId = (path) => {
                         const match = path.match(
-                            /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?\/project$/i
+                            /^\/g\/(g-p-[0-9a-f]{32})(?:-[^/]*)?(?:\/project)?$/i
                         );
                         return match ? match[1].toLowerCase() : '';
                     };

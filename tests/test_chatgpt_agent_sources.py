@@ -117,7 +117,13 @@ class _BootstrapContext:
 def test_chatgpt_source_urls_are_canonical_and_scoped() -> None:
     assert normalize_chatgpt_project_url(
         "https://www.chatgpt.com/g/g-p-demo/project/?utm_source=agent"
-    ) == "https://chatgpt.com/g/g-p-demo/project"
+    ) == "https://chatgpt.com/g/g-p-demo"
+    assert normalize_chatgpt_project_url(
+        "https://chatgpt.com/g/g-p-demo"
+    ) == "https://chatgpt.com/g/g-p-demo"
+    assert normalize_chatgpt_project_url(
+        "https://chatgpt.com/g/g-p-demo/c/session-1"
+    ) == ""
     assert normalize_chatgpt_conversation_url(
         "https://www.chatgpt.com/g/g-p-demo/c/session-1?oai-dm=1"
     ) == "https://chatgpt.com/g/g-p-demo/c/session-1"
@@ -131,7 +137,7 @@ def test_chatgpt_source_urls_are_canonical_and_scoped() -> None:
     ) == ""
     assert normalize_chatgpt_project_url(
         "https://chatgpt.com:443/g/g-p-demo/project"
-    ) == "https://chatgpt.com/g/g-p-demo/project"
+    ) == "https://chatgpt.com/g/g-p-demo"
 
 
 def test_chatgpt_status_and_sources_share_one_chromium_context() -> None:
@@ -415,7 +421,7 @@ def test_project_api_parser_supports_nested_gizmo_items() -> None:
         {
             "id": "g-p-demo-project",
             "title": "Demo project",
-            "url": "https://chatgpt.com/g/g-p-demo-project/project",
+            "url": "https://chatgpt.com/g/g-p-demo-project",
             "updated_at": "2026-08-13T09:00:00Z",
         }
     ]
@@ -475,7 +481,7 @@ def test_project_api_parser_supports_sidebar_resource_records() -> None:
         {
             "id": "g-p-11111111111111111111111111111111",
             "title": "Sidebar project",
-            "url": "https://chatgpt.com/g/g-p-11111111111111111111111111111111-sidebar-project/project",
+            "url": "https://chatgpt.com/g/g-p-11111111111111111111111111111111-sidebar-project",
             "updated_at": "2026-08-13T11:00:00Z",
         }
     ]

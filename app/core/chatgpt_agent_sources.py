@@ -55,7 +55,10 @@ CHATGPT_PROJECT_API_ENDPOINTS = (
     "/backend-api/gizmos?cursor=&limit=100",
     "/backend-api/projects?offset=0&limit=100&order=updated",
 )
-CHATGPT_PROJECT_PATH_PATTERN = re.compile(r"^/g/[^/]+/project/?$", re.IGNORECASE)
+CHATGPT_PROJECT_PATH_PATTERN = re.compile(
+    r"^/g/(g-p-[^/]+?)(?:/project)?/?$",
+    re.IGNORECASE,
+)
 CHATGPT_CONVERSATION_PATH_PATTERN = re.compile(
     r"^/(?:g/[^/]+/)?c/[^/]+/?$",
     re.IGNORECASE,
@@ -605,7 +608,25 @@ def _active_conversation_node_ids(payload: dict[str, object]) -> set[str]:
 
 def normalize_chatgpt_project_url(value: str) -> str:
     """Return one canonical project URL, or an empty string for another ChatGPT URL."""
-    return _normalize_chatgpt_url(value, CHATGPT_PROJECT_PATH_PATTERN)
+    candidate = str(value or "").strip()
+    try:
+        parsed = urlsplit(candidate)
+        port = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or (parsed.hostname or "").lower() not in CHATGPT_HOSTS
+        or port not in {None, 443}
+        or parsed.username
+        or parsed.password
+    ):
+        return ""
+    match = CHATGPT_PROJECT_PATH_PATTERN.fullmatch(parsed.path)
+    if not match:
+        return ""
+    project_segment = match.group(1).rstrip("/")
+    return f"https://chatgpt.com/g/{project_segment}"
 
 
 def normalize_chatgpt_conversation_url(value: str) -> str:
@@ -978,7 +999,7 @@ def _project_item(raw_item: dict[str, Any]) -> dict[str, str]:
         project_segment = short_url if short_url.startswith("g-p-") else project_id
         if slug and slug != project_id and not slug.startswith("g-p-"):
             project_segment = f"{project_id}-{slug}"
-        project_url = normalize_chatgpt_project_url(f"https://chatgpt.com/g/{project_segment}/project")
+        project_url = normalize_chatgpt_project_url(f"https://chatgpt.com/g/{project_segment}")
     if not project_url:
         return {}
     project = {
