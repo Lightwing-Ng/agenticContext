@@ -902,11 +902,10 @@ run. For bounded verification commands, if a Windows group leader exits before i
 terminal state until its process count reaches zero. Safari remains
 macOS-only. The selected operating system must match the host running the local service.
 
-On macOS, Chrome and Edge Agent both run through an isolated clone of the selected signed-in
-profile. That is the same path Cache ChatGPT already proved. The empty project debug Edge under
-`local_store/agent_browser_profile/edge` looped Cloudflare on `auth.openai.com`; do not send macOS
-Edge Agent probes, login, or tasks through that profile. Windows Edge or Chrome still reuse the
-project debug profile over CDP. After that Windows profile exists, Agent readiness, source,
+On macOS, Chrome Agent runs through an isolated clone of the signed-in profile. macOS Edge Agent,
+like Windows Edge or Chrome, reuses the project debug profile under
+`local_store/agent_browser_profile/edge` over CDP; a daily Edge clone is challenged by Cloudflare
+on page load. On Windows, after that profile exists, Agent readiness, source,
 Project, and history probes and Agent tasks reattach to the same process and operate the selected
 provider's DOM directly. The lesson record is [`CHATGPT_AGENT_CLOUDFLARE.md`](CHATGPT_AGENT_CLOUDFLARE.md).
 macOS Edge Jury remains the exception: it launches project Edge with `open -n` against the project
@@ -970,9 +969,8 @@ When an Agent browser status is not signed in, the status card exposes an `Open 
 action. It opens the selected browser visibly at the provider home page; the user must then choose the
 existing recheck action to verify the new session. On Windows, login initializes the project-owned
 debug profile under `local_store/agent_browser_profile/<browser>`; later Recheck and Agent tasks use
-that same profile and restart its browser after a window close. macOS Edge login opens the daily
-Edge profile that Cache ChatGPT already uses; Recheck and Agent tasks clone that signed-in
-profile instead of the empty project debug profile. Copying or launching alone does not prove
+that same profile and restart its browser after a window close. macOS Edge login opens the same
+project debug profile over HTTP endpoints only, and Recheck and Agent tasks reattach to it. Copying or launching alone does not prove
 authentication. Opening the browser does not imply sign-in and does not add automatic login polling.
 Windows runtime behavior for this workflow remains not locally verified.
 A Cloudflare or CAPTCHA interstitial is fail-closed: the sidebar Account row says

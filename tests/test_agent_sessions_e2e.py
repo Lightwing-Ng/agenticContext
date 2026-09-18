@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.11.0-codex.1."""
+"""Session switching, capacity, and selected controls. Code version: v1.11.1-codex.0."""
 
 import re
 from copy import deepcopy
@@ -38,6 +38,85 @@ def agent_selection_server_url(tmp_path):
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("width", [1008, 390])
+def test_agent_connection_mode_switch_keeps_recent_sessions(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+):
+    """Tunnel hides Browser setup while preserving the shared recent-session rail."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": 820})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route("**/api/agent/status", lambda route: route.fulfill(
+        json=fixtures._finished_chatgpt_agent_payload(),
+    ))
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "can_download": True,
+        "logged_in": True,
+        "browser": "edge",
+        "platform": "chatgpt",
+        "agent_sources": fixtures._chatgpt_catalog_sessions(),
+    }))
+    page.route(
+        "**/api/agent/sources**",
+        lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+
+        mode_control = page.locator("[data-agent-connection-mode-control]")
+        browser = page.locator("#agent_connection_browser")
+        tunnel = page.locator("#agent_connection_tunnel")
+        browser_fields = page.locator("[data-agent-browser-mode-field]")
+        recent_sessions = page.locator("[data-agent-execution-sessions]")
+
+        expect(mode_control).to_be_visible()
+        material = page.evaluate(
+            """() => {
+                const read = (element) => {
+                    const style = getComputedStyle(element);
+                    return {
+                        backgroundColor: style.backgroundColor,
+                        borderRadius: style.borderRadius,
+                        minHeight: style.minHeight,
+                        boxShadow: style.boxShadow,
+                    };
+                };
+                return {
+                    connection: read(document.querySelector('[data-agent-connection-mode-control]')),
+                    agentMode: read(document.querySelector('.agent-mode-control')),
+                };
+            }"""
+        )
+        assert material["connection"] == material["agentMode"]
+        expect(browser).to_be_checked()
+        expect(tunnel).not_to_be_checked()
+        expect(browser_fields).to_have_count(2)
+        for field in browser_fields.all():
+            expect(field).to_be_visible()
+        expect(recent_sessions).to_be_visible()
+
+        page.locator('label[for="agent_connection_tunnel"]').click()
+        expect(tunnel).to_be_checked()
+        for field in browser_fields.all():
+            expect(field).to_be_hidden()
+        expect(recent_sessions).to_be_visible()
+        expect(page.locator("[data-agent-new-session]")).to_be_visible()
+
+        page.locator('label[for="agent_connection_browser"]').click()
+        expect(browser).to_be_checked()
+        for field in browser_fields.all():
+            expect(field).to_be_visible()
+        expect(recent_sessions).to_be_visible()
+        assert errors == []
+    finally:
+        context.close()
 
 
 def test_grok_composer_snapshot_uses_one_rendered_provider_scoped_surface(

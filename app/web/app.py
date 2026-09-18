@@ -3595,8 +3595,14 @@ def create_app(
                 browser_name,
                 saved_config,
                 silent=scope == "agent",
+                # macOS Edge Agent tasks run in the project debug profile, so
+                # Recheck must read that profile rather than a daily clone.
                 prefer_initialized_debug_profile=(
-                    scope == "agent" and platform_name == "gemini"
+                    scope == "agent"
+                    and (
+                        platform_name == "gemini"
+                        or (browser_name == "edge" and is_macos_host())
+                    )
                 ),
             )
         except ValueError as exc:

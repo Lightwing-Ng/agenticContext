@@ -1,4 +1,4 @@
-<!-- Code version: v3.52.13-codex.0 -->
+<!-- Code version: v3.52.14-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -69,7 +69,26 @@
                     <span id="agent_project_path_status" class="settings-directory-status" data-directory-picker-status role="status" aria-live="polite" hidden></span>
                 </label>
 
-                <div class="agent-connect-fields">
+                <div
+                    class="segmented-control agent-connection-mode-control"
+                    role="radiogroup"
+                    aria-label="Agent connection"
+                    data-agent-connection-mode-control
+                    data-option-count="2"
+                    data-segmented-active-index="0"
+                    style="--segmented-option-count: 2; --segmented-active-index: 0;"
+                >
+                    <label class="segmented-control-option agent-connection-mode-option" for="agent_connection_browser">
+                        <input id="agent_connection_browser" type="radio" name="agent_connection_mode" value="browser" data-agent-connection-mode checked>
+                        <span>Browser</span>
+                    </label>
+                    <label class="segmented-control-option agent-connection-mode-option" for="agent_connection_tunnel">
+                        <input id="agent_connection_tunnel" type="radio" name="agent_connection_mode" value="tunnel" data-agent-connection-mode>
+                        <span>Tunnel</span>
+                    </label>
+                </div>
+
+                <div class="agent-connect-fields" data-agent-browser-mode-field>
                     <label class="field">
                         <span class="field-label">Web service</span>
                         <div class="trade-strategy-combobox agent-combobox agent-platform-combobox" data-agent-combobox>
@@ -165,7 +184,7 @@
                     </label>
                 </div>
 
-                <div class="agent-session-source" data-agent-session-source>
+                <div class="agent-session-source" data-agent-session-source data-agent-browser-mode-field>
                     <label class="field">
                         <span class="field-label" data-agent-session-platform-label>Session source</span>
                         <div class="trade-strategy-combobox agent-combobox agent-session-mode-combobox" data-agent-combobox>
@@ -496,6 +515,6 @@
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.49.3-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.49.4-codex.0') }}"></script>
 </body>
 </html>

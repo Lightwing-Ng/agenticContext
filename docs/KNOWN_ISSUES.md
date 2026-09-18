@@ -8,12 +8,16 @@ Documentation version: `v1.24.8-codex.0`
   Agent ChatGPT at `/agent/edge/chatgpt` looped on Cloudflare while it used the empty project
   debug Edge under `local_store/agent_browser_profile/edge`. The durable lesson is
   [`CHATGPT_AGENT_CLOUDFLARE.md`](CHATGPT_AGENT_CLOUDFLARE.md).
-- macOS Edge Agent probes now reuse the Cache clone path. Login opens daily Edge. Agent
-  tasks clone that same profile, then send through native Edge over CDP like Windows.
-  Playwright-launched clones can read ChatGPT but fail Project Send with "Something went
-  wrong" and never leave the `/project` URL. Do not complete Cloudflare in the project
-  debug window, do not `connect_over_cdp` onto an `auth.openai.com` challenge, and do not
-  `open -n` a second Edge against that occupied profile.
+- 18 Sep 2026: the daily-clone detour is reverted. A daily clone launched as native Edge hit
+  Cloudflare with nothing attached, and Playwright-launched clones fail Project Send. macOS Edge
+  Agent probes, login, and tasks again use the project debug Edge, like Windows. Login now opens
+  it over HTTP only, so sign in there once. Do not `connect_over_cdp` onto an `auth.openai.com`
+  challenge, and do not `open -n` a second Edge against that occupied profile.
+- 18 Sep 2026, Safari ChatGPT Agent: model selection failed with `model-state-transition-unverified`
+  and `view: closed`. ChatGPT's Radix model menu closes when Safari loses focus, and each trusted
+  Return restored the previous app. ChatGPT model selection now holds one focus transaction.
+- The project debug Edge profile still fails Cloudflare on `auth.openai.com` with nothing attached,
+  while fresh profiles pass. That profile's stored Cloudflare state is suspect; it is not reset.
 - Windows Agent ChatGPT remains on the project debug Chrome or Edge. A live debug Chrome session
   was verified by reading `/api/auth/session` from the ChatGPT tab with
   [`scripts/tmp_probe_chrome_tab.py`](../scripts/tmp_probe_chrome_tab.py).

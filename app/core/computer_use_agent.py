@@ -1833,12 +1833,12 @@ def open_browser_for_login(
         raise ValueError("The Agent browser must be Safari, Edge, or Chrome.")
     if sys.platform != "darwin" and not is_windows_host():
         raise RuntimeError("Browser login handoff is only supported on macOS and Windows.")
-    # Windows Edge/Chrome reuse a project-owned debug browser over CDP.
-    # macOS Edge login opens the daily browser, matching Cache ChatGPT, so
-    # later Agent clones read the same signed-in cookies.
+    # Windows Edge/Chrome and macOS Edge reuse a project-owned debug browser
+    # over CDP. The login handoff must write into that same debug profile so
+    # later Agent tasks reattach instead of launching another authorized window.
     from .agent_debug_browser import debug_browser_supported
 
-    if debug_browser_supported(selected_browser) and is_windows_host():
+    if debug_browser_supported(selected_browser):
         return _open_login_in_debug_browser(
             selected_platform,
             selected_browser,
@@ -8864,9 +8864,19 @@ def _capture_macos_frontmost_application() -> str:
 
 
 def _should_restore_macos_frontmost_after_task_browser(browser_id: str) -> bool:
-    """Restore the previous macOS app after a cloned Agent window launches."""
-    del browser_id
-    return sys.platform == "darwin"
+    """Keep a reused debug Edge/Chrome visible, matching the Windows CDP path."""
+    if sys.platform != "darwin":
+        return False
+    from .agent_debug_browser import (
+        debug_browser_profile_initialized,
+        debug_browser_supported,
+    )
+
+    selected = str(browser_id or "").strip().lower()
+    return not (
+        debug_browser_supported(selected)
+        and debug_browser_profile_initialized(selected)
+    )
 
 
 def _restore_macos_frontmost_application_after_task_stage(
@@ -9090,7 +9100,6 @@ def run_web_computer_use(
                         else CHROMIUM_WINDOW_MODE_OFFSCREEN
                     ),
                     prefer_initialized_debug_profile=True,
-                    native_clone_cdp=(sys.platform == "darwin" and settings.browser == "edge"),
                 )
             )
             if should_stop():
@@ -16358,15 +16367,22 @@ def _select_chatgpt_model_safari(
     should_stop: Callable[[], bool] | None = None,
     thinking_effort: str = CHATGPT_EFFORT_POLICY_HIGHEST,
 ) -> bool:
-    """Verify ChatGPT while each trusted Safari input restores focus independently."""
-    return _select_chatgpt_model_safari_controls(
-        page,
-        option,
-        remote_labels,
-        observation=observation,
-        should_stop=should_stop,
-        thinking_effort=thinking_effort,
-    )
+    """Verify ChatGPT while Safari keeps native focus for the whole menu sequence.
+
+    ChatGPT's Radix model menu closes when Safari loses focus, so restoring the
+    previous app after each trusted input left every later read on ``closed``.
+    """
+    transaction = getattr(page, "native_input_transaction", None)
+    focus = transaction() if callable(transaction) else nullcontext()
+    with focus:
+        return _select_chatgpt_model_safari_controls(
+            page,
+            option,
+            remote_labels,
+            observation=observation,
+            should_stop=should_stop,
+            thinking_effort=thinking_effort,
+        )
 
 
 def _select_chatgpt_model(

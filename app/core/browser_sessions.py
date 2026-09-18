@@ -1383,14 +1383,14 @@ def launch_chromium_context(
     prefer_initialized_debug_profile: bool = False,
     use_project_debug_profile: bool = False,
     project_profile_root: Path | None = None,
-    native_clone_cdp: bool = False,
 ):
     """Launch an isolated Chromium-family browser with an explicit window mode.
 
-    On Windows, Agent callers prefer the project debug profile over CDP. macOS
-    Edge Agent probes and tasks use the same isolated daily-profile clone as
-    Cache ChatGPT, because that signed-in clone already clears Cloudflare.
-    A locked daily profile can still trigger the existing debug-browser fallback.
+    Agent callers prefer the project debug profile over CDP: on Windows once it
+    is initialized, and always for macOS Edge. A daily-profile clone launched on
+    macOS is challenged by Cloudflare even before CDP attaches, while the signed-in
+    project profile clears it. A locked daily profile can still trigger the
+    existing debug-browser fallback.
     Neither CDP path reads locked cookie files or opens the daily profile for
     writing. macOS Edge Jury callers may explicitly require the project profile;
     that branch never inspects or clones the daily profile.
@@ -1406,61 +1406,6 @@ def launch_chromium_context(
             if silent and not headless and is_macos_host()
             else CHROMIUM_WINDOW_MODE_OFFSCREEN
         )
-
-    owned_native_cdp: dict[str, Any] = {
-        "process": None,
-        "browser": None,
-        "user_data_dir": None,
-    }
-
-    def should_launch_native_clone_over_cdp() -> bool:
-        """macOS Edge Agent tasks match Windows: native Edge plus CDP on a clone."""
-        return (
-            allow_cdp_attach
-            and native_clone_cdp
-            and is_macos_host()
-            and descriptor.browser_id == "edge"
-        )
-
-    def launch_native_clone_over_cdp(target_user_data_dir: Path):
-        from .agent_debug_browser import launch_owned_user_data_over_cdp
-        from .computer_use_agent import (
-            _capture_macos_frontmost_application,
-            _restore_macos_frontmost_application_after_task_stage,
-        )
-
-        extra_args = tuple(
-            argument
-            for argument in build_chromium_launch_args(
-                descriptor,
-                background_window=False,
-                window_mode=window_mode,
-            )
-            if str(argument).startswith("--profile-directory=")
-        )
-        previous = _capture_macos_frontmost_application()
-        try:
-            process, identity = launch_owned_user_data_over_cdp(
-                descriptor.browser_id,
-                target_user_data_dir,
-                extra_args=extra_args,
-            )
-        finally:
-            _restore_macos_frontmost_application_after_task_stage(
-                previous,
-                "Microsoft Edge",
-            )
-        browser = playwright.chromium.connect_over_cdp(
-            f"http://127.0.0.1:{identity.port}"
-        )
-        owned_native_cdp["process"] = process
-        owned_native_cdp["browser"] = browser
-        owned_native_cdp["user_data_dir"] = target_user_data_dir
-        LOGGER.info(
-            "Using a native %s clone over CDP for the Agent task.",
-            descriptor.label,
-        )
-        return browser.contexts[0] if browser.contexts else browser.new_context()
 
     def do_launch(target_user_data_dir: Path):
         effective_headless = headless
@@ -1588,10 +1533,11 @@ def launch_chromium_context(
             debug_browser_supported,
         )
 
-        if (
-            is_windows_host()
-            and debug_browser_supported(descriptor.browser_id)
-            and debug_browser_profile_initialized(descriptor.browser_id)
+        # macOS Edge always uses the signed-in project debug profile, like
+        # Windows. A daily-profile clone is challenged by Cloudflare on load.
+        if debug_browser_supported(descriptor.browser_id) and (
+            debug_browser_profile_initialized(descriptor.browser_id)
+            or (is_macos_host() and descriptor.browser_id == "edge")
         ):
             LOGGER.info(
                 "Using the project debug %s over CDP.",
@@ -1614,18 +1560,8 @@ def launch_chromium_context(
                 return attach_debug_browser()
             raise
         try:
-            context = (
-                launch_native_clone_over_cdp(temp_user_data_dir)
-                if should_launch_native_clone_over_cdp()
-                else do_launch(temp_user_data_dir)
-            )
+            context = do_launch(temp_user_data_dir)
         except Exception as exc:
-            from .agent_debug_browser import terminate_owned_chromium
-
-            terminate_owned_chromium(
-                temp_user_data_dir,
-                owned_native_cdp.get("process"),
-            )
             _cleanup_cloned_browser_profile(temp_profile_dir, original_error=exc)
             raise
     else:
@@ -1646,18 +1582,8 @@ def launch_chromium_context(
                     return attach_debug_browser()
                 raise
             try:
-                context = (
-                    launch_native_clone_over_cdp(temp_user_data_dir)
-                    if should_launch_native_clone_over_cdp()
-                    else do_launch(temp_user_data_dir)
-                )
+                context = do_launch(temp_user_data_dir)
             except Exception as exc:
-                from .agent_debug_browser import terminate_owned_chromium
-
-                terminate_owned_chromium(
-                    temp_user_data_dir,
-                    owned_native_cdp.get("process"),
-                )
                 _cleanup_cloned_browser_profile(temp_profile_dir, original_error=exc)
                 raise
 
@@ -1682,19 +1608,7 @@ def launch_chromium_context(
                         LOGGER.warning("Browser context cleanup also failed: %s", close_error)
                     else:
                         LOGGER.info("Chromium context was already closed during cleanup.")
-                owned_browser = owned_native_cdp.get("browser")
-                if owned_browser is not None:
-                    with contextlib.suppress(Exception):
-                        owned_browser.close()
             finally:
-                owned_dir = owned_native_cdp.get("user_data_dir")
-                if owned_dir is not None:
-                    from .agent_debug_browser import terminate_owned_chromium
-
-                    terminate_owned_chromium(
-                        owned_dir,
-                        owned_native_cdp.get("process"),
-                    )
                 _cleanup_cloned_browser_profile(temp_profile_dir, original_error=primary_error)
             return False
 

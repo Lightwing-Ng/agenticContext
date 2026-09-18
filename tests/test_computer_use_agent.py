@@ -3734,7 +3734,38 @@ def test_safari_grok_model_selection_restores_each_native_input_independently(
     assert events == [f"select:safari:{expected_labels!r}:{expected_trigger_labels!r}"]
 
 
-def test_safari_chatgpt_and_gemini_model_polling_do_not_hold_focus_transactions(
+def test_safari_chatgpt_model_menu_holds_one_focus_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ChatGPT's Radix model menu closes on blur, so its steps share one focus lease."""
+    from contextlib import contextmanager
+
+    import app.core.computer_use_agent as computer_use_agent
+
+    events: list[str] = []
+
+    class _Page:
+        @contextmanager
+        def native_input_transaction(self):
+            events.append("focus")
+            yield
+            events.append("restore")
+
+    monkeypatch.setattr(
+        computer_use_agent,
+        "_select_chatgpt_model_safari_controls",
+        lambda *_args, **_kwargs: events.append("chatgpt") or True,
+    )
+
+    assert computer_use_agent._select_chatgpt_model_safari(
+        _Page(),
+        {"key": "latest"},
+        ("Latest",),
+    ) is True
+    assert events == ["focus", "chatgpt", "restore"]
+
+
+def test_safari_gemini_model_polling_does_not_hold_focus_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
@@ -3746,20 +3777,10 @@ def test_safari_chatgpt_and_gemini_model_polling_do_not_hold_focus_transactions(
     events: list[str] = []
     monkeypatch.setattr(
         computer_use_agent,
-        "_select_chatgpt_model_safari_controls",
-        lambda *_args, **_kwargs: events.append("chatgpt") or True,
-    )
-    monkeypatch.setattr(
-        computer_use_agent,
         "_select_safari_web_model_controls",
         lambda *_args, **_kwargs: events.append("gemini") or True,
     )
 
-    assert computer_use_agent._select_chatgpt_model_safari(
-        _Page(),
-        {"key": "latest"},
-        ("Latest",),
-    ) is True
     assert computer_use_agent._select_safari_web_model(
         _Page(),
         "gemini",
@@ -3768,7 +3789,7 @@ def test_safari_chatgpt_and_gemini_model_polling_do_not_hold_focus_transactions(
         {},
         lambda: False,
     ) is True
-    assert events == ["chatgpt", "gemini"]
+    assert events == ["gemini"]
 
 
 def test_non_chatgpt_model_failure_records_the_current_trigger_readback() -> None:
@@ -4421,32 +4442,45 @@ def test_open_browser_for_login_windows_uses_resolved_executable(
     assert opened == ["https://chatgpt.com/"]
 
 
-def test_open_browser_for_login_macos_edge_uses_daily_browser_like_cache(
+def test_open_browser_for_login_macos_edge_uses_debug_browser_over_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """macOS Edge login opens the daily browser Cache ChatGPT already uses."""
+    """macOS Edge login signs in to the project debug profile that Agent tasks reuse."""
     from unittest.mock import Mock
 
     import app.core.computer_use_agent as computer_use_agent
 
-    expected = {"opened": True, "browser": "edge", "debug_browser": False}
-    handoff = Mock(return_value=expected)
     monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
     monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
     monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
     monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
-    monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", handoff)
+    daily_handoff = Mock(side_effect=AssertionError("macOS Edge login must not open daily Edge"))
+    monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", daily_handoff)
+    ensured: list[str] = []
+    opened: list[tuple[str, str]] = []
     monkeypatch.setattr(
         "app.core.agent_debug_browser.ensure_debug_browser",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("macOS Edge login must not use the empty debug profile")
-        ),
+        lambda browser_id, **_kwargs: ensured.append(browser_id),
+    )
+    monkeypatch.setattr(
+        "app.core.browser_sessions.debug_browser_http_verification_status",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.open_debug_browser_url",
+        lambda browser_id, url: opened.append((browser_id, url)),
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.bring_debug_browser_to_front",
+        lambda _browser_id: None,
     )
 
     result = open_browser_for_login("chatgpt", "edge", config=CrawlConfig())
 
-    assert result is expected
-    handoff.assert_called_once()
+    assert result["opened"] is True
+    assert ensured == ["edge"]
+    assert opened == [("edge", "https://chatgpt.com/")]
+    daily_handoff.assert_not_called()
 
 
 def test_open_browser_for_login_does_not_reload_a_cloudflare_challenge(
@@ -4599,35 +4633,6 @@ def test_open_browser_for_login_does_not_reopen_chatgpt_over_an_authorize_popup(
     assert result["opened"] is True
     assert opened == []
     assert activated == ["auth-1"]
-
-
-def test_open_browser_for_login_macos_edge_does_not_restart_debug_profile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """macOS Edge login must not recycle the empty debug profile that Cloudflare loops."""
-    from unittest.mock import Mock
-
-    import app.core.computer_use_agent as computer_use_agent
-
-    expected = {"opened": True, "browser": "edge"}
-    handoff = Mock(return_value=expected)
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
-    monkeypatch.setattr("app.core.config.is_macos_host", lambda: True)
-    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
-    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
-    monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", handoff)
-    monkeypatch.setattr(
-        "app.core.agent_debug_browser.restart_debug_browser",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("macOS Edge login must not recycle the debug profile")
-        ),
-    )
-
-    result = open_browser_for_login("chatgpt", "edge", config=CrawlConfig())
-
-    assert result is expected
-    handoff.assert_called_once()
 
 
 def test_open_browser_for_login_macos_chrome_keeps_standard_handoff(
@@ -6378,9 +6383,6 @@ def test_chromium_agent_selects_the_provider_tab_before_navigation(
     assert launch_options[0]["headless"] is False
     assert launch_options[0]["background_window"] is True
     assert launch_options[0]["silent"] is (host_platform == "darwin")
-    assert launch_options[0]["native_clone_cdp"] is (
-        host_platform == "darwin" and browser_name == "edge"
-    )
     assert captured_frontmost_apps == ([True] if host_platform == "darwin" else [])
     assert restored_frontmost_apps == ([("WeChat", expected_app)] if host_platform == "darwin" else [])
 
@@ -20029,13 +20031,21 @@ def test_chatgpt_composer_wait_fails_when_retry_leaves_chatgpt(
         )
 
 
-def test_macos_cloned_agent_edge_restores_the_previous_app(
+def test_macos_reused_debug_edge_keeps_the_authorized_window_visible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
     monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("edge") is True
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_supported",
+        lambda browser_id: browser_id == "edge",
+    )
+    monkeypatch.setattr(
+        "app.core.agent_debug_browser.debug_browser_profile_initialized",
+        lambda browser_id: browser_id == "edge",
+    )
+    assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("edge") is False
     assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("chrome") is True
     monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
     assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("edge") is False

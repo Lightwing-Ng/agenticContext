@@ -1,4 +1,4 @@
-/* Code version: v3.49.3-codex.1 */
+/* Code version: v3.49.4-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -88,6 +88,9 @@
         projectPath: document.querySelector("[data-agent-project-path]"),
         projectChoose: document.getElementById("agent_project_path_choose"),
         projectName: document.querySelector("[data-agent-project-name]"),
+        connectionModeControl: document.querySelector("[data-agent-connection-mode-control]"),
+        connectionModeInputs: Array.from(document.querySelectorAll("[data-agent-connection-mode]")),
+        browserModeFields: Array.from(document.querySelectorAll("[data-agent-browser-mode-field]")),
         workspacePath: promptForm.querySelector('input[name="workspace_path"]'),
         promptOs: promptForm.querySelector("[data-agent-prompt-os]"),
         promptPlatform: promptForm.querySelector("[data-agent-prompt-platform]"),
@@ -806,6 +809,24 @@
         return selectedValue(".agent-browser-combobox", "edge");
     }
 
+    function selectedConnectionMode() {
+        const selected = elements.connectionModeInputs.find((input) => (
+            input instanceof HTMLInputElement && input.checked
+        ));
+        return selected?.value === "tunnel" ? "tunnel" : "browser";
+    }
+
+    function syncConnectionMode() {
+        const mode = selectedConnectionMode();
+        const browserMode = mode === "browser";
+        elements.browserModeFields.forEach((field) => {
+            field.hidden = !browserMode;
+        });
+        if (elements.connectionModeControl) {
+            elements.connectionModeControl.dataset.agentConnectionMode = mode;
+        }
+    }
+
     function selectedPlatform() {
         return selectedValue(".agent-platform-combobox", "chatgpt");
     }
@@ -1414,7 +1435,7 @@
         projectMenu?.setAttribute("aria-label", projectChoicePlaceholder());
         const sessionSourceMenu = elements.sessionModeCombobox?.querySelector("[data-agent-combobox-menu]");
         sessionSourceMenu?.setAttribute("aria-label", "Choose a session source");
-        if (elements.sessionSource) elements.sessionSource.hidden = false;
+        syncConnectionMode();
         if (browserStatusController?.setSelection) {
             browserStatusController.setSelection(platform, selectedBrowser());
         } else {
@@ -3923,6 +3944,9 @@
         if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
         event.preventDefault();
         if (!elements.ask?.disabled && !elements.ask?.classList.contains("is-stop")) promptForm.requestSubmit();
+    });
+    elements.connectionModeInputs.forEach((input) => {
+        input.addEventListener("change", syncConnectionMode);
     });
     elements.projectPath?.addEventListener("change", () => {
         syncProjectPath(elements.projectPath.value);

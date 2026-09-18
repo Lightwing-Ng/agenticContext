@@ -69,8 +69,9 @@ window, one tab per selected juror, login/composer/model verification only, and 
 conversation. Native Safari input is serialized, so the coordinator asks ChatGPT, Grok, and Gemini
 sequentially on one owning thread. Every juror still receives the same frozen evidence packet for a
 given round: round 1 contains no peer result, and later rounds contain only the complete prior-round
-barrier. Each trusted model-menu or Send action captures and restores focus independently; model
-discovery and response polling run outside that native-input interval. Window creation, tab
+barrier. ChatGPT model selection holds one short focus transaction, because its Radix menu closes when
+Safari loses focus. Other model-menu and Send actions capture and restore focus independently;
+response polling runs outside that native-input interval. Window creation, tab
 creation, and cleanup restore the prior app only while the task still owns the foreground, so a
 later user switch is not overwritten. If the task-owned window cannot be closed, readiness fails
 closed, its page and Safari lease remain tracked for retry, and another Safari Jury is rejected

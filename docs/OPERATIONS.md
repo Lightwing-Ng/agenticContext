@@ -109,12 +109,10 @@ publish it through a public tunnel or reverse proxy.
   HTTP 403. Windows probes retain offscreen/minimized launch arguments. Existing macOS silent
   probes retain their task-stage window policy and foreground-app restoration.
 - Executing Chrome tasks on macOS use an isolated profile clone without offscreen or
-  start-minimized launch arguments. macOS Edge Agent probes and tasks use the same isolated
-  clone of the daily signed-in Edge profile as Cache ChatGPT. That clone already carries
-  ChatGPT cookies and Cloudflare clearance; the empty project debug profile does not.
-  macOS Edge Agent tasks then launch that clone as native Edge over CDP, matching Windows
-  Send behavior; Playwright-launched clones can read ChatGPT but fail Project `Send`.
-  The failure lesson is recorded in [`CHATGPT_AGENT_CLOUDFLARE.md`](CHATGPT_AGENT_CLOUDFLARE.md).
+  start-minimized launch arguments. macOS Edge Agent probes, Recheck, login, and tasks use
+  the persistent project debug Edge over CDP, like Windows, even before it is initialized.
+  A daily Edge clone is challenged by Cloudflare on page load, and Playwright-launched clones
+  fail Project `Send`. The failure lesson is recorded in [`CHATGPT_AGENT_CLOUDFLARE.md`](CHATGPT_AGENT_CLOUDFLARE.md).
   On Windows, a clone may be used before the project debug profile is initialized. After a
   successful debug-browser launch creates its marker, every later Windows Agent readiness,
   source, Project, and history probe or Agent task restarts or reuses that same persistent
@@ -129,7 +127,7 @@ publish it through a public tunnel or reverse proxy.
   the previous foreground app; macOS decides Stage Manager grouping. Human verification reuses
   the same clone and retains the existing Resume gate. Automated execution never opens the user's
   original profile for writing. First-run, crash, notification, and repost prompts remain disabled.
-- macOS Edge Jury is the explicit exception to that clone-backed Agent behavior. Its first
+- macOS Edge Jury shares that project debug profile. Its first
   `Check accounts` creates `<agent-runtime>/agent_browser_profile/edge` with owner-only directory
   permissions, starts one project Edge process, and opens one provider setup tab per selected
   juror. Complete the web-service sign-ins in those tabs and choose `Check accounts` again. Do not
@@ -143,10 +141,10 @@ publish it through a public tunnel or reverse proxy.
   ownership but leaves the project Edge process and Profile available for reuse. A profile launch
   is serialized across threads and local service processes with an owner-only lock. The code does
   not use mock Keychain, basic password storage, disabled encryption, or Keychain mutation.
-- Explicit login handoff opens the selected browser visibly. macOS Chrome, Safari, and Edge login,
+- Explicit login handoff opens the selected browser visibly. macOS Chrome and Safari login,
   and Windows conversation handoff, use the normal resolved browser. Windows Edge or Chrome login
-  uses the project-owned persistent debug profile so Recheck and later tasks read the same
-  authentication state. macOS Edge login opens daily Edge so Agent clones match Cache ChatGPT.
+  and macOS Edge login use the project-owned persistent debug profile so Recheck and later tasks
+  read the same authentication state.
   Opening the page does not establish sign-in; the user must choose Recheck. Native Windows 11
   browser execution remains unverified on this macOS host.
 - Windows Edge or Chrome login targets the project-owned debug browser instead of the user's
@@ -161,8 +159,8 @@ publish it through a public tunnel or reverse proxy.
   verification in the already-open window, then Recheck. The first sign-in on a fresh Windows
   debug profile is the only manual login the user performs there. One process-local lock owns each
   browser for the full CDP caller lifetime. Waiting is bounded to five seconds, and a busy
-  operation fails clearly instead of blocking indefinitely. Windows Edge or Chrome therefore
-  advertise and admit one active task. macOS Edge and Chrome keep isolated-clone concurrency.
+  operation fails clearly instead of blocking indefinitely. Windows Edge or Chrome and macOS Edge
+  therefore admit one active task. macOS Chrome keeps isolated-clone concurrency.
   Multiple application processes are not coordinated by this lock.
 - A Cloudflare or CAPTCHA page on ChatGPT, Gemini, Grok, or Claude is not clicked, filled, or
   reloaded. ChatGPT's `auth.openai.com` authorize popup is the same fail-closed case: leave that
@@ -199,8 +197,9 @@ publish it through a public tunnel or reverse proxy.
   and Project browsing, while their full execution uses Edge or Chrome. macOS Safari Jury runs
   ChatGPT, Grok, and Gemini in one owned window with one tab per juror, including the account
   check, and does not fall back to Edge. Safari Jury rejects Claude; Edge and Chrome still admit
-  it when explicitly checked. Each native model-menu or Send action restores focus independently;
-  model discovery and response polling do not hold a long focus transaction. Window operations
+  it when explicitly checked. ChatGPT model selection holds one short focus transaction, because its
+  menu closes when Safari loses focus. Other model-menu and Send actions restore focus
+  independently; response polling does not hold a focus transaction. Window operations
   preserve a later user app switch. A failed task-window close retains the Safari lease and blocks
   another Safari Jury until tracked cleanup succeeds. A durable ownership token, pre-creation
   window/tab inventory, and owned window ID survive an app restart: admission remains blocked while

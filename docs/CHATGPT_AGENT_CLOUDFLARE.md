@@ -1,6 +1,6 @@
 # ChatGPT Agent Cloudflare lessons
 
-Documentation version: `v1.0.1-codex.0`
+Documentation version: `v1.1.0-codex.0`
 Observed: `17 Sep 2026` on this macOS host
 Windows evidence: debug Chrome over CDP, same day
 
@@ -41,26 +41,27 @@ endpoint; do not reuse an old port.
 5. **Clicking, reloading, or Rechecking through the challenge.** Those are punishment-path
    attempts. Detect the challenge from Chromium HTTP `/json/list` URL and title only. Leave the
    window for the operator.
-6. **Treating Windows debug-browser success as a macOS Edge Agent recipe.** Windows needs the
-   debug profile because the daily browser locks cookies. macOS Cache already proved the daily
-   clone works. macOS Edge Agent must reuse that clone, not the empty debug profile.
+6. **Treating Cache success as proof that a daily-profile clone can browse ChatGPT.** Cache reads
+   `/backend-api` with cookies; it never has to pass Turnstile on a page load. On 18 Sep 2026 a
+   daily clone launched as native Edge showed `Just a moment...` 3 seconds after `/json/new`,
+   with nothing attached over CDP. Under the same flags, a fresh empty profile and the project
+   debug profile both loaded `chatgpt.com` without a challenge. Playwright-launched clones also
+   fail Project Send. Do not route macOS Edge Agent through any daily-profile clone.
 
 ## Current contract
 
-- macOS Edge Agent probes clone the daily signed-in Edge profile, matching Cache ChatGPT.
-  Login opens daily Edge. Recheck reads that clone.
-- macOS Edge Agent **tasks** clone the same daily profile, then launch native Edge with
-  `--remote-debugging-port` and attach over CDP. Playwright `launch_persistent_context` on that
-  clone can read ChatGPT APIs (Cache) but ChatGPT Send then stays on the Project landing with
-  "Something went wrong while generating the response" and never proves a `/c/<id>` URL.
-  Windows already succeeds by connecting to a native debug browser; the task path matches that
-  shape while keeping Cache cookies.
+- macOS Edge Agent matches Windows: probes, Recheck, login, and tasks all use the persistent
+  project debug Edge under `local_store/agent_browser_profile/edge` over CDP, even before its
+  profile is initialized. Login opens `chatgpt.com` in that window through HTTP endpoints only;
+  sign in there once, then Recheck. Later tasks reattach to the same signed-in profile.
+- Attach is refused while `/json/list` shows a challenge, so Playwright never enables Runtime on
+  a Turnstile page.
 - Windows Edge and Chrome Agent keep the project debug browser over CDP.
-- macOS Edge Jury still uses the project debug profile and never copies daily Edge identity.
+- Cache ChatGPT keeps cloning the daily profile; it only calls APIs.
 - Do not auto-solve Cloudflare. Do not click the checkbox from this application.
 
 ## Operator recovery
 
-If Cache ChatGPT already shows a signed-in account, Recheck Agent after the service has loaded
-this contract. Do not complete Cloudflare in the looping project debug Edge. Leave that window
-alone. Do not restart the user-owned service on port `8666` merely to inspect this note.
+Choose `Open Edge to sign in` on the Agent page, sign in to ChatGPT in the project debug Edge
+window, then Recheck. If a challenge appears there, complete it by hand in that window; nothing
+is attached to it at that point. Do not restart the user-owned service on port `8666` merely to inspect this note.
