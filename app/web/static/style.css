@@ -1,4 +1,4 @@
-/* Code version: v2.122.1-codex.1 */
+/* Code version: v2.124.1-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -1716,6 +1716,62 @@ input.formatted-number-input {
 
 .cache-common-config .settings-field-help {
     margin: 0;
+}
+
+/* Sibling-project clearable text input (text-input-control-shell + text-input-clear). */
+.text-input-control-shell {
+    --text-input-control-height: 36px;
+    --text-input-control-clear-reserve: 32px;
+    position: relative;
+}
+
+.text-input-control-shell .text-input-control {
+    padding-inline-end: var(--text-input-control-clear-reserve);
+}
+
+.text-input-clear {
+    --text-input-clear-inset: 4px;
+    position: absolute;
+    top: 50%;
+    right: var(--text-input-clear-inset);
+    display: grid;
+    place-items: center;
+    width: calc(var(--text-input-control-height) - (2 * var(--text-input-clear-inset)));
+    height: calc(var(--text-input-control-height) - (2 * var(--text-input-clear-inset)));
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--theme-glass-border);
+    color: transparent;
+    box-shadow: none;
+    transform: translateY(-50%);
+    z-index: var(--layer-control-affordance);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms var(--motion-standard), background 160ms var(--motion-standard), transform 160ms var(--motion-press);
+}
+
+.text-input-control-shell:hover .text-input-clear.is-visible,
+.text-input-control-shell:focus-within .text-input-clear.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.text-input-clear:hover,
+.text-input-clear:focus-visible {
+    transform: translateY(-50%);
+    box-shadow: none;
+    background: color-mix(in srgb, var(--muted) 28%, transparent);
+}
+
+.icon-remove-muted {
+    width: 10px;
+    height: 10px;
+    background-color: var(--accent-contrast);
+    mask: url("/static/images/xmark.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/xmark.svg") center/contain no-repeat;
 }
 
 /* Sibling-project single-value input control. */
@@ -3798,7 +3854,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     font-weight: var(--font-weight-medium);
 }
 
-.agent-runtime-form .agent-connect-fields > .field:nth-child(2) > .field-label {
+.agent-runtime-form .agent-connect-fields > .field[data-agent-browser-mode-field] > .field-label {
     font-weight: var(--font-weight-regular);
 }
 
@@ -3882,6 +3938,32 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-browser-session-field .browser-session-status-card {
     margin: 0;
+}
+
+.agent-connect-fields > [hidden] {
+    display: none;
+}
+
+.agent-tunnel-session-field .browser-session-status-card {
+    margin: 0;
+}
+
+.agent-tunnel-session-field .browser-session-status-card[data-agent-tunnel-ready="true"] {
+    background: color-mix(in srgb, var(--theme-success) 6%, var(--glass-surface-background-strong));
+}
+
+.agent-tunnel-status-message {
+    margin: 0;
+    padding-inline-start: calc(
+        var(--browser-session-status-checkmark-size)
+        + var(--browser-session-status-item-gap)
+    );
+    color: var(--muted);
+}
+
+.agent-tunnel-action {
+    justify-self: end;
+    text-decoration: none;
 }
 
 .agent-combobox-trigger {
@@ -10107,6 +10189,50 @@ dialog.browser-dialog:not([open]) {
 .icon-settings-agent {
     mask: url("/static/images/network.svg") center/contain no-repeat;
     -webkit-mask: url("/static/images/network.svg") center/contain no-repeat;
+}
+
+.icon-settings-tunnel {
+    background-color: currentColor;
+    mask: url("/static/images/lock.badge.checkmark.fill.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/lock.badge.checkmark.fill.svg") center/contain no-repeat;
+}
+
+/* ChatGPT Tunnel credentials inside one sibling-project Settings action package. */
+.settings-action-package.settings-tunnel-package {
+    grid-template-rows: auto auto auto auto;
+}
+
+.settings-action-package.settings-tunnel-package .settings-tunnel-fields {
+    grid-column: 2;
+    grid-row: 3;
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+}
+
+.settings-action-package.settings-tunnel-package .settings-action-package-form {
+    grid-row: 4;
+}
+
+/* The package places its own note in row 2; nested help text stays in the fields flow. */
+.settings-action-package.settings-tunnel-package .settings-tunnel-fields .settings-tunnel-help {
+    grid-column: auto;
+    grid-row: auto;
+}
+
+.settings-text-input-field {
+    display: grid;
+    gap: 6px;
+    width: min(100%, var(--settings-form-control-max-width));
+}
+
+.settings-text-input-label {
+    margin: 0;
+    font-size: var(--field-title-font-size);
+    line-height: var(--field-title-line-height);
+    letter-spacing: var(--field-title-letter-spacing);
+    font-weight: var(--field-title-font-weight);
+    color: var(--field-title-color);
 }
 
 .settings-maintenance-panel .danger-zone {

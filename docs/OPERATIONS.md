@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.25.6-codex.0`
+Documentation version: `v1.26.0-codex.0`
 
 ## Launch
 
@@ -283,6 +283,60 @@ publish it through a public tunnel or reverse proxy.
   cloning an Edge profile. Restricted Claude accounts remain unavailable and are not sent through
   a login-bypass flow. Safari Gemini and Claude stop after catalog discovery, report execution as
   unsupported, and never enable Ask.
+
+### ChatGPT Tunnel connection
+
+Agent → **Tunnel** lets ChatGPT work on the Agent's *Current project* directly, through the
+OpenAI Secure MCP Tunnel. No separate desktop app is involved: this service serves the MCP
+endpoint at `/mcp` and supervises OpenAI's official `tunnel-client`.
+
+One-time setup:
+
+1. At platform.openai.com, create a Tunnel and an API key whose principal has Tunnels Read + Use
+   for it.
+2. Save the Tunnel ID and API key in Settings → LLM settings → ChatGPT · Tunnel. The key is written
+   to `tunnel-credentials.json` beside `settings.json` with owner-only permissions and is never
+   rendered back into the page; a blank key field keeps the saved key.
+3. In ChatGPT, enable Developer mode (Settings → Security and login) and create an app with
+   Connection **Tunnel** (the same Tunnel), Authentication **No auth**. After switching the server
+   behind an existing Tunnel app, refresh that app under ChatGPT Settings → Apps so it lists the
+   current tools.
+
+Runtime behavior:
+
+- `python3 main.py` starts the Tunnel when credentials exist. Saving new credentials restarts it
+  after a 2-second debounce; the Agent card and Settings package offer **Reconnect**. Test and
+  isolated app instances never start `tunnel-client`.
+- State lives in `tunnel/` beside `settings.json`: the pinned client under `tools/`, the client log
+  (`tunnel-client.log`, previous run in `.log.1`), its pid file, health URL, and a per-start bearer
+  token file (`0600`). A client left behind by a killed service is found by its state path and
+  stopped before a new one starts.
+- The API key reaches the child only as `CONTROL_PLANE_API_KEY`; `OPENAI_API_KEY` and
+  `OPENAI_ADMIN_KEY` are removed. The control-plane proxy comes from `HTTPS_PROXY`/`HTTP_PROXY`
+  or, on macOS, the system proxy; loopback is always exempt so MCP traffic stays local.
+- `/mcp` accepts only loopback callers that present the current bearer token. `GET /mcp` returns
+  405 (no SSE stream). An `OAuth discovery failed` warning in the client log is expected: the app
+  uses No auth, so no OAuth metadata is published and readiness does not depend on it.
+- Tools map one-to-one onto the Browser Agent's registry-validated controller actions, so path
+  confinement, sensitive-file rules, the approved `run` command policy, and bodycheck are identical:
+  `project_overview`, `list_files`, `read_file`, `search_files`, `replace_in_file`, `create_file`,
+  `delete_file` (requires the latest read SHA-256), `run_check`, and `review_changes`.
+
+Maintaining the client when OpenAI changes it:
+
+1. The version and six archive/binary SHA-256 pairs are pinned in `app/core/tunnel_runtime.py`.
+   Take new values only from the official `openai/tunnel-client` release. For a one-off trial,
+   `AGENTIC_CONTEXT_TUNNEL_CLIENT_BIN` points the service at another binary.
+2. Run `tests/test_tunnel_runtime.py`, `tests/test_tunnel_mcp.py`, and
+   `tests/test_tunnel_credentials.py`.
+3. Exercise the real forwarding path without ChatGPT: with the service running, start
+   `tunnel-client dev proxy --mcp-server-url url=http://127.0.0.1:8666/mcp,channel=main` with
+   `MCP_EXTRA_HEADERS="Authorization: file:<tunnel/mcp-authorization>"`, then send `initialize`,
+   `tools/list`, and a read-only `tools/call` to the printed MCP URL.
+4. Ablate before adopting a new flag, header, or protocol version: remove one change at a time and
+   keep it only if its removal breaks readiness (`/readyz`), the `dev proxy` round trip, or a live
+   ChatGPT call. Update `MCP_LEGACY_PROTOCOL_VERSIONS` and `MCP_STATELESS_PROTOCOL_VERSION` in
+   `app/core/tunnel_mcp.py` the same way.
 
 ### Durable optimization jobs
 

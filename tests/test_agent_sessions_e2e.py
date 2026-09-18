@@ -95,25 +95,42 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
             }"""
         )
         assert material["connection"] == material["agentMode"]
+        web_service = page.locator(".agent-platform-combobox")
+        tunnel_field = page.locator("[data-agent-tunnel-mode-field]")
         expect(browser).to_be_checked()
         expect(tunnel).not_to_be_checked()
-        expect(browser_fields).to_have_count(2)
+        # Web service is shared by both connections, so the switch sits right after it.
+        assert page.evaluate(
+            """() => {
+                const platform = document.querySelector('.agent-platform-combobox').closest('label.field');
+                return platform.nextElementSibling === document.querySelector('[data-agent-connection-mode-control]');
+            }"""
+        )
+        expect(browser_fields).to_have_count(3)
         for field in browser_fields.all():
             expect(field).to_be_visible()
         expect(recent_sessions).to_be_visible()
+        expect(tunnel_field).to_be_hidden()
 
         page.locator('label[for="agent_connection_tunnel"]').click()
         expect(tunnel).to_be_checked()
+        expect(page).to_have_url(re.compile(r"/agent/tunnel/chatgpt$"))
+        expect(web_service).to_be_visible()
         for field in browser_fields.all():
             expect(field).to_be_hidden()
-        expect(recent_sessions).to_be_visible()
-        expect(page.locator("[data-agent-new-session]")).to_be_visible()
+        expect(recent_sessions).to_be_hidden()
+        expect(tunnel_field).to_be_visible()
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text(
+            re.compile(r"^(Connected|Connecting|Not configured|Not running|Unavailable)$")
+        )
 
         page.locator('label[for="agent_connection_browser"]').click()
         expect(browser).to_be_checked()
+        expect(page).to_have_url(re.compile(r"/agent/edge/chatgpt$"))
         for field in browser_fields.all():
             expect(field).to_be_visible()
         expect(recent_sessions).to_be_visible()
+        expect(tunnel_field).to_be_hidden()
         assert errors == []
     finally:
         context.close()

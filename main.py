@@ -1,6 +1,6 @@
 """Application entrypoint for agenticContext."""
 
-# Code version: v1.4.0-codex.1
+# Code version: v1.5.0-codex.0
 
 from __future__ import annotations
 
@@ -53,6 +53,17 @@ def _install_shutdown_signal_handlers(app: Any) -> None:
     signal.signal(signal.SIGTERM, handle_shutdown)
 
 
+def _enable_chatgpt_tunnel(app: Any, port: int) -> None:
+    """Let the saved ChatGPT Tunnel reach this service's loopback MCP endpoint."""
+    tunnel_runtime = app.extensions.get("tunnel_runtime")
+    if tunnel_runtime is None:
+        return
+    try:
+        tunnel_runtime.enable(f"http://127.0.0.1:{port}/mcp")
+    except Exception as exc:
+        LOGGER.error("Could not start the ChatGPT Tunnel: %s", exc)
+
+
 def _start_web_console() -> None:
     """Start the local web console with the resolved host Python runtime."""
     from app.core.config import DEFAULT_HOST, DEFAULT_PORT
@@ -63,6 +74,7 @@ def _start_web_console() -> None:
     configure_logging(APP_VERSION)
     app = create_app()
     _install_shutdown_signal_handlers(app)
+    _enable_chatgpt_tunnel(app, DEFAULT_PORT)
     app.run(host=DEFAULT_HOST, port=DEFAULT_PORT, debug=False, threaded=True)
 
 

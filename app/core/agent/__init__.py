@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.11.0-codex.1
+# Code version: v1.12.0-codex.0
 
 from typing import TYPE_CHECKING
 
@@ -27,6 +27,15 @@ from ..grok_history import (
     GROK_INLINE_CITATION_PATTERN,
     normalize_grok_display_markdown,
 )
+from ..tunnel_credentials import (
+    TUNNEL_SUPPORTED_PLATFORMS,
+    default_tunnel_credentials_path,
+    load_tunnel_credentials,
+    merge_tunnel_credentials,
+    save_tunnel_credentials,
+)
+from ..tunnel_mcp import TunnelMcpService
+from ..tunnel_runtime import TunnelRuntime, describe_tunnel_status
 from .capability_registry import (
     AGENT_ACTIONS,
     CAPABILITY_REGISTRY,
@@ -141,6 +150,9 @@ __all__ = [
     "SUPPORTED_BROWSERS",
     "SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS",
     "SUPPORTED_SAFARI_AGENT_PLATFORMS",
+    "TUNNEL_SUPPORTED_PLATFORMS",
+    "TunnelMcpService",
+    "TunnelRuntime",
     "agent_execution_blocked_message",
     "WEBMCP_TOOLS",
     "browser_options_for_host",
@@ -151,6 +163,8 @@ __all__ = [
     "capability_registry_snapshot",
     "controller_action_prompt_schema",
     "default_model_for_platform",
+    "default_tunnel_credentials_path",
+    "describe_tunnel_status",
     "fetch_grok_conversation_history",
     "is_allowed_agent_network_request",
     "is_agent_execution_supported",
@@ -158,6 +172,8 @@ __all__ = [
     "launch_terminal_authorization",
     "list_agent_project_sessions",
     "list_agent_sources",
+    "load_tunnel_credentials",
+    "merge_tunnel_credentials",
     "normalize_agent_conversation_url",
     "normalize_agent_source_catalog_payload",
     "normalize_agent_project_url",
@@ -169,6 +185,7 @@ __all__ = [
     "probe_and_collect_gemini_sources",
     "probe_and_collect_grok_sources",
     "render_final_agent_action",
+    "save_tunnel_credentials",
     "validate_agent_access_password",
     "validate_computer_use_settings",
     "webmcp_manifest_definitions",

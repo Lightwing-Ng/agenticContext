@@ -2722,7 +2722,7 @@ def test_agent_model_and_sidebar_service_triggers_follow_typography_contract(
             "element => element.parentElement.classList.contains('field-label')"
         )
         browser_label = page.locator(
-            ".agent-runtime-form .agent-connect-fields > .field:nth-child(2) > .field-label"
+            ".agent-runtime-form .agent-connect-fields > .field[data-agent-browser-mode-field] > .field-label"
         )
         expect(browser_label).to_have_text("Browser")
         for width, height in ((1_280, 900), (390, 844)):
@@ -2763,7 +2763,8 @@ def test_browser_session_status_reuses_account_typography_for_terminal_and_cache
     )
     try:
         field_labels = page.locator(
-            "#agent_runtime_form .browser-session-status-field-label"
+            "#agent_runtime_form [data-role='browser-session-status'] "
+            ".browser-session-status-field-label"
         )
         account = page.locator(
             "#agent_runtime_form [data-role='browser-session-account']"
@@ -2869,7 +2870,7 @@ def test_shared_literal_status_fields_reduce_generic_account_copy_and_preserve_i
         if width <= 900:
             page.locator("#sidebar_toggle").click()
         agent_card = page.locator(
-            "#agent_runtime_form .browser-session-status-card-compact"
+            "#agent_runtime_form .browser-session-status-card-compact[data-role='browser-session-status']"
         )
         expect(agent_card.locator(".browser-session-status-field-label")).to_have_text(
             ["Account:", "Terminal:"]
@@ -2914,7 +2915,7 @@ def test_agent_compact_browser_status_uses_annotated_spacing(
         geometry = page.evaluate(
             """() => {
                 const card = document.querySelector(
-                    '#agent_runtime_form .browser-session-status-card-compact'
+                    '#agent_runtime_form .browser-session-status-card-compact[data-role="browser-session-status"]'
                 );
                 const accountRow = card?.querySelector('.browser-session-status-item');
                 const accountCheck = accountRow?.querySelector(

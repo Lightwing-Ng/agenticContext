@@ -1,4 +1,4 @@
-/* Code version: v3.49.4-codex.0 */
+/* Code version: v3.51.1-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -91,6 +91,16 @@
         connectionModeControl: document.querySelector("[data-agent-connection-mode-control]"),
         connectionModeInputs: Array.from(document.querySelectorAll("[data-agent-connection-mode]")),
         browserModeFields: Array.from(document.querySelectorAll("[data-agent-browser-mode-field]")),
+        tunnelField: document.querySelector("[data-agent-tunnel-mode-field]"),
+        tunnelStatus: document.querySelector("[data-agent-tunnel-status]"),
+        tunnelCheckmark: document.querySelector("[data-agent-tunnel-checkmark]"),
+        tunnelSpinner: document.querySelector("[data-agent-tunnel-spinner]"),
+        tunnelState: document.querySelector("[data-agent-tunnel-state]"),
+        tunnelMessage: document.querySelector("[data-agent-tunnel-message]"),
+        tunnelHint: document.querySelector("[data-agent-tunnel-hint]"),
+        tunnelActivity: document.querySelector("[data-agent-tunnel-activity]"),
+        tunnelAction: document.querySelector("[data-agent-tunnel-action]"),
+        tunnelRestart: document.querySelector("[data-agent-tunnel-restart]"),
         workspacePath: promptForm.querySelector('input[name="workspace_path"]'),
         promptOs: promptForm.querySelector("[data-agent-prompt-os]"),
         promptPlatform: promptForm.querySelector("[data-agent-prompt-platform]"),
@@ -169,6 +179,7 @@
     let preferredModel = elements.modelInput?.value || "";
     let browserStatusState = "cleared";
     let browserStatusController = null;
+    let browserStatusInitialized = false;
     let preferenceTimer = null;
     let preferenceSaveInFlight = false;
     let inFlightPreferencePayload = null;
@@ -739,13 +750,8 @@
         if (elements.sessionMode && !preserveSourceSelection) elements.sessionMode.value = "new";
         if (elements.promptInput) {
             const nextDraftKey = JSON.stringify([executionScope, sessionId]);
-            if (promptHasLocalDraft && currentDraft) {
-                elements.promptInput.value = currentDraft;
-                executionDrafts.set(nextDraftKey, currentDraft);
-            } else {
-                elements.promptInput.value = executionDrafts.get(nextDraftKey) || "";
-                promptHasLocalDraft = Boolean(elements.promptInput.value);
-            }
+            elements.promptInput.value = executionDrafts.get(nextDraftKey) || "";
+            promptHasLocalDraft = Boolean(elements.promptInput.value);
         }
         // Clear the old stop target immediately; stale network responses cannot restore it.
         render({...lastPayload, agent: {session_id: sessionId}});
@@ -816,15 +822,166 @@
         return selected?.value === "tunnel" ? "tunnel" : "browser";
     }
 
+    function tunnelSupportsPlatform(platform) {
+        const platforms = String(elements.tunnelField?.dataset.agentTunnelPlatforms || "")
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+        return platforms.includes(platform);
+    }
+
+    let tunnelPresentation = readTunnelPresentation();
+    let tunnelActivity = {call_count: 0, recent_calls: []};
+    let tunnelPollTimer = null;
+    let tunnelPollInFlight = false;
+
+    function readTunnelPresentation() {
+        try {
+            return JSON.parse(elements.tunnelField?.dataset.agentTunnelPresentation || "null")
+                || {tone: "error", label: "Not running", message: "", hint: "", action: null};
+        } catch (_error) {
+            return {tone: "error", label: "Not running", message: "", hint: "", action: null};
+        }
+    }
+
+    function tunnelAvailability() {
+        const supported = tunnelSupportsPlatform(selectedPlatform());
+        const tone = String(tunnelPresentation?.tone || "error");
+        return {supported, tone, ready: supported && tone === "ready"};
+    }
+
+    function tunnelActivityCopy() {
+        const latest = Array.isArray(tunnelActivity.recent_calls) ? tunnelActivity.recent_calls[0] : null;
+        if (!latest) return "";
+        const seconds = Math.max(0, Math.round(Date.now() / 1000 - Number(latest.at || 0)));
+        const age = seconds < 60 ? `${seconds} s ago`
+            : seconds < 3600 ? `${Math.round(seconds / 60)} min ago`
+                : `${Math.round(seconds / 3600)} h ago`;
+        const count = Number(tunnelActivity.call_count || 0);
+        const outcome = latest.ok ? "" : " (refused)";
+        return `ChatGPT tool calls: ${count} · last ${latest.tool}${outcome}, ${age}.`;
+    }
+
+    function syncTunnelStatus() {
+        if (!elements.tunnelField) return;
+        const {supported, tone, ready} = tunnelAvailability();
+        const platformLabel = selectedPlatformLabel();
+        const view = supported ? tunnelPresentation : {
+            tone: "error",
+            label: "Unsupported",
+            message: `Tunnel connects ChatGPT only. Choose ChatGPT, or switch to Browser for ${platformLabel}.`,
+            hint: "",
+            action: null,
+        };
+        const loading = supported && tone === "loading";
+        if (elements.tunnelStatus) elements.tunnelStatus.dataset.agentTunnelReady = ready ? "true" : "false";
+        if (elements.tunnelCheckmark) {
+            elements.tunnelCheckmark.hidden = loading;
+            elements.tunnelCheckmark.dataset.statusState = ready ? "ready" : "error";
+        }
+        if (elements.tunnelSpinner) elements.tunnelSpinner.hidden = !loading;
+        if (elements.tunnelState) elements.tunnelState.textContent = view.label || "";
+        if (elements.tunnelMessage) elements.tunnelMessage.textContent = view.message || "";
+        if (elements.tunnelHint) {
+            elements.tunnelHint.textContent = view.hint || "";
+            elements.tunnelHint.hidden = !view.hint;
+        }
+        if (elements.tunnelActivity) {
+            const activity = ready ? tunnelActivityCopy() : "";
+            elements.tunnelActivity.textContent = activity;
+            elements.tunnelActivity.hidden = !activity;
+        }
+        const action = view.action || null;
+        const link = elements.tunnelAction;
+        if (link instanceof HTMLAnchorElement) {
+            const isLink = action?.kind === "link" && Boolean(action.href);
+            link.hidden = !isLink;
+            if (isLink) {
+                link.href = action.href;
+                link.textContent = action.label || "";
+                if (/^https:\/\//.test(action.href)) {
+                    link.target = "_blank";
+                    link.rel = "noopener noreferrer";
+                } else {
+                    link.removeAttribute("target");
+                    link.removeAttribute("rel");
+                }
+            }
+        }
+        if (elements.tunnelRestart) elements.tunnelRestart.hidden = action?.kind !== "restart";
+    }
+
+    function applyTunnelStatus(payload) {
+        if (!payload || typeof payload !== "object") return;
+        if (payload.presentation) tunnelPresentation = payload.presentation;
+        tunnelActivity = {
+            call_count: Number(payload.call_count || 0),
+            recent_calls: Array.isArray(payload.recent_calls) ? payload.recent_calls : [],
+        };
+        syncTunnelStatus();
+        if (lastPayload) renderResponseStatus(lastPayload.agent, readinessState(lastPayload));
+    }
+
+    async function refreshTunnelStatus() {
+        const url = elements.tunnelField?.dataset.agentTunnelStatusUrl;
+        if (!url || tunnelPollInFlight) return;
+        tunnelPollInFlight = true;
+        try {
+            const response = await fetch(url, {cache: "no-store", headers: {Accept: "application/json"}});
+            if (response.ok) applyTunnelStatus(await response.json());
+        } catch (_error) {
+            // Keep the last known Tunnel state; the next poll retries.
+        } finally {
+            tunnelPollInFlight = false;
+        }
+    }
+
+    function scheduleTunnelPoll() {
+        if (tunnelPollTimer !== null) window.clearTimeout(tunnelPollTimer);
+        tunnelPollTimer = null;
+        if (selectedConnectionMode() !== "tunnel") return;
+        const delay = tunnelPresentation?.tone === "ready" ? 10_000 : 3_000;
+        tunnelPollTimer = window.setTimeout(async () => {
+            tunnelPollTimer = null;
+            if (document.visibilityState === "visible") await refreshTunnelStatus();
+            scheduleTunnelPoll();
+        }, delay);
+    }
+
+    async function restartTunnel() {
+        const url = elements.tunnelField?.dataset.agentTunnelRestartUrl;
+        if (!url) return;
+        if (elements.tunnelRestart) elements.tunnelRestart.disabled = true;
+        try {
+            const response = await fetch(url, {method: "POST", headers: {Accept: "application/json"}});
+            if (response.ok) applyTunnelStatus(await response.json());
+        } catch (_error) {
+            // The next status poll reports the outcome.
+        } finally {
+            if (elements.tunnelRestart) elements.tunnelRestart.disabled = false;
+            scheduleTunnelPoll();
+        }
+    }
+
     function syncConnectionMode() {
         const mode = selectedConnectionMode();
         const browserMode = mode === "browser";
         elements.browserModeFields.forEach((field) => {
             field.hidden = !browserMode;
         });
+        if (elements.tunnelField) elements.tunnelField.hidden = browserMode;
         if (elements.connectionModeControl) {
             elements.connectionModeControl.dataset.agentConnectionMode = mode;
         }
+        if (elements.agentPage) elements.agentPage.dataset.agentConnectionMode = mode;
+        syncTunnelStatus();
+        if (!browserMode) {
+            void refreshTunnelStatus();
+            scheduleTunnelPoll();
+        }
+        // The Browser session probe can launch a browser, so Tunnel defers it.
+        if (browserMode) initializeBrowserSessionStatus();
+        if (lastPayload) renderResponseStatus(lastPayload.agent, readinessState(lastPayload));
     }
 
     function selectedPlatform() {
@@ -944,7 +1101,8 @@
             void selectExecutionSession(rememberedExecutionSession() || "new", {routeChanged: true, previousScope});
         }
         const routePrefix = String(elements.agentPage?.dataset.agentRoutePrefix || "/agent").replace(/\/$/, "");
-        const nextPath = `${routePrefix}/${encodeURIComponent(selectedBrowser())}/${encodeURIComponent(selectedPlatform())}`;
+        const connectionSegment = selectedConnectionMode() === "tunnel" ? "tunnel" : selectedBrowser();
+        const nextPath = `${routePrefix}/${encodeURIComponent(connectionSegment)}/${encodeURIComponent(selectedPlatform())}`;
         const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
         if (currentPath === nextPath) return;
         window.history.replaceState({}, "", nextPath);
@@ -2492,6 +2650,13 @@
 
     function readinessState(payload) {
         const platformLabel = selectedPlatformLabel();
+        if (selectedConnectionMode() === "tunnel") {
+            const {supported, ready} = tunnelAvailability();
+            const message = supported
+                ? String(tunnelPresentation?.message || "")
+                : "Tunnel connects ChatGPT only.";
+            return {ready, tunnel: true, message};
+        }
         const runtime = payload.runtime || {};
         const hostOperatingSystem = runtime.host_operating_system || "";
         if (hostOperatingSystem && selectedOs() !== hostOperatingSystem) {
@@ -2534,10 +2699,11 @@
         const sessionMessage = remoteSessionHistoryLoading
             ? `Loading the selected ${selectedPlatformLabel()} session history…`
             : remoteSessionHistoryError;
-        const sourceOnlyMessage = !hasAgentRun && readiness.ready && !agentExecutionSupported()
+        const sourceOnlyMessage = !hasAgentRun && readiness.ready && !readiness.tunnel && !agentExecutionSupported()
             ? agentExecutionBlockedMessage()
             : "";
-        const startBlockedMessage = !hasAgentRun && readiness.ready && !sourceOnlyMessage && !executionCanStart
+        const startBlockedMessage = !hasAgentRun && readiness.ready && !readiness.tunnel
+            && !sourceOnlyMessage && !executionCanStart
             ? (executionStartBlockedReason || "A new Agent task cannot start yet.")
             : "";
         const pauseCopy = agent?.paused
@@ -2586,7 +2752,9 @@
             status = "loading";
             phaseLabel = "Waiting";
         } else if (!readiness.ready) {
-            const verificationPending = browserVerificationPending();
+            const verificationPending = readiness.tunnel
+                ? tunnelPresentation?.tone === "loading"
+                : browserVerificationPending();
             status = verificationPending ? "loading" : "failed";
             phaseLabel = verificationPending ? "Checking" : "Unavailable";
         }
@@ -2751,7 +2919,10 @@
     }
 
     function initializeBrowserSessionStatus() {
+        if (browserStatusInitialized || selectedConnectionMode() === "tunnel") return;
         if (!elements.browserSession || !window.CACHELIKES_BROWSER_SESSION_STATUS?.init) return;
+        // init() renders synchronously, which re-enters syncConnectionMode().
+        browserStatusInitialized = true;
         browserStatusController = window.CACHELIKES_BROWSER_SESSION_STATUS.init(elements.browserSession, {
             platform: selectedPlatform(),
             getBrowser: selectedBrowser,
@@ -3858,6 +4029,27 @@
         setPromptExpanded(false);
     }
 
+    // Tunnel tasks run inside ChatGPT, so the local composer hands off instead of
+    // starting a Browser Agent run.
+    promptForm.addEventListener("submit", (event) => {
+        if (selectedConnectionMode() !== "tunnel") return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const {supported, ready} = tunnelAvailability();
+        if (!supported) return;
+        if (ready) {
+            window.open(selectedPlatformHomeUrl(), "_blank", "noopener");
+            return;
+        }
+        if (tunnelPresentation?.action?.kind === "link" && tunnelPresentation.action.href) {
+            window.location.assign(tunnelPresentation.action.href);
+        }
+    }, {capture: true});
+
+    elements.tunnelRestart?.addEventListener("click", () => {
+        void restartTunnel();
+    });
+
     promptForm.addEventListener("submit", (event) => {
         event.preventDefault();
         if (promptSubmissionPending || elements.ask?.disabled || lastPayload.agent?.running || elements.ask?.classList.contains("is-stop")) return;
@@ -3946,7 +4138,10 @@
         if (!elements.ask?.disabled && !elements.ask?.classList.contains("is-stop")) promptForm.requestSubmit();
     });
     elements.connectionModeInputs.forEach((input) => {
-        input.addEventListener("change", syncConnectionMode);
+        input.addEventListener("change", () => {
+            syncConnectionMode();
+            syncAgentRoute();
+        });
     });
     elements.projectPath?.addEventListener("change", () => {
         syncProjectPath(elements.projectPath.value);

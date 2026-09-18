@@ -30,6 +30,7 @@ from app.core.agent import (
     AGENT_PLATFORM_OPTIONS,
     CAPABILITY_REGISTRY_VERSION,
     OPERATING_SYSTEM_OPTIONS as AGENT_OPERATING_SYSTEM_OPTIONS,
+    SUPPORTED_AGENT_PLATFORMS,
     SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS,
     AgentSessionPool,
     AgentSourceCache,
@@ -63,6 +64,14 @@ from app.core.agent import (
     probe_and_collect_gemini_sources,
     probe_and_collect_grok_sources,
     render_final_agent_action,
+    TUNNEL_SUPPORTED_PLATFORMS,
+    TunnelMcpService,
+    TunnelRuntime,
+    default_tunnel_credentials_path,
+    describe_tunnel_status,
+    load_tunnel_credentials,
+    merge_tunnel_credentials,
+    save_tunnel_credentials,
     validate_computer_use_settings,
     validate_agent_access_password,
 )
@@ -867,6 +876,15 @@ def create_app(
     )
     app.extensions["jury_service"] = jury_service
 
+    tunnel_mcp_service = TunnelMcpService(lambda: computer_use_settings.settings)
+    tunnel_runtime = TunnelRuntime(
+        credentials_loader=load_tunnel_credentials,
+        state_root=default_tunnel_credentials_path().parent / "tunnel",
+        activity_provider=tunnel_mcp_service.activity_snapshot,
+    )
+    app.extensions["tunnel_mcp_service"] = tunnel_mcp_service
+    app.extensions["tunnel_runtime"] = tunnel_runtime
+
     runtime_shutdown_lock = RLock()
     runtime_shutdown_started = False
 
@@ -877,6 +895,11 @@ def create_app(
             if runtime_shutdown_started:
                 return
             runtime_shutdown_started = True
+        tunnel_mcp_service.stop()
+        try:
+            tunnel_runtime.stop()
+        except Exception as exc:
+            app.logger.error("Could not stop the Tunnel during service shutdown: %s", exc)
         for label, service in (
             ("jury_service", jury_service),
             ("agent_session_pool", agent_session_pool),
@@ -1442,6 +1465,8 @@ def create_app(
             shadow_backup_snapshot=shadow_backup_service.snapshot(),
             agent_settings=computer_use_settings.settings,
             agent_runtime_snapshot=computer_use_settings.snapshot(),
+            tunnel_credentials=load_tunnel_credentials().snapshot(),
+            tunnel_status=tunnel_status_payload(),
         )
 
     @app.get("/settings/style-tokens")
@@ -2009,7 +2034,7 @@ def create_app(
         )
         return isolated
 
-    def render_agent_page(browser: str, platform: str):
+    def render_agent_page(browser: str, platform: str, connection_mode: str = "browser"):
         """Render one Agent page using the browser/provider encoded by its URL."""
         agent_settings = agent_settings_for_route(browser, platform)
         runtime_snapshot = computer_use_settings.snapshot()
@@ -2041,6 +2066,9 @@ def create_app(
             model_options_by_platform=AGENT_MODEL_OPTIONS_BY_PLATFORM,
             render_prompt_markdown=render_prompt_markdown,
             format_agent_activity_time=format_agent_activity_time,
+            connection_mode=connection_mode,
+            tunnel_status=tunnel_status_payload(),
+            tunnel_supported_platforms=",".join(sorted(TUNNEL_SUPPORTED_PLATFORMS)),
         )
 
     @app.get("/agent")
@@ -2052,6 +2080,81 @@ def create_app(
         settings = computer_use_settings.settings
         browser = settings.browser if settings.browser in available_agent_browser_keys() else "edge"
         return redirect(build_agent_path(browser, settings.platform))
+
+    def tunnel_route_browser() -> str:
+        """Keep the saved Browser choice so switching back from Tunnel restores it."""
+        browser = computer_use_settings.settings.browser
+        return browser if browser in available_agent_browser_keys() else "edge"
+
+    @app.post("/mcp")
+    def tunnel_mcp_endpoint():
+        """Serve MCP tool calls forwarded by the local tunnel-client only."""
+        if not is_loopback_address(request.remote_addr):
+            abort(403)
+        if not tunnel_runtime.authorization_matches(request.headers.get("Authorization")):
+            return jsonify(
+                {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Unauthorized."}}
+            ), 401
+        body = request.get_json(silent=True, force=True)
+        if body is None:
+            return jsonify(
+                {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error."}}
+            ), 400
+        status, payload = tunnel_mcp_service.handle(body, request.headers)
+        if payload is None:
+            return Response(status=status)
+        return jsonify(payload), status
+
+    @app.get("/mcp")
+    def tunnel_mcp_stream():
+        """This server answers JSON-RPC over POST only and offers no SSE stream."""
+        return Response(status=405, headers={"Allow": "POST"})
+
+    def tunnel_status_payload() -> dict[str, Any]:
+        """Return the Tunnel status plus the presentation both UIs render."""
+        workspace = Path(computer_use_settings.settings.workspace_path)
+        project_name = workspace.name or str(workspace)
+        snapshot = tunnel_runtime.snapshot()
+        return {
+            **snapshot,
+            "project_name": project_name,
+            "presentation": describe_tunnel_status(
+                snapshot,
+                project_name=project_name,
+                settings_url=url_for("settings", _anchor="settings-llm"),
+            ),
+        }
+
+    @app.get("/api/agent/tunnel/status")
+    def api_tunnel_status():
+        require_local_agent_request()
+        return jsonify(tunnel_status_payload())
+
+    @app.post("/api/agent/tunnel/restart")
+    def api_tunnel_restart():
+        require_local_agent_request()
+        tunnel_runtime.restart()
+        return jsonify(tunnel_status_payload())
+
+    @app.get("/agent/tunnel/")
+    def agent_tunnel():
+        """Open the Tunnel connection for the saved Web service."""
+        require_local_agent_request(allow_locked=True)
+        platform = computer_use_settings.settings.platform
+        if platform not in SUPPORTED_AGENT_PLATFORMS:
+            platform = "chatgpt"
+        return redirect(url_for("agent_tunnel_selected", platform=platform), code=302)
+
+    @app.get("/agent/tunnel/<platform>")
+    def agent_tunnel_selected(platform: str):
+        """Render the Agent page with the Tunnel connection selected."""
+        require_local_agent_request(allow_locked=True)
+        selected_platform = platform.strip().lower()
+        if selected_platform not in SUPPORTED_AGENT_PLATFORMS:
+            abort(404)
+        if not is_agent_access_unlocked():
+            return render_locked_agent_access()
+        return render_agent_page(tunnel_route_browser(), selected_platform, "tunnel")
 
     @app.get("/agent/<browser>/")
     def agent_browser(browser: str):
@@ -3304,6 +3407,16 @@ def create_app(
         nonlocal saved_config
         saved_config = parse_form_config(saved_config)
         save_config(saved_config)
+        if "chatgpt_tunnel_id" in request.form:
+            current_tunnel_credentials = load_tunnel_credentials()
+            next_tunnel_credentials = merge_tunnel_credentials(
+                current_tunnel_credentials,
+                request.form.get("chatgpt_tunnel_id"),
+                request.form.get("chatgpt_tunnel_api_key"),
+            )
+            if next_tunnel_credentials != current_tunnel_credentials:
+                save_tunnel_credentials(next_tunnel_credentials)
+                tunnel_runtime.request_restart()
         agent_field_names = {
             "agent_operating_system",
             "agent_context_limit_mib",

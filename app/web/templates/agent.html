@@ -1,4 +1,4 @@
-<!-- Code version: v3.52.14-codex.0 -->
+<!-- Code version: v3.54.1-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.122.1-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.124.1-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.8.4') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
@@ -20,7 +20,7 @@
 {% set selected_platform = platform_options | selectattr('key', 'equalto', settings.platform) | list | first %}
 {% set selected_model_options = model_options_by_platform.get(settings.platform, ()) %}
 {% set selected_model = selected_model_options | selectattr('key', 'equalto', settings.model) | list | first %}
-<main class="page agent-page" data-agent-route-prefix="/agent" data-agent-safari-execution-platforms="{{ safari_agent_execution_platforms }}" data-agent-running="{{ 'true' if agent_snapshot.running else 'false' }}" data-agent-run-id="{{ agent_snapshot.run_id or agent_snapshot.started_at }}" data-agent-run-revision="{{ agent_snapshot.run_revision }}" data-agent-started-at="{{ agent_snapshot.started_at }}">
+<main class="page agent-page" data-agent-route-prefix="/agent" data-agent-connection-mode="{{ connection_mode }}" data-agent-safari-execution-platforms="{{ safari_agent_execution_platforms }}" data-agent-running="{{ 'true' if agent_snapshot.running else 'false' }}" data-agent-run-id="{{ agent_snapshot.run_id or agent_snapshot.started_at }}" data-agent-run-revision="{{ agent_snapshot.run_revision }}" data-agent-started-at="{{ agent_snapshot.started_at }}">
     <button type="button" class="sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
         <span class="icon sidebar-toggle-icon" aria-hidden="true"></span>
     </button>
@@ -69,26 +69,7 @@
                     <span id="agent_project_path_status" class="settings-directory-status" data-directory-picker-status role="status" aria-live="polite" hidden></span>
                 </label>
 
-                <div
-                    class="segmented-control agent-connection-mode-control"
-                    role="radiogroup"
-                    aria-label="Agent connection"
-                    data-agent-connection-mode-control
-                    data-option-count="2"
-                    data-segmented-active-index="0"
-                    style="--segmented-option-count: 2; --segmented-active-index: 0;"
-                >
-                    <label class="segmented-control-option agent-connection-mode-option" for="agent_connection_browser">
-                        <input id="agent_connection_browser" type="radio" name="agent_connection_mode" value="browser" data-agent-connection-mode checked>
-                        <span>Browser</span>
-                    </label>
-                    <label class="segmented-control-option agent-connection-mode-option" for="agent_connection_tunnel">
-                        <input id="agent_connection_tunnel" type="radio" name="agent_connection_mode" value="tunnel" data-agent-connection-mode>
-                        <span>Tunnel</span>
-                    </label>
-                </div>
-
-                <div class="agent-connect-fields" data-agent-browser-mode-field>
+                <div class="agent-connect-fields">
                     <label class="field">
                         <span class="field-label">Web service</span>
                         <div class="trade-strategy-combobox agent-combobox agent-platform-combobox" data-agent-combobox>
@@ -130,7 +111,70 @@
                             </div>
                         </div>
                     </label>
-                    <label class="field">
+                    <div
+                        class="segmented-control agent-connection-mode-control"
+                        role="radiogroup"
+                        aria-label="Agent connection"
+                        data-agent-connection-mode-control
+                        data-option-count="2"
+                        data-segmented-active-index="{{ 1 if connection_mode == 'tunnel' else 0 }}"
+                        style="--segmented-option-count: 2; --segmented-active-index: {{ 1 if connection_mode == 'tunnel' else 0 }};"
+                    >
+                        <label class="segmented-control-option agent-connection-mode-option" for="agent_connection_browser">
+                            <input id="agent_connection_browser" type="radio" name="agent_connection_mode" value="browser" data-agent-connection-mode{% if connection_mode != 'tunnel' %} checked{% endif %}>
+                            <span>Browser</span>
+                        </label>
+                        <label class="segmented-control-option agent-connection-mode-option" for="agent_connection_tunnel">
+                            <input id="agent_connection_tunnel" type="radio" name="agent_connection_mode" value="tunnel" data-agent-connection-mode{% if connection_mode == 'tunnel' %} checked{% endif %}>
+                            <span>Tunnel</span>
+                        </label>
+                    </div>
+
+                    {% set tunnel_view = tunnel_status.presentation %}
+                    <div
+                        class="field agent-tunnel-session-field"
+                        data-agent-tunnel-mode-field
+                        data-agent-tunnel-platforms="{{ tunnel_supported_platforms }}"
+                        data-agent-tunnel-status-url="{{ url_for('api_tunnel_status') }}"
+                        data-agent-tunnel-restart-url="{{ url_for('api_tunnel_restart') }}"
+                        data-agent-tunnel-settings-url="{{ url_for('settings', _anchor='settings-llm') }}"
+                        data-agent-tunnel-presentation='{{ tunnel_view | tojson }}'
+                        {% if connection_mode != 'tunnel' %}hidden{% endif %}
+                    >
+                        <div class="browser-session-status-card browser-session-status-card-compact" data-agent-tunnel-status data-agent-tunnel-ready="{{ 'true' if tunnel_view.tone == 'ready' else 'false' }}">
+                            <div class="browser-session-status-row">
+                                <div class="browser-session-status-copy">
+                                    <div class="browser-session-status-item">
+                                        <span class="browser-session-status-checkmark" data-agent-tunnel-checkmark data-status-state="{{ 'ready' if tunnel_view.tone == 'ready' else 'error' }}" aria-hidden="true"{% if tunnel_view.tone == 'loading' %} hidden{% endif %}></span>
+                                        <span class="suggestion-loading-spinner browser-session-status-spinner" data-agent-tunnel-spinner aria-hidden="true"{% if tunnel_view.tone != 'loading' %} hidden{% endif %}></span>
+                                        <span class="browser-session-status-literal">
+                                            <span class="browser-session-status-field-label">Tunnel:</span>
+                                            <span class="browser-session-status-field-value" data-agent-tunnel-state>{{ tunnel_view.label }}</span>
+                                        </span>
+                                    </div>
+                                    <p class="browser-session-status-message agent-tunnel-status-message" data-agent-tunnel-message aria-live="polite">{{ tunnel_view.message }}</p>
+                                    <p class="browser-session-status-message agent-tunnel-status-message agent-tunnel-status-hint" data-agent-tunnel-hint{% if not tunnel_view.hint %} hidden{% endif %}>{{ tunnel_view.hint }}</p>
+                                    <p class="browser-session-status-message agent-tunnel-status-message agent-tunnel-status-activity" data-agent-tunnel-activity hidden></p>
+                                    {% set tunnel_action = tunnel_view.action or {} %}
+                                    <a
+                                        class="secondary-button browser-session-login-button agent-tunnel-action"
+                                        data-agent-tunnel-action
+                                        href="{{ tunnel_action.href or '#' }}"
+                                        {% if tunnel_action.href and tunnel_action.href.startswith('https://') %}target="_blank" rel="noopener noreferrer"{% endif %}
+                                        {% if tunnel_action.kind != 'link' %}hidden{% endif %}
+                                    >{{ tunnel_action.label if tunnel_action.kind == 'link' else '' }}</a>
+                                    <button
+                                        type="button"
+                                        class="secondary-button browser-session-login-button agent-tunnel-action"
+                                        data-agent-tunnel-restart
+                                        {% if tunnel_action.kind != 'restart' %}hidden{% endif %}
+                                    >Reconnect</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <label class="field" data-agent-browser-mode-field{% if connection_mode == 'tunnel' %} hidden{% endif %}>
                         <span class="field-label">Browser</span>
                         <div class="agent-browser-session-field" data-agent-browser-session data-browser-session-platform="{{ settings.platform }}" data-browser-session-scope="agent">
                         <div class="trade-strategy-combobox agent-combobox agent-browser-combobox" data-agent-combobox>
@@ -184,7 +228,7 @@
                     </label>
                 </div>
 
-                <div class="agent-session-source" data-agent-session-source data-agent-browser-mode-field>
+                <div class="agent-session-source" data-agent-session-source data-agent-browser-mode-field{% if connection_mode == 'tunnel' %} hidden{% endif %}>
                     <label class="field">
                         <span class="field-label" data-agent-session-platform-label>Session source</span>
                         <div class="trade-strategy-combobox agent-combobox agent-session-mode-combobox" data-agent-combobox>
@@ -245,7 +289,7 @@
 
             </form>
 
-            <details class="ui-collapse agent-session-collapse agent-execution-sessions" data-agent-execution-sessions data-collapse="agent-execution-sessions" aria-label="Recent sessions" open>
+            <details class="ui-collapse agent-session-collapse agent-execution-sessions" data-agent-execution-sessions data-collapse="agent-execution-sessions" aria-label="Recent sessions" data-agent-browser-mode-field{% if connection_mode == 'tunnel' %} hidden{% endif %} open>
                 <summary>
                     <span class="agent-recent-sessions-title">Recent sessions <span class="agent-session-count" data-agent-session-capacity role="status" hidden></span></span>
                 </summary>
@@ -515,6 +559,6 @@
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.49.4-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.51.1-codex.0') }}"></script>
 </body>
 </html>

@@ -2251,7 +2251,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.122.1-codex.1 */",
+        "/* Code version: v2.124.1-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2836,7 +2836,7 @@ def test_agent_runtime_labels_use_the_sidebar_label_type_contract() -> None:
     project_rule = stylesheet[project_start:stylesheet.index("\n}", project_start)]
     assert "font-weight: var(--font-weight-medium);" in project_rule
 
-    browser_selector = ".agent-runtime-form .agent-connect-fields > .field:nth-child(2) > .field-label {"
+    browser_selector = ".agent-runtime-form .agent-connect-fields > .field[data-agent-browser-mode-field] > .field-label {"
     browser_start = stylesheet.index(browser_selector)
     browser_rule = stylesheet[browser_start:stylesheet.index("\n}", browser_start)]
     assert "font-weight: var(--font-weight-regular);" in browser_rule

@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.119.7-codex.1
+# Code version: v1.119.7-codex.2
 
 from __future__ import annotations
 
@@ -324,7 +324,7 @@ class WebAppTests(unittest.TestCase):
         ]
         assert option_ids == sorted(option_ids)
         for source in ("chatgpt", "claude", "gemini", "grok", "zhihu"):
-            expected_path = f"/cache/{source}"
+            expected_path = f"/cache/{source}/text/edge"
             self.assertIn(
                 f'data-cache-source-switcher-path="{expected_path}"',
                 body,
@@ -636,7 +636,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn('class="cache-common-config', body)
         self.assertIn('href="/settings#settings-llm"', gemini_body)
         self.assertIn(">Open Gemini settings</a>", gemini_body)
-        self.assertIn('id="settings_llm_heading">LLM cache settings</h3>', settings_body)
+        self.assertIn('id="settings_llm_heading">LLM settings</h3>', settings_body)
         for field_name in (
             "gemini_max_conversations",
             "gemini_scroll_pause_seconds",
@@ -865,7 +865,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.122.1-codex.1"
+                expected_style_version = "style-v2.124.1-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1027,7 +1027,8 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('id="shadow_backup_phase"', settings_body)
         self.assertNotIn('class="sidebar-section anchor-section" id="settings"', settings_body)
         self.assertIn('formaction="/settings/shadow-backup/sync"', settings_body)
-        self.assertEqual(settings_body.count('class="settings-action-package settings-callout-card-primary'), 2)
+        self.assertEqual(settings_body.count('class="settings-action-package settings-callout-card-primary'), 3)
+        self.assertIn('class="settings-action-package settings-callout-card-primary settings-tunnel-package"', settings_body)
         self.assertIn('class="settings-action-package settings-callout-card-primary settings-agent-terminal-action"', settings_body)
         self.assertIn('class="settings-action-package settings-callout-card-primary shadow-backup-actions"', settings_body)
         self.assertIn('class="icon icon-settings-agent"', settings_body)
@@ -1286,14 +1287,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.122.1-codex.1', local_body)
+        self.assertIn('style-v2.124.1-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.8.4', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.49.3-codex.1', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.51.1-codex.0', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -2113,7 +2114,10 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertIn('data-agent-terminal-execution-checkmark', body)
         self.assertNotIn('>Terminal permission</span>', body)
-        status_item_start = body.index('<div class="browser-session-status-item">')
+        status_item_start = body.index(
+            '<div class="browser-session-status-item">',
+            body.index('data-role="browser-session-status"'),
+        )
         status_item_end = body.index('</div>', status_item_start) + len('</div>')
         status_item = body[status_item_start:status_item_end]
         self.assertIn('data-role="browser-session-spinner"', status_item)
@@ -2761,7 +2765,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.49.3-codex.1',
+            'computer-use-agent-v3.51.1-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -3816,7 +3820,7 @@ class WebAppTests(unittest.TestCase):
             'const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"])',
             "function agentExecutionSupported()",
             "function agentExecutionBlockedMessage()",
-            "void loadSelectedSessionHistory(session.conversation_url);",
+            "void loadSelectedSessionHistory(session.url);",
             '"/api/agent/chatgpt-session-history"',
             "Loading the selected ${selectedPlatformLabel()} session history…",
             'statusMessageCopy: document.querySelector("[data-agent-response-status-copy]")',
@@ -3989,7 +3993,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("Configure one category at a time.", body)
         self.assertNotIn("Control concurrency, file limits,", body)
         self.assertEqual(body.count("settings-agent-system-prompt"), 2)
-        self.assertIn('id="settings_llm_heading">LLM cache settings</h3>', body)
+        self.assertIn('id="settings_llm_heading">LLM settings</h3>', body)
         for field_name in (
             "gemini_max_conversations",
             "gemini_scroll_pause_seconds",
@@ -4512,7 +4516,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.122.1-codex.1", body)
+            self.assertIn("style-v2.124.1-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)

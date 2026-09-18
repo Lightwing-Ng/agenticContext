@@ -2,6 +2,8 @@
 .venv/
 .agenticContext-settings.json
 .cachelikes-settings.json
+/tunnel-credentials.json
+/tunnel/
 .idea/*
 .*.agent-backup-*.tmp
 __pycache__/
