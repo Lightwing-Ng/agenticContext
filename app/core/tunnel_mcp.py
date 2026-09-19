@@ -1,6 +1,6 @@
 """MCP endpoint that ChatGPT reaches through the OpenAI Secure MCP Tunnel.
 
-Code version: v2.0.0-claude.0
+Code version: v2.1.0-codex.0
 
 ChatGPT calls these tools through its Tunnel-connected app. Every project-scoped
 tool names one explicitly registered project (see ``tunnel_projects``); a project
@@ -8,9 +8,9 @@ id is an identity, never a path, and write authority comes only from the registr
 File access reuses the Browser Agent's ``WorkspaceController`` path rules for that
 project's root, and commands go through the same registry-validated approved-command
 policy and bodycheck, so both connections share one safety boundary. Batch reads,
-transactional multi-file edits, guarded whole-file writes, paginated read-only Git
-inspection, and durable approved verification jobs make multi-step coding practical
-over the Tunnel.
+validated multi-file edits, guarded whole-file writes, bounded read-only Git
+inspection, and approved verification commands make multi-step coding practical over
+the Tunnel.
 """
 
 from __future__ import annotations
@@ -18,9 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
-import secrets
 import threading
 import time
 from collections import OrderedDict, deque
@@ -32,23 +30,10 @@ from typing import Any
 
 from app.core.agent.capability_registry import capability_for_action, validate_closed_schema
 from app.core.brand import PRODUCT_NAME
-from app.core.tunnel_checks import (
-    DEFAULT_TIMEOUT_SECONDS,
-    MAX_TIMEOUT_SECONDS,
-    MIN_TIMEOUT_SECONDS,
-    TERMINAL_STATES,
-    TunnelCheckStore,
-)
 from app.core.tunnel_git import (
-    DEFAULT_MAX_HUNK_LINES,
-    DEFAULT_MAX_HUNKS,
-    ContinuationCodec,
     DiffRequest,
+    bounded_patch,
     change_summary,
-    diff_page,
-    git_log,
-    request_from_continuation,
-    resolve_commit,
     status_summary,
 )
 from app.core.tunnel_projects import ProjectRegistry, TunnelProject
@@ -110,9 +95,7 @@ def _object(properties: dict[str, Any], *required: str) -> dict[str, Any]:
 
 
 PATH_PROPERTY = _string("Project-relative path.", maximum=1_000, minimum=1)
-PROJECT_PROPERTY = _string("Registered project id from list_projects.", maximum=64, minimum=1)
-JOB_ID_PROPERTY = _string("Check job id returned by start_check.", maximum=32, minimum=32)
-REVISION_PROPERTY = _string("Commit SHA or ref name (not a range).", maximum=128, minimum=1)
+PROJECT_PROPERTY = _string("Registered project id configured by the user.", maximum=64, minimum=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,24 +121,13 @@ class TunnelTool:
 
 TUNNEL_TOOLS: tuple[TunnelTool, ...] = (
     TunnelTool(
-        "list_projects",
-        "",
-        "List projects",
-        "List the registered local projects you may work in, with whether each is writable. "
-        "Every other tool takes one of these ids as project.",
-        read_only=True,
-        schema=_object({}),
-        project_scoped=False,
-        project_lock=False,
-    ),
-    TunnelTool(
         "project_overview",
         "",
         "Project overview",
         "Start here for each project you touch. Returns whether it is writable, its root "
         "instruction files (AGENTS.md and similar, which you must read and follow), nested "
-        "AGENTS.md files to read before changing paths under their folders, active checks, "
-        "and a bounded Git status.",
+        "AGENTS.md files to read before changing paths under their folders, and a bounded "
+        "Git status.",
         read_only=True,
         schema=_object({}),
     ),
@@ -272,115 +244,24 @@ TUNNEL_TOOLS: tuple[TunnelTool, ...] = (
         "python -m <test module>; node --check <file>; npm/pnpm/yarn/bun test or run <check script>; "
         "go test/vet; cargo check/clippy/test; make <check target>; or a project verification "
         "script such as scripts/test.sh. Shells, pipes, and file-changing commands are refused. "
-        "Run a relevant check after every edit. For a check that may take minutes, use "
-        "start_check instead. Writable projects only.",
+        "Run a relevant check after every edit. Writable projects only.",
         read_only=False,
-    ),
-    TunnelTool(
-        "start_check",
-        "",
-        "Start a long verification",
-        "Start one approved verification command (the same allowlist as run_check) as a "
-        "durable background job and return its job_id immediately. Reuse the same "
-        "idempotency_key when retrying an uncertain start; it never starts a second process. "
-        "One check runs per project at a time. Follow with observe_check. Writable projects only.",
-        read_only=False,
-        schema=_object(
-            {
-                "command": _string("One approved verification command.", maximum=4_000, minimum=1),
-                "idempotency_key": _string(
-                    "Caller-chosen key (8-128 letters, digits, '.', '_', ':', '-') unique to this check.",
-                    maximum=128,
-                    minimum=8,
-                ),
-                "timeout_seconds": _integer(
-                    f"Time limit; default {DEFAULT_TIMEOUT_SECONDS}.",
-                    minimum=MIN_TIMEOUT_SECONDS,
-                    maximum=MAX_TIMEOUT_SECONDS,
-                ),
-            },
-            "command",
-            "idempotency_key",
-        ),
-    ),
-    TunnelTool(
-        "observe_check",
-        "",
-        "Observe a verification job",
-        "Return a check's state (starting, running, succeeded, failed, stopped, timeout, or "
-        "unknown) and its output tail. A finished check counts as verification only if the "
-        "project did not change while it ran; the result says whether it was recorded.",
-        read_only=True,
-        schema=_object({"job_id": JOB_ID_PROPERTY}, "job_id"),
-    ),
-    TunnelTool(
-        "stop_check",
-        "",
-        "Stop a verification job",
-        "Stop one running check and its process tree. Writable projects only.",
-        read_only=False,
-        schema=_object({"job_id": JOB_ID_PROPERTY}, "job_id"),
     ),
     TunnelTool(
         "show_changes",
         "",
         "Show changes",
-        "Summarize Git changes: branch status, changed and untracked files, and unstaged and "
-        "staged diff stats, optionally for one path. Use git_diff_hunks for the patch itself.",
-        read_only=True,
-        schema=_object(
-            {"path": _string("Optional project-relative path to limit the summary.", maximum=1_000)}
-        ),
-        project_lock=False,
-    ),
-    TunnelTool(
-        "git_log",
-        "",
-        "Git log",
-        "List recent commits (newest first): full SHA, author date, author, and subject. Page "
-        "with skip while has_more is true.",
+        "Review Git changes: branch status, changed and untracked files, and unstaged and "
+        "staged diff stats. Set include_patch to receive a bounded unified diff, optionally "
+        "for one path or for staged changes.",
         read_only=True,
         schema=_object(
             {
-                "limit": _integer("Commits to return; default 20.", minimum=1, maximum=100),
-                "skip": _integer("Commits to skip from the newest.", minimum=0, maximum=100_000),
-                "ref": REVISION_PROPERTY,
-                "path": _string("Optional project-relative path to limit history.", maximum=1_000),
-            }
-        ),
-        project_lock=False,
-    ),
-    TunnelTool(
-        "git_diff_hunks",
-        "",
-        "Git diff hunks",
-        "Read the unified diff as bounded pages of hunks. Default: unstaged changes; staged "
-        "compares the index with HEAD; base_commit alone compares it with the working tree (or "
-        "the index when staged); base_commit with head_commit compares two commits. When "
-        "complete is false, call again with only project and continuation (page sizes may "
-        "change) until every hunk is read. A continuation fails instead of reading a diff that "
-        "changed in the meantime.",
-        read_only=True,
-        schema=_object(
-            {
-                "paths": {
-                    "type": "array",
-                    "description": "Optional project-relative paths to limit the diff.",
-                    "minItems": 1,
-                    "maxItems": 16,
-                    "items": PATH_PROPERTY,
-                },
-                "staged": _boolean("Diff the index instead of the working tree."),
-                "base_commit": REVISION_PROPERTY,
-                "head_commit": REVISION_PROPERTY,
-                "max_hunks": _integer(f"Hunks per page; default {DEFAULT_MAX_HUNKS}.", minimum=1, maximum=50),
-                "max_hunk_lines": _integer(
-                    f"Lines per hunk segment; default {DEFAULT_MAX_HUNK_LINES}. Longer hunks continue "
-                    "on the next page.",
-                    minimum=20,
-                    maximum=400,
+                "path": _string(
+                    "Optional project-relative path to limit status and diffs.", maximum=1_000
                 ),
-                "continuation": _string("continuation from the previous page.", maximum=40_000, minimum=1),
+                "include_patch": _boolean("Include the bounded unified diff."),
+                "staged": _boolean("Show the staged patch instead of the unstaged patch."),
             }
         ),
         project_lock=False,
@@ -390,24 +271,23 @@ TUNNEL_TOOLS: tuple[TunnelTool, ...] = (
         "bodycheck",
         "Review changes",
         "Final gate: checks the bounded diff and instruction files. In a writable project it "
-        "requires a successful run_check (or a recorded observe_check) after the latest edit.",
+        "requires a successful run_check after the latest edit.",
         read_only=True,
     ),
 )
 TUNNEL_TOOLS_BY_NAME = {tool.name: tool for tool in TUNNEL_TOOLS}
-_DIFF_REQUEST_FIELDS = frozenset({"paths", "staged", "base_commit", "head_commit"})
 
 
 SERVER_INSTRUCTIONS = (
     "These tools work directly in explicitly registered local projects on the user's "
-    "computer. Call list_projects, then project_overview for the project you will work in, "
-    "and follow the instruction files it lists. Every tool names its project; paths are "
+    "computer. Call project_overview first for the registered project you will work in, and "
+    "follow the instruction files it lists. Every tool names its project; paths are "
     "relative to that project's root, and read-only projects (such as reference "
-    "repositories) cannot be changed. Inspect with list_files, search_files, read_files, "
-    "git_log, and git_diff_hunks. Change code with apply_edits (exact replacements) or "
+    "repositories) cannot be changed. Inspect with list_files, search_files, and read_files. "
+    "Change code with apply_edits (exact replacements) or "
     "write_file (new files, or whole-file rewrites guarded by expected_sha256). Verify with "
-    "run_check after every edit, or start_check and observe_check for long checks; review "
-    "with show_changes and git_diff_hunks, and finish with review_changes. Leave unrelated "
+    "run_check after every edit, review with show_changes, and finish with review_changes. "
+    "Leave unrelated "
     "user changes intact."
 )
 
@@ -475,7 +355,6 @@ class _ProjectController:
     root: Path
     writable: bool
     controller: Any
-    epoch: str
 
 
 class TunnelMcpService:
@@ -488,14 +367,12 @@ class TunnelMcpService:
         registry: ProjectRegistry | None = None,
         runtime_root: Path | None = None,
     ) -> None:
-        if runtime_root is None:
-            from app.core.computer_use_agent import DEFAULT_AGENT_RUNTIME_ROOT
-
-            runtime_root = DEFAULT_AGENT_RUNTIME_ROOT
+        # ``runtime_root`` remains accepted for callers that construct the service
+        # alongside other Agent runtimes; the synchronous ten-tool MCP contract does
+        # not persist its own jobs.
+        del runtime_root
         self._settings_provider = settings_provider
         self._registry = registry or ProjectRegistry()
-        self._checks = TunnelCheckStore(runtime_root)
-        self._continuations = ContinuationCodec(secrets.token_bytes(32))
         # Tools for one project run one at a time, in arrival order, so controller
         # generations, read receipts, and verification ordering stay linear. Projects
         # do not block each other, and read-only Git observation takes no project lock.
@@ -706,7 +583,6 @@ class TunnelMcpService:
                         lambda: self._stopping,
                         read_only=not project.writable,
                     ),
-                    secrets.token_hex(8),
                 )
                 self._controllers[project.id] = binding
             return binding
@@ -735,11 +611,16 @@ class TunnelMcpService:
                     receipt is not None
                     and receipt[2] == controller.state.workspace_generation
                 )
-                if not current and path.is_file():
+                expected = str(arguments.get("expected_sha256") or "").strip().casefold()
+                if (
+                    receipt is not None
+                    and not current
+                    and receipt[0] == expected
+                    and path.is_file()
+                ):
                     # Any Tunnel edit advances the controller generation and ages every
-                    # receipt. Refresh this one so expected_sha256, which the controller
-                    # still compares with the file's bytes under its lock, stays the
-                    # single stale-delete guard.
+                    # existing receipt. Refresh only that same-digest receipt; a client
+                    # that never read this file must not gain a synthesized receipt.
                     controller.execute({"action": "read", "path": relative_key})
         payload = {**arguments, "action": action}
         observation = controller.execute(payload)
@@ -756,24 +637,6 @@ class TunnelMcpService:
     def _relative(self, project: TunnelProject, raw_path: Any) -> str:
         return self._resolve(project, raw_path, allow_missing=True).relative_to(project.root).as_posix()
 
-    def _tool_list_projects(self, _arguments: dict[str, Any]) -> dict[str, Any]:
-        projects = self._registry.projects(self._fallback_workspace())
-        if not projects:
-            return {
-                "ok": False,
-                "error": (
-                    "No project is registered. Ask the user to add projects to "
-                    "tunnel-projects.json beside the AgenticContext settings file."
-                ),
-            }
-        return {
-            "ok": True,
-            "projects": [
-                {**project.public_record(), "git": (project.root / ".git").exists()}
-                for project in projects
-            ],
-        }
-
     def _tool_project_overview(self, project: TunnelProject, _arguments: dict[str, Any]) -> dict[str, Any]:
         listing = self._execute_action(project, "list", {"path": ".", "depth": 1})
         root_files, nested_files = _project_instruction_files(project.root)
@@ -784,16 +647,13 @@ class TunnelMcpService:
             "writable": project.writable,
             "instruction_files": root_files,
             "top_level_entries": listing.get("entries", []),
-            "git_status": status_summary(project.root),
+            "git_status": status_summary(project.root, withheld=_withheld_diff_path),
             "workflow": SERVER_INSTRUCTIONS,
         }
         if nested_files:
             result["nested_instruction_files"] = nested_files
         if project.writable:
             result["verification_current"] = bool(controller.state.verification_current)
-            active = self._checks.active_jobs(project.id, project.root)
-            if active:
-                result["active_checks"] = active
         return result
 
     def _tool_read_files(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -804,13 +664,23 @@ class TunnelMcpService:
         return {"ok": any(result.get("ok") for result in results), "files": results}
 
     def _tool_apply_edits(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
+        controller = self._controller_for(project)
         planned: OrderedDict[Path, dict[str, Any]] = OrderedDict()
         for index, edit in enumerate(arguments["edits"], start=1):
             old_text = edit["old_text"]
             new_text = edit["new_text"]
             path = self._resolve(project, edit["path"])
             if path not in planned:
-                planned[path] = {"text": _read_text_file(path), "replacements": 0}
+                source_bytes, _digest, _size, _identity = controller._current_file_snapshot(path)
+                try:
+                    source = source_bytes.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise ValueError(f"{path.name} is not UTF-8 text.") from exc
+                planned[path] = {
+                    "source": source,
+                    "text": source,
+                    "replacements": 0,
+                }
             current = planned[path]["text"]
             occurrences = current.count(old_text)
             relative = path.relative_to(project.root).as_posix()
@@ -828,28 +698,31 @@ class TunnelMcpService:
             planned[path]["text"] = current.replace(old_text, new_text, count)
             planned[path]["replacements"] += count
         changed = []
+        controller._mark_edit()
         for path, plan in planned.items():
             data = plan["text"].encode("utf-8")
-            _atomic_replace(path, data)
+            relative_path = path.relative_to(project.root)
+            controller._replace_text_file(relative_path, plan["source"], plan["text"])
             changed.append(
                 {
-                    "path": path.relative_to(project.root).as_posix(),
+                    "path": relative_path.as_posix(),
                     "replacements": plan["replacements"],
                     "sha256": hashlib.sha256(data).hexdigest(),
                 }
             )
-        self._controller_for(project)._mark_edit()
         return {"ok": True, "files": changed}
 
     def _tool_write_file(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
         content = arguments["content"]
+        controller = self._controller_for(project)
         path = self._resolve(project, arguments["path"], allow_missing=True)
-        relative = path.relative_to(project.root).as_posix()
+        relative_path = path.relative_to(project.root)
+        relative = relative_path.as_posix()
         existed = path.exists()
         if existed:
             if not path.is_file():
                 raise ValueError(f"{relative} is not a regular file.")
-            current_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            source_bytes, current_sha, _size, _identity = controller._current_file_snapshot(path)
             expected = str(arguments.get("expected_sha256") or "")
             if not expected:
                 raise ValueError(
@@ -858,10 +731,16 @@ class TunnelMcpService:
                 )
             if expected != current_sha:
                 raise ValueError(f"{relative} changed since it was read. Read it again first.")
+            try:
+                source = source_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"{relative} is not UTF-8 text.") from exc
         data = content.encode("utf-8")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_replace(path, data)
-        self._controller_for(project)._mark_edit()
+        controller._mark_edit()
+        if existed:
+            controller._replace_text_file(relative_path, source, content)
+        else:
+            controller._write_new_file(relative_path, data)
         return {
             "ok": True,
             "path": relative,
@@ -873,193 +752,25 @@ class TunnelMcpService:
     # Git observation --------------------------------------------------------
 
     def _tool_show_changes(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
-        pathspec = [f":(literal){self._relative(project, arguments['path'])}"] if arguments.get("path") else []
-        return {"ok": True, **change_summary(project.root, pathspec)}
-
-    def _tool_git_log(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
-        pathspec = [f":(literal){self._relative(project, arguments['path'])}"] if arguments.get("path") else []
-        return {
+        paths = (
+            (self._relative(project, arguments["path"]),)
+            if arguments.get("path")
+            else ()
+        )
+        pathspec = [f":(literal){path}" for path in paths]
+        result: dict[str, Any] = {
             "ok": True,
-            **git_log(
-                project.root,
-                limit=int(arguments.get("limit") or 20),
-                skip=int(arguments.get("skip") or 0),
-                ref=str(arguments.get("ref") or ""),
-                pathspec=pathspec,
-            ),
+            **change_summary(project.root, pathspec, withheld=_withheld_diff_path),
         }
-
-    def _tool_git_diff_hunks(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
-        token = arguments.get("continuation")
-        continuation: dict[str, Any] | None = None
-        if token:
-            if arguments.keys() & _DIFF_REQUEST_FIELDS:
-                raise ValueError(
-                    "A continuation already fixes the diff request; pass only project, "
-                    "continuation, max_hunks, and max_hunk_lines."
+        if arguments.get("include_patch"):
+            result.update(
+                bounded_patch(
+                    project.root,
+                    DiffRequest(bool(arguments.get("staged")), "", "", paths),
+                    withheld=_withheld_diff_path,
                 )
-            continuation = self._continuations.decode(token)
-            request = request_from_continuation(continuation, project_id=project.id, root=project.root)
-        else:
-            staged = bool(arguments.get("staged"))
-            base = str(arguments.get("base_commit") or "")
-            head = str(arguments.get("head_commit") or "")
-            if head and not base:
-                raise ValueError("head_commit needs base_commit.")
-            if head and staged:
-                raise ValueError("staged compares the index, so it cannot be combined with head_commit.")
-            paths = tuple(
-                dict.fromkeys(self._relative(project, raw) for raw in arguments.get("paths") or [])
             )
-            request = DiffRequest(
-                staged,
-                resolve_commit(project.root, base, "base_commit") if base else "",
-                resolve_commit(project.root, head, "head_commit") if head else "",
-                paths,
-            )
-        return diff_page(
-            project_id=project.id,
-            root=project.root,
-            request=request,
-            withheld=_withheld_diff_path,
-            codec=self._continuations,
-            continuation=continuation,
-            max_hunks=int(arguments.get("max_hunks") or DEFAULT_MAX_HUNKS),
-            max_hunk_lines=int(arguments.get("max_hunk_lines") or DEFAULT_MAX_HUNK_LINES),
-        )
-
-    # Durable verification ---------------------------------------------------
-
-    def _tool_start_check(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
-        from app.core.computer_use_agent import (
-            _workspace_mutation_fingerprint,
-            inspection_command_parts,
-        )
-
-        command = arguments["command"].strip()
-        argv = inspection_command_parts(command, workspace=project.root)
-        if argv[:2] == ["git", "status"]:
-            raise ValueError("Use run_check for git status; start_check is for long checks.")
-        binding = self._binding(project)
-        snapshot, complete = _workspace_mutation_fingerprint(
-            project.root, should_stop=lambda: self._stopping
-        )
-        if not complete:
-            raise RuntimeError(
-                "The check was not started because the project could not be fingerprinted "
-                "completely; its result could not be tied to the checked state."
-            )
-        controller = binding.controller
-        controller._record_workspace_snapshot(snapshot, complete=True)
-        job_dir, metadata, deduplicated = self._checks.start(
-            project_id=project.id,
-            project_root=project.root,
-            argv=argv,
-            command=command,
-            idempotency_key=arguments["idempotency_key"],
-            timeout_seconds=int(arguments.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
-            evidence={
-                "snapshot_id": snapshot,
-                "edit_generation": controller.state.edit_generation,
-                "workspace_generation": controller.state.workspace_generation,
-                "controller_epoch": binding.epoch,
-            },
-        )
-        result: dict[str, Any] = {"ok": True, "job": self._checks.status(job_dir, metadata)}
-        if deduplicated:
-            result["deduplicated"] = True
         return result
-
-    def _tool_observe_check(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
-        job_dir, metadata = self._checks.find(project.id, project.root, arguments["job_id"])
-        return self._check_observation(project, job_dir, metadata, self._checks.status(job_dir, metadata))
-
-    def _tool_stop_check(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
-        job_dir, metadata = self._checks.find(project.id, project.root, arguments["job_id"])
-        status = self._checks.stop(job_dir, metadata)
-        observation = self._check_observation(project, job_dir, metadata, status)
-        if status["state"] not in TERMINAL_STATES:
-            observation["ok"] = False
-            observation["error"] = "The check has not stopped yet; observe it again shortly."
-        elif status["state"] != "unknown":
-            observation["ok"] = True
-            observation.pop("error", None)
-        return observation
-
-    def _check_observation(
-        self,
-        project: TunnelProject,
-        job_dir: Path,
-        metadata: dict[str, Any],
-        status: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Map one job state to a truthful result, recording evidence exactly once."""
-        state = status["state"]
-        if state not in TERMINAL_STATES:
-            return {"ok": True, "job": status}
-        evaluation = self._evaluate_check(project, job_dir, metadata, state)
-        status.update(evaluation)
-        if state == "succeeded" and not evaluation.get("workspace_changed"):
-            return {"ok": True, "job": status}
-        if state == "succeeded":
-            error = (
-                "The command passed, but the project changed while it ran, so it does not "
-                "verify the current files. Run the check again."
-            )
-        elif state == "unknown":
-            error = "The check outcome is unknown; treat the project as unverified."
-        else:
-            error = f"The check ended as {state}; the project is not verified."
-        return {"ok": False, "error": error, "job": status}
-
-    def _evaluate_check(
-        self,
-        project: TunnelProject,
-        job_dir: Path,
-        metadata: dict[str, Any],
-        state: str,
-    ) -> dict[str, Any]:
-        from app.core.computer_use_agent import _workspace_mutation_fingerprint
-
-        existing = self._checks.evaluation(job_dir)
-        if existing is not None:
-            return {key: existing[key] for key in ("verification", "workspace_changed", "reason") if key in existing}
-        binding = self._binding(project)
-        controller = binding.controller
-        evidence = metadata.get("evidence") if isinstance(metadata.get("evidence"), dict) else {}
-        after, complete = _workspace_mutation_fingerprint(
-            project.root, should_stop=lambda: self._stopping
-        )
-        workspace_changed = not complete or after != evidence.get("snapshot_id")
-        same_session = evidence.get("controller_epoch") == binding.epoch
-        same_generation = bool(
-            same_session
-            and evidence.get("edit_generation") == controller.state.edit_generation
-            and evidence.get("workspace_generation") == controller.state.workspace_generation
-        )
-        evaluation: dict[str, Any] = {"verification": "not_recorded", "workspace_changed": workspace_changed}
-        if workspace_changed:
-            # Newer files than the checked ones: age every older piece of evidence too.
-            controller._record_workspace_snapshot(after, complete=complete)
-            evaluation["reason"] = "The project changed while the check ran."
-        elif state == "succeeded" and same_generation:
-            controller._record_workspace_snapshot(after, complete=True)
-            controller.state.verification_generation = controller.state.edit_generation
-            controller.state.verification_workspace_generation = controller.state.workspace_generation
-            controller.state.verification_snapshot_id = after
-            controller.state.successful_checks.append(str(metadata.get("command") or ""))
-            evaluation["verification"] = "recorded"
-        elif state == "succeeded":
-            evaluation["reason"] = (
-                "The project was edited after the check started."
-                if same_session
-                else "The check started before the service restarted."
-            )
-        elif same_generation:
-            # A failing check of the current files withdraws any earlier pass for them.
-            controller._invalidate_verification_order()
-        self._checks.record_evaluation(job_dir, evaluation)
-        return evaluation
 
     def _record_activity(
         self,
@@ -1151,30 +862,6 @@ def _project_instruction_files(root: Path) -> tuple[list[str], list[str]]:
         if not crosses_repository:
             nested_files.append(relative.as_posix())
     return root_files, nested_files
-
-
-def _read_text_file(path: Path) -> str:
-    if not path.is_file():
-        raise ValueError(f"{path.name} is not a regular file.")
-    try:
-        return path.read_bytes().decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError(f"{path.name} is not UTF-8 text.") from exc
-
-
-def _atomic_replace(path: Path, data: bytes) -> None:
-    """Write bytes beside the target and swap them in, keeping its permissions."""
-    mode = path.stat().st_mode & 0o7777 if path.exists() else 0o644
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tunnel-tmp")
-    try:
-        with temporary.open("wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _server_info() -> dict[str, str]:

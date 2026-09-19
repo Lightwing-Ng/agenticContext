@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.37.0-claude.0`
+Documentation version: `v1.38.0-codex.0`
 
 ## Runtime flow
 
@@ -157,7 +157,7 @@ data. The Agent password unlock template is outside the registration surface. If
 absent or the page is inside an iframe, registration is a no-op and the normal UI remains complete.
 
 The cross-project naming, schema, result envelope, effects, security, evaluation, and promotion
-rules live in `/Users/lightwing/Desktop/SHARED_AGENT_OPTIMIZATION.md`. Project-specific routes and
+rules live in `/Users/lightwing/Desktop/shared_docs/SHARED_AGENT_OPTIMIZATION.md`. Project-specific routes and
 evidence live in [AGENT_OPTIMIZATION.md](AGENT_OPTIMIZATION.md).
 
 ## Secure MCP Tunnel coding backend
@@ -170,11 +170,11 @@ ChatGPT or another MCP client
   -> AgenticContext /mcp
   -> TunnelMcpService (closed-schema validation, project resolution)
   -> ProjectRegistry -> one registered project (id -> canonical root, writable flag)
-  -> that project's WorkspaceController, TunnelCheckStore, or read-only Git inspection
+  -> that project's WorkspaceController or read-only Git inspection
   -> confined filesystem, Git inspection, and approved checks
 ```
 
-The public catalog contains only the sixteen tools documented in
+The public catalog contains exactly the ten tools documented in
 [OPERATIONS.md](OPERATIONS.md). Runtime selection is server-side; callers do not select an
 adaptive or full-operator runtime and no public schema contains a runtime selector. Tool names
 returned by `tools/list` are resolved by the same dispatcher table, so removed compatibility
@@ -189,7 +189,8 @@ follows from where a directory lives. The registry rejects overlapping roots, th
 root, and the home folder, and an invalid registry fails closed. When no registry file exists,
 the Agent's selected workspace becomes the only project, and only when it is itself a Git
 work-tree root; a parent folder such as the Desktop never becomes an implicit project. Every
-tool except `list_projects` requires `project`; a read-only project rejects every mutating tool
+tool requires the configured `project` id; project inventory is not exposed as a public MCP
+capability. A read-only project rejects every mutating tool
 before the filesystem is touched, and its controller is also created read-only. Model paths
 must be project-relative; absolute and `~` paths are refused before resolution, and the
 controller's confinement, symlink, ignored-directory, and credential-file rules then apply to
@@ -203,44 +204,36 @@ Git inspection. `app/core/tunnel_git.py` runs one trusted `git` executable direc
 `GIT_OPTIONAL_LOCKS=0`, no pager or color, `GIT_CEILING_DIRECTORIES` set to the root's parent
 (so a non-Git project never inspects an enclosing repository), fsmonitor disabled, and
 `--no-ext-diff --no-textconv` so repository configuration cannot run programs. Output is read
-with a hard byte cap. `git_diff_hunks` parses the unified diff into hunks (file-level entries
-for binary, mode, and rename-only changes), withholds credential and controller-internal paths,
-and pages by hunk count, lines per hunk segment, and a 60,000-character budget. Its
-continuation is HMAC-signed with a per-process key and carries the project id, a root key, the
-exact request (with revisions resolved to commit SHAs), the SHA-256 of the full diff bytes, and
-the next position. Resuming recomputes the diff and fails if those bytes changed, if the
-continuation belongs to another project, or after a service restart, so evidence is never read
-from a different diff. `show_changes` is the compact status-and-stat summary; the patch itself
-is only available through `git_diff_hunks`.
+with a hard byte cap. `show_changes` returns path-scoped status and staged/unstaged stats while
+withholding protected path names from every model-visible summary. When
+`include_patch` is true, it returns the requested staged or unstaged unified patch under a
+60,000-character response budget, reports truncation, and withholds credential and
+controller-internal file segments. Untracked files remain visible in status; Git does not emit
+a unified patch for them until they are tracked.
 
-Durable verification. `app/core/tunnel_checks.py` and the stdlib-only
-`app/core/tunnel_check_runner.py` run long approved checks as jobs under the Agent runtime root
-(`tunnel-checks/<project key>/<job id>/`). `start_check` accepts only argv that
-`inspection_command_parts` (the same policy as `run_check`) returns, requires an idempotency
-key, and allows one active check per project. The runner is launched with `python -I`, owns the
-command's process group, caps its log, enforces the timeout, and writes one `result.json`; it
-also records the command's pid and birth identity so an orphaned tree can still be stopped. The
-store signals a runner only while its recorded birth identity matches and reports `unknown` when
-the runner vanished without a result. `ComputeJobManager` is not reused for execution because it
-admits only SHA-pinned optimizer entrypoints with a 12-hour minimum runtime and a no-fork macOS
-sandbox; its durable-file, lock, and process-identity helpers are reused. Verification evidence is
-fingerprint-bound: `start_check` records the workspace fingerprint and controller generations,
-and the first terminal observation records verification only when the job succeeded, the
-project fingerprint is unchanged, and the same controller session saw no edit in between. A
-changed project is reported as `workspace_changed`, a failed check of the current state
-withdraws earlier verification, and the evaluation is persisted so later observations cannot
-re-apply it to a later edit.
+Verification. `run_check` uses the controller's bounded approved-command policy and runs no
+shell. A successful command is tied to the current workspace fingerprint; a command that changes
+the workspace does not count as verification. `review_changes` is the non-mutating final gate and
+requires current verification evidence after the latest edit or observed workspace change.
+Approved checks are trusted project code, not a hermetic security sandbox: they execute as the
+AgenticContext service account and can use that account's ambient filesystem and network access.
+The MCP bridge confines command selection, arguments, working directory, output, duration, and
+process cleanup, but operators must register only trusted projects and checks.
 
 Concurrency. Calls for one project run under that project's lock in arrival order, preserving
 controller state, edit-generation, and verification ordering. Different projects do not block
-each other, and `show_changes`, `git_log`, and `git_diff_hunks` take no project lock because
-they only read Git state and never touch controller state.
+each other, and `show_changes` takes no project lock because it only reads Git state and never
+touches controller state.
 
 The catalog is static for one Python process. The server therefore advertises
 `tools.listChanged=false`; a source-level catalog change becomes live only after the
 AgenticContext service reloads that module. A Tunnel reconnect is transport lifecycle only.
+Transport-added routing metadata is ignored before closed-schema validation and can never select
+the project or action; every other undeclared argument is rejected.
 Clients that cache discovered tools must fetch a fresh `tools/list` after reconnecting to the
 reloaded server; ChatGPT exposes that rescan through the app Refresh/Scan Tools action.
+WebCodex Desktop, a DMG application, GUI helper processes, and desktop IPC are not on this
+runtime path and are not required for any MCP coding operation.
 
 ## Agent capability and recovery boundary
 

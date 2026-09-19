@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.3.5-codex.1
+Code version: v1.3.6-codex.0
 """
 
 from copy import deepcopy
@@ -462,7 +462,7 @@ def test_jury_runtime_preferences_restore_without_account_probe(
         ) == expected
         expect(page.locator('[aria-label="Agent modes"] a').first).to_have_attribute(
             "href",
-            re.compile(r"^/agent/edge/"),
+            "/agent/tunnel/chatgpt",
         )
         expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
         assert checks == []
@@ -942,7 +942,7 @@ def test_jury_browser_keyboard_selection_and_dock_restore(jury_browser, sidebar_
         expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
         assert len(checks) == 2
         page.get_by_role("radio", name="Agentic", exact=True).click()
-        expect(page).to_have_url(re.compile(rf"{re.escape(sidebar_server_url)}/agent/{selected_key}/[^/?]+"))
+        expect(page).to_have_url(f"{sidebar_server_url}/agent/tunnel/chatgpt")
         expect(page.locator('[aria-label="Agent modes"]')).to_have_class(
             re.compile(r"\bsegmented-control\b")
         )
@@ -964,17 +964,17 @@ def test_jury_mode_link_switches_into_and_out_of_safari_without_account_probe(
     try:
         page.goto(f"{sidebar_server_url}/jury/safari", wait_until="domcontentloaded")
         agentic = page.locator('[aria-label="Agent modes"] a').first
-        expect(agentic).to_have_attribute("href", re.compile(r"^/agent/safari/"))
+        expect(agentic).to_have_attribute("href", "/agent/tunnel/chatgpt")
 
         page.locator("[data-jury-browser-trigger]").click()
         page.locator('[data-jury-browser-option="edge"]').click()
         expect(page).to_have_url(f"{sidebar_server_url}/jury/edge")
-        expect(agentic).to_have_attribute("href", re.compile(r"^/agent/edge/"))
+        expect(agentic).to_have_attribute("href", "/agent/tunnel/chatgpt")
 
         page.locator("[data-jury-browser-trigger]").click()
         page.locator('[data-jury-browser-option="safari"]').click()
         expect(page).to_have_url(f"{sidebar_server_url}/jury/safari")
-        expect(agentic).to_have_attribute("href", re.compile(r"^/agent/safari/"))
+        expect(agentic).to_have_attribute("href", "/agent/tunnel/chatgpt")
         claude_row = page.locator('[data-jury-provider-row="claude"]')
         expect(claude_row).to_be_visible()
         expect(claude_row).to_have_attribute("aria-disabled", "true")

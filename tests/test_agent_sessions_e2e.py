@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.14.0-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.15.2-codex.0."""
 
 import re
 from copy import deepcopy
@@ -75,6 +75,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         tunnel = page.locator("#agent_connection_tunnel")
         browser_fields = page.locator("[data-agent-browser-mode-field]")
         recent_sessions = page.locator("[data-agent-execution-sessions]")
+        workspace = page.locator("#agent_workspace")
 
         expect(mode_control).to_be_visible()
         material = page.evaluate(
@@ -115,6 +116,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         expect(tunnel_field).to_be_hidden()
         expect(browser_task).to_be_visible()
         expect(onboarding).to_be_hidden()
+        assert workspace.get_attribute("data-layout-role") is None
 
         page.locator('label[for="agent_connection_tunnel"]').click()
         expect(tunnel).to_be_checked()
@@ -127,6 +129,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         expect(browser_task).to_be_hidden()
         expect(page.locator("#agent_prompt_form")).to_be_hidden()
         expect(onboarding).to_be_visible()
+        expect(workspace).to_have_attribute("data-layout-role", "content-scrollport")
         expect(page.locator("[data-agent-heading]")).to_have_text("Connect ChatGPT to this local project")
         for marker in ("➊", "➋", "➌", "➍"):
             expect(onboarding).to_contain_text(marker)
@@ -153,6 +156,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         expect(tunnel_field).to_be_hidden()
         expect(browser_task).to_be_visible()
         expect(onboarding).to_be_hidden()
+        assert workspace.get_attribute("data-layout-role") is None
         expect(page.locator("[data-agent-heading]")).to_have_text("ChatGPT Web Agent")
         assert errors == []
     finally:
@@ -259,6 +263,11 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         )
         expect(page.locator("[data-agent-tunnel-hint]")).to_be_hidden()
 
+        action = page.locator("[data-agent-tunnel-copy-kickoff]")
+        action.focus()
+        action.evaluate("element => element.scrollIntoView({block: 'nearest', inline: 'nearest'})")
+        page.wait_for_timeout(250)
+
         geometry = page.evaluate(
             """() => {
                 const workspace = document.querySelector('#agent_workspace');
@@ -266,8 +275,6 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                 const card = document.querySelector('[data-agent-tunnel-onboarding]');
                 const steps = [...document.querySelectorAll('.agent-tunnel-onboarding-step')];
                 const action = document.querySelector('[data-agent-tunnel-copy-kickoff]');
-                action.focus();
-                action.scrollIntoView({block: 'nearest', inline: 'nearest'});
 
                 const scrollable = (element) => {
                     const style = getComputedStyle(element);
@@ -280,6 +287,8 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                 };
                 const rootStyle = getComputedStyle(document.documentElement);
                 const token = (name) => parseFloat(rootStyle.getPropertyValue(name));
+                const workspaceStyle = getComputedStyle(workspace);
+                const actionStyle = getComputedStyle(action);
                 const workspaceRect = workspace.getBoundingClientRect();
                 const clip = {
                     top: workspaceRect.top + workspace.clientTop,
@@ -290,7 +299,9 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                 const actionRect = action.getBoundingClientRect();
                 const headings = steps.map((step) => step.querySelector('h4'));
                 const paragraphs = steps.flatMap((step) => [...step.querySelectorAll('.agent-tunnel-step-copy p')]);
+                const setupRows = [...steps[0].querySelectorAll('.agent-tunnel-setup-row')];
                 const credentialCopy = steps[1].querySelector('.agent-tunnel-step-copy');
+                const credentialInputs = [...steps[1].querySelectorAll('.text-input-control')];
                 const titleText = document.createRange();
                 titleText.selectNodeContents(document.querySelector('[data-agent-heading]'));
                 const quickActions = document.querySelector('.global-quick-actions').getBoundingClientRect();
@@ -299,7 +310,8 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                         line.right > quickActions.left && line.left < quickActions.right
                         && line.top < quickActions.bottom && line.bottom > quickActions.top
                     ),
-                    workspaceOverflowY: getComputedStyle(workspace).overflowY,
+                    workspaceOverflowY: workspaceStyle.overflowY,
+                    workspaceScrollPaddingBlockEnd: parseFloat(workspaceStyle.scrollPaddingBlockEnd),
                     gridOverflowY: getComputedStyle(grid).overflowY,
                     cardOverflowY: getComputedStyle(card).overflowY,
                     workspaceScrollable: scrollable(workspace),
@@ -319,10 +331,22 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     markerHeadingCenterDeltas: steps.map((step, index) => Math.abs(
                         center(step.querySelector('.agent-tunnel-step-number')) - center(headings[index])
                     )),
+                    markerFontSizes: [...new Set(steps.map((step) =>
+                        parseFloat(getComputedStyle(step.querySelector('.agent-tunnel-step-number')).fontSize)
+                    ))],
+                    setupRowActionCenterDeltas: setupRows.map((row) => Math.abs(
+                        center(row.querySelector('p')) - center(row.querySelector('.agent-tunnel-step-action'))
+                    )),
+                    setupRowActionLabels: setupRows.map((row) =>
+                        row.querySelector('.agent-tunnel-step-action').textContent.trim()
+                    ),
                     headingFontSizes: [...new Set(headings.map((heading) => parseFloat(getComputedStyle(heading).fontSize)))],
                     bodyFontSizes: [...new Set(paragraphs.map((paragraph) => parseFloat(getComputedStyle(paragraph).fontSize)))],
+                    credentialInputFontSizes: credentialInputs.map((input) => getComputedStyle(input).fontSize),
+                    copyIconMask: getComputedStyle(action.querySelector('.agent-response-copy-icon')).maskImage,
                     headingToken: token('--font-ui-lg'),
                     bodyToken: token('--font-ui-md'),
+                    effectBleedToken: token('--layout-physical-effect-bleed'),
                     secondParagraphCount: steps[1].querySelectorAll('p').length,
                     credentialCopyChildren: [...credentialCopy.children].map((child) => child.tagName),
                     emptyCredentialBlocks: [...steps[1].querySelectorAll('div, p, span')].filter(
@@ -332,6 +356,8 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     ).length,
                     dividers: steps.map((step) => getComputedStyle(step).borderBlockStartWidth),
                     focused: document.activeElement === action,
+                    focusedActionFocusVisible: action.matches(':focus-visible'),
+                    focusedActionBoxShadow: actionStyle.boxShadow,
                     focusedActionInsideClip:
                         actionRect.top >= clip.top
                         && actionRect.bottom <= clip.bottom
@@ -341,6 +367,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                         clip.right - actionRect.right,
                         actionRect.left - clip.left,
                     ),
+                    focusedActionBottomClearance: clip.bottom - actionRect.bottom,
                 };
             }"""
         )
@@ -348,6 +375,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["workspaceOverflowY"] == "auto"
         assert geometry["gridOverflowY"] == "visible"
         assert geometry["cardOverflowY"] == "visible"
+        assert geometry["workspaceScrollPaddingBlockEnd"] == geometry["effectBleedToken"]
         assert geometry["gridScrollable"] is False
         assert geometry["cardScrollable"] is False
         if height <= 420:
@@ -356,16 +384,26 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         else:
             assert geometry["scrollOwners"] in ([], ["agent_workspace"])
         assert max(geometry["markerHeadingCenterDeltas"]) <= 1, geometry["markerHeadingCenterDeltas"]
+        assert geometry["markerFontSizes"] == [20]
+        if width > 760:
+            assert max(geometry["setupRowActionCenterDeltas"]) <= 1, geometry["setupRowActionCenterDeltas"]
+        assert geometry["setupRowActionLabels"] == ["Open Tunnels", "Open API keys"]
         assert geometry["headingFontSizes"] == [geometry["headingToken"]]
         assert geometry["bodyFontSizes"] == [geometry["bodyToken"]]
+        assert len(set(geometry["credentialInputFontSizes"])) == 1
+        assert "document.on.document.fill.svg" in geometry["copyIconMask"]
         assert geometry["bodyToken"] < geometry["headingToken"]
         assert geometry["secondParagraphCount"] == 0
         assert geometry["credentialCopyChildren"] == ["H4", "DIV"]
         assert geometry["emptyCredentialBlocks"] == 0
         assert geometry["dividers"] == ["0px", "0px", "1px", "1px"]
         assert geometry["focused"] is True
+        assert geometry["focusedActionFocusVisible"] is True
+        assert geometry["focusedActionBoxShadow"] != "none"
         assert geometry["focusedActionInsideClip"] is True
         assert geometry["focusRingRoom"] >= 4
+        assert geometry["effectBleedToken"] >= 48
+        assert geometry["focusedActionBottomClearance"] >= geometry["effectBleedToken"]
         assert geometry["titleOverlapsQuickActions"] is False
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []
@@ -729,6 +767,8 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
         expect(page.get_by_role("button", name="Model: Auto", exact=True)).to_be_visible()
         page.goto(f"{agent_selection_server_url}/agent", wait_until="domcontentloaded")
         ensure_sidebar_open()
+        expect(page).to_have_url(f"{agent_selection_server_url}/agent/tunnel/grok")
+        page.locator('label[for="agent_connection_browser"]').click()
         expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/grok")
 
         page.wait_for_function(

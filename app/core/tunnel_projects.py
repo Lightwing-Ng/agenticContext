@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.0.0-claude.0
+Code version: v1.0.1-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -198,7 +198,7 @@ class ProjectRegistry:
     def resolve(self, project_id: Any, fallback_workspace: str = "") -> TunnelProject:
         """Return the project with exactly this identifier."""
         if not isinstance(project_id, str) or not project_id:
-            raise ProjectRegistryError("Name a registered project; call list_projects to see them.")
+            raise ProjectRegistryError("Name a registered project by its configured id.")
         projects = self.projects(fallback_workspace)
         for project in projects:
             if project.id == project_id:

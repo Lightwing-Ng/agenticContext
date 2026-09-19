@@ -1,6 +1,6 @@
 """tunnel-client supervision tests with a local fake client.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import io
 import json
 import os
 import sys
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -43,6 +44,7 @@ if args and args[0] == "doctor":
         "args": args,
         "api_key": os.environ.get("CONTROL_PLANE_API_KEY"),
         "openai_api_key": os.environ.get("OPENAI_API_KEY"),
+        "unrelated_secret": os.environ.get("UNRELATED_SECRET"),
     }}
     with open(os.path.join(os.path.dirname(authorization_file), "fake-doctor.json"), "w") as handle:
         json.dump(record, handle)
@@ -54,6 +56,7 @@ record = {{
     "api_key": os.environ.get("CONTROL_PLANE_API_KEY"),
     "tunnel_id": os.environ.get("CONTROL_PLANE_TUNNEL_ID"),
     "openai_api_key": os.environ.get("OPENAI_API_KEY"),
+    "unrelated_secret": os.environ.get("UNRELATED_SECRET"),
     "no_proxy": os.environ.get("NO_PROXY"),
 }}
 with open(os.path.join(os.path.dirname(url_file), "fake-invocation.json"), "w") as handle:
@@ -89,6 +92,7 @@ def fake_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     binary.chmod(0o755)
     monkeypatch.setenv(tunnel_runtime.TUNNEL_CLIENT_BIN_ENV, str(binary))
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-leak-either")
     return binary
 
 
@@ -121,6 +125,7 @@ def test_runtime_supervises_the_client_until_stopped(tmp_path: Path, fake_client
         doctor = json.loads((state_root / "fake-doctor.json").read_text())
         assert doctor["api_key"] == "sk-proj-test"
         assert doctor["openai_api_key"] is None
+        assert doctor["unrelated_secret"] is None
         assert doctor["args"][0] == "doctor"
         assert "--json" in doctor["args"]
         assert "sk-proj-test" not in " ".join(doctor["args"])
@@ -129,6 +134,7 @@ def test_runtime_supervises_the_client_until_stopped(tmp_path: Path, fake_client
         assert invocation["api_key"] == "sk-proj-test"
         assert invocation["tunnel_id"] == VALID_TUNNEL_ID
         assert invocation["openai_api_key"] is None
+        assert invocation["unrelated_secret"] is None
         assert "127.0.0.1" in invocation["no_proxy"]
         assert "sk-proj-test" not in " ".join(invocation["args"])
         args = invocation["args"]
@@ -163,6 +169,146 @@ def test_runtime_rejects_malformed_tunnel_ids(tmp_path: Path, fake_client: Path)
         assert wait_for(lambda: runtime.snapshot()["state"] == "error")
         assert "32 lowercase hexadecimal" in runtime.snapshot()["message"]
     finally:
+        runtime.stop()
+
+
+class _FakeRunningProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+    def kill(self) -> None:
+        self.terminated = True
+        self.returncode = -9
+
+
+def test_disconnect_during_blocked_doctor_does_not_launch_stale_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = tmp_path / "fake-tunnel-client"
+    binary.write_text("fake")
+    binary.chmod(0o755)
+    monkeypatch.setenv(tunnel_runtime.TUNNEL_CLIENT_BIN_ENV, str(binary))
+    doctor_started = threading.Event()
+    release_doctor = threading.Event()
+    popen_calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        if len(command) > 1 and command[1] == "doctor":
+            doctor_started.set()
+            assert release_doctor.wait(5)
+        return tunnel_runtime.subprocess.CompletedProcess(command, 0, stdout="")
+
+    def fake_popen(command, **_kwargs):
+        popen_calls.append(command)
+        return _FakeRunningProcess()
+
+    monkeypatch.setattr(tunnel_runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(tunnel_runtime.subprocess, "Popen", fake_popen)
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+
+    runtime.enable("http://127.0.0.1:8666/mcp")
+    try:
+        assert doctor_started.wait(3)
+        runtime.disconnect()
+        release_doctor.set()
+        assert runtime._launch_lock.acquire(timeout=3)
+        runtime._launch_lock.release()
+
+        assert popen_calls == []
+        assert runtime.snapshot()["state"] == "disconnected"
+        assert runtime.snapshot()["enabled"] is False
+    finally:
+        release_doctor.set()
+        runtime.stop()
+
+
+@pytest.mark.parametrize("stale_doctor_returncode", [0, 1])
+def test_restart_during_blocked_doctor_launches_only_current_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stale_doctor_returncode: int,
+) -> None:
+    binary = tmp_path / "fake-tunnel-client"
+    binary.write_text("fake")
+    binary.chmod(0o755)
+    monkeypatch.setenv(tunnel_runtime.TUNNEL_CLIENT_BIN_ENV, str(binary))
+    first_doctor_started = threading.Event()
+    release_first_doctor = threading.Event()
+    calls_lock = threading.Lock()
+    doctor_calls = 0
+    popen_calls: list[list[str]] = []
+    processes: list[_FakeRunningProcess] = []
+    current_health_url = "http://127.0.0.1:9"
+    stale_health_url = "http://127.0.0.1:10"
+
+    def fake_run(command, **_kwargs):
+        nonlocal doctor_calls
+        if len(command) > 1 and command[1] == "doctor":
+            with calls_lock:
+                doctor_calls += 1
+                call_number = doctor_calls
+            if call_number == 1:
+                first_doctor_started.set()
+                assert release_first_doctor.wait(5)
+                return tunnel_runtime.subprocess.CompletedProcess(
+                    command,
+                    stale_doctor_returncode,
+                    stdout="",
+                )
+        return tunnel_runtime.subprocess.CompletedProcess(command, 0, stdout="")
+
+    def fake_popen(command, **_kwargs):
+        popen_calls.append(command)
+        health_path = Path(command[command.index("--health.url-file") + 1])
+        health_path.write_text(
+            current_health_url if len(popen_calls) == 1 else stale_health_url
+        )
+        process = _FakeRunningProcess()
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(tunnel_runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(tunnel_runtime.subprocess, "Popen", fake_popen)
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+
+    runtime.enable("http://127.0.0.1:8666/mcp")
+    try:
+        assert first_doctor_started.wait(3)
+        runtime.restart()
+        release_first_doctor.set()
+        assert wait_for(lambda: len(popen_calls) == 1 and doctor_calls == 2)
+        assert runtime._launch_lock.acquire(timeout=3)
+        runtime._launch_lock.release()
+
+        assert len(popen_calls) == 1
+        assert len(processes) == 1
+        assert runtime._process is processes[0]
+        assert runtime._health_url_path.read_text() == current_health_url
+        assert runtime._health_url in {"", current_health_url}
+        assert runtime.snapshot()["state"] != "error"
+    finally:
+        release_first_doctor.set()
         runtime.stop()
 
 

@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.69.0-codex.0
+Code version: v1.69.2-codex.0
 """
 
 import hashlib
@@ -2269,7 +2269,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.126.0-codex.0 */",
+        "/* Code version: v2.127.1-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2359,6 +2359,33 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
         "@media (max-width: 1100px) {",
     ):
         assert token in stylesheet
+
+
+def test_tunnel_scrollport_and_step_grouping_follow_shared_layout_contract() -> None:
+    """Keep effect bleed on the scroll owner and divider removal structural."""
+    stylesheet = _stylesheet()
+
+    workspace_selector = 'main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace {'
+    workspace_start = stylesheet.index(workspace_selector)
+    workspace_rule = stylesheet[workspace_start:stylesheet.index("\n}", workspace_start)]
+    assert "overflow-y: auto;" in workspace_rule
+    assert "scroll-padding-block-end: var(--layout-physical-effect-bleed);" in workspace_rule
+
+    grid_selector = 'main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {'
+    grid_start = stylesheet.index(grid_selector)
+    grid_rule = stylesheet[grid_start:stylesheet.index("\n}", grid_start)]
+    assert "overflow: visible;" in grid_rule
+    assert "padding-block-end: var(--layout-physical-effect-bleed);" in grid_rule
+
+    step_start = stylesheet.index(".agent-tunnel-onboarding-step {")
+    step_rule = stylesheet[step_start:stylesheet.index("\n}", step_start)]
+    assert "border-block-start: 1px solid" in step_rule
+    first_start = stylesheet.index(".agent-tunnel-onboarding-step:first-child {")
+    first_rule = stylesheet[first_start:stylesheet.index("\n}", first_start)]
+    assert "border-block-start: 0;" in first_rule
+    continued_start = stylesheet.index(".agent-tunnel-onboarding-step-continued {")
+    continued_rule = stylesheet[continued_start:stylesheet.index("\n}", continued_start)]
+    assert "border-block-start: 0;" in continued_rule
 
 
 def test_agent_composer_right_aligns_all_footer_controls_with_action_gap() -> None:

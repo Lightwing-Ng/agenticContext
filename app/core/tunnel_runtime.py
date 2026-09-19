@@ -1,6 +1,6 @@
 """Supervise OpenAI's tunnel-client so ChatGPT can reach the local MCP endpoint.
 
-Code version: v1.3.0-codex.0
+Code version: v1.4.0-codex.0
 
 The Tunnel connection has three parts:
 
@@ -54,6 +54,29 @@ TUNNEL_RESTART_DEBOUNCE_SECONDS = 2.0
 TUNNEL_MAX_BACKOFF_SECONDS = 60.0
 TUNNEL_ID_PREFIX = "tunnel_"
 LOOPBACK_NO_PROXY = "127.0.0.1,localhost,::1"
+TUNNEL_ENVIRONMENT_PASSTHROUGH = frozenset(
+    {
+        "APPDATA",
+        "COMSPEC",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "PROGRAMDATA",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "USERPROFILE",
+        "WINDIR",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +202,22 @@ def detect_outbound_proxy() -> str:
     return ""
 
 
+def tunnel_client_environment(credentials: TunnelCredentials) -> dict[str, str]:
+    """Build the Tunnel child's minimum host environment plus explicit credentials."""
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in TUNNEL_ENVIRONMENT_PASSTHROUGH
+    }
+    environment["CONTROL_PLANE_API_KEY"] = credentials.api_key
+    environment["CONTROL_PLANE_TUNNEL_ID"] = credentials.tunnel_id
+    proxy = detect_outbound_proxy()
+    if proxy:
+        environment.update({"HTTPS_PROXY": proxy, "HTTP_PROXY": proxy})
+    environment["NO_PROXY"] = LOOPBACK_NO_PROXY
+    return environment
+
+
 class TunnelRuntime:
     """Own one tunnel-client process for the saved Tunnel credentials."""
 
@@ -193,6 +232,7 @@ class TunnelRuntime:
         self._state_root = state_root
         self._activity_provider = activity_provider or (lambda: {})
         self._lock = threading.RLock()
+        self._launch_lock = threading.Lock()
         self._mcp_url = ""
         self._enabled = False
         self._shutdown = False
@@ -330,6 +370,18 @@ class TunnelRuntime:
             self._state = state
             self._message = message
 
+    def _set_state_for_generation(self, generation: int, state: str, message: str) -> bool:
+        """Set state only while ``generation`` still owns supervision."""
+        with self._lock:
+            if (
+                generation != self._generation
+                or not self._enabled
+                or self._shutdown
+            ):
+                return False
+            self._set_state(state, message)
+            return True
+
     def _current(self, generation: int) -> bool:
         with self._lock:
             return (
@@ -343,53 +395,91 @@ class TunnelRuntime:
         while self._current(generation):
             credentials = self._credentials_loader()
             if not credentials.configured:
-                self._set_state(
+                self._set_state_for_generation(
+                    generation,
                     "not_configured",
                     "Enter the Tunnel ID and API key on the Agent Tunnel page.",
                 )
                 return
             if not valid_tunnel_id(credentials.tunnel_id):
-                self._set_state(
+                self._set_state_for_generation(
+                    generation,
                     "error",
                     "The Tunnel ID must look like tunnel_ followed by 32 lowercase hexadecimal characters.",
                 )
                 return
             try:
-                binary = self._resolve_binary(generation)
-                process = self._spawn(binary, credentials)
+                # A superseded doctor process cannot be cancelled portably. Serialize
+                # preflight and launch so the next generation cannot share its auth,
+                # health, pid, or log files with an older generation still returning.
+                with self._launch_lock:
+                    if not self._current(generation):
+                        return
+                    binary = self._resolve_binary(generation)
+                    if not self._current(generation):
+                        return
+                    process = self._spawn(binary, credentials, generation)
+                    if process is None:
+                        return
+                    with self._lock:
+                        if not self._current(generation):
+                            _terminate(process)
+                            return
+                        self._process = process
+                        self._started_at = time.monotonic()
             except TunnelRuntimeError as exc:
-                self._set_state("error", str(exc))
+                self._set_state_for_generation(generation, "error", str(exc))
                 return
-            with self._lock:
-                if not self._current(generation):
-                    _terminate(process)
-                    return
-                self._process = process
-                self._started_at = time.monotonic()
             self._monitor(generation, process)
             if not self._current(generation):
                 return
             exit_code = process.poll()
             detail = self._last_log_problem() or f"exit code {exit_code}"
-            self._set_state("error", f"The Tunnel stopped: {detail}. Retrying in {int(backoff)} s.")
+            if not self._set_state_for_generation(
+                generation,
+                "error",
+                f"The Tunnel stopped: {detail}. Retrying in {int(backoff)} s.",
+            ):
+                return
             if not self._sleep(generation, backoff):
                 return
             backoff = min(backoff * 2, TUNNEL_MAX_BACKOFF_SECONDS)
-            self._set_state("starting", "Reconnecting the Tunnel…")
+            if not self._set_state_for_generation(
+                generation,
+                "starting",
+                "Reconnecting the Tunnel…",
+            ):
+                return
 
     def _monitor(self, generation: int, process: subprocess.Popen[bytes]) -> None:
         """Track readiness until the process exits or a new generation starts."""
         deadline = time.monotonic() + TUNNEL_READY_TIMEOUT_SECONDS
         while self._current(generation) and process.poll() is None:
-            if self._probe_ready():
-                self._set_state(
+            if self._probe_ready(generation):
+                if not self._set_state_for_generation(
+                    generation,
                     "ready",
                     "OpenAI Secure Tunnel ready; waiting for ChatGPT.",
-                )
+                ):
+                    return
             elif time.monotonic() > deadline:
                 detail = self._last_log_problem() or "waiting for the OpenAI control plane"
-                self._set_state("starting", f"Still connecting: {detail}.")
-            self._sleep(generation, TUNNEL_HEALTH_PROBE_INTERVAL_SECONDS if self._state == "ready" else 1.0)
+                if not self._set_state_for_generation(
+                    generation,
+                    "starting",
+                    f"Still connecting: {detail}.",
+                ):
+                    return
+            with self._lock:
+                if not self._current(generation):
+                    return
+                interval = (
+                    TUNNEL_HEALTH_PROBE_INTERVAL_SECONDS
+                    if self._state == "ready"
+                    else 1.0
+                )
+            if not self._sleep(generation, interval):
+                return
 
     def _sleep(self, generation: int, seconds: float) -> bool:
         end = time.monotonic() + seconds
@@ -399,59 +489,63 @@ class TunnelRuntime:
             time.sleep(min(0.25, end - time.monotonic()))
         return self._current(generation)
 
-    def _probe_ready(self) -> bool:
-        if not self._health_url:
+    def _probe_ready(self, generation: int) -> bool:
+        with self._lock:
+            if not self._current(generation):
+                return False
+            health_url = self._health_url
+        if not health_url:
             try:
                 value = self._health_url_path.read_text().strip()
             except OSError:
                 return False
             if not value.startswith(("http://127.0.0.1:", "http://localhost:", "http://[::1]:")):
                 return False
-            self._health_url = value.rstrip("/")
+            with self._lock:
+                if not self._current(generation):
+                    return False
+                if not self._health_url:
+                    self._health_url = value.rstrip("/")
+                health_url = self._health_url
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with opener.open(f"{self._health_url}/readyz", timeout=2) as response:
+            with opener.open(f"{health_url}/readyz", timeout=2) as response:
                 return 200 <= response.status < 300
         except (OSError, urllib.error.URLError):
             return False
 
-    def _spawn(self, binary: Path, credentials: TunnelCredentials) -> subprocess.Popen[bytes]:
-        if not self._mcp_url:
+    def _spawn(
+        self,
+        binary: Path,
+        credentials: TunnelCredentials,
+        generation: int,
+    ) -> subprocess.Popen[bytes] | None:
+        with self._lock:
+            if not self._current(generation):
+                return None
+            mcp_url = self._mcp_url
+        if not mcp_url:
             raise TunnelRuntimeError("The local MCP endpoint is not configured.")
         self._state_root.mkdir(parents=True, exist_ok=True)
         self._stop_orphan()
-        self._authorization = f"Bearer {secrets.token_urlsafe(32)}"
-        _write_owner_only(self._authorization_path, self._authorization)
-        self._health_url = ""
-        self._health_url_path.unlink(missing_ok=True)
-        if self.log_path.exists():
-            os.replace(self.log_path, self.log_path.with_suffix(".log.1"))
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if key.upper()
-            not in {
-                "OPENAI_API_KEY",
-                "OPENAI_ADMIN_KEY",
-                "HTTP_PROXY",
-                "HTTPS_PROXY",
-                "ALL_PROXY",
-                "NO_PROXY",
-            }
-        }
-        env["CONTROL_PLANE_API_KEY"] = credentials.api_key
-        env["CONTROL_PLANE_TUNNEL_ID"] = credentials.tunnel_id
-        proxy = detect_outbound_proxy()
-        if proxy:
-            env.update({"HTTPS_PROXY": proxy, "HTTP_PROXY": proxy})
-        env["NO_PROXY"] = LOOPBACK_NO_PROXY
+        with self._lock:
+            if not self._current(generation):
+                return None
+            self._authorization = f"Bearer {secrets.token_urlsafe(32)}"
+            _write_owner_only(self._authorization_path, self._authorization)
+            self._health_url = ""
+            self._health_url_path.unlink(missing_ok=True)
+            if self.log_path.exists():
+                os.replace(self.log_path, self.log_path.with_suffix(".log.1"))
+        env = tunnel_client_environment(credentials)
+        proxy = env.get("HTTPS_PROXY", "")
         doctor_command = [
             str(binary),
             "doctor",
             "--control-plane.tunnel-id",
             credentials.tunnel_id,
             "--mcp.server-url",
-            f"url={self._mcp_url},channel=main",
+            f"url={mcp_url},channel=main",
             "--mcp.extra-headers",
             f"Authorization: file:{self._authorization_path}",
             "--mcp.startup-wait-timeout",
@@ -475,6 +569,8 @@ class TunnelRuntime:
                 "Tunnel preflight could not complete. Check the Tunnel credentials, "
                 "network route, and local MCP endpoint."
             ) from exc
+        if not self._current(generation):
+            return None
         if doctor.returncode != 0:
             raise TunnelRuntimeError(
                 "Tunnel preflight failed. Check the Tunnel ID, Restricted API key "
@@ -486,7 +582,7 @@ class TunnelRuntime:
             "--control-plane.tunnel-id",
             credentials.tunnel_id,
             "--mcp.server-url",
-            f"url={self._mcp_url},channel=main",
+            f"url={mcp_url},channel=main",
             "--mcp.extra-headers",
             f"Authorization: file:{self._authorization_path}",
             "--mcp.startup-wait-timeout",
@@ -505,17 +601,20 @@ class TunnelRuntime:
             "info",
         ]
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        try:
-            return subprocess.Popen(
-                command,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creation_flags,
-            )
-        except OSError as exc:
-            raise TunnelRuntimeError(f"OpenAI tunnel-client could not start: {exc}") from exc
+        with self._lock:
+            if not self._current(generation):
+                return None
+            try:
+                return subprocess.Popen(
+                    command,
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creation_flags,
+                )
+            except OSError as exc:
+                raise TunnelRuntimeError(f"OpenAI tunnel-client could not start: {exc}") from exc
 
     def _terminate_process(self) -> None:
         process, self._process = self._process, None
@@ -615,7 +714,12 @@ class TunnelRuntime:
             return binary
         if not self._current(generation):
             raise TunnelRuntimeError("The Tunnel start was superseded.")
-        self._set_state("installing", f"Installing OpenAI tunnel-client {TUNNEL_CLIENT_VERSION}…")
+        if not self._set_state_for_generation(
+            generation,
+            "installing",
+            f"Installing OpenAI tunnel-client {TUNNEL_CLIENT_VERSION}…",
+        ):
+            raise TunnelRuntimeError("The Tunnel start was superseded.")
         install_tunnel_client(asset, binary)
         return binary
 

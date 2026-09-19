@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.16.0-claude.0`
+Documentation version: `v1.17.0-codex.0`
 
 ## Supported commands
 
@@ -144,23 +144,20 @@ Run the Secure MCP Tunnel contract independently with:
 ./scripts/test.sh tests/test_tunnel_mcp.py tests/test_tunnel_runtime.py tests/test_tunnel_credentials.py
 ```
 
-The Tunnel tests pin the exact sixteen-tool public catalog, closed-schema enforcement,
+The Tunnel tests pin the exact ten-tool public catalog, closed-schema enforcement,
 discovery/dispatcher agreement, rejection of removed compatibility names, direct invocation
-without runtime selectors, transactional edit behavior, stale-write and delete SHA protection,
-workspace confinement, destructive-command refusal, and loopback bearer authentication. They
-also cover the project registry (exact identities, unknown and path-like ids, read-only
+without runtime selectors, prevalidated batch-edit behavior, stale-write and delete SHA protection,
+workspace confinement, bounded status/patch inspection, `git status`, `node --check`,
+destructive-command refusal, current-evidence bodycheck, and loopback bearer authentication.
+They also cover the project registry (exact identities, unknown and path-like ids, read-only
 projects, cross-project and absolute-path escapes, symlinks, project-scoped instruction
 discovery, per-project SHA guards across switching, re-registration, invalid registries failing
-closed, and no Desktop-wide fallback); paginated Git inspection (small and multi-page diffs,
-long-hunk segments, staged/unstaged/path/commit-range requests, continuation invalidation,
-project binding, tampering and restart expiry, bounded pages, binary and credential files,
-non-Git projects, and the discovery ceiling); durable checks (success with recorded
-verification, failure withdrawing verification, unapproved-command refusal, idempotent
-single-flight starts, stop of the owned tree, forged-identity protection, timeout, project
-isolation, workspace changes during a check, evidence not applying to a later edit, restart
-durability, and runner loss); and per-project lock scope. Durable-check cases need POSIX
-process groups and are skipped on Windows. These are offline tests with temporary projects,
-registries, and runtime roots; a live ChatGPT round trip is separate transport evidence.
+closed, and no Desktop-wide fallback); staged/unstaged/path-scoped Git inspection, bounded patch
+truncation, non-Git projects, the discovery ceiling, and per-project lock scope. Tunnel runtime
+tests also hold a preflight doctor call across disconnect and restart to prove a superseded
+generation cannot launch a process or overwrite the current health/state cache. These are
+offline tests with temporary projects, registries, and runtime roots; a live ChatGPT round trip
+is separate transport evidence.
 
 The Tunnel onboarding UI runs in the disposable Chromium layer:
 
@@ -171,9 +168,9 @@ The Tunnel onboarding UI runs in the disposable Chromium layer:
 It measures the rendered page at 1,280 and 390 px wide, including a 420 px short viewport: the
 Agent workspace is the only content scrollport, marker and heading centers align within 1 px,
 body copy uses `--font-ui-md` under `--font-ui-lg` headings, step ➋ has no paragraph or empty
-block, the grouped first two steps have no divider, the focused action stays inside the
-scrollport, the title clears the global quick actions, and credential errors reach the sidebar
-hint.
+block, the grouped first two steps have no divider, later steps keep their structural dividers,
+the focused action keeps the shared 48 px physical-effect bleed inside the scrollport, the title
+clears the global quick actions, and credential errors reach the sidebar hint.
 
 Run the OpenAI Site tools contract and disposable-browser layers independently with:
 

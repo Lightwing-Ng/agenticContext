@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.12.0-codex.0
+# Code version: v1.12.1-codex.0
 
 from typing import TYPE_CHECKING
 
@@ -34,7 +34,6 @@ from ..tunnel_credentials import (
     merge_tunnel_credentials,
     save_tunnel_credentials,
 )
-from ..tunnel_mcp import TunnelMcpService
 from ..tunnel_runtime import TunnelRuntime, describe_tunnel_status, valid_tunnel_id
 from .capability_registry import (
     AGENT_ACTIONS,
@@ -75,6 +74,7 @@ _COMPUTER_USE_EXPORTS = frozenset(
 )
 _COMPUTER_USE_ALIASES = {"render_final_agent_action": "_render_final_action"}
 _SESSION_POOL_EXPORTS = frozenset({"AgentSessionPool"})
+_TUNNEL_MCP_EXPORTS = frozenset({"TunnelMcpService"})
 
 if TYPE_CHECKING:
     from ..computer_use_agent import (
@@ -100,6 +100,7 @@ if TYPE_CHECKING:
         validate_computer_use_settings,
     )
     from .session_pool import AgentSessionPool
+    from ..tunnel_mcp import TunnelMcpService
     from ..jury import JuryService
     from ..jury_browser import JURY_MODEL_OPTIONS_BY_PROVIDER
 
@@ -121,6 +122,11 @@ def __getattr__(name: str):
 
         globals()[name] = AgentSessionPool
         return AgentSessionPool
+    if name in _TUNNEL_MCP_EXPORTS:
+        from ..tunnel_mcp import TunnelMcpService
+
+        globals()[name] = TunnelMcpService
+        return TunnelMcpService
     if name not in _COMPUTER_USE_EXPORTS and name not in _COMPUTER_USE_ALIASES:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     from .. import computer_use_agent

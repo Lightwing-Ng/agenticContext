@@ -1,9 +1,9 @@
 # OpenAI Site tools and Agent Optimization
 
-Documentation version: `v1.4.1-claude.0`
+Documentation version: `v1.4.2-codex.0`
 
 This project implements the shared Agent Optimization contract at
-`/Users/lightwing/Desktop/SHARED_AGENT_OPTIMIZATION.md`. That file owns the cross-project naming,
+`/Users/lightwing/Desktop/shared_docs/SHARED_AGENT_OPTIMIZATION.md`. That file owns the cross-project naming,
 schema, result, security, lifecycle, evaluation, and promotion rules. This document owns only the
 agenticContext adapter and its verification evidence.
 

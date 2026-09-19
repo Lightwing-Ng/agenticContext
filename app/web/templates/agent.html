@@ -1,4 +1,4 @@
-<!-- Code version: v3.55.5-codex.0 -->
+<!-- Code version: v3.55.7-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.126.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.127.1-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.8.4') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
@@ -309,15 +309,17 @@
                     <ol class="agent-tunnel-onboarding-steps">
                         <li class="agent-tunnel-onboarding-step">
                             <span class="agent-tunnel-step-number" aria-hidden="true">➊</span>
-                            <div class="agent-tunnel-step-copy">
+                            <div class="agent-tunnel-step-copy agent-tunnel-setup-copy">
                                 <h4>Create the OpenAI credentials</h4>
-                                <p>In OpenAI Platform, create a Tunnel and copy its ID, such as <code>tunnel_*4766</code>.</p>
-                                <p>Create a Restricted API key for that Tunnel with <strong>Tunnels Read + Use</strong>, such as <code>sk-proj-*HMAA</code>.</p>
+                                <div class="agent-tunnel-setup-row">
+                                    <p>In OpenAI Platform, create a Tunnel and copy its ID, such as <code>tunnel_*4766</code>.</p>
+                                    <a class="secondary-button browser-refresh-button agent-tunnel-step-action" href="https://platform.openai.com/settings/organization/tunnels" target="_blank" rel="noopener noreferrer"><span>Open Tunnels</span></a>
+                                </div>
+                                <div class="agent-tunnel-setup-row">
+                                    <p>Create a Restricted API key for that Tunnel with <strong>Tunnels Read + Use</strong>, such as <code>sk-proj-*HMAA</code>.</p>
+                                    <a class="secondary-button browser-refresh-button agent-tunnel-step-action" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"><span>Open API keys</span></a>
+                                </div>
                             </div>
-                            <span class="agent-tunnel-step-actions">
-                                <a class="secondary-button browser-refresh-button agent-tunnel-step-action" href="https://platform.openai.com/settings/organization/tunnels" target="_blank" rel="noopener noreferrer"><span>Open Tunnels</span></a>
-                                <a class="secondary-button browser-refresh-button agent-tunnel-step-action" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"><span>Open API keys</span></a>
-                            </span>
                         </li>
                         <li class="agent-tunnel-onboarding-step agent-tunnel-onboarding-step-continued agent-tunnel-credential-step">
                             <span class="agent-tunnel-step-number" aria-hidden="true">➋</span>
@@ -372,7 +374,12 @@
                                         <span>Ask in ChatGPT</span>
                                     </span>
                                 </a>
-                                <button type="button" class="secondary-button browser-refresh-button agent-tunnel-step-action" data-agent-tunnel-copy-kickoff aria-label="Copy kickoff prompt" aria-controls="agent_tunnel_kickoff"><span data-agent-tunnel-copy-label aria-live="polite">Copy kickoff</span></button>
+                                <button type="button" class="secondary-button browser-refresh-button agent-tunnel-step-action" data-agent-tunnel-copy-kickoff aria-label="Copy kickoff prompt" aria-controls="agent_tunnel_kickoff">
+                                    <span class="browser-session-trigger-leading">
+                                        <span class="icon agent-response-copy-icon" aria-hidden="true"></span>
+                                        <span data-agent-tunnel-copy-label aria-live="polite">Copy kickoff</span>
+                                    </span>
+                                </button>
                             </span>
                         </li>
                     </ol>
@@ -620,6 +627,6 @@
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.52.3-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.52.4-codex.0') }}"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.27.0-claude.0`
+Documentation version: `v1.28.0-codex.0`
 
 ## Launch
 
@@ -334,55 +334,49 @@ Runtime behavior:
   (`tunnel-client.log`, previous run in `.log.1`), its pid file, health URL, and a per-start bearer
   token file (`0600`). A client left behind by a killed service is found by its state path and
   stopped before a new one starts.
-- The API key reaches the child only as `CONTROL_PLANE_API_KEY`; `OPENAI_API_KEY` and
-  `OPENAI_ADMIN_KEY` are removed. The control-plane proxy comes from `HTTPS_PROXY`/`HTTP_PROXY`
-  or, on macOS, the system proxy; loopback is always exempt so MCP traffic stays local.
+- The API key reaches the child only as `CONTROL_PLANE_API_KEY`. The child receives a strict
+  cross-platform allowlist of process, locale, temporary-directory, and CA-certificate variables;
+  unrelated host credentials are not inherited. The control-plane proxy comes from
+  `HTTPS_PROXY`/`HTTP_PROXY` or, on macOS, the system proxy; loopback is always exempt so MCP
+  traffic stays local.
 - `/mcp` accepts only loopback callers that present the current bearer token. `GET /mcp` returns
   405 (no SSE stream). An `OAuth discovery failed` warning in the client log is expected: the app
   uses No auth, so no OAuth metadata is published and readiness does not depend on it.
-- Every tool except `list_projects` names one registered `project`; ids match exactly and are
-  never paths. Paths are relative to that project's root (absolute and `~` paths are refused),
+- Every tool names one registered `project`; each id matches exactly and is never interpreted as
+  a path. The id comes from the user-owned registry and is intentionally not discoverable through
+  a separate inventory tool. Paths are relative to that project's root (absolute and `~` paths
+  are refused),
   and every path goes through the Browser Agent's confinement, symlink, ignored-folder, and
   credential-file rules for that root. Read-only projects refuse `apply_edits`, `write_file`,
-  `delete_file`, `run_check`, `start_check`, and `stop_check` before touching anything. Each
+  `delete_file`, and `run_check` before touching anything. Each
   project keeps its own read receipts, SHA-256 guards, and verification evidence.
-- The public catalog is exactly: `list_projects`; `project_overview` (writability, root and
-  nested instruction files of that project only, active checks, bounded Git status);
-  `list_files`; `search_files`; `read_files` (1-8 files or ranges with SHA-256); `apply_edits`
-  (1-16 exact replacements, validated as one batch before any file changes); `write_file` (new
-  files, or whole-file replacement only with the current SHA-256; new files are not
-  executable); `delete_file` (the SHA-256 from `read_files`; an unrelated edit does not
-  invalidate it, but a changed file is refused); `run_check`; `start_check`, `observe_check`,
-  and `stop_check` (durable approved checks); `show_changes` (status and diff stats only);
-  `git_log` (bounded, pageable commit summaries); `git_diff_hunks` (paginated diff hunks with a
-  continuation); and `review_changes` (bodycheck, the final gate). Arguments are validated
+- The public catalog is exactly: `project_overview` (writability, root and nested instruction
+  files of that project only, bounded Git status); `list_files`; `search_files`; `read_files`
+  (1-8 files or ranges with SHA-256); `apply_edits` (1-16 exact replacements, validated as one
+  batch before any file changes); `write_file` (new files, or whole-file replacement only with
+  the current SHA-256; new files are not executable); `delete_file` (the SHA-256 from
+  `read_files`; an unrelated edit does not invalidate an existing receipt, but a changed file
+  is refused); `run_check`; `show_changes` (status, staged/unstaged stats, and an optional
+  bounded patch); and `review_changes` (bodycheck, the final gate). Arguments are validated
   against the published closed schemas, so unknown fields fail. The removed `read_file`,
-  `replace_in_file`, `create_file`, and `call_runtime_tool` names, and `show_changes`
-  `include_patch`, are not compatibility entrypoints.
-- `git_diff_hunks` pages the unstaged diff, the staged diff (`staged`), a commit against the
-  working tree or index (`base_commit`), or two commits (`base_commit` + `head_commit`),
-  optionally for up to 16 paths. When `complete` is false, call it again with the returned
-  `continuation`; the continuation is bound to the project, the request, and the exact diff
-  bytes, so it fails after the diff changes, in another project, or after a service restart
-  rather than returning different evidence. Credential files are counted in `withheld_files`
-  instead of shown, and single lines longer than 4,000 characters are shortened and counted.
-- `start_check` runs one command from the same allowlist as `run_check` as a durable job and
-  returns its `job_id`. Retrying with the same `idempotency_key` returns the same job; one check
-  runs per project at a time; the timeout is 60 seconds to 2 hours (default 30 minutes).
-  `observe_check` reports `starting`, `running`, `succeeded`, `failed`, `stopped`, `timeout`, or
-  `unknown` with a bounded output tail. A success counts as verification for `review_changes`
-  only if the project fingerprint is unchanged and no Tunnel edit happened while it ran;
-  otherwise the result says `workspace_changed` or `not_recorded`. `unknown` means the runner
-  vanished without a result; treat it as unverified. `stop_check` stops only the process tree
-  whose recorded birth identity still matches. Jobs and logs live under the Agent runtime root
-  in `computer-use-agent/tunnel-checks/`; the newest 20 per project are kept, and a job keeps
-  running and stays observable across a service restart (its evidence is then not recorded for
-  the new session).
+  `replace_in_file`, `create_file`, and `call_runtime_tool` names are not compatibility
+  entrypoints. `list_projects`, `start_check`, `observe_check`, `stop_check`, `git_log`, and
+  `git_diff_hunks` are also outside this public contract and are not dispatchable.
+- `show_changes` always reports path-scoped status and staged/unstaged stats. Set
+  `include_patch=true` for a bounded unified patch; `staged=true` selects the staged patch, and
+  `path` confines status, stats, and patch together. Credential and controller-internal names
+  and patch segments are withheld from every model-visible Git summary. An ordinary untracked
+  file appears in status but has no Git patch yet.
+- `run_check` invokes only the controller's approved, shell-free command forms with a confined
+  project working directory and bounded time, output, and process cleanup. The invoked test or
+  build remains trusted project code: it runs as the AgenticContext service account and is not
+  placed in a hermetic filesystem or network sandbox. Register only trusted projects and checks.
 - Calls for one project are serialized; different projects do not block each other, and Git
   observation tools do not wait behind a running `run_check`.
 - Runtime selection is internal to AgenticContext. No public tool accepts or requires
-  `runtime`, `runtime_name`, `execution_mode`, `adaptive_runtime`, or
-  `full_operator_runtime`.
+  `runtime`, `runtime_name`, `execution_mode`, `runtime_gateway`, `adaptive_runtime`, or
+  `full_operator_runtime`. Transport-added routing metadata is ignored before closed-schema
+  validation and cannot select a project or action; every other undeclared argument is rejected.
 - The Python tool catalog is process-static, so `initialize` and `server/discover` advertise
   `tools.listChanged=false` and no list-changed notification is ever sent. Each layer refreshes
   only its own state:
@@ -399,7 +393,9 @@ Runtime behavior:
   application log, so a ChatGPT session can be audited after a restart.
 - Arbitrary shell commands, arbitrary executables, and general background processes are
   intentionally not exposed; only the approved verification commands run through the Tunnel,
-  synchronously (`run_check`) or as durable checks (`start_check`).
+  synchronously through `run_check`.
+- WebCodex Desktop, its DMG, GUI helper processes, and desktop IPC are not part of this path and
+  are not required at runtime.
 
 Maintaining the client when OpenAI changes it:
 

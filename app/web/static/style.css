@@ -1,4 +1,4 @@
-/* Code version: v2.126.0-codex.0 */
+/* Code version: v2.127.1-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -3996,7 +3996,8 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 }
 
 /* A continued step belongs to the step before it (the credentials created in ➊
-   are entered in ➋), so it drops the shared divider wherever it appears. */
+   are entered in ➋), so it drops the shared divider and keeps the pair's tighter
+   vertical rhythm wherever the structural modifier appears. */
 .agent-tunnel-onboarding-step-continued {
     border-block-start: 0;
     padding-block-start: 0;
@@ -4010,7 +4011,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
        title rather than the top of the taller multi-line copy column. */
     min-height: calc(var(--font-ui-lg) * 1.35);
     color: var(--theme-accent-primary);
-    font-size: 22px;
+    font-size: 20px;
     font-weight: var(--font-weight-medium);
     line-height: 1;
 }
@@ -4040,6 +4041,29 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-tunnel-step-copy :is(code, strong) {
     color: var(--text);
+}
+
+.agent-tunnel-setup-copy {
+    grid-column: 2 / -1;
+    display: grid;
+    gap: 5px;
+}
+
+.agent-tunnel-setup-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    align-items: center;
+    column-gap: 14px;
+    min-width: 0;
+    min-height: var(--secondary-button-min-height);
+}
+
+.agent-tunnel-setup-row p {
+    margin-block-start: 0;
+}
+
+.agent-tunnel-setup-row .agent-tunnel-step-action {
+    grid-column: 2;
 }
 
 .agent-tunnel-step-actions {
@@ -4079,6 +4103,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 #chatgpt_tunnel_id.text-input-control,
 #chatgpt_tunnel_api_key.text-input-control {
     font-family: var(--font-mono);
+    font-size: var(--text-input-control-font-size);
 }
 
 .agent-tunnel-credential-label-row {
@@ -4112,6 +4137,19 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
     .agent-tunnel-step-actions {
         width: max-content;
+    }
+
+    .agent-tunnel-setup-copy {
+        grid-column: 2;
+    }
+
+    .agent-tunnel-setup-row {
+        grid-template-columns: minmax(0, 1fr);
+        row-gap: 8px;
+    }
+
+    .agent-tunnel-setup-row .agent-tunnel-step-action {
+        grid-column: 1;
     }
 }
 
@@ -4293,6 +4331,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace {
     overflow-y: auto;
     overflow-x: hidden;
     scrollbar-gutter: stable;
+    scroll-padding-block-end: var(--layout-physical-effect-bleed);
 }
 
 main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
@@ -4302,7 +4341,8 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     min-height: 0;
     align-content: start;
     overflow: visible;
-    padding: 4px 4px 14px;
+    padding: 4px;
+    padding-block-end: var(--layout-physical-effect-bleed);
 }
 
 .agent-task-card {
