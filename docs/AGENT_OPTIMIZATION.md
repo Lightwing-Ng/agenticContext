@@ -1,6 +1,6 @@
 # OpenAI Site tools and Agent Optimization
 
-Documentation version: `v1.4.0-codex.1`
+Documentation version: `v1.4.1-claude.0`
 
 This project implements the shared Agent Optimization contract at
 `/Users/lightwing/Desktop/SHARED_AGENT_OPTIMIZATION.md`. That file owns the cross-project naming,
@@ -41,7 +41,9 @@ tool surface.
 The closed schema is also an execution boundary. `WorkspaceController` validates every registered
 non-final Action against its registry-owned schema before dispatch, including the action constant,
 required fields, types, bounds, and undeclared fields. The Web loop validates `final` against the
-same schema before verification or bodycheck gates, rendering, and publication.
+same schema before verification or bodycheck gates, rendering, and publication. The Secure MCP
+Tunnel reuses the same validator (`validate_closed_schema`, which also covers booleans) for
+every published Tunnel tool schema; the Tunnel catalog is not a WebMCP surface.
 
 The internal registry now also owns `browser_acceptance`, `job_start`, `job_status`, and `job_stop`.
 `browser_acceptance` is a controller-only clean-Chromium verification boundary for an owned

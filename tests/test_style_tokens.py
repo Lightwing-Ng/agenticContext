@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.68.6-codex.1
+Code version: v1.69.0-codex.0
 """
 
 import hashlib
@@ -90,8 +90,8 @@ def test_cache_metrics_reuse_the_foundation_surface_and_type_contract() -> None:
     assert "font-weight: var(--font-weight-regular);" in progress_label_rule
 
 
-def test_typography_matches_the_sibling_font_contract() -> None:
-    """Keep the local font family, primitives, and semantic aliases in sync."""
+def test_typography_preserves_local_hsbc_and_technical_monospace_contract() -> None:
+    """Keep ordinary UI on HSBC while technical text uses the scoped mono token."""
     stylesheet = _stylesheet()
 
     expected_tokens = (
@@ -109,8 +109,10 @@ def test_typography_matches_the_sibling_font_contract() -> None:
         '--font-family-brand: "Univers Next for HSBC";',
         '--font-family-cjk: "PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei", "Microsoft JhengHei", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;',
         '--font-family-base: var(--font-family-brand), var(--font-family-cjk);',
-        '--font-family-mono-cjk: var(--font-family-base);',
-        '--font-family-mono: var(--font-family-base);',
+        '--font-family-technical-mono: monospace;',
+        '--font-family-mono-cjk: var(--font-family-technical-mono);',
+        '--font-family-mono: var(--font-family-technical-mono);',
+        '--font-mono: var(--font-family-mono);',
         "--font-ui-md: var(--font-size-4);",
         "--font-ui-lg: var(--font-size-5);",
         "--font-form-label: var(--font-size-5);",
@@ -132,7 +134,7 @@ def test_typography_matches_the_sibling_font_contract() -> None:
 
 
 def test_runtime_sources_name_no_alternate_western_typeface() -> None:
-    """Keep Univers Next for HSBC as the only Western interface typeface."""
+    """Keep Univers Next for HSBC as the only named Western interface typeface."""
     runtime_sources = (
         STYLE_PATH.read_text(encoding="utf-8"),
         (PROJECT_ROOT / "app/web/static/chatgpt-project-icons.js").read_text(encoding="utf-8"),
@@ -1782,14 +1784,30 @@ def test_settings_category_navigation_uses_compact_shared_geometry() -> None:
     assert "padding: var(--settings-category-nav-item-padding-block) 12px;" in item_rule
 
 
+def test_technical_monospace_is_centralized_and_scoped() -> None:
+    """Keep technical monospace behind one token instead of one-off family declarations."""
+    stylesheet = _stylesheet()
+
+    assert "--font-family-technical-mono: monospace;" in stylesheet
+    assert "font-family: monospace;" not in stylesheet
+    for selector in (
+        "#chatgpt_tunnel_id.text-input-control,",
+        ".agent-monospace-input,",
+        ".settings-agent-system-prompt {",
+    ):
+        rule_start = stylesheet.index(selector)
+        rule = stylesheet[rule_start:stylesheet.index("\n}", rule_start)]
+        assert "font-family: var(--font-mono);" in rule
+
+
 def test_settings_agent_system_prompts_use_monospace_type() -> None:
-    """Keep both operating-system prompts on a real monospace font family."""
+    """Keep both operating-system prompts on the shared real-monospace token."""
     stylesheet = _stylesheet()
     prompt_start = stylesheet.index(".settings-agent-system-prompt {")
     prompt_rule = stylesheet[prompt_start:stylesheet.index("\n}", prompt_start)]
 
-    assert "font-family: monospace;" in prompt_rule
-    assert "font-family: var(--font-mono);" not in prompt_rule
+    assert "font-family: var(--font-mono);" in prompt_rule
+    assert "font-family: monospace;" not in prompt_rule
 
 
 def test_beta_dock_uses_the_shared_sparkles_asset() -> None:
@@ -2251,7 +2269,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.125.5-codex.0 */",
+        "/* Code version: v2.126.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',

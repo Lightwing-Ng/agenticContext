@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.8.0-codex.1`
+Documentation version: `v1.9.0-codex.0`
 
 ## Authority
 
@@ -30,15 +30,22 @@ hex values or derive a separate palette in this project.
 
 ## Western Typeface Source
 
-`../../worthward/app/web/static/assets/fonts/UniversNextforHSBC.ttc` is the
-single approved source for Western interface glyphs in both projects. Named
-platform fallbacks and product-local chart, code, or icon typefaces are not part
-of the contract. CJK fallback families remain available only for glyphs absent
-from Univers Next for HSBC, and KaTeX keeps its scoped mathematical fonts.
+`app/web/static/fonts/UniversNextforHSBC.ttc` is the approved Western interface
+typeface source for agenticContext. This is an explicit local typography
+adaptation: normal interface text must use `--font-family-base` and the locally
+served Univers Next for HSBC faces even when the sibling project's current
+font-family tokens use platform fonts. CJK fallback families remain available
+only for glyphs absent from Univers Next for HSBC.
+
+Technical text is the narrow exception. Paths, code and preformatted content,
+credentials, diagnostics, system prompts, URLs, and token/value specimens use
+the generic `monospace` family only through `--font-family-technical-mono` and
+its aliases. KaTeX keeps its separately scoped mathematical fonts. Do not treat
+those technical or mathematical scopes as ordinary interface typography.
 
 Chromium does not honor TTC face fragments and selects the collection's first
-Bold face for every CSS weight. Each project therefore serves deterministic
-standalone transport faces extracted from the canonical TTC; those files retain
+Bold face for every CSS weight. agenticContext therefore serves deterministic
+standalone transport faces extracted from its approved TTC; those files retain
 the original glyphs, metrics, and PostScript names and do not constitute another
 typeface.
 
@@ -47,9 +54,10 @@ typeface.
 1. Inspect the relevant reference files first. Start with
    `../../worthward/app/web/static/assets/css/app.css`, then follow
    its imports in `foundation/`, `layout/`, `components/`, and `views/`.
-2. Reuse the reference project's token names, font stack, spacing, corner radii, surface
-   treatment, motion curves, and accessibility states where they apply to existing
-   agenticContext markup.
+2. Reuse the reference project's token names, spacing, corner radii, surface treatment,
+   motion curves, and accessibility states where they apply to existing agenticContext
+   markup. Preserve the local typography contract above instead of copying the sibling's
+   current `font-family` values.
 3. Keep agenticContext-specific templates and interactions intact unless the
    requested change explicitly modifies behavior.
 4. Verify the affected local page at `http://127.0.0.1:8666` at desktop and narrow
@@ -59,9 +67,9 @@ typeface.
 ## Local Adaptation
 
 `app/web/static/style.css` contains a compatibility layer titled
-`Sibling-project style synchronization`. It brings the shared shell, Univers Next
-typography, frosted surfaces, and motion foundation into this project's existing
-single-file stylesheet. Prefer extending that layer or migrating equivalent reference
+`Sibling-project style synchronization`. It brings the shared shell, this project's
+local Univers Next typography adaptation, frosted surfaces, and motion foundation into
+its existing single-file stylesheet. Prefer extending that layer or migrating equivalent reference
 rules deliberately; do not blindly paste whole product view styles.
 
 If the sibling project changes materially, compare its current CSS modules with this

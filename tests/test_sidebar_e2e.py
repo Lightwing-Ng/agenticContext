@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.46.16-codex.1
+Code version: v1.46.17-codex.0
 """
 
 from __future__ import annotations
@@ -9245,6 +9245,7 @@ def test_agent_project_path_prefers_trailing_directories_without_overflow(
                     direction: style.direction,
                     textAlign: style.textAlign,
                     textOverflow: style.textOverflow,
+                    fontFamily: style.fontFamily,
                     value: input.value,
                     documentOverflow: Math.max(
                         document.documentElement.scrollWidth,
@@ -9257,6 +9258,7 @@ def test_agent_project_path_prefers_trailing_directories_without_overflow(
         assert geometry["direction"] == "rtl"
         assert geometry["textAlign"] == "left"
         assert geometry["textOverflow"] == "ellipsis"
+        assert geometry["fontFamily"] == "monospace"
         assert not geometry["documentOverflow"]
     finally:
         context.close()

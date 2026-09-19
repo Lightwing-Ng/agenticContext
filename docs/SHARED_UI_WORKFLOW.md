@@ -1,6 +1,6 @@
 # Shared UI workflow
 
-Documentation version: `v1.0.6`
+Documentation version: `v1.0.7-codex.0`
 
 ## Shared select keyboard adapter
 
@@ -37,6 +37,10 @@ long-form synchronization state lives in:
 - agenticContext is an adapter: reuse the sibling's tokens, structure,
   states, responsive behavior, and accessibility contract while preserving local
   routes and product-specific markup.
+- Typography is an explicit local adaptation. Preserve the self-hosted Univers Next
+  for HSBC interface stack and the scoped technical-monospace exception documented in
+  `STYLE_REFERENCE.md`; do not replace them with the sibling's current platform-font
+  values during convergence.
 - A Cache-first improvement is a `Candidate review`, not a finished synchronization.
   Inspect and promote it into `worthward` before the ledger can say `Synchronized`.
 - If only this repository is authorized, do not edit the sibling. Set the ledger row

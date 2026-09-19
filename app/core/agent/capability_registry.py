@@ -1,6 +1,6 @@
 """One registry for Agent actions, page observations, and WebMCP tools.
 
-Code version: v1.6.0-codex.1
+Code version: v1.7.0-claude.0
 """
 
 from __future__ import annotations
@@ -183,7 +183,7 @@ class ControllerActionValidationError(ValueError):
 
 def _schema_validation_error(path: str, message: str) -> None:
     """Raise one concise, non-content-bearing action-schema validation error."""
-    raise ControllerActionValidationError(f"Agent action payload {path} {message}")
+    raise ControllerActionValidationError(f"{path} {message}")
 
 
 def _validate_controller_schema(value: Any, schema: dict[str, Any], *, path: str) -> None:
@@ -238,6 +238,9 @@ def _validate_controller_schema(value: Any, schema: dict[str, Any], *, path: str
             _schema_validation_error(path, f"must be at least {minimum:,}.")
         if isinstance(maximum, int) and value > maximum:
             _schema_validation_error(path, f"must be at most {maximum:,}.")
+    elif expected_type == "boolean":
+        if not isinstance(value, bool):
+            _schema_validation_error(path, "must be a boolean.")
     elif expected_type == "array":
         if not isinstance(value, list):
             _schema_validation_error(path, "must be an array.")
@@ -264,6 +267,15 @@ def _validate_controller_schema(value: Any, schema: dict[str, Any], *, path: str
         _schema_validation_error(path, "does not match the registered action value.")
 
 
+def validate_closed_schema(value: Any, schema: dict[str, Any], *, subject: str) -> None:
+    """Validate one payload against a closed schema from the same bounded subset.
+
+    Other model-facing adapters, such as the Secure MCP Tunnel, reuse this so every
+    published schema is also enforced with one implementation.
+    """
+    _validate_controller_schema(value, schema, path=subject)
+
+
 def validate_controller_action_payload(
     capability: CapabilityDefinition,
     payload: Any,
@@ -275,7 +287,11 @@ def validate_controller_action_payload(
         )
     if not isinstance(payload, dict):
         raise ControllerActionValidationError("Agent action payload must be an object.")
-    _validate_controller_schema(payload, capability.input_schema, path="root")
+    _validate_controller_schema(
+        payload,
+        capability.input_schema,
+        path="Agent action payload root",
+    )
 
 
 CAPABILITY_REGISTRY: tuple[CapabilityDefinition, ...] = (

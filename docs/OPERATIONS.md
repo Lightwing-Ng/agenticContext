@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.26.3-codex.0`
+Documentation version: `v1.27.0-claude.0`
 
 ## Launch
 
@@ -286,8 +286,8 @@ publish it through a public tunnel or reverse proxy.
 
 ### ChatGPT Tunnel connection
 
-Agent → **Tunnel** lets ChatGPT work on the Agent's *Current project* directly, through the
-OpenAI Secure MCP Tunnel. No separate desktop app is involved: this service serves the MCP
+Agent → **Tunnel** lets ChatGPT work on explicitly registered local projects directly, through
+the OpenAI Secure MCP Tunnel. No separate desktop app is involved: this service serves the MCP
 endpoint at `/mcp` and supervises OpenAI's official `tunnel-client`.
 
 One-time setup:
@@ -302,6 +302,28 @@ One-time setup:
    Connection **Tunnel** (the same Tunnel), Authentication **No auth**. After switching the server
    behind an existing Tunnel app, refresh that app under ChatGPT Settings → Apps so it lists the
    current tools.
+4. Register the projects ChatGPT may use in `tunnel-projects.json` beside `settings.json`
+   (`~/Library/Application Support/agenticContext/` on macOS). The file is user-owned; the
+   service only reads it, and edits apply on the next tool call without a restart:
+
+   ```json
+   {
+     "schema_version": 1,
+     "projects": [
+       {"id": "agenticContext", "root": "/Users/<you>/Desktop/agenticContext", "writable": true},
+       {"id": "worthward", "root": "/Users/<you>/Desktop/worthward", "writable": false},
+       {"id": "webcodex", "root": "/Users/<you>/Desktop/githubs/webcodex", "writable": false,
+        "description": "Read-only architecture reference."},
+       {"id": "shared-docs", "root": "/Users/<you>/Desktop/shared_docs", "writable": false}
+     ]
+   }
+   ```
+
+   `writable` defaults to `false`; grant it only to projects ChatGPT may change. Roots must be
+   absolute existing directories, must not overlap, and must not be the filesystem root or the
+   home folder; any invalid entry disables every project until it is fixed. Without this file,
+   the Agent's selected workspace is the only project, and only when it is a Git repository
+   root, so a parent folder such as the Desktop is never exposed as one project.
 
 Runtime behavior:
 
@@ -318,16 +340,46 @@ Runtime behavior:
 - `/mcp` accepts only loopback callers that present the current bearer token. `GET /mcp` returns
   405 (no SSE stream). An `OAuth discovery failed` warning in the client log is expected: the app
   uses No auth, so no OAuth metadata is published and readiness does not depend on it.
-- Tools share the Browser Agent's controller boundary: every path goes through its confinement,
-  ignored-folder, and credential-file rules; commands go through the approved `run` policy; and
-  bodycheck is the final gate. The public catalog is exactly `project_overview`, `list_files`,
-  `search_files`, `read_files` (1-8 files or ranges with SHA-256), `apply_edits` (1-16 exact
-  replacements, validated as one batch before any file changes), `write_file` (new files, or
-  whole-file replacement only with the current SHA-256; new files are not executable),
-  `delete_file` (the SHA-256 from `read_files`; an unrelated edit does not invalidate it, but a
-  changed file is refused), `run_check`, `show_changes` (read-only Git status, stats,
-  and bounded patch), and `review_changes`. The removed `read_file`, `replace_in_file`,
-  `create_file`, and `call_runtime_tool` names are not compatibility entrypoints.
+- Every tool except `list_projects` names one registered `project`; ids match exactly and are
+  never paths. Paths are relative to that project's root (absolute and `~` paths are refused),
+  and every path goes through the Browser Agent's confinement, symlink, ignored-folder, and
+  credential-file rules for that root. Read-only projects refuse `apply_edits`, `write_file`,
+  `delete_file`, `run_check`, `start_check`, and `stop_check` before touching anything. Each
+  project keeps its own read receipts, SHA-256 guards, and verification evidence.
+- The public catalog is exactly: `list_projects`; `project_overview` (writability, root and
+  nested instruction files of that project only, active checks, bounded Git status);
+  `list_files`; `search_files`; `read_files` (1-8 files or ranges with SHA-256); `apply_edits`
+  (1-16 exact replacements, validated as one batch before any file changes); `write_file` (new
+  files, or whole-file replacement only with the current SHA-256; new files are not
+  executable); `delete_file` (the SHA-256 from `read_files`; an unrelated edit does not
+  invalidate it, but a changed file is refused); `run_check`; `start_check`, `observe_check`,
+  and `stop_check` (durable approved checks); `show_changes` (status and diff stats only);
+  `git_log` (bounded, pageable commit summaries); `git_diff_hunks` (paginated diff hunks with a
+  continuation); and `review_changes` (bodycheck, the final gate). Arguments are validated
+  against the published closed schemas, so unknown fields fail. The removed `read_file`,
+  `replace_in_file`, `create_file`, and `call_runtime_tool` names, and `show_changes`
+  `include_patch`, are not compatibility entrypoints.
+- `git_diff_hunks` pages the unstaged diff, the staged diff (`staged`), a commit against the
+  working tree or index (`base_commit`), or two commits (`base_commit` + `head_commit`),
+  optionally for up to 16 paths. When `complete` is false, call it again with the returned
+  `continuation`; the continuation is bound to the project, the request, and the exact diff
+  bytes, so it fails after the diff changes, in another project, or after a service restart
+  rather than returning different evidence. Credential files are counted in `withheld_files`
+  instead of shown, and single lines longer than 4,000 characters are shortened and counted.
+- `start_check` runs one command from the same allowlist as `run_check` as a durable job and
+  returns its `job_id`. Retrying with the same `idempotency_key` returns the same job; one check
+  runs per project at a time; the timeout is 60 seconds to 2 hours (default 30 minutes).
+  `observe_check` reports `starting`, `running`, `succeeded`, `failed`, `stopped`, `timeout`, or
+  `unknown` with a bounded output tail. A success counts as verification for `review_changes`
+  only if the project fingerprint is unchanged and no Tunnel edit happened while it ran;
+  otherwise the result says `workspace_changed` or `not_recorded`. `unknown` means the runner
+  vanished without a result; treat it as unverified. `stop_check` stops only the process tree
+  whose recorded birth identity still matches. Jobs and logs live under the Agent runtime root
+  in `computer-use-agent/tunnel-checks/`; the newest 20 per project are kept, and a job keeps
+  running and stays observable across a service restart (its evidence is then not recorded for
+  the new session).
+- Calls for one project are serialized; different projects do not block each other, and Git
+  observation tools do not wait behind a running `run_check`.
 - Runtime selection is internal to AgenticContext. No public tool accepts or requires
   `runtime`, `runtime_name`, `execution_mode`, `adaptive_runtime`, or
   `full_operator_runtime`.
@@ -342,10 +394,12 @@ Runtime behavior:
     client may keep its cached tool snapshot.
   - ChatGPT Settings → Apps → AgenticContext → Refresh/Scan Tools replaces ChatGPT's stored
     snapshot. After a catalog change, restart the service first, then refresh the app.
-- Every tool call is logged as `Tunnel tool <name> ok=<bool> duration=<s> target=<path or command>`
-  in the application log, so a ChatGPT session can be audited after a restart.
-- Arbitrary shell commands and long-running background jobs are intentionally not exposed; only
-  the approved verification commands run through the Tunnel.
+- Every tool call is logged as
+  `Tunnel tool <name> ok=<bool> duration=<s> project=<id> target=<path or command>` in the
+  application log, so a ChatGPT session can be audited after a restart.
+- Arbitrary shell commands, arbitrary executables, and general background processes are
+  intentionally not exposed; only the approved verification commands run through the Tunnel,
+  synchronously (`run_check`) or as durable checks (`start_check`).
 
 Maintaining the client when OpenAI changes it:
 

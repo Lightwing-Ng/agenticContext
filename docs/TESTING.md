@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.15.3-codex.0`
+Documentation version: `v1.16.0-claude.0`
 
 ## Supported commands
 
@@ -144,11 +144,23 @@ Run the Secure MCP Tunnel contract independently with:
 ./scripts/test.sh tests/test_tunnel_mcp.py tests/test_tunnel_runtime.py tests/test_tunnel_credentials.py
 ```
 
-The Tunnel tests pin the exact ten-tool public catalog, discovery/dispatcher agreement, rejection
-of removed compatibility names, direct invocation without runtime selectors, transactional edit
-behavior, stale-write and delete SHA protection, workspace confinement, destructive-command
-refusal, Git diff reporting, and loopback bearer authentication. These are offline controller
-tests; a live ChatGPT round trip is separate transport evidence.
+The Tunnel tests pin the exact sixteen-tool public catalog, closed-schema enforcement,
+discovery/dispatcher agreement, rejection of removed compatibility names, direct invocation
+without runtime selectors, transactional edit behavior, stale-write and delete SHA protection,
+workspace confinement, destructive-command refusal, and loopback bearer authentication. They
+also cover the project registry (exact identities, unknown and path-like ids, read-only
+projects, cross-project and absolute-path escapes, symlinks, project-scoped instruction
+discovery, per-project SHA guards across switching, re-registration, invalid registries failing
+closed, and no Desktop-wide fallback); paginated Git inspection (small and multi-page diffs,
+long-hunk segments, staged/unstaged/path/commit-range requests, continuation invalidation,
+project binding, tampering and restart expiry, bounded pages, binary and credential files,
+non-Git projects, and the discovery ceiling); durable checks (success with recorded
+verification, failure withdrawing verification, unapproved-command refusal, idempotent
+single-flight starts, stop of the owned tree, forged-identity protection, timeout, project
+isolation, workspace changes during a check, evidence not applying to a later edit, restart
+durability, and runner loss); and per-project lock scope. Durable-check cases need POSIX
+process groups and are skipped on Windows. These are offline tests with temporary projects,
+registries, and runtime roots; a live ChatGPT round trip is separate transport evidence.
 
 The Tunnel onboarding UI runs in the disposable Chromium layer:
 

@@ -1,4 +1,4 @@
-/* Code version: v2.125.5-codex.0 */
+/* Code version: v2.126.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -482,8 +482,10 @@
     --font-family-brand: "Univers Next for HSBC";
     --font-family-cjk: "PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei", "Microsoft JhengHei", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
     --font-family-base: var(--font-family-brand), var(--font-family-cjk);
-    --font-family-mono-cjk: var(--font-family-base);
-    --font-family-mono: var(--font-family-base);
+    /* Technical text is the only Western-font exception to the HSBC interface contract. */
+    --font-family-technical-mono: monospace;
+    --font-family-mono-cjk: var(--font-family-technical-mono);
+    --font-family-mono: var(--font-family-technical-mono);
     --font-mono: var(--font-family-mono);
     --font-ui-xs: var(--font-size-1);
     --font-ui-sm: var(--font-size-2);
@@ -4076,7 +4078,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 #chatgpt_tunnel_id.text-input-control,
 #chatgpt_tunnel_api_key.text-input-control {
-    font-family: monospace;
+    font-family: var(--font-mono);
 }
 
 .agent-tunnel-credential-label-row {
@@ -5102,7 +5104,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     min-height: 240px;
     resize: vertical;
     border-radius: var(--radius-soft);
-    font-family: monospace;
+    font-family: var(--font-mono);
     font-size: var(--font-ui-sm);
     line-height: 1.5;
     white-space: pre-wrap;
