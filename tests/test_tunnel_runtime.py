@@ -1,6 +1,6 @@
 """tunnel-client supervision tests with a local fake client.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -36,6 +36,18 @@ import http.server, json, os, sys
 args = sys.argv[1:]
 def value(name):
     return args[args.index(name) + 1]
+if args and args[0] == "doctor":
+    header = value("--mcp.extra-headers")
+    authorization_file = header.removeprefix("Authorization: file:")
+    record = {{
+        "args": args,
+        "api_key": os.environ.get("CONTROL_PLANE_API_KEY"),
+        "openai_api_key": os.environ.get("OPENAI_API_KEY"),
+    }}
+    with open(os.path.join(os.path.dirname(authorization_file), "fake-doctor.json"), "w") as handle:
+        json.dump(record, handle)
+    print(json.dumps({{"ok": True}}))
+    raise SystemExit(0)
 url_file = value("--health.url-file")
 record = {{
     "args": args,
@@ -106,6 +118,13 @@ def test_runtime_supervises_the_client_until_stopped(tmp_path: Path, fake_client
     runtime.enable("http://127.0.0.1:8666/mcp")
     try:
         assert wait_for(lambda: runtime.snapshot()["ready"]), runtime.snapshot()
+        doctor = json.loads((state_root / "fake-doctor.json").read_text())
+        assert doctor["api_key"] == "sk-proj-test"
+        assert doctor["openai_api_key"] is None
+        assert doctor["args"][0] == "doctor"
+        assert "--json" in doctor["args"]
+        assert "sk-proj-test" not in " ".join(doctor["args"])
+
         invocation = json.loads((state_root / "fake-invocation.json").read_text())
         assert invocation["api_key"] == "sk-proj-test"
         assert invocation["tunnel_id"] == VALID_TUNNEL_ID
@@ -121,6 +140,13 @@ def test_runtime_supervises_the_client_until_stopped(tmp_path: Path, fake_client
         assert not runtime.authorization_matches("Bearer guess")
         if os.name == "posix":
             assert authorization_file.stat().st_mode & 0o777 == 0o600
+
+        runtime.disconnect()
+        assert runtime.snapshot()["state"] == "disconnected"
+        assert runtime.snapshot()["enabled"] is False
+        runtime.connect()
+        assert wait_for(lambda: runtime.snapshot()["ready"]), runtime.snapshot()
+        assert runtime.snapshot()["enabled"] is True
     finally:
         runtime.stop()
     assert runtime.snapshot()["state"] == "stopped"
@@ -146,17 +172,38 @@ def test_runtime_without_credentials_reports_not_configured(tmp_path: Path) -> N
     assert snapshot["state"] == "not_configured"
     view = describe_tunnel_status(snapshot, project_name="demo", settings_url="/settings#settings-llm")
     assert view["label"] == "Not configured"
-    assert view["action"] == {"kind": "link", "label": "Open Settings", "href": "/settings#settings-llm"}
+    assert "step ➋" in view["message"]
+    assert view["action"] is None
 
 
-def test_ready_presentation_announces_direct_chatgpt_access() -> None:
+def test_ready_presentation_distinguishes_local_readiness_from_tool_activity() -> None:
     view = describe_tunnel_status({"state": "ready"}, project_name="demo", settings_url="/s")
     assert view["tone"] == "ready"
-    assert "demo" in view["message"]
-    assert "No separate desktop app is needed." in view["message"]
-    assert view["action"]["href"] == "https://chatgpt.com/"
-    error = describe_tunnel_status({"state": "error", "message": "boom"}, project_name="d", settings_url="/s")
-    assert error["action"]["kind"] == "restart"
+    assert view["label"] == "Ready"
+    assert view["message"] == "Ready for demo."
+    assert view["hint"] == ""
+    assert view["action"] is None
+
+    active = describe_tunnel_status(
+        {"state": "ready", "activity_observed": True},
+        project_name="demo",
+        settings_url="/s",
+    )
+    assert active["label"] == "Active"
+    assert "Tool call received for demo" in active["message"]
+
+    disconnected = describe_tunnel_status(
+        {"state": "disconnected"},
+        project_name="demo",
+        settings_url="/s",
+    )
+    assert disconnected["label"] == "Disconnected"
+    error = describe_tunnel_status(
+        {"state": "error", "message": "boom"},
+        project_name="d",
+        settings_url="/s",
+    )
+    assert error["action"] is None
 
 
 def _zip_with(member: str, payload: bytes) -> bytes:

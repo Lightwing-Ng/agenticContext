@@ -1858,7 +1858,7 @@ def test_shared_segmented_controls_shrink_wrap_and_center(
         ),
         (
             "/cache/chatgpt",
-            "[data-cache-content-mode]",
+            ".cache-page-content-mode-control[data-cache-content-mode]",
             ".cache-page-content-mode-section",
         ),
     )

@@ -1,6 +1,6 @@
 """Supervise OpenAI's tunnel-client so ChatGPT can reach the local MCP endpoint.
 
-Code version: v1.1.0-codex.0
+Code version: v1.3.0-codex.0
 
 The Tunnel connection has three parts:
 
@@ -48,6 +48,7 @@ TUNNEL_CLIENT_RELEASE_BASE = (
 TUNNEL_CLIENT_BIN_ENV = "AGENTIC_CONTEXT_TUNNEL_CLIENT_BIN"
 TUNNEL_CLIENT_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 TUNNEL_READY_TIMEOUT_SECONDS = 60.0
+TUNNEL_DOCTOR_TIMEOUT_SECONDS = 45.0
 TUNNEL_HEALTH_PROBE_INTERVAL_SECONDS = 5.0
 TUNNEL_RESTART_DEBOUNCE_SECONDS = 2.0
 TUNNEL_MAX_BACKOFF_SECONDS = 60.0
@@ -233,8 +234,26 @@ class TunnelRuntime:
         """Start supervising the Tunnel for this service's MCP URL."""
         with self._lock:
             self._mcp_url = mcp_url
+        self.connect()
+
+    def connect(self) -> None:
+        """Enable the Tunnel and start a fresh client generation."""
+        with self._lock:
+            if self._shutdown:
+                return
             self._enabled = True
         self.restart()
+
+    def disconnect(self) -> None:
+        """Stop forwarding while preserving the saved credentials."""
+        with self._lock:
+            if self._shutdown:
+                return
+            self._enabled = False
+            self._generation += 1
+            self._cancel_restart_timer()
+            self._terminate_process()
+            self._set_state("disconnected", "OpenAI Secure Tunnel is disconnected.")
 
     def restart(self) -> None:
         """Stop any client and start a new generation when credentials exist."""
@@ -287,11 +306,12 @@ class TunnelRuntime:
             message = self._message
             if not credentials.configured:
                 state, message = "not_configured", (
-                    "Save the Tunnel ID and API key in Settings to connect ChatGPT."
+                    "Enter the Tunnel ID and API key on the Agent Tunnel page."
                 )
             return {
                 "state": state,
                 "ready": state == "ready",
+                "enabled": self._enabled,
                 "configured": credentials.configured,
                 "message": message,
                 "ready_since": self._ready_since,
@@ -312,14 +332,21 @@ class TunnelRuntime:
 
     def _current(self, generation: int) -> bool:
         with self._lock:
-            return generation == self._generation and not self._shutdown
+            return (
+                generation == self._generation
+                and self._enabled
+                and not self._shutdown
+            )
 
     def _supervise(self, generation: int) -> None:
         backoff = 5.0
         while self._current(generation):
             credentials = self._credentials_loader()
             if not credentials.configured:
-                self._set_state("not_configured", "Save the Tunnel ID and API key in Settings.")
+                self._set_state(
+                    "not_configured",
+                    "Enter the Tunnel ID and API key on the Agent Tunnel page.",
+                )
                 return
             if not valid_tunnel_id(credentials.tunnel_id):
                 self._set_state(
@@ -357,7 +384,7 @@ class TunnelRuntime:
             if self._probe_ready():
                 self._set_state(
                     "ready",
-                    "Connected. ChatGPT reaches this computer directly; no separate desktop app is needed.",
+                    "OpenAI Secure Tunnel ready; waiting for ChatGPT.",
                 )
             elif time.monotonic() > deadline:
                 detail = self._last_log_problem() or "waiting for the OpenAI control plane"
@@ -418,6 +445,41 @@ class TunnelRuntime:
         if proxy:
             env.update({"HTTPS_PROXY": proxy, "HTTP_PROXY": proxy})
         env["NO_PROXY"] = LOOPBACK_NO_PROXY
+        doctor_command = [
+            str(binary),
+            "doctor",
+            "--control-plane.tunnel-id",
+            credentials.tunnel_id,
+            "--mcp.server-url",
+            f"url={self._mcp_url},channel=main",
+            "--mcp.extra-headers",
+            f"Authorization: file:{self._authorization_path}",
+            "--mcp.startup-wait-timeout",
+            "30s",
+            "--json",
+        ]
+        if proxy:
+            doctor_command.extend(["--control-plane.http-proxy", proxy])
+        try:
+            doctor = subprocess.run(
+                doctor_command,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=TUNNEL_DOCTOR_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise TunnelRuntimeError(
+                "Tunnel preflight could not complete. Check the Tunnel credentials, "
+                "network route, and local MCP endpoint."
+            ) from exc
+        if doctor.returncode != 0:
+            raise TunnelRuntimeError(
+                "Tunnel preflight failed. Check the Tunnel ID, Restricted API key "
+                "(Tunnels Read + Use), network route, and local MCP endpoint."
+            )
         command = [
             str(binary),
             "run",
@@ -559,10 +621,7 @@ class TunnelRuntime:
 
 
 CHATGPT_HOME_URL = "https://chatgpt.com/"
-TUNNEL_CHATGPT_HINT = (
-    "In ChatGPT, turn on your Tunnel app from the composer's + menu. If its tools look "
-    "outdated, refresh that app under Settings → Apps."
-)
+TUNNEL_CHATGPT_HINT = "Not connected until ChatGPT makes a tool call."
 
 
 def describe_tunnel_status(
@@ -575,38 +634,48 @@ def describe_tunnel_status(
     state = str(snapshot.get("state") or "")
     message = str(snapshot.get("message") or "")
     if state == "ready":
+        activity_observed = bool(snapshot.get("activity_observed"))
         return {
             "tone": "ready",
-            "label": "Connected",
+            "label": "Active" if activity_observed else "Ready",
             "message": (
-                f"ChatGPT reaches {project_name} on this computer through the OpenAI Tunnel. "
-                "No separate desktop app is needed."
+                f"Tool call received for {project_name}."
+                if activity_observed
+                else f"Ready for {project_name}."
             ),
-            "hint": TUNNEL_CHATGPT_HINT,
-            "action": {"kind": "link", "label": "Open ChatGPT", "href": CHATGPT_HOME_URL},
+            "hint": "",
+            "action": None,
         }
     if state in {"starting", "installing"}:
-        return {"tone": "loading", "label": "Connecting", "message": message, "hint": "", "action": None}
+        return {"tone": "loading", "label": "Connecting", "message": "Connecting...", "hint": "", "action": None}
     if state == "not_configured":
         return {
             "tone": "error",
             "label": "Not configured",
-            "message": "Save the Tunnel ID and API key in Settings to connect ChatGPT.",
+            "message": "Enter credentials in step ➋.",
             "hint": "",
-            "action": {"kind": "link", "label": "Open Settings", "href": settings_url},
+            "action": None,
+        }
+    if state == "disconnected":
+        return {
+            "tone": "error",
+            "label": "Disconnected",
+            "message": "Tunnel disconnected.",
+            "hint": "",
+            "action": None,
         }
     if state == "error":
         return {
             "tone": "error",
             "label": "Unavailable",
-            "message": message,
+            "message": message[:60] if message else "Tunnel unavailable.",
             "hint": "",
-            "action": {"kind": "restart", "label": "Reconnect"},
+            "action": None,
         }
     return {
         "tone": "error",
         "label": "Not running",
-        "message": "Restart the local service to start the Tunnel.",
+        "message": "Reconnect in step ➋.",
         "hint": "",
         "action": None,
     }

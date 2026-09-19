@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.26.0-codex.0`
+Documentation version: `v1.26.3-codex.0`
 
 ## Launch
 
@@ -294,9 +294,10 @@ One-time setup:
 
 1. At platform.openai.com, create a Tunnel and an API key whose principal has Tunnels Read + Use
    for it.
-2. Save the Tunnel ID and API key in Settings → LLM settings → ChatGPT · Tunnel. The key is written
-   to `tunnel-credentials.json` beside `settings.json` with owner-only permissions and is never
-   rendered back into the page; a blank key field keeps the saved key.
+2. Enter the Tunnel ID and API key in Agent → Tunnel, step ➋; a qualified pair saves
+   automatically. The key is written to `tunnel-credentials.json` beside `settings.json` with
+   owner-only permissions and is never rendered back into the page; a blank key field keeps the
+   saved key. Save and format errors appear in the sidebar Tunnel status hint.
 3. In ChatGPT, enable Developer mode (Settings → Security and login) and create an app with
    Connection **Tunnel** (the same Tunnel), Authentication **No auth**. After switching the server
    behind an existing Tunnel app, refresh that app under ChatGPT Settings → Apps so it lists the
@@ -305,7 +306,7 @@ One-time setup:
 Runtime behavior:
 
 - `python3 main.py` starts the Tunnel when credentials exist. Saving new credentials restarts it
-  after a 2-second debounce; the Agent card and Settings package offer **Reconnect**. Test and
+  after a short debounce; step ➋ offers **Disconnect**/**Reconnect** without deleting credentials. Test and
   isolated app instances never start `tunnel-client`.
 - State lives in `tunnel/` beside `settings.json`: the pinned client under `tools/`, the client log
   (`tunnel-client.log`, previous run in `.log.1`), its pid file, health URL, and a per-start bearer
@@ -317,10 +318,34 @@ Runtime behavior:
 - `/mcp` accepts only loopback callers that present the current bearer token. `GET /mcp` returns
   405 (no SSE stream). An `OAuth discovery failed` warning in the client log is expected: the app
   uses No auth, so no OAuth metadata is published and readiness does not depend on it.
-- Tools map one-to-one onto the Browser Agent's registry-validated controller actions, so path
-  confinement, sensitive-file rules, the approved `run` command policy, and bodycheck are identical:
-  `project_overview`, `list_files`, `read_file`, `search_files`, `replace_in_file`, `create_file`,
-  `delete_file` (requires the latest read SHA-256), `run_check`, and `review_changes`.
+- Tools share the Browser Agent's controller boundary: every path goes through its confinement,
+  ignored-folder, and credential-file rules; commands go through the approved `run` policy; and
+  bodycheck is the final gate. The public catalog is exactly `project_overview`, `list_files`,
+  `search_files`, `read_files` (1-8 files or ranges with SHA-256), `apply_edits` (1-16 exact
+  replacements, validated as one batch before any file changes), `write_file` (new files, or
+  whole-file replacement only with the current SHA-256; new files are not executable),
+  `delete_file` (the SHA-256 from `read_files`; an unrelated edit does not invalidate it, but a
+  changed file is refused), `run_check`, `show_changes` (read-only Git status, stats,
+  and bounded patch), and `review_changes`. The removed `read_file`, `replace_in_file`,
+  `create_file`, and `call_runtime_tool` names are not compatibility entrypoints.
+- Runtime selection is internal to AgenticContext. No public tool accepts or requires
+  `runtime`, `runtime_name`, `execution_mode`, `adaptive_runtime`, or
+  `full_operator_runtime`.
+- The Python tool catalog is process-static, so `initialize` and `server/discover` advertise
+  `tools.listChanged=false` and no list-changed notification is ever sent. Each layer refreshes
+  only its own state:
+  - Restarting the AgenticContext service (Python process) is the only step that loads a changed
+    `TUNNEL_TOOLS` or dispatcher; `tools/list` and `tools/call` both read that one table.
+  - A `tunnel-client` reconnect (step ➋, or the automatic restart) renews forwarding and the
+    bearer token only; it reloads no Python code and changes no tool.
+  - An MCP client reconnect (`initialize` again) receives the running process's catalog, but a
+    client may keep its cached tool snapshot.
+  - ChatGPT Settings → Apps → AgenticContext → Refresh/Scan Tools replaces ChatGPT's stored
+    snapshot. After a catalog change, restart the service first, then refresh the app.
+- Every tool call is logged as `Tunnel tool <name> ok=<bool> duration=<s> target=<path or command>`
+  in the application log, so a ChatGPT session can be audited after a restart.
+- Arbitrary shell commands and long-running background jobs are intentionally not exposed; only
+  the approved verification commands run through the Tunnel.
 
 Maintaining the client when OpenAI changes it:
 

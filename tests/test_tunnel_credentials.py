@@ -1,10 +1,11 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.0.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -69,38 +70,68 @@ def test_merge_keeps_saved_key_when_blank_and_clears_with_tunnel_id() -> None:
     assert merge_tunnel_credentials(saved, "", "") == TunnelCredentials()
 
 
-def test_settings_saves_credentials_without_rendering_the_key(agent_client) -> None:
-    empty_body = agent_client.get("/settings").get_data(as_text=True)
-    assert 'name="chatgpt_tunnel_id"' in empty_body
-    assert 'name="chatgpt_tunnel_api_key"' in empty_body
-    assert 'type="password"' in empty_body
+def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent_client) -> None:
+    settings_body = agent_client.get("/settings").get_data(as_text=True)
+    assert 'name="chatgpt_tunnel_id"' not in settings_body
+    assert 'name="chatgpt_tunnel_api_key"' not in settings_body
+    assert "settings-tunnel-package" not in settings_body
+    assert "settings-tunnel.js" not in settings_body
 
-    response = agent_client.post(
-        "/settings",
-        data={"chatgpt_tunnel_id": "tunnel_abc", "chatgpt_tunnel_api_key": "sk-proj-secret-HMAA"},
+    empty_body = agent_client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
+    assert 'id="chatgpt_tunnel_id"' in empty_body
+    assert 'id="chatgpt_tunnel_api_key"' in empty_body
+    assert 'data-agent-tunnel-credentials-url="/api/agent/tunnel/credentials"' in empty_body
+    for marker in ("➊", "➋", "➌", "➍"):
+        assert marker in empty_body
+    assert 'target="_blank" rel="noopener noreferrer"' in empty_body
+    assert "Connect ChatGPT to this local project" in empty_body
+    assert "Install and prepare" not in empty_body
+    assert 'class="secondary-button browser-refresh-button agent-tunnel-step-action"' in empty_body
+
+    invalid = agent_client.post(
+        "/api/agent/tunnel/credentials",
+        json={"tunnel_id": "tunnel_bad", "api_key": "sk-proj-secret-HMAA"},
     )
-    assert response.status_code == 302
-    assert load_tunnel_credentials().configured
+    assert invalid.status_code == 400
+    assert not load_tunnel_credentials().configured
 
-    body = agent_client.get("/settings").get_data(as_text=True)
-    assert 'value="tunnel_abc"' in body
-    assert 'class="text-input-control-shell"' in body
-    assert "data-text-input-clear" in body
+    tunnel_id = "tunnel_" + "a" * 32
+    response = agent_client.post(
+        "/api/agent/tunnel/credentials",
+        json={"tunnel_id": tunnel_id, "api_key": "sk-proj-secret-HMAA"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["credentials"]["qualified"] is True
+    assert payload["credentials"]["tunnel_id_valid"] is True
+    assert payload["credentials"]["api_key_saved"] is True
+    assert "sk-proj-secret-HMAA" not in str(payload)
+    assert load_tunnel_credentials() == TunnelCredentials(tunnel_id, "sk-proj-secret-HMAA")
+
+    body = agent_client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
+    assert f'value="{tunnel_id}"' in body
+    assert 'placeholder="••••••••HMAA"' in body
     assert "sk-proj-secret-HMAA" not in body
-    assert 'placeholder="Saved …HMAA"' in body
 
 
 def test_agent_tunnel_route_reflects_tunnel_status(agent_client) -> None:
+    default_redirect = agent_client.get("/agent")
+    assert default_redirect.status_code == 302
+    assert default_redirect.headers["Location"] == "/agent/tunnel/chatgpt"
+
     redirect = agent_client.get("/agent/tunnel/")
     assert redirect.status_code == 302
     assert redirect.headers["Location"] == "/agent/tunnel/chatgpt"
     assert agent_client.get("/agent/tunnel/unknown").status_code == 404
 
     body = agent_client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
+    assert 'data-segmented-active-index="0"' in body
+    assert body.index("<span>Tunnel</span>") < body.index("<span>Browser</span>")
     assert 'value="tunnel" data-agent-connection-mode checked' in body
     assert "data-agent-tunnel-state>Not configured</span>" in body
-    assert 'href="/settings#settings-llm"' in body
-    assert "Open Settings</a>" in body
+    assert 'data-agent-tunnel-onboarding' in body
+    assert 'data-agent-browser-task hidden' in body
+    assert 'href="/settings#settings-llm"' not in body
     # Recent sessions belong to Browser runs only.
     assert 'aria-label="Recent sessions" data-agent-browser-mode-field hidden' in body
 
@@ -114,8 +145,29 @@ def test_agent_tunnel_route_reflects_tunnel_status(agent_client) -> None:
     assert status["configured"] is True
     assert status["state"] == "disabled"
     assert status["presentation"]["label"] == "Not running"
+    assert status["credentials"]["qualified"] is True
+    assert status["presentation"]["action"] is None
     assert "sk-proj-secret" not in str(status)
 
     browser_body = agent_client.get("/agent/edge/chatgpt").get_data(as_text=True)
+    assert 'data-segmented-active-index="1"' in browser_body
     assert 'value="browser" data-agent-connection-mode checked' in browser_body
     assert "data-agent-tunnel-mode-field" in browser_body
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, [], False, None, {"tunnel_id": None}, {"tunnel_id": "tunnel_" + "b" * 32, "api_key": []}],
+)
+def test_malformed_tunnel_credentials_do_not_clear_saved_pair(agent_client, payload) -> None:
+    saved = TunnelCredentials("tunnel_" + "b" * 32, "sk-proj-onboarding-test-ABCD")
+    save_tunnel_credentials(saved)
+
+    response = agent_client.post(
+        "/api/agent/tunnel/credentials",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert load_tunnel_credentials() == saved
+    assert saved.api_key not in response.get_data(as_text=True)

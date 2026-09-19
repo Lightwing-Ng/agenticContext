@@ -1,4 +1,4 @@
-/* Code version: v3.51.1-codex.0 */
+/* Code version: v3.52.3-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -99,8 +99,16 @@
         tunnelMessage: document.querySelector("[data-agent-tunnel-message]"),
         tunnelHint: document.querySelector("[data-agent-tunnel-hint]"),
         tunnelActivity: document.querySelector("[data-agent-tunnel-activity]"),
-        tunnelAction: document.querySelector("[data-agent-tunnel-action]"),
-        tunnelRestart: document.querySelector("[data-agent-tunnel-restart]"),
+        tunnelOnboarding: document.querySelector("[data-agent-tunnel-onboarding]"),
+        browserTask: document.querySelector("[data-agent-browser-task]"),
+        tunnelIdInput: document.querySelector("[data-agent-tunnel-id]"),
+        tunnelKeyInput: document.querySelector("[data-agent-tunnel-key]"),
+        tunnelIdCheck: document.querySelector("[data-agent-tunnel-id-check]"),
+        tunnelKeyCheck: document.querySelector("[data-agent-tunnel-key-check]"),
+        tunnelToggle: document.querySelector("[data-agent-tunnel-toggle]"),
+        tunnelToggleLabel: document.querySelector("[data-agent-tunnel-toggle-label]"),
+        tunnelClearButtons: Array.from(document.querySelectorAll("[data-agent-tunnel-clear]")),
+        tunnelLiveMarker: document.querySelector("[data-agent-tunnel-live-marker]"),
         workspacePath: promptForm.querySelector('input[name="workspace_path"]'),
         promptOs: promptForm.querySelector("[data-agent-prompt-os]"),
         promptPlatform: promptForm.querySelector("[data-agent-prompt-platform]"),
@@ -831,9 +839,16 @@
     }
 
     let tunnelPresentation = readTunnelPresentation();
+    let tunnelCredentials = readTunnelCredentials();
     let tunnelActivity = {call_count: 0, recent_calls: []};
+    let tunnelEnabled = elements.tunnelToggleLabel?.textContent.trim() === "Disconnect";
+    let tunnelActivityObserved = !elements.tunnelLiveMarker?.hidden;
     let tunnelPollTimer = null;
     let tunnelPollInFlight = false;
+    let tunnelCredentialSaveTimer = null;
+    let tunnelCredentialSaveRevision = 0;
+    let tunnelCredentialNotice = "";
+    let tunnelToggleInFlight = false;
 
     function readTunnelPresentation() {
         try {
@@ -844,22 +859,99 @@
         }
     }
 
+    function readTunnelCredentials() {
+        try {
+            return JSON.parse(elements.tunnelField?.dataset.agentTunnelCredentials || "null")
+                || {tunnel_id: "", tunnel_id_valid: false, api_key_saved: false, api_key_hint: "", qualified: false};
+        } catch (_error) {
+            return {tunnel_id: "", tunnel_id_valid: false, api_key_saved: false, api_key_hint: "", qualified: false};
+        }
+    }
+
     function tunnelAvailability() {
         const supported = tunnelSupportsPlatform(selectedPlatform());
         const tone = String(tunnelPresentation?.tone || "error");
         return {supported, tone, ready: supported && tone === "ready"};
     }
 
+    function tunnelIdLooksValid(value) {
+        return /^tunnel_[0-9a-f]{32}$/.test(String(value || "").trim());
+    }
+
+    function tunnelApiKeyLooksValid(value) {
+        const candidate = String(value || "").trim();
+        return candidate.startsWith("sk-") && candidate.length >= 12;
+    }
+
+    function tunnelCredentialState() {
+        const tunnelId = String(elements.tunnelIdInput?.value || "").trim();
+        const typedKey = String(elements.tunnelKeyInput?.value || "").trim();
+        const tunnelIdValid = tunnelIdLooksValid(tunnelId);
+        const typedKeyValid = tunnelApiKeyLooksValid(typedKey);
+        const savedKeyAvailable = Boolean(tunnelCredentials.api_key_saved) && !typedKey;
+        return {
+            tunnelId,
+            typedKey,
+            tunnelIdValid,
+            typedKeyValid,
+            keyQualified: typedKeyValid || savedKeyAvailable,
+            qualified: tunnelIdValid && (typedKeyValid || savedKeyAvailable),
+        };
+    }
+
+    function syncTunnelCredentialUi() {
+        const state = tunnelCredentialState();
+        if (elements.tunnelIdCheck) {
+            elements.tunnelIdCheck.hidden = !state.tunnelIdValid;
+            elements.tunnelIdCheck.dataset.statusState = "ready";
+        }
+        if (elements.tunnelKeyCheck) {
+            elements.tunnelKeyCheck.hidden = !state.keyQualified;
+            elements.tunnelKeyCheck.dataset.statusState = "ready";
+        }
+        elements.tunnelClearButtons.forEach((button) => {
+            const kind = button.dataset.agentTunnelClear;
+            const value = kind === "id" ? state.tunnelId : state.typedKey;
+            button.classList.toggle("is-visible", Boolean(value));
+        });
+        if (elements.tunnelKeyInput) {
+            elements.tunnelKeyInput.placeholder = tunnelCredentials.api_key_saved
+                ? ("••••••••" + String(tunnelCredentials.api_key_hint || "").slice(-4))
+                : "sk-proj-…";
+        }
+        if (elements.tunnelToggleLabel) {
+            elements.tunnelToggleLabel.textContent = tunnelEnabled ? "Disconnect" : "Reconnect";
+        }
+        if (elements.tunnelToggle) {
+            elements.tunnelToggle.disabled = tunnelToggleInFlight || (!tunnelEnabled && !state.qualified);
+        }
+        if (elements.tunnelLiveMarker) elements.tunnelLiveMarker.hidden = !tunnelActivityObserved;
+        const tunnelIdInvalid = Boolean(state.tunnelId) && !state.tunnelIdValid;
+        const typedKeyInvalid = Boolean(state.typedKey) && !state.typedKeyValid;
+        elements.tunnelIdInput?.setAttribute("aria-invalid", String(tunnelIdInvalid));
+        elements.tunnelKeyInput?.setAttribute("aria-invalid", String(typedKeyInvalid));
+        if (elements.tunnelHint) {
+            // Step ➋ has no status paragraph: progress, save errors, and format errors
+            // reuse the sidebar status hint, which stays hidden while there is nothing to say.
+            let hint = tunnelCredentialNotice;
+            if (!hint && tunnelIdInvalid) hint = "Tunnel ID must be tunnel_ plus 32 lowercase hex characters.";
+            if (!hint && typedKeyInvalid) hint = "API key must start with sk-.";
+            hint = hint || String(tunnelPresentation?.hint || "");
+            elements.tunnelHint.textContent = hint;
+            elements.tunnelHint.hidden = !hint;
+        }
+    }
+
     function tunnelActivityCopy() {
         const latest = Array.isArray(tunnelActivity.recent_calls) ? tunnelActivity.recent_calls[0] : null;
         if (!latest) return "";
         const seconds = Math.max(0, Math.round(Date.now() / 1000 - Number(latest.at || 0)));
-        const age = seconds < 60 ? `${seconds} s ago`
-            : seconds < 3600 ? `${Math.round(seconds / 60)} min ago`
-                : `${Math.round(seconds / 3600)} h ago`;
+        const age = seconds < 60 ? (String(seconds) + " s ago")
+            : seconds < 3600 ? (String(Math.round(seconds / 60)) + " min ago")
+                : (String(Math.round(seconds / 3600)) + " h ago");
         const count = Number(tunnelActivity.call_count || 0);
         const outcome = latest.ok ? "" : " (refused)";
-        return `ChatGPT tool calls: ${count} · last ${latest.tool}${outcome}, ${age}.`;
+        return "Tunnel tool calls: " + count + " · last " + latest.tool + outcome + ", " + age + ".";
     }
 
     function syncTunnelStatus() {
@@ -869,7 +961,7 @@
         const view = supported ? tunnelPresentation : {
             tone: "error",
             label: "Unsupported",
-            message: `Tunnel connects ChatGPT only. Choose ChatGPT, or switch to Browser for ${platformLabel}.`,
+            message: "Tunnel connects ChatGPT only. Choose ChatGPT, or switch to Browser for " + platformLabel + ".",
             hint: "",
             action: null,
         };
@@ -882,38 +974,22 @@
         if (elements.tunnelSpinner) elements.tunnelSpinner.hidden = !loading;
         if (elements.tunnelState) elements.tunnelState.textContent = view.label || "";
         if (elements.tunnelMessage) elements.tunnelMessage.textContent = view.message || "";
-        if (elements.tunnelHint) {
-            elements.tunnelHint.textContent = view.hint || "";
-            elements.tunnelHint.hidden = !view.hint;
-        }
         if (elements.tunnelActivity) {
             const activity = ready ? tunnelActivityCopy() : "";
             elements.tunnelActivity.textContent = activity;
             elements.tunnelActivity.hidden = !activity;
         }
-        const action = view.action || null;
-        const link = elements.tunnelAction;
-        if (link instanceof HTMLAnchorElement) {
-            const isLink = action?.kind === "link" && Boolean(action.href);
-            link.hidden = !isLink;
-            if (isLink) {
-                link.href = action.href;
-                link.textContent = action.label || "";
-                if (/^https:\/\//.test(action.href)) {
-                    link.target = "_blank";
-                    link.rel = "noopener noreferrer";
-                } else {
-                    link.removeAttribute("target");
-                    link.removeAttribute("rel");
-                }
-            }
-        }
-        if (elements.tunnelRestart) elements.tunnelRestart.hidden = action?.kind !== "restart";
+        syncTunnelCredentialUi();
     }
 
     function applyTunnelStatus(payload) {
         if (!payload || typeof payload !== "object") return;
         if (payload.presentation) tunnelPresentation = payload.presentation;
+        if (payload.credentials && typeof payload.credentials === "object") {
+            tunnelCredentials = payload.credentials;
+        }
+        if (typeof payload.enabled === "boolean") tunnelEnabled = payload.enabled;
+        tunnelActivityObserved = Boolean(payload.activity_observed);
         tunnelActivity = {
             call_count: Number(payload.call_count || 0),
             recent_calls: Array.isArray(payload.recent_calls) ? payload.recent_calls : [],
@@ -948,17 +1024,75 @@
         }, delay);
     }
 
-    async function restartTunnel() {
-        const url = elements.tunnelField?.dataset.agentTunnelRestartUrl;
-        if (!url) return;
-        if (elements.tunnelRestart) elements.tunnelRestart.disabled = true;
+    async function saveTunnelCredentials({allowClear = false} = {}) {
+        const url = elements.tunnelField?.dataset.agentTunnelCredentialsUrl;
+        if (!url) return false;
+        const state = tunnelCredentialState();
+        if (!state.tunnelId && !allowClear) return false;
+        if (state.tunnelId && !state.qualified) return false;
+        const revision = ++tunnelCredentialSaveRevision;
+        const submittedKey = state.typedKey;
+        tunnelCredentialNotice = state.tunnelId ? "Checking and saving credentials…" : "Clearing saved credentials…";
+        syncTunnelCredentialUi();
         try {
-            const response = await fetch(url, {method: "POST", headers: {Accept: "application/json"}});
-            if (response.ok) applyTunnelStatus(await response.json());
-        } catch (_error) {
-            // The next status poll reports the outcome.
+            const payload = await requestJson(url, {
+                method: "POST",
+                body: JSON.stringify({tunnel_id: state.tunnelId, api_key: submittedKey}),
+            });
+            if (revision !== tunnelCredentialSaveRevision) return true;
+            if (submittedKey && elements.tunnelKeyInput?.value.trim() === submittedKey) {
+                elements.tunnelKeyInput.value = "";
+            }
+            // The field checkmarks and the Tunnel status already confirm a save.
+            tunnelCredentialNotice = "";
+            applyTunnelStatus(payload);
+            scheduleTunnelPoll();
+            return true;
+        } catch (error) {
+            if (revision === tunnelCredentialSaveRevision) {
+                tunnelCredentialNotice = error.message;
+                syncTunnelCredentialUi();
+            }
+            return false;
+        }
+    }
+
+    function scheduleTunnelCredentialSave() {
+        if (tunnelCredentialSaveTimer !== null) window.clearTimeout(tunnelCredentialSaveTimer);
+        tunnelCredentialSaveTimer = null;
+        tunnelCredentialNotice = "";
+        syncTunnelCredentialUi();
+        if (!tunnelCredentialState().qualified) return;
+        tunnelCredentialSaveTimer = window.setTimeout(() => {
+            tunnelCredentialSaveTimer = null;
+            void saveTunnelCredentials();
+        }, 450);
+    }
+
+    async function toggleTunnelConnection() {
+        if (!elements.tunnelToggle || elements.tunnelToggle.disabled || tunnelToggleInFlight) return;
+        const disconnect = tunnelEnabled;
+        const url = disconnect
+            ? elements.tunnelField?.dataset.agentTunnelDisconnectUrl
+            : elements.tunnelField?.dataset.agentTunnelConnectUrl;
+        if (!url) return;
+        tunnelToggleInFlight = true;
+        tunnelCredentialNotice = disconnect ? "Disconnecting Tunnel…" : "Reconnecting Tunnel…";
+        syncTunnelCredentialUi();
+        try {
+            if (!disconnect) {
+                if (tunnelCredentialSaveTimer !== null) window.clearTimeout(tunnelCredentialSaveTimer);
+                tunnelCredentialSaveTimer = null;
+                if (!await saveTunnelCredentials()) return;
+            }
+            const payload = await requestJson(url, {method: "POST"});
+            tunnelCredentialNotice = "";
+            applyTunnelStatus(payload);
+        } catch (error) {
+            tunnelCredentialNotice = error.message;
         } finally {
-            if (elements.tunnelRestart) elements.tunnelRestart.disabled = false;
+            tunnelToggleInFlight = false;
+            syncTunnelCredentialUi();
             scheduleTunnelPoll();
         }
     }
@@ -969,11 +1103,19 @@
         elements.browserModeFields.forEach((field) => {
             field.hidden = !browserMode;
         });
+        if (elements.browserTask) elements.browserTask.hidden = !browserMode;
+        if (elements.tunnelOnboarding) elements.tunnelOnboarding.hidden = browserMode;
         if (elements.tunnelField) elements.tunnelField.hidden = browserMode;
         if (elements.connectionModeControl) {
             elements.connectionModeControl.dataset.agentConnectionMode = mode;
         }
         if (elements.agentPage) elements.agentPage.dataset.agentConnectionMode = mode;
+        const heading = document.querySelector("[data-agent-heading]");
+        if (heading) {
+            heading.textContent = browserMode
+                ? (selectedPlatformLabel() + " Web Agent")
+                : "Connect ChatGPT to this local project";
+        }
         syncTunnelStatus();
         if (!browserMode) {
             void refreshTunnelStatus();
@@ -2206,6 +2348,15 @@
             preferenceTimer = null;
             void flushPreferenceSave();
         }, PREFERENCE_SAVE_DEBOUNCE_MS);
+    }
+
+    async function savePreferenceImmediately() {
+        if (preferenceTimer !== null) {
+            window.clearTimeout(preferenceTimer);
+            preferenceTimer = null;
+        }
+        storePendingPreferencePayload(preferencePayload());
+        await flushPreferenceSave();
     }
 
     function flushPreferenceSaveOnPageHide() {
@@ -3820,7 +3971,11 @@
         syncConversationLink(agent);
 
         const heading = document.querySelector("[data-agent-heading]");
-        if (heading) heading.textContent = `${platformLabel} Web Agent`;
+        if (heading) {
+            heading.textContent = selectedConnectionMode() === "tunnel"
+                ? "Connect ChatGPT to this local project"
+                : `${platformLabel} Web Agent`;
+        }
         if (elements.promptInput) {
             elements.promptInput.placeholder = "Do anything";
         }
@@ -4029,27 +4184,6 @@
         setPromptExpanded(false);
     }
 
-    // Tunnel tasks run inside ChatGPT, so the local composer hands off instead of
-    // starting a Browser Agent run.
-    promptForm.addEventListener("submit", (event) => {
-        if (selectedConnectionMode() !== "tunnel") return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        const {supported, ready} = tunnelAvailability();
-        if (!supported) return;
-        if (ready) {
-            window.open(selectedPlatformHomeUrl(), "_blank", "noopener");
-            return;
-        }
-        if (tunnelPresentation?.action?.kind === "link" && tunnelPresentation.action.href) {
-            window.location.assign(tunnelPresentation.action.href);
-        }
-    }, {capture: true});
-
-    elements.tunnelRestart?.addEventListener("click", () => {
-        void restartTunnel();
-    });
-
     promptForm.addEventListener("submit", (event) => {
         event.preventDefault();
         if (promptSubmissionPending || elements.ask?.disabled || lastPayload.agent?.running || elements.ask?.classList.contains("is-stop")) return;
@@ -4143,9 +4277,51 @@
             syncAgentRoute();
         });
     });
-    elements.projectPath?.addEventListener("change", () => {
+    const kickoffCopyButton = document.querySelector("[data-agent-tunnel-copy-kickoff]");
+    kickoffCopyButton?.addEventListener("click", async () => {
+        if (kickoffCopyButton.disabled) return;
+        const prompt = document.querySelector("[data-agent-tunnel-kickoff]")?.textContent.trim();
+        if (!prompt) return;
+        kickoffCopyButton.disabled = true;
+        try {
+            const copied = await copyResponseText(prompt);
+            const label = kickoffCopyButton.querySelector("[data-agent-tunnel-copy-label]");
+            if (label) label.textContent = copied ? "Copied" : "Copy failed";
+            kickoffCopyButton.setAttribute("aria-label", copied ? "Kickoff prompt copied" : "Unable to copy kickoff prompt; select the text to copy it manually");
+        } finally {
+            kickoffCopyButton.disabled = false;
+            kickoffCopyButton.focus({preventScroll: true});
+        }
+    });
+    elements.tunnelIdInput?.addEventListener("input", scheduleTunnelCredentialSave);
+    elements.tunnelKeyInput?.addEventListener("input", scheduleTunnelCredentialSave);
+    elements.tunnelClearButtons.forEach((button) => {
+        button.addEventListener("mousedown", (event) => event.preventDefault());
+        button.addEventListener("click", () => {
+            const input = button.dataset.agentTunnelClear === "id"
+                ? elements.tunnelIdInput
+                : elements.tunnelKeyInput;
+            if (!input) return;
+            input.value = "";
+            input.dispatchEvent(new Event("input", {bubbles: true}));
+            input.focus();
+            if (button.dataset.agentTunnelClear === "id") {
+                if (tunnelCredentialSaveTimer !== null) window.clearTimeout(tunnelCredentialSaveTimer);
+                tunnelCredentialSaveTimer = null;
+                void saveTunnelCredentials({allowClear: true});
+            }
+        });
+    });
+    elements.tunnelToggle?.addEventListener("click", () => {
+        void toggleTunnelConnection();
+    });
+
+    elements.projectPath?.addEventListener("change", async () => {
         syncProjectPath(elements.projectPath.value);
-        schedulePreferenceSave();
+        await savePreferenceImmediately();
+        if (selectedConnectionMode() === "tunnel") {
+            await refreshTunnelStatus();
+        }
     });
     elements.conversationLink?.addEventListener("click", (event) => {
         event.preventDefault();

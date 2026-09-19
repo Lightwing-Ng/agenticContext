@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.11.1-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.14.0-codex.0."""
 
 import re
 from copy import deepcopy
@@ -97,6 +97,8 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         assert material["connection"] == material["agentMode"]
         web_service = page.locator(".agent-platform-combobox")
         tunnel_field = page.locator("[data-agent-tunnel-mode-field]")
+        onboarding = page.locator("[data-agent-tunnel-onboarding]")
+        browser_task = page.locator("[data-agent-browser-task]")
         expect(browser).to_be_checked()
         expect(tunnel).not_to_be_checked()
         # Web service is shared by both connections, so the switch sits right after it.
@@ -111,6 +113,8 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
             expect(field).to_be_visible()
         expect(recent_sessions).to_be_visible()
         expect(tunnel_field).to_be_hidden()
+        expect(browser_task).to_be_visible()
+        expect(onboarding).to_be_hidden()
 
         page.locator('label[for="agent_connection_tunnel"]').click()
         expect(tunnel).to_be_checked()
@@ -120,8 +124,24 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
             expect(field).to_be_hidden()
         expect(recent_sessions).to_be_hidden()
         expect(tunnel_field).to_be_visible()
+        expect(browser_task).to_be_hidden()
+        expect(page.locator("#agent_prompt_form")).to_be_hidden()
+        expect(onboarding).to_be_visible()
+        expect(page.locator("[data-agent-heading]")).to_have_text("Connect ChatGPT to this local project")
+        for marker in ("➊", "➋", "➌", "➍"):
+            expect(onboarding).to_contain_text(marker)
+        external_actions = onboarding.locator("a.agent-tunnel-step-action")
+        assert external_actions.count() == 4
+        for action in external_actions.all():
+            expect(action).to_have_class(re.compile(r"secondary-button.*browser-refresh-button"))
+            expect(action).to_have_attribute("target", "_blank")
+            expect(action).to_have_attribute("rel", "noopener noreferrer")
+        right_edges = external_actions.evaluate_all(
+            "(nodes) => nodes.map((node) => node.getBoundingClientRect().right)"
+        )
+        assert max(right_edges) - min(right_edges) <= 2
         expect(page.locator("[data-agent-tunnel-state]")).to_have_text(
-            re.compile(r"^(Connected|Connecting|Not configured|Not running|Unavailable)$")
+            re.compile(r"^(Ready|Active|Connecting|Not configured|Not running|Disconnected|Unavailable)$")
         )
 
         page.locator('label[for="agent_connection_browser"]').click()
@@ -131,7 +151,349 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
             expect(field).to_be_visible()
         expect(recent_sessions).to_be_visible()
         expect(tunnel_field).to_be_hidden()
+        expect(browser_task).to_be_visible()
+        expect(onboarding).to_be_hidden()
+        expect(page.locator("[data-agent-heading]")).to_have_text("ChatGPT Web Agent")
         assert errors == []
+    finally:
+        context.close()
+
+
+
+TUNNEL_ONBOARDING_ID = "tunnel_" + "b" * 32
+TUNNEL_ONBOARDING_KEY = "sk-proj-onboarding-test-ABCD"
+
+
+def _tunnel_onboarding_status(enabled=True):
+    return {
+        "enabled": enabled,
+        "state": "ready" if enabled else "disconnected",
+        "ready": enabled,
+        "activity_observed": False,
+        "credentials": {
+            "tunnel_id": TUNNEL_ONBOARDING_ID,
+            "tunnel_id_valid": True,
+            "api_key_saved": True,
+            "api_key_hint": "…ABCD",
+            "qualified": True,
+        },
+        "presentation": {
+            "tone": "ready" if enabled else "error",
+            "label": "Tunnel ready" if enabled else "Disconnected",
+            "message": "Ready for a project tool call." if enabled else "Disconnected.",
+            "hint": "",
+            "action": None,
+        },
+    }
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_tunnel_kickoff_copy_and_native_monospace(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 900})
+    context.add_init_script("""Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {writeText: async (text) => { window.copiedKickoff = text; }}
+    });""")
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
+            page.locator("#sidebar_toggle").click()
+        kickoff = page.locator("[data-agent-tunnel-kickoff]")
+        expect(kickoff).to_contain_text("@AgenticContext")
+        expect(kickoff).to_contain_text("[describe your task]")
+        expect(page.locator("[data-agent-tunnel-onboarding]")).to_contain_text("named AgenticContext")
+        expect(page.locator(".agent-tunnel-onboarding-step")).to_have_count(4)
+        expect(page.locator("#agent_prompt_form")).to_be_hidden()
+        assert page.locator("#chatgpt_tunnel_id").evaluate("e => getComputedStyle(e).fontFamily") == "monospace"
+        button = page.locator("[data-agent-tunnel-copy-kickoff]")
+        button.scroll_into_view_if_needed()
+        button.focus()
+        button.press("Enter")
+        expect(button).to_have_text("Copied")
+        assert page.evaluate("window.copiedKickoff") == kickoff.inner_text()
+        expect(button).to_be_focused()
+        edges = page.locator(".agent-tunnel-step-action").evaluate_all(
+            "nodes => nodes.map(e => e.getBoundingClientRect().right)"
+        )
+        assert max(edges) - min(edges) <= 2
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(("width", "height"), [(1280, 420), (390, 420), (1280, 900)])
+def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+    height,
+):
+    """Keep Tunnel onboarding on one page-level scroll owner with compact hierarchy."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": height})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route(
+        "**/api/agent/tunnel/status",
+        lambda route: route.fulfill(json=_tunnel_onboarding_status()),
+    )
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
+            page.locator("#sidebar_toggle").click()
+
+        onboarding = page.locator("[data-agent-tunnel-onboarding]")
+        steps = page.locator(".agent-tunnel-onboarding-step")
+        expect(onboarding).to_be_visible()
+        expect(steps).to_have_count(4)
+        expect(page.locator("[data-agent-tunnel-message]")).to_have_text(
+            "Ready for a project tool call."
+        )
+        expect(page.locator("[data-agent-tunnel-hint]")).to_be_hidden()
+
+        geometry = page.evaluate(
+            """() => {
+                const workspace = document.querySelector('#agent_workspace');
+                const grid = document.querySelector('.agent-workspace-grid');
+                const card = document.querySelector('[data-agent-tunnel-onboarding]');
+                const steps = [...document.querySelectorAll('.agent-tunnel-onboarding-step')];
+                const action = document.querySelector('[data-agent-tunnel-copy-kickoff]');
+                action.focus();
+                action.scrollIntoView({block: 'nearest', inline: 'nearest'});
+
+                const scrollable = (element) => {
+                    const style = getComputedStyle(element);
+                    return ['auto', 'scroll'].includes(style.overflowY)
+                        && element.scrollHeight > element.clientHeight + 1;
+                };
+                const center = (element) => {
+                    const box = element.getBoundingClientRect();
+                    return box.top + box.height / 2;
+                };
+                const rootStyle = getComputedStyle(document.documentElement);
+                const token = (name) => parseFloat(rootStyle.getPropertyValue(name));
+                const workspaceRect = workspace.getBoundingClientRect();
+                const clip = {
+                    top: workspaceRect.top + workspace.clientTop,
+                    left: workspaceRect.left + workspace.clientLeft,
+                    bottom: workspaceRect.top + workspace.clientTop + workspace.clientHeight,
+                    right: workspaceRect.left + workspace.clientLeft + workspace.clientWidth,
+                };
+                const actionRect = action.getBoundingClientRect();
+                const headings = steps.map((step) => step.querySelector('h4'));
+                const paragraphs = steps.flatMap((step) => [...step.querySelectorAll('.agent-tunnel-step-copy p')]);
+                const credentialCopy = steps[1].querySelector('.agent-tunnel-step-copy');
+                const titleText = document.createRange();
+                titleText.selectNodeContents(document.querySelector('[data-agent-heading]'));
+                const quickActions = document.querySelector('.global-quick-actions').getBoundingClientRect();
+                return {
+                    titleOverlapsQuickActions: [...titleText.getClientRects()].some((line) =>
+                        line.right > quickActions.left && line.left < quickActions.right
+                        && line.top < quickActions.bottom && line.bottom > quickActions.top
+                    ),
+                    workspaceOverflowY: getComputedStyle(workspace).overflowY,
+                    gridOverflowY: getComputedStyle(grid).overflowY,
+                    cardOverflowY: getComputedStyle(card).overflowY,
+                    workspaceScrollable: scrollable(workspace),
+                    gridScrollable: scrollable(grid),
+                    cardScrollable: scrollable(card),
+                    // The content column, its descendants, and its ancestors up to the
+                    // document; the navigation sidebar is a separate scroll region.
+                    scrollOwners: [
+                        ...(function* ancestors(node) {
+                            for (let current = node.parentElement; current; current = current.parentElement) yield current;
+                        })(workspace),
+                        workspace,
+                        ...workspace.querySelectorAll('*'),
+                    ]
+                        .filter((element) => element.checkVisibility() && scrollable(element))
+                        .map((element) => element.id || element.tagName),
+                    markerHeadingCenterDeltas: steps.map((step, index) => Math.abs(
+                        center(step.querySelector('.agent-tunnel-step-number')) - center(headings[index])
+                    )),
+                    headingFontSizes: [...new Set(headings.map((heading) => parseFloat(getComputedStyle(heading).fontSize)))],
+                    bodyFontSizes: [...new Set(paragraphs.map((paragraph) => parseFloat(getComputedStyle(paragraph).fontSize)))],
+                    headingToken: token('--font-ui-lg'),
+                    bodyToken: token('--font-ui-md'),
+                    secondParagraphCount: steps[1].querySelectorAll('p').length,
+                    credentialCopyChildren: [...credentialCopy.children].map((child) => child.tagName),
+                    emptyCredentialBlocks: [...steps[1].querySelectorAll('div, p, span')].filter(
+                        (element) => !element.children.length && !element.textContent.trim()
+                            && !element.matches('[aria-hidden="true"], .icon')
+                            && element.getBoundingClientRect().height > 0
+                    ).length,
+                    dividers: steps.map((step) => getComputedStyle(step).borderBlockStartWidth),
+                    focused: document.activeElement === action,
+                    focusedActionInsideClip:
+                        actionRect.top >= clip.top
+                        && actionRect.bottom <= clip.bottom
+                        && actionRect.left >= clip.left
+                        && actionRect.right <= clip.right,
+                    focusRingRoom: Math.min(
+                        clip.right - actionRect.right,
+                        actionRect.left - clip.left,
+                    ),
+                };
+            }"""
+        )
+
+        assert geometry["workspaceOverflowY"] == "auto"
+        assert geometry["gridOverflowY"] == "visible"
+        assert geometry["cardOverflowY"] == "visible"
+        assert geometry["gridScrollable"] is False
+        assert geometry["cardScrollable"] is False
+        if height <= 420:
+            assert geometry["workspaceScrollable"] is True
+            assert geometry["scrollOwners"] == ["agent_workspace"]
+        else:
+            assert geometry["scrollOwners"] in ([], ["agent_workspace"])
+        assert max(geometry["markerHeadingCenterDeltas"]) <= 1, geometry["markerHeadingCenterDeltas"]
+        assert geometry["headingFontSizes"] == [geometry["headingToken"]]
+        assert geometry["bodyFontSizes"] == [geometry["bodyToken"]]
+        assert geometry["bodyToken"] < geometry["headingToken"]
+        assert geometry["secondParagraphCount"] == 0
+        assert geometry["credentialCopyChildren"] == ["H4", "DIV"]
+        assert geometry["emptyCredentialBlocks"] == 0
+        assert geometry["dividers"] == ["0px", "0px", "1px", "1px"]
+        assert geometry["focused"] is True
+        assert geometry["focusedActionInsideClip"] is True
+        assert geometry["focusRingRoom"] >= 4
+        assert geometry["titleOverlapsQuickActions"] is False
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_tunnel_copy_failure_is_reported_without_false_success(
+    disposable_browser,
+    sidebar_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script("""Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {writeText: async () => { throw new Error('Unavailable'); }}
+    }); document.execCommand = () => false;""")
+    page = context.new_page()
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        button = page.locator("[data-agent-tunnel-copy-kickoff]")
+        button.click()
+        expect(button).to_have_text("Copy failed")
+        expect(button).to_be_enabled()
+        expect(page.locator("[data-agent-tunnel-kickoff]")).to_be_visible()
+    finally:
+        context.close()
+
+
+def test_tunnel_saved_key_is_only_a_mask_and_not_resubmitted(
+    disposable_browser,
+    sidebar_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    submitted = []
+    page.route("**/api/agent/tunnel/status", lambda route: route.fulfill(json=_tunnel_onboarding_status()))
+
+    def save(route):
+        submitted.append(route.request.post_data_json)
+        route.fulfill(json=_tunnel_onboarding_status())
+
+    page.route("**/api/agent/tunnel/credentials", save)
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        key = page.locator("#chatgpt_tunnel_api_key")
+        expect(key).to_have_attribute("placeholder", "••••••••ABCD")
+        expect(key).to_have_value("")
+        expect(key).to_have_attribute("type", "password")
+        with page.expect_response("**/api/agent/tunnel/credentials"):
+            page.locator("#chatgpt_tunnel_id").fill(TUNNEL_ONBOARDING_ID)
+        # A successful save leaves no extra status copy behind.
+        expect(page.locator("[data-agent-tunnel-hint]")).to_be_hidden()
+        expect(page.locator("[data-agent-tunnel-key-check]")).to_be_visible()
+        assert submitted and all(item["api_key"] == "" for item in submitted)
+        key.fill(TUNNEL_ONBOARDING_KEY)
+        page.wait_for_function("() => document.querySelector('#chatgpt_tunnel_api_key').value === ''")
+        assert submitted[-1]["api_key"] == TUNNEL_ONBOARDING_KEY
+        assert TUNNEL_ONBOARDING_KEY not in page.content()
+        storage = page.evaluate("JSON.stringify({local: {...localStorage}, session: {...sessionStorage}})")
+        assert TUNNEL_ONBOARDING_KEY not in storage
+    finally:
+        context.close()
+
+
+def test_tunnel_credential_errors_use_the_sidebar_hint_not_step_copy(
+    disposable_browser,
+    sidebar_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route("**/api/agent/tunnel/status", lambda route: route.fulfill(json=_tunnel_onboarding_status()))
+    page.route(
+        "**/api/agent/tunnel/credentials",
+        lambda route: route.fulfill(status=400, json={"error": "Enter the API key for this Tunnel."}),
+    )
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        hint = page.locator("[data-agent-tunnel-hint]")
+        tunnel_id = page.locator("#chatgpt_tunnel_id")
+        expect(hint).to_be_hidden()
+        expect(hint).to_have_attribute("aria-live", "polite")
+
+        tunnel_id.fill("tunnel_short")
+        expect(hint).to_be_visible()
+        expect(hint).to_contain_text("Tunnel ID must be tunnel_")
+        expect(tunnel_id).to_have_attribute("aria-invalid", "true")
+
+        tunnel_id.fill(TUNNEL_ONBOARDING_ID)
+        expect(tunnel_id).to_have_attribute("aria-invalid", "false")
+        expect(hint).to_have_text("Enter the API key for this Tunnel.")
+        assert page.locator(".agent-tunnel-credential-step p").count() == 0
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_tunnel_connection_button_blocks_duplicate_pending_request(
+    disposable_browser,
+    sidebar_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    page.route("**/api/agent/tunnel/status", lambda route: route.fulfill(json=_tunnel_onboarding_status()))
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        button = page.locator("[data-agent-tunnel-toggle]")
+        expect(button).to_have_text("Disconnect")
+        page.evaluate("""() => {
+            const original = window.fetch.bind(window);
+            window.disconnectRequests = 0;
+            window.fetch = (url, options) => {
+                if (!String(url).endsWith('/tunnel/disconnect')) return original(url, options);
+                window.disconnectRequests += 1;
+                return new Promise(resolve => { window.finishDisconnect = resolve; });
+            };
+        }""")
+        button.click()
+        expect(button).to_be_disabled()
+        button.dispatch_event("click")
+        assert page.evaluate("window.disconnectRequests") == 1
+        page.evaluate(
+            "payload => window.finishDisconnect(new Response(JSON.stringify(payload), {status: 200, headers: {'Content-Type': 'application/json'}}))",
+            _tunnel_onboarding_status(False),
+        )
+        expect(button).to_have_text("Reconnect")
+        expect(button).to_be_enabled()
     finally:
         context.close()
 

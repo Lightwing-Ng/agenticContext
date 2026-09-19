@@ -1,6 +1,6 @@
 """Flask application for the local web console."""
 
-# Code version: v1.82.4-codex.0
+# Code version: v1.83.2-codex.0
 
 from __future__ import annotations
 
@@ -72,6 +72,7 @@ from app.core.agent import (
     load_tunnel_credentials,
     merge_tunnel_credentials,
     save_tunnel_credentials,
+    valid_tunnel_id,
     validate_computer_use_settings,
     validate_agent_access_password,
 )
@@ -166,7 +167,6 @@ from app.web.cache_sources import (
     get_cache_source_view,
 )
 from app.web.navigation import (
-    build_agent_path,
     is_supported_agent_selection,
     is_supported_cache_browser,
     normalize_cache_content_mode,
@@ -946,16 +946,19 @@ def create_app(
 
     @app.template_global("agent_entry_url")
     def agent_entry_url() -> str:
-        """Return the canonical Agent URL for the current route or saved selection."""
+        """Return the current Agent URL, defaulting new entries to Tunnel."""
         route_args = request.view_args or {}
-        browser = str(route_args.get("browser") or computer_use_settings.settings.browser).strip().lower()
         platform = str(route_args.get("platform") or computer_use_settings.settings.platform).strip().lower()
-        if not is_supported_agent_selection(browser, platform) or browser not in available_agent_browser_keys():
-            browser = computer_use_settings.settings.browser
-            if browser not in available_agent_browser_keys():
-                browser = "edge"
-            platform = computer_use_settings.settings.platform
-        return url_for("agent_selected", browser=browser, platform=platform)
+        if platform not in SUPPORTED_AGENT_PLATFORMS:
+            platform = "chatgpt"
+        if request.endpoint == "agent_selected":
+            browser = str(route_args.get("browser") or computer_use_settings.settings.browser).strip().lower()
+            if not is_supported_agent_selection(browser, platform) or browser not in available_agent_browser_keys():
+                browser = computer_use_settings.settings.browser
+                if browser not in available_agent_browser_keys():
+                    browser = "edge"
+            return url_for("agent_selected", browser=browser, platform=platform)
+        return url_for("agent_tunnel_selected", platform=platform)
 
     @app.template_global("build_agent_optimization_manifest")
     def build_agent_optimization_manifest_for_template() -> dict[str, Any]:
@@ -1465,8 +1468,6 @@ def create_app(
             shadow_backup_snapshot=shadow_backup_service.snapshot(),
             agent_settings=computer_use_settings.settings,
             agent_runtime_snapshot=computer_use_settings.snapshot(),
-            tunnel_credentials=load_tunnel_credentials().snapshot(),
-            tunnel_status=tunnel_status_payload(),
         )
 
     @app.get("/settings/style-tokens")
@@ -2078,8 +2079,8 @@ def create_app(
         if not is_agent_access_unlocked():
             return render_locked_agent_access()
         settings = computer_use_settings.settings
-        browser = settings.browser if settings.browser in available_agent_browser_keys() else "edge"
-        return redirect(build_agent_path(browser, settings.platform))
+        platform = settings.platform if settings.platform in SUPPORTED_AGENT_PLATFORMS else "chatgpt"
+        return redirect(url_for("agent_tunnel_selected", platform=platform))
 
     def tunnel_route_browser() -> str:
         """Keep the saved Browser choice so switching back from Tunnel restores it."""
@@ -2111,19 +2112,76 @@ def create_app(
         return Response(status=405, headers={"Allow": "POST"})
 
     def tunnel_status_payload() -> dict[str, Any]:
-        """Return the Tunnel status plus the presentation both UIs render."""
+        """Return the Tunnel status, safe credentials, and UI presentation."""
         workspace = Path(computer_use_settings.settings.workspace_path)
         project_name = workspace.name or str(workspace)
         snapshot = tunnel_runtime.snapshot()
+        credentials = load_tunnel_credentials().snapshot()
+        tunnel_id = str(credentials.get("tunnel_id") or "")
+        credentials["tunnel_id_valid"] = valid_tunnel_id(tunnel_id) if tunnel_id else False
+        credentials["qualified"] = bool(
+            credentials["tunnel_id_valid"] and credentials.get("api_key_saved")
+        )
+        ready_since = float(snapshot.get("ready_since") or 0)
+        recent_calls = snapshot.get("recent_calls") or []
+        activity_observed = bool(
+            snapshot.get("ready")
+            and ready_since
+            and any(float(call.get("at") or 0) >= ready_since for call in recent_calls)
+        )
+        snapshot["activity_observed"] = activity_observed
         return {
             **snapshot,
             "project_name": project_name,
+            "credentials": credentials,
             "presentation": describe_tunnel_status(
                 snapshot,
                 project_name=project_name,
                 settings_url=url_for("settings", _anchor="settings-llm"),
             ),
         }
+
+    @app.post("/api/agent/tunnel/credentials")
+    def api_tunnel_credentials():
+        """Save a qualified Tunnel credential pair without echoing the API key."""
+        require_local_agent_request()
+        payload = request.get_json(silent=True)
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("tunnel_id"), str)
+            or not isinstance(payload.get("api_key", ""), str)
+        ):
+            return jsonify({"error": "Send a JSON object with a Tunnel ID and optional API key."}), 400
+        tunnel_id = payload["tunnel_id"].strip()
+        submitted_key = payload.get("api_key", "").strip()
+        current = load_tunnel_credentials()
+        if not tunnel_id:
+            next_credentials = merge_tunnel_credentials(current, "", "")
+        else:
+            if not valid_tunnel_id(tunnel_id):
+                return jsonify(
+                    {
+                        "error": (
+                            "Tunnel ID must look like tunnel_ followed by "
+                            "32 lowercase hexadecimal characters."
+                        )
+                    }
+                ), 400
+            if submitted_key and (
+                not submitted_key.startswith("sk-") or len(submitted_key) < 12
+            ):
+                return jsonify({"error": "OpenAI API key must start with sk-."}), 400
+            next_credentials = merge_tunnel_credentials(
+                current,
+                tunnel_id,
+                submitted_key,
+            )
+            if not next_credentials.api_key:
+                return jsonify({"error": "Enter the API key for this Tunnel."}), 400
+        if next_credentials != current:
+            save_tunnel_credentials(next_credentials)
+            tunnel_runtime.request_restart(delay=0.05)
+        return jsonify(tunnel_status_payload())
 
     @app.get("/api/agent/tunnel/status")
     def api_tunnel_status():
@@ -2134,6 +2192,28 @@ def create_app(
     def api_tunnel_restart():
         require_local_agent_request()
         tunnel_runtime.restart()
+        return jsonify(tunnel_status_payload())
+
+    @app.post("/api/agent/tunnel/connect")
+    def api_tunnel_connect():
+        """Start or reconnect the Tunnel using the saved credential pair."""
+        require_local_agent_request()
+        credentials = load_tunnel_credentials()
+        if (
+            not credentials.configured
+            or not valid_tunnel_id(credentials.tunnel_id)
+            or not credentials.api_key.startswith("sk-")
+            or len(credentials.api_key) < 12
+        ):
+            return jsonify({"error": "Save a qualified Tunnel ID and API key first."}), 409
+        tunnel_runtime.connect()
+        return jsonify(tunnel_status_payload())
+
+    @app.post("/api/agent/tunnel/disconnect")
+    def api_tunnel_disconnect():
+        """Stop Tunnel forwarding without deleting the saved credentials."""
+        require_local_agent_request()
+        tunnel_runtime.disconnect()
         return jsonify(tunnel_status_payload())
 
     @app.get("/agent/tunnel/")
@@ -2326,13 +2406,9 @@ def create_app(
         clear_agent_unlock_failures()
         session[AGENT_ACCESS_SESSION_KEY] = True
         settings = computer_use_settings.settings
-        browser = settings.browser if settings.browser in available_agent_browser_keys() else "edge"
+        platform = settings.platform if settings.platform in SUPPORTED_AGENT_PLATFORMS else "chatgpt"
         return redirect(
-            url_for(
-                "agent_selected",
-                browser=browser,
-                platform=settings.platform,
-            ),
+            url_for("agent_tunnel_selected", platform=platform),
             code=303,
         )
 
@@ -3407,16 +3483,6 @@ def create_app(
         nonlocal saved_config
         saved_config = parse_form_config(saved_config)
         save_config(saved_config)
-        if "chatgpt_tunnel_id" in request.form:
-            current_tunnel_credentials = load_tunnel_credentials()
-            next_tunnel_credentials = merge_tunnel_credentials(
-                current_tunnel_credentials,
-                request.form.get("chatgpt_tunnel_id"),
-                request.form.get("chatgpt_tunnel_api_key"),
-            )
-            if next_tunnel_credentials != current_tunnel_credentials:
-                save_tunnel_credentials(next_tunnel_credentials)
-                tunnel_runtime.request_restart()
         agent_field_names = {
             "agent_operating_system",
             "agent_context_limit_mib",

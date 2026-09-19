@@ -1,4 +1,4 @@
-<!-- Code version: v1.35.0-codex.0 -->
+<!-- Code version: v1.36.1-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.124.1-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.125.5-codex.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
@@ -16,7 +16,6 @@
     <script defer src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v1.3.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-auto-save.js', v='settings-auto-save-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='agent-settings.js', v='agent-settings-v1.0.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='settings-tunnel.js', v='settings-tunnel-v1.0.0-codex.0') }}"></script>
 </head>
 <body>
 {% include "_sidebar_bootstrap.html" %}
@@ -159,65 +158,9 @@
                             >
                                 <div class="settings-category-heading">
                                     <h3 id="settings_llm_heading">LLM settings</h3>
-                                    <p>Configure the ChatGPT Tunnel connection and timing and history-scan limits for browser-based LLM cache tasks.</p>
+                                    <p>Configure timing and history-scan limits for browser-based LLM cache tasks.</p>
                                 </div>
                                 <div class="settings-category-fields">
-                                    <h4 id="settings_llm_tunnel_heading">ChatGPT · Tunnel</h4>
-                                    {% set tunnel_ready = tunnel_status.state == 'ready' %}
-                                    <section
-                                        class="settings-action-package settings-callout-card-primary settings-tunnel-package"
-                                        aria-labelledby="settings_tunnel_name"
-                                        data-tunnel-settings
-                                        data-tunnel-status-url="{{ url_for('api_tunnel_status') }}"
-                                        data-tunnel-restart-url="{{ url_for('api_tunnel_restart') }}"
-                                        data-action-package-live="{{ 'true' if tunnel_ready else 'false' }}"
-                                    >
-                                        <span class="settings-nav-icon-shell settings-action-package-icon-shell settings-callout-icon-shell" aria-hidden="true">
-                                            <span class="icon icon-settings-tunnel"></span>
-                                        </span>
-                                        <div class="settings-action-package-copy settings-callout-text">
-                                            <p class="settings-service-name" id="settings_tunnel_name"><span class="settings-action-package-live-marker" data-action-package-live-marker role="img" aria-label="Tunnel connected" title="Tunnel connected"{% if not tunnel_ready %} hidden{% endif %}></span>OpenAI Secure Tunnel</p>
-                                            <p class="settings-service-note" data-tunnel-status-copy aria-live="polite">{{ tunnel_status.presentation.message }}</p>
-                                            <div class="settings-tunnel-fields">
-                                                <div class="settings-text-input-field">
-                                                    <label class="settings-text-input-label" for="chatgpt_tunnel_id">Tunnel ID</label>
-                                                    <div class="text-input-control-shell">
-                                                        <input
-                                                            id="chatgpt_tunnel_id"
-                                                            class="text-input-control"
-                                                            type="text"
-                                                            name="chatgpt_tunnel_id"
-                                                            value="{{ tunnel_credentials.tunnel_id }}"
-                                                            placeholder="tunnel_…"
-                                                            spellcheck="false"
-                                                            autocomplete="off"
-                                                        >
-                                                        <button type="button" class="text-input-clear" data-text-input-clear aria-label="Clear Tunnel ID"><span class="icon icon-remove-muted" aria-hidden="true"></span></button>
-                                                    </div>
-                                                </div>
-                                                <div class="settings-text-input-field">
-                                                    <label class="settings-text-input-label" for="chatgpt_tunnel_api_key">Tunnel API key</label>
-                                                    <div class="text-input-control-shell">
-                                                        <input
-                                                            id="chatgpt_tunnel_api_key"
-                                                            class="text-input-control"
-                                                            type="password"
-                                                            name="chatgpt_tunnel_api_key"
-                                                            value=""
-                                                            placeholder="{{ ('Saved ' ~ tunnel_credentials.api_key_hint) if tunnel_credentials.api_key_saved else 'sk-proj-…' }}"
-                                                            spellcheck="false"
-                                                            autocomplete="new-password"
-                                                        >
-                                                        <button type="button" class="text-input-clear" data-text-input-clear aria-label="Clear typed API key"><span class="icon icon-remove-muted" aria-hidden="true"></span></button>
-                                                    </div>
-                                                </div>
-                                                <p class="settings-service-note settings-tunnel-help">Create the Tunnel and an API key authorized for it at platform.openai.com. The key stays on this computer and is never shown again; leave it blank to keep the saved key. Clearing the Tunnel ID removes both.</p>
-                                            </div>
-                                        </div>
-                                        <div class="settings-action-package-form">
-                                            <button type="button" class="settings-inline-button settings-inline-button-primary" data-tunnel-restart>Reconnect</button>
-                                        </div>
-                                    </section>
                                     <h4>ChatGPT · Text</h4>
                                     {{ render_number_field("Startup timeout (s)", "chatgpt_text_startup_timeout_seconds", saved_config.chatgpt_text_startup_timeout_seconds, "decimal", "1", "1", "600") }}
                                     {{ render_number_field("Wait between sessions (s)", "cache_scan_wait_chatgpt_text", saved_config.cache_scan_wait("chatgpt", "text"), "decimal", "0.1", "0", "60") }}

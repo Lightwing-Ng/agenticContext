@@ -1,4 +1,4 @@
-/* Code version: v2.124.1-codex.0 */
+/* Code version: v2.125.5-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -3961,9 +3961,156 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     color: var(--muted);
 }
 
-.agent-tunnel-action {
+.agent-tunnel-onboarding-card {
+    display: grid;
+    align-content: start;
+    gap: 18px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.agent-tunnel-onboarding-steps {
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.agent-tunnel-onboarding-step {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) max-content;
+    align-items: start;
+    column-gap: 14px;
+    row-gap: 10px;
+    min-width: 0;
+    padding: 18px 0;
+    border-block-start: 1px solid color-mix(in srgb, var(--muted) 18%, transparent);
+}
+
+.agent-tunnel-onboarding-step:first-child {
+    border-block-start: 0;
+    padding-block-start: 4px;
+}
+
+/* A continued step belongs to the step before it (the credentials created in ➊
+   are entered in ➋), so it drops the shared divider wherever it appears. */
+.agent-tunnel-onboarding-step-continued {
+    border-block-start: 0;
+    padding-block-start: 0;
+}
+
+.agent-tunnel-step-number {
+    grid-column: 1;
+    display: flex;
+    align-items: center;
+    /* Size the numeral box to the heading's first line so it centers on the
+       title rather than the top of the taller multi-line copy column. */
+    min-height: calc(var(--font-ui-lg) * 1.35);
+    color: var(--theme-accent-primary);
+    font-size: 22px;
+    font-weight: var(--font-weight-medium);
+    line-height: 1;
+}
+
+.agent-tunnel-step-copy {
+    grid-column: 2;
+    min-width: 0;
+}
+
+.agent-tunnel-step-copy :is(h4, p) {
+    margin: 0;
+}
+
+.agent-tunnel-step-copy h4 {
+    font-size: var(--font-ui-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.35;
+}
+
+.agent-tunnel-step-copy p {
+    margin-block-start: 5px;
+    color: var(--muted);
+    /* One step below the title so the body copy reads as clearly secondary. */
+    font-size: var(--font-ui-md);
+    line-height: 1.55;
+}
+
+.agent-tunnel-step-copy :is(code, strong) {
+    color: var(--text);
+}
+
+.agent-tunnel-step-actions {
+    grid-column: 3;
+    display: grid;
+    justify-items: end;
+    gap: 8px;
+}
+
+.agent-tunnel-step-action {
+    grid-column: 3;
     justify-self: end;
+    width: max-content;
     text-decoration: none;
+    white-space: nowrap;
+}
+
+.agent-tunnel-step-actions .agent-tunnel-step-action {
+    grid-column: auto;
+}
+
+.agent-tunnel-step-action .browser-session-trigger-leading {
+    justify-content: center;
+}
+
+.agent-tunnel-credential-fields {
+    display: grid;
+    gap: 12px;
+    width: min(100%, var(--settings-form-control-max-width));
+    margin-block-start: 14px;
+}
+
+.agent-tunnel-credential-fields .settings-text-input-field {
+    width: 100%;
+}
+
+#chatgpt_tunnel_id.text-input-control,
+#chatgpt_tunnel_api_key.text-input-control {
+    font-family: monospace;
+}
+
+.agent-tunnel-credential-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.agent-tunnel-credential-check {
+    width: 20px;
+    flex: 0 0 20px;
+    mask-size: 16px 16px;
+    -webkit-mask-size: 16px 16px;
+}
+
+.agent-tunnel-onboarding-card .cache-phase-live-marker {
+    --cache-phase-live-marker-color: var(--theme-accent-positive);
+}
+
+@media (max-width: 760px) {
+    .agent-tunnel-onboarding-step {
+        grid-template-columns: 32px minmax(0, 1fr);
+    }
+
+    .agent-tunnel-step-action,
+    .agent-tunnel-step-actions {
+        grid-column: 2;
+        justify-self: end;
+    }
+
+    .agent-tunnel-step-actions {
+        width: max-content;
+    }
 }
 
 .agent-combobox-trigger {
@@ -4134,6 +4281,26 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     grid-template-rows: minmax(0, 1fr);
     margin-top: 12px;
     overflow: visible;
+}
+
+/* Tunnel onboarding is document-like content. The app shell is viewport-fixed,
+   so the main Agent workspace is the page-level content scrollport in Tunnel mode.
+   The onboarding grid and card keep natural height and visible overflow, avoiding
+   a nested article scrollbar while preserving room for focus rings. */
+main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace {
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+}
+
+main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
+    grid-template-rows: auto;
+    flex: 0 0 auto;
+    height: auto;
+    min-height: 0;
+    align-content: start;
+    overflow: visible;
+    padding: 4px 4px 14px;
 }
 
 .agent-task-card {
@@ -5497,7 +5664,9 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
         max-width: calc(var(--layout-sidebar-overlay-inline-size) - (var(--layout-edge-gap) * 2));
     }
 
-    .cache-overview-title-card {
+    /* Long titles (such as the Tunnel heading) wrap before the global quick actions. */
+    .cache-overview-title-card,
+    .agent-summary-card {
         padding-inline-end: 68px;
     }
 
@@ -10189,35 +10358,6 @@ dialog.browser-dialog:not([open]) {
 .icon-settings-agent {
     mask: url("/static/images/network.svg") center/contain no-repeat;
     -webkit-mask: url("/static/images/network.svg") center/contain no-repeat;
-}
-
-.icon-settings-tunnel {
-    background-color: currentColor;
-    mask: url("/static/images/lock.badge.checkmark.fill.svg") center/contain no-repeat;
-    -webkit-mask: url("/static/images/lock.badge.checkmark.fill.svg") center/contain no-repeat;
-}
-
-/* ChatGPT Tunnel credentials inside one sibling-project Settings action package. */
-.settings-action-package.settings-tunnel-package {
-    grid-template-rows: auto auto auto auto;
-}
-
-.settings-action-package.settings-tunnel-package .settings-tunnel-fields {
-    grid-column: 2;
-    grid-row: 3;
-    display: grid;
-    gap: 12px;
-    min-width: 0;
-}
-
-.settings-action-package.settings-tunnel-package .settings-action-package-form {
-    grid-row: 4;
-}
-
-/* The package places its own note in row 2; nested help text stays in the fields flow. */
-.settings-action-package.settings-tunnel-package .settings-tunnel-fields .settings-tunnel-help {
-    grid-column: auto;
-    grid-row: auto;
 }
 
 .settings-text-input-field {

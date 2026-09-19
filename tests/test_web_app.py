@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.119.7-codex.2
+# Code version: v1.120.2-codex.0
 
 from __future__ import annotations
 
@@ -436,7 +436,7 @@ class WebAppTests(unittest.TestCase):
         for response in responses:
             self.assertEqual(response.status_code, 200)
             body = response.get_data(as_text=True)
-            self.assertIn("<title>agenticContext", body)
+            self.assertIn("<title>AgenticContext", body)
             self.assertNotIn("CacheLikesFromTwitter", body)
 
     def test_pages_load_the_global_simplified_chinese_language_boundary(self) -> None:
@@ -484,7 +484,7 @@ class WebAppTests(unittest.TestCase):
             safari_gemini = client.get("/agent/safari/gemini")
 
         self.assertEqual(legacy.status_code, 302)
-        self.assertEqual(legacy.headers["Location"], "/agent/edge/chatgpt")
+        self.assertEqual(legacy.headers["Location"], "/agent/tunnel/chatgpt")
         self.assertEqual(selected.status_code, 200)
         body = selected.get_data(as_text=True)
         self.assertIn(
@@ -865,7 +865,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.124.1-codex.0"
+                expected_style_version = "style-v2.125.5-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -939,10 +939,11 @@ class WebAppTests(unittest.TestCase):
                     heading_markup.count('data-cache-source-switcher-option='),
                     expected_source_options,
                 )
-                current_source = next(
-                    source
-                    for source in ("x", "grok", "chatgpt", "gemini", "claude", "zhihu")
-                    if f'data-cache-source="{source}"' in body
+                self.assertTrue(
+                    any(
+                        f'data-cache-source="{source}"' in body
+                        for source in ("x", "grok", "chatgpt", "gemini", "claude", "zhihu")
+                    )
                 )
                 expected_paths = (
                     "/cache/chatgpt/text/edge",
@@ -1027,8 +1028,11 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('id="shadow_backup_phase"', settings_body)
         self.assertNotIn('class="sidebar-section anchor-section" id="settings"', settings_body)
         self.assertIn('formaction="/settings/shadow-backup/sync"', settings_body)
-        self.assertEqual(settings_body.count('class="settings-action-package settings-callout-card-primary'), 3)
-        self.assertIn('class="settings-action-package settings-callout-card-primary settings-tunnel-package"', settings_body)
+        self.assertEqual(settings_body.count('class="settings-action-package settings-callout-card-primary'), 2)
+        self.assertNotIn("settings-tunnel-package", settings_body)
+        self.assertNotIn("settings-tunnel.js", settings_body)
+        self.assertNotIn('name="chatgpt_tunnel_id"', settings_body)
+        self.assertNotIn('name="chatgpt_tunnel_api_key"', settings_body)
         self.assertIn('class="settings-action-package settings-callout-card-primary settings-agent-terminal-action"', settings_body)
         self.assertIn('class="settings-action-package settings-callout-card-primary shadow-backup-actions"', settings_body)
         self.assertIn('class="icon icon-settings-agent"', settings_body)
@@ -1207,7 +1211,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(locked_cache_status.status_code, 401)
         self.assertEqual(wrong_unlock.status_code, 401)
         self.assertEqual(correct_unlock.status_code, 303)
-        self.assertEqual(correct_unlock.headers["Location"], "/agent/edge/chatgpt")
+        self.assertEqual(correct_unlock.headers["Location"], "/agent/tunnel/chatgpt")
         self.assertIn("HttpOnly", correct_unlock.headers["Set-Cookie"])
         self.assertIn("SameSite=Lax", correct_unlock.headers["Set-Cookie"])
         self.assertEqual(unlocked_lan_page.status_code, 200)
@@ -1228,7 +1232,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'", lan_page.headers["Content-Security-Policy"])
         self.assertIn("The password is incorrect.", wrong_unlock.get_data(as_text=True))
         local_body = local_page.get_data(as_text=True)
-        self.assertIn("ChatGPT Web Agent", local_body)
+        self.assertIn("Connect ChatGPT to this local project", local_body)
         self.assertNotIn('id="agent_phase_chip"', local_body)
         self.assertNotIn('class="agent-readiness"', local_body)
         self.assertNotIn("public tunnel, API key, or copied password", local_body)
@@ -1287,14 +1291,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.124.1-codex.0', local_body)
+        self.assertIn('style-v2.125.5-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.8.4', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.51.1-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.52.3-codex.0', local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1395,7 +1399,7 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(task_position, response_position)
         self.assertLess(response_position, prompt_form_position)
         self.assertIn(
-            '<article class="report-card workspace-article-card agent-task-card">\n'
+            '<article class="report-card workspace-article-card agent-task-card" data-agent-browser-task hidden>\n'
             '                    <article class="agent-response-card"',
             local_body,
         )
@@ -2501,7 +2505,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["settings"]["platform"], "grok")
         self.assertEqual(payload["settings"]["model"], "grok-build")
         self.assertEqual(redirect_response.status_code, 302)
-        self.assertEqual(redirect_response.headers["Location"], "/agent/safari/grok")
+        self.assertEqual(redirect_response.headers["Location"], "/agent/tunnel/grok")
         save_computer_use_settings.assert_called_once()
 
     def test_agent_terminal_authorization_route_is_local_and_platform_aware(self) -> None:
@@ -2765,7 +2769,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.51.1-codex.0',
+            'computer-use-agent-v3.52.3-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -2799,6 +2803,10 @@ class WebAppTests(unittest.TestCase):
             'const selectedWorkspacePath = String(elements.workspacePath?.value || "").trim();',
             script,
         )
+        self.assertIn("async function savePreferenceImmediately()", script)
+        self.assertIn("await savePreferenceImmediately();", script)
+        self.assertIn('if (selectedConnectionMode() === "tunnel") {', script)
+        self.assertIn("await refreshTunnelStatus();", script)
         self.assertNotIn('data-agent-session-platforms="chatgpt"', body)
         self.assertNotIn('class="agent-readiness"', body)
         self.assertNotIn('id="agent_readiness_message"', body)
@@ -3107,7 +3115,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(safari_claude_response.get_json()["settings"]["browser"], "safari")
         self.assertEqual(safari_claude_response.get_json()["settings"]["platform"], "claude")
         self.assertEqual(root_response.status_code, 302)
-        self.assertEqual(root_response.headers["Location"], "/agent/safari/claude")
+        self.assertEqual(root_response.headers["Location"], "/agent/tunnel/claude")
 
     def test_agent_source_routes_are_loopback_only_and_delegate_selected_browser(self) -> None:
         with TemporaryDirectory() as raw_root:
@@ -4516,7 +4524,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.124.1-codex.0", body)
+            self.assertIn("style-v2.125.5-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)

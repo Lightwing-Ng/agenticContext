@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.15.1-codex.0`
+Documentation version: `v1.15.3-codex.0`
 
 ## Supported commands
 
@@ -137,6 +137,31 @@ node --test tests/test_beta_engines.mjs
 
 These commands remain offline. They do not establish that a signed-in Chrome or Edge profile can
 currently complete Zhihu's live provider flow.
+
+Run the Secure MCP Tunnel contract independently with:
+
+```bash
+./scripts/test.sh tests/test_tunnel_mcp.py tests/test_tunnel_runtime.py tests/test_tunnel_credentials.py
+```
+
+The Tunnel tests pin the exact ten-tool public catalog, discovery/dispatcher agreement, rejection
+of removed compatibility names, direct invocation without runtime selectors, transactional edit
+behavior, stale-write and delete SHA protection, workspace confinement, destructive-command
+refusal, Git diff reporting, and loopback bearer authentication. These are offline controller
+tests; a live ChatGPT round trip is separate transport evidence.
+
+The Tunnel onboarding UI runs in the disposable Chromium layer:
+
+```bash
+./scripts/test.sh tests/test_agent_sessions_e2e.py -k "tunnel or connection_mode"
+```
+
+It measures the rendered page at 1,280 and 390 px wide, including a 420 px short viewport: the
+Agent workspace is the only content scrollport, marker and heading centers align within 1 px,
+body copy uses `--font-ui-md` under `--font-ui-lg` headings, step ➋ has no paragraph or empty
+block, the grouped first two steps have no divider, the focused action stays inside the
+scrollport, the title clears the global quick actions, and credential errors reach the sidebar
+hint.
 
 Run the OpenAI Site tools contract and disposable-browser layers independently with:
 

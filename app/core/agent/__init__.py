@@ -35,7 +35,7 @@ from ..tunnel_credentials import (
     save_tunnel_credentials,
 )
 from ..tunnel_mcp import TunnelMcpService
-from ..tunnel_runtime import TunnelRuntime, describe_tunnel_status
+from ..tunnel_runtime import TunnelRuntime, describe_tunnel_status, valid_tunnel_id
 from .capability_registry import (
     AGENT_ACTIONS,
     CAPABILITY_REGISTRY,
@@ -165,6 +165,7 @@ __all__ = [
     "default_model_for_platform",
     "default_tunnel_credentials_path",
     "describe_tunnel_status",
+    "valid_tunnel_id",
     "fetch_grok_conversation_history",
     "is_allowed_agent_network_request",
     "is_agent_execution_supported",

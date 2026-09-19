@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.36.2-codex.1`
+Documentation version: `v1.36.3-codex.1`
 
 ## Runtime flow
 
@@ -159,6 +159,31 @@ absent or the page is inside an iframe, registration is a no-op and the normal U
 The cross-project naming, schema, result envelope, effects, security, evaluation, and promotion
 rules live in `/Users/lightwing/Desktop/SHARED_AGENT_OPTIMIZATION.md`. Project-specific routes and
 evidence live in [AGENT_OPTIMIZATION.md](AGENT_OPTIMIZATION.md).
+
+## Secure MCP Tunnel coding backend
+
+`app/core/tunnel_mcp.py` owns the local coding-backend MCP contract. The normal path is:
+
+```text
+ChatGPT or another MCP client
+  -> OpenAI Secure MCP Tunnel
+  -> AgenticContext /mcp
+  -> TunnelMcpService
+  -> WorkspaceController
+  -> confined filesystem, Git inspection, and approved checks
+```
+
+The public catalog contains only the ten direct workspace tools documented in
+[OPERATIONS.md](OPERATIONS.md). Runtime selection is server-side; callers do not select an
+adaptive or full-operator runtime and no public schema contains a runtime selector. Tool names
+returned by `tools/list` are resolved by the same dispatcher table, so removed compatibility
+names are neither advertised nor callable.
+
+The catalog is static for one Python process. The server therefore advertises
+`tools.listChanged=false`; a source-level catalog change becomes live only after the
+AgenticContext service reloads that module. A Tunnel reconnect is transport lifecycle only.
+Clients that cache discovered tools must fetch a fresh `tools/list` after reconnecting to the
+reloaded server; ChatGPT exposes that rescan through the app Refresh/Scan Tools action.
 
 ## Agent capability and recovery boundary
 
