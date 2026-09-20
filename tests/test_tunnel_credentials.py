@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.2.7-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -146,6 +146,31 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         'href="https://platform.openai.com/settings/organization/api-keys"'
         in guide_body
     )
+    chatgpt_guide_start = onboarding_body.index(
+        '<ol class="agent-tunnel-guide-list agent-tunnel-chatgpt-guide-list"'
+    )
+    chatgpt_guide_end = onboarding_body.index("</ol>", chatgpt_guide_start) + len("</ol>")
+    chatgpt_guide_body = onboarding_body[chatgpt_guide_start:chatgpt_guide_end]
+    assert re.findall(
+        r'<span class="agent-tunnel-guide-title"[^>]*>(.*?)</span>',
+        chatgpt_guide_body,
+    ) == [
+        "Enable Developer mode.",
+        "Create the AgenticContext plugin.",
+    ]
+    assert chatgpt_guide_body.count('<details class="ui-collapse agent-tunnel-guide"') == 2
+    assert chatgpt_guide_body.count('<svg class="agent-tunnel-guide-svg"') == 2
+    assert chatgpt_guide_body.count('class="guide-card"') == 2
+    assert chatgpt_guide_body.count("data-guide-select-chevron") == 2
+    assert 'data-guide-selected="tunnel"' in chatgpt_guide_body
+    assert 'data-guide-existing-tunnel' in chatgpt_guide_body
+    assert 'data-guide-auth="none"' in chatgpt_guide_body
+    assert "No Auth" in chatgpt_guide_body
+    assert 'href="https://chatgpt.com/plugins"' in chatgpt_guide_body
+    chatgpt_guide_rects = re.findall(r"<rect\b[^>]*>", chatgpt_guide_body)
+    assert chatgpt_guide_rects
+    assert all(re.search(r'\brx="10"', rect) for rect in chatgpt_guide_rects)
+    assert re.search(r"sk-proj-[A-Za-z0-9_-]{12,}", chatgpt_guide_body) is None
     assert 'target="_blank" rel="noopener noreferrer"' in empty_body
     assert re.findall(
         r'<span class="agent-tunnel-substep-number" aria-hidden="true">(.*?)</span>',
@@ -172,9 +197,10 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         < kickoff_sequence.index("➋")
         < kickoff_sequence.index("Ask in ChatGPT")
     )
+    assert "After copying the prompt, open ChatGPT and ask your question." in kickoff_sequence
     assert "Connect ChatGPT to this local project" in empty_body
     assert "Install and prepare" not in empty_body
-    assert onboarding_body.count('class="secondary-button agent-tunnel-step-action"') == 5
+    assert onboarding_body.count('class="secondary-button agent-tunnel-step-action"') == 6
     assert 'data-agent-tunnel-toggle' not in empty_body
     assert 'data-agent-tunnel-connect-url' not in empty_body
     assert 'data-agent-tunnel-disconnect-url' not in empty_body

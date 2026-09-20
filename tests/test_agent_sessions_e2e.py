@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.15.10-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.16.0-codex.0."""
 
 import re
 from copy import deepcopy
@@ -142,12 +142,14 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
             "➋",
             "➌",
             "➍",
+            "➊",
+            "➋",
         ]
         guides = onboarding.locator("details.ui-collapse[data-agent-tunnel-guide]")
-        expect(guides).to_have_count(4)
-        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 4
+        expect(guides).to_have_count(6)
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 6
         external_actions = onboarding.locator("a.agent-tunnel-step-action")
-        assert external_actions.count() == 4
+        assert external_actions.count() == 5
         for action in external_actions.all():
             expect(action).to_have_class(re.compile(r"\bsecondary-button\b"))
             expect(action).to_have_attribute("target", "_blank")
@@ -234,8 +236,8 @@ def test_tunnel_kickoff_copy_and_native_monospace(
         expect(page.locator("[data-agent-tunnel-onboarding]")).not_to_contain_text("tunnel_*4766")
         expect(page.locator("[data-agent-tunnel-onboarding]")).not_to_contain_text("sk-proj-*HMAA")
         expect(page.locator(".agent-tunnel-onboarding-step")).to_have_count(4)
-        expect(page.locator("details.ui-collapse[data-agent-tunnel-guide]")).to_have_count(4)
-        expect(page.locator("[data-agent-tunnel-guide] svg[role='img']")).to_have_count(4)
+        expect(page.locator("details.ui-collapse[data-agent-tunnel-guide]")).to_have_count(6)
+        expect(page.locator("[data-agent-tunnel-guide] svg[role='img']")).to_have_count(6)
         expect(page.locator("[data-agent-tunnel-guide] :is(img, image, foreignObject)")).to_have_count(0)
         expect(page.locator("#agent_prompt_form")).to_be_hidden()
         technical_input_styles = page.locator(
@@ -284,12 +286,12 @@ def test_tunnel_kickoff_copy_and_native_monospace(
 
 
 @pytest.mark.parametrize("width", [1280, 390])
-def test_tunnel_credential_guides_use_native_disclosure_and_vector_cards(
+def test_tunnel_guides_use_native_disclosure_and_vector_cards(
     disposable_browser,
     sidebar_server_url,
     width,
 ):
-    """Keep all four lightweight visual guides native, independent, and closed by default."""
+    """Keep all six visual guides native, independent, and closed by default."""
     context = disposable_browser.new_context(viewport={"width": width, "height": 900})
     page = context.new_page()
     errors = []
@@ -301,30 +303,36 @@ def test_tunnel_credential_guides_use_native_disclosure_and_vector_cards(
 
         guides = page.locator("details.ui-collapse[data-agent-tunnel-guide]")
         summaries = guides.locator("summary")
-        expect(guides).to_have_count(4)
-        expect(summaries).to_have_count(4)
+        expect(guides).to_have_count(6)
+        expect(summaries).to_have_count(6)
         assert page.locator(".agent-tunnel-guide-title").all_inner_texts() == [
             "Create a Tunnel.",
             "Copy the Tunnel ID.",
             "Create an API key.",
             "Copy the secret key.",
+            "Enable Developer mode.",
+            "Create the AgenticContext plugin.",
         ]
         assert page.locator(".agent-tunnel-guide-description").all_inner_texts() == [
             "Open Tunnels and create an AgenticContext Tunnel.",
             "Copy the new ID starting with tunnel_.",
             "Use Expiration: Never and Permissions: All.",
             "Copy the key starting with sk-proj-; it is shown only once.",
+            "In ChatGPT Settings, open Plugins and turn on Developer mode.",
+            "Choose Tunnel, select the existing Tunnel, and use No Auth.",
         ]
         expect(page.locator("[data-agent-tunnel-guide] circle")).to_have_count(0)
-        expect(page.locator("[data-agent-tunnel-guide] .guide-card")).to_have_count(4)
+        expect(page.locator("[data-agent-tunnel-guide] .guide-card")).to_have_count(6)
         expect(page.locator("[data-agent-tunnel-guide] [class*='guide-window']")).to_have_count(0)
         assert page.locator("[data-agent-tunnel-guide] rect").evaluate_all(
             "nodes => nodes.every((node) => node.getAttribute('rx') === '10')"
         )
         expect(page.locator('[data-guide-expiration="never"]')).to_have_count(1)
         expect(page.locator('[data-guide-selected="all"]')).to_have_count(1)
+        expect(page.locator('[data-guide-selected="tunnel"]')).to_have_count(1)
+        expect(page.locator('[data-guide-auth="none"]')).to_have_count(1)
         expect(page.locator("[data-agent-tunnel-onboarding]")).not_to_contain_text("Read + Use")
-        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 4
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 6
         for svg in page.locator("[data-agent-tunnel-guide] svg[role='img']").all():
             expect(svg).to_be_hidden()
 
@@ -346,7 +354,7 @@ def test_tunnel_credential_guides_use_native_disclosure_and_vector_cards(
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
         page.reload()
-        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 4
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 6
         assert not errors
     finally:
         context.close()
@@ -385,9 +393,9 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         expect(page.locator("[data-agent-tunnel-hint]")).to_be_hidden()
 
         guides = page.locator("details[data-agent-tunnel-guide]")
-        expect(guides).to_have_count(4)
+        expect(guides).to_have_count(6)
         guides.evaluate_all("nodes => nodes.forEach((node) => { node.open = true; })")
-        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [True] * 4
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [True] * 6
 
         action = page.locator("[data-agent-tunnel-copy-kickoff]")
         action.focus()
@@ -563,7 +571,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     ),
                     copyIconMask: getComputedStyle(action.querySelector('.agent-response-copy-icon')).maskImage,
                     headingToken: token('--font-ui-lg'),
-                    markerToken: token('--font-ui-sm'),
+                    markerToken: token('--font-ui-lg'),
                     bodyToken: token('--font-ui-md'),
                     effectBleedToken: token('--layout-physical-effect-bleed'),
                     paragraphCounts: steps.map((step) => step.querySelectorAll('.agent-tunnel-step-copy p').length),
@@ -678,6 +686,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
             "Open Tunnels",
             "Open API keys",
             "Open ChatGPT",
+            "Open Plugins",
             "Copy this prompt",
             "Ask in ChatGPT",
         ]
@@ -691,8 +700,8 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["credentialPlaceholderFontSizes"] == geometry["credentialInputFontSizes"]
         assert "document.on.document.fill.svg" in geometry["copyIconMask"]
         assert geometry["bodyToken"] < geometry["headingToken"]
-        assert geometry["paragraphCounts"] == [0, 0, 2, 1]
-        assert geometry["actionPackageParagraphCounts"] == [2, 1]
+        assert geometry["paragraphCounts"] == [0, 0, 1, 2]
+        assert geometry["actionPackageParagraphCounts"] == [2]
         assert geometry["credentialCopyChildren"] == ["H4", "OL"]
         assert geometry["credentialFieldChildren"] == ["LI", "LI"]
         assert geometry["credentialSubstepMarkers"] == ["➊", "➋"]

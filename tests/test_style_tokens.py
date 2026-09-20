@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.71.0-codex.0
+Code version: v1.72.0-codex.0
 """
 
 import hashlib
@@ -2287,7 +2287,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.129.0-codex.0 */",
+        "/* Code version: v2.131.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2474,6 +2474,15 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert "font-size: inherit;" in guide_title_rule
     assert "font-size: inherit;" in guide_description_rule
 
+    step_number_start = stylesheet.index(".agent-tunnel-step-number {")
+    step_number_rule = stylesheet[
+        step_number_start:stylesheet.index("\n}", step_number_start)
+    ]
+    assert "font-size: var(--font-ui-lg);" in step_number_rule
+    assert "font-weight: var(--font-weight-medium);" in step_number_rule
+    assert "line-height: 1.35;" in step_number_rule
+    assert ".guide-button-small" not in stylesheet
+
     numbered_list_start = stylesheet.index(".agent-tunnel-numbered-list {")
     numbered_list_rule = stylesheet[
         numbered_list_start:stylesheet.index("\n}", numbered_list_start)
@@ -2498,6 +2507,9 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     guide_template = (
         STYLE_PATH.parents[1] / "templates/_agent_tunnel_credential_guides.html"
     ).read_text(encoding="utf-8")
+    chatgpt_guide_template = (
+        STYLE_PATH.parents[1] / "templates/_agent_tunnel_chatgpt_guides.html"
+    ).read_text(encoding="utf-8")
     assert guide_template.count('<details class="ui-collapse agent-tunnel-guide"') == 4
     assert guide_template.count('<svg class="agent-tunnel-guide-svg"') == 4
     assert guide_template.count("data-agent-tunnel-guide-scroll") == 4
@@ -2511,6 +2523,7 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert guide_template.count('class="guide-card"') == 4
     assert guide_template.count("data-guide-select-chevron") == 4
     assert "m-10 11 5 5 5-5" not in guide_template
+    assert "guide-button-small" not in guide_template
     guide_rects = re.findall(r"<rect\b[^>]*>", guide_template)
     assert guide_rects
     assert all(re.search(r'\brx="10"', rect) for rect in guide_rects)
@@ -2525,14 +2538,33 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert re.search(r"org-[A-Za-z0-9]{12,}", guide_template) is None
     assert "tunnel_••••••••" in guide_template
     assert "sk-proj-••••••••" in guide_template
+    assert chatgpt_guide_template.count('<details class="ui-collapse agent-tunnel-guide"') == 2
+    assert chatgpt_guide_template.count('<svg class="agent-tunnel-guide-svg"') == 2
+    assert chatgpt_guide_template.count('class="guide-card"') == 2
+    assert chatgpt_guide_template.count("data-guide-select-chevron") == 2
+    assert 'data-guide-selected="tunnel"' in chatgpt_guide_template
+    assert 'data-guide-auth="none"' in chatgpt_guide_template
+    assert 'href="https://chatgpt.com/plugins"' in chatgpt_guide_template
+    lowered_chatgpt_guide_template = chatgpt_guide_template.lower()
+    for forbidden_markup in ("<img", "<image", "<foreignobject", "data:image"):
+        assert forbidden_markup not in lowered_chatgpt_guide_template
+    assert "<circle" not in lowered_chatgpt_guide_template
+    chatgpt_guide_rects = re.findall(r"<rect\b[^>]*>", chatgpt_guide_template)
+    assert chatgpt_guide_rects
+    assert all(re.search(r'\brx="10"', rect) for rect in chatgpt_guide_rects)
     assert agent_template.count('class="agent-tunnel-substep-number"') == 4
     assert 'class="agent-tunnel-numbered-list agent-tunnel-credential-fields"' in agent_template
     assert 'class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence"' in agent_template
 
     action_class = 'class="secondary-button agent-tunnel-step-action"'
-    assert agent_template.count(action_class) + guide_template.count(action_class) == 5
+    assert (
+        agent_template.count(action_class)
+        + guide_template.count(action_class)
+        + chatgpt_guide_template.count(action_class)
+        == 6
+    )
     assert "settings-inline-button-primary agent-tunnel-step-action" not in (
-        agent_template + guide_template
+        agent_template + guide_template + chatgpt_guide_template
     )
     assert "data-agent-tunnel-toggle" not in agent_template
 

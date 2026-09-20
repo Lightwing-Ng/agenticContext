@@ -1,4 +1,4 @@
-/* Code version: v2.129.0-codex.0 */
+/* Code version: v2.131.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -585,7 +585,7 @@ html {
 body {
     height: var(--viewport-block-size);
     min-height: 100svh;
-    overflow: visible;
+    overflow: hidden;
     font-family: var(--font-family-base);
     color: var(--text);
     background:
@@ -635,7 +635,7 @@ button {
     padding: var(--layout-page-inset-top) var(--layout-page-inset-right) var(--layout-page-inset-bottom) var(--layout-page-inset-left);
     display: flex;
     align-items: stretch;
-    overflow: hidden;
+    overflow: visible;
     position: relative;
 }
 
@@ -4007,9 +4007,9 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
        title rather than the top of the taller multi-line copy column. */
     min-height: calc(var(--font-ui-lg) * 1.35);
     color: var(--text);
-    font-size: var(--font-ui-sm);
-    font-weight: var(--font-weight-semibold);
-    line-height: 1;
+    font-size: var(--font-ui-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.35;
     white-space: nowrap;
 }
 
@@ -4315,10 +4315,6 @@ details.agent-tunnel-guide > summary {
     fill: var(--text);
 }
 
-.agent-tunnel-guide-svg .guide-button-small {
-    font-size: 11px;
-}
-
 .agent-tunnel-guide-svg .guide-mono {
     fill: var(--text);
     font-family: var(--font-mono);
@@ -4411,6 +4407,10 @@ details.agent-tunnel-guide > summary {
 
 .agent-tunnel-numbered-copy > p {
     margin-block-start: 0;
+}
+
+.agent-tunnel-step-note {
+    margin-block-start: 10px !important;
 }
 
 .agent-tunnel-kickoff-sequence {
