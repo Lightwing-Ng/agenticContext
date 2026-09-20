@@ -1,4 +1,4 @@
-<!-- Code version: v1.9.19-codex.0 -->
+<!-- Code version: v1.10.2-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.127.1-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.129.0-codex.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='resizer.js', v='resizer-v1.0.0-codex.1') }}"></script>
@@ -77,6 +77,18 @@
                                 </div>
                                 <div class="style-token-demo-card" aria-hidden="true"></div>
                             </section>
+                            {% elif row.sample_kind == "collapse" %}
+                            <details class="ui-collapse style-token-collapse-demo" data-style-token-collapse>
+                                <summary>{{ row.sample_title }}</summary>
+                                <div class="ui-collapse-body style-token-collapse-example">
+                                    {% for field in row.sample_fields %}
+                                    <div class="style-token-collapse-example-row">
+                                        <span>{{ field.label }}</span>
+                                        <span class="style-token-collapse-example-value">{{ field.value }}{% if field.unit %} {{ field.unit }}{% endif %}</span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </details>
                             {% elif row.sample_kind == "modal-dialog" %}
                             <div class="style-token-modal-shell">
                                 <section class="workspace-modal-dialog style-token-modal-demo" data-style-token-dismissible aria-label="Modal dialog demo">

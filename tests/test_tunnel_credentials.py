@@ -1,12 +1,13 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.7-codex.0
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 from pathlib import Path
 from unittest.mock import patch
@@ -81,12 +82,104 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
     assert 'id="chatgpt_tunnel_id"' in empty_body
     assert 'id="chatgpt_tunnel_api_key"' in empty_body
     assert 'data-agent-tunnel-credentials-url="/api/agent/tunnel/credentials"' in empty_body
+    onboarding_start = empty_body.index("data-agent-tunnel-onboarding")
+    onboarding_end = empty_body.index("data-agent-browser-task", onboarding_start)
+    onboarding_body = empty_body[onboarding_start:onboarding_end]
+    for step_number in range(1, 5):
+        assert (
+            '<span class="agent-tunnel-step-number" aria-hidden="true">'
+            f"Step {step_number}</span>"
+        ) in onboarding_body
+    guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list"')
+    guide_end = onboarding_body.index("</ol>", guide_start) + len("</ol>")
+    guide_body = onboarding_body[guide_start:guide_end]
     for marker in ("➊", "➋", "➌", "➍"):
-        assert marker in empty_body
+        assert marker in guide_body
+    assert re.findall(
+        r'<span class="agent-tunnel-guide-title"[^>]*>(.*?)</span>',
+        guide_body,
+    ) == [
+        "Create a Tunnel.",
+        "Copy the Tunnel ID.",
+        "Create an API key.",
+        "Copy the secret key.",
+    ]
+    detail_tags = re.findall(r"<details\b[^>]*>", guide_body)
+    assert len(detail_tags) == 4
+    assert all(
+        re.search(r'class="[^"]*\bui-collapse\b[^"]*"', tag) is not None
+        for tag in detail_tags
+    )
+    assert all(re.search(r"\sopen(?:\s|>)", tag) is None for tag in detail_tags)
+    assert guide_body.count("<summary>") == 4
+    assert len(re.findall(r"<svg\b", guide_body)) == 4
+    assert guide_body.count("data-agent-tunnel-guide-scroll") == 4
+    assert guide_body.count('role="region" tabindex="0"') == 4
+    assert guide_body.count('aria-labelledby="agent_tunnel_guide_title_') == 4
+    guide_lower = guide_body.lower()
+    for unsafe_markup in ("<img", "<image", "<foreignobject", "data:image"):
+        assert unsafe_markup not in guide_lower
+    assert "<circle" not in guide_lower
+    assert "guide-window" not in guide_body
+    assert guide_body.count('class="guide-card"') == 4
+    guide_select_chevrons = re.findall(
+        r'<path class="guide-select-chevron" data-guide-select-chevron d="([^"]+)">',
+        guide_body,
+    )
+    assert len(guide_select_chevrons) == 4
+    assert all(
+        re.fullmatch(r"M\d+ \d+l5 5 5-5", path)
+        for path in guide_select_chevrons
+    )
+    guide_rects = re.findall(r"<rect\b[^>]*>", guide_body)
+    assert guide_rects
+    assert all(re.search(r'\brx="10"', rect) for rect in guide_rects)
+    assert 'data-guide-expiration="never"' in guide_body
+    assert 'data-guide-selected="all"' in guide_body
+    assert "Expiration: Never" in guide_body
+    assert "Permissions: All" in guide_body
+    assert "Read + Use" not in guide_body
+    assert "Read and write API resources" in guide_body
+    assert re.search(r"tunnel_[A-Za-z0-9]{16,}", guide_body) is None
+    assert re.search(r"sk-proj-[A-Za-z0-9_-]{12,}", guide_body) is None
+    assert (
+        'href="https://platform.openai.com/settings/organization/api-keys"'
+        in guide_body
+    )
     assert 'target="_blank" rel="noopener noreferrer"' in empty_body
+    assert re.findall(
+        r'<span class="agent-tunnel-substep-number" aria-hidden="true">(.*?)</span>',
+        onboarding_body,
+    ) == ["➊", "➋", "➊", "➋"]
+    credential_sequence_start = onboarding_body.index(
+        '<ol class="agent-tunnel-numbered-list agent-tunnel-credential-fields"'
+    )
+    credential_sequence_end = onboarding_body.index("</ol>", credential_sequence_start)
+    credential_sequence = onboarding_body[
+        credential_sequence_start:credential_sequence_end
+    ]
+    assert credential_sequence.index("➊") < credential_sequence.index("Tunnel ID")
+    assert credential_sequence.index("➋") < credential_sequence.index("Tunnel API key")
+    kickoff_sequence_start = onboarding_body.index(
+        '<ol class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence"'
+    )
+    kickoff_sequence_end = onboarding_body.index("</ol>", kickoff_sequence_start)
+    kickoff_sequence = onboarding_body[kickoff_sequence_start:kickoff_sequence_end]
+    assert (
+        kickoff_sequence.index("➊")
+        < kickoff_sequence.index("data-agent-tunnel-kickoff")
+        < kickoff_sequence.index("Copy this prompt")
+        < kickoff_sequence.index("➋")
+        < kickoff_sequence.index("Ask in ChatGPT")
+    )
     assert "Connect ChatGPT to this local project" in empty_body
     assert "Install and prepare" not in empty_body
-    assert 'class="secondary-button browser-refresh-button agent-tunnel-step-action"' in empty_body
+    assert onboarding_body.count('class="secondary-button agent-tunnel-step-action"') == 5
+    assert 'data-agent-tunnel-toggle' not in empty_body
+    assert 'data-agent-tunnel-connect-url' not in empty_body
+    assert 'data-agent-tunnel-disconnect-url' not in empty_body
+    assert 'data-agent-tunnel-message' not in empty_body
+    assert 'data-agent-tunnel-activity' not in empty_body
 
     invalid = agent_client.post(
         "/api/agent/tunnel/credentials",

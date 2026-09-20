@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.6.4-codex.1
+Code version: v1.7.0-codex.0
 """
 
 import re
@@ -56,6 +56,7 @@ def test_style_token_component_rows_form_a_complete_sorted_component_catalog() -
     expected_ids = {
         "agent-browser-selector",
         "circular-icon-button",
+        "collapse",
         "frosted-glass",
         "global-theme-toggle",
         "modal-dialog",
@@ -76,7 +77,7 @@ def test_style_token_component_rows_form_a_complete_sorted_component_catalog() -
         "tooltip",
         "workspace-metric-value",
     }
-    assert len(rows) == 21
+    assert len(rows) == 22
     assert all(row["id"] != "workspace-article" for row in rows)
     assert {row["id"] for row in rows} == expected_ids
     assert len({row["id"] for row in rows}) == len(rows)
@@ -86,6 +87,19 @@ def test_style_token_component_rows_form_a_complete_sorted_component_catalog() -
     )
     assert all(row["tokens"] for row in rows)
     rows_by_id = {row["id"]: row for row in rows}
+    assert rows_by_id["collapse"]["sample_kind"] == "collapse"
+    assert {token["name"] for token in rows_by_id["collapse"]["tokens"]} == {
+        "--collapse-body-padding",
+        "--collapse-font-size",
+        "--collapse-font-weight",
+        "--collapse-icon-closed",
+        "--collapse-icon-gap",
+        "--collapse-icon-height",
+        "--collapse-icon-open",
+        "--collapse-icon-size",
+        "--collapse-section-gap",
+        "--collapse-summary-padding",
+    }
     assert rows_by_id["agent-browser-selector"]["sample_copy"] == ""
     assert {token["name"] for token in rows_by_id["prompt-tag"]["tokens"]} == {
         "--accent-border-strong",
@@ -190,7 +204,11 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert 'data-style-token-card="segmented-control"' in html
     assert 'data-style-token-copy="Segmented control"' in html
     assert 'data-style-token-inventory-demo' not in html
-    assert html.count('data-style-token-card=') == 21
+    assert html.count('data-style-token-card=') == 22
+    assert 'data-style-token-card="collapse"' in html
+    assert 'class="ui-collapse style-token-collapse-demo"' in html
+    assert "LSTM parameters" in html
+    assert "--collapse-summary-padding" in html
     assert 'data-style-token-card="strategy-tuning-control"' in html
     assert "--strategy-tune-button-size" in html
     assert "--strategy-tune-panel-padding" in html

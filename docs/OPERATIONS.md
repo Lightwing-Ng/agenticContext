@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.28.0-codex.0`
+Documentation version: `v1.28.4-codex.0`
 
 ## Launch
 
@@ -292,9 +292,16 @@ endpoint at `/mcp` and supervises OpenAI's official `tunnel-client`.
 
 One-time setup:
 
-1. At platform.openai.com, create a Tunnel and an API key whose principal has Tunnels Read + Use
-   for it.
-2. Enter the Tunnel ID and API key in Agent → Tunnel, step ➋; a qualified pair saves
+1. In Agent → Tunnel, Step 1 contains four expandable visual guides for the OpenAI Platform flow:
+   create a Tunnel with a name, short description, organization, and ChatGPT workspace; copy the
+   resulting `tunnel_` ID; open API keys and create a key with Expiration set to Never and
+   Permissions set to All; then copy the complete `sk-proj-` value immediately because the
+   Platform displays it only once. The guides are lightweight inline SVG reconstructions with no
+   macOS window chrome, a shared 10px card radius, and intentionally no real identifiers or
+   secrets. On narrow screens, focus or swipe the guide body to inspect the full-width card without
+   shrinking its labels below their readable size. A Never-expiring key is long-lived: store it
+   securely and rotate or revoke it when needed.
+2. Enter the Tunnel ID and API key in Agent → Tunnel, Step 2; a qualified pair saves
    automatically. The key is written to `tunnel-credentials.json` beside `settings.json` with
    owner-only permissions and is never rendered back into the page; a blank key field keeps the
    saved key. Save and format errors appear in the sidebar Tunnel status hint.
@@ -328,8 +335,8 @@ One-time setup:
 Runtime behavior:
 
 - `python3 main.py` starts the Tunnel when credentials exist. Saving new credentials restarts it
-  after a short debounce; step ➋ offers **Disconnect**/**Reconnect** without deleting credentials. Test and
-  isolated app instances never start `tunnel-client`.
+  after a short debounce; the onboarding page intentionally has no manual disconnect or reconnect
+  control. Test and isolated app instances never start `tunnel-client`.
 - State lives in `tunnel/` beside `settings.json`: the pinned client under `tools/`, the client log
   (`tunnel-client.log`, previous run in `.log.1`), its pid file, health URL, and a per-start bearer
   token file (`0600`). A client left behind by a killed service is found by its state path and
@@ -382,7 +389,7 @@ Runtime behavior:
   only its own state:
   - Restarting the AgenticContext service (Python process) is the only step that loads a changed
     `TUNNEL_TOOLS` or dispatcher; `tools/list` and `tools/call` both read that one table.
-  - A `tunnel-client` reconnect (step ➋, or the automatic restart) renews forwarding and the
+  - A `tunnel-client` reconnect (a Step 2 credential save, or the automatic restart) renews forwarding and the
     bearer token only; it reloads no Python code and changes no tool.
   - An MCP client reconnect (`initialize` again) receives the running process's catalog, but a
     client may keep its cached tool snapshot.

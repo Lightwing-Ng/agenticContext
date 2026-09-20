@@ -1,6 +1,6 @@
 """Read the local CSS foundation token registry for the Style tokens page.
 
-Code version: v0.9.0-codex.1
+Code version: v0.10.0-codex.0
 """
 
 from __future__ import annotations
@@ -249,6 +249,18 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "sample_kind": "round-icon-button",
             "token_names": ("--settings-round-icon-button-material", "--settings-round-icon-button-size", "--settings-round-icon-button-icon-size", "--settings-round-icon-button-radius", "--settings-round-icon-button-background", "--settings-round-icon-button-background-hover", "--settings-round-icon-button-shadow", "--settings-round-icon-button-shadow-hover", "--settings-round-icon-button-shadow-active", "--settings-round-icon-button-color", "--settings-round-icon-button-color-hover"),
             "material_names": ("--settings-round-icon-button-material",),
+        },
+        {
+            "id": "collapse",
+            "name": "Collapse",
+            "sample_kind": "collapse",
+            "sample_title": "LSTM parameters",
+            "sample_fields": (
+                {"label": "Training window", "value": "30", "unit": "days"},
+                {"label": "Chip window", "value": "41", "unit": "days"},
+                {"label": "Prior strength", "value": "1.51", "unit": ""},
+            ),
+            "token_names": ("--collapse-body-padding", "--collapse-font-size", "--collapse-font-weight", "--collapse-icon-closed", "--collapse-icon-gap", "--collapse-icon-height", "--collapse-icon-open", "--collapse-icon-size", "--collapse-section-gap", "--collapse-summary-padding"),
         },
         {
             "id": "frosted-glass",

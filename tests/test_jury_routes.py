@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.4.3-codex.1
+Code version: v1.4.4-codex.0
 """
 
 from __future__ import annotations
@@ -71,8 +71,8 @@ def test_macos_jury_route_exposes_safari_as_a_persistable_browser(jury_app):
     assert 'data-jury-browser="safari"' in body
     assert 'name="browser" value="safari"' in body
     assert 'data-jury-browser-option="safari"' in body
-    assert 'agent-sessions.css?v=1.8.4' in body
-    assert 'jury.css?v=jury-v1.1.7-codex.1' in body
+    assert 'agent-sessions.css?v=1.9.0' in body
+    assert 'jury.css?v=jury-v1.2.0-codex.0' in body
     assert 'jury.js?v=jury-v1.3.5-codex.1' in body
     assert 'data-jury-provider-row="claude" aria-disabled="true"' in body
     service.check.assert_not_called()

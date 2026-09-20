@@ -1,4 +1,4 @@
-/* Code version: v2.127.1-codex.0 */
+/* Code version: v2.129.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -202,6 +202,16 @@
     --browser-picker-chevron-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.41 1.59 6 6.17l4.59-4.58L12 3l-6 5-6-5z' fill='currentColor'/%3E%3C/svg%3E");
     --browser-picker-selected-icon-background: transparent;
     --browser-picker-selected-icon-shadow: none;
+    --collapse-section-gap: 8px;
+    --collapse-icon-size: 12px;
+    --collapse-icon-height: 8px;
+    --collapse-icon-gap: 8px;
+    --collapse-icon-closed: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.41 1.59 6 6.17l4.59-4.58L12 3l-6 5-6-5z' fill='currentColor'/%3E%3C/svg%3E");
+    --collapse-icon-open: var(--collapse-icon-closed);
+    --collapse-summary-padding: 10px 0;
+    --collapse-body-padding: 0 10px 10px;
+    --collapse-font-size: var(--font-ui-lg);
+    --collapse-font-weight: var(--font-weight-medium);
     --control-glass-background: transparent;
     --control-glass-background-hover: color-mix(in srgb, var(--theme-muted) 8%, transparent);
     --layout-content-width: 640px;
@@ -575,7 +585,7 @@ html {
 body {
     height: var(--viewport-block-size);
     min-height: 100svh;
-    overflow: hidden;
+    overflow: visible;
     font-family: var(--font-family-base);
     color: var(--text);
     background:
@@ -3973,7 +3983,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-tunnel-onboarding-steps {
     display: grid;
-    gap: 0;
+    gap: 18px;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -3981,39 +3991,26 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-tunnel-onboarding-step {
     display: grid;
-    grid-template-columns: 32px minmax(0, 1fr) max-content;
+    grid-template-columns: max-content minmax(0, 1fr);
     align-items: start;
     column-gap: 14px;
-    row-gap: 10px;
     min-width: 0;
-    padding: 18px 0;
-    border-block-start: 1px solid color-mix(in srgb, var(--muted) 18%, transparent);
-}
-
-.agent-tunnel-onboarding-step:first-child {
-    border-block-start: 0;
-    padding-block-start: 4px;
-}
-
-/* A continued step belongs to the step before it (the credentials created in ➊
-   are entered in ➋), so it drops the shared divider and keeps the pair's tighter
-   vertical rhythm wherever the structural modifier appears. */
-.agent-tunnel-onboarding-step-continued {
-    border-block-start: 0;
-    padding-block-start: 0;
+    padding: 4px 0;
+    border: 0;
 }
 
 .agent-tunnel-step-number {
     grid-column: 1;
     display: flex;
     align-items: center;
-    /* Size the numeral box to the heading's first line so it centers on the
+    /* Size the marker box to the heading's first line so it centers on the
        title rather than the top of the taller multi-line copy column. */
     min-height: calc(var(--font-ui-lg) * 1.35);
-    color: var(--theme-accent-primary);
-    font-size: 20px;
-    font-weight: var(--font-weight-medium);
+    color: var(--text);
+    font-size: var(--font-ui-sm);
+    font-weight: var(--font-weight-semibold);
     line-height: 1;
+    white-space: nowrap;
 }
 
 .agent-tunnel-step-copy {
@@ -4044,54 +4041,407 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 }
 
 .agent-tunnel-setup-copy {
-    grid-column: 2 / -1;
     display: grid;
-    gap: 5px;
+    gap: 0;
 }
 
-.agent-tunnel-setup-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) max-content;
-    align-items: center;
-    column-gap: 14px;
+.ui-collapse {
     min-width: 0;
-    min-height: var(--secondary-button-min-height);
+    border: none;
+    background: transparent;
 }
 
-.agent-tunnel-setup-row p {
+.ui-collapse + .ui-collapse {
+    margin-top: var(--collapse-section-gap);
+}
+
+.ui-collapse > summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--collapse-icon-size);
+    column-gap: var(--collapse-icon-gap);
+    align-items: center;
+    padding: var(--collapse-summary-padding);
+    font-size: var(--collapse-font-size);
+    font-weight: var(--collapse-font-weight);
+    list-style: none;
+    cursor: pointer;
+}
+
+.ui-collapse > summary::marker,
+.ui-collapse > summary::-webkit-details-marker {
+    display: none;
+    content: "";
+}
+
+.ui-collapse > summary::after {
+    content: "";
+    grid-column: 2;
+    grid-row: 1;
+    width: var(--collapse-icon-size);
+    height: var(--collapse-icon-height);
+    background-color: currentColor;
+    mask: var(--collapse-icon-closed) center/contain no-repeat;
+    -webkit-mask: var(--collapse-icon-closed) center/contain no-repeat;
+    transform: rotate(0deg);
+    transform-origin: center;
+    transition: transform 180ms var(--motion-standard);
+    pointer-events: none;
+}
+
+.ui-collapse[open] > summary::after {
+    mask-image: var(--collapse-icon-open);
+    -webkit-mask-image: var(--collapse-icon-open);
+    transform: rotate(180deg);
+}
+
+.ui-collapse > summary:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+    border-radius: var(--radius-soft);
+}
+
+.ui-collapse-body {
+    min-width: 0;
+    padding: var(--collapse-body-padding);
+}
+
+.ui-collapse-body:has(> .ui-collapse) {
+    padding-inline-end: 0;
+}
+
+.agent-tunnel-guide-list {
+    display: grid;
+    gap: var(--collapse-section-gap);
+    min-width: 0;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.agent-tunnel-guide-item {
+    display: grid;
+    grid-template-columns: 1.35em minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
+    min-width: 0;
+    font-size: var(--collapse-font-size);
+}
+
+.agent-tunnel-guide-number {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: calc((var(--collapse-font-size) * 1.35) + 20px);
+    color: var(--text);
+    font-size: var(--collapse-font-size);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.35;
+}
+
+.agent-tunnel-guide-content,
+.agent-tunnel-guide {
+    min-width: 0;
+}
+
+details.agent-tunnel-guide > summary {
+    min-width: 0;
+    color: var(--text);
+}
+
+.agent-tunnel-guide-summary-copy {
+    display: block;
+    min-width: 0;
+    font-size: var(--collapse-font-size);
+    line-height: 1.35;
+}
+
+.agent-tunnel-guide-title {
+    margin-inline-end: 8px;
+    font-size: inherit;
+    font-weight: var(--font-weight-medium);
+    line-height: inherit;
+}
+
+.agent-tunnel-guide-description {
+    color: var(--muted);
+    font-size: inherit;
+    line-height: inherit;
+}
+
+.agent-tunnel-guide-description :is(code, strong) {
+    color: var(--text);
+}
+
+.agent-tunnel-guide > .agent-tunnel-guide-body {
+    box-sizing: border-box;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+.agent-tunnel-guide > .agent-tunnel-guide-body:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: -2px;
+    border-radius: var(--radius-panel);
+}
+
+.agent-tunnel-guide-actions {
+    display: flex;
+    justify-content: flex-end;
+    min-width: 0;
+    margin-block-start: 2px;
+}
+
+.agent-tunnel-guide-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: hidden;
+    border-radius: var(--radius-panel);
+    font-family: var(--font-family-base);
+}
+
+.agent-tunnel-guide-svg :is(rect, line, path) {
+    vector-effect: non-scaling-stroke;
+}
+
+.agent-tunnel-guide-svg .guide-card {
+    fill: color-mix(in srgb, var(--glass-surface-background-strong) 92%, var(--theme-background));
+    stroke: var(--theme-glass-border);
+}
+
+.agent-tunnel-guide-svg .guide-modal {
+    fill: var(--glass-surface-background-strong);
+    stroke: color-mix(in srgb, var(--muted) 24%, transparent);
+}
+
+.agent-tunnel-guide-svg .guide-sidebar {
+    fill: color-mix(in srgb, var(--muted) 8%, var(--glass-surface-background-strong));
+}
+
+.agent-tunnel-guide-svg .guide-control,
+.agent-tunnel-guide-svg .guide-table-row {
+    fill: color-mix(in srgb, var(--glass-surface-background-strong) 88%, var(--theme-background));
+    stroke: color-mix(in srgb, var(--muted) 28%, transparent);
+}
+
+.agent-tunnel-guide-svg .guide-accent-stroke {
+    stroke: var(--theme-accent-primary);
+    stroke-width: 2px;
+}
+
+.agent-tunnel-guide-svg .guide-button-primary {
+    fill: var(--text);
+}
+
+.agent-tunnel-guide-svg .guide-button-secondary {
+    fill: color-mix(in srgb, var(--muted) 10%, var(--glass-surface-background-strong));
+    stroke: color-mix(in srgb, var(--muted) 20%, transparent);
+}
+
+.agent-tunnel-guide-svg .guide-segment,
+.agent-tunnel-guide-svg .guide-sidebar-active {
+    fill: color-mix(in srgb, var(--muted) 12%, var(--glass-surface-background-strong));
+}
+
+.agent-tunnel-guide-svg .guide-segment-active {
+    fill: var(--glass-surface-background-strong);
+    stroke: color-mix(in srgb, var(--muted) 24%, transparent);
+}
+
+.agent-tunnel-guide-svg .guide-divider {
+    stroke: var(--theme-glass-border);
+}
+
+.agent-tunnel-guide-svg .guide-note {
+    fill: color-mix(in srgb, var(--muted) 7%, var(--glass-surface-background-strong));
+    stroke: color-mix(in srgb, var(--muted) 18%, transparent);
+}
+
+.agent-tunnel-guide-svg .guide-warning {
+    fill: var(--theme-warning-translucent);
+    stroke: color-mix(in srgb, var(--theme-warning) 36%, transparent);
+}
+
+.agent-tunnel-guide-svg .guide-backdrop {
+    fill: color-mix(in srgb, var(--text) 18%, transparent);
+}
+
+.agent-tunnel-guide-svg :is(.guide-title, .guide-label, .guide-value, .guide-body, .guide-sidebar-text) {
+    fill: var(--text);
+}
+
+.agent-tunnel-guide-svg .guide-title {
+    font-size: 22px;
+    font-weight: var(--font-weight-semibold);
+}
+
+.agent-tunnel-guide-svg .guide-label {
+    font-size: 14px;
+    font-weight: var(--font-weight-semibold);
+}
+
+.agent-tunnel-guide-svg :is(.guide-value, .guide-body, .guide-sidebar-text, .guide-muted, .guide-caption, .guide-accent-text) {
+    font-size: 14px;
+}
+
+.agent-tunnel-guide-svg :is(.guide-muted, .guide-caption) {
+    fill: var(--muted);
+}
+
+.agent-tunnel-guide-svg .guide-warning-text {
+    fill: var(--theme-warning-text);
+    font-size: 13px;
+}
+
+.agent-tunnel-guide-svg .guide-accent-text {
+    fill: var(--theme-accent-primary);
+    font-weight: var(--font-weight-semibold);
+}
+
+.agent-tunnel-guide-svg .guide-button-text,
+.agent-tunnel-guide-svg .guide-button-secondary-text {
+    font-size: 14px;
+    font-weight: var(--font-weight-semibold);
+}
+
+.agent-tunnel-guide-svg .guide-button-text {
+    fill: var(--theme-background);
+}
+
+.agent-tunnel-guide-svg .guide-button-secondary-text {
+    fill: var(--text);
+}
+
+.agent-tunnel-guide-svg .guide-button-small {
+    font-size: 11px;
+}
+
+.agent-tunnel-guide-svg .guide-mono {
+    fill: var(--text);
+    font-family: var(--font-mono);
+    font-size: 17px;
+}
+
+.agent-tunnel-guide-svg :is(.guide-copy-icon, .guide-select-chevron) {
+    fill: none;
+    stroke: var(--text);
+    stroke-width: 2px;
+}
+
+.agent-tunnel-guide-svg .guide-select-chevron {
+    stroke: var(--muted);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.5px;
+}
+
+@media (max-width: 760px) {
+    .agent-tunnel-guide-svg {
+        min-width: 720px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ui-collapse > summary::after {
+        transition: none;
+    }
+}
+
+.agent-tunnel-action-package {
+    display: grid;
+    min-width: 0;
+    margin-block-start: 10px;
+}
+
+.agent-tunnel-action-package > p {
+    margin: 0;
+}
+
+.agent-tunnel-action-package > p + p {
+    margin-block-start: 5px;
+}
+
+.agent-tunnel-action-package > .agent-tunnel-action-package-form,
+.agent-tunnel-numbered-copy > .agent-tunnel-action-package-form {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: end;
+    align-self: end;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    margin-block-start: 5px;
+}
+
+.agent-tunnel-numbered-list {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+    margin: 14px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.agent-tunnel-numbered-item {
+    display: grid;
+    grid-template-columns: 1.35em minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
+    min-width: 0;
+    font-size: var(--font-ui-lg);
+}
+
+.agent-tunnel-substep-number {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text);
+    font-size: inherit;
+    font-weight: var(--font-weight-medium);
+    line-height: 1.35;
+}
+
+.agent-tunnel-numbered-copy {
+    min-width: 0;
+}
+
+.agent-tunnel-numbered-copy > p {
     margin-block-start: 0;
 }
 
-.agent-tunnel-setup-row .agent-tunnel-step-action {
-    grid-column: 2;
+.agent-tunnel-kickoff-sequence {
+    margin-block-start: 0;
 }
 
-.agent-tunnel-step-actions {
-    grid-column: 3;
-    display: grid;
-    justify-items: end;
-    gap: 8px;
+.agent-tunnel-action-only .agent-tunnel-action-package-form {
+    margin-block-start: 0;
 }
 
 .agent-tunnel-step-action {
-    grid-column: 3;
     justify-self: end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: max-content;
+    min-height: var(--settings-action-button-min-height);
     text-decoration: none;
     white-space: nowrap;
-}
-
-.agent-tunnel-step-actions .agent-tunnel-step-action {
-    grid-column: auto;
 }
 
 .agent-tunnel-step-action .browser-session-trigger-leading {
     justify-content: center;
 }
 
+.agent-tunnel-step-action .agent-response-copy-icon {
+    width: 1em;
+    height: 1em;
+}
+
 .agent-tunnel-credential-fields {
-    display: grid;
-    gap: 12px;
     width: min(100%, var(--settings-form-control-max-width));
     margin-block-start: 14px;
 }
@@ -4102,6 +4452,12 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 #chatgpt_tunnel_id.text-input-control,
 #chatgpt_tunnel_api_key.text-input-control {
+    font-family: var(--font-mono);
+    font-size: var(--text-input-control-font-size);
+}
+
+#chatgpt_tunnel_id.text-input-control::placeholder,
+#chatgpt_tunnel_api_key.text-input-control::placeholder {
     font-family: var(--font-mono);
     font-size: var(--text-input-control-font-size);
 }
@@ -4122,35 +4478,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-tunnel-onboarding-card .cache-phase-live-marker {
     --cache-phase-live-marker-color: var(--theme-accent-positive);
-}
-
-@media (max-width: 760px) {
-    .agent-tunnel-onboarding-step {
-        grid-template-columns: 32px minmax(0, 1fr);
-    }
-
-    .agent-tunnel-step-action,
-    .agent-tunnel-step-actions {
-        grid-column: 2;
-        justify-self: end;
-    }
-
-    .agent-tunnel-step-actions {
-        width: max-content;
-    }
-
-    .agent-tunnel-setup-copy {
-        grid-column: 2;
-    }
-
-    .agent-tunnel-setup-row {
-        grid-template-columns: minmax(0, 1fr);
-        row-gap: 8px;
-    }
-
-    .agent-tunnel-setup-row .agent-tunnel-step-action {
-        grid-column: 1;
-    }
 }
 
 .agent-combobox-trigger {
@@ -4242,7 +4569,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     min-width: 0;
 }
 
-.agent-monospace-input,
+.agent-monospace-input.text-input-control,
 .agent-page code {
     font-family: var(--font-mono);
 }
@@ -10709,6 +11036,33 @@ dialog.browser-dialog:not([open]) {
     width: 100%;
     max-width: 100%;
     min-width: 0;
+}
+
+.style-token-collapse-demo {
+    align-self: start;
+    color: var(--text);
+}
+
+.style-token-collapse-example {
+    display: grid;
+    gap: 0;
+}
+
+.style-token-collapse-example-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    align-items: center;
+    gap: 12px;
+    min-height: 36px;
+    border-top: 1px solid var(--theme-glass-border);
+}
+
+.style-token-collapse-example-row:first-child {
+    border-top: 0;
+}
+
+.style-token-collapse-example-value {
+    font-variant-numeric: tabular-nums;
 }
 
 .style-token-title-row {

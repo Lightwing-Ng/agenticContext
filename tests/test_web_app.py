@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.120.4-codex.0
+# Code version: v1.120.13-codex.0
 
 from __future__ import annotations
 
@@ -865,7 +865,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.127.1-codex.0"
+                expected_style_version = "style-v2.129.0-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1291,14 +1291,72 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.127.1-codex.0', local_body)
+        self.assertIn('style-v2.129.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
-        self.assertIn('agent-sessions.css?v=1.8.4', local_body)
+        self.assertIn('agent-sessions.css?v=1.9.0', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.52.4-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.52.6-codex.0', local_body)
+        self.assertIn('starting with <code>tunnel_</code>', local_body)
+        self.assertIn('starting with <code>sk-proj-</code>', local_body)
+        onboarding_start = local_body.index('data-agent-tunnel-onboarding')
+        onboarding_end = local_body.index('data-agent-browser-task', onboarding_start)
+        onboarding_body = local_body[onboarding_start:onboarding_end]
+        for step_number in range(1, 5):
+            self.assertIn(
+                '<span class="agent-tunnel-step-number" aria-hidden="true">'
+                f'Step {step_number}</span>',
+                onboarding_body,
+            )
+        guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list"')
+        guide_end = onboarding_body.index('</ol>', guide_start) + len('</ol>')
+        guide_body = onboarding_body[guide_start:guide_end]
+        for marker in ("➊", "➋", "➌", "➍"):
+            self.assertIn(marker, guide_body)
+        detail_tags = re.findall(r'<details\b[^>]*>', guide_body)
+        self.assertEqual(len(detail_tags), 4)
+        self.assertTrue(
+            all(
+                re.search(r'class="[^"]*\bui-collapse\b[^"]*"', tag) is not None
+                for tag in detail_tags
+            )
+        )
+        self.assertTrue(
+            all(re.search(r'\sopen(?:\s|>)', tag) is None for tag in detail_tags)
+        )
+        self.assertEqual(guide_body.count('<summary>'), 4)
+        self.assertEqual(len(re.findall(r'<svg\b', guide_body)), 4)
+        self.assertEqual(guide_body.count('data-agent-tunnel-guide-scroll'), 4)
+        self.assertEqual(guide_body.count('role="region" tabindex="0"'), 4)
+        self.assertEqual(
+            guide_body.count('aria-labelledby="agent_tunnel_guide_title_'),
+            4,
+        )
+        guide_lower = guide_body.lower()
+        for unsafe_markup in ('<img', '<image', '<foreignobject', 'data:image'):
+            self.assertNotIn(unsafe_markup, guide_lower)
+        self.assertNotIn('<circle', guide_lower)
+        self.assertNotIn('guide-window', guide_body)
+        self.assertEqual(guide_body.count('class="guide-card"'), 4)
+        guide_rects = re.findall(r'<rect\b[^>]*>', guide_body)
+        self.assertTrue(guide_rects)
+        self.assertTrue(all(re.search(r'\brx="10"', rect) for rect in guide_rects))
+        self.assertIn('data-guide-expiration="never"', guide_body)
+        self.assertIn('data-guide-selected="all"', guide_body)
+        self.assertNotIn('Read + Use', guide_body)
+        self.assertIsNone(re.search(r'tunnel_[A-Za-z0-9]{16,}', guide_body))
+        self.assertIsNone(re.search(r'sk-proj-[A-Za-z0-9_-]{12,}', guide_body))
+        self.assertEqual(
+            onboarding_body.count('class="secondary-button agent-tunnel-step-action"'),
+            5,
+        )
+        self.assertNotIn('data-agent-tunnel-toggle', local_body)
+        self.assertIn('data-agent-tunnel-copy-label aria-live="polite">Copy this prompt</span>', local_body)
+        self.assertNotIn('data-agent-tunnel-message', local_body)
+        self.assertNotIn('data-agent-tunnel-activity', local_body)
+        self.assertNotIn("Pick <strong>AgenticContext</strong> from ChatGPT", local_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -2769,7 +2827,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.52.4-codex.0',
+            'computer-use-agent-v3.52.6-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -4524,7 +4582,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.127.1-codex.0", body)
+            self.assertIn("style-v2.129.0-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)

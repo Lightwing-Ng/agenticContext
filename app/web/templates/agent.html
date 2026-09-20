@@ -1,4 +1,4 @@
-<!-- Code version: v3.55.7-codex.0 -->
+<!-- Code version: v3.56.2-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,8 +9,8 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.127.1-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.8.4') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.129.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -138,8 +138,6 @@
                         data-agent-tunnel-platforms="{{ tunnel_supported_platforms }}"
                         data-agent-tunnel-status-url="{{ url_for('api_tunnel_status') }}"
                         data-agent-tunnel-credentials-url="{{ url_for('api_tunnel_credentials') }}"
-                        data-agent-tunnel-connect-url="{{ url_for('api_tunnel_connect') }}"
-                        data-agent-tunnel-disconnect-url="{{ url_for('api_tunnel_disconnect') }}"
                         data-agent-tunnel-presentation='{{ tunnel_view | tojson }}'
                         data-agent-tunnel-credentials='{{ tunnel_credentials | tojson }}'
                         {% if connection_mode != 'tunnel' %}hidden{% endif %}
@@ -155,9 +153,7 @@
                                             <span class="browser-session-status-field-value" data-agent-tunnel-state>{{ tunnel_view.label }}</span>
                                         </span>
                                     </div>
-                                    <p class="browser-session-status-message agent-tunnel-status-message" data-agent-tunnel-message aria-live="polite">{{ tunnel_view.message }}</p>
                                     <p class="browser-session-status-message agent-tunnel-status-message agent-tunnel-status-hint" data-agent-tunnel-hint aria-live="polite"{% if not tunnel_view.hint %} hidden{% endif %}>{{ tunnel_view.hint }}</p>
-                                    <p class="browser-session-status-message agent-tunnel-status-message agent-tunnel-status-activity" data-agent-tunnel-activity hidden></p>
                                 </div>
                             </div>
                         </div>
@@ -308,79 +304,95 @@
                 <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-onboarding{% if connection_mode != 'tunnel' %} hidden{% endif %}>
                     <ol class="agent-tunnel-onboarding-steps">
                         <li class="agent-tunnel-onboarding-step">
-                            <span class="agent-tunnel-step-number" aria-hidden="true">➊</span>
+                            <span class="agent-tunnel-step-number" aria-hidden="true">Step 1</span>
                             <div class="agent-tunnel-step-copy agent-tunnel-setup-copy">
                                 <h4>Create the OpenAI credentials</h4>
-                                <div class="agent-tunnel-setup-row">
-                                    <p>In OpenAI Platform, create a Tunnel and copy its ID, such as <code>tunnel_*4766</code>.</p>
-                                    <a class="secondary-button browser-refresh-button agent-tunnel-step-action" href="https://platform.openai.com/settings/organization/tunnels" target="_blank" rel="noopener noreferrer"><span>Open Tunnels</span></a>
-                                </div>
-                                <div class="agent-tunnel-setup-row">
-                                    <p>Create a Restricted API key for that Tunnel with <strong>Tunnels Read + Use</strong>, such as <code>sk-proj-*HMAA</code>.</p>
-                                    <a class="secondary-button browser-refresh-button agent-tunnel-step-action" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"><span>Open API keys</span></a>
-                                </div>
+                                {% include "_agent_tunnel_credential_guides.html" %}
                             </div>
                         </li>
-                        <li class="agent-tunnel-onboarding-step agent-tunnel-onboarding-step-continued agent-tunnel-credential-step">
-                            <span class="agent-tunnel-step-number" aria-hidden="true">➋</span>
+                        <li class="agent-tunnel-onboarding-step agent-tunnel-credential-step">
+                            <span class="agent-tunnel-step-number" aria-hidden="true">Step 2</span>
                             <div class="agent-tunnel-step-copy">
                                 <h4>Enter the Tunnel credentials</h4>
-                                <div class="agent-tunnel-credential-fields">
-                                    <div class="settings-text-input-field">
-                                        <span class="agent-tunnel-credential-label-row">
-                                            <label class="settings-text-input-label" for="chatgpt_tunnel_id">Tunnel ID</label>
-                                            <span class="browser-session-status-checkmark agent-tunnel-credential-check" data-agent-tunnel-id-check aria-hidden="true"{% if not tunnel_credentials.tunnel_id_valid %} hidden{% endif %}></span>
-                                        </span>
-                                        <div class="text-input-control-shell">
-                                            <input id="chatgpt_tunnel_id" class="text-input-control agent-tunnel-id-input" type="text" value="{{ tunnel_credentials.tunnel_id }}" placeholder="tunnel_…" spellcheck="false" autocomplete="off" data-agent-tunnel-id>
-                                            <button type="button" class="text-input-clear{% if tunnel_credentials.tunnel_id %} is-visible{% endif %}" data-agent-tunnel-clear="id" aria-label="Clear Tunnel ID"><span class="icon icon-remove-muted" aria-hidden="true"></span></button>
+                                <ol class="agent-tunnel-numbered-list agent-tunnel-credential-fields" aria-label="Tunnel credential fields">
+                                    <li class="agent-tunnel-numbered-item">
+                                        <span class="agent-tunnel-substep-number" aria-hidden="true">➊</span>
+                                        <div class="settings-text-input-field">
+                                            <span class="agent-tunnel-credential-label-row">
+                                                <label class="settings-text-input-label" for="chatgpt_tunnel_id">Tunnel ID</label>
+                                                <span class="browser-session-status-checkmark agent-tunnel-credential-check" data-agent-tunnel-id-check aria-hidden="true"{% if not tunnel_credentials.tunnel_id_valid %} hidden{% endif %}></span>
+                                            </span>
+                                            <div class="text-input-control-shell">
+                                                <input id="chatgpt_tunnel_id" class="text-input-control agent-tunnel-id-input" type="text" value="{{ tunnel_credentials.tunnel_id }}" placeholder="tunnel_…" spellcheck="false" autocomplete="off" data-agent-tunnel-id>
+                                                <button type="button" class="text-input-clear{% if tunnel_credentials.tunnel_id %} is-visible{% endif %}" data-agent-tunnel-clear="id" aria-label="Clear Tunnel ID"><span class="icon icon-remove-muted" aria-hidden="true"></span></button>
+                                            </div>
                                         </div>
-                                    </div>
-                                    <div class="settings-text-input-field">
-                                        <span class="agent-tunnel-credential-label-row">
-                                            <label class="settings-text-input-label" for="chatgpt_tunnel_api_key">Tunnel API key</label>
-                                            <span class="browser-session-status-checkmark agent-tunnel-credential-check" data-agent-tunnel-key-check aria-hidden="true"{% if not tunnel_credentials.api_key_saved %} hidden{% endif %}></span>
-                                        </span>
-                                        <div class="text-input-control-shell">
-                                            <input id="chatgpt_tunnel_api_key" class="text-input-control agent-tunnel-api-key-input" type="password" value="" placeholder="{{ ('••••••••' ~ tunnel_credentials.api_key_hint[-4:]) if tunnel_credentials.api_key_saved else 'sk-proj-…' }}" spellcheck="false" autocomplete="new-password" data-agent-tunnel-key>
-                                            <button type="button" class="text-input-clear" data-agent-tunnel-clear="key" aria-label="Clear typed API key"><span class="icon icon-remove-muted" aria-hidden="true"></span></button>
+                                    </li>
+                                    <li class="agent-tunnel-numbered-item">
+                                        <span class="agent-tunnel-substep-number" aria-hidden="true">➋</span>
+                                        <div class="settings-text-input-field">
+                                            <span class="agent-tunnel-credential-label-row">
+                                                <label class="settings-text-input-label" for="chatgpt_tunnel_api_key">Tunnel API key</label>
+                                                <span class="browser-session-status-checkmark agent-tunnel-credential-check" data-agent-tunnel-key-check aria-hidden="true"{% if not tunnel_credentials.api_key_saved %} hidden{% endif %}></span>
+                                            </span>
+                                            <div class="text-input-control-shell">
+                                                <input id="chatgpt_tunnel_api_key" class="text-input-control agent-tunnel-api-key-input" type="password" value="" placeholder="{{ ('••••••••' ~ tunnel_credentials.api_key_hint[-4:]) if tunnel_credentials.api_key_saved else 'sk-proj-…' }}" spellcheck="false" autocomplete="new-password" data-agent-tunnel-key>
+                                                <button type="button" class="text-input-clear" data-agent-tunnel-clear="key" aria-label="Clear typed API key"><span class="icon icon-remove-muted" aria-hidden="true"></span></button>
+                                            </div>
                                         </div>
+                                    </li>
+                                </ol>
+                            </div>
+                        </li>
+                        <li class="agent-tunnel-onboarding-step">
+                            <span class="agent-tunnel-step-number" aria-hidden="true">Step 3</span>
+                            <div class="agent-tunnel-step-copy">
+                                <h4>Create the ChatGPT custom app</h4>
+                                <div class="agent-tunnel-action-package">
+                                    <p>In ChatGPT Settings, enable Developer mode, then under Apps create a custom app named <strong>AgenticContext</strong>.</p>
+                                    <p>Set <strong>Connection: Tunnel</strong> (the Tunnel created in Step 1), <strong>Permission: Allow all actions</strong>, and <strong>Authentication: No auth</strong>. Never paste the API key into ChatGPT.</p>
+                                    <div class="settings-action-package-form agent-tunnel-action-package-form">
+                                        <a class="secondary-button agent-tunnel-step-action" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer"><span>Open ChatGPT</span></a>
                                     </div>
                                 </div>
                             </div>
-                            <button type="button" class="secondary-button browser-refresh-button agent-tunnel-step-action" data-agent-tunnel-toggle{% if not tunnel_credentials.qualified and not tunnel_status.enabled %} disabled{% endif %}><span data-agent-tunnel-toggle-label>{{ 'Disconnect' if tunnel_status.enabled else 'Reconnect' }}</span></button>
                         </li>
                         <li class="agent-tunnel-onboarding-step">
-                            <span class="agent-tunnel-step-number" aria-hidden="true">➌</span>
-                            <div class="agent-tunnel-step-copy">
-                                <h4>Create the ChatGPT custom app</h4>
-                                <p>In ChatGPT Settings, enable Developer mode, then under Apps create a custom app named <strong>AgenticContext</strong>.</p>
-                                <p>Set <strong>Connection: Tunnel</strong> (the one from step ➊), <strong>Permission: Allow all actions</strong>, and <strong>Authentication: No auth</strong>. Never paste the API key into ChatGPT.</p>
-                            </div>
-                            <a class="secondary-button browser-refresh-button agent-tunnel-step-action" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer"><span>Open ChatGPT</span></a>
-                        </li>
-                        <li class="agent-tunnel-onboarding-step">
-                            <span class="agent-tunnel-step-number" aria-hidden="true">➍</span>
+                            <span class="agent-tunnel-step-number" aria-hidden="true">Step 4</span>
                             <div class="agent-tunnel-step-copy">
                                 <h4>Run one real project task</h4>
-                                <p>Pick <strong>AgenticContext</strong> from ChatGPT's + or @ menu, fill in your task, and send:</p>
-                                <p id="agent_tunnel_kickoff" data-agent-tunnel-kickoff>Use @AgenticContext to read the selected project's instructions and current changes, then implement and verify the following task without altering unrelated work: [describe your task].</p>
-                                <p>The live marker means this Tunnel received tool calls, not that the task is done.</p>
+                                <div class="agent-tunnel-action-package agent-tunnel-kickoff-package">
+                                    <ol class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence" aria-label="Run a project task">
+                                        <li class="agent-tunnel-numbered-item">
+                                            <span class="agent-tunnel-substep-number" aria-hidden="true">➊</span>
+                                            <div class="agent-tunnel-numbered-copy">
+                                                <p id="agent_tunnel_kickoff" data-agent-tunnel-kickoff>Use @AgenticContext to read the selected project's instructions and current changes, then implement and verify the following task without altering unrelated work:<br><span class="agent-tunnel-kickoff-task">[describe your task].</span></p>
+                                                <div class="settings-action-package-form agent-tunnel-action-package-form">
+                                                    <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-tunnel-copy-kickoff aria-label="Copy this prompt" aria-controls="agent_tunnel_kickoff">
+                                                        <span class="browser-session-trigger-leading">
+                                                            <span class="icon agent-response-copy-icon" aria-hidden="true"></span>
+                                                            <span data-agent-tunnel-copy-label aria-live="polite">Copy this prompt</span>
+                                                        </span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </li>
+                                        <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
+                                            <span class="agent-tunnel-substep-number" aria-hidden="true">➋</span>
+                                            <div class="agent-tunnel-numbered-copy">
+                                                <div class="settings-action-package-form agent-tunnel-action-package-form">
+                                                    <a class="secondary-button agent-tunnel-step-action" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">
+                                                        <span class="browser-session-trigger-leading">
+                                                            <span class="cache-phase-live-marker" data-agent-tunnel-live-marker aria-hidden="true"{% if not tunnel_status.activity_observed %} hidden{% endif %}></span>
+                                                            <span>Ask in ChatGPT</span>
+                                                        </span>
+                                                    </a>
+                                                </div>
+                                            </div>
+                                        </li>
+                                    </ol>
+                                </div>
                             </div>
-                            <span class="agent-tunnel-step-actions">
-                                <a class="secondary-button browser-refresh-button agent-tunnel-step-action" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">
-                                    <span class="browser-session-trigger-leading">
-                                        <span class="cache-phase-live-marker" data-agent-tunnel-live-marker aria-hidden="true"{% if not tunnel_status.activity_observed %} hidden{% endif %}></span>
-                                        <span>Ask in ChatGPT</span>
-                                    </span>
-                                </a>
-                                <button type="button" class="secondary-button browser-refresh-button agent-tunnel-step-action" data-agent-tunnel-copy-kickoff aria-label="Copy kickoff prompt" aria-controls="agent_tunnel_kickoff">
-                                    <span class="browser-session-trigger-leading">
-                                        <span class="icon agent-response-copy-icon" aria-hidden="true"></span>
-                                        <span data-agent-tunnel-copy-label aria-live="polite">Copy kickoff</span>
-                                    </span>
-                                </button>
-                            </span>
                         </li>
                     </ol>
                 </article>
@@ -627,6 +639,6 @@
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.52.4-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.52.6-codex.0') }}"></script>
 </body>
 </html>

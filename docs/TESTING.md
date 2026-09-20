@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.17.0-codex.0`
+Documentation version: `v1.17.6-codex.0`
 
 ## Supported commands
 
@@ -165,12 +165,28 @@ The Tunnel onboarding UI runs in the disposable Chromium layer:
 ./scripts/test.sh tests/test_agent_sessions_e2e.py -k "tunnel or connection_mode"
 ```
 
-It measures the rendered page at 1,280 and 390 px wide, including a 420 px short viewport: the
-Agent workspace is the only content scrollport, marker and heading centers align within 1 px,
-body copy uses `--font-ui-md` under `--font-ui-lg` headings, step ➋ has no paragraph or empty
-block, the grouped first two steps have no divider, later steps keep their structural dividers,
-the focused action keeps the shared 48 px physical-effect bleed inside the scrollport, the title
-clears the global quick actions, and credential errors reach the sidebar hint.
+It measures the rendered page at 1,280, 876, and 390 px wide, including a 420 px short viewport: the
+Agent workspace is the only content scrollport; the outer `Step 1` through `Step 4` markers align
+with their headings and share the same text color; body copy uses `--font-ui-md` under
+`--font-ui-lg` headings; the project path, credential values, and masked credential placeholder use
+the scoped technical monospace and the two credential displays share one size. Step 1 contains four
+independent native disclosure rows, marked ➊ through ➍. They are closed on first render and after
+reload, support mouse, Enter, and Space, and reveal four responsive inline SVG cards reconstructed
+from the OpenAI Platform flow. The disclosure adapter follows Worthward's canonical 12×8 px
+chevron, 8 px icon gap, `10px 0` summary padding, `0 10px 10px` body padding, and 180 ms standard
+rotation. The vectors contain no macOS window chrome, every rectangular surface uses a 10 px
+radius, and the API-key diagram selects Expiration: Never and Permissions: All. The contract
+rejects raster images, SVG `<image>` or `<foreignObject>` nodes, embedded data images, and
+credential-shaped literal values. At 760 px and below, each disclosure body becomes a focusable
+horizontal scrollport and keeps its SVG at the authored 720 px width, preserving at least 11 px
+rendered text while the document itself remains free of horizontal overflow. Every instruction
+package places the Style tokens Secondary
+button below its complete copy and against the package's lower-right edge. Step 2 has no manual
+disconnect or reconnect control; Step 4 keeps only the explicit-break prompt, then orders
+`Copy this prompt` before `Ask in ChatGPT`. All four outer steps are divider-free, the focused
+action keeps the shared 48 px physical-effect bleed inside the scrollport, the title clears the
+global quick actions, routine Tunnel message/activity copy is absent, and credential errors still
+reach the sidebar hint.
 
 Run the OpenAI Site tools contract and disposable-browser layers independently with:
 

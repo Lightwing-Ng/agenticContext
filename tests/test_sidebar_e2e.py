@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.46.17-codex.0
+Code version: v1.48.0-codex.0
 """
 
 from __future__ import annotations
@@ -1527,7 +1527,7 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
     )
     try:
         cards = page.locator("[data-style-token-card]")
-        expect(cards).to_have_count(21)
+        expect(cards).to_have_count(22)
         assert page.evaluate(
             "document.documentElement.scrollWidth === document.documentElement.clientWidth"
         )
@@ -1593,6 +1593,35 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
             '[data-style-token-agent-browser-option="edge"]'
         ).evaluate("element => getComputedStyle(element).borderRadius")
         assert selected_agent_option_radius == "999px"
+
+        collapse = page.locator("[data-style-token-collapse]")
+        collapse_summary = collapse.locator(":scope > summary")
+        collapse_body = collapse.locator(":scope > .ui-collapse-body")
+        expect(collapse).not_to_have_attribute("open", "")
+        expect(collapse_body).to_be_hidden()
+        assert collapse_summary.evaluate(
+            """element => {
+                const style = getComputedStyle(element);
+                return {
+                    padding: style.padding,
+                    fontSize: style.fontSize,
+                    fontWeight: style.fontWeight,
+                };
+            }"""
+        ) == {
+            "padding": "10px 0px",
+            "fontSize": "15px",
+            "fontWeight": "500",
+        }
+        collapse_summary.click()
+        expect(collapse).to_have_attribute("open", "")
+        expect(collapse_body).to_be_visible()
+        assert collapse_body.evaluate(
+            "element => getComputedStyle(element).padding"
+        ) == "0px 10px 10px"
+        assert collapse_summary.evaluate(
+            "element => getComputedStyle(element, '::after').transform"
+        ) == "matrix(-1, 0, 0, -1, 0, 0)"
 
         period_trigger = page.locator(
             "#shared-select-dropdown [data-style-token-shared-filter-trigger]"
@@ -1829,6 +1858,12 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
             "lineHeight": "normal",
             "color": "rgb(11, 12, 12)",
         }
+        narrow_collapse = narrow_page.locator("[data-style-token-collapse]")
+        narrow_collapse.locator(":scope > summary").click()
+        expect(narrow_collapse.locator(":scope > .ui-collapse-body")).to_be_visible()
+        assert narrow_collapse.evaluate(
+            "element => element.scrollWidth <= element.clientWidth"
+        )
         title_left = narrow_page.locator(
             ".settings-summary-card .report-heading"
         ).bounding_box()["x"]
@@ -3521,6 +3556,64 @@ def test_settings_reuse_shared_content_control_and_effect_boundaries(
         assert style_geometry["shellOverflow"] == "visible"
         assert style_geometry["cardOverflow"] == "visible"
         assert style_geometry["documentOverflow"] <= 1
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_settings_sidebar_effect_escapes_centered_page_at_ultrawide_width(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+) -> None:
+    """Keep the desktop sidebar material open until the viewport boundary."""
+    page, context = _open_page(
+        disposable_browser,
+        f"{sidebar_server_url}/settings",
+        1_920,
+        960,
+        touch=False,
+    )
+    try:
+        geometry = page.evaluate(
+            """() => {
+                const pageShell = document.querySelector('.page');
+                const appShell = document.querySelector('.app-shell');
+                const sidebar = document.querySelector('#settings_sidebar');
+                const pageBounds = pageShell.getBoundingClientRect();
+                const sidebarBounds = sidebar.getBoundingClientRect();
+                const clippingAncestors = [];
+                for (let node = sidebar.parentElement; node; node = node.parentElement) {
+                    const style = getComputedStyle(node);
+                    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+                        clippingAncestors.push({
+                            selector: node.id || node.className || node.tagName,
+                            x: style.overflowX,
+                            y: style.overflowY,
+                        });
+                    }
+                }
+                return {
+                    pageLeft: pageBounds.left,
+                    sidebarLeft: sidebarBounds.left,
+                    pageOverflow: getComputedStyle(pageShell).overflow,
+                    appShellOverflow: getComputedStyle(appShell).overflow,
+                    clippingAncestors,
+                    documentOverflow: document.documentElement.scrollWidth
+                        - document.documentElement.clientWidth,
+                };
+            }"""
+        )
+
+        assert geometry["pageLeft"] >= 179
+        assert geometry["sidebarLeft"] >= geometry["pageLeft"]
+        assert geometry["pageOverflow"] == "visible"
+        assert geometry["appShellOverflow"] == "visible"
+        assert not any(
+            item["selector"] == "page" for item in geometry["clippingAncestors"]
+        ), geometry["clippingAncestors"]
+        assert geometry["clippingAncestors"][0]["selector"] == "BODY"
+        assert geometry["documentOverflow"] <= 1
     finally:
         context.close()
 

@@ -1,10 +1,11 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.69.2-codex.0
+Code version: v1.71.0-codex.0
 """
 
 import hashlib
 from pathlib import Path
+import re
 import struct
 
 from scripts.build_web_fonts import FACE_NAMES, checksum, extract_face
@@ -1792,7 +1793,7 @@ def test_technical_monospace_is_centralized_and_scoped() -> None:
     assert "font-family: monospace;" not in stylesheet
     for selector in (
         "#chatgpt_tunnel_id.text-input-control,",
-        ".agent-monospace-input,",
+        ".agent-monospace-input.text-input-control,",
         ".settings-agent-system-prompt {",
     ):
         rule_start = stylesheet.index(selector)
@@ -2246,6 +2247,23 @@ def test_browser_picker_icon_plate_is_dark_theme_only() -> None:
     assert stylesheet.count(dark_shadow) == 3
 
 
+def test_desktop_page_exposes_sidebar_effects_until_the_viewport_boundary() -> None:
+    """Open the centered desktop shell while bounding the overlay layout."""
+    stylesheet = _stylesheet()
+    page_start = stylesheet.index("\n.page {") + 1
+    page_rule = stylesheet[page_start:stylesheet.index("\n}", page_start)]
+    assert "overflow: visible;" in page_rule
+
+    responsive_start = stylesheet.index("@media (max-width: 900px) {")
+    responsive_page_start = stylesheet.index(
+        "\n    .page {\n        overflow: hidden;", responsive_start
+    ) + 1
+    responsive_page_rule = stylesheet[
+        responsive_page_start:stylesheet.index("\n    }", responsive_page_start)
+    ]
+    assert "overflow: hidden;" in responsive_page_rule
+
+
 def test_browser_content_mode_reuses_the_sibling_optimistic_navigation_skeleton() -> None:
     """Keep content-mode navigation on the sibling's skeleton and motion contract."""
     stylesheet = _stylesheet()
@@ -2269,7 +2287,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.127.1-codex.0 */",
+        "/* Code version: v2.129.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2361,8 +2379,8 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
         assert token in stylesheet
 
 
-def test_tunnel_scrollport_and_step_grouping_follow_shared_layout_contract() -> None:
-    """Keep effect bleed on the scroll owner and divider removal structural."""
+def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None:
+    """Keep effect bleed on the scroll owner and every onboarding step divider-free."""
     stylesheet = _stylesheet()
 
     workspace_selector = 'main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace {'
@@ -2379,13 +2397,144 @@ def test_tunnel_scrollport_and_step_grouping_follow_shared_layout_contract() -> 
 
     step_start = stylesheet.index(".agent-tunnel-onboarding-step {")
     step_rule = stylesheet[step_start:stylesheet.index("\n}", step_start)]
-    assert "border-block-start: 1px solid" in step_rule
-    first_start = stylesheet.index(".agent-tunnel-onboarding-step:first-child {")
-    first_rule = stylesheet[first_start:stylesheet.index("\n}", first_start)]
-    assert "border-block-start: 0;" in first_rule
-    continued_start = stylesheet.index(".agent-tunnel-onboarding-step-continued {")
-    continued_rule = stylesheet[continued_start:stylesheet.index("\n}", continued_start)]
-    assert "border-block-start: 0;" in continued_rule
+    assert "grid-template-columns: max-content minmax(0, 1fr);" in step_rule
+    assert "border: 0;" in step_rule
+    assert ".agent-tunnel-onboarding-step:first-child" not in stylesheet
+    assert ".agent-tunnel-onboarding-step-continued" not in stylesheet
+
+    root_start = stylesheet.index(":root {")
+    root_rule = stylesheet[root_start:stylesheet.index("\n}", root_start)]
+    for token in (
+        "--collapse-section-gap: 8px;",
+        "--collapse-icon-size: 12px;",
+        "--collapse-icon-height: 8px;",
+        "--collapse-icon-gap: 8px;",
+        '--collapse-icon-closed: url("data:image/svg+xml,',
+        "--collapse-icon-open: var(--collapse-icon-closed);",
+        "--collapse-summary-padding: 10px 0;",
+        "--collapse-body-padding: 0 10px 10px;",
+        "--collapse-font-size: var(--font-ui-lg);",
+        "--collapse-font-weight: var(--font-weight-medium);",
+    ):
+        assert token in root_rule
+    assert stylesheet.count("--collapse-icon-closed:") == 1
+    assert stylesheet.count("--collapse-summary-padding:") == 1
+
+    summary_icon_start = stylesheet.index(".ui-collapse > summary::after {")
+    summary_icon_rule = stylesheet[
+        summary_icon_start:stylesheet.index("\n}", summary_icon_start)
+    ]
+    assert "mask: var(--collapse-icon-closed) center/contain no-repeat;" in summary_icon_rule
+    assert "-webkit-mask: var(--collapse-icon-closed) center/contain no-repeat;" in summary_icon_rule
+    assert "data:image" not in summary_icon_rule
+    summary_open_start = stylesheet.index(".ui-collapse[open] > summary::after {")
+    summary_open_rule = stylesheet[
+        summary_open_start:stylesheet.index("\n}", summary_open_start)
+    ]
+    assert "mask-image: var(--collapse-icon-open);" in summary_open_rule
+    assert "-webkit-mask-image: var(--collapse-icon-open);" in summary_open_rule
+    assert "transform: rotate(180deg);" in summary_open_rule
+    shared_body_start = stylesheet.index(".ui-collapse-body {")
+    shared_body_rule = stylesheet[
+        shared_body_start:stylesheet.index("\n}", shared_body_start)
+    ]
+    assert "padding: var(--collapse-body-padding);" in shared_body_rule
+    guide_body_start = stylesheet.index(".agent-tunnel-guide > .agent-tunnel-guide-body {")
+    guide_body_rule = stylesheet[guide_body_start:stylesheet.index("\n}", guide_body_start)]
+    assert "overflow-x: auto;" in guide_body_rule
+    assert "overflow-y: hidden;" in guide_body_rule
+    assert "overscroll-behavior-inline: contain;" in guide_body_rule
+    narrow_guide_start = stylesheet.index("@media (max-width: 760px) {")
+    narrow_guide_rule = stylesheet[
+        narrow_guide_start:stylesheet.index("\n}", narrow_guide_start) + 2
+    ]
+    assert ".agent-tunnel-guide-svg" in narrow_guide_rule
+    assert "min-width: 720px;" in narrow_guide_rule
+
+    guide_number_start = stylesheet.index(".agent-tunnel-guide-number {")
+    guide_number_rule = stylesheet[
+        guide_number_start:stylesheet.index("\n}", guide_number_start)
+    ]
+    assert "font-size: var(--collapse-font-size);" in guide_number_rule
+    assert "line-height: 1.35;" in guide_number_rule
+    guide_summary_copy_start = stylesheet.index(".agent-tunnel-guide-summary-copy {")
+    guide_summary_copy_rule = stylesheet[
+        guide_summary_copy_start:stylesheet.index("\n}", guide_summary_copy_start)
+    ]
+    assert "display: block;" in guide_summary_copy_rule
+    assert "font-size: var(--collapse-font-size);" in guide_summary_copy_rule
+    guide_title_start = stylesheet.index(".agent-tunnel-guide-title {")
+    guide_title_rule = stylesheet[
+        guide_title_start:stylesheet.index("\n}", guide_title_start)
+    ]
+    guide_description_start = stylesheet.index(".agent-tunnel-guide-description {")
+    guide_description_rule = stylesheet[
+        guide_description_start:stylesheet.index("\n}", guide_description_start)
+    ]
+    assert "font-size: inherit;" in guide_title_rule
+    assert "font-size: inherit;" in guide_description_rule
+
+    numbered_list_start = stylesheet.index(".agent-tunnel-numbered-list {")
+    numbered_list_rule = stylesheet[
+        numbered_list_start:stylesheet.index("\n}", numbered_list_start)
+    ]
+    assert "list-style: none;" in numbered_list_rule
+    substep_number_start = stylesheet.index(".agent-tunnel-substep-number {")
+    substep_number_rule = stylesheet[
+        substep_number_start:stylesheet.index("\n}", substep_number_start)
+    ]
+    assert "font-size: inherit;" in substep_number_rule
+
+    action_start = stylesheet.index(".agent-tunnel-action-package > .agent-tunnel-action-package-form,")
+    action_rule = stylesheet[action_start:stylesheet.index("\n}", action_start)]
+    assert ".agent-tunnel-numbered-copy > .agent-tunnel-action-package-form" in action_rule
+    assert "justify-self: end;" in action_rule
+    assert "align-self: end;" in action_rule
+    assert "flex-direction: column;" in action_rule
+
+    agent_template = (
+        STYLE_PATH.parents[1] / "templates/agent.html"
+    ).read_text(encoding="utf-8")
+    guide_template = (
+        STYLE_PATH.parents[1] / "templates/_agent_tunnel_credential_guides.html"
+    ).read_text(encoding="utf-8")
+    assert guide_template.count('<details class="ui-collapse agent-tunnel-guide"') == 4
+    assert guide_template.count('<svg class="agent-tunnel-guide-svg"') == 4
+    assert guide_template.count("data-agent-tunnel-guide-scroll") == 4
+    assert guide_template.count('role="region" tabindex="0"') == 4
+    assert guide_template.count('aria-labelledby="agent_tunnel_guide_title_') == 4
+    lowered_guide_template = guide_template.lower()
+    for forbidden_markup in ("<img", "<image", "<foreignobject", "data:image"):
+        assert forbidden_markup not in lowered_guide_template
+    assert "<circle" not in lowered_guide_template
+    assert "guide-window" not in guide_template
+    assert guide_template.count('class="guide-card"') == 4
+    assert guide_template.count("data-guide-select-chevron") == 4
+    assert "m-10 11 5 5 5-5" not in guide_template
+    guide_rects = re.findall(r"<rect\b[^>]*>", guide_template)
+    assert guide_rects
+    assert all(re.search(r'\brx="10"', rect) for rect in guide_rects)
+    assert 'data-guide-expiration="never"' in guide_template
+    assert 'data-guide-selected="all"' in guide_template
+    assert "Expiration: Never" in guide_template
+    assert "Permissions: All" in guide_template
+    assert "Read + Use" not in guide_template
+    assert "Read and write API resources" in guide_template
+    assert re.search(r"tunnel_[0-9a-f]{32}", guide_template, re.IGNORECASE) is None
+    assert re.search(r"sk-proj-[A-Za-z0-9_-]{16,}", guide_template) is None
+    assert re.search(r"org-[A-Za-z0-9]{12,}", guide_template) is None
+    assert "tunnel_••••••••" in guide_template
+    assert "sk-proj-••••••••" in guide_template
+    assert agent_template.count('class="agent-tunnel-substep-number"') == 4
+    assert 'class="agent-tunnel-numbered-list agent-tunnel-credential-fields"' in agent_template
+    assert 'class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence"' in agent_template
+
+    action_class = 'class="secondary-button agent-tunnel-step-action"'
+    assert agent_template.count(action_class) + guide_template.count(action_class) == 5
+    assert "settings-inline-button-primary agent-tunnel-step-action" not in (
+        agent_template + guide_template
+    )
+    assert "data-agent-tunnel-toggle" not in agent_template
 
 
 def test_agent_composer_right_aligns_all_footer_controls_with_action_gap() -> None:

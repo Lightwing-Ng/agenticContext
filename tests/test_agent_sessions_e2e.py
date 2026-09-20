@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.15.2-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.15.10-codex.0."""
 
 import re
 from copy import deepcopy
@@ -131,12 +131,25 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         expect(onboarding).to_be_visible()
         expect(workspace).to_have_attribute("data-layout-role", "content-scrollport")
         expect(page.locator("[data-agent-heading]")).to_have_text("Connect ChatGPT to this local project")
-        for marker in ("➊", "➋", "➌", "➍"):
-            expect(onboarding).to_contain_text(marker)
+        assert onboarding.locator(".agent-tunnel-step-number").all_inner_texts() == [
+            "Step 1",
+            "Step 2",
+            "Step 3",
+            "Step 4",
+        ]
+        assert onboarding.locator(".agent-tunnel-guide-number").all_inner_texts() == [
+            "➊",
+            "➋",
+            "➌",
+            "➍",
+        ]
+        guides = onboarding.locator("details.ui-collapse[data-agent-tunnel-guide]")
+        expect(guides).to_have_count(4)
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 4
         external_actions = onboarding.locator("a.agent-tunnel-step-action")
         assert external_actions.count() == 4
         for action in external_actions.all():
-            expect(action).to_have_class(re.compile(r"secondary-button.*browser-refresh-button"))
+            expect(action).to_have_class(re.compile(r"\bsecondary-button\b"))
             expect(action).to_have_attribute("target", "_blank")
             expect(action).to_have_attribute("rel", "noopener noreferrer")
         right_edges = external_actions.evaluate_all(
@@ -191,7 +204,7 @@ def _tunnel_onboarding_status(enabled=True):
     }
 
 
-@pytest.mark.parametrize("width", [1280, 390])
+@pytest.mark.parametrize("width", [1280, 876, 390])
 def test_tunnel_kickoff_copy_and_native_monospace(
     disposable_browser,
     sidebar_server_url,
@@ -212,28 +225,137 @@ def test_tunnel_kickoff_copy_and_native_monospace(
         kickoff = page.locator("[data-agent-tunnel-kickoff]")
         expect(kickoff).to_contain_text("@AgenticContext")
         expect(kickoff).to_contain_text("[describe your task]")
+        assert kickoff.inner_text().endswith(
+            "without altering unrelated work:\n[describe your task]."
+        )
         expect(page.locator("[data-agent-tunnel-onboarding]")).to_contain_text("named AgenticContext")
+        expect(page.locator("[data-agent-tunnel-onboarding]")).to_contain_text("starting with tunnel_")
+        expect(page.locator("[data-agent-tunnel-onboarding]")).to_contain_text("starting with sk-proj-")
+        expect(page.locator("[data-agent-tunnel-onboarding]")).not_to_contain_text("tunnel_*4766")
+        expect(page.locator("[data-agent-tunnel-onboarding]")).not_to_contain_text("sk-proj-*HMAA")
         expect(page.locator(".agent-tunnel-onboarding-step")).to_have_count(4)
+        expect(page.locator("details.ui-collapse[data-agent-tunnel-guide]")).to_have_count(4)
+        expect(page.locator("[data-agent-tunnel-guide] svg[role='img']")).to_have_count(4)
+        expect(page.locator("[data-agent-tunnel-guide] :is(img, image, foreignObject)")).to_have_count(0)
         expect(page.locator("#agent_prompt_form")).to_be_hidden()
-        assert page.locator("#chatgpt_tunnel_id").evaluate("e => getComputedStyle(e).fontFamily") == "monospace"
+        technical_input_styles = page.locator(
+            "#agent_project_path, #chatgpt_tunnel_id, #chatgpt_tunnel_api_key"
+        ).evaluate_all(
+            """inputs => inputs.map((input) => ({
+                id: input.id,
+                fontFamily: getComputedStyle(input).fontFamily,
+                fontSize: getComputedStyle(input).fontSize,
+                placeholderFontFamily: getComputedStyle(input, '::placeholder').fontFamily,
+                placeholderFontSize: getComputedStyle(input, '::placeholder').fontSize,
+            }))"""
+        )
+        assert [item["fontFamily"] for item in technical_input_styles] == [
+            "monospace",
+            "monospace",
+            "monospace",
+        ]
+        credential_styles = technical_input_styles[1:]
+        assert len({item["fontSize"] for item in credential_styles}) == 1
+        assert {
+            item["placeholderFontFamily"] for item in credential_styles
+        } == {"monospace"}
+        assert {
+            item["placeholderFontSize"] for item in credential_styles
+        } == {credential_styles[0]["fontSize"]}
         button = page.locator("[data-agent-tunnel-copy-kickoff]")
+        expect(button).to_have_text("Copy this prompt")
         button.scroll_into_view_if_needed()
         button.focus()
         button.press("Enter")
         expect(button).to_have_text("Copied")
         assert page.evaluate("window.copiedKickoff") == kickoff.inner_text()
         expect(button).to_be_focused()
-        edges = page.locator(".agent-tunnel-step-action").evaluate_all(
+        edges = page.locator(
+            "a.agent-tunnel-step-action, [data-agent-tunnel-copy-kickoff]"
+        ).evaluate_all(
             "nodes => nodes.map(e => e.getBoundingClientRect().right)"
         )
         assert max(edges) - min(edges) <= 2
+        expect(page.locator("[data-agent-tunnel-toggle]")).to_have_count(0)
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert not errors
     finally:
         context.close()
 
 
-@pytest.mark.parametrize(("width", "height"), [(1280, 420), (390, 420), (1280, 900)])
+@pytest.mark.parametrize("width", [1280, 390])
+def test_tunnel_credential_guides_use_native_disclosure_and_vector_cards(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+):
+    """Keep all four lightweight visual guides native, independent, and closed by default."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": 900})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
+            page.locator("#sidebar_toggle").click()
+
+        guides = page.locator("details.ui-collapse[data-agent-tunnel-guide]")
+        summaries = guides.locator("summary")
+        expect(guides).to_have_count(4)
+        expect(summaries).to_have_count(4)
+        assert page.locator(".agent-tunnel-guide-title").all_inner_texts() == [
+            "Create a Tunnel.",
+            "Copy the Tunnel ID.",
+            "Create an API key.",
+            "Copy the secret key.",
+        ]
+        assert page.locator(".agent-tunnel-guide-description").all_inner_texts() == [
+            "Open Tunnels and create an AgenticContext Tunnel.",
+            "Copy the new ID starting with tunnel_.",
+            "Use Expiration: Never and Permissions: All.",
+            "Copy the key starting with sk-proj-; it is shown only once.",
+        ]
+        expect(page.locator("[data-agent-tunnel-guide] circle")).to_have_count(0)
+        expect(page.locator("[data-agent-tunnel-guide] .guide-card")).to_have_count(4)
+        expect(page.locator("[data-agent-tunnel-guide] [class*='guide-window']")).to_have_count(0)
+        assert page.locator("[data-agent-tunnel-guide] rect").evaluate_all(
+            "nodes => nodes.every((node) => node.getAttribute('rx') === '10')"
+        )
+        expect(page.locator('[data-guide-expiration="never"]')).to_have_count(1)
+        expect(page.locator('[data-guide-selected="all"]')).to_have_count(1)
+        expect(page.locator("[data-agent-tunnel-onboarding]")).not_to_contain_text("Read + Use")
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 4
+        for svg in page.locator("[data-agent-tunnel-guide] svg[role='img']").all():
+            expect(svg).to_be_hidden()
+
+        summaries.nth(0).focus()
+        summaries.nth(0).press("Enter")
+        expect(guides.nth(0)).to_have_attribute("open", "")
+        expect(guides.nth(0).locator("svg")).to_be_visible()
+        expect(summaries.nth(0)).to_be_focused()
+
+        summaries.nth(1).focus()
+        summaries.nth(1).press("Space")
+        expect(guides.nth(1)).to_have_attribute("open", "")
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)")[:2] == [True, True]
+        expect(summaries.nth(1)).to_be_focused()
+
+        summaries.nth(0).click()
+        expect(guides.nth(0)).not_to_have_attribute("open", "")
+        expect(guides.nth(1)).to_have_attribute("open", "")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+        page.reload()
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 4
+        assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(1280, 420), (390, 420), (1280, 900), (876, 1190)],
+)
 def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
     disposable_browser,
     sidebar_server_url,
@@ -258,10 +380,14 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         steps = page.locator(".agent-tunnel-onboarding-step")
         expect(onboarding).to_be_visible()
         expect(steps).to_have_count(4)
-        expect(page.locator("[data-agent-tunnel-message]")).to_have_text(
-            "Ready for a project tool call."
-        )
+        expect(page.locator("[data-agent-tunnel-message]")).to_have_count(0)
+        expect(page.locator("[data-agent-tunnel-activity]")).to_have_count(0)
         expect(page.locator("[data-agent-tunnel-hint]")).to_be_hidden()
+
+        guides = page.locator("details[data-agent-tunnel-guide]")
+        expect(guides).to_have_count(4)
+        guides.evaluate_all("nodes => nodes.forEach((node) => { node.open = true; })")
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [True] * 4
 
         action = page.locator("[data-agent-tunnel-copy-kickoff]")
         action.focus()
@@ -299,9 +425,21 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                 const actionRect = action.getBoundingClientRect();
                 const headings = steps.map((step) => step.querySelector('h4'));
                 const paragraphs = steps.flatMap((step) => [...step.querySelectorAll('.agent-tunnel-step-copy p')]);
-                const setupRows = [...steps[0].querySelectorAll('.agent-tunnel-setup-row')];
+                const actionPackages = [...document.querySelectorAll('.agent-tunnel-action-package')];
+                const guideItems = [...steps[0].querySelectorAll('.agent-tunnel-guide-item')];
+                const guideDetails = guideItems.map((item) => item.querySelector('details'));
+                const guideSummaries = guideDetails.map((detail) => detail.querySelector('summary'));
+                const guideTitles = guideDetails.map((detail) => detail.querySelector('.agent-tunnel-guide-title'));
+                const guideDescriptions = guideDetails.map((detail) => detail.querySelector('.agent-tunnel-guide-description'));
+                const guideBodies = guideDetails.map((detail) => detail.querySelector(':scope > .ui-collapse-body'));
+                const guideSvgs = guideDetails.map((detail) => detail.querySelector('svg'));
+                const firstStepCopy = steps[0].querySelector('.agent-tunnel-step-copy');
                 const credentialCopy = steps[1].querySelector('.agent-tunnel-step-copy');
+                const credentialFields = steps[1].querySelector('.agent-tunnel-credential-fields');
                 const credentialInputs = [...steps[1].querySelectorAll('.text-input-control')];
+                const stepFourLink = steps[3].querySelector('a.agent-tunnel-step-action');
+                const stepFourButton = steps[3].querySelector('[data-agent-tunnel-copy-kickoff]');
+                const kickoff = steps[3].querySelector('[data-agent-tunnel-kickoff]');
                 const titleText = document.createRange();
                 titleText.selectNodeContents(document.querySelector('[data-agent-heading]'));
                 const quickActions = document.querySelector('.global-quick-actions').getBoundingClientRect();
@@ -334,21 +472,130 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     markerFontSizes: [...new Set(steps.map((step) =>
                         parseFloat(getComputedStyle(step.querySelector('.agent-tunnel-step-number')).fontSize)
                     ))],
-                    setupRowActionCenterDeltas: setupRows.map((row) => Math.abs(
-                        center(row.querySelector('p')) - center(row.querySelector('.agent-tunnel-step-action'))
-                    )),
-                    setupRowActionLabels: setupRows.map((row) =>
-                        row.querySelector('.agent-tunnel-step-action').textContent.trim()
+                    markerColors: steps.map((step) =>
+                        getComputedStyle(step.querySelector('.agent-tunnel-step-number')).color
+                    ),
+                    markerTexts: steps.map((step) =>
+                        step.querySelector('.agent-tunnel-step-number').textContent.trim()
+                    ),
+                    headingColors: headings.map((heading) => getComputedStyle(heading).color),
+                    guideMarkerTexts: guideItems.map((item) =>
+                        item.querySelector('.agent-tunnel-guide-number').textContent.trim()
+                    ),
+                    guideMarkerFontSizes: guideItems.map((item) =>
+                        parseFloat(getComputedStyle(item.querySelector('.agent-tunnel-guide-number')).fontSize)
+                    ),
+                    guideTitleFontSizes: guideTitles.map((title) =>
+                        parseFloat(getComputedStyle(title).fontSize)
+                    ),
+                    guideDescriptionFontSizes: guideDescriptions.map((description) =>
+                        parseFloat(getComputedStyle(description).fontSize)
+                    ),
+                    guideSummaryTexts: guideSummaries.map((summary) => summary.innerText.trim()),
+                    guideDetailsOpen: guideDetails.map((detail) => detail.open),
+                    guideSummaryDisplay: [...new Set(guideSummaries.map((summary) =>
+                        getComputedStyle(summary).display
+                    ))],
+                    guideSummaryMarkerMasks: guideSummaries.map((summary) =>
+                        getComputedStyle(summary, '::after').maskImage
+                    ),
+                    guideSummaryStyles: guideSummaries.map((summary) => {
+                        const style = getComputedStyle(summary);
+                        const icon = getComputedStyle(summary, '::after');
+                        const body = getComputedStyle(summary.parentElement.querySelector(':scope > .ui-collapse-body'));
+                        return {
+                            columnGap: style.columnGap,
+                            padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
+                            iconSize: [icon.width, icon.height],
+                            bodyPadding: [body.paddingTop, body.paddingRight, body.paddingBottom, body.paddingLeft],
+                        };
+                    }),
+                    guideBodyStyles: guideBodies.map((body) => ({
+                        overflowX: getComputedStyle(body).overflowX,
+                        overflowY: getComputedStyle(body).overflowY,
+                        tabIndex: body.tabIndex,
+                        role: body.getAttribute('role'),
+                        labelledBy: body.getAttribute('aria-labelledby'),
+                        horizontallyScrollable: body.scrollWidth > body.clientWidth + 1,
+                    })),
+                    guideSvgClientWidths: guideSvgs.map((svg) => svg.getBoundingClientRect().width),
+                    guideMinimumRenderedTextSizes: guideSvgs.map((svg) => {
+                        const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+                        return Math.min(...[...svg.querySelectorAll('text')].map((text) =>
+                            parseFloat(getComputedStyle(text).fontSize) * scale
+                        ));
+                    }),
+                    guideSvgStyles: guideSvgs.map((svg) => {
+                        const style = getComputedStyle(svg);
+                        return {borderRadius: style.borderRadius, overflow: style.overflow};
+                    }),
+                    guideScrollportsInsideStep: guideBodies.map((body) => {
+                        const bodyRect = body.getBoundingClientRect();
+                        const ownerRect = firstStepCopy.getBoundingClientRect();
+                        return bodyRect.left >= ownerRect.left - 1 && bodyRect.right <= ownerRect.right + 1;
+                    }),
+                    guideStepNonOverlapping:
+                        steps[0].getBoundingClientRect().bottom <= steps[1].getBoundingClientRect().top,
+                    actionPackageRightDeltas: actionPackages.flatMap((pack) =>
+                        [...pack.querySelectorAll('.agent-tunnel-action-package-form')].map((form) => Math.abs(
+                            pack.getBoundingClientRect().right - form.getBoundingClientRect().right
+                        ))
+                    ),
+                    actionPackagesFollowCopy: actionPackages.map((pack) => {
+                        const actionForms = [...pack.querySelectorAll('.agent-tunnel-action-package-form')];
+                        return actionForms.every((actionForm) => {
+                            const paragraphs = [...actionForm.parentElement.querySelectorAll(':scope > p')];
+                            return paragraphs.length === 0 || actionForm.getBoundingClientRect().top
+                                >= paragraphs.at(-1).getBoundingClientRect().bottom;
+                        });
+                    }),
+                    actionLabels: [...document.querySelectorAll('.agent-tunnel-step-action')].map((element) =>
+                        element.textContent.trim()
+                    ),
+                    actionClasses: [...document.querySelectorAll('.agent-tunnel-step-action')].map((element) =>
+                        element.className
                     ),
                     headingFontSizes: [...new Set(headings.map((heading) => parseFloat(getComputedStyle(heading).fontSize)))],
                     bodyFontSizes: [...new Set(paragraphs.map((paragraph) => parseFloat(getComputedStyle(paragraph).fontSize)))],
                     credentialInputFontSizes: credentialInputs.map((input) => getComputedStyle(input).fontSize),
+                    credentialPlaceholderFontSizes: credentialInputs.map((input) =>
+                        getComputedStyle(input, '::placeholder').fontSize
+                    ),
                     copyIconMask: getComputedStyle(action.querySelector('.agent-response-copy-icon')).maskImage,
                     headingToken: token('--font-ui-lg'),
+                    markerToken: token('--font-ui-sm'),
                     bodyToken: token('--font-ui-md'),
                     effectBleedToken: token('--layout-physical-effect-bleed'),
-                    secondParagraphCount: steps[1].querySelectorAll('p').length,
+                    paragraphCounts: steps.map((step) => step.querySelectorAll('.agent-tunnel-step-copy p').length),
+                    actionPackageParagraphCounts: actionPackages.map((pack) =>
+                        pack.querySelectorAll('p').length
+                    ),
                     credentialCopyChildren: [...credentialCopy.children].map((child) => child.tagName),
+                    credentialFieldChildren: [...credentialFields.children].map((child) => child.tagName),
+                    credentialSubstepMarkers: [...steps[1].querySelectorAll('.agent-tunnel-substep-number')].map(
+                        (marker) => marker.textContent.trim()
+                    ),
+                    kickoffSubstepMarkers: [...steps[3].querySelectorAll('.agent-tunnel-substep-number')].map(
+                        (marker) => marker.textContent.trim()
+                    ),
+                    kickoffActionGroups: [...steps[3].querySelectorAll('.agent-tunnel-numbered-item')].map(
+                        (item) => [...item.querySelectorAll('.agent-tunnel-step-action')].map(
+                            (element) => element.textContent.trim()
+                        )
+                    ),
+                    substepMarkerFontSizes: [...steps[1].querySelectorAll('.agent-tunnel-substep-number'),
+                        ...steps[3].querySelectorAll('.agent-tunnel-substep-number')].map(
+                        (marker) => parseFloat(getComputedStyle(marker).fontSize)
+                    ),
+                    credentialToggleCount: steps[1].querySelectorAll('[data-agent-tunnel-toggle]').length,
+                    stepFourActionHeights: [stepFourLink, stepFourButton].map((element) =>
+                        element.getBoundingClientRect().height
+                    ),
+                    stepFourActionLabels: [...steps[3].querySelectorAll('.agent-tunnel-step-action')].map(
+                        (element) => element.textContent.trim()
+                    ),
+                    kickoffHasExplicitBreak: Boolean(kickoff.querySelector('br')),
+                    kickoffText: kickoff.innerText,
                     emptyCredentialBlocks: [...steps[1].querySelectorAll('div, p, span')].filter(
                         (element) => !element.children.length && !element.textContent.trim()
                             && !element.matches('[aria-hidden="true"], .icon')
@@ -358,6 +605,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     focused: document.activeElement === action,
                     focusedActionFocusVisible: action.matches(':focus-visible'),
                     focusedActionBoxShadow: actionStyle.boxShadow,
+                    focusedActionOutlineStyle: actionStyle.outlineStyle,
                     focusedActionInsideClip:
                         actionRect.top >= clip.top
                         && actionRect.bottom <= clip.bottom
@@ -384,22 +632,89 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         else:
             assert geometry["scrollOwners"] in ([], ["agent_workspace"])
         assert max(geometry["markerHeadingCenterDeltas"]) <= 1, geometry["markerHeadingCenterDeltas"]
-        assert geometry["markerFontSizes"] == [20]
-        if width > 760:
-            assert max(geometry["setupRowActionCenterDeltas"]) <= 1, geometry["setupRowActionCenterDeltas"]
-        assert geometry["setupRowActionLabels"] == ["Open Tunnels", "Open API keys"]
+        assert geometry["markerFontSizes"] == [geometry["markerToken"]]
+        assert geometry["markerColors"] == geometry["headingColors"]
+        assert geometry["markerTexts"] == ["Step 1", "Step 2", "Step 3", "Step 4"]
+        assert geometry["guideMarkerTexts"] == ["➊", "➋", "➌", "➍"]
+        assert geometry["guideMarkerFontSizes"] == geometry["guideTitleFontSizes"]
+        assert geometry["guideTitleFontSizes"] == geometry["guideDescriptionFontSizes"]
+        assert all(text.endswith(".") for text in geometry["guideSummaryTexts"])
+        assert geometry["guideDetailsOpen"] == [True] * 4
+        assert geometry["guideSummaryDisplay"] == ["grid"]
+        assert all("data:image/svg+xml" in mask for mask in geometry["guideSummaryMarkerMasks"])
+        assert geometry["guideSummaryStyles"] == [
+            {
+                "columnGap": "8px",
+                "padding": ["10px", "0px", "10px", "0px"],
+                "iconSize": ["12px", "8px"],
+                "bodyPadding": ["0px", "10px", "10px", "10px"],
+            }
+        ] * 4
+        assert all(style["overflowX"] == "auto" for style in geometry["guideBodyStyles"])
+        assert all(style["overflowY"] == "hidden" for style in geometry["guideBodyStyles"])
+        assert all(style["tabIndex"] == 0 for style in geometry["guideBodyStyles"])
+        assert all(style["role"] == "region" for style in geometry["guideBodyStyles"])
+        assert all(style["labelledBy"] for style in geometry["guideBodyStyles"])
+        if width <= 760:
+            assert all(style["horizontallyScrollable"] for style in geometry["guideBodyStyles"])
+            assert min(geometry["guideSvgClientWidths"]) >= 719
+            assert min(geometry["guideMinimumRenderedTextSizes"]) >= 10.9
+            first_guide_scrollport = page.locator("[data-agent-tunnel-guide-scroll]").first
+            first_guide_scrollport.evaluate("element => { element.scrollLeft = 0; }")
+            first_guide_scrollport.focus()
+            first_guide_scrollport.press("ArrowRight")
+            page.wait_for_timeout(150)
+            assert first_guide_scrollport.evaluate("element => element.scrollLeft") > 0
+        else:
+            assert not any(style["horizontallyScrollable"] for style in geometry["guideBodyStyles"])
+        assert geometry["guideSvgStyles"] == [
+            {"borderRadius": "10px", "overflow": "hidden"}
+        ] * 4
+        assert all(geometry["guideScrollportsInsideStep"])
+        assert geometry["guideStepNonOverlapping"] is True
+        assert max(geometry["actionPackageRightDeltas"]) <= 1
+        assert all(geometry["actionPackagesFollowCopy"])
+        assert geometry["actionLabels"] == [
+            "Open Tunnels",
+            "Open API keys",
+            "Open ChatGPT",
+            "Copy this prompt",
+            "Ask in ChatGPT",
+        ]
+        assert all(
+            "secondary-button" in class_name
+            for class_name in geometry["actionClasses"]
+        )
         assert geometry["headingFontSizes"] == [geometry["headingToken"]]
         assert geometry["bodyFontSizes"] == [geometry["bodyToken"]]
         assert len(set(geometry["credentialInputFontSizes"])) == 1
+        assert geometry["credentialPlaceholderFontSizes"] == geometry["credentialInputFontSizes"]
         assert "document.on.document.fill.svg" in geometry["copyIconMask"]
         assert geometry["bodyToken"] < geometry["headingToken"]
-        assert geometry["secondParagraphCount"] == 0
-        assert geometry["credentialCopyChildren"] == ["H4", "DIV"]
+        assert geometry["paragraphCounts"] == [0, 0, 2, 1]
+        assert geometry["actionPackageParagraphCounts"] == [2, 1]
+        assert geometry["credentialCopyChildren"] == ["H4", "OL"]
+        assert geometry["credentialFieldChildren"] == ["LI", "LI"]
+        assert geometry["credentialSubstepMarkers"] == ["➊", "➋"]
+        assert geometry["kickoffSubstepMarkers"] == ["➊", "➋"]
+        assert geometry["kickoffActionGroups"] == [["Copy this prompt"], ["Ask in ChatGPT"]]
+        assert geometry["substepMarkerFontSizes"] == [geometry["headingToken"]] * 4
+        assert geometry["credentialToggleCount"] == 0
+        assert max(geometry["stepFourActionHeights"]) - min(geometry["stepFourActionHeights"]) <= 1
+        assert geometry["stepFourActionHeights"] == [32, 32]
+        assert geometry["stepFourActionLabels"] == ["Copy this prompt", "Ask in ChatGPT"]
+        assert geometry["kickoffHasExplicitBreak"] is True
+        assert geometry["kickoffText"].endswith(
+            "without altering unrelated work:\n[describe your task]."
+        )
         assert geometry["emptyCredentialBlocks"] == 0
-        assert geometry["dividers"] == ["0px", "0px", "1px", "1px"]
+        assert geometry["dividers"] == ["0px", "0px", "0px", "0px"]
         assert geometry["focused"] is True
         assert geometry["focusedActionFocusVisible"] is True
-        assert geometry["focusedActionBoxShadow"] != "none"
+        assert (
+            geometry["focusedActionBoxShadow"] != "none"
+            or geometry["focusedActionOutlineStyle"] != "none"
+        )
         assert geometry["focusedActionInsideClip"] is True
         assert geometry["focusRingRoom"] >= 4
         assert geometry["effectBleedToken"] >= 48
@@ -498,40 +813,6 @@ def test_tunnel_credential_errors_use_the_sidebar_hint_not_step_copy(
         expect(hint).to_have_text("Enter the API key for this Tunnel.")
         assert page.locator(".agent-tunnel-credential-step p").count() == 0
         assert errors == []
-    finally:
-        context.close()
-
-
-def test_tunnel_connection_button_blocks_duplicate_pending_request(
-    disposable_browser,
-    sidebar_server_url,
-):
-    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
-    page = context.new_page()
-    page.route("**/api/agent/tunnel/status", lambda route: route.fulfill(json=_tunnel_onboarding_status()))
-    try:
-        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
-        button = page.locator("[data-agent-tunnel-toggle]")
-        expect(button).to_have_text("Disconnect")
-        page.evaluate("""() => {
-            const original = window.fetch.bind(window);
-            window.disconnectRequests = 0;
-            window.fetch = (url, options) => {
-                if (!String(url).endsWith('/tunnel/disconnect')) return original(url, options);
-                window.disconnectRequests += 1;
-                return new Promise(resolve => { window.finishDisconnect = resolve; });
-            };
-        }""")
-        button.click()
-        expect(button).to_be_disabled()
-        button.dispatch_event("click")
-        assert page.evaluate("window.disconnectRequests") == 1
-        page.evaluate(
-            "payload => window.finishDisconnect(new Response(JSON.stringify(payload), {status: 200, headers: {'Content-Type': 'application/json'}}))",
-            _tunnel_onboarding_status(False),
-        )
-        expect(button).to_have_text("Reconnect")
-        expect(button).to_be_enabled()
     finally:
         context.close()
 

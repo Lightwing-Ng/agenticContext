@@ -1,4 +1,4 @@
-/* Code version: v1.1.7-codex.1 */
+/* Code version: v1.2.0-codex.0 */
 .agent-mode-section {
     display: grid;
     justify-items: center;
@@ -204,67 +204,11 @@
     color: var(--muted);
     font-size: var(--font-ui-sm);
 }
-.jury-rounds {
-    --collapse-section-gap: 8px;
-    --collapse-icon-size: 12px;
-    --collapse-icon-height: 8px;
-    --collapse-icon-gap: 8px;
-    --collapse-icon-closed: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.41 1.59 6 6.17l4.59-4.58L12 3l-6 5-6-5z' fill='currentColor'/%3E%3C/svg%3E");
-    --collapse-icon-open: var(--collapse-icon-closed);
-    --collapse-summary-padding: 10px 0;
-    --collapse-body-padding: 0 10px 10px;
-    --collapse-font-size: var(--font-ui-lg);
-    --collapse-font-weight: var(--font-weight-medium);
-}
 .jury-round {
-    min-width: 0;
-    border: none;
-    background: transparent;
     overflow: visible;
 }
-.jury-round + .jury-round {
-    margin-top: var(--collapse-section-gap);
-}
 .jury-round > summary {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--collapse-icon-size);
-    column-gap: var(--collapse-icon-gap);
-    align-items: center;
-    padding: var(--collapse-summary-padding);
     color: var(--text);
-    font-size: var(--collapse-font-size);
-    font-weight: var(--collapse-font-weight);
-    list-style: none;
-    cursor: pointer;
-}
-.jury-round > summary::marker,
-.jury-round > summary::-webkit-details-marker {
-    display: none;
-    content: "";
-}
-.jury-round > summary::after {
-    content: "";
-    grid-column: 2;
-    grid-row: 1;
-    width: var(--collapse-icon-size);
-    height: var(--collapse-icon-height);
-    background-color: currentColor;
-    mask: var(--collapse-icon-closed) center/contain no-repeat;
-    -webkit-mask: var(--collapse-icon-closed) center/contain no-repeat;
-    transform: rotate(0deg);
-    transform-origin: center;
-    transition: transform 180ms var(--motion-standard);
-    pointer-events: none;
-}
-.jury-round[open] > summary::after {
-    mask-image: var(--collapse-icon-open);
-    -webkit-mask-image: var(--collapse-icon-open);
-    transform: rotate(180deg);
-}
-.jury-round > summary:focus-visible {
-    outline: 2px solid var(--accent-text);
-    outline-offset: 2px;
-    border-radius: var(--radius-soft);
 }
 .jury-round-summary {
     display: flex;
@@ -278,8 +222,6 @@
 .jury-round > .ui-collapse-body {
     display: grid;
     gap: 16px;
-    min-width: 0;
-    padding: var(--collapse-body-padding);
 }
 .jury-opinion {
     min-width: 0;

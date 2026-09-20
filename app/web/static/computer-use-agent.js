@@ -1,4 +1,4 @@
-/* Code version: v3.52.4-codex.0 */
+/* Code version: v3.52.6-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -97,17 +97,13 @@
         tunnelCheckmark: document.querySelector("[data-agent-tunnel-checkmark]"),
         tunnelSpinner: document.querySelector("[data-agent-tunnel-spinner]"),
         tunnelState: document.querySelector("[data-agent-tunnel-state]"),
-        tunnelMessage: document.querySelector("[data-agent-tunnel-message]"),
         tunnelHint: document.querySelector("[data-agent-tunnel-hint]"),
-        tunnelActivity: document.querySelector("[data-agent-tunnel-activity]"),
         tunnelOnboarding: document.querySelector("[data-agent-tunnel-onboarding]"),
         browserTask: document.querySelector("[data-agent-browser-task]"),
         tunnelIdInput: document.querySelector("[data-agent-tunnel-id]"),
         tunnelKeyInput: document.querySelector("[data-agent-tunnel-key]"),
         tunnelIdCheck: document.querySelector("[data-agent-tunnel-id-check]"),
         tunnelKeyCheck: document.querySelector("[data-agent-tunnel-key-check]"),
-        tunnelToggle: document.querySelector("[data-agent-tunnel-toggle]"),
-        tunnelToggleLabel: document.querySelector("[data-agent-tunnel-toggle-label]"),
         tunnelClearButtons: Array.from(document.querySelectorAll("[data-agent-tunnel-clear]")),
         tunnelLiveMarker: document.querySelector("[data-agent-tunnel-live-marker]"),
         workspacePath: promptForm.querySelector('input[name="workspace_path"]'),
@@ -841,15 +837,12 @@
 
     let tunnelPresentation = readTunnelPresentation();
     let tunnelCredentials = readTunnelCredentials();
-    let tunnelActivity = {call_count: 0, recent_calls: []};
-    let tunnelEnabled = elements.tunnelToggleLabel?.textContent.trim() === "Disconnect";
     let tunnelActivityObserved = !elements.tunnelLiveMarker?.hidden;
     let tunnelPollTimer = null;
     let tunnelPollInFlight = false;
     let tunnelCredentialSaveTimer = null;
     let tunnelCredentialSaveRevision = 0;
     let tunnelCredentialNotice = "";
-    let tunnelToggleInFlight = false;
 
     function readTunnelPresentation() {
         try {
@@ -920,12 +913,6 @@
                 ? ("••••••••" + String(tunnelCredentials.api_key_hint || "").slice(-4))
                 : "sk-proj-…";
         }
-        if (elements.tunnelToggleLabel) {
-            elements.tunnelToggleLabel.textContent = tunnelEnabled ? "Disconnect" : "Reconnect";
-        }
-        if (elements.tunnelToggle) {
-            elements.tunnelToggle.disabled = tunnelToggleInFlight || (!tunnelEnabled && !state.qualified);
-        }
         if (elements.tunnelLiveMarker) elements.tunnelLiveMarker.hidden = !tunnelActivityObserved;
         const tunnelIdInvalid = Boolean(state.tunnelId) && !state.tunnelIdValid;
         const typedKeyInvalid = Boolean(state.typedKey) && !state.typedKeyValid;
@@ -941,18 +928,6 @@
             elements.tunnelHint.textContent = hint;
             elements.tunnelHint.hidden = !hint;
         }
-    }
-
-    function tunnelActivityCopy() {
-        const latest = Array.isArray(tunnelActivity.recent_calls) ? tunnelActivity.recent_calls[0] : null;
-        if (!latest) return "";
-        const seconds = Math.max(0, Math.round(Date.now() / 1000 - Number(latest.at || 0)));
-        const age = seconds < 60 ? (String(seconds) + " s ago")
-            : seconds < 3600 ? (String(Math.round(seconds / 60)) + " min ago")
-                : (String(Math.round(seconds / 3600)) + " h ago");
-        const count = Number(tunnelActivity.call_count || 0);
-        const outcome = latest.ok ? "" : " (refused)";
-        return "Tunnel tool calls: " + count + " · last " + latest.tool + outcome + ", " + age + ".";
     }
 
     function syncTunnelStatus() {
@@ -974,12 +949,6 @@
         }
         if (elements.tunnelSpinner) elements.tunnelSpinner.hidden = !loading;
         if (elements.tunnelState) elements.tunnelState.textContent = view.label || "";
-        if (elements.tunnelMessage) elements.tunnelMessage.textContent = view.message || "";
-        if (elements.tunnelActivity) {
-            const activity = ready ? tunnelActivityCopy() : "";
-            elements.tunnelActivity.textContent = activity;
-            elements.tunnelActivity.hidden = !activity;
-        }
         syncTunnelCredentialUi();
     }
 
@@ -989,12 +958,7 @@
         if (payload.credentials && typeof payload.credentials === "object") {
             tunnelCredentials = payload.credentials;
         }
-        if (typeof payload.enabled === "boolean") tunnelEnabled = payload.enabled;
         tunnelActivityObserved = Boolean(payload.activity_observed);
-        tunnelActivity = {
-            call_count: Number(payload.call_count || 0),
-            recent_calls: Array.isArray(payload.recent_calls) ? payload.recent_calls : [],
-        };
         syncTunnelStatus();
         if (lastPayload) renderResponseStatus(lastPayload.agent, readinessState(lastPayload));
     }
@@ -1068,34 +1032,6 @@
             tunnelCredentialSaveTimer = null;
             void saveTunnelCredentials();
         }, 450);
-    }
-
-    async function toggleTunnelConnection() {
-        if (!elements.tunnelToggle || elements.tunnelToggle.disabled || tunnelToggleInFlight) return;
-        const disconnect = tunnelEnabled;
-        const url = disconnect
-            ? elements.tunnelField?.dataset.agentTunnelDisconnectUrl
-            : elements.tunnelField?.dataset.agentTunnelConnectUrl;
-        if (!url) return;
-        tunnelToggleInFlight = true;
-        tunnelCredentialNotice = disconnect ? "Disconnecting Tunnel…" : "Reconnecting Tunnel…";
-        syncTunnelCredentialUi();
-        try {
-            if (!disconnect) {
-                if (tunnelCredentialSaveTimer !== null) window.clearTimeout(tunnelCredentialSaveTimer);
-                tunnelCredentialSaveTimer = null;
-                if (!await saveTunnelCredentials()) return;
-            }
-            const payload = await requestJson(url, {method: "POST"});
-            tunnelCredentialNotice = "";
-            applyTunnelStatus(payload);
-        } catch (error) {
-            tunnelCredentialNotice = error.message;
-        } finally {
-            tunnelToggleInFlight = false;
-            syncTunnelCredentialUi();
-            scheduleTunnelPoll();
-        }
     }
 
     function syncConnectionMode() {
@@ -4285,14 +4221,14 @@
     const kickoffCopyButton = document.querySelector("[data-agent-tunnel-copy-kickoff]");
     kickoffCopyButton?.addEventListener("click", async () => {
         if (kickoffCopyButton.disabled) return;
-        const prompt = document.querySelector("[data-agent-tunnel-kickoff]")?.textContent.trim();
+        const prompt = document.querySelector("[data-agent-tunnel-kickoff]")?.innerText.trim();
         if (!prompt) return;
         kickoffCopyButton.disabled = true;
         try {
             const copied = await copyResponseText(prompt);
             const label = kickoffCopyButton.querySelector("[data-agent-tunnel-copy-label]");
             if (label) label.textContent = copied ? "Copied" : "Copy failed";
-            kickoffCopyButton.setAttribute("aria-label", copied ? "Kickoff prompt copied" : "Unable to copy kickoff prompt; select the text to copy it manually");
+            kickoffCopyButton.setAttribute("aria-label", copied ? "Prompt copied" : "Unable to copy this prompt; select the text to copy it manually");
         } finally {
             kickoffCopyButton.disabled = false;
             kickoffCopyButton.focus({preventScroll: true});
@@ -4317,10 +4253,6 @@
             }
         });
     });
-    elements.tunnelToggle?.addEventListener("click", () => {
-        void toggleTunnelConnection();
-    });
-
     elements.projectPath?.addEventListener("change", async () => {
         syncProjectPath(elements.projectPath.value);
         await savePreferenceImmediately();
