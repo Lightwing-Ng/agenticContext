@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.120.14-codex.0
+# Code version: v1.120.15-codex.0
 
 from __future__ import annotations
 
@@ -1298,7 +1298,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.52.6-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.52.7-codex.0', local_body)
         self.assertIn('starting with <code>tunnel_</code>', local_body)
         self.assertIn('starting with <code>sk-proj-</code>', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-onboarding')
@@ -2533,6 +2533,7 @@ class WebAppTests(unittest.TestCase):
 
         for fragment in (
             'workspacePath: promptForm.querySelector(\'input[name="workspace_path"]\')',
+            'elements.projectPath?.addEventListener("input"',
             'elements.projectPath?.addEventListener("change"',
             'elements.workspacePath.value = normalizedPath',
             'elements.projectName.textContent = projectNameFromPath(normalizedPath)',
@@ -2837,7 +2838,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.52.6-codex.0',
+            'computer-use-agent-v3.52.7-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',

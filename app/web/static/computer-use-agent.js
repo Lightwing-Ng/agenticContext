@@ -1,4 +1,4 @@
-/* Code version: v3.52.6-codex.0 */
+/* Code version: v3.52.7-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -4252,6 +4252,12 @@
                 void saveTunnelCredentials({allowClear: true});
             }
         });
+    });
+    elements.projectPath?.addEventListener("input", () => {
+        // Keep the submitted preference payload current before blur so an
+        // immediate reload can restore the user's complete typed path.
+        syncProjectPath(elements.projectPath.value);
+        storePendingPreferencePayload(preferencePayload());
     });
     elements.projectPath?.addEventListener("change", async () => {
         syncProjectPath(elements.projectPath.value);

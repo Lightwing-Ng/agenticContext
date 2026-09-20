@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.16.0-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.16.1-codex.0."""
 
 import re
 from copy import deepcopy
@@ -1138,6 +1138,54 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
         )
         assert ("chatgpt", "safari") in browser_status_requests
         assert ("chatgpt", "edge") not in browser_status_requests
+    finally:
+        context.close()
+
+
+def test_agent_project_path_input_survives_an_immediate_reload(
+    disposable_browser,
+    agent_selection_server_url,
+    tmp_path,
+):
+    """Persist a valid typed project path even when reload happens before blur."""
+    remembered_project = tmp_path / "Remembered Project"
+    remembered_project.mkdir()
+    remembered_path = str(remembered_project)
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
+    page = context.new_page()
+    try:
+        page.goto(
+            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            wait_until="domcontentloaded",
+        )
+        page.locator("#agent_project_path").evaluate(
+            """(input, path) => {
+                input.value = path;
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+            }""",
+            remembered_path,
+        )
+        expect(page.locator("[data-agent-project-name]")).to_have_text(
+            remembered_project.name
+        )
+
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+            and response.request.post_data_json.get("workspace_path") == remembered_path
+        ):
+            page.reload(wait_until="domcontentloaded")
+
+        expect(page.locator("#agent_project_path")).to_have_value(remembered_path)
+        expect(page.locator('input[name="workspace_path"]')).to_have_value(
+            remembered_path
+        )
+        expect(page.locator("[data-agent-project-name]")).to_have_text(
+            remembered_project.name
+        )
+
+        page.reload(wait_until="domcontentloaded")
+        expect(page.locator("#agent_project_path")).to_have_value(remembered_path)
     finally:
         context.close()
 
