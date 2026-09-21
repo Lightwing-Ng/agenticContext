@@ -1,4 +1,4 @@
-/* Code version: v2.131.0-codex.0 */
+/* Code version: v2.134.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -905,6 +905,10 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     backface-visibility: hidden;
     transform-origin: left top;
     will-change: transform;
+}
+
+.app-shell.is-sidebar-animating {
+    overflow-x: clip;
 }
 
 .app-shell.is-sidebar-opening [data-sidebar-gel-content] {
@@ -4340,6 +4344,19 @@ details.agent-tunnel-guide > summary {
     }
 }
 
+.agent-tunnel-responsive-guide-list .agent-tunnel-guide > .agent-tunnel-guide-body {
+    overflow: visible;
+    overscroll-behavior-inline: auto;
+}
+
+.agent-tunnel-responsive-guide-list .agent-tunnel-guide-svg {
+    width: min(100%, 640px);
+    max-width: 100%;
+    max-height: 1024px;
+    min-width: 0;
+    margin-inline: auto;
+}
+
 @media (prefers-reduced-motion: reduce) {
     .ui-collapse > summary::after {
         transition: none;
@@ -4405,7 +4422,42 @@ details.agent-tunnel-guide > summary {
     min-width: 0;
 }
 
-.agent-tunnel-numbered-copy > p {
+.agent-tunnel-kickoff-title {
+    display: block;
+    margin: 0;
+    color: var(--text);
+    font-size: inherit;
+    font-weight: var(--font-weight-medium);
+    line-height: 1.35;
+}
+
+.agent-tunnel-kickoff-editor {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: calc((var(--font-ui-lg) * 1.55) + 18px);
+    max-height: 96px;
+    margin-block-start: 5px;
+    padding: 8px 12px;
+    overflow-y: hidden;
+    resize: none;
+    border: 1px solid color-mix(in srgb, var(--muted) 22%, transparent);
+    border-radius: var(--radius-panel);
+    background: color-mix(in srgb, var(--muted) 8%, var(--glass-surface-background-strong));
+    color: var(--text);
+    font-family: var(--font-family-base);
+    font-size: var(--font-ui-lg);
+    line-height: 1.55;
+}
+
+.agent-tunnel-kickoff-editor:focus-visible {
+    border-color: var(--theme-accent-primary);
+    outline: 2px solid var(--theme-accent-primary);
+    outline-offset: 2px;
+}
+
+.agent-tunnel-numbered-copy > p,
+.agent-tunnel-numbered-copy > .agent-tunnel-kickoff-title {
     margin-block-start: 0;
 }
 
@@ -10841,8 +10893,10 @@ dialog.browser-dialog:not([open]) {
 .settings-shell-style-tokens > .style-token-shell > .style-token-list {
     flex: 1 1 auto;
     min-height: 0;
-    margin: -24px -48px;
-    padding: 24px 48px;
+    margin-block: -24px;
+    margin-inline: -48px 0;
+    padding-block: 24px;
+    padding-inline: 48px 0;
     overflow: auto;
     overscroll-behavior: contain;
 }

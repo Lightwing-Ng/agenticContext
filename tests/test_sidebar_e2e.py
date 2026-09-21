@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.48.0-codex.0
+Code version: v1.48.1-codex.0
 """
 
 from __future__ import annotations
@@ -4876,7 +4876,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
             expect(page.locator('[name="chatgpt_project_url"]')).to_be_disabled()
 
         media_option.click()
-        expect(page).to_have_url(re.compile(rf"/cache/{source_key}$"))
+        expect(page).to_have_url(re.compile(rf"/cache/{source_key}/media/edge$"))
         expect(page.locator('[data-cache-content-mode-option="media"]')).to_have_attribute(
             "aria-checked",
             "true",

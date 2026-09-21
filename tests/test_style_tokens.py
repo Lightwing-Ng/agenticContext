@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.72.0-codex.0
+Code version: v1.74.0-codex.0
 """
 
 import hashlib
@@ -2287,7 +2287,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.131.0-codex.0 */",
+        "/* Code version: v2.134.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2450,6 +2450,22 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     ]
     assert ".agent-tunnel-guide-svg" in narrow_guide_rule
     assert "min-width: 720px;" in narrow_guide_rule
+    responsive_body_start = stylesheet.index(
+        ".agent-tunnel-responsive-guide-list .agent-tunnel-guide > .agent-tunnel-guide-body {"
+    )
+    responsive_body_rule = stylesheet[
+        responsive_body_start:stylesheet.index("\n}", responsive_body_start)
+    ]
+    assert "overflow: visible;" in responsive_body_rule
+    responsive_svg_start = stylesheet.index(
+        ".agent-tunnel-responsive-guide-list .agent-tunnel-guide-svg {"
+    )
+    responsive_svg_rule = stylesheet[
+        responsive_svg_start:stylesheet.index("\n}", responsive_svg_start)
+    ]
+    assert "width: min(100%, 640px);" in responsive_svg_rule
+    assert "max-height: 1024px;" in responsive_svg_rule
+    assert "min-width: 0;" in responsive_svg_rule
 
     guide_number_start = stylesheet.index(".agent-tunnel-guide-number {")
     guide_number_rule = stylesheet[
@@ -2500,6 +2516,16 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert "justify-self: end;" in action_rule
     assert "align-self: end;" in action_rule
     assert "flex-direction: column;" in action_rule
+    kickoff_editor_start = stylesheet.index(".agent-tunnel-kickoff-editor {")
+    kickoff_editor_rule = stylesheet[
+        kickoff_editor_start:stylesheet.index("\n}", kickoff_editor_start)
+    ]
+    assert "border-radius: var(--radius-panel);" in kickoff_editor_rule
+    assert "overflow-y: hidden;" in kickoff_editor_rule
+    assert "max-height: 96px;" in kickoff_editor_rule
+    assert "padding: 8px 12px;" in kickoff_editor_rule
+    assert "resize: none;" in kickoff_editor_rule
+    assert "background: color-mix(" in kickoff_editor_rule
 
     agent_template = (
         STYLE_PATH.parents[1] / "templates/agent.html"
@@ -2512,15 +2538,18 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     ).read_text(encoding="utf-8")
     assert guide_template.count('<details class="ui-collapse agent-tunnel-guide"') == 4
     assert guide_template.count('<svg class="agent-tunnel-guide-svg"') == 4
-    assert guide_template.count("data-agent-tunnel-guide-scroll") == 4
-    assert guide_template.count('role="region" tabindex="0"') == 4
+    assert guide_template.count("data-agent-tunnel-guide-scroll") == 0
+    assert guide_template.count('role="region"') == 4
+    assert 'tabindex="0"' not in guide_template
     assert guide_template.count('aria-labelledby="agent_tunnel_guide_title_') == 4
     lowered_guide_template = guide_template.lower()
     for forbidden_markup in ("<img", "<image", "<foreignobject", "data:image"):
         assert forbidden_markup not in lowered_guide_template
     assert "<circle" not in lowered_guide_template
     assert "guide-window" not in guide_template
-    assert guide_template.count('class="guide-card"') == 4
+    assert guide_template.count('class="guide-card"') == 3
+    assert guide_template.count('viewBox="0 0 640 ') == 4
+    assert guide_template.count("agent-tunnel-guide-description") == 0
     assert guide_template.count("data-guide-select-chevron") == 4
     assert "m-10 11 5 5 5-5" not in guide_template
     assert "guide-button-small" not in guide_template
@@ -2529,8 +2558,10 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert all(re.search(r'\brx="10"', rect) for rect in guide_rects)
     assert 'data-guide-expiration="never"' in guide_template
     assert 'data-guide-selected="all"' in guide_template
-    assert "Expiration: Never" in guide_template
-    assert "Permissions: All" in guide_template
+    assert ">Expiration<" in guide_template
+    assert ">Never<" in guide_template
+    assert ">Permissions<" in guide_template
+    assert ">All<" in guide_template
     assert "Read + Use" not in guide_template
     assert "Read and write API resources" in guide_template
     assert re.search(r"tunnel_[0-9a-f]{32}", guide_template, re.IGNORECASE) is None
@@ -2540,7 +2571,9 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert "sk-proj-••••••••" in guide_template
     assert chatgpt_guide_template.count('<details class="ui-collapse agent-tunnel-guide"') == 2
     assert chatgpt_guide_template.count('<svg class="agent-tunnel-guide-svg"') == 2
-    assert chatgpt_guide_template.count('class="guide-card"') == 2
+    assert chatgpt_guide_template.count('class="guide-card"') == 1
+    assert chatgpt_guide_template.count('viewBox="0 0 640 ') == 2
+    assert chatgpt_guide_template.count("agent-tunnel-guide-description") == 0
     assert chatgpt_guide_template.count("data-guide-select-chevron") == 2
     assert 'data-guide-selected="tunnel"' in chatgpt_guide_template
     assert 'data-guide-auth="none"' in chatgpt_guide_template
@@ -2555,6 +2588,11 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert agent_template.count('class="agent-tunnel-substep-number"') == 4
     assert 'class="agent-tunnel-numbered-list agent-tunnel-credential-fields"' in agent_template
     assert 'class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence"' in agent_template
+    assert 'class="agent-tunnel-kickoff-editor"' in agent_template
+    assert 'data-agent-tunnel-kickoff-next-step aria-live="polite"' in agent_template
+    assert 'data-agent-tunnel-kickoff-title' in agent_template
+    assert 'data-agent-tunnel-kickoff-action-step' in agent_template
+    assert "After creation, allow all actions" not in agent_template
 
     action_class = 'class="secondary-button agent-tunnel-step-action"'
     assert (

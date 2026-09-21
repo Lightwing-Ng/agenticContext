@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.19.1-codex.0`
+Documentation version: `v1.20.0-codex.0`
 
 ## Supported commands
 
@@ -189,20 +189,24 @@ Agent workspace is the only content scrollport; the outer `Step 1` through `Step
 with their headings and share the same text color; body copy uses `--font-ui-md` under
 `--font-ui-lg` headings; the project path, credential values, and masked credential placeholder use
 the scoped technical monospace and the two credential displays share one size. Step 1 contains four
-independent native disclosure rows, marked ➊ through ➍. They are closed on first render and after
-reload, support mouse, Enter, and Space, and reveal four responsive inline SVG cards reconstructed
-from the OpenAI Platform flow. The disclosure adapter follows Worthward's canonical 12×8 px
+independent native disclosure rows, marked ➊ through ➍, and Step 3 contains two more rows for the
+ChatGPT plugin flow. They are closed on first render and after reload, support mouse, Enter, and
+Space, and reveal six responsive inline SVG guides. Each disclosure summary keeps one concise
+sentence-case title while the diagrams retain the detailed choices. The disclosure adapter follows
+Worthward's canonical 12×8 px
 chevron, 8 px icon gap, `10px 0` summary padding, `0 10px 10px` body padding, and 180 ms standard
 rotation. The vectors contain no macOS window chrome, every rectangular surface uses a 10 px
 radius, and the API-key diagram selects Expiration: Never and Permissions: All. The contract
 rejects raster images, SVG `<image>` or `<foreignObject>` nodes, embedded data images, and
-credential-shaped literal values. At 760 px and below, each disclosure body becomes a focusable
-horizontal scrollport and keeps its SVG at the authored 720 px width, preserving at least 11 px
-rendered text while the document itself remains free of horizontal overflow. Every instruction
+credential-shaped literal values. Every guide uses a 640 px logical viewBox, remains no wider than
+640 CSS pixels, and shrinks with its disclosure body without introducing a nested horizontal
+scrollport. The document itself remains free of horizontal overflow. Every instruction
 package places the Style tokens Secondary
 button below its complete copy and against the package's lower-right edge. Step 2 has no manual
-disconnect or reconnect control; Step 4 keeps only the explicit-break prompt, then orders
-`Copy this prompt` before `Ask in ChatGPT`. All four outer steps are divider-free, the focused
+disconnect or reconnect control; Step 4 keeps an editable gray prompt surface, copies its current
+value, and changes the button label to `Copied` before inviting the user to open ChatGPT. Further
+edits reset the copy state and resize the field without creating another scroll owner. All four
+outer steps are divider-free, the focused
 action keeps the shared 48 px physical-effect bleed inside the scrollport, the title clears the
 global quick actions, routine Tunnel message/activity copy is absent, and credential errors still
 reach the sidebar hint. Switching the Web service in place must replace the entire provider panel,

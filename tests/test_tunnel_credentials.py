@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.3.1-codex.0
+Code version: v1.5.0-codex.0
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
             '<span class="agent-tunnel-step-number" aria-hidden="true">'
             f"Step {step_number}</span>"
         ) in onboarding_body
-    guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list"')
+    guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list ')
     guide_end = onboarding_body.index("</ol>", guide_start) + len("</ol>")
     guide_body = onboarding_body[guide_start:guide_end]
     for marker in ("➊", "➋", "➌", "➍"):
@@ -103,10 +103,10 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         r'<span class="agent-tunnel-guide-title"[^>]*>(.*?)</span>',
         guide_body,
     ) == [
-        "Create a Tunnel.",
-        "Copy the Tunnel ID.",
-        "Create an API key.",
-        "Copy the secret key.",
+        "Create a tunnel",
+        "Copy the Tunnel ID",
+        "Create an API key",
+        "Copy the secret key",
     ]
     detail_tags = re.findall(r"<details\b[^>]*>", guide_body)
     assert len(detail_tags) == 4
@@ -117,15 +117,18 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
     assert all(re.search(r"\sopen(?:\s|>)", tag) is None for tag in detail_tags)
     assert guide_body.count("<summary>") == 4
     assert len(re.findall(r"<svg\b", guide_body)) == 4
-    assert guide_body.count("data-agent-tunnel-guide-scroll") == 4
-    assert guide_body.count('role="region" tabindex="0"') == 4
+    assert guide_body.count("data-agent-tunnel-guide-scroll") == 0
+    assert guide_body.count('role="region"') == 4
+    assert 'tabindex="0"' not in guide_body
     assert guide_body.count('aria-labelledby="agent_tunnel_guide_title_') == 4
     guide_lower = guide_body.lower()
     for unsafe_markup in ("<img", "<image", "<foreignobject", "data:image"):
         assert unsafe_markup not in guide_lower
     assert "<circle" not in guide_lower
     assert "guide-window" not in guide_body
-    assert guide_body.count('class="guide-card"') == 4
+    assert guide_body.count('class="guide-card"') == 3
+    assert guide_body.count('viewBox="0 0 640 ') == 4
+    assert 'class="guide-control guide-accent-stroke" x="80" y="427"' not in guide_body
     guide_select_chevrons = re.findall(
         r'<path class="guide-select-chevron" data-guide-select-chevron d="([^"]+)">',
         guide_body,
@@ -140,8 +143,10 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
     assert all(re.search(r'\brx="10"', rect) for rect in guide_rects)
     assert 'data-guide-expiration="never"' in guide_body
     assert 'data-guide-selected="all"' in guide_body
-    assert "Expiration: Never" in guide_body
-    assert "Permissions: All" in guide_body
+    assert ">Expiration<" in guide_body
+    assert ">Never<" in guide_body
+    assert ">Permissions<" in guide_body
+    assert ">All<" in guide_body
     assert "Read + Use" not in guide_body
     assert "Read and write API resources" in guide_body
     assert re.search(r"tunnel_[A-Za-z0-9]{16,}", guide_body) is None
@@ -151,7 +156,7 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         in guide_body
     )
     chatgpt_guide_start = onboarding_body.index(
-        '<ol class="agent-tunnel-guide-list agent-tunnel-chatgpt-guide-list"'
+        '<ol class="agent-tunnel-guide-list agent-tunnel-chatgpt-guide-list '
     )
     chatgpt_guide_end = onboarding_body.index("</ol>", chatgpt_guide_start) + len("</ol>")
     chatgpt_guide_body = onboarding_body[chatgpt_guide_start:chatgpt_guide_end]
@@ -159,12 +164,13 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         r'<span class="agent-tunnel-guide-title"[^>]*>(.*?)</span>',
         chatgpt_guide_body,
     ) == [
-        "Enable Developer mode.",
-        "Create the AgenticContext plugin.",
+        "Enable Developer mode",
+        "Create the AgenticContext plugin",
     ]
     assert chatgpt_guide_body.count('<details class="ui-collapse agent-tunnel-guide"') == 2
     assert chatgpt_guide_body.count('<svg class="agent-tunnel-guide-svg"') == 2
-    assert chatgpt_guide_body.count('class="guide-card"') == 2
+    assert chatgpt_guide_body.count('class="guide-card"') == 1
+    assert chatgpt_guide_body.count('viewBox="0 0 640 ') == 2
     assert chatgpt_guide_body.count("data-guide-select-chevron") == 2
     assert 'data-guide-selected="tunnel"' in chatgpt_guide_body
     assert 'data-guide-existing-tunnel' in chatgpt_guide_body
@@ -201,7 +207,13 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         < kickoff_sequence.index("➋")
         < kickoff_sequence.index("Ask in ChatGPT")
     )
-    assert "After copying the prompt, open ChatGPT and ask your question." in kickoff_sequence
+    assert "Edit and copy the prompt" in kickoff_sequence
+    assert 'data-agent-tunnel-kickoff-next-step aria-live="polite"' in kickoff_sequence
+    assert "Complete the Tunnel credentials" in kickoff_sequence
+    assert 'data-agent-tunnel-kickoff-state="credentials"' in kickoff_sequence
+    assert '<textarea id="agent_tunnel_kickoff"' in kickoff_sequence
+    assert "After copying the prompt" not in kickoff_sequence
+    assert "After creation, allow all actions" not in onboarding_body
     assert "Connect ChatGPT to this local project" in empty_body
     assert "Install and prepare" not in empty_body
     assert onboarding_body.count('class="secondary-button agent-tunnel-step-action"') == 6

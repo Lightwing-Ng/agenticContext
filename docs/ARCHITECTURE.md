@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.43.3-codex.0`
+Documentation version: `v1.43.4-codex.0`
 
 ## Runtime flow
 
@@ -359,9 +359,12 @@ request after a persisted conversation-binding proof succeeds.
 The Agent execution selector persists a separate session ID for each browser/provider route.
 An explicit `unknown_agent_session` status response recovers to `new` without submitting a prompt.
 Route changes invalidate pending response epochs and restore only the target route's selection.
-Unsent drafts remain in page memory, keyed by browser/provider scope and execution session ID;
-changing routes restores that route's draft without sending it or copying it into another route.
-Drafts are not persisted across a page reload.
+Unsent drafts for an unallocated new session remain in page memory, keyed by browser/provider
+scope and execution session ID; changing routes restores that route's draft without sending it or
+copying it into another route. When an existing task snapshot is displayed, a direct sidebar
+browser or provider change carries the current unsent draft into the selected route so the source
+selection cannot destroy text the user is still editing. Neither path submits the draft
+automatically, and drafts are not persisted across a page reload.
 
 Runtime preferences use a serialized, full-snapshot outbox rather than independent field writes.
 Each same-tab browser session owns a sessionStorage-scoped client identifier and monotonic revision;

@@ -1,4 +1,4 @@
-/* Code version: v1.15.1-codex.0 */
+/* Code version: v1.16.0-codex.0 */
 
 (() => {
     "use strict";
@@ -65,12 +65,13 @@
     let statusRefreshInFlight = false;
     let statusRefreshFailed = false;
 
-    function readRememberedContentMode() {
+    function readRememberedContentMode(fallbackMode = "text") {
+        const fallback = fallbackMode === "media" ? "media" : "text";
         try {
             const rememberedMode = window.sessionStorage.getItem(cacheContentModeStorageKey);
-            return rememberedMode === "media" || rememberedMode === "text" ? rememberedMode : "text";
+            return rememberedMode === "media" || rememberedMode === "text" ? rememberedMode : fallback;
         } catch (_error) {
-            return "text";
+            return fallback;
         }
     }
 
@@ -161,16 +162,16 @@
         } else {
             window.history.pushState(null, "", nextPath);
         }
-        page.dataset.cacheContentMode = mode === "media" ? "media" : "text";
+        page.dataset.cachePageContentMode = mode === "media" ? "media" : "text";
         if (selectedBrowser) page.dataset.cacheBrowser = selectedBrowser;
     }
 
     function initializeCacheContentMode() {
         if (!cacheContentModeControl) return;
         const urlMode = contentModeFromCacheUrl();
-        const mode = urlMode || page.dataset.cacheContentMode || readRememberedContentMode();
+        const mode = urlMode || readRememberedContentMode(page.dataset.cachePageContentMode);
         rememberCacheContentMode(mode);
-        page.dataset.cacheContentMode = mode === "media" ? "media" : "text";
+        page.dataset.cachePageContentMode = mode === "media" ? "media" : "text";
         syncCacheContentMode(mode);
         cacheContentModeControl.addEventListener("click", (event) => {
             const option = event.target.closest("[data-cache-content-mode-option]");

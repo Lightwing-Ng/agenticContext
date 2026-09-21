@@ -1,8 +1,9 @@
-/* Code version: v3.56.0-codex.0 */
+/* Code version: v3.58.0-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
     const TUNNEL_UI_PLATFORMS = new Set(["chatgpt", "gemini"]);
+    const TUNNEL_KICKOFF_MAX_HEIGHT = 96;
     const AGENT_SESSION_SELECTION_CACHE_VERSION = 1;
     const AGENT_SESSION_SELECTION_CACHE_PREFIX = "cachelikes:agent-session-selection";
     const MAX_AGENT_SESSION_CACHE_VALUE_LENGTH = 2048;
@@ -110,6 +111,13 @@
         tunnelKeyCheck: document.querySelector("[data-agent-tunnel-key-check]"),
         tunnelClearButtons: Array.from(document.querySelectorAll("[data-agent-tunnel-clear]")),
         tunnelLiveMarkers: Array.from(document.querySelectorAll("[data-agent-tunnel-live-marker]")),
+        tunnelKickoffPrompt: document.querySelector("[data-agent-tunnel-kickoff]"),
+        tunnelKickoffTitle: document.querySelector("[data-agent-tunnel-kickoff-title]"),
+        tunnelKickoffCopyForm: document.querySelector("[data-agent-tunnel-kickoff-copy-form]"),
+        tunnelKickoffCopy: document.querySelector("[data-agent-tunnel-copy-kickoff]"),
+        tunnelKickoffCopyLabel: document.querySelector("[data-agent-tunnel-copy-label]"),
+        tunnelKickoffActionStep: document.querySelector("[data-agent-tunnel-kickoff-action-step]"),
+        tunnelKickoffNextStep: document.querySelector("[data-agent-tunnel-kickoff-next-step]"),
         geminiPublicOrigin: document.querySelector("[data-agent-gemini-public-origin]"),
         geminiConfigStatus: document.querySelector("[data-agent-gemini-config-status]"),
         geminiSaveOrigin: document.querySelector("[data-agent-gemini-save-origin]"),
@@ -195,6 +203,7 @@
     }
 
     let lastPayload = {};
+    let lastPersistedAgentContextKind = "";
     let lastBrowserStatus = null;
     let preferredModel = elements.modelInput?.value || "";
     let browserStatusState = "cleared";
@@ -746,7 +755,15 @@
         }
     }
 
-    async function selectExecutionSession(sessionId, {routeChanged = false, previousScope = executionScope, preserveSourceSelection = false} = {}) {
+    async function selectExecutionSession(
+        sessionId,
+        {
+            routeChanged = false,
+            previousScope = executionScope,
+            preserveSourceSelection = false,
+            preserveLocalDraft = false,
+        } = {},
+    ) {
         if (!routeChanged && (promptSubmissionPending || sessionId === executionSessionId)) return;
         const currentDraft = elements.promptInput?.value || "";
         executionDrafts.set(JSON.stringify([previousScope, executionSessionId]), currentDraft);
@@ -770,7 +787,10 @@
         if (elements.sessionMode && !preserveSourceSelection) elements.sessionMode.value = "new";
         if (elements.promptInput) {
             const nextDraftKey = JSON.stringify([executionScope, sessionId]);
-            elements.promptInput.value = executionDrafts.get(nextDraftKey) || "";
+            if (preserveLocalDraft) executionDrafts.set(nextDraftKey, currentDraft);
+            elements.promptInput.value = preserveLocalDraft
+                ? currentDraft
+                : (executionDrafts.get(nextDraftKey) || "");
             promptHasLocalDraft = Boolean(elements.promptInput.value);
         }
         // Clear the old stop target immediately; stale network responses cannot restore it.
@@ -1007,6 +1027,70 @@
         };
     }
 
+    function resetTunnelKickoffCopyState() {
+        if (elements.tunnelKickoffCopyLabel) {
+            elements.tunnelKickoffCopyLabel.textContent = "Copy this prompt";
+        }
+        elements.tunnelKickoffCopy?.setAttribute("aria-label", "Copy this prompt");
+        if (elements.tunnelKickoffNextStep) {
+            elements.tunnelKickoffNextStep.textContent = "Edit and copy the prompt";
+        }
+    }
+
+    function resizeTunnelKickoffPrompt() {
+        const prompt = elements.tunnelKickoffPrompt;
+        if (!(prompt instanceof HTMLTextAreaElement) || prompt.hidden) return;
+        prompt.style.height = "auto";
+        prompt.style.overflowY = "hidden";
+        const style = getComputedStyle(prompt);
+        const borderHeight = Number.parseFloat(style.borderTopWidth)
+            + Number.parseFloat(style.borderBottomWidth);
+        const naturalHeight = Math.ceil(prompt.scrollHeight + borderHeight);
+        const maxHeight = Number.parseFloat(style.maxHeight) || TUNNEL_KICKOFF_MAX_HEIGHT;
+        prompt.style.height = `${Math.min(maxHeight, naturalHeight)}px`;
+        prompt.style.overflowY = naturalHeight > maxHeight ? "auto" : "hidden";
+    }
+
+    function tunnelKickoffGate() {
+        const credentialsReady = selectedPlatform() === "chatgpt"
+            && Boolean(tunnelCredentials.qualified)
+            && tunnelCredentialState().qualified;
+        if (!credentialsReady) {
+            return {ready: false, state: "credentials", title: "Complete the Tunnel credentials"};
+        }
+        if (!tunnelAvailability().ready) {
+            return {ready: false, state: "tunnel", title: "Wait for the Tunnel to be ready"};
+        }
+        if (!tunnelActivityObserved) {
+            return {ready: false, state: "plugin", title: "Create the AgenticContext plugin"};
+        }
+        return {ready: true, state: "ready", title: "Describe your project task"};
+    }
+
+    function syncTunnelKickoffUi() {
+        if (!elements.tunnelKickoffTitle) return;
+        const gate = tunnelKickoffGate();
+        const previousState = elements.tunnelKickoffTitle.dataset.agentTunnelKickoffState || "";
+        elements.tunnelKickoffTitle.dataset.agentTunnelKickoffState = gate.state;
+        elements.tunnelKickoffTitle.textContent = gate.title;
+        if (previousState !== gate.state) resetTunnelKickoffCopyState();
+        if (elements.tunnelKickoffPrompt) {
+            elements.tunnelKickoffPrompt.hidden = !gate.ready;
+            elements.tunnelKickoffPrompt.disabled = !gate.ready;
+        }
+        if (elements.tunnelKickoffCopyForm) {
+            elements.tunnelKickoffCopyForm.hidden = !gate.ready;
+        }
+        if (elements.tunnelKickoffCopy) {
+            elements.tunnelKickoffCopy.disabled = !gate.ready
+                || elements.tunnelKickoffCopy.dataset.agentTunnelCopying === "true";
+        }
+        if (elements.tunnelKickoffActionStep) {
+            elements.tunnelKickoffActionStep.hidden = !gate.ready;
+        }
+        if (gate.ready) resizeTunnelKickoffPrompt();
+    }
+
     function syncTunnelCredentialUi() {
         const state = tunnelCredentialState();
         if (elements.tunnelIdCheck) {
@@ -1041,6 +1125,7 @@
             elements.tunnelHint.textContent = hint;
             elements.tunnelHint.hidden = !hint;
         }
+        syncTunnelKickoffUi();
     }
 
     function normalizedGeminiPublicOrigin(value) {
@@ -1140,6 +1225,15 @@
         tunnelPresentation = snapshot?.presentation || defaultTunnelPresentation(platform);
         tunnelCredentials = snapshot?.credentials || emptyTunnelCredentials();
         tunnelActivityObserved = Boolean(snapshot?.activityObserved);
+        if (
+            platform === "chatgpt"
+            && elements.tunnelIdInput
+            && document.activeElement !== elements.tunnelIdInput
+            && !elements.tunnelIdInput.value.trim()
+            && tunnelCredentials.tunnel_id
+        ) {
+            elements.tunnelIdInput.value = tunnelCredentials.tunnel_id;
+        }
         if (platform === "gemini") {
             geminiConfig = snapshot?.config || safeGeminiConfig(null);
             const nextAuthorization = snapshot?.authorization || emptyGeminiAuthorization();
@@ -1190,6 +1284,7 @@
         if (platform === "gemini") syncGeminiConfigUi();
         syncGeminiAuthorizationUi();
         syncTunnelLiveMarkers();
+        syncTunnelKickoffUi();
     }
 
     function syncTunnelUsage(payload) {
@@ -1673,7 +1768,15 @@
             executionStartBlockedReason = "";
             lastPayload = {...lastPayload, can_start: false};
             delete lastPayload.sessions;
-            void selectExecutionSession(rememberedExecutionSession() || "new", {routeChanged: true, previousScope});
+            void selectExecutionSession(
+                rememberedExecutionSession() || "new",
+                {
+                    routeChanged: true,
+                    previousScope,
+                    preserveLocalDraft: promptHasLocalDraft
+                        && lastPersistedAgentContextKind === "existing",
+                },
+            );
         }
         const routePrefix = String(elements.agentPage?.dataset.agentRoutePrefix || "/agent").replace(/\/$/, "");
         const connectionSegment = selectedConnectionMode() === "tunnel" ? "tunnel" : selectedBrowser();
@@ -4324,6 +4427,13 @@
         if (!hasPersistedAgent) return;
         renderExecutionSessions(nextPayload);
         const persistedAgent = nextPayload.agent || {};
+        const persistedSessionId = String(persistedAgent.session_id || "");
+        const persistedPhase = String(persistedAgent.phase || "");
+        if (persistedSessionId === "new") {
+            lastPersistedAgentContextKind = "new";
+        } else if (persistedSessionId || persistedPhase) {
+            lastPersistedAgentContextKind = "existing";
+        }
         restoreExecutionConfiguration(persistedAgent);
         if (persistedAgent.session_id === executionSessionId
             && lastRenderedExecutionSessionId !== executionSessionId) {
@@ -4715,20 +4825,33 @@
         });
     });
     document.querySelectorAll("[data-agent-tunnel-copy-action]").forEach((copyButton) => {
+        const promptId = copyButton.getAttribute("aria-controls");
+        const promptControl = document.getElementById(promptId || "");
+        const label = copyButton.querySelector("[data-agent-tunnel-copy-label]");
+        const nextStep = document.querySelector("[data-agent-tunnel-kickoff-next-step]");
+        promptControl?.addEventListener("input", () => {
+            resetTunnelKickoffCopyState();
+            resizeTunnelKickoffPrompt();
+        });
+        window.addEventListener("resize", resizeTunnelKickoffPrompt, {passive: true});
+        resizeTunnelKickoffPrompt();
         copyButton.addEventListener("click", async () => {
             if (copyButton.disabled) return;
-            const promptId = copyButton.getAttribute("aria-controls");
-            const prompt = document.getElementById(promptId || "")?.innerText.trim();
+            const prompt = promptControl instanceof HTMLTextAreaElement
+                ? promptControl.value.trim()
+                : promptControl?.innerText.trim();
             if (!prompt) return;
+            copyButton.dataset.agentTunnelCopying = "true";
             copyButton.disabled = true;
             try {
                 const copied = await copyResponseText(prompt);
-                const label = copyButton.querySelector("[data-agent-tunnel-copy-label]");
                 if (label) label.textContent = copied ? "Copied" : "Copy failed";
                 copyButton.setAttribute("aria-label", copied ? "Prompt copied" : "Unable to copy this prompt; select the text to copy it manually");
+                if (copied && nextStep) nextStep.textContent = "Open ChatGPT and ask your question.";
             } finally {
-                copyButton.disabled = false;
-                copyButton.focus({preventScroll: true});
+                copyButton.dataset.agentTunnelCopying = "false";
+                syncTunnelKickoffUi();
+                if (!copyButton.disabled) copyButton.focus({preventScroll: true});
             }
         });
     });

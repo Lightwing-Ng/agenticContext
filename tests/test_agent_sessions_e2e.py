@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.19.0-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.21.0-codex.0."""
 
 import re
 from copy import deepcopy
@@ -154,7 +154,10 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
             expect(action).to_have_class(re.compile(r"\bsecondary-button\b"))
             expect(action).to_have_attribute("target", "_blank")
             expect(action).to_have_attribute("rel", "noopener noreferrer")
-        right_edges = external_actions.evaluate_all(
+        visible_external_actions = onboarding.locator("a.agent-tunnel-step-action:visible")
+        expect(visible_external_actions).to_have_count(4)
+        expect(onboarding.get_by_role("link", name="Ask in ChatGPT")).to_be_hidden()
+        right_edges = visible_external_actions.evaluate_all(
             "(nodes) => nodes.map((node) => node.getBoundingClientRect().right)"
         )
         assert max(right_edges) - min(right_edges) <= 2
@@ -183,12 +186,12 @@ TUNNEL_ONBOARDING_ID = "tunnel_" + "b" * 32
 TUNNEL_ONBOARDING_KEY = "sk-proj-onboarding-test-ABCD"
 
 
-def _tunnel_onboarding_status(enabled=True):
+def _tunnel_onboarding_status(enabled=True, *, activity_observed=True):
     return {
         "enabled": enabled,
         "state": "ready" if enabled else "disconnected",
         "ready": enabled,
-        "activity_observed": False,
+        "activity_observed": activity_observed,
         "credentials": {
             "tunnel_id": TUNNEL_ONBOARDING_ID,
             "tunnel_id_valid": True,
@@ -267,20 +270,24 @@ def test_tunnel_kickoff_copy_and_native_monospace(
     page = context.new_page()
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=_tunnel_onboarding_status()),
+    )
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
         if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
             page.locator("#sidebar_toggle").click()
         onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
         kickoff = onboarding.locator("[data-agent-tunnel-kickoff]")
-        expect(kickoff).to_contain_text("@AgenticContext")
-        expect(kickoff).to_contain_text("[describe your task]")
-        assert kickoff.inner_text().endswith(
+        expect(kickoff).to_have_value(re.compile(r"@AgenticContext"))
+        expect(kickoff).to_have_value(re.compile(r"\[describe your task\]"))
+        assert kickoff.input_value().endswith(
             "without altering unrelated work:\n[describe your task]."
         )
         expect(onboarding).to_contain_text("named AgenticContext")
         expect(onboarding).to_contain_text("starting with tunnel_")
-        expect(onboarding).to_contain_text("starting with sk-proj-")
+        expect(onboarding).to_contain_text("sk-proj-")
         expect(onboarding).not_to_contain_text("tunnel_*4766")
         expect(onboarding).not_to_contain_text("sk-proj-*HMAA")
         expect(onboarding.locator(".agent-tunnel-onboarding-step")).to_have_count(4)
@@ -313,13 +320,49 @@ def test_tunnel_kickoff_copy_and_native_monospace(
             item["placeholderFontSize"] for item in credential_styles
         } == {credential_styles[0]["fontSize"]}
         button = onboarding.locator("[data-agent-tunnel-copy-kickoff]")
+        next_step = onboarding.locator("[data-agent-tunnel-kickoff-next-step]")
         expect(button).to_have_text("Copy this prompt")
+        expect(next_step).to_have_text("Edit and copy the prompt")
+        expect(onboarding.locator("[data-agent-tunnel-kickoff-title]")).to_have_text(
+            "Describe your project task"
+        )
+        kickoff.fill("Short task.")
+        short_geometry = kickoff.evaluate(
+            """element => ({
+                height: element.getBoundingClientRect().height,
+                overflowY: getComputedStyle(element).overflowY,
+                paddingTop: getComputedStyle(element).paddingTop,
+                paddingBottom: getComputedStyle(element).paddingBottom,
+            })"""
+        )
+        assert 40 <= short_geometry["height"] < 96
+        assert short_geometry["overflowY"] == "hidden"
+        assert short_geometry["paddingTop"] == "8px"
+        assert short_geometry["paddingBottom"] == "8px"
+        kickoff.fill("\n".join(f"Task detail {index}" for index in range(10)))
+        long_geometry = kickoff.evaluate(
+            """element => ({
+                height: element.getBoundingClientRect().height,
+                overflowY: getComputedStyle(element).overflowY,
+                scrollHeight: element.scrollHeight,
+                clientHeight: element.clientHeight,
+            })"""
+        )
+        assert long_geometry["height"] == 96
+        assert long_geometry["overflowY"] == "auto"
+        assert long_geometry["scrollHeight"] > long_geometry["clientHeight"]
+        edited_prompt = "Use @AgenticContext to verify the responsive Tunnel guide."
+        kickoff.fill(edited_prompt)
         button.scroll_into_view_if_needed()
         button.focus()
         button.press("Enter")
         expect(button).to_have_text("Copied")
-        assert page.evaluate("window.copiedKickoff") == kickoff.inner_text()
+        expect(next_step).to_have_text("Open ChatGPT and ask your question.")
+        assert page.evaluate("window.copiedKickoff") == edited_prompt
         expect(button).to_be_focused()
+        kickoff.fill(edited_prompt + " Check the narrow viewport.")
+        expect(button).to_have_text("Copy this prompt")
+        expect(next_step).to_have_text("Edit and copy the prompt")
         edges = onboarding.locator(
             "a.agent-tunnel-step-action, [data-agent-tunnel-copy-kickoff]"
         ).evaluate_all(
@@ -328,7 +371,72 @@ def test_tunnel_kickoff_copy_and_native_monospace(
         assert max(edges) - min(edges) <= 2
         expect(onboarding.locator("[data-agent-tunnel-toggle]")).to_have_count(0)
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        if width == 1280:
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.wait_for_timeout(100)
+            assert kickoff.evaluate("element => element.clientHeight <= 96")
         assert not errors
+    finally:
+        context.close()
+
+
+def test_tunnel_kickoff_unlocks_only_after_credentials_and_plugin_activity(
+    disposable_browser,
+    sidebar_server_url,
+):
+    """Keep the task editor behind the verified setup preconditions."""
+    context = disposable_browser.new_context(viewport={"width": 876, "height": 1_100})
+    page = context.new_page()
+    status = _tunnel_onboarding_status(activity_observed=False)
+    status["credentials"] = {
+        "tunnel_id": "",
+        "tunnel_id_valid": False,
+        "api_key_saved": False,
+        "api_key_hint": "",
+        "qualified": False,
+    }
+
+    def fulfill_status(route):
+        route.fulfill(json=deepcopy(status))
+
+    def refresh_tunnel_status():
+        for input_id in ("agent_connection_browser", "agent_connection_tunnel"):
+            page.locator(f"#{input_id}").evaluate(
+                """element => {
+                    element.checked = true;
+                    element.dispatchEvent(new Event('change', {bubbles: true}));
+                }"""
+            )
+
+    page.route("**/api/agent/tunnel/status?platform=chatgpt", fulfill_status)
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        title = page.locator("[data-agent-tunnel-kickoff-title]")
+        kickoff = page.locator("[data-agent-tunnel-kickoff]")
+        copy_form = page.locator("[data-agent-tunnel-kickoff-copy-form]")
+        action_step = page.locator("[data-agent-tunnel-kickoff-action-step]")
+        expect(title).to_have_text("Complete the Tunnel credentials")
+        expect(kickoff).to_be_hidden()
+        expect(kickoff).to_be_disabled()
+        expect(copy_form).to_be_hidden()
+        expect(action_step).to_be_hidden()
+
+        status.update(_tunnel_onboarding_status(activity_observed=False))
+        refresh_tunnel_status()
+        expect(title).to_have_text("Create the AgenticContext plugin")
+        expect(kickoff).to_be_hidden()
+        expect(action_step).to_be_hidden()
+
+        status["activity_observed"] = True
+        refresh_tunnel_status()
+        expect(title).to_have_text("Describe your project task")
+        expect(kickoff).to_be_visible()
+        expect(kickoff).to_be_enabled()
+        expect(copy_form).to_be_visible()
+        expect(action_step).to_be_visible()
+        expect(action_step.locator("[data-agent-tunnel-kickoff-next-step]")).to_have_text(
+            "Edit and copy the prompt"
+        )
     finally:
         context.close()
 
@@ -355,23 +463,16 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         expect(guides).to_have_count(6)
         expect(summaries).to_have_count(6)
         assert onboarding.locator(".agent-tunnel-guide-title").all_inner_texts() == [
-            "Create a Tunnel.",
-            "Copy the Tunnel ID.",
-            "Create an API key.",
-            "Copy the secret key.",
-            "Enable Developer mode.",
-            "Create the AgenticContext plugin.",
+            "Create a tunnel",
+            "Copy the Tunnel ID",
+            "Create an API key",
+            "Copy the secret key",
+            "Enable Developer mode",
+            "Create the AgenticContext plugin",
         ]
-        assert onboarding.locator(".agent-tunnel-guide-description").all_inner_texts() == [
-            "Open Tunnels and create an AgenticContext Tunnel.",
-            "Copy the new ID starting with tunnel_.",
-            "Use Expiration: Never and Permissions: All.",
-            "Copy the key starting with sk-proj-; it is shown only once.",
-            "In ChatGPT Settings, open Plugins and turn on Developer mode.",
-            "Choose Tunnel, select the existing Tunnel, and use No Auth.",
-        ]
+        expect(onboarding.locator(".agent-tunnel-guide-description")).to_have_count(0)
         expect(onboarding.locator("[data-agent-tunnel-guide] circle")).to_have_count(0)
-        expect(onboarding.locator("[data-agent-tunnel-guide] .guide-card")).to_have_count(6)
+        expect(onboarding.locator("[data-agent-tunnel-guide] .guide-card")).to_have_count(4)
         expect(onboarding.locator("[data-agent-tunnel-guide] [class*='guide-window']")).to_have_count(0)
         assert onboarding.locator("[data-agent-tunnel-guide] rect").evaluate_all(
             "nodes => nodes.every((node) => node.getAttribute('rx') === '10')"
@@ -381,6 +482,9 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         expect(onboarding.locator('[data-guide-selected="tunnel"]')).to_have_count(1)
         expect(onboarding.locator('[data-guide-auth="none"]')).to_have_count(1)
         expect(onboarding).not_to_contain_text("Read + Use")
+        assert onboarding.locator("[data-agent-tunnel-guide] svg").evaluate_all(
+            "nodes => nodes.every((node) => node.viewBox.baseVal.width === 640 && node.viewBox.baseVal.height <= 1024)"
+        )
         assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 6
         for svg in onboarding.locator("[data-agent-tunnel-guide] svg[role='img']").all():
             expect(svg).to_be_hidden()
@@ -483,14 +587,12 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                 const headings = steps.map((step) => step.querySelector('h4'));
                 const paragraphs = steps.flatMap((step) => [...step.querySelectorAll('.agent-tunnel-step-copy p')]);
                 const actionPackages = [...card.querySelectorAll('.agent-tunnel-action-package')];
-                const guideItems = [...steps[0].querySelectorAll('.agent-tunnel-guide-item')];
+                const guideItems = [...card.querySelectorAll('.agent-tunnel-guide-item')];
                 const guideDetails = guideItems.map((item) => item.querySelector('details'));
                 const guideSummaries = guideDetails.map((detail) => detail.querySelector('summary'));
                 const guideTitles = guideDetails.map((detail) => detail.querySelector('.agent-tunnel-guide-title'));
-                const guideDescriptions = guideDetails.map((detail) => detail.querySelector('.agent-tunnel-guide-description'));
                 const guideBodies = guideDetails.map((detail) => detail.querySelector(':scope > .ui-collapse-body'));
                 const guideSvgs = guideDetails.map((detail) => detail.querySelector('svg'));
-                const firstStepCopy = steps[0].querySelector('.agent-tunnel-step-copy');
                 const credentialCopy = steps[1].querySelector('.agent-tunnel-step-copy');
                 const credentialFields = steps[1].querySelector('.agent-tunnel-credential-fields');
                 const credentialInputs = [...steps[1].querySelectorAll('.text-input-control')];
@@ -545,9 +647,6 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     guideTitleFontSizes: guideTitles.map((title) =>
                         parseFloat(getComputedStyle(title).fontSize)
                     ),
-                    guideDescriptionFontSizes: guideDescriptions.map((description) =>
-                        parseFloat(getComputedStyle(description).fontSize)
-                    ),
                     guideSummaryTexts: guideSummaries.map((summary) => summary.innerText.trim()),
                     guideDetailsOpen: guideDetails.map((detail) => detail.open),
                     guideSummaryDisplay: [...new Set(guideSummaries.map((summary) =>
@@ -574,21 +673,26 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                         role: body.getAttribute('role'),
                         labelledBy: body.getAttribute('aria-labelledby'),
                         horizontallyScrollable: body.scrollWidth > body.clientWidth + 1,
+                        clientWidth: body.clientWidth,
                     })),
                     guideSvgClientWidths: guideSvgs.map((svg) => svg.getBoundingClientRect().width),
-                    guideMinimumRenderedTextSizes: guideSvgs.map((svg) => {
-                        const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
-                        return Math.min(...[...svg.querySelectorAll('text')].map((text) =>
-                            parseFloat(getComputedStyle(text).fontSize) * scale
-                        ));
-                    }),
+                    guideSvgViewBoxes: guideSvgs.map((svg) => ({
+                        width: svg.viewBox.baseVal.width,
+                        height: svg.viewBox.baseVal.height,
+                    })),
                     guideSvgStyles: guideSvgs.map((svg) => {
                         const style = getComputedStyle(svg);
                         return {borderRadius: style.borderRadius, overflow: style.overflow};
                     }),
+                    tunnelListCopyIconSize: (() => {
+                        const bounds = guideSvgs[1].querySelector('.guide-copy-icon').getBBox();
+                        return {width: bounds.width, height: bounds.height};
+                    })(),
+                    tunnelListHeaderButtonHeight: guideSvgs[1]
+                        .querySelector('.guide-button-secondary').getBBox().height,
                     guideScrollportsInsideStep: guideBodies.map((body) => {
                         const bodyRect = body.getBoundingClientRect();
-                        const ownerRect = firstStepCopy.getBoundingClientRect();
+                        const ownerRect = body.closest('.agent-tunnel-step-copy').getBoundingClientRect();
                         return bodyRect.left >= ownerRect.left - 1 && bodyRect.right <= ownerRect.right + 1;
                     }),
                     guideStepNonOverlapping:
@@ -652,7 +756,24 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                         (element) => element.textContent.trim()
                     ),
                     kickoffHasExplicitBreak: Boolean(kickoff.querySelector('br')),
-                    kickoffText: kickoff.innerText,
+                    kickoffText: kickoff.value,
+                    kickoffTagName: kickoff.tagName,
+                    kickoffReadOnly: kickoff.readOnly,
+                    kickoffDisabled: kickoff.disabled,
+                    kickoffPaddingBlock: [
+                        getComputedStyle(kickoff).paddingTop,
+                        getComputedStyle(kickoff).paddingBottom,
+                    ],
+                    kickoffMaxHeight: getComputedStyle(kickoff).maxHeight,
+                    kickoffTitleFontSize: getComputedStyle(
+                        steps[3].querySelector('[data-agent-tunnel-kickoff-title]')
+                    ).fontSize,
+                    kickoffTitleFontWeight: getComputedStyle(
+                        steps[3].querySelector('[data-agent-tunnel-kickoff-title]')
+                    ).fontWeight,
+                    guideTitleFontWeight: getComputedStyle(guideTitles[0]).fontWeight,
+                    kickoffBorderRadius: getComputedStyle(kickoff).borderRadius,
+                    kickoffBackgroundColor: getComputedStyle(kickoff).backgroundColor,
                     emptyCredentialBlocks: [...steps[1].querySelectorAll('div, p, span')].filter(
                         (element) => !element.children.length && !element.textContent.trim()
                             && !element.matches('[aria-hidden="true"], .icon')
@@ -685,18 +806,28 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["cardScrollable"] is False
         if height <= 420:
             assert geometry["workspaceScrollable"] is True
-            assert geometry["scrollOwners"] == ["agent_workspace"]
+            assert geometry["scrollOwners"][0] == "agent_workspace"
+            assert set(geometry["scrollOwners"]) <= {
+                "agent_workspace",
+                "agent_tunnel_kickoff",
+            }
         else:
             assert geometry["scrollOwners"] in ([], ["agent_workspace"])
         assert max(geometry["markerHeadingCenterDeltas"]) <= 1, geometry["markerHeadingCenterDeltas"]
         assert geometry["markerFontSizes"] == [geometry["markerToken"]]
         assert geometry["markerColors"] == geometry["headingColors"]
         assert geometry["markerTexts"] == ["Step 1", "Step 2", "Step 3", "Step 4"]
-        assert geometry["guideMarkerTexts"] == ["➊", "➋", "➌", "➍"]
+        assert geometry["guideMarkerTexts"] == ["➊", "➋", "➌", "➍", "➊", "➋"]
         assert geometry["guideMarkerFontSizes"] == geometry["guideTitleFontSizes"]
-        assert geometry["guideTitleFontSizes"] == geometry["guideDescriptionFontSizes"]
-        assert all(text.endswith(".") for text in geometry["guideSummaryTexts"])
-        assert geometry["guideDetailsOpen"] == [True] * 4
+        assert geometry["guideSummaryTexts"] == [
+            "Create a tunnel",
+            "Copy the Tunnel ID",
+            "Create an API key",
+            "Copy the secret key",
+            "Enable Developer mode",
+            "Create the AgenticContext plugin",
+        ]
+        assert geometry["guideDetailsOpen"] == [True] * 6
         assert geometry["guideSummaryDisplay"] == ["grid"]
         assert all("data:image/svg+xml" in mask for mask in geometry["guideSummaryMarkerMasks"])
         assert geometry["guideSummaryStyles"] == [
@@ -706,27 +837,29 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                 "iconSize": ["12px", "8px"],
                 "bodyPadding": ["0px", "10px", "10px", "10px"],
             }
-        ] * 4
-        assert all(style["overflowX"] == "auto" for style in geometry["guideBodyStyles"])
-        assert all(style["overflowY"] == "hidden" for style in geometry["guideBodyStyles"])
-        assert all(style["tabIndex"] == 0 for style in geometry["guideBodyStyles"])
+        ] * 6
+        assert all(style["overflowX"] == "visible" for style in geometry["guideBodyStyles"])
+        assert all(style["overflowY"] == "visible" for style in geometry["guideBodyStyles"])
+        assert all(style["tabIndex"] == -1 for style in geometry["guideBodyStyles"])
         assert all(style["role"] == "region" for style in geometry["guideBodyStyles"])
         assert all(style["labelledBy"] for style in geometry["guideBodyStyles"])
-        if width <= 760:
-            assert all(style["horizontallyScrollable"] for style in geometry["guideBodyStyles"])
-            assert min(geometry["guideSvgClientWidths"]) >= 719
-            assert min(geometry["guideMinimumRenderedTextSizes"]) >= 10.9
-            first_guide_scrollport = onboarding.locator("[data-agent-tunnel-guide-scroll]").first
-            first_guide_scrollport.evaluate("element => { element.scrollLeft = 0; }")
-            first_guide_scrollport.focus()
-            first_guide_scrollport.press("ArrowRight")
-            page.wait_for_timeout(150)
-            assert first_guide_scrollport.evaluate("element => element.scrollLeft") > 0
-        else:
-            assert not any(style["horizontallyScrollable"] for style in geometry["guideBodyStyles"])
+        assert not any(style["horizontallyScrollable"] for style in geometry["guideBodyStyles"])
+        assert all(width <= 640 for width in geometry["guideSvgClientWidths"])
+        assert all(
+            svg_width <= body["clientWidth"] + 1
+            for svg_width, body in zip(
+                geometry["guideSvgClientWidths"],
+                geometry["guideBodyStyles"],
+                strict=True,
+            )
+        )
+        assert all(view_box["width"] == 640 for view_box in geometry["guideSvgViewBoxes"])
+        assert all(view_box["height"] <= 1024 for view_box in geometry["guideSvgViewBoxes"])
         assert geometry["guideSvgStyles"] == [
             {"borderRadius": "10px", "overflow": "hidden"}
-        ] * 4
+        ] * 6
+        assert geometry["tunnelListCopyIconSize"]["height"] < geometry["tunnelListHeaderButtonHeight"]
+        assert geometry["tunnelListCopyIconSize"]["width"] <= 20
         assert all(geometry["guideScrollportsInsideStep"])
         assert geometry["guideStepNonOverlapping"] is True
         assert max(geometry["actionPackageRightDeltas"]) <= 1
@@ -744,13 +877,13 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
             for class_name in geometry["actionClasses"]
         )
         assert geometry["headingFontSizes"] == [geometry["headingToken"]]
-        assert geometry["bodyFontSizes"] == [geometry["bodyToken"]]
+        assert geometry["bodyFontSizes"] == []
         assert len(set(geometry["credentialInputFontSizes"])) == 1
         assert geometry["credentialPlaceholderFontSizes"] == geometry["credentialInputFontSizes"]
         assert "document.on.document.fill.svg" in geometry["copyIconMask"]
         assert geometry["bodyToken"] < geometry["headingToken"]
-        assert geometry["paragraphCounts"] == [0, 0, 1, 2]
-        assert geometry["actionPackageParagraphCounts"] == [2]
+        assert geometry["paragraphCounts"] == [0, 0, 0, 0]
+        assert geometry["actionPackageParagraphCounts"] == [0]
         assert geometry["credentialCopyChildren"] == ["H4", "OL"]
         assert geometry["credentialFieldChildren"] == ["LI", "LI"]
         assert geometry["credentialSubstepMarkers"] == ["➊", "➋"]
@@ -761,10 +894,19 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert max(geometry["stepFourActionHeights"]) - min(geometry["stepFourActionHeights"]) <= 1
         assert geometry["stepFourActionHeights"] == [32, 32]
         assert geometry["stepFourActionLabels"] == ["Copy this prompt", "Ask in ChatGPT"]
-        assert geometry["kickoffHasExplicitBreak"] is True
+        assert geometry["kickoffHasExplicitBreak"] is False
         assert geometry["kickoffText"].endswith(
             "without altering unrelated work:\n[describe your task]."
         )
+        assert geometry["kickoffTagName"] == "TEXTAREA"
+        assert geometry["kickoffReadOnly"] is False
+        assert geometry["kickoffDisabled"] is False
+        assert geometry["kickoffPaddingBlock"] == ["8px", "8px"]
+        assert geometry["kickoffMaxHeight"] == "96px"
+        assert float(geometry["kickoffTitleFontSize"].removesuffix("px")) == geometry["headingToken"]
+        assert geometry["kickoffTitleFontWeight"] == geometry["guideTitleFontWeight"]
+        assert geometry["kickoffBorderRadius"] == "10px"
+        assert geometry["kickoffBackgroundColor"] != "rgba(0, 0, 0, 0)"
         assert geometry["emptyCredentialBlocks"] == 0
         assert geometry["dividers"] == ["0px", "0px", "0px", "0px"]
         assert geometry["focused"] is True
@@ -794,6 +936,10 @@ def test_tunnel_copy_failure_is_reported_without_false_success(
         value: {writeText: async () => { throw new Error('Unavailable'); }}
     }); document.execCommand = () => false;""")
     page = context.new_page()
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=_tunnel_onboarding_status()),
+    )
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
         onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')

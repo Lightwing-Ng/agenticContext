@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.124.0-claude.0
+# Code version: v1.126.0-codex.0
 
 from __future__ import annotations
 
@@ -713,7 +713,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.15.1-codex.0', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.16.0-codex.0', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt/text/edge"', chatgpt_body)
@@ -748,7 +748,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', chatgpt_body)
-        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.8.1-codex.0', chatgpt_body)
+        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.8.2-codex.0', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
         chatgpt_form_end = chatgpt_body.index("</form>", chatgpt_form_start)
@@ -865,7 +865,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.131.0-codex.0"
+                expected_style_version = "style-v2.134.0-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1291,14 +1291,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.131.0-codex.0', local_body)
+        self.assertIn('style-v2.134.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.56.0-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.58.0-codex.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -1306,15 +1306,15 @@ class WebAppTests(unittest.TestCase):
         onboarding_body = local_body[onboarding_start:onboarding_end]
         gemini_end = local_body.index('data-agent-tunnel-unsupported', onboarding_end)
         gemini_body = local_body[onboarding_end:gemini_end]
-        self.assertIn('starting with <code>tunnel_</code>', onboarding_body)
-        self.assertIn('starting with <code>sk-proj-</code>', onboarding_body)
+        self.assertIn('starting with tunnel_', onboarding_body)
+        self.assertIn('sk-proj-••••••••', onboarding_body)
         for step_number in range(1, 5):
             self.assertIn(
                 '<span class="agent-tunnel-step-number" aria-hidden="true">'
                 f'Step {step_number}</span>',
                 onboarding_body,
             )
-        guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list"')
+        guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list ')
         guide_end = onboarding_body.index('</ol>', guide_start) + len('</ol>')
         guide_body = onboarding_body[guide_start:guide_end]
         for marker in ("➊", "➋", "➌", "➍"):
@@ -1332,8 +1332,9 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertEqual(guide_body.count('<summary>'), 4)
         self.assertEqual(len(re.findall(r'<svg\b', guide_body)), 4)
-        self.assertEqual(guide_body.count('data-agent-tunnel-guide-scroll'), 4)
-        self.assertEqual(guide_body.count('role="region" tabindex="0"'), 4)
+        self.assertEqual(guide_body.count('data-agent-tunnel-guide-scroll'), 0)
+        self.assertEqual(guide_body.count('role="region"'), 4)
+        self.assertNotIn('tabindex="0"', guide_body)
         self.assertEqual(
             guide_body.count('aria-labelledby="agent_tunnel_guide_title_'),
             4,
@@ -1343,7 +1344,8 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(unsafe_markup, guide_lower)
         self.assertNotIn('<circle', guide_lower)
         self.assertNotIn('guide-window', guide_body)
-        self.assertEqual(guide_body.count('class="guide-card"'), 4)
+        self.assertEqual(guide_body.count('class="guide-card"'), 3)
+        self.assertEqual(guide_body.count('viewBox="0 0 640 '), 4)
         guide_rects = re.findall(r'<rect\b[^>]*>', guide_body)
         self.assertTrue(guide_rects)
         self.assertTrue(all(re.search(r'\brx="10"', rect) for rect in guide_rects))
@@ -1353,15 +1355,17 @@ class WebAppTests(unittest.TestCase):
         self.assertIsNone(re.search(r'tunnel_[A-Za-z0-9]{16,}', guide_body))
         self.assertIsNone(re.search(r'sk-proj-[A-Za-z0-9_-]{12,}', guide_body))
         self.assertIn('Create the ChatGPT plugin', onboarding_body)
-        self.assertIn('Enable Developer mode.', onboarding_body)
-        self.assertIn('Create the AgenticContext plugin.', onboarding_body)
+        self.assertIn('Enable Developer mode', onboarding_body)
+        self.assertIn('Create the AgenticContext plugin', onboarding_body)
         self.assertIn('href="https://chatgpt.com/plugins"', onboarding_body)
         self.assertIn('data-guide-selected="tunnel"', onboarding_body)
         self.assertIn('data-guide-auth="none"', onboarding_body)
-        self.assertIn(
-            'After copying the prompt, open ChatGPT and ask your question.',
-            onboarding_body,
-        )
+        self.assertIn('Edit and copy the prompt', onboarding_body)
+        self.assertIn('Complete the Tunnel credentials', onboarding_body)
+        self.assertIn('data-agent-tunnel-kickoff-state="credentials"', onboarding_body)
+        self.assertIn('<textarea id="agent_tunnel_kickoff"', onboarding_body)
+        self.assertNotIn('After copying the prompt', onboarding_body)
+        self.assertNotIn('After creation, allow all actions', onboarding_body)
         self.assertEqual(
             onboarding_body.count('class="secondary-button agent-tunnel-step-action"'),
             6,
@@ -2823,6 +2827,10 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browserStatusController.refresh()', script)
         self.assertIn("Recent sessions timed out after 4 minutes.", script)
         self.assertIn("clearCatalogLoadingState", script)
+        self.assertIn(
+            'window.addEventListener("resize", resizeTunnelKickoffPrompt, {passive: true});',
+            script,
+        )
         self.assertIn('requestJson("/api/agent/open-conversation"', script)
         self.assertIn('elements.conversationLink.classList.toggle("is-traditional-handoff"', script)
         self.assertIn("agent?.traditional_handoff_available", script)
@@ -2833,7 +2841,7 @@ class WebAppTests(unittest.TestCase):
         script = COMPUTER_USE_AGENT_SCRIPT_PATH.read_text(encoding="utf-8")
 
         self.assertTrue(
-            script.startswith("/* Code version: v3.56.0-codex.0 */")
+            script.startswith("/* Code version: v3.58.0-codex.0 */")
         )
         for fragment in (
             'geminiAuthorization: document.querySelector("[data-agent-gemini-authorization]")',
@@ -2901,7 +2909,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.56.0-codex.0',
+            'computer-use-agent-v3.58.0-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -4656,7 +4664,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.131.0-codex.0", body)
+            self.assertIn("style-v2.134.0-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)
@@ -5715,14 +5723,14 @@ def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path) -> None
     assert safari.status_code == 200
     body = safari.get_data(as_text=True)
     assert 'data-cache-source="grok"' in body
-    assert 'data-cache-content-mode="text"' in body
+    assert 'data-cache-page-content-mode="text"' in body
     assert 'data-cache-browser="safari"' in body
     assert 'href="/cache/grok/text/safari"' in body
     assert 'href="/cache/grok/media/safari"' in body
     assert 'name="grok_browser"' in body
     assert 'value="safari"' in body
     assert media.status_code == 200
-    assert 'data-cache-content-mode="media"' in media.get_data(as_text=True)
+    assert 'data-cache-page-content-mode="media"' in media.get_data(as_text=True)
     assert invalid_mode.status_code == 404
     assert x_selected.status_code == 404
     assert zhihu_safari.status_code == 404

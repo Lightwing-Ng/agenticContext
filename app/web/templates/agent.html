@@ -1,4 +1,4 @@
-<!-- Code version: v3.61.0-codex.0 -->
+<!-- Code version: v3.63.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.131.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.134.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.0.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
@@ -379,21 +379,36 @@
                             <div class="agent-tunnel-step-copy">
                                 <h4>Create the ChatGPT plugin</h4>
                                 {% include "_agent_tunnel_chatgpt_guides.html" %}
-                                <p class="agent-tunnel-step-note">After creation, allow all actions for this plugin. Never paste the API key into ChatGPT.</p>
                             </div>
                         </li>
                         <li class="agent-tunnel-onboarding-step">
                             <span class="agent-tunnel-step-number" aria-hidden="true">Step 4</span>
                             <div class="agent-tunnel-step-copy">
                                 <h4>Run one real project task</h4>
+                                {% set tunnel_kickoff_ready = (tunnel_credentials.qualified | default(false)) and tunnel_view.tone == 'ready' and (tunnel_status.activity_observed | default(false)) %}
+                                {% if not (tunnel_credentials.qualified | default(false)) %}
+                                    {% set tunnel_kickoff_title = 'Complete the Tunnel credentials' %}
+                                    {% set tunnel_kickoff_state = 'credentials' %}
+                                {% elif tunnel_view.tone != 'ready' %}
+                                    {% set tunnel_kickoff_title = 'Wait for the Tunnel to be ready' %}
+                                    {% set tunnel_kickoff_state = 'tunnel' %}
+                                {% elif not (tunnel_status.activity_observed | default(false)) %}
+                                    {% set tunnel_kickoff_title = 'Create the AgenticContext plugin' %}
+                                    {% set tunnel_kickoff_state = 'plugin' %}
+                                {% else %}
+                                    {% set tunnel_kickoff_title = 'Describe your project task' %}
+                                    {% set tunnel_kickoff_state = 'ready' %}
+                                {% endif %}
                                 <div class="agent-tunnel-action-package agent-tunnel-kickoff-package">
                                     <ol class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence" aria-label="Run a project task">
                                         <li class="agent-tunnel-numbered-item">
                                             <span class="agent-tunnel-substep-number" aria-hidden="true">➊</span>
                                             <div class="agent-tunnel-numbered-copy">
-                                                <p id="agent_tunnel_kickoff" data-agent-tunnel-kickoff>Use @AgenticContext to read the selected project's instructions and current changes, then implement and verify the following task without altering unrelated work:<br><span class="agent-tunnel-kickoff-task">[describe your task].</span></p>
-                                                <div class="settings-action-package-form agent-tunnel-action-package-form">
-                                                    <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-tunnel-copy-action data-agent-tunnel-copy-kickoff aria-label="Copy this prompt" aria-controls="agent_tunnel_kickoff">
+                                                <label id="agent_tunnel_kickoff_title" class="agent-tunnel-kickoff-title" for="agent_tunnel_kickoff" data-agent-tunnel-kickoff-title data-agent-tunnel-kickoff-state="{{ tunnel_kickoff_state }}" aria-live="polite">{{ tunnel_kickoff_title }}</label>
+                                                <textarea id="agent_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-tunnel-kickoff aria-labelledby="agent_tunnel_kickoff_title" rows="1"{% if not tunnel_kickoff_ready %} hidden disabled{% endif %}>Use @AgenticContext to read the selected project's instructions and current changes, then implement and verify the following task without altering unrelated work:
+[describe your task].</textarea>
+                                                <div class="settings-action-package-form agent-tunnel-action-package-form" data-agent-tunnel-kickoff-copy-form{% if not tunnel_kickoff_ready %} hidden{% endif %}>
+                                                    <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-tunnel-copy-action data-agent-tunnel-copy-kickoff aria-label="Copy this prompt" aria-controls="agent_tunnel_kickoff"{% if not tunnel_kickoff_ready %} disabled{% endif %}>
                                                         <span class="browser-session-trigger-leading">
                                                             <span class="icon agent-response-copy-icon" aria-hidden="true"></span>
                                                             <span data-agent-tunnel-copy-label aria-live="polite">Copy this prompt</span>
@@ -402,10 +417,10 @@
                                                 </div>
                                             </div>
                                         </li>
-                                        <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
+                                        <li class="agent-tunnel-numbered-item agent-tunnel-action-only" data-agent-tunnel-kickoff-action-step{% if not tunnel_kickoff_ready %} hidden{% endif %}>
                                             <span class="agent-tunnel-substep-number" aria-hidden="true">➋</span>
                                             <div class="agent-tunnel-numbered-copy">
-                                                <p>After copying the prompt, open ChatGPT and ask your question.</p>
+                                                <h5 class="agent-tunnel-kickoff-title" data-agent-tunnel-kickoff-next-step aria-live="polite">Edit and copy the prompt</h5>
                                                 <div class="settings-action-package-form agent-tunnel-action-package-form">
                                                     <a class="secondary-button agent-tunnel-step-action" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">
                                                         <span class="browser-session-trigger-leading">
@@ -676,6 +691,6 @@
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.56.0-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.58.0-codex.0') }}"></script>
 </body>
 </html>

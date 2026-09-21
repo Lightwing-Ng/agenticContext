@@ -1,6 +1,6 @@
 """Read-through Parquet cache for Web Agent source discovery.
 
-Code version: v2.1.8-codex.1
+Code version: v2.1.9-codex.0
 """
 
 from __future__ import annotations
@@ -578,7 +578,7 @@ def _canonical_project_url(value: str, *, platform: str = "") -> str:
             and parsed.port in {None, 443}
             and (match := CHATGPT_PROJECT_PATH_PATTERN.fullmatch(parsed.path))
         ):
-            return f"https://chatgpt.com/g/{match.group(1).lower()}"
+            return f"https://chatgpt.com/g/{match.group(1).lower()}/project"
         query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
         return urlunsplit(
             (

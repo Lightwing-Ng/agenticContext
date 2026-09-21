@@ -1,4 +1,4 @@
-/* Code version: v1.8.1-codex.0 */
+/* Code version: v1.8.2-codex.0 */
 
 (() => {
     function closeOtherMenus(activePanel) {
@@ -62,7 +62,7 @@
             const page = document.querySelector("[data-cache-page]");
             if (!page || !page.querySelector("[data-cache-content-mode]") || !browserId) return;
             const source = page.dataset.cacheSource || "";
-            const mode = page.dataset.cacheContentMode === "media" ? "media" : "text";
+            const mode = page.dataset.cachePageContentMode === "media" ? "media" : "text";
             if (!source) return;
             page.querySelectorAll("[data-cache-content-mode-option]").forEach((option) => {
                 const optionMode = option.dataset.cacheContentModeOption === "media" ? "media" : "text";
