@@ -1,6 +1,6 @@
 """Extract browser-safe standalone faces from the approved local TTC.
 
-Code version: v1.0.0
+Code version: v1.1.0
 """
 
 from hashlib import sha256
@@ -14,6 +14,17 @@ FACE_NAMES = (
     "Bold", "Light", "LightItalic", "Medium", "Regular", "Thin",
     "ThinItalic", "UltraLight", "UltraLightItalic",
 )
+FACE_SHA256 = {
+    "Bold": "78e041ed15c14b3347ce8778cf6e9360cf3c03e3ea6db959feecc24a786ec393",
+    "Light": "fb63962132cb74c6193cb87c213f145483485eb71b6dd02c71cc1b99e3c29b6c",
+    "LightItalic": "9ef5d41486539167e011f48814a48effb53fc31dc4345c82a603f70bc6666501",
+    "Medium": "d657dccff328844e0f1bbef8622cb1d37b3f1ccb7146553d738056ceb9876866",
+    "Regular": "13376b6923f0f48e659ac924daadb1627a04735e72310a757f802a2e5bfe386f",
+    "Thin": "822280033b9d46a1f3110cf32047cb333108ff90352b8bbd8d15d9eea53bd951",
+    "ThinItalic": "1f10597f20df775a7777417aa2ad312f554d40a03c6b0d2bc16f5a62df98d96a",
+    "UltraLight": "a83c12df49fc84cc1cf8563d54fa27b09d2a2b14fa4073ec377902db0812124e",
+    "UltraLightItalic": "6ecd693ac92032174e5259e85f36ca6a5b5d3379c0a6607a300220008ae94016",
+}
 
 
 def checksum(data: bytes | bytearray) -> int:
@@ -62,7 +73,10 @@ def main() -> None:
     for index, name in enumerate(FACE_NAMES):
         offset = struct.unpack_from(">I", source, 12 + 4 * index)[0]
         target = FONT_ROOT / f"UniversNextforHSBC-{name}.ttf"
-        target.write_bytes(extract_face(source, offset))
+        extracted = extract_face(source, offset)
+        if sha256(extracted).hexdigest() != FACE_SHA256[name]:
+            raise ValueError(f"Unexpected derived face checksum: {name}")
+        target.write_bytes(extracted)
         print(target.name)
 
 

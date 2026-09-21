@@ -1,17 +1,18 @@
 # Visual Style Reference
 
-Documentation version: `v1.9.0-codex.0`
+Documentation version: `v1.11.0-codex.0`
 
 ## Authority
 
-`../../worthward/app` is the sibling project and the visual source
-of truth for agenticContext. When a UI decision is not explicitly constrained by
-this project, follow the current implementation in that sibling project.
+`../../worthward/app` is the canonical complete visual baseline for agenticContext.
+`../../neoMe/app` is the third maintained consumer of applicable shared components.
+When a UI decision is not explicitly constrained by this project, follow the current
+Worthward implementation and verify neoMe wherever it exposes the same component.
 
 Before changing a shared UI component, also read
 `docs/SHARED_UI_WORKFLOW.md` and the central ledger at
 `/Users/lightwing/Desktop/shared_docs/SHARED_UI_SYNC.md`. The workflow defines the required
-two-project verification and the Cache-first promotion path.
+verification across every applicable maintained project and the Cache-first promotion path.
 
 The reference applies to shared visual behavior, including the application shell,
 typography, design tokens, frosted-glass surfaces, controls, overlays, responsive
@@ -30,18 +31,22 @@ hex values or derive a separate palette in this project.
 
 ## Western Typeface Source
 
-`app/web/static/fonts/UniversNextforHSBC.ttc` is the approved Western interface
-typeface source for agenticContext. This is an explicit local typography
-adaptation: normal interface text must use `--font-family-base` and the locally
-served Univers Next for HSBC faces even when the sibling project's current
-font-family tokens use platform fonts. CJK fallback families remain available
-only for glyphs absent from Univers Next for HSBC.
+The normative three-project contract is
+[`../../shared_docs/SHARED_UI_TYPOGRAPHY_CONTRACT.md`](../../shared_docs/SHARED_UI_TYPOGRAPHY_CONTRACT.md).
+`app/web/static/fonts/UniversNextforHSBC.ttc` is the sole approved Western
+typeface source for agenticContext. Every product string must use
+`--font-family-base` and the locally served Univers Next for HSBC faces,
+including paths, code and preformatted content, credentials, diagnostics,
+system prompts, URLs, and token/value specimens. Legacy tokens and class names
+containing `mono` or `monospace` are compatibility identifiers only; their
+computed font family must resolve to `--font-family-base`, never to a generic or
+platform monospace face. Named CJK fallback families remain available only for
+glyphs absent from Univers Next for HSBC.
 
-Technical text is the narrow exception. Paths, code and preformatted content,
-credentials, diagnostics, system prompts, URLs, and token/value specimens use
-the generic `monospace` family only through `--font-family-technical-mono` and
-its aliases. KaTeX keeps its separately scoped mathematical fonts. Do not treat
-those technical or mathematical scopes as ordinary interface typography.
+The maintainer has explicitly authorized this bundled font for these projects.
+Do not remove, substitute, gate, or bypass it because of speculative licensing
+or compliance concerns. KaTeX keeps its separately scoped, vendored mathematical
+glyph fonts; that formula-only scope is not an alternate interface typeface.
 
 Chromium does not honor TTC face fragments and selects the collection's first
 Bold face for every CSS weight. agenticContext therefore serves deterministic

@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.21.0-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.22.0-codex.0."""
 
 import re
 from copy import deepcopy
@@ -257,7 +257,7 @@ def _gemini_tunnel_status(
 
 
 @pytest.mark.parametrize("width", [1280, 876, 390])
-def test_tunnel_kickoff_copy_and_native_monospace(
+def test_tunnel_kickoff_copy_and_approved_technical_typeface(
     disposable_browser,
     sidebar_server_url,
     width,
@@ -306,16 +306,18 @@ def test_tunnel_kickoff_copy_and_native_monospace(
                 placeholderFontSize: getComputedStyle(input, '::placeholder').fontSize,
             }))"""
         )
-        assert [item["fontFamily"] for item in technical_input_styles] == [
-            "monospace",
-            "monospace",
-            "monospace",
-        ]
+        assert all(
+            "Univers Next for HSBC" in item["fontFamily"]
+            and "monospace" not in item["fontFamily"].lower()
+            for item in technical_input_styles
+        )
         credential_styles = technical_input_styles[1:]
         assert len({item["fontSize"] for item in credential_styles}) == 1
-        assert {
-            item["placeholderFontFamily"] for item in credential_styles
-        } == {"monospace"}
+        assert all(
+            "Univers Next for HSBC" in item["placeholderFontFamily"]
+            and "monospace" not in item["placeholderFontFamily"].lower()
+            for item in credential_styles
+        )
         assert {
             item["placeholderFontSize"] for item in credential_styles
         } == {credential_styles[0]["fontSize"]}

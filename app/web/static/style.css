@@ -1,4 +1,4 @@
-/* Code version: v2.134.0-codex.0 */
+/* Code version: v2.135.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -492,10 +492,11 @@
     --font-family-brand: "Univers Next for HSBC";
     --font-family-cjk: "PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei", "Microsoft JhengHei", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
     --font-family-base: var(--font-family-brand), var(--font-family-cjk);
-    /* Technical text is the only Western-font exception to the HSBC interface contract. */
-    --font-family-technical-mono: monospace;
-    --font-family-mono-cjk: var(--font-family-technical-mono);
-    --font-family-mono: var(--font-family-technical-mono);
+    /* Legacy mono aliases intentionally resolve to the sole approved Western family. */
+    --font-family-technical: var(--font-family-base);
+    --font-family-technical-mono: var(--font-family-technical);
+    --font-family-mono-cjk: var(--font-family-technical);
+    --font-family-mono: var(--font-family-technical);
     --font-mono: var(--font-family-mono);
     --font-ui-xs: var(--font-size-1);
     --font-ui-sm: var(--font-size-2);

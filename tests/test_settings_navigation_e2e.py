@@ -1,4 +1,4 @@
-"""Settings navigation and annotation regressions. Code version: v1.1.0-codex.1."""
+"""Settings navigation and annotation regressions. Code version: v1.2.0-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -74,7 +74,8 @@ def test_settings_annotations_share_compact_navigation_and_prompt_type(
             "elements => elements.map(element => getComputedStyle(element).fontFamily)"
         )
         assert len(prompt_families) == 2
-        assert all('monospace' in family.lower() for family in prompt_families)
+        assert all('Univers Next for HSBC' in family for family in prompt_families)
+        assert all('monospace' not in family.lower() for family in prompt_families)
 
         page.goto(f'{sidebar_server_url}/settings/style-tokens')
         if width < 900:

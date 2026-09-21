@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Code policy version: v1.3.4-agent-contract.0
+Code policy version: v1.4.0-agent-contract.0
 
 This file defines mandatory collaboration rules for all coding agents in this repository (Claude, Codex, Antigravity, Trae, and future agents).
 
@@ -35,15 +35,24 @@ This file defines mandatory collaboration rules for all coding agents in this re
 - For UI work, read [`docs/SHARED_UI_WORKFLOW.md`](docs/SHARED_UI_WORKFLOW.md) first.
   Treat `../worthward/app` as this project's sibling and visual source of truth;
   read `docs/STYLE_REFERENCE.md` before changing markup, CSS, assets, or UI behavior.
-- Before changing a UI pattern shared with the sibling project, read the single local
+- Before changing a UI pattern shared across the maintained projects, read the single local
   synchronization ledger at `../shared_docs/SHARED_UI_SYNC.md` and follow its mandatory workflow.
   `worthward` is the canonical complete baseline and final convergence target.
   A Cache-first improvement is only a `Candidate review` until it is promoted into
-  `worthward` and both projects have current evidence.
-- A task scoped only to this repository does not authorize editing the sibling. When a
-  shared component changes here, update the ledger, mark the sibling `Pending`, and report
-  the required sibling-sync reminder at handoff. When the user authorizes both projects,
-  synchronize and verify both in the same task.
+  `worthward` and every applicable consumer has current evidence. `neoMe` is the third
+  maintained consumer and retains its product-specific health-record boundaries.
+- A task scoped only to this repository does not authorize editing either sibling. When a
+  shared component changes here, update the ledger, mark the other applicable projects
+  `Pending`, and report the required sync reminder at handoff. When the user authorizes all
+  affected projects, synchronize and verify them in the same task.
+- Before changing typography, font assets, font-family tokens, or a technical-text style, read
+  `../shared_docs/SHARED_UI_TYPOGRAPHY_CONTRACT.md`. The maintainer has explicitly authorized
+  the bundled `app/web/static/fonts/UniversNextforHSBC.ttc` for this project. It is the sole
+  Western typeface source for every product string, including code, paths, URLs, diagnostics,
+  credentials, and system prompts. The nine standalone TTF files are deterministic browser
+  transports derived from that TTC, not alternate typefaces. Do not replace, remove, gate, or
+  bypass this source because of speculative licensing or compliance concerns. Named CJK
+  fallbacks and the narrowly scoped vendored KaTeX mathematical glyphs remain permitted.
 
 ## 5) Testing and Verification
 - Run focused checks for touched areas.

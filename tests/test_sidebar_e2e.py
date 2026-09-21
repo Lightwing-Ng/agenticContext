@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.48.1-codex.0
+Code version: v1.49.0-codex.0
 """
 
 from __future__ import annotations
@@ -8597,12 +8597,24 @@ def test_agent_response_scrollports_keep_actions_and_last_line_inside(
         cdp.send("DOM.enable")
         cdp.send("CSS.enable")
         document = cdp.send("DOM.getDocument")
-        node = cdp.send("DOM.querySelector", {
-            "nodeId": document["root"]["nodeId"], "selector": ".agent-model-trigger-label",
-        })
-        fonts = cdp.send("CSS.getPlatformFontsForNode", {"nodeId": node["nodeId"]})["fonts"]
-        assert any(font["postScriptName"] == "UniversNextforHSBC-Regular" for font in fonts), fonts
-        assert all(font["postScriptName"] != "UniversNextforHSBC-Bold" for font in fonts), fonts
+        for selector in (
+            ".agent-model-trigger-label",
+            ".agent-response-answer-content pre code",
+        ):
+            node = cdp.send("DOM.querySelector", {
+                "nodeId": document["root"]["nodeId"], "selector": selector,
+            })
+            fonts = cdp.send(
+                "CSS.getPlatformFontsForNode", {"nodeId": node["nodeId"]},
+            )["fonts"]
+            assert any(
+                font["postScriptName"] == "UniversNextforHSBC-Regular"
+                for font in fonts
+            ), (selector, fonts)
+            assert all(
+                font["postScriptName"] != "UniversNextforHSBC-Bold"
+                for font in fonts
+            ), (selector, fonts)
         read_layout = """() => {
             const selectors = {
                 theme: '#global_theme_toggle', questionToggle: '.agent-response-question-header button',
@@ -9351,7 +9363,8 @@ def test_agent_project_path_prefers_trailing_directories_without_overflow(
         assert geometry["direction"] == "rtl"
         assert geometry["textAlign"] == "left"
         assert geometry["textOverflow"] == "ellipsis"
-        assert geometry["fontFamily"] == "monospace"
+        assert "Univers Next for HSBC" in geometry["fontFamily"]
+        assert "monospace" not in geometry["fontFamily"].lower()
         assert not geometry["documentOverflow"]
     finally:
         context.close()

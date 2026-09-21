@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.74.0-codex.0
+Code version: v1.75.1-codex.0
 """
 
 import hashlib
@@ -8,13 +8,24 @@ from pathlib import Path
 import re
 import struct
 
-from scripts.build_web_fonts import FACE_NAMES, checksum, extract_face
+from scripts.build_web_fonts import FACE_NAMES, FACE_SHA256, checksum, extract_face
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FONT_PATH = PROJECT_ROOT / "app/web/static/fonts/UniversNextforHSBC.ttc"
 STYLE_PATH = PROJECT_ROOT / "app/web/static/style.css"
 AGENT_SESSIONS_STYLE_PATH = PROJECT_ROOT / "app/web/static/agent-sessions.css"
+EXPECTED_FACE_SHA256 = {
+    "Bold": "78e041ed15c14b3347ce8778cf6e9360cf3c03e3ea6db959feecc24a786ec393",
+    "Light": "fb63962132cb74c6193cb87c213f145483485eb71b6dd02c71cc1b99e3c29b6c",
+    "LightItalic": "9ef5d41486539167e011f48814a48effb53fc31dc4345c82a603f70bc6666501",
+    "Medium": "d657dccff328844e0f1bbef8622cb1d37b3f1ccb7146553d738056ceb9876866",
+    "Regular": "13376b6923f0f48e659ac924daadb1627a04735e72310a757f802a2e5bfe386f",
+    "Thin": "822280033b9d46a1f3110cf32047cb333108ff90352b8bbd8d15d9eea53bd951",
+    "ThinItalic": "1f10597f20df775a7777417aa2ad312f554d40a03c6b0d2bc16f5a62df98d96a",
+    "UltraLight": "a83c12df49fc84cc1cf8563d54fa27b09d2a2b14fa4073ec377902db0812124e",
+    "UltraLightItalic": "6ecd693ac92032174e5259e85f36ca6a5b5d3379c0a6607a300220008ae94016",
+}
 
 
 def _stylesheet() -> str:
@@ -91,8 +102,8 @@ def test_cache_metrics_reuse_the_foundation_surface_and_type_contract() -> None:
     assert "font-weight: var(--font-weight-regular);" in progress_label_rule
 
 
-def test_typography_preserves_local_hsbc_and_technical_monospace_contract() -> None:
-    """Keep ordinary UI on HSBC while technical text uses the scoped mono token."""
+def test_typography_preserves_the_single_hsbc_western_typeface_contract() -> None:
+    """Keep ordinary and technical UI on the sole approved Western typeface."""
     stylesheet = _stylesheet()
 
     expected_tokens = (
@@ -110,9 +121,10 @@ def test_typography_preserves_local_hsbc_and_technical_monospace_contract() -> N
         '--font-family-brand: "Univers Next for HSBC";',
         '--font-family-cjk: "PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei", "Microsoft JhengHei", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;',
         '--font-family-base: var(--font-family-brand), var(--font-family-cjk);',
-        '--font-family-technical-mono: monospace;',
-        '--font-family-mono-cjk: var(--font-family-technical-mono);',
-        '--font-family-mono: var(--font-family-technical-mono);',
+        '--font-family-technical: var(--font-family-base);',
+        '--font-family-technical-mono: var(--font-family-technical);',
+        '--font-family-mono-cjk: var(--font-family-technical);',
+        '--font-family-mono: var(--font-family-technical);',
         '--font-mono: var(--font-family-mono);',
         "--font-ui-md: var(--font-size-4);",
         "--font-ui-lg: var(--font-size-5);",
@@ -136,9 +148,18 @@ def test_typography_preserves_local_hsbc_and_technical_monospace_contract() -> N
 
 def test_runtime_sources_name_no_alternate_western_typeface() -> None:
     """Keep Univers Next for HSBC as the only named Western interface typeface."""
-    runtime_sources = (
-        STYLE_PATH.read_text(encoding="utf-8"),
-        (PROJECT_ROOT / "app/web/static/chatgpt-project-icons.js").read_text(encoding="utf-8"),
+    approved_cjk_fallback = (
+        '--font-family-cjk: "PingFang SC", "PingFang TC", "PingFang HK", '
+        '"Microsoft YaHei", "Microsoft JhengHei", "Hiragino Sans GB", '
+        '"Noto Sans CJK SC", sans-serif;'
+    )
+    app_root = PROJECT_ROOT / "app"
+    runtime_paths = sorted(
+        path
+        for path in app_root.rglob("*")
+        if path.suffix in {".css", ".html", ".js", ".py"}
+        and "vendor" not in path.relative_to(PROJECT_ROOT).parts
+        and "fonts" not in path.relative_to(PROJECT_ROOT).parts
     )
     forbidden_families = (
         "GDS Transport",
@@ -146,6 +167,9 @@ def test_runtime_sources_name_no_alternate_western_typeface() -> None:
         "Arial",
         "Georgia",
         "Inter",
+        "Roboto",
+        "Segoe UI",
+        "San Francisco",
         "SF Pro",
         "SFMono",
         "SF Mono",
@@ -157,11 +181,18 @@ def test_runtime_sources_name_no_alternate_western_typeface() -> None:
         "Times New Roman",
         "ui-monospace",
         "system-ui",
+        "sans-serif",
     )
 
-    for source in runtime_sources:
+    for path in runtime_paths:
+        source = path.read_text(encoding="utf-8")
+        if path == STYLE_PATH:
+            assert source.count(approved_cjk_fallback) == 1
+            source = source.replace(approved_cjk_fallback, "")
         for family in forbidden_families:
-            assert family not in source
+            pattern = rf"(?<![A-Za-z0-9_-]){re.escape(family)}(?![A-Za-z0-9_-])"
+            assert re.search(pattern, source) is None, path
+        assert re.search(r"font(?:-family)?\s*:[^;]*\bmonospace\b", source) is None, path
 
 
 def test_hsbc_font_collection_is_present_and_checksum_pinned() -> None:
@@ -173,12 +204,14 @@ def test_hsbc_font_collection_is_present_and_checksum_pinned() -> None:
 
 
 def test_standalone_web_fonts_preserve_every_approved_face() -> None:
-    """Verify deterministic table extraction and valid standalone font checksums."""
+    """Pin every derived face and verify deterministic TTC table extraction."""
     source = FONT_PATH.read_bytes()
+    assert FACE_SHA256 == EXPECTED_FACE_SHA256
     for index, face in enumerate(FACE_NAMES):
         offset = struct.unpack_from(">I", source, 12 + index * 4)[0]
         path = FONT_PATH.with_name(f"UniversNextforHSBC-{face}.ttf")
         extracted = path.read_bytes()
+        assert hashlib.sha256(extracted).hexdigest() == EXPECTED_FACE_SHA256[face]
         assert extracted == extract_face(source, offset)
         assert checksum(extracted) == 0xB1B0AFBA
         assert path.name in _stylesheet()
@@ -1785,11 +1818,14 @@ def test_settings_category_navigation_uses_compact_shared_geometry() -> None:
     assert "padding: var(--settings-category-nav-item-padding-block) 12px;" in item_rule
 
 
-def test_technical_monospace_is_centralized_and_scoped() -> None:
-    """Keep technical monospace behind one token instead of one-off family declarations."""
+def test_technical_text_aliases_resolve_to_the_approved_base_family() -> None:
+    """Prevent legacy mono aliases from bypassing the approved typeface."""
     stylesheet = _stylesheet()
 
-    assert "--font-family-technical-mono: monospace;" in stylesheet
+    assert "--font-family-technical: var(--font-family-base);" in stylesheet
+    assert "--font-family-technical-mono: var(--font-family-technical);" in stylesheet
+    assert "--font-family-mono-cjk: var(--font-family-technical);" in stylesheet
+    assert "--font-family-mono: var(--font-family-technical);" in stylesheet
     assert "font-family: monospace;" not in stylesheet
     for selector in (
         "#chatgpt_tunnel_id.text-input-control,",
@@ -1801,8 +1837,8 @@ def test_technical_monospace_is_centralized_and_scoped() -> None:
         assert "font-family: var(--font-mono);" in rule
 
 
-def test_settings_agent_system_prompts_use_monospace_type() -> None:
-    """Keep both operating-system prompts on the shared real-monospace token."""
+def test_settings_agent_system_prompts_use_the_approved_typeface_alias() -> None:
+    """Keep both operating-system prompts on the approved technical alias."""
     stylesheet = _stylesheet()
     prompt_start = stylesheet.index(".settings-agent-system-prompt {")
     prompt_rule = stylesheet[prompt_start:stylesheet.index("\n}", prompt_start)]
@@ -2287,7 +2323,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.134.0-codex.0 */",
+        "/* Code version: v2.135.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
