@@ -13,7 +13,11 @@ import pytest
 
 from app.core.agent import compute_jobs
 from app.core.agent.session_pool import AgentSessionPool
-from app.core.computer_use_agent import ComputerUseAgentService, ComputerUseSettingsStore, default_model_for_platform
+from app.core.computer_use_agent import (
+    ComputerUseAgentService,
+    ComputerUseSettingsStore,
+)
+from app.core.agent.platform_catalog import default_model_for_platform
 from app.core.foundation import CrawlConfig
 
 

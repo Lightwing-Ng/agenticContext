@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.13.4-codex.0
+Code version: v1.13.5-codex.0
 """
 
 from __future__ import annotations
@@ -553,12 +553,16 @@ def test_silent_edge_chromium_context_is_backgrounded_without_stealing_focus(
     macos_host: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.core import computer_use_agent
+    from app.core import browser_host
 
     monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: macos_host)
-    monkeypatch.setattr(computer_use_agent, "_capture_macos_frontmost_application", lambda: "Editor")
+    monkeypatch.setattr(browser_host, "_capture_macos_frontmost_application", lambda: "Editor")
     restored = []
-    monkeypatch.setattr(computer_use_agent, "_restore_macos_frontmost_application_after_task_stage", lambda *args: restored.append(args))
+    monkeypatch.setattr(
+        browser_host,
+        "_restore_macos_frontmost_application_after_task_stage",
+        lambda *args: restored.append(args),
+    )
     source_user_data_dir = tmp_path / "Edge"
     source_profile_dir = source_user_data_dir / "Default"
     source_profile_dir.mkdir(parents=True)
@@ -620,8 +624,11 @@ def test_task_stage_chromium_context_is_not_forced_back_offscreen_by_silent_mode
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: macos_host)
-    monkeypatch.setattr("app.core.computer_use_agent._capture_macos_frontmost_application", lambda: "")
-    monkeypatch.setattr("app.core.computer_use_agent._restore_macos_frontmost_application_after_task_stage", lambda *_: None)
+    monkeypatch.setattr("app.core.browser_host._capture_macos_frontmost_application", lambda: "")
+    monkeypatch.setattr(
+        "app.core.browser_host._restore_macos_frontmost_application_after_task_stage",
+        lambda *_: None,
+    )
     source_user_data_dir = tmp_path / dir_name
     source_profile_dir = source_user_data_dir / "Default"
     source_profile_dir.mkdir(parents=True)

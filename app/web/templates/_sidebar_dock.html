@@ -16,7 +16,7 @@
         <span class="sidebar-dock-label" aria-hidden="true">Agent</span>
     </a>
     <a
-        href="{{ url_for('cache_source', source_key=cache_dock_source_key) }}"
+        href="{{ url_for('cache.cache_source', source_key=cache_dock_source_key) }}"
         class="sidebar-dock-item{% if dock_section in cache_source_keys or dock_section in llm_cache_source_keys or dock_section == 'cache' %} is-active{% endif %}"
         data-dock-section="cache"
         data-section-link="cache"
@@ -28,7 +28,7 @@
         <span class="sidebar-dock-label" aria-hidden="true">Cache</span>
     </a>
     <a
-        href="{{ url_for('browser', view='text', source='chatgpt', kind='all', q='', sort='newest', session_view='1') }}"
+        href="{{ url_for('local_resources.browser', view='text', source='chatgpt', kind='all', q='', sort='newest', session_view='1') }}"
         class="sidebar-dock-item{% if dock_section == 'local-resources' %} is-active{% endif %}"
         data-dock-section="local-resources"
         data-section-link="local-resources"
@@ -53,7 +53,7 @@
     </a>
     {% endif %}
     <a
-        href="{{ url_for('settings') }}"
+        href="{{ url_for('settings.settings') }}"
         class="sidebar-dock-item{% if dock_section == 'settings' %} is-active{% endif %}"
         data-dock-section="settings"
         data-section-link="settings"

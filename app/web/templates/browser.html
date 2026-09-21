@@ -105,7 +105,7 @@
             </section>
             <section class="sidebar-section">
                 <form
-                    action="{{ url_for('browser') }}"
+                    action="{{ url_for('local_resources.browser') }}"
                     method="get"
                     class="sidebar-form browser-filter-form"
                     id="browser_filter_form"
@@ -271,12 +271,12 @@
                     <div class="browser-content-toolbar">
                         <div class="browser-session-detail-actions browser-local-resources-header-actions{% if filters.view == 'text' and text_page.session_detail %} browser-session-detail-actions--session{% endif %}" data-browser-local-resources-header-actions>
                             {% if filters.view == "text" and text_page.session_detail %}
-                            <a class="secondary-button browser-session-back-link" href="{{ url_for('browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">{{ "Back to all answerers" if is_zhihu_text else "Back to all sessions" }}</a>
+                            <a class="secondary-button browser-session-back-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">{{ "Back to all answerers" if is_zhihu_text else "Back to all sessions" }}</a>
                             <nav class="browser-session-neighbor-nav" aria-label="{{ 'Answerer navigation' if is_zhihu_text else 'Session navigation' }}">
                                 {% if text_page.previous_session %}
                                 <a
                                     class="browser-session-control-button browser-session-neighbor-button"
-                                    href="{{ url_for('browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.previous_session.stable_id, session_page=filters.session_page, page=1) }}"
+                                    href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.previous_session.stable_id, session_page=filters.session_page, page=1) }}"
                                     aria-label="{{ 'Previous answerer' if is_zhihu_text else 'Previous session' }}"
                                     title="{{ 'Previous answerer' if is_zhihu_text else 'Previous session' }}: {{ text_page.previous_session.conversation_title }}"
                                 ><span class="icon browser-session-neighbor-prev-icon" aria-hidden="true"></span></a>
@@ -286,7 +286,7 @@
                                 {% if text_page.next_session %}
                                 <a
                                     class="browser-session-control-button browser-session-neighbor-button"
-                                    href="{{ url_for('browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.next_session.stable_id, session_page=filters.session_page, page=1) }}"
+                                    href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.next_session.stable_id, session_page=filters.session_page, page=1) }}"
                                     aria-label="{{ 'Next answerer' if is_zhihu_text else 'Next session' }}"
                                     title="{{ 'Next answerer' if is_zhihu_text else 'Next session' }}: {{ text_page.next_session.conversation_title }}"
                                 ><span class="icon browser-session-neighbor-next-icon" aria-hidden="true"></span></a>
@@ -315,7 +315,7 @@
                                 <button
                                     type="button"
                                     class="browser-session-action-button browser-session-refresh-button"
-                                    data-browser-session-refresh-url="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view='1', session=text_page.current_session.stable_id, session_page=filters.session_page, page=filters.page, refresh='1') }}"
+                                    data-browser-session-refresh-url="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view='1', session=text_page.current_session.stable_id, session_page=filters.session_page, page=filters.page, refresh='1') }}"
                                     data-wait-title="Refreshing page"
                                     data-wait-copy="{{ 'Reloading this answerer’s cached answers.' if is_zhihu_text else 'Reloading the current cached session page.' }}"
                                     aria-label="Refresh current page"
@@ -327,7 +327,7 @@
                                     type="button"
                                     class="browser-session-action-button browser-session-full-export-button"
                                     data-browser-session-export-scope="all"
-                                    data-browser-session-download-url="{{ url_for('browser_session_export', session_id=text_page.current_session.stable_id, source=filters.source, sort=filters.sort, scope='all') }}"
+                                    data-browser-session-download-url="{{ url_for('local_resources.browser_session_export', session_id=text_page.current_session.stable_id, source=filters.source, sort=filters.sort, scope='all') }}"
                                     aria-label="Export Markdown"
                                     title="Export Markdown"
                                 >
@@ -594,7 +594,7 @@
                                 <video
                                     class="browser-preview-media"
                                     data-preview
-                                    data-media-src="{{ url_for('browser_deleted_preview', stable_id=item.stable_id) if item.is_deleted else browser_media_url(item.relative_path) }}"
+                                    data-media-src="{{ url_for('local_resources.browser_deleted_preview', stable_id=item.stable_id) if item.is_deleted else browser_media_url(item.relative_path) }}"
                                     muted
                                     playsinline
                                     preload="none"
@@ -604,7 +604,7 @@
                                 <img
                                     class="browser-preview-media"
                                     data-preview
-                                    data-media-src="{{ url_for('browser_deleted_preview', stable_id=item.stable_id) if item.is_deleted else browser_media_url(item.relative_path) }}"
+                                    data-media-src="{{ url_for('local_resources.browser_deleted_preview', stable_id=item.stable_id) if item.is_deleted else browser_media_url(item.relative_path) }}"
                                     alt="{{ item.alt_text or item.title }}"
                                     loading="lazy"
                                     decoding="async"
@@ -909,7 +909,7 @@
                                         {% if not is_zhihu_text %}
                                         <th scope="col" class="browser-session-col-source scrollable-data-table-filter-header">
                                             <span class="scrollable-data-table-filter-default-label">Source</span>
-                                            <form method="get" action="{{ url_for('browser') }}" class="browser-header-filter-form">
+                                            <form method="get" action="{{ url_for('local_resources.browser') }}" class="browser-header-filter-form">
                                                 <input type="hidden" name="view" value="text">
                                                 <input type="hidden" name="session_view" value="1">
                                                 <input type="hidden" name="q" value="{{ filters.q }}">
@@ -971,7 +971,7 @@
                                         {% endif %}
                                         <th scope="col" class="browser-session-col-count">{{ "Answers" if is_zhihu_text else "Messages" }}</th>
                                         <th scope="col" class="browser-session-col-updated" aria-sort="{{ 'ascending' if filters.sort == 'oldest' else ('descending' if filters.sort == 'newest' else 'none') }}">
-                                            <a class="browser-session-sort-link" href="{{ url_for('browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort='newest' if filters.sort == 'oldest' else 'oldest', session_view='1', page=1) }}" aria-label="Last updated: sort {{ 'newest first' if filters.sort == 'oldest' else 'oldest first' }}">Last updated <span aria-hidden="true">{{ '↑' if filters.sort == 'oldest' else '↓' }}</span></a>
+                                            <a class="browser-session-sort-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort='newest' if filters.sort == 'oldest' else 'oldest', session_view='1', page=1) }}" aria-label="Last updated: sort {{ 'newest first' if filters.sort == 'oldest' else 'oldest first' }}">Last updated <span aria-hidden="true">{{ '↑' if filters.sort == 'oldest' else '↓' }}</span></a>
                                         </th>
                                     </tr>
                                 </thead>
@@ -980,7 +980,7 @@
                                     <tr data-chat-session-id="{{ session.stable_id }}">
                                         <td class="browser-session-table-number">{{ ((text_page.current_page - 1) * text_page.page_size) + loop.index }}</td>
                                         <td>
-                                            <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q='', sort=filters.sort, session_view='1', session=session.stable_id, session_page=filters.page, page=1) }}">{{ session.conversation_title }}</a>
+                                            <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q='', sort=filters.sort, session_view='1', session=session.stable_id, session_page=filters.page, page=1) }}">{{ session.conversation_title }}</a>
                                             {% if not is_zhihu_text %}
                                             <span class="browser-session-table-id">{{ session.conversation_id }}</span>
                                             {% endif %}

@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.27.8-codex.0
+# Code version: v1.27.11-codex.0
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from . import browser_host
 from .browser.x_session import X_READY_SELECTORS, detect_account_handle
 from .config import CrawlConfig, default_edge_user_data_dir, is_macos_host, is_windows_host
 from .safari_automation import SafariContext
@@ -287,7 +288,7 @@ def open_zhihu_browser_for_login(
         command = ["/usr/bin/open", "-g", "-a", application, ZHIHU_HOME_URL]
         process_options["start_new_session"] = True
     elif is_windows_host():
-        from .computer_use_agent import resolve_windows_browser_executable
+        from .browser_executables import resolve_windows_browser_executable
 
         executable = resolve_windows_browser_executable(selected)
         if executable is None:
@@ -1414,13 +1415,12 @@ def launch_chromium_context(
             and descriptor.browser_id in {"edge", "chrome"}
             and window_mode == CHROMIUM_WINDOW_MODE_OFFSCREEN
         )
-        from .computer_use_agent import (
-            _capture_macos_frontmost_application,
-            _restore_macos_frontmost_application_after_task_stage,
-        )
-
         task_stage = is_macos_host() and window_mode == CHROMIUM_WINDOW_MODE_TASK_STAGE
-        previous = _capture_macos_frontmost_application() if task_stage else ""
+        previous = (
+            browser_host._capture_macos_frontmost_application()
+            if task_stage
+            else ""
+        )
         try:
             return playwright.chromium.launch_persistent_context(
                 user_data_dir=str(target_user_data_dir),
@@ -1436,7 +1436,7 @@ def launch_chromium_context(
             )
         finally:
             if task_stage:
-                _restore_macos_frontmost_application_after_task_stage(
+                browser_host._restore_macos_frontmost_application_after_task_stage(
                     previous,
                     "Google Chrome" if descriptor.browser_id == "chrome" else "Microsoft Edge",
                 )

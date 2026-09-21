@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.81.13-codex.2
+Code version: v3.82.1-codex.0
 """
 
 from __future__ import annotations
@@ -26,23 +26,16 @@ from typing import Callable
 import pytest
 
 from app.core.computer_use_agent import (
-    AGENT_MODEL_OPTIONS_BY_PLATFORM,
-    AGENT_PLATFORM_OPTIONS,
     AgentRunSnapshot,
     AgentTurnLimitExceeded,
-    ActionState,
     CHATGPT_MODEL_TRIGGER_LABELS,
     CHATGPT_SESSION_BIND_TIMEOUT_SECONDS,
-    DEFAULT_CHATGPT_MODEL,
-    MAX_CONTROLLER_DELETE_BYTES,
     MAX_MAX_TURNS,
     OpenAIEquivalentTokenCounter,
     PROVIDER_SESSION_BIND_TIMEOUT_SECONDS,
-    SEARCH_MAX_FILE_BYTES,
     ComputerUseAgentService,
     ComputerUseSettings,
     ComputerUseSettingsStore,
-    WorkspaceController,
     _LinearizedStopSignal,
     _ProviderSessionBinding,
     _provider_human_verification_reason,
@@ -65,8 +58,6 @@ from app.core.computer_use_agent import (
     _read_chatgpt_model_menu,
     _chatgpt_visible_model_controls,
     _detect_browser_interruption,
-    default_model_for_platform,
-    strongest_model_option,
     _chatgpt_is_project_surface,
     _chatgpt_target_is_open,
     _grok_existing_conversation_urls,
@@ -94,7 +85,6 @@ from app.core.computer_use_agent import (
     _openai_agentic_token_count,
     _format_binary_size,
     build_context_markdown,
-    detect_host_operating_system,
     is_agent_execution_supported,
     is_loopback_address,
     launch_terminal_authorization,
@@ -102,7 +92,6 @@ from app.core.computer_use_agent import (
     open_browser_for_login,
     open_chatgpt_in_default_browser,
     open_agent_in_default_browser,
-    parse_agent_action,
     run_web_computer_use,
     load_computer_use_settings,
     save_computer_use_settings,
@@ -113,14 +102,102 @@ from app.core.computer_use_agent import (
     terminal_execution_permission_snapshot,
     _submit_and_wait,
     validate_computer_use_settings,
-    inspection_command_parts,
     resolve_agent_session_target,
     resolve_windows_browser_executable,
+)
+from app.core.agent.action_protocol import parse_agent_action
+from app.core.agent.platform_catalog import (
+    AGENT_MODEL_OPTIONS_BY_PLATFORM,
+    AGENT_PLATFORM_OPTIONS,
+    DEFAULT_CHATGPT_MODEL,
+    default_model_for_platform,
+    detect_host_operating_system,
+    strongest_model_option,
+)
+from app.core.workspace.action_state import ActionState
+from app.core.workspace.command_policy import (
+    inspection_command_parts,
     validate_inspection_command,
 )
+from app.core.workspace.controller import (
+    MAX_CONTROLLER_DELETE_BYTES,
+    WorkspaceController,
+)
+from app.core.workspace.search import SEARCH_MAX_FILE_BYTES
+from app.core.workspace import (
+    action_state as workspace_action_state,
+    command_policy as workspace_command_policy,
+    controller as workspace_controller,
+    evidence as workspace_evidence,
+    executables as workspace_executables,
+    paths as workspace_paths,
+    process_io as workspace_process_io,
+    search as workspace_search,
+)
+from app.core.agent import context_package, platform_catalog as agent_platform_catalog
 from app.core.agent.event_chain import AgentEventChain, new_run_id
 from app.core.config import CrawlConfig
 from app.core.safari_automation import SafariNativeActivationError
+
+
+WORKSPACE_MODULES = (
+    workspace_action_state,
+    workspace_command_policy,
+    workspace_controller,
+    workspace_evidence,
+    workspace_executables,
+    workspace_paths,
+    workspace_process_io,
+    workspace_search,
+)
+
+
+def test_computer_use_agent_keeps_moved_symbol_compatibility() -> None:
+    """Existing callers can migrate off the former giant module incrementally."""
+    import app.core.computer_use_agent as legacy
+
+    identity_bindings = {
+        "AGENT_MODEL_OPTIONS_BY_PLATFORM": agent_platform_catalog.AGENT_MODEL_OPTIONS_BY_PLATFORM,
+        "AGENT_PLATFORM_OPTIONS": agent_platform_catalog.AGENT_PLATFORM_OPTIONS,
+        "OPERATING_SYSTEM_OPTIONS": agent_platform_catalog.OPERATING_SYSTEM_OPTIONS,
+        "SUPPORTED_SAFARI_AGENT_PLATFORMS": (
+            agent_platform_catalog.SUPPORTED_SAFARI_AGENT_PLATFORMS
+        ),
+        "strongest_model_option": agent_platform_catalog.strongest_model_option,
+        "inspection_command_parts": workspace_command_policy.inspection_command_parts,
+        "validate_inspection_command": workspace_command_policy.validate_inspection_command,
+        "_collect_instruction_files": workspace_paths._collect_instruction_files,
+        "_path_has_controller_internal_file": (
+            workspace_paths._path_has_controller_internal_file
+        ),
+        "_path_has_sensitive_part": workspace_paths._path_has_sensitive_part,
+        "_process_group_options": workspace_process_io._process_group_options,
+        "_trusted_system_executable": workspace_executables._trusted_system_executable,
+        "_workspace_mutation_fingerprint": workspace_evidence._workspace_mutation_fingerprint,
+    }
+    for name, canonical in identity_bindings.items():
+        assert getattr(legacy, name) is canonical, name
+
+    assert legacy.MAX_BASE64_DECODED_BYTES == workspace_controller.MAX_BASE64_DECODED_BYTES
+    assert legacy.MAX_CONTROLLER_DELETE_BYTES == workspace_controller.MAX_CONTROLLER_DELETE_BYTES
+    assert legacy.SEARCH_MAX_FILE_BYTES == workspace_search.SEARCH_MAX_FILE_BYTES
+
+
+def _patch_workspace_global(monkeypatch: pytest.MonkeyPatch, name: str, value: object) -> None:
+    """Replace one shared workspace global in every module that binds it.
+
+    These helpers were module globals of a single file, so one patch reached every
+    caller. They now live in the workspace package and each consumer binds its own
+    reference, so patching every binding keeps the original single-global behavior.
+    """
+    import app.core.computer_use_agent as computer_use_agent
+
+    patched = False
+    for module in (computer_use_agent, *WORKSPACE_MODULES):
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, value)
+            patched = True
+    assert patched, f"no module binds {name}"
 
 
 def _select_verified_chatgpt_model(*args: object, **kwargs: object) -> bool:
@@ -215,9 +292,8 @@ def test_windows_agent_rejects_safari_and_accepts_chromium(tmp_path: Path) -> No
 def test_windows_python_launcher_uses_controller_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launcher: str,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
     expected = inspection_command_parts("python -m pytest tests/test_example.py", workspace=tmp_path)
     assert inspection_command_parts(
         f"{launcher} -3 -m pytest tests/test_example.py", workspace=tmp_path,
@@ -237,9 +313,8 @@ def test_windows_python_launcher_uses_controller_runtime(
 def test_windows_python_launcher_preserves_command_restrictions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: str,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
     with pytest.raises(ValueError):
         inspection_command_parts(f"py -3 {arguments}", workspace=tmp_path)
 
@@ -256,7 +331,7 @@ def test_windows_inspection_commands_use_powershell_for_safe_scripts(
     script.write_text("exit 0\n", encoding="utf-8")
     powershell = tmp_path / "pwsh.exe"
     powershell.write_text("", encoding="utf-8")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
     monkeypatch.setattr(
         computer_use_agent.shutil,
         "which",
@@ -300,9 +375,8 @@ def test_windows_inspection_commands_remove_outer_quotes_from_path_arguments(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
 
     double_quoted = inspection_command_parts(
         r'pytest "tests\foo bar.py" -q',
@@ -4231,7 +4305,7 @@ def test_open_agent_in_browser_windows_uses_resolved_executable_and_detached_fla
     resolved_executable = str(tmp_path / "msedge.exe")
     launched: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
     monkeypatch.setattr(
         computer_use_agent,
         "resolve_windows_browser_executable",
@@ -4289,7 +4363,7 @@ def test_open_agent_in_browser_windows_fails_without_a_resolved_executable(
 
     launched: list[list[str]] = []
     monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
     monkeypatch.setattr(computer_use_agent, "resolve_windows_browser_executable", lambda _browser: None)
     monkeypatch.setattr(
         computer_use_agent.subprocess,
@@ -4394,7 +4468,7 @@ def test_open_browser_for_login_windows_uses_resolved_executable(
     from app.core.agent_debug_browser import DebugBrowserHandle
 
     monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
 
     ensure_calls: list[str] = []
 
@@ -4451,7 +4525,7 @@ def test_open_browser_for_login_macos_edge_uses_debug_browser_over_http(
     import app.core.computer_use_agent as computer_use_agent
 
     monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: False)
     monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
     monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
     daily_handoff = Mock(side_effect=AssertionError("macOS Edge login must not open daily Edge"))
@@ -4491,7 +4565,7 @@ def test_open_browser_for_login_does_not_reload_a_cloudflare_challenge(
     from app.core.agent_debug_browser import DebugBrowserHandle
 
     monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
     monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
     monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
     monkeypatch.setattr(
@@ -4566,7 +4640,7 @@ def test_open_browser_for_login_does_not_reopen_chatgpt_over_an_authorize_popup(
     from app.core.agent_debug_browser import DebugBrowserHandle
 
     monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
     monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
     monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
     monkeypatch.setattr(
@@ -4647,7 +4721,7 @@ def test_open_browser_for_login_macos_chrome_keeps_standard_handoff(
     handoff = Mock(return_value=expected)
     config = CrawlConfig()
     monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: False)
     monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
     monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
     monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", handoff)
@@ -4686,7 +4760,7 @@ def test_open_browser_for_login_macos_allows_safari_source_providers(
     handoff = Mock(return_value=expected)
     config = CrawlConfig()
     monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: False)
     monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", handoff)
 
     result = open_browser_for_login(platform, "safari", config=config)
@@ -5948,11 +6022,7 @@ def test_transient_initial_workspace_evidence_is_retried_before_browser_startup(
         scan_timeouts.append(timeout_seconds)
         return next(scans)
 
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_workspace_mutation_fingerprint",
-        fingerprint,
-    )
+    _patch_workspace_global(monkeypatch, "_workspace_mutation_fingerprint", fingerprint)
     monkeypatch.setattr(
         computer_use_agent,
         "browser_descriptors",
@@ -5983,7 +6053,7 @@ def test_transient_initial_workspace_evidence_is_retried_before_browser_startup(
         )
 
     assert scan_timeouts == [
-        computer_use_agent.WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS,
+        workspace_evidence.WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS,
         computer_use_agent.INITIAL_WORKSPACE_EVIDENCE_RETRY_TIMEOUT_SECONDS,
     ]
 
@@ -6011,11 +6081,7 @@ def test_persistently_incomplete_initial_workspace_evidence_still_fails_closed(
         scan_timeouts.append(timeout_seconds)
         return "partial", False
 
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_workspace_mutation_fingerprint",
-        fingerprint,
-    )
+    _patch_workspace_global(monkeypatch, "_workspace_mutation_fingerprint", fingerprint)
     monkeypatch.setattr(
         computer_use_agent,
         "browser_descriptors",
@@ -6043,7 +6109,7 @@ def test_persistently_incomplete_initial_workspace_evidence_still_fails_closed(
         )
 
     assert scan_timeouts == [
-        computer_use_agent.WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS,
+        workspace_evidence.WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS,
         computer_use_agent.INITIAL_WORKSPACE_EVIDENCE_RETRY_TIMEOUT_SECONDS,
         computer_use_agent.INITIAL_WORKSPACE_EVIDENCE_RETRY_TIMEOUT_SECONDS,
     ]
@@ -7674,7 +7740,6 @@ def test_non_regular_snapshot_file_returns_without_blocking(tmp_path: Path) -> N
 def test_context_markdown_contains_instructions_request_and_bounded_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     with TemporaryDirectory() as raw_root:
         workspace = Path(raw_root) / "project"
@@ -7711,11 +7776,7 @@ def test_context_markdown_contains_instructions_request_and_bounded_index(
             "?? nested/.computer-use-agent/context.md\x00"
         )
 
-        monkeypatch.setattr(
-            computer_use_agent,
-            "_bounded_git_status_output",
-            lambda _workspace, **_kwargs: (status_output, False),
-        )
+        _patch_workspace_global(monkeypatch, "_bounded_git_status_output", lambda _workspace, **_kwargs: (status_output, False))
         destination = Path(raw_root) / "runtime" / "context.md"
         settings = ComputerUseSettings(workspace_path=str(workspace), context_limit_mib=1)
 
@@ -7894,11 +7955,11 @@ def test_git_status_stream_has_a_global_raw_limit_and_stops_the_process(
         stopped.append(value)
         process.returncode = -15
 
-    monkeypatch.setattr(computer_use_agent, "GIT_STATUS_MAX_RAW_CHARS", 64)
+    _patch_workspace_global(monkeypatch, "GIT_STATUS_MAX_RAW_CHARS", 64)
     monkeypatch.setattr(computer_use_agent.subprocess, "Popen", launch)
-    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
+    _patch_workspace_global(monkeypatch, "_stop_process", stop_process)
 
-    output, truncated = computer_use_agent._bounded_git_status_output(workspace)
+    output, truncated = workspace_evidence._bounded_git_status_output(workspace)
 
     assert truncated is True
     assert len(output) == 64
@@ -7914,7 +7975,6 @@ def test_filtered_git_status_drops_sensitive_rename_and_truncated_records(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     raw = (
         "?? safe.py\x00"
@@ -7922,13 +7982,9 @@ def test_filtered_git_status_drops_sensitive_rename_and_truncated_records(
         "?? .env\x00"
         "?? incomplete-sensitive"
     )
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_bounded_git_status_output",
-        lambda _workspace, **_kwargs: (raw, True),
-    )
+    _patch_workspace_global(monkeypatch, "_bounded_git_status_output", lambda _workspace, **_kwargs: (raw, True))
 
-    status = computer_use_agent._filtered_git_status(tmp_path)
+    status = workspace_evidence._filtered_git_status(tmp_path)
 
     assert '?? "safe.py"' in status
     assert "credentials" not in status
@@ -7941,15 +7997,10 @@ def test_filtered_git_status_drops_a_fully_incomplete_first_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_bounded_git_status_output",
-        lambda _workspace, **_kwargs: ("?? incomplete-sensitive", True),
-    )
+    _patch_workspace_global(monkeypatch, "_bounded_git_status_output", lambda _workspace, **_kwargs: ("?? incomplete-sensitive", True))
 
-    status = computer_use_agent._filtered_git_status(tmp_path)
+    status = workspace_evidence._filtered_git_status(tmp_path)
 
     assert status == "!! [status truncated at the controller output limit]"
     assert "incomplete-sensitive" not in status
@@ -7989,16 +8040,16 @@ def test_git_status_stream_timeout_is_bounded_and_cleans_up(
         stopped.append(value)
         process.returncode = -15
 
-    monkeypatch.setattr(computer_use_agent, "GIT_STATUS_TIMEOUT_SECONDS", 0.001)
+    _patch_workspace_global(monkeypatch, "GIT_STATUS_TIMEOUT_SECONDS", 0.001)
     monkeypatch.setattr(
         computer_use_agent.subprocess,
         "Popen",
         lambda *_args, **_kwargs: process,
     )
-    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
+    _patch_workspace_global(monkeypatch, "_stop_process", stop_process)
 
     with pytest.raises(RuntimeError, match="0.001-second controller limit"):
-        computer_use_agent._bounded_git_status_output(tmp_path)
+        workspace_evidence._bounded_git_status_output(tmp_path)
 
     assert stopped == [process]
 
@@ -8006,7 +8057,6 @@ def test_git_status_stream_timeout_is_bounded_and_cleans_up(
 def test_project_file_index_is_bounded_to_safe_regular_files(
     tmp_path: Path,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -8026,7 +8076,7 @@ def test_project_file_index_is_bounded_to_safe_regular_files(
     except OSError:
         pass
 
-    assert computer_use_agent._project_file_index(workspace) == ["app.py", "README.md"]
+    assert context_package._project_file_index(workspace) == ["app.py", "README.md"]
 
 
 def test_action_parser_requires_one_json_object() -> None:
@@ -8096,7 +8146,6 @@ def test_windows_controller_fences_root_before_admission_identity_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -8120,21 +8169,9 @@ def test_windows_controller_fences_root_before_admission_identity_check(
         workspace.mkdir()
         return root_handle, (900, 901)
 
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_uses_windows_directory_handles",
-        lambda: True,
-    )
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_open_windows_directory_identity",
-        open_guarded_root,
-    )
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_close_windows_directory_handle",
-        closed_handles.append,
-    )
+    _patch_workspace_global(monkeypatch, "_uses_windows_directory_handles", lambda: True)
+    _patch_workspace_global(monkeypatch, "_open_windows_directory_identity", open_guarded_root)
+    _patch_workspace_global(monkeypatch, "_close_windows_directory_handle", closed_handles.append)
 
     with pytest.raises(RuntimeError, match="identity changed after admission"):
         WorkspaceController(
@@ -8153,7 +8190,6 @@ def test_windows_controller_rejects_root_rebound_during_native_identity_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -8171,29 +8207,13 @@ def test_windows_controller_rejects_root_rebound_during_native_identity_check(
         workspace.mkdir()
         return 902, 903
 
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_uses_windows_directory_handles",
-        lambda: True,
-    )
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_open_windows_directory_identity",
-        lambda _directory, *, deny_delete: (
+    _patch_workspace_global(monkeypatch, "_uses_windows_directory_handles", lambda: True)
+    _patch_workspace_global(monkeypatch, "_open_windows_directory_identity", lambda _directory, *, deny_delete: (
             root_handle,
             (900, 901),
-        ),
-    )
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_windows_directory_identity",
-        read_rebound_identity,
-    )
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_close_windows_directory_handle",
-        closed_handles.append,
-    )
+        ))
+    _patch_workspace_global(monkeypatch, "_windows_directory_identity", read_rebound_identity)
+    _patch_workspace_global(monkeypatch, "_close_windows_directory_handle", closed_handles.append)
 
     with pytest.raises(RuntimeError, match="Windows root handle was acquired"):
         WorkspaceController(
@@ -11510,9 +11530,8 @@ def test_workspace_controller_delete_anchors_the_parent_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_DELETE_SUPPORTED:
+    if not workspace_controller._ANCHORED_DELETE_SUPPORTED:
         pytest.skip("Anchored deletion descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     nested = workspace / "nested"
@@ -11628,9 +11647,8 @@ def test_workspace_replace_preserves_concurrent_replacement_at_commit_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+    if not workspace_controller._ANCHORED_MUTATION_SUPPORTED:
         pytest.skip("Anchored mutation descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -11708,9 +11726,8 @@ def test_workspace_delete_preserves_concurrent_replacement_at_commit_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_DELETE_SUPPORTED:
+    if not workspace_controller._ANCHORED_DELETE_SUPPORTED:
         pytest.skip("Anchored deletion descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -11789,9 +11806,8 @@ def test_workspace_write_preserves_concurrent_rebind_during_failed_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+    if not workspace_controller._ANCHORED_MUTATION_SUPPORTED:
         pytest.skip("Anchored mutation descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -11834,9 +11850,8 @@ def test_workspace_replace_preserves_a_concurrent_user_edit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+    if not workspace_controller._ANCHORED_MUTATION_SUPPORTED:
         pytest.skip("Anchored mutation descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -11880,9 +11895,8 @@ def test_workspace_replace_preserves_a_late_edit_through_the_old_descriptor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+    if not workspace_controller._ANCHORED_MUTATION_SUPPORTED:
         pytest.skip("Anchored mutation descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -11946,9 +11960,8 @@ def test_workspace_replace_retains_recovery_after_the_final_backup_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+    if not workspace_controller._ANCHORED_MUTATION_SUPPORTED:
         pytest.skip("Anchored mutation descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -12023,14 +12036,14 @@ def test_workspace_replace_retains_recovery_after_the_final_backup_check(
         ComputerUseSettings(workspace_path=str(workspace)),
         tmp_path / "context.md",
     )
-    before_fingerprint = computer_use_agent._workspace_mutation_fingerprint(workspace)
+    before_fingerprint = workspace_evidence._workspace_mutation_fingerprint(workspace)
     recovery_path.write_bytes(b"later recovery-only bytes\n")
-    after_fingerprint = computer_use_agent._workspace_mutation_fingerprint(workspace)
+    after_fingerprint = workspace_evidence._workspace_mutation_fingerprint(workspace)
     assert search_result["matches"] == []
     assert run_result["ok"] is False
     assert "internal Agent metadata" in run_result["error"]
     assert result["recovery_path"] not in context_path.read_text(encoding="utf-8")
-    assert computer_use_agent._safe_untracked_paths_from_status(
+    assert workspace_evidence._safe_untracked_paths_from_status(
         f"?? {json.dumps(result['recovery_path'])}"
     ) == []
     assert before_fingerprint == after_fingerprint
@@ -12187,7 +12200,6 @@ def test_unanchored_non_windows_write_fails_before_a_parent_rebind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     nested = workspace / "nested"
@@ -12199,7 +12211,7 @@ def test_unanchored_non_windows_write_fails_before_a_parent_rebind(
         ComputerUseSettings(workspace_path=str(workspace)),
         lambda: False,
     )
-    monkeypatch.setattr(computer_use_agent, "_ANCHORED_MUTATION_SUPPORTED", False)
+    _patch_workspace_global(monkeypatch, "_ANCHORED_MUTATION_SUPPORTED", False)
     original_resolve = controller._resolve_path
     resolve_calls = 0
 
@@ -12230,9 +12242,8 @@ def test_workspace_write_removes_its_partial_file_after_a_write_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+    if not workspace_controller._ANCHORED_MUTATION_SUPPORTED:
         pytest.skip("Anchored mutation descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -12263,9 +12274,8 @@ def test_workspace_write_preserves_a_replacement_after_partial_write_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+    if not workspace_controller._ANCHORED_MUTATION_SUPPORTED:
         pytest.skip("Anchored mutation descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -12388,9 +12398,8 @@ def test_workspace_write_uses_exclusive_creation_under_a_race(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+    if not workspace_controller._ANCHORED_MUTATION_SUPPORTED:
         pytest.skip("Anchored mutation descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -12441,9 +12450,8 @@ def test_workspace_write_never_follows_a_swapped_parent_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    if not computer_use_agent._ANCHORED_MUTATION_SUPPORTED:
+    if not workspace_controller._ANCHORED_MUTATION_SUPPORTED:
         pytest.skip("Anchored mutation descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     nested = workspace / "nested"
@@ -12740,11 +12748,10 @@ def _mock_rg_popen(
 def test_rg_json_parser_preserves_posix_colons_and_backslashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: False)
 
-    assert computer_use_agent._parse_rg_search_match(
+    assert workspace_search._parse_rg_search_match(
         _rg_json_match("outer:part/docs/name\\literal.md", 7, "marker")
     ) == (
         Path("outer:part/docs/name\\literal.md"),
@@ -12755,11 +12762,10 @@ def test_rg_json_parser_preserves_posix_colons_and_backslashes(
 def test_rg_json_parser_normalizes_windows_separators(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
 
-    assert computer_use_agent._parse_rg_search_match(
+    assert workspace_search._parse_rg_search_match(
         _rg_json_match(r"docs\nested\agent.py", 3, "marker")
     ) == (
         Path("docs/nested/agent.py"),
@@ -12988,7 +12994,7 @@ def test_windows_search_glob_normalizes_separators_case_and_engine_parity(
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
     workspace = tmp_path / "project"
     source = workspace / "app" / "core" / "agent.py"
     source.parent.mkdir(parents=True)
@@ -13292,7 +13298,6 @@ def test_workspace_search_rg_stops_at_the_global_raw_event_limit(
     monkeypatch: pytest.MonkeyPatch,
     trusted_mock_rg: Path,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -13303,7 +13308,7 @@ def test_workspace_search_rg_stops_at_the_global_raw_event_limit(
     )
     output = "\n".join(
         _rg_json_match(f"docs/file-{index}.txt", 1, "marker")
-        for index in range(computer_use_agent.SEARCH_MAX_RAW_EVENTS + 1)
+        for index in range(workspace_search.SEARCH_MAX_RAW_EVENTS + 1)
     )
     _mock_rg_popen(monkeypatch, stdout=output)
 
@@ -13432,7 +13437,7 @@ def test_workspace_search_rg_timeout_returns_a_bounded_observation(
         def wait(self, **_kwargs: object) -> int:
             return self.returncode
 
-    monkeypatch.setattr(computer_use_agent, "SEARCH_TIMEOUT_SECONDS", 0.001)
+    _patch_workspace_global(monkeypatch, "SEARCH_TIMEOUT_SECONDS", 0.001)
     monkeypatch.setattr(
         computer_use_agent.subprocess,
         "Popen",
@@ -13502,7 +13507,7 @@ def test_workspace_search_stream_failure_stops_and_clears_the_process(
         "Popen",
         lambda *_args, **_kwargs: process,
     )
-    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
+    _patch_workspace_global(monkeypatch, "_stop_process", stop_process)
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),
@@ -13981,9 +13986,8 @@ def test_command_policy_allows_only_real_platform_scripts_under_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: False)
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: False)
     workspace = tmp_path / "project"
     script = workspace / "scripts" / "check.sh"
     script.parent.mkdir(parents=True)
@@ -14104,7 +14108,6 @@ def test_command_policy_rejects_linked_path_arguments(
 def test_hard_link_is_rejected_across_controller_boundaries(
     tmp_path: Path,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -14137,7 +14140,7 @@ def test_hard_link_is_rejected_across_controller_boundaries(
         {"action": "run", "command": "python3 -m py_compile linked.py"}
     )
     _digest, fingerprint_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     context_path, _context_bytes = build_context_markdown(
         workspace,
@@ -14229,11 +14232,7 @@ def test_git_status_run_returns_only_filtered_status(
         ComputerUseSettings(workspace_path=str(workspace)),
         lambda: False,
     )
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_filtered_git_status",
-        lambda _workspace, **_kwargs: '?? "safe.py"',
-    )
+    _patch_workspace_global(monkeypatch, "_filtered_git_status", lambda _workspace, **_kwargs: '?? "safe.py"')
     monkeypatch.setattr(
         computer_use_agent.subprocess,
         "Popen",
@@ -14255,7 +14254,6 @@ def test_git_status_run_never_satisfies_the_verification_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -14265,11 +14263,7 @@ def test_git_status_run_never_satisfies_the_verification_gate(
         lambda: False,
     )
     controller.state.edit_generation = 7
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_filtered_git_status",
-        lambda _workspace, **_kwargs: ' M "sample.py"',
-    )
+    _patch_workspace_global(monkeypatch, "_filtered_git_status", lambda _workspace, **_kwargs: ' M "sample.py"')
 
     result = controller.execute(
         {"action": "run", "command": "git status --short"}
@@ -14320,7 +14314,7 @@ def test_git_status_run_stop_terminates_and_clears_the_active_process(
         "Popen",
         lambda *_args, **_kwargs: process,
     )
-    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
+    _patch_workspace_global(monkeypatch, "_stop_process", stop_process)
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),
@@ -14349,11 +14343,7 @@ def test_run_does_not_launch_when_the_initial_fingerprint_is_incomplete(
     workspace = tmp_path / "project"
     workspace.mkdir()
     (workspace / "sample.py").write_text("value = 1\n", encoding="utf-8")
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_workspace_mutation_fingerprint",
-        lambda _workspace, **_kwargs: ("incomplete", False),
-    )
+    _patch_workspace_global(monkeypatch, "_workspace_mutation_fingerprint", lambda _workspace, **_kwargs: ("incomplete", False))
     monkeypatch.setattr(
         computer_use_agent.subprocess,
         "Popen",
@@ -14387,11 +14377,7 @@ def test_run_invalidates_gates_when_the_final_fingerprint_is_incomplete(
     workspace.mkdir()
     (workspace / "sample.py").write_text("value = 1\n", encoding="utf-8")
     fingerprints = iter((("same", True), ("same", False)))
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_workspace_mutation_fingerprint",
-        lambda _workspace, **_kwargs: next(fingerprints),
-    )
+    _patch_workspace_global(monkeypatch, "_workspace_mutation_fingerprint", lambda _workspace, **_kwargs: next(fingerprints))
 
     class _SuccessfulProcess:
         pid = 12_345
@@ -14439,7 +14425,6 @@ def test_run_invalidates_gates_when_the_final_fingerprint_is_incomplete(
 def test_workspace_fingerprint_hashes_content_and_empty_directories(
     tmp_path: Path,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -14450,7 +14435,7 @@ def test_workspace_fingerprint_hashes_content_and_empty_directories(
     original_stat = source.stat()
 
     first_digest, first_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     source.write_text("value = 2\n", encoding="utf-8")
     os.utime(
@@ -14458,11 +14443,11 @@ def test_workspace_fingerprint_hashes_content_and_empty_directories(
         ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
     )
     second_digest, second_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     empty_directory.rename(workspace / "empty-b")
     third_digest, third_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
 
     assert first_complete and second_complete and third_complete
@@ -14513,7 +14498,7 @@ def test_workspace_fingerprint_uses_real_stat_when_scandir_stat_is_placeholder(
         scandir_with_windows_placeholder_stat,
     )
 
-    _digest, complete = computer_use_agent._workspace_mutation_fingerprint(workspace)
+    _digest, complete = workspace_evidence._workspace_mutation_fingerprint(workspace)
 
     assert complete is True
     assert entry_stat_calls == 0
@@ -14523,7 +14508,6 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -14534,11 +14518,11 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     cache_file = cache / "state"
     cache_file.write_text("first\n", encoding="utf-8")
     first_digest, first_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     cache_file.write_text("second\n", encoding="utf-8")
     second_digest, second_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     assert first_complete and second_complete
     assert first_digest == second_digest
@@ -14556,7 +14540,7 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     browser_report = playwright_report / "index.html"
     browser_report.write_text("first\n", encoding="utf-8")
     artifact_digest, artifact_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     assert artifact_complete
     assert artifact_digest == second_digest
@@ -14565,7 +14549,7 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     html_index.write_text("second\n", encoding="utf-8")
     browser_report.write_text("second\n", encoding="utf-8")
     changed_artifact_digest, changed_artifact_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     assert changed_artifact_complete
     assert artifact_digest == changed_artifact_digest
@@ -14575,11 +14559,11 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     finder_metadata = fixture_directory / ".DS_Store"
     finder_metadata.write_text("first\n", encoding="utf-8")
     finder_before, finder_before_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     finder_metadata.write_text("second\n", encoding="utf-8")
     finder_after, finder_after_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     assert finder_before_complete and finder_after_complete
     assert finder_before == finder_after
@@ -14587,11 +14571,11 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     ordinary_hidden = fixture_directory / ".project-contract"
     ordinary_hidden.write_text("first\n", encoding="utf-8")
     ordinary_hidden_before, ordinary_hidden_before_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     ordinary_hidden.write_text("second\n", encoding="utf-8")
     ordinary_hidden_after, ordinary_hidden_after_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     assert ordinary_hidden_before_complete and ordinary_hidden_after_complete
     assert ordinary_hidden_before != ordinary_hidden_after
@@ -14599,11 +14583,11 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     nested_coverage = fixture_directory / "coverage.json"
     nested_coverage.write_text('{"contract": "first"}\n', encoding="utf-8")
     nested_before, nested_before_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     nested_coverage.write_text('{"contract": "second"}\n', encoding="utf-8")
     nested_after, nested_after_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     assert nested_before_complete and nested_after_complete
     assert nested_before != nested_after
@@ -14614,7 +14598,7 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     except OSError:
         pytest.skip("This host cannot create the symlink required by this regression test.")
     _link_digest, link_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     assert link_complete is False
     link.unlink()
@@ -14626,7 +14610,7 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
         return True
 
     _stopped_digest, stopped_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(
+        workspace_evidence._workspace_mutation_fingerprint(
             workspace,
             should_stop=should_stop,
         )
@@ -14634,13 +14618,9 @@ def test_workspace_fingerprint_limits_links_ignored_cache_and_stop(
     assert stopped_complete is False
     assert stop_calls["count"] >= 1
 
-    monkeypatch.setattr(
-        computer_use_agent,
-        "WORKSPACE_FINGERPRINT_MAX_FILES",
-        0,
-    )
+    _patch_workspace_global(monkeypatch, "WORKSPACE_FINGERPRINT_MAX_FILES", 0)
     _limited_digest, limited_complete = (
-        computer_use_agent._workspace_mutation_fingerprint(workspace)
+        workspace_evidence._workspace_mutation_fingerprint(workspace)
     )
     assert limited_complete is False
 
@@ -14683,7 +14663,7 @@ def test_workspace_fingerprint_rechecks_changed_directory_inventory(
 
     monkeypatch.setattr(computer_use_agent.os, "stat", stat_with_one_replacement)
 
-    _digest, complete = computer_use_agent._workspace_mutation_fingerprint(workspace)
+    _digest, complete = workspace_evidence._workspace_mutation_fingerprint(workspace)
 
     assert workspace_stat_calls >= 2
     assert complete is expected_complete
@@ -14693,7 +14673,6 @@ def test_workspace_fingerprint_rechecks_changed_directory_inventory(
 def test_verification_timeout_kills_descendants_after_the_group_leader_exits(
     tmp_path: Path,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     parent_code = (
         "import pathlib,subprocess,sys; "
@@ -14716,7 +14695,7 @@ def test_verification_timeout_kills_descendants_after_the_group_leader_exits(
     started = time.monotonic()
     try:
         output, _returncode, _truncated, stopped, timed_out = (
-            computer_use_agent._bounded_verification_process_output(
+            workspace_process_io._bounded_verification_process_output(
                 process,
                 timeout_seconds=1,
                 should_stop=lambda: False,
@@ -14748,7 +14727,6 @@ def test_verification_timeout_kills_descendants_after_the_group_leader_exits(
 def test_verification_success_kills_a_detached_output_descendant(
     tmp_path: Path,
 ) -> None:
-    import app.core.computer_use_agent as computer_use_agent
 
     parent_code = (
         "import pathlib,subprocess,sys; "
@@ -14771,7 +14749,7 @@ def test_verification_success_kills_a_detached_output_descendant(
     child_pid = 0
     try:
         output, returncode, _truncated, stopped, timed_out = (
-            computer_use_agent._bounded_verification_process_output(
+            workspace_process_io._bounded_verification_process_output(
                 process,
                 timeout_seconds=3,
                 should_stop=lambda: False,
@@ -14816,19 +14794,15 @@ def test_windows_stop_attempts_system_taskkill_after_the_leader_exits(
         def wait(self, **_kwargs: object) -> int:
             return 0
 
-    monkeypatch.setattr(computer_use_agent, "is_windows_host", lambda: True)
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_trusted_windows_taskkill",
-        lambda: taskkill,
-    )
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: True)
+    _patch_workspace_global(monkeypatch, "_trusted_windows_taskkill", lambda: taskkill)
     monkeypatch.setattr(
         computer_use_agent.subprocess,
         "run",
         lambda command, **_kwargs: commands.append(command),
     )
 
-    computer_use_agent._stop_process(_ExitedProcess(), timeout=0.1)
+    workspace_process_io._stop_process(_ExitedProcess(), timeout=0.1)
 
     assert commands == [
         [str(taskkill), "/PID", "12345", "/T", "/F"],
@@ -14851,7 +14825,7 @@ def test_run_streams_invalid_utf8_with_a_global_output_limit(
         returncode = 0
 
         def __init__(self) -> None:
-            raw = b"\xff" + (b"x" * (computer_use_agent.MAX_ACTION_OUTPUT_CHARS * 2))
+            raw = b"\xff" + (b"x" * (workspace_process_io.MAX_ACTION_OUTPUT_CHARS * 2))
             self.stdout = TextIOWrapper(
                 BytesIO(raw),
                 encoding="utf-8",
@@ -14888,7 +14862,7 @@ def test_run_streams_invalid_utf8_with_a_global_output_limit(
     assert result["output_truncated"] is True
     assert "\ufffd" in result["output"]
     assert result["output"].endswith("[output truncated at 48,000 characters]")
-    assert len(result["output"]) <= computer_use_agent.MAX_ACTION_OUTPUT_CHARS
+    assert len(result["output"]) <= workspace_process_io.MAX_ACTION_OUTPUT_CHARS
     assert process_states == [True, False]
 
 
@@ -14940,7 +14914,7 @@ def test_run_stream_read_failure_stops_and_clears_the_process(
         "Popen",
         launch,
     )
-    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
+    _patch_workspace_global(monkeypatch, "_stop_process", stop_process)
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),
@@ -15009,7 +14983,7 @@ def test_run_stop_records_mutation_and_invalidates_bodycheck(
         "Popen",
         launch,
     )
-    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
+    _patch_workspace_global(monkeypatch, "_stop_process", stop_process)
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),
@@ -15071,7 +15045,7 @@ def test_run_timeout_records_mutation_and_stops_the_process(
         "Popen",
         launch,
     )
-    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
+    _patch_workspace_global(monkeypatch, "_stop_process", stop_process)
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(
@@ -15109,11 +15083,7 @@ def test_bodycheck_never_returns_raw_git_diagnostics(
         ComputerUseSettings(workspace_path=str(workspace)),
         lambda: False,
     )
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_filtered_git_status",
-        lambda _workspace, **_kwargs: ' M "safe.py"',
-    )
+    _patch_workspace_global(monkeypatch, "_filtered_git_status", lambda _workspace, **_kwargs: ' M "safe.py"')
 
     class _DiffProcess:
         pid = 12_345
@@ -15257,22 +15227,14 @@ def test_bodycheck_stop_terminates_diff_check_and_clears_active_process(
         stopped.append(value)
         process.returncode = -15
 
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_filtered_git_status",
-        lambda _workspace, **_kwargs: "",
-    )
-    monkeypatch.setattr(
-        computer_use_agent,
-        "_workspace_mutation_fingerprint",
-        lambda _workspace, **_kwargs: ("a" * 64, True),
-    )
+    _patch_workspace_global(monkeypatch, "_filtered_git_status", lambda _workspace, **_kwargs: "")
+    _patch_workspace_global(monkeypatch, "_workspace_mutation_fingerprint", lambda _workspace, **_kwargs: ("a" * 64, True))
     monkeypatch.setattr(
         computer_use_agent.subprocess,
         "Popen",
         lambda *_args, **_kwargs: process,
     )
-    monkeypatch.setattr(computer_use_agent, "_stop_process", stop_process)
+    _patch_workspace_global(monkeypatch, "_stop_process", stop_process)
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),

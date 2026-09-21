@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.12.1-codex.0
+# Code version: v1.15.0-codex.0
 
 from typing import TYPE_CHECKING
 
@@ -27,6 +27,21 @@ from ..grok_history import (
     GROK_INLINE_CITATION_PATTERN,
     normalize_grok_display_markdown,
 )
+from ..gemini_tunnel import (
+    MCP_SCOPE,
+    GeminiOAuthAuthority,
+    GeminiOAuthError,
+    GeminiTunnelConfig,
+    GeminiTunnelConfigError,
+    authorization_server_metadata,
+    clear_gemini_tunnel_config,
+    configure_gemini_tunnel,
+    load_gemini_tunnel_config,
+    protected_resource_metadata,
+    protected_resource_metadata_url,
+    validate_redirect_uri,
+    www_authenticate_challenge,
+)
 from ..tunnel_credentials import (
     TUNNEL_SUPPORTED_PLATFORMS,
     default_tunnel_credentials_path,
@@ -35,6 +50,17 @@ from ..tunnel_credentials import (
     save_tunnel_credentials,
 )
 from ..tunnel_runtime import TunnelRuntime, describe_tunnel_status, valid_tunnel_id
+from .action_protocol import parse_agent_action, render_final_action as render_final_agent_action
+from .platform_catalog import (
+    AGENT_MODEL_OPTIONS_BY_PLATFORM,
+    AGENT_PLATFORM_OPTIONS,
+    OPERATING_SYSTEM_OPTIONS,
+    SUPPORTED_AGENT_PLATFORMS,
+    SUPPORTED_BROWSERS,
+    SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS,
+    SUPPORTED_SAFARI_AGENT_PLATFORMS,
+    default_model_for_platform,
+)
 from .capability_registry import (
     AGENT_ACTIONS,
     CAPABILITY_REGISTRY,
@@ -51,54 +77,35 @@ from .capability_registry import (
 
 _COMPUTER_USE_EXPORTS = frozenset(
     {
-        "AGENT_MODEL_OPTIONS_BY_PLATFORM",
-        "AGENT_PLATFORM_OPTIONS",
-        "OPERATING_SYSTEM_OPTIONS",
-        "SUPPORTED_AGENT_PLATFORMS",
-        "SUPPORTED_BROWSERS",
-        "SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS",
-        "SUPPORTED_SAFARI_AGENT_PLATFORMS",
         "ComputerUseAgentService",
         "ComputerUseSettingsStore",
         "agent_execution_blocked_message",
         "browser_options_for_host",
-        "default_model_for_platform",
         "is_agent_execution_supported",
         "is_loopback_address",
         "launch_terminal_authorization",
-        "open_agent_in_browser",
-        "open_browser_for_login",
-        "parse_agent_action",
         "validate_computer_use_settings",
     }
 )
-_COMPUTER_USE_ALIASES = {"render_final_agent_action": "_render_final_action"}
+_COMPUTER_USE_ALIASES: dict[str, str] = {}
+_BROWSER_TRANSPORT_EXPORTS = frozenset(
+    {"open_agent_in_browser", "open_browser_for_login"}
+)
 _SESSION_POOL_EXPORTS = frozenset({"AgentSessionPool"})
 _TUNNEL_MCP_EXPORTS = frozenset({"TunnelMcpService"})
 
 if TYPE_CHECKING:
     from ..computer_use_agent import (
-        AGENT_MODEL_OPTIONS_BY_PLATFORM,
-        AGENT_PLATFORM_OPTIONS,
-        OPERATING_SYSTEM_OPTIONS,
-        SUPPORTED_AGENT_PLATFORMS,
-        SUPPORTED_BROWSERS,
-        SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS,
-        SUPPORTED_SAFARI_AGENT_PLATFORMS,
         ComputerUseAgentService,
         ComputerUseSettingsStore,
-        _render_final_action as render_final_agent_action,
         agent_execution_blocked_message,
         browser_options_for_host,
-        default_model_for_platform,
         is_agent_execution_supported,
         is_loopback_address,
         launch_terminal_authorization,
-        open_agent_in_browser,
-        open_browser_for_login,
-        parse_agent_action,
         validate_computer_use_settings,
     )
+    from .browser_transport import open_agent_in_browser, open_browser_for_login
     from .session_pool import AgentSessionPool
     from ..tunnel_mcp import TunnelMcpService
     from ..jury import JuryService
@@ -117,6 +124,12 @@ def __getattr__(name: str):
 
         globals()[name] = JuryService
         return JuryService
+    if name in _BROWSER_TRANSPORT_EXPORTS:
+        from . import browser_transport
+
+        value = getattr(browser_transport, name)
+        globals()[name] = value
+        return value
     if name in _SESSION_POOL_EXPORTS:
         from .session_pool import AgentSessionPool
 
@@ -148,8 +161,13 @@ __all__ = [
     "ComputerUseSettingsStore",
     "GROK_AGENT_HISTORY_RENDER_CONTRACT",
     "GROK_INLINE_CITATION_PATTERN",
+    "GeminiOAuthAuthority",
+    "GeminiOAuthError",
+    "GeminiTunnelConfig",
+    "GeminiTunnelConfigError",
     "JURY_MODEL_OPTIONS_BY_PROVIDER",
     "JuryService",
+    "MCP_SCOPE",
     "OPERATING_SYSTEM_OPTIONS",
     "PAGE_OBSERVATIONS",
     "SUPPORTED_AGENT_PLATFORMS",
@@ -164,9 +182,12 @@ __all__ = [
     "browser_options_for_host",
     "build_agent_optimization_manifest",
     "agent_access_password_is_configured",
+    "authorization_server_metadata",
     "capability_for_action",
     "capability_for_observation",
     "capability_registry_snapshot",
+    "clear_gemini_tunnel_config",
+    "configure_gemini_tunnel",
     "controller_action_prompt_schema",
     "default_model_for_platform",
     "default_tunnel_credentials_path",
@@ -179,6 +200,7 @@ __all__ = [
     "launch_terminal_authorization",
     "list_agent_project_sessions",
     "list_agent_sources",
+    "load_gemini_tunnel_config",
     "load_tunnel_credentials",
     "merge_tunnel_credentials",
     "normalize_agent_conversation_url",
@@ -191,9 +213,13 @@ __all__ = [
     "probe_and_collect_claude_sources",
     "probe_and_collect_gemini_sources",
     "probe_and_collect_grok_sources",
+    "protected_resource_metadata",
+    "protected_resource_metadata_url",
     "render_final_agent_action",
     "save_tunnel_credentials",
     "validate_agent_access_password",
     "validate_computer_use_settings",
+    "validate_redirect_uri",
     "webmcp_manifest_definitions",
+    "www_authenticate_challenge",
 ]

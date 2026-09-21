@@ -14,7 +14,8 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from app.core.computer_use_agent import ComputerUseSettings, WorkspaceController
+from app.core.computer_use_agent import ComputerUseSettings
+from app.core.workspace.controller import WorkspaceController
 
 
 DEMO_FLIGHT_ROOT_CANDIDATES = (

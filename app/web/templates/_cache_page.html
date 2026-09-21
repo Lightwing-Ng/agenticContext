@@ -25,18 +25,18 @@
 {% set cache_mode = cache_content_mode if cache_content_mode is defined and cache_content_mode in ["text", "media"] else "text" %}
 {% set cache_browser = selected_browser_id if selected_browser_id is defined and selected_browser_id else saved_config|attr(cache_source.browser_config_field) %}
 {% if cache_source.show_content_mode and cache_browser %}
-{% set cache_text_href = url_for("cache_source_selected", source_key=cache_source.key, content_mode="text", browser=cache_browser) %}
-{% set cache_media_href = url_for("cache_source_selected", source_key=cache_source.key, content_mode="media", browser=cache_browser) %}
+{% set cache_text_href = url_for("cache.cache_source_selected", source_key=cache_source.key, content_mode="text", browser=cache_browser) %}
+{% set cache_media_href = url_for("cache.cache_source_selected", source_key=cache_source.key, content_mode="media", browser=cache_browser) %}
 {% else %}
-{% set cache_text_href = url_for("cache_source", source_key=cache_source.key) %}
-{% set cache_media_href = url_for("cache_source", source_key=cache_source.key) %}
+{% set cache_text_href = url_for("cache.cache_source", source_key=cache_source.key) %}
+{% set cache_media_href = url_for("cache.cache_source", source_key=cache_source.key) %}
 {% endif %}
 <main
     class="page"
     data-cache-page
     data-cache-source="{{ cache_source.key }}"
     data-cache-source-label="{{ cache_source.label }}"
-    data-cache-status-url="{{ url_for('api_cache_status', source_key=cache_source.key) }}"
+    data-cache-status-url="{{ url_for('cache.api_cache_status', source_key=cache_source.key) }}"
     data-cache-progress-strategy="{{ cache_source.progress_strategy }}"
     data-cache-content-mode="{{ cache_mode }}"
     data-cache-browser="{{ cache_browser }}"
@@ -167,7 +167,7 @@
                 {{ render_browser_session(cache_source, browser_options) }}
 
                 <form
-                    action="{{ url_for('start_cache_source', source_key=cache_source.key) }}"
+                    action="{{ url_for('cache.start_cache_source', source_key=cache_source.key) }}"
                     method="post"
                     class="sidebar-form"
                     id="{{ cache_source.start_form_id }}"
@@ -186,7 +186,7 @@
                 {% if cache_source.show_shared_settings_link %}
                 <a
                     class="secondary-button cache-settings-link"
-                    href="{{ url_for('settings') }}#settings-{{ cache_source.resolved_settings_category }}"
+                    href="{{ url_for('settings.settings') }}#settings-{{ cache_source.resolved_settings_category }}"
                 >{{ cache_source.resolved_settings_link_label }}</a>
                 {% endif %}
                 <div
@@ -195,7 +195,7 @@
                     data-action-running="{{ 'true' if snapshot.running else 'false' }}"
                 >
                     <form
-                        action="{{ url_for('stop_cache_source', source_key=cache_source.key) }}"
+                        action="{{ url_for('cache.stop_cache_source', source_key=cache_source.key) }}"
                         method="post"
                         class="sidebar-form sidebar-form-stop"
                         {% if not snapshot.running %}hidden{% endif %}

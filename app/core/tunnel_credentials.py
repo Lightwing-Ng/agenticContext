@@ -1,6 +1,6 @@
 """Local storage for the OpenAI Secure MCP Tunnel credential pair.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 
 The Tunnel connection lets ChatGPT reach this computer through an OpenAI
 platform Tunnel. It needs a Tunnel ID (``tunnel_...``) and an API key that is
@@ -19,7 +19,7 @@ from pathlib import Path
 from app.core.config import default_settings_path
 
 TUNNEL_CREDENTIALS_FILENAME = "tunnel-credentials.json"
-TUNNEL_SUPPORTED_PLATFORMS = frozenset({"chatgpt"})
+TUNNEL_SUPPORTED_PLATFORMS = frozenset({"chatgpt", "gemini"})
 
 
 @dataclass(frozen=True, slots=True)

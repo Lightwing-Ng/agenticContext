@@ -1,6 +1,6 @@
 """Read-only, bounded Git inspection for the Secure MCP Tunnel.
 
-Code version: v1.2.1-codex.0
+Code version: v1.3.0-claude.0
 
 Every call runs one trusted ``git`` executable directly (never a shell) inside one
 registered project root. Discovery cannot climb above that root, repository-level
@@ -87,9 +87,9 @@ def run_git(
     timeout: float = GIT_TIMEOUT_SECONDS,
 ) -> GitResult:
     """Run one read-only Git query with bounded output and time."""
-    from app.core.computer_use_agent import _trusted_system_executable
+    from app.core.workspace import trusted_system_executable
 
-    git = _trusted_system_executable("git", forbidden_root=root)
+    git = trusted_system_executable("git", forbidden_root=root)
     if git is None:
         raise GitInspectionError("Git is unavailable on this computer.")
     try:

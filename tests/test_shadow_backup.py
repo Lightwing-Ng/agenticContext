@@ -1,17 +1,76 @@
 """Regression tests for the one-way shadow cloud backup.
 
-Code version: v1.2.0-codex.1
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+from unittest.mock import patch
 
 import pytest
 
 from app.core.config import CrawlConfig
 from app.core.job_lock import CacheTaskLock
-from app.core.shadow_backup import ShadowBackupError, ShadowBackupService, sync_shadow_backup
+from app.core.shadow_backup import (
+    MACOS_DIRECTORY_PICKER_APPLESCRIPT,
+    ShadowBackupError,
+    ShadowBackupService,
+    choose_settings_directory,
+    sync_shadow_backup,
+)
+
+
+def test_macos_directory_picker_uses_finder_and_restores_browser_focus(tmp_path: Path) -> None:
+    selected_path = tmp_path / "selected"
+    selected_path.mkdir()
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=f"{selected_path}\n",
+        stderr="",
+    )
+
+    with patch("app.core.shadow_backup.is_windows_host", return_value=False), patch(
+        "app.core.shadow_backup.subprocess.run",
+        return_value=completed,
+    ) as run:
+        result = choose_settings_directory(tmp_path, "Select project folder")
+
+    assert result == selected_path.resolve()
+    run.assert_called_once_with(
+        [
+            "/usr/bin/osascript",
+            "-e",
+            MACOS_DIRECTORY_PICKER_APPLESCRIPT,
+            "Select project folder",
+            tmp_path.as_posix(),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert 'tell application "Finder"' in MACOS_DIRECTORY_PICKER_APPLESCRIPT
+    assert "activate" in MACOS_DIRECTORY_PICKER_APPLESCRIPT
+    assert "restorePreviousApplication" in MACOS_DIRECTORY_PICKER_APPLESCRIPT
+    assert 'currentFrontmostProcessName is "Finder"' in MACOS_DIRECTORY_PICKER_APPLESCRIPT
+    assert 'tell application "Terminal"' not in MACOS_DIRECTORY_PICKER_APPLESCRIPT
+
+
+def test_macos_directory_picker_treats_user_cancel_as_no_selection(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=1,
+        stdout="",
+        stderr="execution error: User canceled. (-128)\n",
+    )
+
+    with patch("app.core.shadow_backup.is_windows_host", return_value=False), patch(
+        "app.core.shadow_backup.subprocess.run",
+        return_value=completed,
+    ):
+        assert choose_settings_directory(tmp_path, "Select project folder") is None
 
 
 def test_shadow_backup_copies_changes_and_optionally_mirrors_deletions(tmp_path: Path) -> None:

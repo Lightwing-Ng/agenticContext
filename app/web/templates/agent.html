@@ -1,4 +1,4 @@
-<!-- Code version: v3.57.1-codex.0 -->
+<!-- Code version: v3.61.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.131.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.0.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -131,13 +132,23 @@
                     </div>
 
                     {% set tunnel_view = tunnel_status.presentation %}
-                    {% set tunnel_credentials = tunnel_status.credentials %}
+                    {% set tunnel_credentials = tunnel_status.credentials | default({
+                        'tunnel_id': '',
+                        'tunnel_id_valid': false,
+                        'api_key_saved': false,
+                        'api_key_hint': '',
+                        'qualified': false
+                    }) %}
                     <div
                         class="field agent-tunnel-session-field"
                         data-agent-tunnel-mode-field
                         data-agent-tunnel-platforms="{{ tunnel_supported_platforms }}"
-                        data-agent-tunnel-status-url="{{ url_for('api_tunnel_status') }}"
-                        data-agent-tunnel-credentials-url="{{ url_for('api_tunnel_credentials') }}"
+                        data-agent-tunnel-status-url="{{ url_for('tunnel.api_status') }}"
+                        data-agent-tunnel-credentials-url="{{ url_for('tunnel.api_credentials') }}"
+                        data-agent-gemini-config-url="/api/agent/tunnel/gemini/config"
+                        data-agent-gemini-copy-value-url="/api/agent/tunnel/gemini/copy-value"
+                        data-agent-gemini-authorization-url="/api/agent/tunnel/gemini/authorization"
+                        data-agent-tunnel-initial-platform="{{ tunnel_status.platform | default('chatgpt') }}"
                         data-agent-tunnel-presentation='{{ tunnel_view | tojson }}'
                         data-agent-tunnel-credentials='{{ tunnel_credentials | tojson }}'
                         {% if connection_mode != 'tunnel' %}hidden{% endif %}
@@ -146,7 +157,7 @@
                             <div class="browser-session-status-row">
                                 <div class="browser-session-status-copy">
                                     <div class="browser-session-status-item">
-                                        <span class="browser-session-status-checkmark" data-agent-tunnel-checkmark data-status-state="{{ 'ready' if tunnel_view.tone == 'ready' else 'error' }}" aria-hidden="true"{% if tunnel_view.tone == 'loading' %} hidden{% endif %}></span>
+                                        <span class="browser-session-status-checkmark" data-agent-tunnel-checkmark{% if tunnel_view.tone not in ['loading', 'configured'] %} data-status-state="{{ 'ready' if tunnel_view.tone == 'ready' else 'error' }}"{% endif %} aria-hidden="true"{% if tunnel_view.tone in ['loading', 'configured'] %} hidden{% endif %}></span>
                                         <span class="suggestion-loading-spinner browser-session-status-spinner" data-agent-tunnel-spinner aria-hidden="true"{% if tunnel_view.tone != 'loading' %} hidden{% endif %}></span>
                                         <span class="browser-session-status-literal">
                                             <span class="browser-session-status-field-label">Tunnel:</span>
@@ -155,6 +166,25 @@
                                     </div>
                                     <p class="browser-session-status-message agent-tunnel-status-message agent-tunnel-status-hint" data-agent-tunnel-hint aria-live="polite"{% if not tunnel_view.hint %} hidden{% endif %}>{{ tunnel_view.hint }}</p>
                                 </div>
+                            </div>
+                            <div class="agent-tunnel-usage" data-agent-tunnel-usage aria-label="Tunnel token usage">
+                                <p>Estimated tool tokens</p>
+                                {% set active_calls = tunnel_status.active_calls | default([]) %}
+                                {% set recent_calls = tunnel_status.recent_calls | default([]) %}
+                                {% for kind, calls in [('current', active_calls), ('recent', recent_calls)] %}
+                                {% set call = (calls | last if kind == 'current' else calls | first) if calls else none %}
+                                {% set count = call.estimated_tokens if call and call.estimated_tokens is defined else none %}
+                                {% set detail = ('#' ~ call.call_id ~ ' ' ~ call.project ~ ' · ' ~ call.tool ~ ' · ' ~ call.state ~ (' · request only' if kind == 'current' else '')) if call and call.call_id is defined else ('No running calls' if kind == 'current' else 'No recent calls') %}
+                                <div class="agent-tunnel-usage-row" data-tunnel-usage-row="{{ kind }}">
+                                    <p class="agent-tunnel-usage-detail" data-tunnel-usage-detail title="{{ detail }}">{{ 'Current call' if kind == 'current' else 'Recent call' }}{% if call %} · {{ 'Running' if kind == 'current' else ('Failed' if call.state == 'failed' else 'Completed') }}{% endif %}{% if kind == 'current' and calls | length > 1 %} ({{ calls | length }} running){% endif %}: {{ detail }}</p>
+                                    <div class="agent-tunnel-usage-value" tabindex="0" aria-label="{{ 'Current' if kind == 'current' else 'Recent' }} tool call token estimate" role="group">
+                                        <span class="investment-holdings-allocation-badge" data-tunnel-token-badge{% if count is none %} hidden{% endif %}><span class="investment-holdings-allocation-badge-value"><span class="workspace-metric-value-major" data-tunnel-token-digits>{% if count is not none %}{% for glyph in '{:,}'.format(count) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}{% endif %}</span></span></span>
+                                        <span data-tunnel-token-unit{% if count is none %} hidden{% endif %}>{{ 'token' if count == 1 else 'tokens' }}</span>
+                                        <span data-tunnel-token-unavailable{% if count is not none %} hidden{% endif %}>Unavailable</span>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                                <p class="agent-tunnel-usage-note">Task usage: Unavailable. Running calls: request only. Excludes full conversation context and model reasoning.</p>
                             </div>
                         </div>
                     </div>
@@ -294,14 +324,14 @@
                 <article class="report-card workspace-summary-card workspace-article-card agent-summary-card" data-layout-role="title-rail">
                     <div class="report-heading-row" data-layout-role="title-heading">
                         <div>
-                            <h2 data-agent-heading>{{ 'Connect ChatGPT to this local project' if connection_mode == 'tunnel' else selected_platform.label ~ ' Web Agent' }}</h2>
+                            <h2 data-agent-heading>{{ 'Connect ' ~ selected_platform.label ~ ' to this local project' if connection_mode == 'tunnel' else selected_platform.label ~ ' Web Agent' }}</h2>
                         </div>
                     </div>
                 </article>
             </div>
 
             <div class="workspace-grid workspace-content-card agent-workspace-grid">
-                <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-onboarding{% if connection_mode != 'tunnel' %} hidden{% endif %}>
+                <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-onboarding data-agent-tunnel-provider-panel="chatgpt"{% if connection_mode != 'tunnel' or settings.platform != 'chatgpt' %} hidden{% endif %}>
                     <ol class="agent-tunnel-onboarding-steps">
                         <li class="agent-tunnel-onboarding-step">
                             <span class="agent-tunnel-step-number" aria-hidden="true">Step 1</span>
@@ -363,7 +393,7 @@
                                             <div class="agent-tunnel-numbered-copy">
                                                 <p id="agent_tunnel_kickoff" data-agent-tunnel-kickoff>Use @AgenticContext to read the selected project's instructions and current changes, then implement and verify the following task without altering unrelated work:<br><span class="agent-tunnel-kickoff-task">[describe your task].</span></p>
                                                 <div class="settings-action-package-form agent-tunnel-action-package-form">
-                                                    <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-tunnel-copy-kickoff aria-label="Copy this prompt" aria-controls="agent_tunnel_kickoff">
+                                                    <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-tunnel-copy-action data-agent-tunnel-copy-kickoff aria-label="Copy this prompt" aria-controls="agent_tunnel_kickoff">
                                                         <span class="browser-session-trigger-leading">
                                                             <span class="icon agent-response-copy-icon" aria-hidden="true"></span>
                                                             <span data-agent-tunnel-copy-label aria-live="polite">Copy this prompt</span>
@@ -391,6 +421,17 @@
                             </div>
                         </li>
                     </ol>
+                </article>
+                <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-onboarding data-agent-tunnel-provider-panel="gemini"{% if connection_mode != 'tunnel' or settings.platform != 'gemini' %} hidden{% endif %}>
+                    <ol class="agent-tunnel-onboarding-steps">
+                        {% include "_agent_tunnel_gemini_guides.html" %}
+                    </ol>
+                </article>
+                <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-unsupported{% if connection_mode != 'tunnel' or settings.platform in ['chatgpt', 'gemini'] %} hidden{% endif %}>
+                    <div class="agent-tunnel-step-copy">
+                        <h4 data-agent-tunnel-unsupported-heading>{{ selected_platform.label }} Tunnel is not available</h4>
+                        <p data-agent-tunnel-unsupported-copy>Choose ChatGPT or Gemini for Tunnel, or switch to Browser for {{ selected_platform.label }}.</p>
+                    </div>
                 </article>
                 <article class="report-card workspace-article-card agent-task-card" data-agent-browser-task{% if connection_mode == 'tunnel' %} hidden{% endif %}>
                     <article class="agent-response-card" aria-live="polite">
@@ -635,6 +676,6 @@
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.52.7-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.56.0-codex.0') }}"></script>
 </body>
 </html>

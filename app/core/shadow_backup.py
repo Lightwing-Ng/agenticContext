@@ -1,6 +1,6 @@
 """One-way shadow cloud backup for the local cache.
 
-Code version: v1.2.0-codex.1
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from functools import partial
 import hashlib
-import json
 import logging
 import os
 from pathlib import Path
@@ -121,6 +120,43 @@ def sync_shadow_backup(
     )
 
 
+MACOS_DIRECTORY_PICKER_APPLESCRIPT = """
+on restorePreviousApplication(previousFrontmostProcessName)
+    if previousFrontmostProcessName is "" or previousFrontmostProcessName is "Finder" then return
+    tell application "System Events"
+        try
+            set currentFrontmostProcessName to name of first application process whose frontmost is true
+            if currentFrontmostProcessName is "Finder" then
+                set frontmost of process previousFrontmostProcessName to true
+            end if
+        end try
+    end tell
+end restorePreviousApplication
+
+on run argv
+    set pickerPrompt to item 1 of argv
+    set defaultPath to item 2 of argv
+    set previousFrontmostProcessName to ""
+    tell application "System Events"
+        try
+            set previousFrontmostProcessName to name of first application process whose frontmost is true
+        end try
+    end tell
+    try
+        tell application "Finder"
+            activate
+            set selectedFolder to choose folder with prompt pickerPrompt default location POSIX file defaultPath
+        end tell
+    on error errorMessage number errorNumber
+        my restorePreviousApplication(previousFrontmostProcessName)
+        error errorMessage number errorNumber
+    end try
+    my restorePreviousApplication(previousFrontmostProcessName)
+    return POSIX path of selectedFolder
+end run
+""".strip()
+
+
 def choose_settings_directory(initial_path: Path, prompt: str) -> Path | None:
     """Open the host-native folder picker and return the selected directory.
 
@@ -148,13 +184,14 @@ def choose_settings_directory(initial_path: Path, prompt: str) -> Path | None:
             root.destroy()
         return Path(selected_folder).expanduser().resolve(strict=False) if selected_folder else None
 
-    applescript = (
-        f"set selectedFolder to choose folder with prompt {json.dumps(prompt)} "
-        f"default location POSIX file {json.dumps(default_location.as_posix())}\n"
-        "return POSIX path of selectedFolder"
-    )
     completed = subprocess.run(
-        ["/usr/bin/osascript", "-e", applescript],
+        [
+            "/usr/bin/osascript",
+            "-e",
+            MACOS_DIRECTORY_PICKER_APPLESCRIPT,
+            prompt,
+            default_location.as_posix(),
+        ],
         check=False,
         capture_output=True,
         text=True,

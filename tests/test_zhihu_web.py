@@ -31,7 +31,7 @@ ZHIHU_IMAGE_PLACEHOLDER_ASSET = (
 
 def _create_zhihu_app(tmp_path: Path):
     with patch(
-        "app.web.app.load_saved_config",
+        "app.web.config_store.load_saved_config",
         return_value=CrawlConfig(zhihu_browser="edge"),
     ):
         return create_app(tmp_path / "local_store")
@@ -72,7 +72,7 @@ def test_zhihu_routes_probe_and_dispatch_the_selected_edge_session(tmp_path: Pat
     service = application.extensions["zhihu_history_service"]
 
     with patch(
-        "app.web.app.probe_browser_session",
+        "app.web.agent_routes.probe_browser_session",
         return_value={"logged_in": True, "can_download": True, "account_handle": "MayukoSF"},
     ) as probe:
         payload = client.get("/api/browser-session?platform=zhihu&browser=edge").get_json()
@@ -80,7 +80,7 @@ def test_zhihu_routes_probe_and_dispatch_the_selected_edge_session(tmp_path: Pat
     assert payload["account_handle"] == "MayukoSF"
     assert probe.call_args.args[:2] == ("zhihu", "edge")
 
-    with patch.object(service, "start") as start, patch("app.web.app.save_config"):
+    with patch.object(service, "start") as start, patch("app.web.config_store.save_config"):
         response = client.post(
             "/cache/zhihu/start",
             data={
@@ -96,7 +96,7 @@ def test_zhihu_routes_probe_and_dispatch_the_selected_edge_session(tmp_path: Pat
     }
 
     with patch(
-        "app.web.app.open_zhihu_browser_for_login",
+        "app.web.agent_routes.open_zhihu_browser_for_login",
         return_value={"opened": True, "platform": "zhihu", "browser": "edge"},
     ) as open_login:
         opened = client.post(

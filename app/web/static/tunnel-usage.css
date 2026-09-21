@@ -1,0 +1,97 @@
+/* Code version: v1.0.0-codex.0 */
+/*
+ * Worthward allocation badge adapter.
+ * Source: foundation/tokens.css v0.40.3 and views/investment-tables.css v1.0.0.
+ * Preserve the canonical badge and glyph rules; integers use intrinsic width.
+ * The local Univers Next interface font remains the approved typography exception.
+ */
+.agent-tunnel-usage {
+    --investment-holdings-allocation-badge-inline-size: 52px;
+    --investment-holdings-allocation-badge-glyph-width: 0.625em;
+    --investment-holdings-allocation-badge-padding-block: 2px;
+    --investment-holdings-allocation-badge-padding-inline: 6px;
+    --investment-holdings-allocation-badge-radius: 2px;
+    --investment-holdings-allocation-badge-background-positive: var(--theme-accent-positive);
+    --investment-holdings-allocation-badge-background-negative: var(--theme-accent-secondary);
+    --investment-holdings-allocation-badge-color: var(--color-white-adaptive);
+    display: grid;
+    gap: 6px;
+    min-inline-size: 0;
+    margin-block-start: 6px;
+    font-size: var(--font-ui-xs);
+    line-height: 1.3;
+}
+.agent-tunnel-usage p {
+    margin: 0;
+}
+.agent-tunnel-usage-note,
+.agent-tunnel-usage-detail {
+    color: var(--muted);
+}
+.agent-tunnel-usage-row {
+    display: grid;
+    grid-template-rows: 18px 34px;
+    min-inline-size: 0;
+}
+.agent-tunnel-usage-detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.agent-tunnel-usage-value {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-inline-size: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+.agent-tunnel-usage .investment-holdings-allocation-badge {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: flex-end;
+    justify-content: flex-end;
+    justify-self: end;
+    inline-size: fit-content;
+    min-inline-size: var(--investment-holdings-allocation-badge-inline-size);
+    padding-block: var(--investment-holdings-allocation-badge-padding-block);
+    padding-inline: var(--investment-holdings-allocation-badge-padding-inline);
+    border-radius: var(--investment-holdings-allocation-badge-radius);
+    background: var(--investment-holdings-allocation-badge-background-positive);
+    color: var(--theme-background);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.3;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+.agent-tunnel-usage .investment-holdings-allocation-badge-value {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: flex-end;
+    inline-size: 100%;
+    max-inline-size: none;
+    min-height: 0;
+    padding-bottom: 0;
+    color: inherit;
+    font-size: var(--workspace-metric-value-font-size);
+    font-weight: var(--workspace-metric-value-font-weight);
+    line-height: var(--workspace-metric-value-line-height);
+    letter-spacing: var(--workspace-metric-value-letter-spacing);
+}
+.agent-tunnel-usage .workspace-metric-value-major {
+    align-self: end;
+    display: flex;
+    align-items: flex-end;
+    justify-self: end;
+    font-size: 1em;
+    line-height: 1;
+}
+.agent-tunnel-usage .investment-holdings-allocation-badge-glyph {
+    box-sizing: border-box;
+    flex: 0 0 var(--investment-holdings-allocation-badge-glyph-width);
+    inline-size: var(--investment-holdings-allocation-badge-glyph-width);
+    text-align: center;
+}
+.agent-tunnel-usage [hidden] {
+    display: none;
+}

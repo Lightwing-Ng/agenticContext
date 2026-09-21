@@ -13,12 +13,12 @@ import pytest
 
 from app.core.agent.event_chain import AgentEventChain
 from app.core.computer_use_agent import (
-    ActionState,
     CONTINUE_INTERRUPTED_AGENT_PROMPT,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
-    detect_host_operating_system,
 )
+from app.core.agent.platform_catalog import detect_host_operating_system
+from app.core.workspace.action_state import ActionState
 from app.core.config import CrawlConfig
 
 

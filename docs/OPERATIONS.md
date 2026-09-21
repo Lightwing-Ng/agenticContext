@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.28.4-codex.0`
+Documentation version: `v1.31.2-codex.0`
 
 ## Launch
 
@@ -50,7 +50,8 @@ On Windows:
 On macOS, the launcher prefers `python3` from `PATH`, then tries unversioned platform Python
 installations. It skips an otherwise supported interpreter when required application modules are
 missing, so an already prepared platform installation can still start the app without a manual
-interpreter override.
+interpreter override. On macOS, directory controls open a Finder-owned native picker and restore the
+previous frontmost application after the selection finishes; Terminal never hosts the picker.
 
 The normal server address is `http://127.0.0.1:8666`, and the application binds only to loopback by
 default. To opt in to trusted-LAN access, set `AGENTIC_CONTEXT_HOST=0.0.0.0` and set
@@ -61,8 +62,10 @@ When LAN access is enabled, every application route requires that signed session
 and the unlock flow are the only pre-authentication exceptions. Unsafe private-network requests
 also require a matching same-origin `Origin` header, and repeated failed unlocks are throttled per
 client. Public, cross-site, host-rebinding, and malformed-host requests are rejected. Keep the
-console on a trusted local network, do not expose it through router port forwarding, and do not
-publish it through a public tunnel or reverse proxy.
+console on a trusted local network and do not expose it through router port forwarding or a
+general-purpose public proxy. The only supported exception is the dedicated Gemini hostname in
+[GEMINI_TUNNEL_SETUP.md](GEMINI_TUNNEL_SETUP.md): the application recognizes that exact Host and
+admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path remains closed.
 
 ## Browser-session preconditions
 
@@ -286,7 +289,8 @@ publish it through a public tunnel or reverse proxy.
 
 ### ChatGPT Tunnel connection
 
-Agent → **Tunnel** lets ChatGPT work on explicitly registered local projects directly, through
+Agent → **Tunnel**, with **ChatGPT** selected as the Web service, lets ChatGPT work on explicitly
+registered local projects directly, through
 the OpenAI Secure MCP Tunnel. No separate desktop app is involved: this service serves the MCP
 endpoint at `/mcp` and supervises OpenAI's official `tunnel-client`.
 
@@ -361,9 +365,10 @@ Runtime behavior:
   files of that project only, bounded Git status); `list_files`; `search_files`; `read_files`
   (1-8 files or ranges with SHA-256); `apply_edits` (1-16 exact replacements, validated as one
   batch before any file changes); `write_file` (new files, or whole-file replacement only with
-  the current SHA-256; new files are not executable); `delete_file` (the SHA-256 from
-  `read_files`; an unrelated edit does not invalidate an existing receipt, but a changed file
-  is refused); `run_check`; `show_changes` (status, staged/unstaged stats, and an optional
+  the SHA-256 from `read_files`; supplying a caller-computed digest without that read receipt is
+  refused, and new files are not executable); `delete_file` (the SHA-256 from `read_files`; an
+  unrelated edit does not invalidate an existing receipt, but a changed file is refused);
+  `run_check`; `show_changes` (status, staged/unstaged stats, and an optional
   bounded patch); and `review_changes` (bodycheck, the final gate). Arguments are validated
   against the published closed schemas, so unknown fields fail. The removed `read_file`,
   `replace_in_file`, `create_file`, and `call_runtime_tool` names are not compatibility
@@ -396,7 +401,7 @@ Runtime behavior:
   - ChatGPT Settings → Apps → AgenticContext → Refresh/Scan Tools replaces ChatGPT's stored
     snapshot. After a catalog change, restart the service first, then refresh the app.
 - Every tool call is logged as
-  `Tunnel tool <name> ok=<bool> duration=<s> project=<id> target=<path or command>` in the
+  `Tunnel tool <name> provider=<provider> ok=<bool> duration=<s> project=<id> target=<path or command>` in the
   application log, so a ChatGPT session can be audited after a restart.
 - Arbitrary shell commands, arbitrary executables, and general background processes are
   intentionally not exposed; only the approved verification commands run through the Tunnel,
@@ -419,6 +424,45 @@ Maintaining the client when OpenAI changes it:
    keep it only if its removal breaks readiness (`/readyz`), the `dev proxy` round trip, or a live
    ChatGPT call. Update `MCP_LEGACY_PROTOCOL_VERSIONS` and `MCP_STATELESS_PROTOCOL_VERSION` in
    `app/core/tunnel_mcp.py` the same way.
+
+### Gemini Custom App connection
+
+Select **Gemini** in Agent → Tunnel to configure the independent Gemini transport. It reuses the
+same exact ten-tool catalog and project authority but does not reuse the OpenAI Tunnel ID, API key,
+control plane, local bearer, or supervised process. Gemini requires a stable public HTTPS MCP URL,
+so the operator supplies a dedicated reverse tunnel and AgenticContext supplies a static OAuth 2.1
+client with PKCE S256.
+
+Follow [GEMINI_TUNNEL_SETUP.md](GEMINI_TUNNEL_SETUP.md) for the complete setup, Cloudflare named-
+tunnel example, current consumer-account prerequisites, Gemini Connected Apps steps, verification,
+rotation, and troubleshooting. Operational invariants are:
+
+- Keep AgenticContext bound to `127.0.0.1:8666`; the reverse tunnel forwards to loopback and
+  sets the origin Host to the dedicated public hostname. The proxy itself must allowlist only the
+  six documented OAuth/MCP paths and return its own 404 for every other path.
+- Only the documented OAuth discovery, authorization, token, and `/mcp/gemini` paths are reachable
+  on that Host. A public 404 for the console, local APIs, static files, ChatGPT `/mcp`, and every
+  other path is expected.
+- The private `gemini-tunnel-credentials.json` is independent of `tunnel-credentials.json`. POSIX
+  hosts enforce mode `0600`; on Windows verify that the current user's settings-directory ACL is
+  restricted to the intended account. Never put the Gemini client secret, signing key, access
+  token, or refresh token in a URL, repository, reverse-proxy configuration, or support log.
+- Configured means only that the local origin and OAuth material exist. Active requires an
+  authenticated Gemini tool call observed by this process. Local tests do not prove a real Gemini
+  connection, consumer eligibility, enterprise compatibility, or write-confirmation behavior.
+- Clearing the public origin revokes the current local OAuth material. Stop or remove the external
+  reverse tunnel and disconnect or remove the Custom App in Gemini separately.
+- A process restart preserves the saved static client credentials but invalidates every in-memory
+  authorization code, access token, and refresh token. Reconnect the Gemini Custom App after the
+  service restarts.
+- Copying the client secret never approves a callback. A complete valid authorization request is
+  held in process memory for 10 minutes while the authenticated local Agent UI displays its exact
+  callback URI. Approve or deny that exact URI there; a different redirect, state, PKCE challenge,
+  client, resource, or scope cannot consume the approval. An opaque review identity also prevents
+  a stale local page from approving a request that replaced the one it displayed.
+- The OAuth adapter does not guess an undocumented consumer callback hostname. It pins the first
+  approved complete callback URI for the current process. Deny an unexpected URI instead of
+  broadening or bypassing the local review.
 
 ### Durable optimization jobs
 

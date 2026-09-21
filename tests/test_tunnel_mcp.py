@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.1.2-codex.0
+Code version: v2.3.2-codex.0
 """
 
 from __future__ import annotations
@@ -135,7 +135,67 @@ def content(result: dict) -> dict:
     return result["structuredContent"]
 
 
+def provider_rpc(
+    service: TunnelMcpService,
+    provider: str,
+    method: str,
+    params: dict | None = None,
+) -> dict:
+    """Call the shared MCP service through one authenticated ingress identity."""
+    status, body = service.handle(
+        {"jsonrpc": "2.0", "id": 9, "method": method, "params": params or {}},
+        {},
+        provider=provider,
+    )
+    assert status == 200
+    return body
+
+
 # Protocol ---------------------------------------------------------------------
+
+
+def test_provider_ingresses_share_tools_but_keep_activity_attribution(
+    service: TunnelMcpService,
+) -> None:
+    chatgpt_tools = provider_rpc(service, "chatgpt", "tools/list")["result"]["tools"]
+    gemini_tools = provider_rpc(service, "gemini", "tools/list")["result"]["tools"]
+    assert gemini_tools == chatgpt_tools
+    assert [tool["name"] for tool in gemini_tools] == EXPECTED_TOOLS
+    assert all("provider" not in tool["inputSchema"]["properties"] for tool in gemini_tools)
+
+    provider_rpc(
+        service,
+        "chatgpt",
+        "tools/call",
+        {"name": "list_files", "arguments": {"project": "main"}},
+    )
+    provider_rpc(
+        service,
+        "gemini",
+        "tools/call",
+        {"name": "list_files", "arguments": {"project": "main"}},
+    )
+
+    chatgpt_activity = service.activity_snapshot("chatgpt")
+    gemini_activity = service.activity_snapshot("gemini")
+    assert chatgpt_activity["call_count"] == 1
+    assert gemini_activity["call_count"] == 1
+    assert {record["provider"] for record in chatgpt_activity["recent_calls"]} == {
+        "chatgpt"
+    }
+    assert {record["provider"] for record in gemini_activity["recent_calls"]} == {
+        "gemini"
+    }
+    assert service.activity_snapshot()["call_count"] == 2
+
+
+def test_unknown_provider_identity_is_rejected(service: TunnelMcpService) -> None:
+    with pytest.raises(ValueError, match="Unknown authenticated MCP provider"):
+        service.handle(
+            {"jsonrpc": "2.0", "id": 10, "method": "tools/list", "params": {}},
+            {},
+            provider="untrusted-header",
+        )
 
 
 def test_tunnel_mcp_imports_in_a_fresh_interpreter() -> None:
@@ -246,7 +306,7 @@ def test_every_listed_tool_is_dispatchable_by_its_published_schema(
     listed = [tool["name"] for tool in rpc(service, "tools/list")["result"]["tools"]]
     assert listed == EXPECTED_TOOLS == [tool.name for tool in TUNNEL_TOOLS]
     project = service._registry.resolve("main", service._fallback_workspace())
-    controller = service._controller_for(project)
+    controller = service._workspace_for(project)
     for tool in TUNNEL_TOOLS:
         if tool.action:
             capability = capability_for_action(tool.action)
@@ -502,6 +562,21 @@ def test_write_file_requires_the_current_sha_to_replace(
     )
     assert stale["isError"] is True
 
+    calculated_without_read = hashlib.sha256(
+        (workspace / "app.py").read_bytes()
+    ).hexdigest()
+    uncredentialed = call(
+        service,
+        "write_file",
+        {
+            "path": "app.py",
+            "content": "caller-computed\n",
+            "expected_sha256": calculated_without_read,
+        },
+    )
+    assert uncredentialed["isError"] is True
+    assert "read the current file first" in content(uncredentialed)["error"]
+
     current = call(service, "read_files", {"files": [{"path": "app.py"}]})
     sha = content(current)["files"][0]["sha256"]
     replaced = call(
@@ -526,6 +601,56 @@ def test_write_file_requires_the_current_sha_to_replace(
     credential = call(service, "write_file", {"path": ".env", "content": "TOKEN=x"})
     assert credential["isError"] is True
     assert not (workspace / ".env").exists()
+
+
+def test_write_file_rejects_a_receipt_after_an_external_change(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    current = call(service, "read_files", {"files": [{"path": "app.py"}]})
+    old_sha = content(current)["files"][0]["sha256"]
+    (workspace / "app.py").write_text("changed elsewhere\n", encoding="utf-8")
+
+    result = call(
+        service,
+        "write_file",
+        {
+            "path": "app.py",
+            "content": "replacement\n",
+            "expected_sha256": old_sha,
+        },
+    )
+
+    assert result["isError"] is True
+    assert "no longer matches" in content(result)["error"]
+    assert (workspace / "app.py").read_text(encoding="utf-8") == "changed elsewhere\n"
+
+
+def test_write_file_refreshes_a_held_receipt_after_an_unrelated_edit(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    current = call(service, "read_files", {"files": [{"path": "app.py"}]})
+    sha = content(current)["files"][0]["sha256"]
+    created = call(
+        service,
+        "write_file",
+        {"path": "unrelated.txt", "content": "new\n"},
+    )
+    assert created["isError"] is False
+
+    replaced = call(
+        service,
+        "write_file",
+        {
+            "path": "app.py",
+            "content": "replacement\n",
+            "expected_sha256": sha,
+        },
+    )
+
+    assert replaced["isError"] is False
+    assert (workspace / "app.py").read_text(encoding="utf-8") == "replacement\n"
 
 
 def test_delete_file_rejects_stale_sha_and_accepts_current_sha(

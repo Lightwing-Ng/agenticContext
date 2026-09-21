@@ -18,23 +18,25 @@ from app.core.browser_sessions import select_provider_tab
 from app.core.computer_use_agent import (
     AgentRunSnapshot,
     CHATGPT_MODEL_VERIFICATION_ATTEMPTS,
-    DEFAULT_CHATGPT_MODEL,
     DEFAULT_MACOS_SYSTEM_PROMPT,
     DEFAULT_WINDOWS_SYSTEM_PROMPT,
-    MAX_BASE64_DECODED_BYTES,
     MAX_INVALID_ACTION_RETRIES,
     SAFE_PROTOCOL_PROMPT_MARKERS,
-    WorkspaceController,
     _detect_browser_interruption,
     _run_web_action_loop,
     _select_chatgpt_model,
-    parse_agent_action,
     ComputerUseSettings,
     ComputerUseSettingsStore,
     session_type_for_mode,
 )
-from app.web.app import (
-    create_app,
+from app.core.agent.action_protocol import parse_agent_action
+from app.core.agent.platform_catalog import DEFAULT_CHATGPT_MODEL
+from app.core.workspace.controller import (
+    MAX_BASE64_DECODED_BYTES,
+    WorkspaceController,
+)
+from app.web.app import create_app
+from app.web.presentation import (
     is_excluded_system_directory,
     validate_local_directory_path,
 )
@@ -1262,7 +1264,7 @@ class TestRecentSessionCatalog:
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             with patch(
-                "app.web.app.list_agent_sources",
+                "app.web.agent_routes.list_agent_sources",
                 return_value=first_payload,
             ) as sources:
                 with app.test_client() as client:

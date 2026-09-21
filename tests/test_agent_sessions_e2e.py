@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.16.1-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.19.0-codex.0."""
 
 import re
 from copy import deepcopy
@@ -11,7 +11,7 @@ from werkzeug.serving import make_server
 
 from tests import test_sidebar_e2e as fixtures
 from app.core.browser_sessions import grok_composer_snapshot
-from app.web.app import render_agent_response
+from app.web.presentation import render_agent_response
 
 disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
@@ -98,7 +98,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         assert material["connection"] == material["agentMode"]
         web_service = page.locator(".agent-platform-combobox")
         tunnel_field = page.locator("[data-agent-tunnel-mode-field]")
-        onboarding = page.locator("[data-agent-tunnel-onboarding]")
+        onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
         browser_task = page.locator("[data-agent-browser-task]")
         expect(browser).to_be_checked()
         expect(tunnel).not_to_be_checked()
@@ -206,6 +206,53 @@ def _tunnel_onboarding_status(enabled=True):
     }
 
 
+def _empty_gemini_authorization():
+    return {
+        "pending": False,
+        "review_id": "",
+        "redirect_uri": "",
+        "redirect_host": "",
+        "expires_in": 0,
+    }
+
+
+def _gemini_tunnel_status(
+    public_origin="https://agent.example.com",
+    authorization=None,
+):
+    configured = bool(public_origin)
+    return {
+        "platform": "gemini",
+        "activity_observed": False,
+        "presentation": {
+            "tone": "configured" if configured else "error",
+            "label": "Configured" if configured else "Not configured",
+            "message": (
+                "Gemini connection values are configured."
+                if configured
+                else "Save a public HTTPS origin."
+            ),
+            "hint": "",
+            "action": None,
+        },
+        "config": {
+            "configured": configured,
+            "public_origin": public_origin,
+            "mcp_url": f"{public_origin}/mcp/gemini" if configured else "",
+            "client_id": "gtc_frontend_test" if configured else "",
+            "client_secret_saved": configured,
+            "signing_key_saved": configured,
+        },
+        "authorization": (
+            authorization
+            if authorization is not None
+            else _empty_gemini_authorization()
+        ),
+        "active_calls": [],
+        "recent_calls": [],
+    }
+
+
 @pytest.mark.parametrize("width", [1280, 876, 390])
 def test_tunnel_kickoff_copy_and_native_monospace(
     disposable_browser,
@@ -224,21 +271,22 @@ def test_tunnel_kickoff_copy_and_native_monospace(
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
         if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
             page.locator("#sidebar_toggle").click()
-        kickoff = page.locator("[data-agent-tunnel-kickoff]")
+        onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
+        kickoff = onboarding.locator("[data-agent-tunnel-kickoff]")
         expect(kickoff).to_contain_text("@AgenticContext")
         expect(kickoff).to_contain_text("[describe your task]")
         assert kickoff.inner_text().endswith(
             "without altering unrelated work:\n[describe your task]."
         )
-        expect(page.locator("[data-agent-tunnel-onboarding]")).to_contain_text("named AgenticContext")
-        expect(page.locator("[data-agent-tunnel-onboarding]")).to_contain_text("starting with tunnel_")
-        expect(page.locator("[data-agent-tunnel-onboarding]")).to_contain_text("starting with sk-proj-")
-        expect(page.locator("[data-agent-tunnel-onboarding]")).not_to_contain_text("tunnel_*4766")
-        expect(page.locator("[data-agent-tunnel-onboarding]")).not_to_contain_text("sk-proj-*HMAA")
-        expect(page.locator(".agent-tunnel-onboarding-step")).to_have_count(4)
-        expect(page.locator("details.ui-collapse[data-agent-tunnel-guide]")).to_have_count(6)
-        expect(page.locator("[data-agent-tunnel-guide] svg[role='img']")).to_have_count(6)
-        expect(page.locator("[data-agent-tunnel-guide] :is(img, image, foreignObject)")).to_have_count(0)
+        expect(onboarding).to_contain_text("named AgenticContext")
+        expect(onboarding).to_contain_text("starting with tunnel_")
+        expect(onboarding).to_contain_text("starting with sk-proj-")
+        expect(onboarding).not_to_contain_text("tunnel_*4766")
+        expect(onboarding).not_to_contain_text("sk-proj-*HMAA")
+        expect(onboarding.locator(".agent-tunnel-onboarding-step")).to_have_count(4)
+        expect(onboarding.locator("details.ui-collapse[data-agent-tunnel-guide]")).to_have_count(6)
+        expect(onboarding.locator("[data-agent-tunnel-guide] svg[role='img']")).to_have_count(6)
+        expect(onboarding.locator("[data-agent-tunnel-guide] :is(img, image, foreignObject)")).to_have_count(0)
         expect(page.locator("#agent_prompt_form")).to_be_hidden()
         technical_input_styles = page.locator(
             "#agent_project_path, #chatgpt_tunnel_id, #chatgpt_tunnel_api_key"
@@ -264,7 +312,7 @@ def test_tunnel_kickoff_copy_and_native_monospace(
         assert {
             item["placeholderFontSize"] for item in credential_styles
         } == {credential_styles[0]["fontSize"]}
-        button = page.locator("[data-agent-tunnel-copy-kickoff]")
+        button = onboarding.locator("[data-agent-tunnel-copy-kickoff]")
         expect(button).to_have_text("Copy this prompt")
         button.scroll_into_view_if_needed()
         button.focus()
@@ -272,13 +320,13 @@ def test_tunnel_kickoff_copy_and_native_monospace(
         expect(button).to_have_text("Copied")
         assert page.evaluate("window.copiedKickoff") == kickoff.inner_text()
         expect(button).to_be_focused()
-        edges = page.locator(
+        edges = onboarding.locator(
             "a.agent-tunnel-step-action, [data-agent-tunnel-copy-kickoff]"
         ).evaluate_all(
             "nodes => nodes.map(e => e.getBoundingClientRect().right)"
         )
         assert max(edges) - min(edges) <= 2
-        expect(page.locator("[data-agent-tunnel-toggle]")).to_have_count(0)
+        expect(onboarding.locator("[data-agent-tunnel-toggle]")).to_have_count(0)
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert not errors
     finally:
@@ -301,11 +349,12 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
             page.locator("#sidebar_toggle").click()
 
-        guides = page.locator("details.ui-collapse[data-agent-tunnel-guide]")
+        onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
+        guides = onboarding.locator("details.ui-collapse[data-agent-tunnel-guide]")
         summaries = guides.locator("summary")
         expect(guides).to_have_count(6)
         expect(summaries).to_have_count(6)
-        assert page.locator(".agent-tunnel-guide-title").all_inner_texts() == [
+        assert onboarding.locator(".agent-tunnel-guide-title").all_inner_texts() == [
             "Create a Tunnel.",
             "Copy the Tunnel ID.",
             "Create an API key.",
@@ -313,7 +362,7 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
             "Enable Developer mode.",
             "Create the AgenticContext plugin.",
         ]
-        assert page.locator(".agent-tunnel-guide-description").all_inner_texts() == [
+        assert onboarding.locator(".agent-tunnel-guide-description").all_inner_texts() == [
             "Open Tunnels and create an AgenticContext Tunnel.",
             "Copy the new ID starting with tunnel_.",
             "Use Expiration: Never and Permissions: All.",
@@ -321,19 +370,19 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
             "In ChatGPT Settings, open Plugins and turn on Developer mode.",
             "Choose Tunnel, select the existing Tunnel, and use No Auth.",
         ]
-        expect(page.locator("[data-agent-tunnel-guide] circle")).to_have_count(0)
-        expect(page.locator("[data-agent-tunnel-guide] .guide-card")).to_have_count(6)
-        expect(page.locator("[data-agent-tunnel-guide] [class*='guide-window']")).to_have_count(0)
-        assert page.locator("[data-agent-tunnel-guide] rect").evaluate_all(
+        expect(onboarding.locator("[data-agent-tunnel-guide] circle")).to_have_count(0)
+        expect(onboarding.locator("[data-agent-tunnel-guide] .guide-card")).to_have_count(6)
+        expect(onboarding.locator("[data-agent-tunnel-guide] [class*='guide-window']")).to_have_count(0)
+        assert onboarding.locator("[data-agent-tunnel-guide] rect").evaluate_all(
             "nodes => nodes.every((node) => node.getAttribute('rx') === '10')"
         )
-        expect(page.locator('[data-guide-expiration="never"]')).to_have_count(1)
-        expect(page.locator('[data-guide-selected="all"]')).to_have_count(1)
-        expect(page.locator('[data-guide-selected="tunnel"]')).to_have_count(1)
-        expect(page.locator('[data-guide-auth="none"]')).to_have_count(1)
-        expect(page.locator("[data-agent-tunnel-onboarding]")).not_to_contain_text("Read + Use")
+        expect(onboarding.locator('[data-guide-expiration="never"]')).to_have_count(1)
+        expect(onboarding.locator('[data-guide-selected="all"]')).to_have_count(1)
+        expect(onboarding.locator('[data-guide-selected="tunnel"]')).to_have_count(1)
+        expect(onboarding.locator('[data-guide-auth="none"]')).to_have_count(1)
+        expect(onboarding).not_to_contain_text("Read + Use")
         assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 6
-        for svg in page.locator("[data-agent-tunnel-guide] svg[role='img']").all():
+        for svg in onboarding.locator("[data-agent-tunnel-guide] svg[role='img']").all():
             expect(svg).to_be_hidden()
 
         summaries.nth(0).focus()
@@ -376,7 +425,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.route(
-        "**/api/agent/tunnel/status",
+        "**/api/agent/tunnel/status?platform=chatgpt",
         lambda route: route.fulfill(json=_tunnel_onboarding_status()),
     )
     try:
@@ -384,20 +433,20 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
             page.locator("#sidebar_toggle").click()
 
-        onboarding = page.locator("[data-agent-tunnel-onboarding]")
-        steps = page.locator(".agent-tunnel-onboarding-step")
+        onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
+        steps = onboarding.locator(".agent-tunnel-onboarding-step")
         expect(onboarding).to_be_visible()
         expect(steps).to_have_count(4)
         expect(page.locator("[data-agent-tunnel-message]")).to_have_count(0)
         expect(page.locator("[data-agent-tunnel-activity]")).to_have_count(0)
         expect(page.locator("[data-agent-tunnel-hint]")).to_be_hidden()
 
-        guides = page.locator("details[data-agent-tunnel-guide]")
+        guides = onboarding.locator("details[data-agent-tunnel-guide]")
         expect(guides).to_have_count(6)
         guides.evaluate_all("nodes => nodes.forEach((node) => { node.open = true; })")
         assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [True] * 6
 
-        action = page.locator("[data-agent-tunnel-copy-kickoff]")
+        action = onboarding.locator("[data-agent-tunnel-copy-kickoff]")
         action.focus()
         action.evaluate("element => element.scrollIntoView({block: 'nearest', inline: 'nearest'})")
         page.wait_for_timeout(250)
@@ -406,9 +455,9 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
             """() => {
                 const workspace = document.querySelector('#agent_workspace');
                 const grid = document.querySelector('.agent-workspace-grid');
-                const card = document.querySelector('[data-agent-tunnel-onboarding]');
-                const steps = [...document.querySelectorAll('.agent-tunnel-onboarding-step')];
-                const action = document.querySelector('[data-agent-tunnel-copy-kickoff]');
+                const card = document.querySelector('[data-agent-tunnel-provider-panel="chatgpt"]');
+                const steps = [...card.querySelectorAll('.agent-tunnel-onboarding-step')];
+                const action = card.querySelector('[data-agent-tunnel-copy-kickoff]');
 
                 const scrollable = (element) => {
                     const style = getComputedStyle(element);
@@ -433,7 +482,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                 const actionRect = action.getBoundingClientRect();
                 const headings = steps.map((step) => step.querySelector('h4'));
                 const paragraphs = steps.flatMap((step) => [...step.querySelectorAll('.agent-tunnel-step-copy p')]);
-                const actionPackages = [...document.querySelectorAll('.agent-tunnel-action-package')];
+                const actionPackages = [...card.querySelectorAll('.agent-tunnel-action-package')];
                 const guideItems = [...steps[0].querySelectorAll('.agent-tunnel-guide-item')];
                 const guideDetails = guideItems.map((item) => item.querySelector('details'));
                 const guideSummaries = guideDetails.map((detail) => detail.querySelector('summary'));
@@ -557,10 +606,10 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                                 >= paragraphs.at(-1).getBoundingClientRect().bottom;
                         });
                     }),
-                    actionLabels: [...document.querySelectorAll('.agent-tunnel-step-action')].map((element) =>
+                    actionLabels: [...card.querySelectorAll('.agent-tunnel-step-action')].map((element) =>
                         element.textContent.trim()
                     ),
-                    actionClasses: [...document.querySelectorAll('.agent-tunnel-step-action')].map((element) =>
+                    actionClasses: [...card.querySelectorAll('.agent-tunnel-step-action')].map((element) =>
                         element.className
                     ),
                     headingFontSizes: [...new Set(headings.map((heading) => parseFloat(getComputedStyle(heading).fontSize)))],
@@ -667,7 +716,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
             assert all(style["horizontallyScrollable"] for style in geometry["guideBodyStyles"])
             assert min(geometry["guideSvgClientWidths"]) >= 719
             assert min(geometry["guideMinimumRenderedTextSizes"]) >= 10.9
-            first_guide_scrollport = page.locator("[data-agent-tunnel-guide-scroll]").first
+            first_guide_scrollport = onboarding.locator("[data-agent-tunnel-guide-scroll]").first
             first_guide_scrollport.evaluate("element => { element.scrollLeft = 0; }")
             first_guide_scrollport.focus()
             first_guide_scrollport.press("ArrowRight")
@@ -747,11 +796,12 @@ def test_tunnel_copy_failure_is_reported_without_false_success(
     page = context.new_page()
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
-        button = page.locator("[data-agent-tunnel-copy-kickoff]")
+        onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
+        button = onboarding.locator("[data-agent-tunnel-copy-kickoff]")
         button.click()
         expect(button).to_have_text("Copy failed")
         expect(button).to_be_enabled()
-        expect(page.locator("[data-agent-tunnel-kickoff]")).to_be_visible()
+        expect(onboarding.locator("[data-agent-tunnel-kickoff]")).to_be_visible()
     finally:
         context.close()
 
@@ -763,7 +813,10 @@ def test_tunnel_saved_key_is_only_a_mask_and_not_resubmitted(
     context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     submitted = []
-    page.route("**/api/agent/tunnel/status", lambda route: route.fulfill(json=_tunnel_onboarding_status()))
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=_tunnel_onboarding_status()),
+    )
 
     def save(route):
         submitted.append(route.request.post_data_json)
@@ -800,7 +853,10 @@ def test_tunnel_credential_errors_use_the_sidebar_hint_not_step_copy(
     page = context.new_page()
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
-    page.route("**/api/agent/tunnel/status", lambda route: route.fulfill(json=_tunnel_onboarding_status()))
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=_tunnel_onboarding_status()),
+    )
     page.route(
         "**/api/agent/tunnel/credentials",
         lambda route: route.fulfill(status=400, json={"error": "Enter the API key for this Tunnel."}),
@@ -820,7 +876,350 @@ def test_tunnel_credential_errors_use_the_sidebar_hint_not_step_copy(
         tunnel_id.fill(TUNNEL_ONBOARDING_ID)
         expect(tunnel_id).to_have_attribute("aria-invalid", "false")
         expect(hint).to_have_text("Enter the API key for this Tunnel.")
-        assert page.locator(".agent-tunnel-credential-step p").count() == 0
+        onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
+        assert onboarding.locator(".agent-tunnel-credential-step p").count() == 0
+        assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_gemini_tunnel_switch_config_copy_and_secret_dom_boundary(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+):
+    """Keep provider state, copied secrets, and callback approval explicitly separated."""
+    secret = "gts_frontend_secret_DO_NOT_RENDER"
+    callback_uri = (
+        "https://consumer-callback.example/oauth/callback"
+        "?flow=agentic%20context&return=%2Fapps"
+    )
+    state = {
+        "origin": "https://agent.example.com",
+        "authorization": {
+            "pending": True,
+            "review_id": "review_frontend_0123456789abcdef",
+            "redirect_uri": callback_uri,
+            "redirect_host": "consumer-callback.example",
+            "expires_in": 599,
+        },
+    }
+    config_requests = []
+    copy_requests = []
+    authorization_requests = []
+    gemini_status_requests = []
+    context = disposable_browser.new_context(viewport={"width": width, "height": 900})
+    context.add_init_script(
+        """Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: {writeText: async (value) => {
+                if (window.__rejectClipboard) throw new Error('Unavailable');
+                window.__copiedValues.push(value);
+            }}
+        });
+        window.__copiedValues = [];
+        window.__domCopyValues = [];
+        window.__execCommandCalls = 0;
+        window.__rejectClipboard = false;
+        const nativeAppend = Element.prototype.append;
+        Element.prototype.append = function (...nodes) {
+            nodes.forEach((node) => {
+                if (node instanceof HTMLTextAreaElement) {
+                    window.__domCopyValues.push(node.value);
+                }
+            });
+            return nativeAppend.apply(this, nodes);
+        };
+        document.execCommand = () => {
+            window.__execCommandCalls += 1;
+            return true;
+        };"""
+    )
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json={
+            **_tunnel_onboarding_status(),
+            "platform": "chatgpt",
+        }),
+    )
+    def gemini_status(route):
+        gemini_status_requests.append(route.request.url)
+        route.fulfill(json=_gemini_tunnel_status(
+            state["origin"],
+            state["authorization"],
+        ))
+
+    page.route("**/api/agent/tunnel/status?platform=gemini", gemini_status)
+
+    def save_config(route):
+        payload = route.request.post_data_json
+        config_requests.append(payload)
+        state["origin"] = payload["public_origin"]
+        route.fulfill(json=_gemini_tunnel_status(
+            state["origin"],
+            state["authorization"],
+        ))
+
+    def copy_value(route):
+        payload = route.request.post_data_json
+        copy_requests.append(payload)
+        values = {
+            "mcp_url": f'{state["origin"]}/mcp/gemini',
+            "client_id": "gtc_frontend_test",
+            "client_secret": secret,
+        }
+        route.fulfill(json={"value": values[payload["value"]]})
+
+    def decide_authorization(route):
+        authorization_requests.append(route.request.post_data_json)
+        state["authorization"] = _empty_gemini_authorization()
+        route.fulfill(json={"ok": True})
+
+    page.route("**/api/agent/tunnel/gemini/config", save_config)
+    page.route("**/api/agent/tunnel/gemini/copy-value", copy_value)
+    page.route(
+        "**/api/agent/tunnel/gemini/authorization",
+        decide_authorization,
+    )
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        chatgpt_panel = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
+        gemini_panel = page.locator('[data-agent-tunnel-provider-panel="gemini"]')
+        expect(chatgpt_panel).to_be_visible()
+        expect(gemini_panel).to_be_hidden()
+
+        page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
+        page.get_by_role("option", name="Gemini", exact=True).click()
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        expect(page).to_have_url(re.compile(r"/agent/tunnel/gemini$"))
+        expect(page.locator("[data-agent-heading]")).to_have_text(
+            "Connect Gemini to this local project"
+        )
+        expect(chatgpt_panel).to_be_hidden()
+        expect(gemini_panel).to_be_visible()
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Configured")
+        expect(page.locator("[data-agent-tunnel-status]")).to_have_attribute(
+            "data-agent-tunnel-ready", "false"
+        )
+        expect(page.locator("[data-agent-tunnel-checkmark]")).to_be_hidden()
+        expect(page.locator("[data-agent-tunnel-spinner]")).to_be_hidden()
+        guides = gemini_panel.locator("details[data-agent-tunnel-guide]")
+        expect(guides).to_have_count(4)
+        assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 4
+        if width < 900:
+            guides.first.locator("summary").click()
+            guide_scrollport = guides.first.locator("[data-agent-tunnel-guide-scroll]")
+            expect(guide_scrollport).to_be_visible()
+            assert guide_scrollport.evaluate(
+                "element => element.scrollWidth > element.clientWidth"
+            )
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+        authorization = gemini_panel.locator("[data-agent-gemini-authorization]")
+        redirect_uri = authorization.locator("[data-agent-gemini-redirect-uri]")
+        redirect_host = authorization.locator("[data-agent-gemini-redirect-host]")
+        expiry = authorization.locator("[data-agent-gemini-authorization-expiry]")
+        approve = authorization.locator(
+            '[data-agent-gemini-authorization-action="approve"]'
+        )
+        deny = authorization.locator(
+            '[data-agent-gemini-authorization-action="deny"]'
+        )
+        expect(authorization).to_be_visible()
+        expect(redirect_uri).to_have_value(callback_uri)
+        expect(redirect_host).to_have_text("consumer-callback.example")
+        expect(expiry).to_have_text("599 seconds")
+        expect(approve).to_have_text("Approve callback")
+        expect(deny).to_have_text("Deny")
+        expect(approve).to_be_enabled()
+        expect(deny).to_be_enabled()
+
+        secret_button = gemini_panel.locator(
+            '[data-agent-gemini-copy-value="client_secret"]'
+        )
+        secret_button.click()
+        expect(secret_button).to_contain_text("Copied")
+        assert page.evaluate("window.__copiedValues.at(-1)") == secret
+        assert copy_requests == [{"value": "client_secret"}]
+        assert authorization_requests == []
+        expect(authorization).to_be_visible()
+        expect(redirect_uri).to_have_value(callback_uri)
+
+        authorization_action = "approve" if width >= 900 else "deny"
+        authorization_button = approve if authorization_action == "approve" else deny
+        status_request_count = len(gemini_status_requests)
+        with page.expect_response("**/api/agent/tunnel/gemini/authorization"):
+            with page.expect_response(
+                "**/api/agent/tunnel/status?platform=gemini"
+            ):
+                authorization_button.click()
+        assert authorization_requests == [{
+            "action": authorization_action,
+            "review_id": "review_frontend_0123456789abcdef",
+        }]
+        assert len(gemini_status_requests) > status_request_count
+        expect(authorization).to_be_hidden()
+        expect(redirect_uri).to_have_value("")
+        expect(redirect_host).to_have_text("")
+        expect(expiry).to_have_text("")
+        page.wait_for_timeout(1_700)
+
+        origin = gemini_panel.locator("[data-agent-gemini-public-origin]")
+        expect(origin).to_have_value("https://agent.example.com")
+        origin.fill("https://new.example.com")
+        expect(gemini_panel.locator('[data-agent-gemini-copy-value="client_secret"]')).to_be_disabled()
+        with page.expect_response("**/api/agent/tunnel/gemini/config"):
+            gemini_panel.locator("[data-agent-gemini-save-origin]").click()
+        assert config_requests == [{"public_origin": "https://new.example.com"}]
+        expect(origin).to_have_value("https://new.example.com")
+
+        expected_values = {
+            "mcp_url": "https://new.example.com/mcp/gemini",
+            "client_id": "gtc_frontend_test",
+            "client_secret": secret,
+        }
+        for kind, expected in expected_values.items():
+            button = gemini_panel.locator(f'[data-agent-gemini-copy-value="{kind}"]')
+            expect(button).to_be_enabled()
+            button.click()
+            expect(button).to_contain_text("Copied")
+            assert page.evaluate("window.__copiedValues.at(-1)") == expected
+        assert copy_requests == [
+            {"value": "client_secret"},
+            *({"value": kind} for kind in expected_values),
+        ]
+        assert authorization_requests == [{
+            "action": authorization_action,
+            "review_id": "review_frontend_0123456789abcdef",
+        }]
+        assert secret not in page.content()
+        storage = page.evaluate(
+            "JSON.stringify({local: {...localStorage}, session: {...sessionStorage}})"
+        )
+        assert secret not in storage
+
+        page.wait_for_timeout(1_700)
+        page.evaluate("window.__rejectClipboard = true")
+        secret_button.click()
+        expect(secret_button).to_contain_text("Copy failed")
+        assert page.evaluate("window.__domCopyValues") == []
+        assert page.evaluate("window.__execCommandCalls") == 0
+        assert secret not in page.content()
+        assert authorization_requests == [{
+            "action": authorization_action,
+            "review_id": "review_frontend_0123456789abcdef",
+        }]
+
+        with page.expect_response("**/api/agent/tunnel/gemini/config"):
+            gemini_panel.locator("[data-agent-gemini-clear-origin]").click()
+        assert config_requests == [
+            {"public_origin": "https://new.example.com"},
+            {"public_origin": ""},
+        ]
+        expect(origin).to_have_value("")
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Not configured")
+        expect(secret_button).to_be_disabled()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        page.get_by_role("button", name="Web service: Gemini", exact=True).click()
+        page.get_by_role("option", name="Grok", exact=True).click()
+        expect(page.locator("[data-agent-heading]")).to_have_text(
+            "Connect Grok to this local project"
+        )
+        expect(chatgpt_panel).to_be_hidden()
+        expect(gemini_panel).to_be_hidden()
+        unsupported = page.locator("[data-agent-tunnel-unsupported]")
+        expect(unsupported).to_be_visible()
+        expect(unsupported).to_contain_text("Grok Tunnel is not available")
+        expect(unsupported).to_contain_text("Choose ChatGPT or Gemini")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_gemini_tunnel_ignores_a_late_chatgpt_status_response(
+    disposable_browser,
+    sidebar_server_url,
+):
+    """A superseded provider response cannot overwrite the active Gemini UI."""
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(
+        """const nativeFetch = window.fetch.bind(window);
+        window.__tunnelStatusPending = {};
+        window.__tunnelStatusRequests = [];
+        window.__resolveTunnelStatus = (platform, payload) => {
+            const resolve = window.__tunnelStatusPending[platform];
+            if (!resolve) throw new Error(`No pending ${platform} Tunnel status request.`);
+            delete window.__tunnelStatusPending[platform];
+            resolve(new Response(JSON.stringify(payload), {
+                status: 200,
+                headers: {'Content-Type': 'application/json'},
+            }));
+        };
+        window.fetch = (input, options = {}) => {
+            const value = typeof input === 'string' ? input : input.url;
+            const url = new URL(value, location.href);
+            if (url.pathname === '/api/agent/tunnel/status') {
+                const platform = url.searchParams.get('platform');
+                window.__tunnelStatusRequests.push(url.pathname + url.search);
+                return new Promise((resolve) => {
+                    window.__tunnelStatusPending[platform] = resolve;
+                });
+            }
+            return nativeFetch(input, options);
+        };"""
+    )
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        page.wait_for_function("() => Boolean(window.__tunnelStatusPending.chatgpt)")
+        page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
+        page.get_by_role("option", name="Gemini", exact=True).click()
+        page.wait_for_function("() => Boolean(window.__tunnelStatusPending.gemini)")
+
+        page.evaluate(
+            "payload => window.__resolveTunnelStatus('gemini', payload)",
+            _gemini_tunnel_status("https://fresh.example.com"),
+        )
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Configured")
+        expect(page.locator('[data-agent-tunnel-provider-panel="gemini"]')).to_be_visible()
+
+        stale_chatgpt = {
+            **_tunnel_onboarding_status(),
+            "platform": "chatgpt",
+            "presentation": {
+                "tone": "error",
+                "label": "Stale ChatGPT",
+                "message": "This response is no longer current.",
+                "hint": "",
+                "action": None,
+            },
+        }
+        page.evaluate(
+            "payload => window.__resolveTunnelStatus('chatgpt', payload)",
+            stale_chatgpt,
+        )
+        page.wait_for_timeout(100)
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Configured")
+        expect(page.locator("[data-agent-heading]")).to_have_text(
+            "Connect Gemini to this local project"
+        )
+        assert page.evaluate("window.__tunnelStatusRequests")[:2] == [
+            "/api/agent/tunnel/status?platform=chatgpt",
+            "/api/agent/tunnel/status?platform=gemini",
+        ]
         assert errors == []
     finally:
         context.close()

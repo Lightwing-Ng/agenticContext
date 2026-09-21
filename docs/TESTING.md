@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.17.6-codex.0`
+Documentation version: `v1.19.1-codex.0`
 
 ## Supported commands
 
@@ -141,7 +141,11 @@ currently complete Zhihu's live provider flow.
 Run the Secure MCP Tunnel contract independently with:
 
 ```bash
-./scripts/test.sh tests/test_tunnel_mcp.py tests/test_tunnel_runtime.py tests/test_tunnel_credentials.py
+./scripts/test.sh \
+  tests/test_tunnel_mcp.py \
+  tests/test_tunnel_runtime.py \
+  tests/test_tunnel_credentials.py \
+  tests/test_gemini_tunnel.py
 ```
 
 The Tunnel tests pin the exact ten-tool public catalog, closed-schema enforcement,
@@ -156,10 +160,25 @@ closed, and no Desktop-wide fallback); staged/unstaged/path-scoped Git inspectio
 truncation, non-Git projects, the discovery ceiling, and per-project lock scope. Tunnel runtime
 tests also hold a preflight doctor call across disconnect and restart to prove a superseded
 generation cannot launch a process or overwrite the current health/state cache. These are
-offline tests with temporary projects, registries, and runtime roots; a live ChatGPT round trip
-is separate transport evidence.
+offline tests with temporary projects, registries, and runtime roots; live ChatGPT and Gemini
+round trips are separate, provider-specific transport evidence.
 
-The Tunnel onboarding UI runs in the disposable Chromium layer:
+The Gemini transport tests independently cover strict public-origin validation, atomic private
+credential storage with POSIX owner-only mode checks, safe snapshots, protected-resource and
+authorization-server metadata, exact
+client/resource/scope/redirect binding, mandatory PKCE S256, one-time authorization codes,
+short-lived access tokens, refresh tokens, signature and expiry failure, public-Host path
+confinement, exact pending-callback review and single-use local approval, bearer challenges, credential-
+generation-scoped Active evidence, provider-attributed activity, and identical ten-tool discovery.
+They must also prove that the client secret, signing key, and bearer values do not appear in HTML,
+initial JSON, status payloads, URLs, or logs; copying a secret does not approve a callback; pending,
+approved, denied, stale-review-id, empty-state, changed-state, and changed-callback cases fail closed;
+exact first-use callback
+pinning is enforced without assuming an undocumented consumer callback hostname; and body ceilings
+still apply without Content-Length. These tests use a loopback request with the configured
+public Host and do not open a real reverse tunnel or establish provider eligibility.
+
+The ChatGPT and Gemini Tunnel onboarding UI runs in the disposable Chromium layer:
 
 ```bash
 ./scripts/test.sh tests/test_agent_sessions_e2e.py -k "tunnel or connection_mode"
@@ -186,7 +205,12 @@ disconnect or reconnect control; Step 4 keeps only the explicit-break prompt, th
 `Copy this prompt` before `Ask in ChatGPT`. All four outer steps are divider-free, the focused
 action keeps the shared 48 px physical-effect bleed inside the scrollport, the title clears the
 global quick actions, routine Tunnel message/activity copy is absent, and credential errors still
-reach the sidebar hint.
+reach the sidebar hint. Switching the Web service in place must replace the entire provider panel,
+status snapshot, labels, links, and copy actions without navigation or stale-response bleed.
+Gemini acceptance also asserts that no secret is present before the explicit copy response, the
+public origin and copied MCP URL remain distinct, ChatGPT credentials never appear in the Gemini
+panel, an exact pending callback can be approved or denied without stale-provider bleed, and
+unsupported providers stay unsupported.
 
 Run the OpenAI Site tools contract and disposable-browser layers independently with:
 

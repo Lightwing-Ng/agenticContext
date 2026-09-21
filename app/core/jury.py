@@ -1,4 +1,4 @@
-"""Evidence-convergent browser-only fact-checking. Code version: v1.8.1-codex.1."""
+"""Evidence-convergent browser-only fact-checking. Code version: v1.8.2-claude.0."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from time import monotonic
 from typing import Any, Callable
 from uuid import uuid4
 
+from .agent.platform_catalog import AGENT_PLATFORM_OPTIONS
 from .computer_use_agent import (
-    AGENT_PLATFORM_OPTIONS,
     ComputerUseSettings,
     _atomic_write_owner_only_text,
     _path_crosses_link_like_component,

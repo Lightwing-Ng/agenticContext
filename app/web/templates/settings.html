@@ -65,7 +65,7 @@
                     <div class="settings-content-scrollport" data-layout-role="content-scrollport" data-settings-content-scrollport>
                     <div class="settings-category-shell" data-settings-category-shell data-active-category="browser">
                         <form
-                            action="{{ url_for('save_settings') }}"
+                            action="{{ url_for('settings.save_settings') }}"
                             method="post"
                             class="settings-category-form"
                             id="settings_form"
@@ -405,7 +405,7 @@
                                         <button
                                             type="submit"
                                             form="settings_form"
-                                            formaction="{{ url_for('start_shadow_backup_sync') }}"
+                                            formaction="{{ url_for('settings.start_shadow_backup_sync') }}"
                                             formmethod="post"
                                             class="settings-inline-button settings-inline-button-primary shadow-backup-sync-button"
                                             id="shadow_backup_sync_now"

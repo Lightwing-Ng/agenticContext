@@ -11,7 +11,7 @@ import pytest
 
 from app.core.agent_model_catalog import chatgpt_live_catalog
 from app.core.computer_use_agent import _select_chatgpt_model, validate_computer_use_settings
-from app.web.app import render_agent_response, render_prompt_markdown
+from app.web.presentation import render_agent_response, render_prompt_markdown
 
 
 @pytest.mark.parametrize("wrapper", [

@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.4.4-codex.0
+Code version: v1.5.0-codex.0
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from app.web.app import create_app
 
 @pytest.fixture
 def jury_app(tmp_path):
-    """Keep all persistent state private and replace provider operations with a fake."""
+    """Keep state private and stub provider operations on the injected service."""
     application = create_app(
         tmp_path / "local-store",
         computer_use_settings_path=tmp_path / "settings" / "agent.json",
@@ -22,11 +22,14 @@ def jury_app(tmp_path):
         agent_external_operations_enabled=False,
     )
     application.config.update(TESTING=True)
-    real_service = application.extensions["jury_service"]
-    fake = Mock(spec=[
-        "check", "dismiss_failed", "start", "status", "sessions", "stop", "stop_at_exit",
-    ])
-    fake.status.return_value = {
+    service = application.extensions["jury_service"]
+    service.check = Mock()
+    service.dismiss_failed = Mock()
+    service.start = Mock()
+    service.status = Mock()
+    service.sessions = Mock()
+    service.stop = Mock()
+    service.status.return_value = {
         "session_id": "jury-example",
         "question": "Check the original claim against primary evidence.",
         "phase": "reviewing",
@@ -40,8 +43,8 @@ def jury_app(tmp_path):
         "response": "",
         "consensus": False,
     }
-    fake.start.return_value = fake.status.return_value
-    fake.check.return_value = {
+    service.start.return_value = service.status.return_value
+    service.check.return_value = {
         "browser": "edge",
         "providers": [
             {"provider": "chatgpt", "logged_in": True},
@@ -49,17 +52,20 @@ def jury_app(tmp_path):
         ],
         "ready": True,
     }
-    fake.sessions.return_value = [fake.status.return_value]
-    fake.stop.return_value = {**fake.status.return_value, "running": False, "phase": "stopped"}
-    fake.dismiss_failed.return_value = {"session_id": "jury-example"}
-    application.extensions["jury_service"] = fake
-    yield application, fake
-    real_service.stop_at_exit()
+    service.sessions.return_value = [service.status.return_value]
+    service.stop.return_value = {
+        **service.status.return_value,
+        "running": False,
+        "phase": "stopped",
+    }
+    service.dismiss_failed.return_value = {"session_id": "jury-example"}
+    yield application, service
+    service.stop_at_exit()
     application.extensions["agent_session_pool"].stop_at_exit()
 
 
 def enable_fake_operations(application):
-    """Enable route dispatch only after the browser-facing service has been replaced."""
+    """Enable route dispatch only after the browser-facing methods have been stubbed."""
     application.config["AGENT_EXTERNAL_OPERATIONS_ENABLED"] = True
 
 

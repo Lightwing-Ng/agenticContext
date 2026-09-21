@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.4-codex.1
+Code version: v1.8.5-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from flask import url_for
 
 from app.core.config import MAX_DOWNLOAD_WORKERS, CrawlConfig
 from app.core.downloader import DownloadResult
@@ -16,8 +17,133 @@ from app.core.grok_downloader import GrokResetResult
 from app.core.grok_service import summarize_error_for_status
 from app.core.service import CacheLikesService
 from app.core.state import TaskSnapshot, TaskState
-from app.web.app import create_app
+from app.web.app import LEGACY_ENDPOINT_ALIASES, create_app
 from app.web.cache_sources import CACHE_SOURCE_VIEWS
+
+
+NEW_GEMINI_TUNNEL_ENDPOINTS = frozenset(
+    {
+        "tunnel.api_gemini_config",
+        "tunnel.api_gemini_copy_value",
+        "tunnel.api_gemini_authorization",
+        "tunnel.gemini_protected_resource_metadata",
+        "tunnel.gemini_authorization_server_metadata",
+        "tunnel.gemini_oauth_authorize",
+        "tunnel.gemini_oauth_token",
+        "tunnel.gemini_mcp_endpoint",
+        "tunnel.gemini_mcp_stream",
+    }
+)
+
+
+def _route_values(rule) -> dict[str, str]:
+    """Return stable values for every converter in one compatibility route."""
+    values = {
+        "browser": "edge",
+        "content_mode": "text",
+        "platform": "chatgpt",
+        "relative_path": "nested/file.txt",
+        "session_id": "session-1",
+        "source_key": "chatgpt",
+        "stable_id": "item-1",
+    }
+    return {argument: values[argument] for argument in rule.arguments}
+
+
+def _route_signature(rule) -> tuple[object, ...]:
+    """Describe the URL-building behavior copied to one legacy endpoint."""
+    return (
+        rule.rule,
+        rule.methods,
+        rule.defaults or {},
+        rule.subdomain,
+        rule.strict_slashes,
+        rule.merge_slashes,
+        rule.redirect_to,
+        rule.alias,
+        rule.host,
+        rule.websocket,
+    )
+
+
+def test_pre_blueprint_endpoints_remain_buildable_without_dispatching_requests(app) -> None:
+    """Every endpoint moved out of app.py keeps its old url_for contract."""
+    split_blueprints = {
+        "agent",
+        "cache",
+        "jury",
+        "local_resources",
+        "settings",
+        "tunnel",
+    }
+    current_endpoints = {
+        rule.endpoint
+        for rule in app.url_map.iter_rules()
+        if "." in rule.endpoint
+        and rule.endpoint.partition(".")[0] in split_blueprints
+    }
+    assert len(LEGACY_ENDPOINT_ALIASES) == 93
+    assert set(LEGACY_ENDPOINT_ALIASES.values()) == (
+        current_endpoints - NEW_GEMINI_TUNNEL_ENDPOINTS
+    )
+
+    rules_by_endpoint: dict[str, list[object]] = {}
+    for rule in app.url_map.iter_rules():
+        rules_by_endpoint.setdefault(rule.endpoint, []).append(rule)
+
+    adapter = app.url_map.bind("localhost")
+    with app.test_request_context():
+        for legacy_endpoint, current_endpoint in LEGACY_ENDPOINT_ALIASES.items():
+            legacy_rules = sorted(
+                rules_by_endpoint[legacy_endpoint],
+                key=lambda rule: (rule.rule, sorted(rule.methods or ())),
+            )
+            current_rules = sorted(
+                rules_by_endpoint[current_endpoint],
+                key=lambda rule: (rule.rule, sorted(rule.methods or ())),
+            )
+            assert legacy_endpoint not in app.view_functions
+            assert len(legacy_rules) == len(current_rules)
+
+            for legacy_rule, current_rule in zip(
+                legacy_rules,
+                current_rules,
+                strict=True,
+            ):
+                assert legacy_rule.build_only is True
+                assert _route_signature(legacy_rule) == _route_signature(current_rule)
+                values = _route_values(current_rule)
+                for method in current_rule.methods or ():
+                    legacy_url = url_for(
+                        legacy_endpoint,
+                        _method=method,
+                        **values,
+                    )
+                    current_url = url_for(
+                        current_endpoint,
+                        _method=method,
+                        **values,
+                    )
+                    assert legacy_url == current_url
+                    matched_endpoint, _arguments = adapter.match(
+                        current_url,
+                        method=method,
+                    )
+                    assert matched_endpoint not in LEGACY_ENDPOINT_ALIASES
+                    if method != "OPTIONS":
+                        assert matched_endpoint == current_endpoint
+
+                assert url_for(
+                    legacy_endpoint,
+                    _anchor="compatibility",
+                    compatibility_probe="1",
+                    **values,
+                ) == url_for(
+                    current_endpoint,
+                    _anchor="compatibility",
+                    compatibility_probe="1",
+                    **values,
+                )
 
 
 def test_cache_service_run_aggregates_download_results_without_browser_access(tmp_path: Path) -> None:
@@ -130,7 +256,7 @@ def test_browser_session_api_validates_inputs_and_returns_probe_payload(client) 
     assert invalid.status_code == 400
     assert "Unsupported platform" in invalid.get_json()["error"]
 
-    with patch("app.web.app.probe_browser_session", return_value={"ready": True, "account_name": "demo"}) as probe:
+    with patch("app.web.agent_routes.probe_browser_session", return_value={"ready": True, "account_name": "demo"}) as probe:
         valid = client.get("/api/browser-session?platform=x&browser=chrome")
 
     assert valid.status_code == 200
@@ -141,7 +267,7 @@ def test_browser_session_api_validates_inputs_and_returns_probe_payload(client) 
 @pytest.mark.integration
 def test_browser_session_api_returns_409_when_debug_browser_lock_is_busy(client) -> None:
     with patch(
-        "app.web.app.probe_and_collect_chatgpt_sources",
+        "app.web.agent_routes.probe_and_collect_chatgpt_sources",
         side_effect=RuntimeError(
             "The project debug edge is busy with another operation. Retry after it finishes."
         ),
@@ -160,7 +286,7 @@ def test_browser_session_api_returns_409_when_debug_browser_lock_is_busy(client)
 @pytest.mark.integration
 def test_browser_session_api_returns_409_when_probe_raises_runtime_error(client) -> None:
     with patch(
-        "app.web.app.probe_browser_session",
+        "app.web.agent_routes.probe_browser_session",
         side_effect=RuntimeError("The project debug edge is busy with another operation."),
     ):
         response = client.get("/api/browser-session?platform=gemini&browser=edge")
@@ -171,7 +297,7 @@ def test_browser_session_api_returns_409_when_probe_raises_runtime_error(client)
 
 @pytest.mark.integration
 def test_settings_and_grok_reset_routes_redirect_without_external_work(client, tmp_path: Path) -> None:
-    with patch("app.web.app.save_config") as save_config:
+    with patch("app.web.config_store.save_config") as save_config:
         settings_response = client.post(
             "/settings",
             data={
@@ -188,7 +314,7 @@ def test_settings_and_grok_reset_routes_redirect_without_external_work(client, t
     assert saved_config.chatgpt_startup_timeout_seconds == 45.0
     assert saved_config.chatgpt_scan_wait_seconds == 0.25
 
-    with patch("app.web.app.reset_grok_state", return_value=GrokResetResult(removed_media_files=2, removed_state_files=1)):
+    with patch("app.web.cache_routes.reset_grok_state", return_value=GrokResetResult(removed_media_files=2, removed_state_files=1)):
         reset_response = client.post("/grok/reset")
     assert reset_response.status_code == 302
     assert client.get("/api/grok/status").status_code == 200
@@ -199,7 +325,7 @@ def test_grok_start_route_accepts_safari(client, macos_host) -> None:
     # Keep the simulated macOS selection out of later tests' host settings.
     with (
         patch("app.core.grok_service.GrokDownloadService.start") as start,
-        patch("app.web.app.save_config") as save_config,
+        patch("app.web.config_store.save_config") as save_config,
     ):
         response = client.post(
             "/grok/start",
@@ -245,8 +371,8 @@ def test_chatgpt_text_start_preserves_media_settings_and_selects_text_mode(
     saved_project_url = "https://chatgpt.com/c/specific-session"
     initial_config = CrawlConfig(chatgpt_project_url=saved_project_url)
 
-    with patch("app.web.app.load_saved_config", return_value=initial_config), patch(
-        "app.web.app.save_config"
+    with patch("app.web.config_store.load_saved_config", return_value=initial_config), patch(
+        "app.web.config_store.save_config"
     ) as save_config, patch("app.core.chatgpt_service.ChatGPTDownloadService.start") as start:
         application = create_app(tmp_path / "local_store")
         application.config.update(TESTING=True)
@@ -272,8 +398,8 @@ def test_chatgpt_media_start_uses_safari_project_settings(tmp_path: Path, macos_
     project_name = "Demo project"
     initial_config = CrawlConfig(chatgpt_project_url=project_url, chatgpt_project_name=project_name)
 
-    with patch("app.web.app.load_saved_config", return_value=initial_config), patch(
-        "app.web.app.save_config"
+    with patch("app.web.config_store.load_saved_config", return_value=initial_config), patch(
+        "app.web.config_store.save_config"
     ), patch("app.core.chatgpt_service.ChatGPTDownloadService.start") as start:
         application = create_app(tmp_path / "local_store")
         application.config.update(TESTING=True)
@@ -302,8 +428,8 @@ def test_chatgpt_media_start_passes_blank_url_for_all_generated_media(
     saved_project_url = "https://chatgpt.com/g/g-p-saved/project"
     initial_config = CrawlConfig(chatgpt_project_url=saved_project_url)
 
-    with patch("app.web.app.load_saved_config", return_value=initial_config), patch(
-        "app.web.app.save_config"
+    with patch("app.web.config_store.load_saved_config", return_value=initial_config), patch(
+        "app.web.config_store.save_config"
     ) as save_config, patch("app.core.chatgpt_service.ChatGPTDownloadService.start") as start:
         application = create_app(tmp_path / "local_store")
         application.config.update(TESTING=True)
@@ -333,8 +459,8 @@ def test_partial_cache_start_preserves_unsubmitted_global_booleans(tmp_path: Pat
         shadow_backup_mirror_deletions=True,
     )
 
-    with patch("app.web.app.load_saved_config", return_value=initial_config), patch(
-        "app.web.app.save_config"
+    with patch("app.web.config_store.load_saved_config", return_value=initial_config), patch(
+        "app.web.config_store.save_config"
     ) as save_config, patch("app.core.service.CacheLikesService.start") as start:
         application = create_app(tmp_path / "local_store")
         application.config.update(TESTING=True)

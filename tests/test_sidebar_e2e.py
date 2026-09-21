@@ -36,8 +36,8 @@ from app.core.computer_use_agent import (
     _submit_chromium_prompt,
     _submit_chromium_web_prompt,
     load_computer_use_settings,
-    parse_agent_action,
 )
+from app.core.agent.action_protocol import parse_agent_action
 from app.core.gemini_downloader import inspect_gemini_session
 from app.core.resource_persistence import (
     CHATGPT_HISTORY_SCHEMA,
@@ -10810,7 +10810,7 @@ def test_agent_bootstrap_discovers_models_efforts_and_restores_markdown_once(
     height: int,
 ) -> None:
     from app.core.agent_model_catalog import chatgpt_live_catalog
-    from app.web.app import render_agent_response
+    from app.web.presentation import render_agent_response
 
     raw = json.dumps({
         'action': 'final',

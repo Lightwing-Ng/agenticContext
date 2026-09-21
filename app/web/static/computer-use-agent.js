@@ -1,7 +1,8 @@
-/* Code version: v3.52.7-codex.0 */
+/* Code version: v3.56.0-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
+    const TUNNEL_UI_PLATFORMS = new Set(["chatgpt", "gemini"]);
     const AGENT_SESSION_SELECTION_CACHE_VERSION = 1;
     const AGENT_SESSION_SELECTION_CACHE_PREFIX = "cachelikes:agent-session-selection";
     const MAX_AGENT_SESSION_CACHE_VALUE_LENGTH = 2048;
@@ -98,14 +99,28 @@
         tunnelSpinner: document.querySelector("[data-agent-tunnel-spinner]"),
         tunnelState: document.querySelector("[data-agent-tunnel-state]"),
         tunnelHint: document.querySelector("[data-agent-tunnel-hint]"),
-        tunnelOnboarding: document.querySelector("[data-agent-tunnel-onboarding]"),
+        tunnelOnboardings: Array.from(document.querySelectorAll("[data-agent-tunnel-onboarding]")),
+        tunnelUnsupported: document.querySelector("[data-agent-tunnel-unsupported]"),
+        tunnelUnsupportedHeading: document.querySelector("[data-agent-tunnel-unsupported-heading]"),
+        tunnelUnsupportedCopy: document.querySelector("[data-agent-tunnel-unsupported-copy]"),
         browserTask: document.querySelector("[data-agent-browser-task]"),
         tunnelIdInput: document.querySelector("[data-agent-tunnel-id]"),
         tunnelKeyInput: document.querySelector("[data-agent-tunnel-key]"),
         tunnelIdCheck: document.querySelector("[data-agent-tunnel-id-check]"),
         tunnelKeyCheck: document.querySelector("[data-agent-tunnel-key-check]"),
         tunnelClearButtons: Array.from(document.querySelectorAll("[data-agent-tunnel-clear]")),
-        tunnelLiveMarker: document.querySelector("[data-agent-tunnel-live-marker]"),
+        tunnelLiveMarkers: Array.from(document.querySelectorAll("[data-agent-tunnel-live-marker]")),
+        geminiPublicOrigin: document.querySelector("[data-agent-gemini-public-origin]"),
+        geminiConfigStatus: document.querySelector("[data-agent-gemini-config-status]"),
+        geminiSaveOrigin: document.querySelector("[data-agent-gemini-save-origin]"),
+        geminiClearOrigin: document.querySelector("[data-agent-gemini-clear-origin]"),
+        geminiCopyValueButtons: Array.from(document.querySelectorAll("[data-agent-gemini-copy-value]")),
+        geminiAuthorization: document.querySelector("[data-agent-gemini-authorization]"),
+        geminiRedirectUri: document.querySelector("[data-agent-gemini-redirect-uri]"),
+        geminiRedirectHost: document.querySelector("[data-agent-gemini-redirect-host]"),
+        geminiAuthorizationExpiry: document.querySelector("[data-agent-gemini-authorization-expiry]"),
+        geminiAuthorizationStatus: document.querySelector("[data-agent-gemini-authorization-status]"),
+        geminiAuthorizationButtons: Array.from(document.querySelectorAll("[data-agent-gemini-authorization-action]")),
         workspacePath: promptForm.querySelector('input[name="workspace_path"]'),
         promptOs: promptForm.querySelector("[data-agent-prompt-os]"),
         promptPlatform: promptForm.querySelector("[data-agent-prompt-platform]"),
@@ -832,17 +847,8 @@
             .split(",")
             .map((value) => value.trim())
             .filter(Boolean);
-        return platforms.includes(platform);
+        return TUNNEL_UI_PLATFORMS.has(platform) && platforms.includes(platform);
     }
-
-    let tunnelPresentation = readTunnelPresentation();
-    let tunnelCredentials = readTunnelCredentials();
-    let tunnelActivityObserved = !elements.tunnelLiveMarker?.hidden;
-    let tunnelPollTimer = null;
-    let tunnelPollInFlight = false;
-    let tunnelCredentialSaveTimer = null;
-    let tunnelCredentialSaveRevision = 0;
-    let tunnelCredentialNotice = "";
 
     function readTunnelPresentation() {
         try {
@@ -861,6 +867,114 @@
             return {tunnel_id: "", tunnel_id_valid: false, api_key_saved: false, api_key_hint: "", qualified: false};
         }
     }
+
+    function defaultTunnelPresentation(platform) {
+        const provider = platform === "gemini" ? "Gemini" : "Tunnel";
+        return {
+            tone: "loading",
+            label: "Checking",
+            message: `Checking ${provider} Tunnel status…`,
+            hint: "",
+            action: null,
+        };
+    }
+
+    function emptyTunnelCredentials() {
+        return {
+            tunnel_id: "",
+            tunnel_id_valid: false,
+            api_key_saved: false,
+            api_key_hint: "",
+            qualified: false,
+        };
+    }
+
+    function safeGeminiConfig(snapshot) {
+        const config = snapshot && typeof snapshot === "object" ? snapshot : {};
+        return {
+            configured: Boolean(config.configured),
+            publicOrigin: normalizedGeminiPublicOrigin(
+                config.public_origin || config.publicOrigin || "",
+            ),
+            mcpUrlAvailable: Boolean(config.mcp_url || config.mcpUrlAvailable),
+            clientIdAvailable: Boolean(config.client_id || config.clientIdAvailable),
+            clientSecretAvailable: Boolean(config.client_secret_saved || config.clientSecretAvailable),
+        };
+    }
+
+    function emptyGeminiAuthorization() {
+        return {
+            pending: false,
+            reviewId: "",
+            redirectUri: "",
+            redirectHost: "",
+            expiresIn: 0,
+        };
+    }
+
+    function safeGeminiAuthorization(snapshot) {
+        const authorization = snapshot && typeof snapshot === "object" ? snapshot : {};
+        if (!authorization.pending) return emptyGeminiAuthorization();
+        const redirectUri = typeof authorization.redirect_uri === "string"
+            ? authorization.redirect_uri : "";
+        const redirectHost = typeof authorization.redirect_host === "string"
+            ? authorization.redirect_host : "";
+        const reviewId = typeof authorization.review_id === "string"
+            ? authorization.review_id : "";
+        const expiresIn = authorization.expires_in;
+        try {
+            const parsed = new URL(redirectUri);
+            if (
+                parsed.protocol !== "https:"
+                || parsed.username
+                || parsed.password
+                || redirectUri !== redirectUri.trim()
+                || redirectHost !== redirectHost.trim()
+                || !redirectHost
+                || !/^[A-Za-z0-9_-]{16,128}$/.test(reviewId)
+                || parsed.hostname.toLowerCase() !== redirectHost.toLowerCase()
+                || !Number.isSafeInteger(expiresIn)
+                || expiresIn < 0
+            ) return emptyGeminiAuthorization();
+            return {pending: true, reviewId, redirectUri, redirectHost, expiresIn};
+        } catch (_error) {
+            return emptyGeminiAuthorization();
+        }
+    }
+
+    const initialTunnelPlatformCandidate = String(
+        elements.tunnelField?.dataset.agentTunnelInitialPlatform || "chatgpt",
+    ).trim().toLowerCase();
+    const initialTunnelPlatform = TUNNEL_UI_PLATFORMS.has(initialTunnelPlatformCandidate)
+        ? initialTunnelPlatformCandidate
+        : "chatgpt";
+    const initialTunnelSnapshot = {
+        presentation: readTunnelPresentation(),
+        credentials: readTunnelCredentials(),
+        activityObserved: elements.tunnelLiveMarkers.some((marker) => !marker.hidden),
+        config: safeGeminiConfig(null),
+        authorization: emptyGeminiAuthorization(),
+        usageKnown: false,
+    };
+    const tunnelSnapshots = new Map([[initialTunnelPlatform, initialTunnelSnapshot]]);
+    let tunnelPresentation = initialTunnelSnapshot.presentation;
+    let tunnelCredentials = initialTunnelSnapshot.credentials;
+    let tunnelActivityObserved = initialTunnelSnapshot.activityObserved;
+    let tunnelPollTimer = null;
+    let tunnelPollRevision = 0;
+    let tunnelPollController = null;
+    let tunnelPollPlatform = "";
+    let tunnelCredentialSaveTimer = null;
+    let tunnelCredentialSaveRevision = 0;
+    let tunnelCredentialNotice = "";
+    let geminiConfig = safeGeminiConfig(null);
+    let geminiConfigBusy = false;
+    let geminiConfigDirty = false;
+    let geminiConfigRevision = 0;
+    let geminiConfigNotice = "";
+    let geminiAuthorization = emptyGeminiAuthorization();
+    let geminiAuthorizationBusy = false;
+    let geminiAuthorizationNotice = "";
 
     function tunnelAvailability() {
         const supported = tunnelSupportsPlatform(selectedPlatform());
@@ -913,7 +1027,6 @@
                 ? ("••••••••" + String(tunnelCredentials.api_key_hint || "").slice(-4))
                 : "sk-proj-…";
         }
-        if (elements.tunnelLiveMarker) elements.tunnelLiveMarker.hidden = !tunnelActivityObserved;
         const tunnelIdInvalid = Boolean(state.tunnelId) && !state.tunnelIdValid;
         const typedKeyInvalid = Boolean(state.typedKey) && !state.typedKeyValid;
         elements.tunnelIdInput?.setAttribute("aria-invalid", String(tunnelIdInvalid));
@@ -930,6 +1043,121 @@
         }
     }
 
+    function normalizedGeminiPublicOrigin(value) {
+        const candidate = String(value || "").trim();
+        if (!candidate) return "";
+        try {
+            const parsed = new URL(candidate);
+            if (parsed.protocol !== "https:" || parsed.username || parsed.password) return "";
+            if (parsed.pathname !== "/" || parsed.search || parsed.hash) return "";
+            return parsed.origin;
+        } catch (_error) {
+            return "";
+        }
+    }
+
+    function syncTunnelLiveMarkers() {
+        const platform = selectedPlatform();
+        elements.tunnelLiveMarkers.forEach((marker) => {
+            const markerPlatform = marker.dataset.agentTunnelLiveMarker || "chatgpt";
+            marker.hidden = markerPlatform !== platform || !tunnelActivityObserved;
+        });
+    }
+
+    function syncGeminiConfigUi() {
+        if (!elements.geminiPublicOrigin) return;
+        if (!geminiConfigDirty && document.activeElement !== elements.geminiPublicOrigin) {
+            elements.geminiPublicOrigin.value = geminiConfig.publicOrigin;
+        }
+        const typedOrigin = elements.geminiPublicOrigin.value.trim();
+        const normalizedOrigin = normalizedGeminiPublicOrigin(typedOrigin);
+        const invalid = Boolean(typedOrigin) && !normalizedOrigin;
+        elements.geminiPublicOrigin.disabled = geminiConfigBusy;
+        elements.geminiPublicOrigin.setAttribute("aria-invalid", String(invalid));
+        if (elements.geminiSaveOrigin) {
+            elements.geminiSaveOrigin.disabled = geminiConfigBusy || !normalizedOrigin;
+        }
+        if (elements.geminiClearOrigin) {
+            elements.geminiClearOrigin.disabled = geminiConfigBusy
+                || (!typedOrigin && !geminiConfig.configured);
+        }
+        const availability = {
+            mcp_url: geminiConfig.mcpUrlAvailable,
+            client_id: geminiConfig.clientIdAvailable,
+            client_secret: geminiConfig.clientSecretAvailable,
+        };
+        elements.geminiCopyValueButtons.forEach((button) => {
+            const value = button.dataset.agentGeminiCopyValue;
+            button.disabled = geminiConfigBusy
+                || geminiConfigDirty
+                || button.dataset.agentGeminiCopying === "true"
+                || !availability[value];
+        });
+        if (elements.geminiConfigStatus) {
+            let notice = geminiConfigNotice;
+            if (!notice && invalid) {
+                notice = "Enter one HTTPS origin without a path, query, fragment, or embedded credentials.";
+            }
+            if (!notice && geminiConfigDirty) {
+                notice = "Save this origin before copying its connection values.";
+            }
+            if (!notice && geminiConfig.configured) {
+                notice = "Origin saved. The connection values are ready to copy.";
+            }
+            elements.geminiConfigStatus.textContent = notice;
+            elements.geminiConfigStatus.hidden = !notice;
+        }
+    }
+
+    function syncGeminiAuthorizationUi() {
+        if (!elements.geminiAuthorization) return;
+        const pending = selectedPlatform() === "gemini" && geminiAuthorization.pending;
+        elements.geminiAuthorization.hidden = !pending;
+        if (elements.geminiRedirectUri) {
+            elements.geminiRedirectUri.value = pending ? geminiAuthorization.redirectUri : "";
+        }
+        if (elements.geminiRedirectHost) {
+            elements.geminiRedirectHost.textContent = pending ? geminiAuthorization.redirectHost : "";
+        }
+        if (elements.geminiAuthorizationExpiry) {
+            const seconds = pending ? geminiAuthorization.expiresIn : 0;
+            elements.geminiAuthorizationExpiry.textContent = pending
+                ? `${seconds.toLocaleString("en-US")} ${seconds === 1 ? "second" : "seconds"}`
+                : "";
+        }
+        elements.geminiAuthorizationButtons.forEach((button) => {
+            button.disabled = !pending || geminiAuthorizationBusy;
+        });
+        if (elements.geminiAuthorizationStatus) {
+            const notice = pending ? geminiAuthorizationNotice : "";
+            elements.geminiAuthorizationStatus.textContent = notice;
+            elements.geminiAuthorizationStatus.hidden = !notice;
+        }
+    }
+
+    function activateTunnelSnapshot(platform) {
+        const snapshot = tunnelSnapshots.get(platform);
+        tunnelPresentation = snapshot?.presentation || defaultTunnelPresentation(platform);
+        tunnelCredentials = snapshot?.credentials || emptyTunnelCredentials();
+        tunnelActivityObserved = Boolean(snapshot?.activityObserved);
+        if (platform === "gemini") {
+            geminiConfig = snapshot?.config || safeGeminiConfig(null);
+            const nextAuthorization = snapshot?.authorization || emptyGeminiAuthorization();
+            if (
+                !nextAuthorization.pending
+                || nextAuthorization.redirectUri !== geminiAuthorization.redirectUri
+            ) geminiAuthorizationNotice = "";
+            geminiAuthorization = nextAuthorization;
+            if (!geminiConfigDirty && document.activeElement !== elements.geminiPublicOrigin) {
+                if (elements.geminiPublicOrigin) {
+                    elements.geminiPublicOrigin.value = geminiConfig.publicOrigin;
+                }
+            }
+        }
+        if (snapshot?.usageKnown) syncTunnelUsage(snapshot);
+        else if (platform !== initialTunnelPlatform) syncTunnelUsage({});
+    }
+
     function syncTunnelStatus() {
         if (!elements.tunnelField) return;
         const {supported, tone, ready} = tunnelAvailability();
@@ -937,56 +1165,292 @@
         const view = supported ? tunnelPresentation : {
             tone: "error",
             label: "Unsupported",
-            message: "Tunnel connects ChatGPT only. Choose ChatGPT, or switch to Browser for " + platformLabel + ".",
+            message: "Tunnel is available for ChatGPT and Gemini. Choose one of those services, or switch to Browser for " + platformLabel + ".",
             hint: "",
             action: null,
         };
         const loading = supported && tone === "loading";
+        const configured = supported && tone === "configured";
         if (elements.tunnelStatus) elements.tunnelStatus.dataset.agentTunnelReady = ready ? "true" : "false";
         if (elements.tunnelCheckmark) {
-            elements.tunnelCheckmark.hidden = loading;
-            elements.tunnelCheckmark.dataset.statusState = ready ? "ready" : "error";
+            elements.tunnelCheckmark.hidden = loading || configured;
+            if (loading || configured) elements.tunnelCheckmark.removeAttribute("data-status-state");
+            else elements.tunnelCheckmark.dataset.statusState = ready ? "ready" : "error";
         }
         if (elements.tunnelSpinner) elements.tunnelSpinner.hidden = !loading;
         if (elements.tunnelState) elements.tunnelState.textContent = view.label || "";
-        syncTunnelCredentialUi();
+        const platform = selectedPlatform();
+        if (supported && platform === "chatgpt") {
+            syncTunnelCredentialUi();
+        } else if (elements.tunnelHint) {
+            const hint = String(view.hint || view.message || "");
+            elements.tunnelHint.textContent = hint;
+            elements.tunnelHint.hidden = !hint;
+        }
+        if (platform === "gemini") syncGeminiConfigUi();
+        syncGeminiAuthorizationUi();
+        syncTunnelLiveMarkers();
     }
 
-    function applyTunnelStatus(payload) {
-        if (!payload || typeof payload !== "object") return;
-        if (payload.presentation) tunnelPresentation = payload.presentation;
-        if (payload.credentials && typeof payload.credentials === "object") {
-            tunnelCredentials = payload.credentials;
-        }
-        tunnelActivityObserved = Boolean(payload.activity_observed);
+    function syncTunnelUsage(payload) {
+        const rows = elements.tunnelStatus?.querySelectorAll("[data-tunnel-usage-row]") || [];
+        const active = Array.isArray(payload.active_calls) ? payload.active_calls : [];
+        const recent = Array.isArray(payload.recent_calls) ? payload.recent_calls : [];
+        rows.forEach((row) => {
+            const current = row.dataset.tunnelUsageRow === "current";
+            const call = current ? active.at(-1) : recent[0];
+            const label = (current ? "Current call" : "Recent call")
+                + (call ? " · " + (current ? "Running" : (call.state === "failed" ? "Failed" : "Completed")) : "");
+            const running = current && active.length > 1
+                ? " (" + active.length.toLocaleString("en-US") + " running)" : "";
+            const detail = call && call.call_id != null
+                ? "#" + call.call_id + " " + (call.project || "") + " · "
+                    + call.tool + " · " + call.state + (current ? " · request only" : "")
+                : (current ? "No running calls" : "No recent calls");
+            const description = row.querySelector("[data-tunnel-usage-detail]");
+            const text = label + running + ": " + detail;
+            if (description.textContent !== text) description.textContent = text;
+            description.title = text;
+            row.dataset.callId = call?.call_id == null ? "" : String(call.call_id);
+
+            // Reject unsafe numbers rather than rounding or coercing unknown to zero.
+            const value = call?.estimated_tokens;
+            const available = Number.isSafeInteger(value) && value >= 0;
+            const badge = row.querySelector("[data-tunnel-token-badge]");
+            const digits = row.querySelector("[data-tunnel-token-digits]");
+            const unit = row.querySelector("[data-tunnel-token-unit]");
+            const unavailable = row.querySelector("[data-tunnel-token-unavailable]");
+            const formatted = available ? value.toLocaleString("en-US") : "";
+            if (digits.textContent !== formatted) {
+                const glyphs = Array.from(formatted, (glyph) => {
+                    const span = document.createElement("span");
+                    span.className = "investment-holdings-allocation-badge-glyph";
+                    span.textContent = glyph;
+                    return span;
+                });
+                digits.replaceChildren(...glyphs);
+            }
+            badge.hidden = !available;
+            unit.hidden = !available;
+            unavailable.hidden = available;
+            unit.textContent = value === 1 ? "token" : "tokens";
+        });
+    }
+
+    function applyTunnelStatus(payload, requestedPlatform = selectedPlatform()) {
+        if (!payload || typeof payload !== "object") return false;
+        const declaredPlatform = String(payload.platform || "").trim().toLowerCase();
+        if (declaredPlatform && declaredPlatform !== requestedPlatform) return false;
+        // Gemini must identify itself so a legacy ChatGPT-only response cannot be
+        // mistaken for a Gemini status snapshot.
+        if (requestedPlatform === "gemini" && declaredPlatform !== "gemini") return false;
+        const previous = tunnelSnapshots.get(requestedPlatform);
+        const snapshot = {
+            presentation: payload.presentation || previous?.presentation
+                || defaultTunnelPresentation(requestedPlatform),
+            credentials: requestedPlatform === "chatgpt"
+                ? (payload.credentials || previous?.credentials || emptyTunnelCredentials())
+                : emptyTunnelCredentials(),
+            activityObserved: Object.hasOwn(payload, "activity_observed")
+                ? Boolean(payload.activity_observed)
+                : Boolean(previous?.activityObserved),
+            config: requestedPlatform === "gemini"
+                ? safeGeminiConfig(payload.config || previous?.config)
+                : safeGeminiConfig(null),
+            authorization: requestedPlatform === "gemini"
+                ? (Object.hasOwn(payload, "authorization")
+                    ? safeGeminiAuthorization(payload.authorization)
+                    : (previous?.authorization || emptyGeminiAuthorization()))
+                : emptyGeminiAuthorization(),
+            active_calls: Array.isArray(payload.active_calls) ? payload.active_calls : [],
+            recent_calls: Array.isArray(payload.recent_calls) ? payload.recent_calls : [],
+            usageKnown: true,
+        };
+        tunnelSnapshots.set(requestedPlatform, snapshot);
+        if (selectedPlatform() !== requestedPlatform) return true;
+        activateTunnelSnapshot(requestedPlatform);
         syncTunnelStatus();
         if (lastPayload) renderResponseStatus(lastPayload.agent, readinessState(lastPayload));
+        return true;
     }
 
     async function refreshTunnelStatus() {
         const url = elements.tunnelField?.dataset.agentTunnelStatusUrl;
-        if (!url || tunnelPollInFlight) return;
-        tunnelPollInFlight = true;
+        const requestedPlatform = selectedPlatform();
+        if (!url || !tunnelSupportsPlatform(requestedPlatform)) return;
+        if (tunnelPollController && tunnelPollPlatform === requestedPlatform) return;
+        const revision = ++tunnelPollRevision;
+        tunnelPollController?.abort();
+        const controller = new AbortController();
+        tunnelPollController = controller;
+        tunnelPollPlatform = requestedPlatform;
+        const requestUrl = new URL(url, window.location.href);
+        requestUrl.searchParams.set("platform", requestedPlatform);
         try {
-            const response = await fetch(url, {cache: "no-store", headers: {Accept: "application/json"}});
-            if (response.ok) applyTunnelStatus(await response.json());
-        } catch (_error) {
+            const response = await fetch(requestUrl.toString(), {
+                cache: "no-store",
+                headers: {Accept: "application/json"},
+                signal: controller.signal,
+            });
+            if (!response.ok) return;
+            const payload = await response.json();
+            if (revision !== tunnelPollRevision || selectedPlatform() !== requestedPlatform) return;
+            applyTunnelStatus(payload, requestedPlatform);
+        } catch (error) {
+            if (error?.name === "AbortError") return;
             // Keep the last known Tunnel state; the next poll retries.
         } finally {
-            tunnelPollInFlight = false;
+            if (tunnelPollController === controller) {
+                tunnelPollController = null;
+                tunnelPollPlatform = "";
+            }
         }
     }
 
     function scheduleTunnelPoll() {
         if (tunnelPollTimer !== null) window.clearTimeout(tunnelPollTimer);
         tunnelPollTimer = null;
-        if (selectedConnectionMode() !== "tunnel") return;
+        if (selectedConnectionMode() !== "tunnel" || !tunnelSupportsPlatform(selectedPlatform())) return;
         const delay = tunnelPresentation?.tone === "ready" ? 10_000 : 3_000;
         tunnelPollTimer = window.setTimeout(async () => {
             tunnelPollTimer = null;
             if (document.visibilityState === "visible") await refreshTunnelStatus();
             scheduleTunnelPoll();
         }, delay);
+    }
+
+    async function saveGeminiPublicOrigin({clear = false} = {}) {
+        const url = elements.tunnelField?.dataset.agentGeminiConfigUrl;
+        if (!url || !elements.geminiPublicOrigin) return false;
+        const typedOrigin = clear ? "" : elements.geminiPublicOrigin.value.trim();
+        const publicOrigin = clear ? "" : normalizedGeminiPublicOrigin(typedOrigin);
+        if (!clear && !publicOrigin) {
+            geminiConfigNotice = "Enter one valid public HTTPS origin before saving.";
+            syncGeminiConfigUi();
+            return false;
+        }
+        const revision = ++geminiConfigRevision;
+        tunnelPollRevision += 1;
+        tunnelPollController?.abort();
+        tunnelPollController = null;
+        tunnelPollPlatform = "";
+        geminiConfigBusy = true;
+        geminiConfigNotice = clear ? "Clearing the Gemini origin…" : "Saving the Gemini origin…";
+        syncGeminiConfigUi();
+        try {
+            const payload = await requestJson(url, {
+                method: "POST",
+                cache: "no-store",
+                body: JSON.stringify({public_origin: publicOrigin}),
+            });
+            if (revision !== geminiConfigRevision) return true;
+            geminiConfigDirty = false;
+            const accepted = applyTunnelStatus(payload, "gemini");
+            if (!accepted) throw new Error("Gemini returned an invalid configuration response.");
+            geminiConfigNotice = clear
+                ? "Gemini connection values cleared."
+                : "Origin saved. The connection values are ready to copy.";
+            scheduleTunnelPoll();
+            return true;
+        } catch (error) {
+            if (revision === geminiConfigRevision) {
+                geminiConfigNotice = String(error?.message || "Unable to save the Gemini origin.");
+            }
+            return false;
+        } finally {
+            if (revision === geminiConfigRevision) {
+                geminiConfigBusy = false;
+                syncGeminiConfigUi();
+            }
+        }
+    }
+
+    async function copyGeminiConnectionValue(button) {
+        const kind = String(button?.dataset.agentGeminiCopyValue || "");
+        const allowed = new Set(["mcp_url", "client_id", "client_secret"]);
+        const url = elements.tunnelField?.dataset.agentGeminiCopyValueUrl;
+        if (!button || button.disabled || !url || !allowed.has(kind)) return;
+        const label = button.querySelector("[data-agent-gemini-copy-label]");
+        const defaultLabel = label?.textContent || "Copy value";
+        button.dataset.agentGeminiCopying = "true";
+        button.disabled = true;
+        try {
+            const payload = await requestJson(url, {
+                method: "POST",
+                cache: "no-store",
+                body: JSON.stringify({value: kind}),
+            });
+            const clipboardValue = typeof payload.value === "string" ? payload.value : "";
+            const copied = kind === "client_secret"
+                ? await copyResponseText(clipboardValue, {allowDomFallback: false})
+                : await copyResponseText(clipboardValue);
+            if (!clipboardValue || !copied) {
+                throw new Error("Copy failed");
+            }
+            if (label) label.textContent = "Copied";
+            button.setAttribute("aria-label", `${defaultLabel}: copied`);
+        } catch (_error) {
+            if (label) label.textContent = "Copy failed";
+            button.setAttribute("aria-label", `${defaultLabel}: copy failed; try again`);
+        } finally {
+            delete button.dataset.agentGeminiCopying;
+            syncGeminiConfigUi();
+            window.setTimeout(() => {
+                if (label) label.textContent = defaultLabel;
+                button.removeAttribute("aria-label");
+                syncGeminiConfigUi();
+            }, 1_600);
+        }
+    }
+
+    async function decideGeminiAuthorization(action) {
+        const allowed = new Set(["approve", "deny"]);
+        const url = elements.tunnelField?.dataset.agentGeminiAuthorizationUrl;
+        const reviewId = geminiAuthorization.reviewId;
+        if (
+            !url
+            || !allowed.has(action)
+            || !geminiAuthorization.pending
+            || !reviewId
+            || geminiAuthorizationBusy
+        ) return false;
+        tunnelPollRevision += 1;
+        tunnelPollController?.abort();
+        tunnelPollController = null;
+        tunnelPollPlatform = "";
+        geminiAuthorizationBusy = true;
+        geminiAuthorizationNotice = action === "approve"
+            ? "Approving this exact callback URI…"
+            : "Denying this callback URI…";
+        syncGeminiAuthorizationUi();
+        try {
+            await requestJson(url, {
+                method: "POST",
+                cache: "no-store",
+                body: JSON.stringify({action, review_id: reviewId}),
+            });
+            geminiAuthorization = emptyGeminiAuthorization();
+            const snapshot = tunnelSnapshots.get("gemini");
+            if (snapshot) {
+                tunnelSnapshots.set("gemini", {
+                    ...snapshot,
+                    authorization: emptyGeminiAuthorization(),
+                });
+            }
+            geminiAuthorizationNotice = "";
+            syncGeminiAuthorizationUi();
+            await refreshTunnelStatus();
+            scheduleTunnelPoll();
+            return true;
+        } catch (error) {
+            geminiAuthorizationNotice = String(
+                error?.message || "Unable to update this OAuth callback request.",
+            );
+            return false;
+        } finally {
+            geminiAuthorizationBusy = false;
+            syncGeminiAuthorizationUi();
+        }
     }
 
     async function saveTunnelCredentials({allowClear = false} = {}) {
@@ -1010,7 +1474,7 @@
             }
             // The field checkmarks and the Tunnel status already confirm a save.
             tunnelCredentialNotice = "";
-            applyTunnelStatus(payload);
+            applyTunnelStatus(payload, "chatgpt");
             scheduleTunnelPoll();
             return true;
         } catch (error) {
@@ -1037,11 +1501,27 @@
     function syncConnectionMode() {
         const mode = selectedConnectionMode();
         const browserMode = mode === "browser";
+        const platform = selectedPlatform();
+        const tunnelSupported = tunnelSupportsPlatform(platform);
+        activateTunnelSnapshot(platform);
         elements.browserModeFields.forEach((field) => {
             field.hidden = !browserMode;
         });
         if (elements.browserTask) elements.browserTask.hidden = !browserMode;
-        if (elements.tunnelOnboarding) elements.tunnelOnboarding.hidden = browserMode;
+        elements.tunnelOnboardings.forEach((panel) => {
+            panel.hidden = browserMode
+                || panel.dataset.agentTunnelProviderPanel !== platform;
+        });
+        if (elements.tunnelUnsupported) {
+            elements.tunnelUnsupported.hidden = browserMode || tunnelSupported;
+        }
+        if (elements.tunnelUnsupportedHeading) {
+            elements.tunnelUnsupportedHeading.textContent = `${selectedPlatformLabel()} Tunnel is not available`;
+        }
+        if (elements.tunnelUnsupportedCopy) {
+            elements.tunnelUnsupportedCopy.textContent = "Choose ChatGPT or Gemini for Tunnel, or switch to Browser for "
+                + selectedPlatformLabel() + ".";
+        }
         if (elements.tunnelField) elements.tunnelField.hidden = browserMode;
         if (elements.connectionModeControl) {
             elements.connectionModeControl.dataset.agentConnectionMode = mode;
@@ -1055,12 +1535,19 @@
         if (heading) {
             heading.textContent = browserMode
                 ? (selectedPlatformLabel() + " Web Agent")
-                : "Connect ChatGPT to this local project";
+                : ("Connect " + selectedPlatformLabel() + " to this local project");
         }
         syncTunnelStatus();
-        if (!browserMode) {
+        if (!browserMode && tunnelSupported) {
             void refreshTunnelStatus();
             scheduleTunnelPoll();
+        } else {
+            if (tunnelPollTimer !== null) window.clearTimeout(tunnelPollTimer);
+            tunnelPollTimer = null;
+            tunnelPollRevision += 1;
+            tunnelPollController?.abort();
+            tunnelPollController = null;
+            tunnelPollPlatform = "";
         }
         // The Browser session probe can launch a browser, so Tunnel defers it.
         if (browserMode) initializeBrowserSessionStatus();
@@ -1153,7 +1640,12 @@
     }
 
     function selectedPlatformLabel() {
-        return document.querySelector(".agent-platform-combobox [data-agent-combobox-selected-label]")?.textContent?.trim() || "Web AI";
+        const option = Array.from(
+            document.querySelectorAll(".agent-platform-combobox [data-agent-combobox-option]"),
+        ).find((candidate) => candidate.dataset.agentComboboxOption === selectedPlatform());
+        return option?.dataset.agentComboboxLabel
+            || document.querySelector(".agent-platform-combobox [data-agent-combobox-selected-label]")?.textContent?.trim()
+            || "Web AI";
     }
 
     function agentExecutionSupported() {
@@ -1645,6 +2137,10 @@
 
     function syncPlatformState(agent = {}) {
         const platform = selectedPlatform();
+        const platformOption = Array.from(
+            elements.platformCombobox?.querySelectorAll("[data-agent-combobox-option]") || [],
+        ).find((option) => option.dataset.agentComboboxOption === platform);
+        if (platformOption) syncComboboxTriggerFromOption(elements.platformCombobox, platformOption);
         if (elements.promptPlatform instanceof HTMLInputElement) elements.promptPlatform.value = platform;
         if (elements.browserSession) {
             elements.browserSession.dataset.browserSessionPlatform = platform;
@@ -2746,7 +3242,7 @@
             const {supported, ready} = tunnelAvailability();
             const message = supported
                 ? String(tunnelPresentation?.message || "")
-                : "Tunnel connects ChatGPT only.";
+                : `Tunnel is available for ChatGPT and Gemini. Switch to Browser for ${platformLabel}.`;
             return {ready, tunnel: true, message};
         }
         const runtime = payload.runtime || {};
@@ -3614,7 +4110,7 @@
         }
     }
 
-    async function copyResponseText(value) {
+    async function copyResponseText(value, {allowDomFallback = true} = {}) {
         if (!value) return false;
         if (navigator.clipboard?.writeText) {
             try {
@@ -3623,7 +4119,7 @@
             } catch (_error) {
             }
         }
-        return copyResponseTextFallback(value);
+        return allowDomFallback ? copyResponseTextFallback(value) : false;
     }
 
     function setResponseCopyFeedback(didCopy) {
@@ -3914,7 +4410,7 @@
         const heading = document.querySelector("[data-agent-heading]");
         if (heading) {
             heading.textContent = selectedConnectionMode() === "tunnel"
-                ? "Connect ChatGPT to this local project"
+                ? `Connect ${selectedPlatformLabel()} to this local project`
                 : `${platformLabel} Web Agent`;
         }
         if (elements.promptInput) {
@@ -4218,21 +4714,46 @@
             syncAgentRoute();
         });
     });
-    const kickoffCopyButton = document.querySelector("[data-agent-tunnel-copy-kickoff]");
-    kickoffCopyButton?.addEventListener("click", async () => {
-        if (kickoffCopyButton.disabled) return;
-        const prompt = document.querySelector("[data-agent-tunnel-kickoff]")?.innerText.trim();
-        if (!prompt) return;
-        kickoffCopyButton.disabled = true;
-        try {
-            const copied = await copyResponseText(prompt);
-            const label = kickoffCopyButton.querySelector("[data-agent-tunnel-copy-label]");
-            if (label) label.textContent = copied ? "Copied" : "Copy failed";
-            kickoffCopyButton.setAttribute("aria-label", copied ? "Prompt copied" : "Unable to copy this prompt; select the text to copy it manually");
-        } finally {
-            kickoffCopyButton.disabled = false;
-            kickoffCopyButton.focus({preventScroll: true});
-        }
+    document.querySelectorAll("[data-agent-tunnel-copy-action]").forEach((copyButton) => {
+        copyButton.addEventListener("click", async () => {
+            if (copyButton.disabled) return;
+            const promptId = copyButton.getAttribute("aria-controls");
+            const prompt = document.getElementById(promptId || "")?.innerText.trim();
+            if (!prompt) return;
+            copyButton.disabled = true;
+            try {
+                const copied = await copyResponseText(prompt);
+                const label = copyButton.querySelector("[data-agent-tunnel-copy-label]");
+                if (label) label.textContent = copied ? "Copied" : "Copy failed";
+                copyButton.setAttribute("aria-label", copied ? "Prompt copied" : "Unable to copy this prompt; select the text to copy it manually");
+            } finally {
+                copyButton.disabled = false;
+                copyButton.focus({preventScroll: true});
+            }
+        });
+    });
+    elements.geminiPublicOrigin?.addEventListener("input", () => {
+        geminiConfigDirty = true;
+        geminiConfigNotice = "";
+        syncGeminiConfigUi();
+    });
+    elements.geminiSaveOrigin?.addEventListener("click", () => {
+        void saveGeminiPublicOrigin();
+    });
+    elements.geminiClearOrigin?.addEventListener("click", () => {
+        void saveGeminiPublicOrigin({clear: true});
+    });
+    elements.geminiCopyValueButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+            void copyGeminiConnectionValue(button);
+        });
+    });
+    elements.geminiAuthorizationButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+            void decideGeminiAuthorization(
+                String(button.dataset.agentGeminiAuthorizationAction || ""),
+            );
+        });
     });
     elements.tunnelIdInput?.addEventListener("input", scheduleTunnelCredentialSave);
     elements.tunnelKeyInput?.addEventListener("input", scheduleTunnelCredentialSave);

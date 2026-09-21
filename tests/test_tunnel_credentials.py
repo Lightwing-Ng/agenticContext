@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -82,8 +82,12 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
     assert 'id="chatgpt_tunnel_id"' in empty_body
     assert 'id="chatgpt_tunnel_api_key"' in empty_body
     assert 'data-agent-tunnel-credentials-url="/api/agent/tunnel/credentials"' in empty_body
-    onboarding_start = empty_body.index("data-agent-tunnel-onboarding")
-    onboarding_end = empty_body.index("data-agent-browser-task", onboarding_start)
+    onboarding_start = empty_body.index(
+        'data-agent-tunnel-provider-panel="chatgpt"'
+    )
+    onboarding_end = empty_body.index(
+        'data-agent-tunnel-provider-panel="gemini"', onboarding_start
+    )
     onboarding_body = empty_body[onboarding_start:onboarding_end]
     for step_number in range(1, 5):
         assert (

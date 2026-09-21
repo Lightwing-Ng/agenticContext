@@ -1,7 +1,7 @@
 <!-- Code version: v1.2.0-codex.1 -->
 <nav class="settings-category-nav" aria-label="Settings categories">
     <a
-        href="{{ url_for('settings') }}#settings-browser"
+        href="{{ url_for('settings.settings') }}#settings-browser"
         class="settings-category-nav-item settings-category-nav-item-browser{% if current_category == 'browser' %} is-active{% endif %}"
         data-settings-category="browser"
         {% if current_category == 'browser' %}aria-current="page"{% endif %}
@@ -12,7 +12,7 @@
         <span class="settings-category-nav-label">Browser &amp; accounts</span>
     </a>
     <a
-        href="{{ url_for('settings') }}#settings-downloads"
+        href="{{ url_for('settings.settings') }}#settings-downloads"
         class="settings-category-nav-item settings-category-nav-item-downloads{% if current_category == 'downloads' %} is-active{% endif %}"
         data-settings-category="downloads"
         {% if current_category == 'downloads' %}aria-current="page"{% endif %}
@@ -23,7 +23,7 @@
         <span class="settings-category-nav-label">Cache</span>
     </a>
     <a
-        href="{{ url_for('settings') }}#settings-llm"
+        href="{{ url_for('settings.settings') }}#settings-llm"
         class="settings-category-nav-item settings-category-nav-item-llm{% if current_category == 'llm' %} is-active{% endif %}"
         data-settings-category="llm"
         {% if current_category == 'llm' %}aria-current="page"{% endif %}
@@ -34,7 +34,7 @@
         <span class="settings-category-nav-label">LLM settings</span>
     </a>
     <a
-        href="{{ url_for('settings') }}#settings-agent"
+        href="{{ url_for('settings.settings') }}#settings-agent"
         class="settings-category-nav-item settings-category-nav-item-agent{% if current_category == 'agent' %} is-active{% endif %}"
         data-settings-category="agent"
         {% if current_category == 'agent' %}aria-current="page"{% endif %}
@@ -45,7 +45,7 @@
         <span class="settings-category-nav-label">Agent</span>
     </a>
     <a
-        href="{{ url_for('settings') }}#settings-cloud"
+        href="{{ url_for('settings.settings') }}#settings-cloud"
         class="settings-category-nav-item settings-category-nav-item-cloud{% if current_category == 'cloud' %} is-active{% endif %}"
         data-settings-category="cloud"
         {% if current_category == 'cloud' %}aria-current="page"{% endif %}
@@ -56,7 +56,7 @@
         <span class="settings-category-nav-label">Cloud backup</span>
     </a>
     <a
-        href="{{ url_for('settings_style_tokens') }}"
+        href="{{ url_for('settings.settings_style_tokens') }}"
         class="settings-category-nav-item settings-category-nav-item-style-tokens{% if current_category == 'style-tokens' %} is-active{% endif %}"
         {% if current_category == 'style-tokens' %}aria-current="page"{% endif %}
     >

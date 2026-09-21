@@ -1,13 +1,15 @@
-"""MCP endpoint that ChatGPT reaches through the OpenAI Secure MCP Tunnel.
+"""Shared MCP endpoint reached through authenticated provider transports.
 
-Code version: v2.1.0-codex.0
+Code version: v2.4.2-codex.0
 
-ChatGPT calls these tools through its Tunnel-connected app. Every project-scoped
+ChatGPT and Gemini call the same tool catalog through separate authenticated
+transports. Every project-scoped
 tool names one explicitly registered project (see ``tunnel_projects``); a project
 id is an identity, never a path, and write authority comes only from the registry.
-File access reuses the Browser Agent's ``WorkspaceController`` path rules for that
-project's root, and commands go through the same registry-validated approved-command
-policy and bodycheck, so both connections share one safety boundary. Batch reads,
+File access goes through ``app.core.workspace``'s public ``WorkspaceAccess`` boundary
+for that project's root, and commands go through the same registry-validated
+approved-command policy and bodycheck, so both connections share one safety boundary
+without this module reaching into controller internals. Batch reads,
 validated multi-file edits, guarded whole-file writes, bounded read-only Git
 inspection, and approved verification commands make multi-step coding practical over
 the Tunnel.
@@ -37,7 +39,15 @@ from app.core.tunnel_git import (
     status_summary,
 )
 from app.core.tunnel_projects import ProjectRegistry, TunnelProject
+from app.core.token_usage import openai_agentic_token_encoding
 from app.core.version import APP_VERSION
+from app.core.workspace import (
+    TextReplacement,
+    WorkspaceAccess,
+    collect_instruction_files,
+    is_withheld_workspace_path,
+    open_workspace,
+)
 
 MCP_LEGACY_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 MCP_DEFAULT_PROTOCOL_VERSION = "2025-06-18"
@@ -66,6 +76,33 @@ ROUTING_METADATA_KEYS = frozenset(
 )
 
 LOGGER = logging.getLogger(__name__)
+
+_TOOL_ENCODING_LOCK = threading.Lock()
+_TOOL_ENCODING: Any | None = None
+_TOOL_ENCODING_STARTED = False
+
+
+def _load_tool_encoding() -> None:
+    # Reuse the existing tokenizer cache, but never block a tool on its download.
+    global _TOOL_ENCODING
+    _TOOL_ENCODING = openai_agentic_token_encoding()
+
+
+def _estimated_tool_tokens(text: str) -> int | None:
+    """Estimate observable tool text only; unavailable is never a byte heuristic."""
+    global _TOOL_ENCODING_STARTED
+    with _TOOL_ENCODING_LOCK:
+        if not _TOOL_ENCODING_STARTED:
+            _TOOL_ENCODING_STARTED = True
+            threading.Thread(target=_load_tool_encoding, daemon=True).start()
+        encoding = _TOOL_ENCODING
+    if encoding is None or len(text) > MAX_WRITE_CHARACTERS:
+        return None
+    try:
+        return len(encoding.encode(text, disallowed_special=()))
+    except Exception:
+        # Metrics cannot fail a workspace operation.
+        return None
 
 
 def _string(description: str, *, maximum: int, minimum: int = 0) -> dict[str, Any]:
@@ -102,7 +139,7 @@ PROJECT_PROPERTY = _string("Registered project id configured by the user.", maxi
 class TunnelTool:
     """One model-facing tool.
 
-    ``action`` names a ``WorkspaceController`` action whose registry schema is
+    ``action`` names a workspace controller action whose registry schema is
     reused; an empty ``action`` means a local ``_tool_<name>`` handler with its own
     ``schema``. A tool that is not ``read_only`` runs only in writable projects.
     Project-scoped tools require the ``project`` argument.
@@ -351,10 +388,12 @@ def tunnel_tool_definitions() -> list[dict[str, Any]]:
 
 
 @dataclass(slots=True)
-class _ProjectController:
+class _ProjectWorkspace:
+    """One registered project bound to the shared workspace safety rules."""
+
     root: Path
     writable: bool
-    controller: Any
+    access: WorkspaceAccess
 
 
 class TunnelMcpService:
@@ -377,26 +416,65 @@ class TunnelMcpService:
         # generations, read receipts, and verification ordering stay linear. Projects
         # do not block each other, and read-only Git observation takes no project lock.
         self._project_locks: dict[str, threading.Lock] = {}
-        self._controllers: dict[str, _ProjectController] = {}
+        self._controllers: dict[str, _ProjectWorkspace] = {}
         self._controllers_lock = threading.Lock()
         self._activity_lock = threading.Lock()
         self._activity: deque[dict[str, Any]] = deque(maxlen=TUNNEL_ACTIVITY_LIMIT)
         self._call_count = 0
+        self._provider_call_counts: dict[str, int] = {}
+        self._call_sequence = 0
+        self._active_calls: dict[int, dict[str, Any]] = {}
         self._stopping = False
+        _estimated_tool_tokens("")
 
     def stop(self) -> None:
         """Make any in-flight controller command stop at its next check."""
         self._stopping = True
 
-    def activity_snapshot(self) -> dict[str, Any]:
-        """Return recent tool calls for the Agent and Settings status views."""
+    def activity_snapshot(self, provider: str | None = None) -> dict[str, Any]:
+        """Return recent tool calls, optionally scoped to one trusted ingress."""
+        normalized_provider = str(provider or "").strip().lower()
         with self._activity_lock:
-            return {"call_count": self._call_count, "recent_calls": list(self._activity)}
+            active_calls = list(self._active_calls.values())
+            recent_calls = list(self._activity)
+            if normalized_provider:
+                active_calls = [
+                    record
+                    for record in active_calls
+                    if record.get("provider") == normalized_provider
+                ]
+                recent_calls = [
+                    record
+                    for record in recent_calls
+                    if record.get("provider") == normalized_provider
+                ]
+            return {
+                "call_count": (
+                    self._provider_call_counts.get(normalized_provider, 0)
+                    if normalized_provider
+                    else self._call_count
+                ),
+                "active_calls": deepcopy(active_calls),
+                "recent_calls": deepcopy(recent_calls),
+                # MCP exposes neither conversation task boundaries nor model billing.
+                "task_usage": None,
+                "usage_scope": "tool_call",
+                "usage_encoding": "o200k_base",
+            }
 
     # JSON-RPC transport -------------------------------------------------
 
-    def handle(self, body: Any, headers: Mapping[str, str]) -> tuple[int, Any | None]:
+    def handle(
+        self,
+        body: Any,
+        headers: Mapping[str, str],
+        *,
+        provider: str = "chatgpt",
+    ) -> tuple[int, Any | None]:
         """Return an HTTP status and JSON body (``None`` means no body)."""
+        normalized_provider = str(provider or "").strip().lower()
+        if normalized_provider not in {"chatgpt", "gemini"}:
+            raise ValueError("Unknown authenticated MCP provider.")
         header_version = str(headers.get(MCP_PROTOCOL_VERSION_HEADER) or "").strip()
         if isinstance(body, list):
             if not body:
@@ -404,15 +482,26 @@ class TunnelMcpService:
             responses = [
                 response
                 for item in body
-                if (response := self._handle_one(item, header_version)) is not None
+                if (
+                    response := self._handle_one(
+                        item,
+                        header_version,
+                        normalized_provider,
+                    )
+                ) is not None
             ]
             return (200, responses) if responses else (202, None)
-        response = self._handle_one(body, header_version)
+        response = self._handle_one(body, header_version, normalized_provider)
         if response is None:
             return 202, None
         return 200, response
 
-    def _handle_one(self, request: Any, header_version: str) -> dict[str, Any] | None:
+    def _handle_one(
+        self,
+        request: Any,
+        header_version: str,
+        provider: str,
+    ) -> dict[str, Any] | None:
         if not isinstance(request, dict) or not isinstance(request.get("method"), str):
             return _rpc_error(
                 request.get("id") if isinstance(request, dict) else None,
@@ -431,7 +520,7 @@ class TunnelMcpService:
             str(meta.get(MCP_PROTOCOL_VERSION_META) or ""),
         }
         try:
-            result = self._dispatch(method, params, stateless)
+            result = self._dispatch(method, params, stateless, provider)
         except McpRequestError as exc:
             return _rpc_error(request_id, exc.code, exc.message)
         if stateless:
@@ -439,7 +528,13 @@ class TunnelMcpService:
             result.setdefault("_meta", {}).setdefault(MCP_SERVER_INFO_META, _server_info())
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
-    def _dispatch(self, method: str, params: dict[str, Any], stateless: bool) -> dict[str, Any]:
+    def _dispatch(
+        self,
+        method: str,
+        params: dict[str, Any],
+        stateless: bool,
+        provider: str,
+    ) -> dict[str, Any]:
         if method == "initialize":
             requested = str(params.get("protocolVersion") or "")
             return {
@@ -471,7 +566,7 @@ class TunnelMcpService:
                 result.update({"ttlMs": 0, "cacheScope": "private"})
             return result
         if method == "tools/call":
-            return self._call_tool(params)
+            return self._call_tool(params, provider)
         if method == "resources/list":
             return {"resources": []}
         if method == "resources/templates/list":
@@ -482,7 +577,7 @@ class TunnelMcpService:
 
     # Tools --------------------------------------------------------------
 
-    def _call_tool(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _call_tool(self, params: dict[str, Any], provider: str) -> dict[str, Any]:
         name = str(params.get("name") or "").strip()
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
@@ -504,27 +599,33 @@ class TunnelMcpService:
             raise McpRequestError(-32602, f"Unknown tool: {name or '[missing]'}")
 
         started = time.monotonic()
+        call_id = self._start_activity(tool, arguments, provider=provider)
+        response_text = None
+        ok = False
         try:
-            observation = self._run_tool(tool, arguments)
-        except (OSError, RuntimeError, ValueError) as exc:
-            observation = {"ok": False, "error": str(exc)[:2_000]}
-        ok = bool(observation.get("ok"))
-        duration = time.monotonic() - started
-        self._record_activity(tool, arguments, ok, duration)
+            try:
+                observation = self._run_tool(tool, arguments)
+            except (OSError, RuntimeError, ValueError) as exc:
+                observation = {"ok": False, "error": str(exc)[:2_000]}
+            response_text = json.dumps(observation, ensure_ascii=False)
+            if len(response_text) > MAX_TOOL_TEXT_CHARACTERS:
+                response_text = response_text[:MAX_TOOL_TEXT_CHARACTERS] + "…"
+            ok = bool(observation.get("ok"))
+        finally:
+            duration = time.monotonic() - started
+            self._finish_activity(call_id, ok, duration, response_text)
         LOGGER.info(
-            "Tunnel tool %s ok=%s duration=%.2fs project=%s target=%s%s",
+            "Tunnel tool %s provider=%s ok=%s duration=%.2fs project=%s target=%s%s",
             tool.name,
+            provider,
             ok,
             duration,
             str(arguments.get("project") or "")[:64],
             _activity_target(arguments)[:200],
             "" if ok else f" error={str(observation.get('error') or '')[:200]}",
         )
-        text = json.dumps(observation, ensure_ascii=False)
-        if len(text) > MAX_TOOL_TEXT_CHARACTERS:
-            text = text[:MAX_TOOL_TEXT_CHARACTERS] + "…"
         return {
-            "content": [{"type": "text", "text": text}],
+            "content": [{"type": "text", "text": response_text}],
             "structuredContent": observation,
             "isError": not ok,
         }
@@ -563,8 +664,8 @@ class TunnelMcpService:
         with self._controllers_lock:
             return self._project_locks.setdefault(f"{project.id}\0{project.root}", threading.Lock())
 
-    def _binding(self, project: TunnelProject) -> _ProjectController:
-        """Return this project's controller, rebuilt whenever its registration changes."""
+    def _binding(self, project: TunnelProject) -> _ProjectWorkspace:
+        """Return this project's workspace access, rebuilt whenever its registration changes."""
         with self._controllers_lock:
             binding = self._controllers.get(project.id)
             if (
@@ -572,12 +673,10 @@ class TunnelMcpService:
                 or binding.root != project.root
                 or binding.writable != project.writable
             ):
-                from app.core.computer_use_agent import WorkspaceController
-
-                binding = _ProjectController(
+                binding = _ProjectWorkspace(
                     project.root,
                     project.writable,
-                    WorkspaceController(
+                    open_workspace(
                         project.root,
                         self._settings_provider(),
                         lambda: self._stopping,
@@ -587,8 +686,8 @@ class TunnelMcpService:
                 self._controllers[project.id] = binding
             return binding
 
-    def _controller_for(self, project: TunnelProject) -> Any:
-        return self._binding(project).controller
+    def _workspace_for(self, project: TunnelProject) -> WorkspaceAccess:
+        return self._binding(project).access
 
     def _discard_controller(self, project: TunnelProject) -> None:
         with self._controllers_lock:
@@ -600,47 +699,33 @@ class TunnelMcpService:
         action: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        controller = self._controller_for(project)
+        workspace = self._workspace_for(project)
         if action == "delete":
             raw_path = arguments.get("path")
             if raw_path:
-                path = self._resolve(project, raw_path, allow_missing=True)
-                relative_key = path.relative_to(project.root).as_posix()
-                receipt = controller.state.read_receipts.get(relative_key)
-                current = (
-                    receipt is not None
-                    and receipt[2] == controller.state.workspace_generation
+                # Any Tunnel edit advances the workspace generation and ages every
+                # existing receipt. The workspace refreshes only a receipt this client
+                # already holds with the same digest, so a client that never read the
+                # file gains no synthesized receipt.
+                workspace.refresh_stale_read_receipt(
+                    self._relative(project, raw_path),
+                    expected_sha256=str(arguments.get("expected_sha256") or ""),
                 )
-                expected = str(arguments.get("expected_sha256") or "").strip().casefold()
-                if (
-                    receipt is not None
-                    and not current
-                    and receipt[0] == expected
-                    and path.is_file()
-                ):
-                    # Any Tunnel edit advances the controller generation and ages every
-                    # existing receipt. Refresh only that same-digest receipt; a client
-                    # that never read this file must not gain a synthesized receipt.
-                    controller.execute({"action": "read", "path": relative_key})
         payload = {**arguments, "action": action}
-        observation = controller.execute(payload)
+        observation = workspace.execute(payload)
         if "start a new task" in str(observation.get("error") or ""):
-            # The project folder was replaced on disk; bind a fresh controller once.
+            # The project folder was replaced on disk; bind a fresh workspace once.
             self._discard_controller(project)
-            observation = self._controller_for(project).execute(payload)
+            observation = self._workspace_for(project).execute(payload)
         return observation
 
-    def _resolve(self, project: TunnelProject, raw_path: Any, *, allow_missing: bool = False) -> Path:
-        """Resolve one project path through the Browser Agent's path rules."""
-        return self._controller_for(project)._resolve_path(raw_path, allow_missing=allow_missing)
-
     def _relative(self, project: TunnelProject, raw_path: Any) -> str:
-        return self._resolve(project, raw_path, allow_missing=True).relative_to(project.root).as_posix()
+        """Admit one project path through the shared workspace path rules."""
+        return self._workspace_for(project).project_relative_path(raw_path, allow_missing=True)
 
     def _tool_project_overview(self, project: TunnelProject, _arguments: dict[str, Any]) -> dict[str, Any]:
         listing = self._execute_action(project, "list", {"path": ".", "depth": 1})
         root_files, nested_files = _project_instruction_files(project.root)
-        controller = self._controller_for(project)
         result: dict[str, Any] = {
             "ok": True,
             "project": project.id,
@@ -653,7 +738,7 @@ class TunnelMcpService:
         if nested_files:
             result["nested_instruction_files"] = nested_files
         if project.writable:
-            result["verification_current"] = bool(controller.state.verification_current)
+            result["verification_current"] = self._workspace_for(project).verification_current
         return result
 
     def _tool_read_files(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -664,26 +749,21 @@ class TunnelMcpService:
         return {"ok": any(result.get("ok") for result in results), "files": results}
 
     def _tool_apply_edits(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
-        controller = self._controller_for(project)
-        planned: OrderedDict[Path, dict[str, Any]] = OrderedDict()
+        workspace = self._workspace_for(project)
+        planned: OrderedDict[str, dict[str, Any]] = OrderedDict()
         for index, edit in enumerate(arguments["edits"], start=1):
             old_text = edit["old_text"]
             new_text = edit["new_text"]
-            path = self._resolve(project, edit["path"])
-            if path not in planned:
-                source_bytes, _digest, _size, _identity = controller._current_file_snapshot(path)
-                try:
-                    source = source_bytes.decode("utf-8")
-                except UnicodeDecodeError as exc:
-                    raise ValueError(f"{path.name} is not UTF-8 text.") from exc
-                planned[path] = {
+            relative = workspace.project_relative_path(edit["path"])
+            if relative not in planned:
+                source = workspace.file_snapshot(relative).as_text()
+                planned[relative] = {
                     "source": source,
                     "text": source,
                     "replacements": 0,
                 }
-            current = planned[path]["text"]
+            current = planned[relative]["text"]
             occurrences = current.count(old_text)
-            relative = path.relative_to(project.root).as_posix()
             if occurrences == 0:
                 raise ValueError(
                     f"Edit {index}: old_text was not found in {relative}. Read the file again "
@@ -695,56 +775,56 @@ class TunnelMcpService:
                     "surrounding context or set replace_all."
                 )
             count = occurrences if edit.get("replace_all") else 1
-            planned[path]["text"] = current.replace(old_text, new_text, count)
-            planned[path]["replacements"] += count
-        changed = []
-        controller._mark_edit()
-        for path, plan in planned.items():
-            data = plan["text"].encode("utf-8")
-            relative_path = path.relative_to(project.root)
-            controller._replace_text_file(relative_path, plan["source"], plan["text"])
-            changed.append(
+            planned[relative]["text"] = current.replace(old_text, new_text, count)
+            planned[relative]["replacements"] += count
+        workspace.apply_text_replacements(
+            [
+                TextReplacement(relative, plan["source"], plan["text"])
+                for relative, plan in planned.items()
+            ]
+        )
+        return {
+            "ok": True,
+            "files": [
                 {
-                    "path": relative_path.as_posix(),
+                    "path": relative,
                     "replacements": plan["replacements"],
-                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "sha256": hashlib.sha256(plan["text"].encode("utf-8")).hexdigest(),
                 }
-            )
-        return {"ok": True, "files": changed}
+                for relative, plan in planned.items()
+            ],
+        }
 
     def _tool_write_file(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:
         content = arguments["content"]
-        controller = self._controller_for(project)
-        path = self._resolve(project, arguments["path"], allow_missing=True)
-        relative_path = path.relative_to(project.root)
-        relative = relative_path.as_posix()
-        existed = path.exists()
-        if existed:
-            if not path.is_file():
-                raise ValueError(f"{relative} is not a regular file.")
-            source_bytes, current_sha, _size, _identity = controller._current_file_snapshot(path)
+        workspace = self._workspace_for(project)
+        relative = workspace.project_relative_path(arguments["path"], allow_missing=True)
+        snapshot = workspace.existing_file_snapshot(relative)
+        if snapshot is not None:
             expected = str(arguments.get("expected_sha256") or "")
             if not expected:
                 raise ValueError(
                     f"{relative} already exists. Read it with read_files and pass its sha256 "
                     "as expected_sha256 to replace it, or use apply_edits."
                 )
-            if expected != current_sha:
-                raise ValueError(f"{relative} changed since it was read. Read it again first.")
-            try:
-                source = source_bytes.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise ValueError(f"{relative} is not UTF-8 text.") from exc
+            workspace.refresh_stale_read_receipt(
+                relative,
+                expected_sha256=expected,
+            )
+            snapshot = workspace.current_read_receipt_snapshot(
+                relative,
+                expected_sha256=expected,
+            )
+            source = snapshot.as_text()
         data = content.encode("utf-8")
-        controller._mark_edit()
-        if existed:
-            controller._replace_text_file(relative_path, source, content)
+        if snapshot is not None:
+            workspace.overwrite_text_file(relative, source=source, content=content)
         else:
-            controller._write_new_file(relative_path, data)
+            workspace.create_file(relative, data)
         return {
             "ok": True,
             "path": relative,
-            "created": not existed,
+            "created": snapshot is None,
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         }
@@ -772,28 +852,69 @@ class TunnelMcpService:
             )
         return result
 
-    def _record_activity(
+    def _start_activity(
         self,
         tool: TunnelTool,
         arguments: dict[str, Any],
-        ok: bool,
-        duration: float,
-    ) -> None:
+        *,
+        provider: str = "chatgpt",
+    ) -> int:
+        """Assign a call identity before execution, including time waiting for its lock."""
         target = _activity_target(arguments)
         project = str(arguments.get("project") or "")
         if project and isinstance(arguments.get("project"), str):
             target = f"{project[:64]}: {target}" if target else project[:64]
+        request_tokens = _estimated_tool_tokens(
+            json.dumps({"name": tool.name, "arguments": arguments}, ensure_ascii=False)
+        )
         with self._activity_lock:
+            self._call_sequence += 1
+            call_id = self._call_sequence
+            self._active_calls[call_id] = {
+                "call_id": call_id,
+                "provider": provider,
+                "tool": tool.name,
+                "project": project[:64],
+                "target": target[:160],
+                "state": "running",
+                "started_at": time.time(),
+                "ok": None,
+                "request_tokens": request_tokens,
+                "response_tokens": None,
+                "estimated_tokens": request_tokens,
+                "usage_partial": True,
+            }
+            return call_id
+
+    def _finish_activity(
+        self, call_id: int, ok: bool, duration: float, response_text: str | None
+    ) -> None:
+        # Count the visible text once, not its duplicate structuredContent envelope.
+        response_tokens = (
+            _estimated_tool_tokens(response_text) if response_text is not None else None
+        )
+        with self._activity_lock:
+            record = self._active_calls.pop(call_id)
+            request_tokens = record["request_tokens"]
+            record.update({
+                "state": "completed" if ok else "failed",
+                "ok": ok,
+                "duration_seconds": round(duration, 2),
+                "at": time.time(),
+                "response_tokens": response_tokens,
+                "estimated_tokens": (
+                    request_tokens + response_tokens
+                    if request_tokens is not None and response_tokens is not None
+                    else None
+                ),
+                "usage_partial": False,
+            })
             self._call_count += 1
-            self._activity.appendleft(
-                {
-                    "tool": tool.name,
-                    "target": target[:160],
-                    "ok": ok,
-                    "duration_seconds": round(duration, 2),
-                    "at": time.time(),
-                }
+            provider = str(record.get("provider") or "chatgpt")
+            self._provider_call_counts[provider] = (
+                self._provider_call_counts.get(provider, 0) + 1
             )
+            self._activity.appendleft(record)
 
 
 def _activity_target(arguments: dict[str, Any]) -> str:
@@ -827,17 +948,8 @@ def _reject_absolute_paths(arguments: dict[str, Any]) -> None:
 
 def _withheld_diff_path(relative: str) -> bool:
     """Keep credential and controller-internal files out of model-visible diffs."""
-    from app.core.computer_use_agent import (
-        _path_has_controller_internal_file,
-        _path_has_sensitive_part,
-    )
-
     path = Path(relative)
-    return (
-        _path_has_sensitive_part(path)
-        or _path_has_controller_internal_file(path)
-        or ".computer-use-agent" in path.parts
-    )
+    return is_withheld_workspace_path(path) or ".computer-use-agent" in path.parts
 
 
 def _project_instruction_files(root: Path) -> tuple[list[str], list[str]]:
@@ -846,11 +958,9 @@ def _project_instruction_files(root: Path) -> tuple[list[str], list[str]]:
     A nested directory with its own ``.git`` is another repository, so its
     instruction files are excluded along with everything beneath it.
     """
-    from app.core.computer_use_agent import _collect_instruction_files
-
     root_files: list[str] = []
     nested_files: list[str] = []
-    for path in _collect_instruction_files(root):
+    for path in collect_instruction_files(root):
         relative = path.relative_to(root)
         if len(relative.parts) == 1:
             root_files.append(relative.as_posix())

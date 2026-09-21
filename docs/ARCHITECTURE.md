@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.38.0-codex.0`
+Documentation version: `v1.43.3-codex.0`
 
 ## Runtime flow
 
@@ -33,7 +33,12 @@ every implementation module:
 - `app/core/browser/`: browser descriptors, session probes, and provider-neutral X page identity.
 - `app/core/storage/`: local media, chat history, and shadow-backup operations.
 - `app/core/providers/`: X, Gemini, Grok, and ChatGPT workflows.
-- `app/core/agent/`: Agent access control, source discovery, and Computer Use orchestration.
+- `app/core/agent/`: Agent access control, source discovery, the platform catalog, the local
+  action protocol, context-package assembly, browser launch transport, and Computer Use
+  orchestration.
+- `app/core/workspace/`: the shared safety boundary for one selected project root - path
+  admission, symbolic-link and file-identity checks, read receipts and expired-write refusal,
+  the approved-command allow-list, bounded process output, and workspace evidence.
 
 The original flat modules remain import-compatible during this migration. New application-layer
 code should depend on the domain façades; provider and storage implementations may continue to
@@ -41,19 +46,30 @@ use their existing compatibility imports until each slice is moved. `browser.x_s
 module: it owns X identity/readiness helpers so `browser_sessions` no longer needs an implicit
 runtime import back into `scraper`.
 
+One workspace root, one set of rules: the Browser Agent run loop and the Tunnel MCP server are two
+callers of `app/core/workspace/`, never two copies of it. A non-Agent caller opens a project with
+`open_workspace()` and receives `WorkspaceAccess`, so it cannot resolve an absolute path itself,
+reach a mutable read-receipt store, or widen the approved-command list.
+
 The intended dependency direction is:
 
 ```text
-app.web
-  -> core domain façades
-     -> core implementations
-        -> foundation, browser leaves, and storage primitives
+app.web route blueprints
+  -> app.web composition root, presentation, and form parsing
+     -> core domain façades
+        -> core implementations (Agent run loop, providers, storage)
+           -> app.core.workspace, foundation, browser leaves, and storage primitives
 ```
 
 Core modules must not import `app.web`, templates, or frontend JavaScript. A domain façade should
 export only the symbols needed by its caller and should not become a second implementation file.
-The architecture regression scans every Python module and nested import in `app/web`; a function-local
-or secondary Web-module import cannot bypass the five domain façades.
+
+`tests/test_core_architecture.py` enforces these directions rather than a file layout. It scans
+`app/web` and `app/core` recursively, resolves relative imports to absolute module names, and checks
+that every Web module reaches Core only through the five façades, that no Core module imports
+`app.web`, that `app/core/workspace/` never imports the Agent run loop, and that the Tunnel modules
+reach a project only through the published `WorkspaceAccess` surface. A Web module may depend on any
+subset of the façades; the regression no longer freezes one module's exact façade list.
 
 ## Application layers
 
@@ -91,17 +107,48 @@ or secondary Web-module import cannot bypass the five domain façades.
   Project URL, while atomic replacement preserves the other providers' entries.
 - `app/core/agent_access_security.py`: the Agent password resolver, constant-time password
   comparison, and loopback/private-network request boundary.
-- `app/core/computer_use_agent.py`: selected ChatGPT, Gemini, Grok, or Claude Web session targets,
-  runtime-discovered ChatGPT effort selection, bounded context packages, the local JSON action
-  protocol, anchored read-receipt deletion, project path confinement, command policy, confirmed
-  interrupted-session continuation, and mandatory bodycheck ordering for the optional Agent workspace.
+- `app/core/computer_use_agent.py`: the Agent run loop - selected ChatGPT, Gemini, Grok, or Claude
+  Web session targets, runtime-discovered ChatGPT effort selection, confirmed interrupted-session
+  continuation, and mandatory bodycheck ordering. It composes the slices below and keeps thin
+  compatibility wrappers for the names it owned before they moved.
+- `app/core/agent/platform_catalog.py`: which providers, models, browsers, and host URLs exist.
+  This is data, so the domain facade reads it directly instead of loading the run loop.
+- `app/core/agent/browser_transport.py`: host browser launch and login handoff, including Windows
+  profile selection and project-debug-profile reuse. The Agent facade exports this transport
+  directly without loading the run loop.
+- `app/core/browser_executables.py`: neutral host executable discovery shared by the Agent
+  transport, browser-session login, and project debug-browser launcher. Those callers depend on
+  this leaf in one direction; the leaf imports neither browser orchestration nor the Agent package.
+- `app/core/browser_host.py`: neutral macOS frontmost-application capture and conditional restore
+  used by browser-session launch and the Agent run loop. `computer_use_agent` retains compatibility
+  wrappers, while browser-session launch depends directly on this leaf without importing the run
+  loop.
+- `app/core/agent/action_protocol.py`: parsing one JSON controller action out of a model response
+  and rendering one final action. Pure text transformation with no browser or workspace dependency.
+- `app/core/agent/context_package.py`: bounded Markdown context assembly for a fresh conversation.
+  It reads a `ContextPackageSettings` protocol, not the whole settings dataclass.
+- `app/core/token_usage.py`: provider-neutral, cached token estimation shared by the Browser Agent
+  and Tunnel activity reporting, without either side importing the other's orchestration runtime.
+- `app/core/workspace/controller.py`: the action protocol executed inside one project root, plus
+  the public `WorkspaceAccess` capability surface in `workspace/capabilities.py`. Anchored
+  read-receipt deletion, project path confinement, and the approved-command policy live here,
+  once, for both the Browser Agent and the Tunnel.
 - `app/core/cache_catalog.py` and `app/core/local_media_browser.py`: durable local indexes,
   media discovery, secure path resolution, deletion tombstones, and restoration.
 - `app/core/resource_persistence.py` and `app/core/history_rows.py`: ordered provider-specific
   Parquet schemas, atomic persistence, and pure conversation-row partitioning, comparison, and
   deterministic ordering. Provider stores retain their distinct replace, merge, and save timing.
 - `app/core/logging_setup.py`: process-wide JSON-line logging.
-- `app/web/`: Flask routes, templates, style tokens, and first-party browser JavaScript.
+- `app/web/app.py`: the composition root. It configures Flask, builds the services, installs the
+  application-wide request hooks and security headers, coordinates one idempotent shutdown, and
+  registers the route blueprints. It contains no domain request handling.
+- `app/web/agent_routes.py`, `tunnel_routes.py`, `jury_routes.py`, `cache_routes.py`,
+  `local_resource_routes.py`, and `settings_routes.py`: one blueprint per surface. Each receives a
+  small typed context of the collaborators it actually uses.
+- `app/web/presentation.py`: pure transformations from stored data into what a template or JSON
+  response shows. `app/web/form_config.py` parses the shared configuration form, and
+  `app/web/config_store.py` holds the one mutable crawl configuration the route modules share.
+- `app/web/templates/` and `app/web/static/`: templates, style tokens, and first-party JavaScript.
 
 Web routes may orchestrate core services and present serialized state. Core modules must not
 depend on templates or browser DOM details. Source-specific automation belongs at a browser or
@@ -162,17 +209,54 @@ evidence live in [AGENT_OPTIMIZATION.md](AGENT_OPTIMIZATION.md).
 
 ## Secure MCP Tunnel coding backend
 
-`app/core/tunnel_mcp.py` owns the local coding-backend MCP contract. The normal path is:
+`app/core/tunnel_mcp.py` owns the shared coding-backend MCP contract. The authenticated
+provider paths are:
 
 ```text
-ChatGPT or another MCP client
-  -> OpenAI Secure MCP Tunnel
-  -> AgenticContext /mcp
-  -> TunnelMcpService (closed-schema validation, project resolution)
+ChatGPT -> OpenAI Secure MCP Tunnel -> loopback /mcp ---------+
+                                                               |
+Gemini -> public HTTPS -> OAuth 2.1 -> /mcp/gemini -----------+
+                                                               v
+  TunnelMcpService (provider attribution, closed-schema validation, project resolution)
   -> ProjectRegistry -> one registered project (id -> canonical root, writable flag)
-  -> that project's WorkspaceController or read-only Git inspection
+  -> that project's WorkspaceAccess or read-only Git inspection
   -> confined filesystem, Git inspection, and approved checks
 ```
+
+The OpenAI transport remains a supervised `tunnel-client` process with a per-start loopback
+bearer. Gemini does not reuse the OpenAI Tunnel ID, API key, control plane, bearer, or process.
+`app/core/gemini_tunnel.py` owns an independent private credential record and a minimal static
+OAuth client authority with exact issuer, resource, scope, redirect URI, and PKCE S256 checks. The
+record is enforced as mode `0600` on POSIX; a Windows deployment relies on and must verify the ACL
+of the current user's settings directory.
+The Gemini resource is the configured public origin plus `/mcp/gemini`. Its protected-resource
+and authorization-server metadata are published on that same origin; Dynamic Client Registration
+is intentionally not advertised, so Gemini's Advanced features fields receive the generated client
+ID and secret. Provisioning that high-entropy pair into one chosen Custom App is the local
+operator's explicit pre-authorization of the static confidential client. Authorization codes,
+access tokens, and rotating refresh tokens are digest-tracked only in process memory, so a process
+restart invalidates every outstanding grant without rotating the saved client credentials.
+
+The public hostname is a second fail-closed request boundary, not public access to the Flask
+console. Only the two protected-resource metadata paths, authorization-server metadata,
+`/oauth/authorize`, `/oauth/token`, and `/mcp/gemini` are admitted when the exact configured Host
+arrives from the loopback reverse proxy. Every other path on that Host returns 404. The local
+Agent UI and its APIs retain the existing loopback/private-network and signed-session controls.
+The reverse proxy is a separate mandatory boundary: it must forward only those six paths, set the
+origin Host to the configured public hostname, and return its own 404 for every other path. This
+prevents a Host-rewriting proxy mistake from turning a loopback request into public access to the
+local control plane.
+The client secret and signing key never enter templates, initial JSON, status snapshots, URLs, or
+logs; the local copy endpoint releases one value only after an explicit authenticated click.
+Copying the client secret does not authorize a callback. Instead, the first complete valid OAuth
+request is held in process memory for 10 minutes and its exact callback URI is shown only in the
+authenticated local Agent UI. Approve or Deny resolves that exact request; one approval is bound to
+the complete client, resource, scope, PKCE challenge, redirect URI, and state values and is consumed
+when one code is issued. The decision also carries an opaque per-request review identity, so a
+stale UI cannot approve a replacement request after expiry or configuration rotation. No
+undocumented consumer callback hostname is assumed. The first approved complete redirect URI is
+then pinned for that process. OAuth and MCP request streams have
+parser-enforced byte ceilings, including requests without a Content-Length header.
 
 The public catalog contains exactly the ten tools documented in
 [OPERATIONS.md](OPERATIONS.md). Runtime selection is server-side; callers do not select an
@@ -191,12 +275,16 @@ the Agent's selected workspace becomes the only project, and only when it is its
 work-tree root; a parent folder such as the Desktop never becomes an implicit project. Every
 tool requires the configured `project` id; project inventory is not exposed as a public MCP
 capability. A read-only project rejects every mutating tool
-before the filesystem is touched, and its controller is also created read-only. Model paths
+before the filesystem is touched, and its workspace access is also created read-only. Model paths
 must be project-relative; absolute and `~` paths are refused before resolution, and the
-controller's confinement, symlink, ignored-directory, and credential-file rules then apply to
-the selected root. Each project keeps its own controller, so read receipts, SHA-256 guards,
+workspace confinement, symlink, ignored-directory, and credential-file rules then apply to
+the selected root. Each project keeps its own workspace binding, so read receipts, SHA-256 guards,
 edit generations, and verification evidence never cross projects, and a re-registered root
-rebinds a fresh controller. Instruction discovery is project-scoped: `project_overview` lists
+rebinds a fresh workspace. ChatGPT and Gemini are two authenticated transports for the same local
+operator authority: they intentionally share that project binding and serialize mutations under
+the same per-project lock. Provider attribution is recorded on active and recent calls, but it is
+not a model-supplied tool argument and never enters a public tool schema. Instruction discovery is
+project-scoped: `project_overview` lists
 root instruction files and nested `AGENTS.md` files inside the project, excluding any nested
 directory that is its own Git repository.
 

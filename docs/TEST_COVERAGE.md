@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.7.1-codex.1`
+Test-suite version: `v1.8.1-codex.0`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -15,7 +15,16 @@ This is a behavior map, not a claim of complete coverage or a current test-count
   and rejection of absent or stale coverage reports. Native cases are platform-scoped.
 - `test_documentation.py`: local Markdown navigation, reference links, image paths, repeated
   heading anchors, missing destinations, and portable treatment of shared references.
-- `test_main.py` and `test_core_architecture.py`: application startup and core module boundaries.
+- `test_main.py`: application startup.
+- `test_core_architecture.py`: dependency direction, not file layout. Web reaches Core only
+  through the five domain façades, Core never imports Web, `app/core/workspace/` never imports
+  the Agent run loop, and the Tunnel modules reach a project only through `WorkspaceAccess`.
+- `test_workspace_boundary.py`: behavior of the shared workspace boundary and the route split -
+  path isolation, read-only refusal, read-receipt issuance, expiry and refresh, MCP response
+  contracts, preserved URLs and reversible endpoints, application-instance isolation, and ordered
+  idempotent shutdown.
+- `test_agent_browser_transport.py`: the extracted host-browser transport, direct facade export,
+  import independence from the Agent run loop, and compatibility wrapper injection seams.
 - `test_config_and_state.py`, `test_state.py`, and `test_notice_banner.py`: configuration,
   state transitions, and notice behavior.
 - `test_compute_jobs.py`, `test_agent_capability_registry.py`, `test_agent_event_chain.py`, and

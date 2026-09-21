@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.120.15-codex.0
+# Code version: v1.124.0-claude.0
 
 from __future__ import annotations
 
@@ -23,14 +23,14 @@ from app.core.resource_persistence import (
     GEMINI_HISTORY_SCHEMA,
     write_parquet_rows_atomic,
 )
-from app.web.app import (
-    create_app,
+from app.web.app import create_app
+from app.web.presentation import (
     format_media_size,
     reconcile_cached_snapshot,
-    render_cached_message,
-    render_prompt_markdown,
     render_agent_response,
     render_agent_response_copy_text,
+    render_cached_message,
+    render_prompt_markdown,
 )
 from app.web.cache_sources import CACHE_SOURCE_VIEWS
 
@@ -217,7 +217,7 @@ class WebAppTests(unittest.TestCase):
         url = "/api/agent/chatgpt-session-history?browser=edge&conversation_url=https://chatgpt.com/c/cache-test"
         with TemporaryDirectory() as root:
             app = create_app(Path(root) / "store")
-            with patch("app.web.app.fetch_chatgpt_conversation_history", return_value=collected) as fetch:
+            with patch("app.web.agent_routes.fetch_chatgpt_conversation_history", return_value=collected) as fetch:
                 first = app.test_client().get(url).get_json()
                 second = app.test_client().get(url).get_json()
                 with (
@@ -227,7 +227,7 @@ class WebAppTests(unittest.TestCase):
                     restarted = create_app(Path(root) / "store").test_client().get(url).get_json()
                     refresh.assert_not_called()
             fetch.assert_called_once()
-            with patch("app.web.app.fetch_chatgpt_conversation_history", return_value=collected) as fetch:
+            with patch("app.web.agent_routes.fetch_chatgpt_conversation_history", return_value=collected) as fetch:
                 app.test_client().get(url + "&refresh=1")
                 fetch.assert_called_once()
             self.assertTrue((Path(root) / "store/agent/agent_source_catalog.parquet").is_file())
@@ -245,7 +245,7 @@ class WebAppTests(unittest.TestCase):
         )
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
-            with patch("app.web.app.fetch_chatgpt_conversation_history") as fetch:
+            with patch("app.web.agent_routes.fetch_chatgpt_conversation_history") as fetch:
                 response = app.test_client().get(url)
 
         self.assertEqual(response.status_code, 409)
@@ -284,7 +284,7 @@ class WebAppTests(unittest.TestCase):
                 project_url=conversation_url,
                 payload=cached_payload,
             )
-            with patch("app.web.app.fetch_chatgpt_conversation_history") as fetch:
+            with patch("app.web.agent_routes.fetch_chatgpt_conversation_history") as fetch:
                 response = app.test_client().get(url)
 
         self.assertEqual(response.status_code, 200)
@@ -506,7 +506,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-browser-session-platform="gemini"', safari_gemini_body)
 
     def test_cache_timing_settings_survive_partial_start_forms(self) -> None:
-        with TemporaryDirectory() as folder, patch("app.web.app.load_saved_config", return_value=CrawlConfig()), patch("app.web.app.save_config") as save:
+        with TemporaryDirectory() as folder, patch("app.web.config_store.load_saved_config", return_value=CrawlConfig()), patch("app.web.config_store.save_config") as save:
             app = create_app(Path(folder) / "store")
             with app.test_client() as client:
                 response = client.post("/settings", data={
@@ -535,7 +535,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_chatgpt_removes_obsolete_notice_with_selected_safari(self) -> None:
         with patch(
-            "app.web.app.load_saved_config",
+            "app.web.config_store.load_saved_config",
             return_value=CrawlConfig(chatgpt_browser="safari"),
         ), patch("app.core.browser_sessions.is_macos_host", return_value=True):
             app = create_app()
@@ -550,7 +550,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_chatgpt_removes_obsolete_notice_when_registry_is_host_limited(self) -> None:
         with patch(
-            "app.web.app.load_saved_config",
+            "app.web.config_store.load_saved_config",
             return_value=CrawlConfig(chatgpt_browser="safari"),
         ), patch("app.core.browser_sessions.is_macos_host", return_value=False):
             app = create_app()
@@ -1298,12 +1298,16 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.52.7-codex.0', local_body)
-        self.assertIn('starting with <code>tunnel_</code>', local_body)
-        self.assertIn('starting with <code>sk-proj-</code>', local_body)
-        onboarding_start = local_body.index('data-agent-tunnel-onboarding')
-        onboarding_end = local_body.index('data-agent-browser-task', onboarding_start)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.56.0-codex.0', local_body)
+        onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
+        onboarding_end = local_body.index(
+            'data-agent-tunnel-provider-panel="gemini"', onboarding_start
+        )
         onboarding_body = local_body[onboarding_start:onboarding_end]
+        gemini_end = local_body.index('data-agent-tunnel-unsupported', onboarding_end)
+        gemini_body = local_body[onboarding_end:gemini_end]
+        self.assertIn('starting with <code>tunnel_</code>', onboarding_body)
+        self.assertIn('starting with <code>sk-proj-</code>', onboarding_body)
         for step_number in range(1, 5):
             self.assertIn(
                 '<span class="agent-tunnel-step-number" aria-hidden="true">'
@@ -1363,10 +1367,13 @@ class WebAppTests(unittest.TestCase):
             6,
         )
         self.assertNotIn('data-agent-tunnel-toggle', local_body)
-        self.assertIn('data-agent-tunnel-copy-label aria-live="polite">Copy this prompt</span>', local_body)
+        self.assertIn(
+            'data-agent-tunnel-copy-label aria-live="polite">Copy this prompt</span>',
+            onboarding_body,
+        )
         self.assertNotIn('data-agent-tunnel-message', local_body)
         self.assertNotIn('data-agent-tunnel-activity', local_body)
-        self.assertNotIn("Pick <strong>AgenticContext</strong> from ChatGPT", local_body)
+        self.assertNotIn("Pick <strong>AgenticContext</strong> from ChatGPT", onboarding_body)
         self.assertIn('data-agent-compute-job', local_body)
         self.assertIn('data-agent-compute-job-stop', local_body)
         self.assertIn('data-agent-effort-field', local_body)
@@ -1453,7 +1460,34 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("Local control plane for a signed-in ChatGPT web session", local_body)
         self.assertNotIn("third-party agent bridge", local_body)
         self.assertNotIn("Allowed workspace root", local_body)
-        self.assertNotIn("Public HTTPS origin", local_body)
+        self.assertNotIn("Public HTTPS origin", onboarding_body)
+        self.assertIn("Public HTTPS origin", gemini_body)
+        self.assertIn(
+            "Review this one OAuth callback locally.",
+            gemini_body,
+        )
+        self.assertIn(
+            'data-agent-gemini-authorization-url="/api/agent/tunnel/gemini/authorization"',
+            local_body,
+        )
+        self.assertRegex(
+            gemini_body,
+            r'data-agent-gemini-authorization\b[^>]*\bhidden\b',
+        )
+        self.assertIn('data-agent-gemini-redirect-uri', gemini_body)
+        self.assertIn('data-agent-gemini-redirect-host', gemini_body)
+        self.assertIn('data-agent-gemini-authorization-expiry', gemini_body)
+        self.assertIn(
+            'data-agent-gemini-authorization-action="approve"',
+            gemini_body,
+        )
+        self.assertIn(
+            'data-agent-gemini-authorization-action="deny"',
+            gemini_body,
+        )
+        self.assertIn('<span>Approve callback</span>', gemini_body)
+        self.assertIn('<span>Deny</span>', gemini_body)
+        self.assertNotIn('https://gemini.google.com/oauth/callback', gemini_body)
         self.assertNotIn("OAuth owner password", local_body)
         self.assertNotIn("agent_owner_token_reveal", local_body)
         self.assertNotIn("owner_token", json.dumps(local_status.get_json()))
@@ -1593,7 +1627,7 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             with patch(
-                "app.web.app.probe_and_collect_chatgpt_sources",
+                "app.web.agent_routes.probe_and_collect_chatgpt_sources",
                 return_value=(status_payload, None),
             ) as probe:
                 with app.test_client() as client:
@@ -1641,12 +1675,12 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             pool = app.extensions["agent_session_pool"]
-            with patch("app.web.app.is_windows_host", return_value=True), patch.object(
+            with patch("app.web.agent_routes.is_windows_host", return_value=True), patch.object(
                 pool,
                 "has_active_worker",
                 return_value=True,
             ) as active, patch(
-                "app.web.app.probe_and_collect_chatgpt_sources"
+                "app.web.agent_routes.probe_and_collect_chatgpt_sources"
             ) as probe:
                 with app.test_client() as client:
                     response = client.get(
@@ -1665,15 +1699,15 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             pool = app.extensions["agent_session_pool"]
-            with patch("app.web.app.is_windows_host", return_value=False), patch(
-                "app.web.app.is_macos_host",
+            with patch("app.web.agent_routes.is_windows_host", return_value=False), patch(
+                "app.web.agent_routes.is_macos_host",
                 return_value=True,
             ), patch.object(
                 pool,
                 "has_active_worker",
                 return_value=True,
             ) as active, patch(
-                "app.web.app.probe_and_collect_chatgpt_sources"
+                "app.web.agent_routes.probe_and_collect_chatgpt_sources"
             ) as probe:
                 with app.test_client() as client:
                     response = client.get(
@@ -1701,15 +1735,15 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             pool = app.extensions["agent_session_pool"]
-            with patch("app.web.app.is_windows_host", return_value=False), patch(
-                "app.web.app.is_macos_host",
+            with patch("app.web.agent_routes.is_windows_host", return_value=False), patch(
+                "app.web.agent_routes.is_macos_host",
                 return_value=True,
             ), patch.object(
                 pool,
                 "has_active_worker",
                 side_effect=AssertionError("macOS Chrome must not use debug-browser probe suppression"),
             ) as active, patch(
-                "app.web.app.probe_and_collect_chatgpt_sources",
+                "app.web.agent_routes.probe_and_collect_chatgpt_sources",
                 return_value=(status_payload, None),
             ) as probe:
                 with app.test_client() as client:
@@ -1729,12 +1763,12 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             pool = app.extensions["agent_session_pool"]
-            with patch("app.web.app.is_macos_host", return_value=True), patch.object(
+            with patch("app.web.agent_routes.is_macos_host", return_value=True), patch.object(
                 pool,
                 "has_active_worker",
                 return_value=True,
             ) as active, patch(
-                "app.web.app.probe_and_collect_grok_sources"
+                "app.web.agent_routes.probe_and_collect_grok_sources"
             ) as probe:
                 with app.test_client() as client:
                     response = client.get(
@@ -1757,7 +1791,7 @@ class WebAppTests(unittest.TestCase):
                 pool,
                 "has_active_worker",
                 return_value=True,
-            ) as active, patch("app.web.app.probe_browser_session") as probe:
+            ) as active, patch("app.web.agent_routes.probe_browser_session") as probe:
                 with app.test_client() as client:
                     response = client.get(
                         "/api/browser-session?platform=grok&browser=safari"
@@ -1776,9 +1810,9 @@ class WebAppTests(unittest.TestCase):
             chatgpt_browser="safari",
         )
         with TemporaryDirectory() as raw_root, patch(
-            "app.web.app.load_saved_config",
+            "app.web.config_store.load_saved_config",
             return_value=config,
-        ), patch("app.web.app.save_config") as save:
+        ), patch("app.web.config_store.save_config") as save:
             app = create_app(Path(raw_root) / "local_store")
             pool = app.extensions["agent_session_pool"]
             with patch.object(
@@ -1814,7 +1848,7 @@ class WebAppTests(unittest.TestCase):
     def test_active_safari_agent_blocks_targeted_chatgpt_refresh(self) -> None:
         config = CrawlConfig(chatgpt_browser="safari")
         with TemporaryDirectory() as raw_root, patch(
-            "app.web.app.load_saved_config",
+            "app.web.config_store.load_saved_config",
             return_value=config,
         ):
             app = create_app(Path(raw_root) / "local_store")
@@ -1839,7 +1873,7 @@ class WebAppTests(unittest.TestCase):
     def test_active_safari_cache_blocks_agent_start_before_pool_admission(self) -> None:
         config = CrawlConfig(x_browser="safari")
         with TemporaryDirectory() as raw_root, patch(
-            "app.web.app.load_saved_config",
+            "app.web.config_store.load_saved_config",
             return_value=config,
         ):
             app = create_app(Path(raw_root) / "local_store")
@@ -1906,10 +1940,10 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             with patch(
-                "app.web.app.probe_browser_session",
+                "app.web.agent_routes.probe_browser_session",
                 return_value=status_payload,
             ) as probe, patch(
-                "app.web.app.probe_and_collect_gemini_sources",
+                "app.web.agent_routes.probe_and_collect_gemini_sources",
                 return_value=(status_payload, {"recent_sessions": [], "projects": []}),
             ) as bootstrap:
                 with app.test_client() as client:
@@ -1941,12 +1975,12 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             pool = app.extensions["agent_session_pool"]
-            with patch("app.web.app.is_windows_host", return_value=True), patch.object(
+            with patch("app.web.agent_routes.is_windows_host", return_value=True), patch.object(
                 pool,
                 "has_active_worker",
                 return_value=True,
             ), patch(
-                "app.web.app.fetch_chatgpt_conversation_history"
+                "app.web.agent_routes.fetch_chatgpt_conversation_history"
             ) as history:
                 with app.test_client() as client:
                     response = client.get(
@@ -1965,12 +1999,12 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             pool = app.extensions["agent_session_pool"]
-            with patch("app.web.app.is_macos_host", return_value=True), patch.object(
+            with patch("app.web.agent_routes.is_macos_host", return_value=True), patch.object(
                 pool,
                 "has_active_worker",
                 return_value=True,
             ), patch(
-                "app.web.app.fetch_grok_conversation_history"
+                "app.web.agent_routes.fetch_grok_conversation_history"
             ) as history:
                 with app.test_client() as client:
                     response = client.get(
@@ -1986,11 +2020,11 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             pool = app.extensions["agent_session_pool"]
-            with patch("app.web.app.is_windows_host", return_value=True), patch.object(
+            with patch("app.web.agent_routes.is_windows_host", return_value=True), patch.object(
                 pool,
                 "has_active_worker",
                 return_value=True,
-            ), patch("app.web.app.list_agent_sources") as sources:
+            ), patch("app.web.agent_routes.list_agent_sources") as sources:
                 with app.test_client() as client:
                     response = client.get(
                         "/api/agent/sources?platform=grok&browser=edge&refresh=1"
@@ -2019,12 +2053,12 @@ class WebAppTests(unittest.TestCase):
                 payload=cached_payload,
                 now=datetime(2000, 1, 1, tzinfo=timezone.utc),
             )
-            with patch("app.web.app.is_windows_host", return_value=True), patch.object(
+            with patch("app.web.agent_routes.is_windows_host", return_value=True), patch.object(
                 pool,
                 "has_active_worker",
                 return_value=True,
             ), patch(
-                "app.web.app.fetch_chatgpt_conversation_history"
+                "app.web.agent_routes.fetch_chatgpt_conversation_history"
             ) as history, patch(
                 "app.core.agent_source_cache.AgentSourceCache._start_background_refresh_locked"
             ) as background_refresh:
@@ -2069,22 +2103,22 @@ class WebAppTests(unittest.TestCase):
                 raise AssertionError("An isolated Agent app must not perform an external operation.")
 
             with patch(
-                "app.web.app.probe_and_collect_chatgpt_sources",
+                "app.web.agent_routes.probe_and_collect_chatgpt_sources",
                 side_effect=poison,
-            ), patch("app.web.app.probe_browser_session", side_effect=poison), patch(
-                "app.web.app.list_agent_sources",
-                side_effect=poison,
-            ), patch(
-                "app.web.app.list_chatgpt_agent_sources",
+            ), patch("app.web.agent_routes.probe_browser_session", side_effect=poison), patch(
+                "app.web.agent_routes.list_agent_sources",
                 side_effect=poison,
             ), patch(
-                "app.web.app.list_chatgpt_project_sessions",
+                "app.web.agent_routes.list_chatgpt_agent_sources",
                 side_effect=poison,
-            ), patch("app.web.app.list_agent_project_sessions", side_effect=poison), patch(
-                "app.web.app.fetch_chatgpt_conversation_history",
+            ), patch(
+                "app.web.agent_routes.list_chatgpt_project_sessions",
                 side_effect=poison,
-            ), patch("app.web.app.open_agent_in_browser", side_effect=poison), patch(
-                "app.web.app.launch_terminal_authorization",
+            ), patch("app.web.agent_routes.list_agent_project_sessions", side_effect=poison), patch(
+                "app.web.agent_routes.fetch_chatgpt_conversation_history",
+                side_effect=poison,
+            ), patch("app.web.agent_routes.open_agent_in_browser", side_effect=poison), patch(
+                "app.web.agent_routes.launch_terminal_authorization",
                 side_effect=poison,
             ), patch.object(agent_service, "start", side_effect=poison), patch.object(
                 agent_service,
@@ -2511,7 +2545,7 @@ class WebAppTests(unittest.TestCase):
         selected_path = Path("/tmp/Selected Agent Project")
         app = create_app()
 
-        with patch("app.web.app.choose_settings_directory", return_value=selected_path) as picker:
+        with patch("app.web.settings_routes.choose_settings_directory", return_value=selected_path) as picker:
             with app.test_client() as client:
                 response = client.post(
                     "/api/settings/directory",
@@ -2587,7 +2621,7 @@ class WebAppTests(unittest.TestCase):
             "message": "System Settings opened.",
         }
 
-        with patch("app.web.app.launch_terminal_authorization", return_value=opened) as launch:
+        with patch("app.web.agent_routes.launch_terminal_authorization", return_value=opened) as launch:
             with app.test_client() as client:
                 response = client.post(
                     "/api/agent/terminal-authorization",
@@ -2606,7 +2640,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_browser_session_login_route_is_local_and_uses_canonical_selection(self) -> None:
         config = CrawlConfig(chrome_profile_directory="Profile 2")
-        with patch("app.web.app.load_saved_config", return_value=config):
+        with patch("app.web.config_store.load_saved_config", return_value=config):
             app = create_app()
         opened = {
             "opened": True,
@@ -2617,7 +2651,7 @@ class WebAppTests(unittest.TestCase):
             "background": False,
         }
 
-        with patch("app.web.app.open_browser_for_login", return_value=opened) as open_login:
+        with patch("app.web.agent_routes.open_browser_for_login", return_value=opened) as open_login:
             with app.test_client() as client:
                 response = client.post(
                     "/api/browser-session/open-login",
@@ -2655,7 +2689,7 @@ class WebAppTests(unittest.TestCase):
     def test_browser_session_login_route_reports_handoff_failure_and_external_guard(self) -> None:
         app = create_app()
         with patch(
-            "app.web.app.open_browser_for_login",
+            "app.web.agent_routes.open_browser_for_login",
             side_effect=RuntimeError("Microsoft Edge could not be found on this host."),
         ) as open_login:
             with app.test_client() as client:
@@ -2669,7 +2703,7 @@ class WebAppTests(unittest.TestCase):
         open_login.assert_called_once_with("chatgpt", "edge", config=ANY)
 
         isolated_app = create_app(agent_external_operations_enabled=False)
-        with patch("app.web.app.open_browser_for_login") as isolated_open_login:
+        with patch("app.web.agent_routes.open_browser_for_login") as isolated_open_login:
             with isolated_app.test_client() as client:
                 disabled = client.post(
                     "/api/browser-session/open-login",
@@ -2722,7 +2756,7 @@ class WebAppTests(unittest.TestCase):
 
         with patch.object(agent_service, "snapshot", return_value=snapshot):
             with patch(
-                "app.web.app.open_agent_in_browser",
+                "app.web.agent_routes.open_agent_in_browser",
                 return_value=opened,
             ) as open_browser:
                 with app.test_client() as client:
@@ -2795,6 +2829,35 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('["failed", "interrupted"].includes(String(agent?.phase || ""))', script)
         self.assertNotIn('document.getElementById("agent_stop_button")', script)
 
+    def test_gemini_tunnel_authorization_client_requires_an_explicit_decision(self) -> None:
+        script = COMPUTER_USE_AGENT_SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertTrue(
+            script.startswith("/* Code version: v3.56.0-codex.0 */")
+        )
+        for fragment in (
+            'geminiAuthorization: document.querySelector("[data-agent-gemini-authorization]")',
+            'geminiRedirectUri: document.querySelector("[data-agent-gemini-redirect-uri]")',
+            'geminiRedirectHost: document.querySelector("[data-agent-gemini-redirect-host]")',
+            'geminiAuthorizationExpiry: document.querySelector("[data-agent-gemini-authorization-expiry]")',
+            'document.querySelectorAll("[data-agent-gemini-authorization-action]")',
+            "function safeGeminiAuthorization(snapshot)",
+            'const reviewId = typeof authorization.review_id === "string"',
+            "function syncGeminiAuthorizationUi()",
+            "async function decideGeminiAuthorization(action)",
+            "body: JSON.stringify({action, review_id: reviewId})",
+            "geminiAuthorization = emptyGeminiAuthorization();",
+            "await refreshTunnelStatus();",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, script)
+
+        copy_start = script.index("async function copyGeminiConnectionValue(button)")
+        copy_end = script.index("async function decideGeminiAuthorization(action)", copy_start)
+        copy_client = script[copy_start:copy_end]
+        self.assertNotIn("decideGeminiAuthorization", copy_client)
+        self.assertNotIn("agentGeminiAuthorizationUrl", copy_client)
+
     def test_agent_session_source_contract_is_explicit_and_not_persisted(self) -> None:
         app = create_app()
         agent_service = app.extensions["computer_use_agent_service"]
@@ -2838,7 +2901,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.52.7-codex.0',
+            'computer-use-agent-v3.56.0-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -2999,7 +3062,7 @@ class WebAppTests(unittest.TestCase):
         }
         app = create_app()
         with patch(
-            "app.web.app.probe_and_collect_claude_sources",
+            "app.web.agent_routes.probe_and_collect_claude_sources",
             return_value=(status_payload, source_payload),
         ) as probe:
             with app.test_client() as client:
@@ -3053,9 +3116,9 @@ class WebAppTests(unittest.TestCase):
                 }
                 app = create_app(Path(raw_root) / "local_store")
                 with patch(
-                    f"app.web.app.{collector_name}",
+                    f"app.web.agent_routes.{collector_name}",
                     return_value=(status_payload, source_payload),
-                ) as collector, patch("app.web.app.probe_browser_session") as legacy_probe:
+                ) as collector, patch("app.web.agent_routes.probe_browser_session") as legacy_probe:
                     with app.test_client() as client:
                         response = client.get(
                             f"/api/browser-session?platform={platform}&browser=safari&scope=agent"
@@ -3090,9 +3153,9 @@ class WebAppTests(unittest.TestCase):
         }
         app = create_app()
         with patch(
-            "app.web.app.probe_and_collect_grok_sources",
+            "app.web.agent_routes.probe_and_collect_grok_sources",
             return_value=(status_payload, source_payload),
-        ) as probe, patch("app.web.app.probe_browser_session") as legacy_probe:
+        ) as probe, patch("app.web.agent_routes.probe_browser_session") as legacy_probe:
             with app.test_client() as client:
                 response = client.get(
                     "/api/browser-session?platform=grok&browser=edge&scope=agent"
@@ -3189,10 +3252,10 @@ class WebAppTests(unittest.TestCase):
     def test_agent_source_routes_are_loopback_only_and_delegate_selected_browser(self) -> None:
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
-            with patch("app.web.app.list_chatgpt_agent_sources", return_value={"recent_sessions": [], "projects": []}) as sources:
-                with patch("app.web.app.list_chatgpt_project_sessions", return_value={"sessions": []}) as sessions:
+            with patch("app.web.agent_routes.list_chatgpt_agent_sources", return_value={"recent_sessions": [], "projects": []}) as sources:
+                with patch("app.web.agent_routes.list_chatgpt_project_sessions", return_value={"sessions": []}) as sessions:
                     with patch(
-                        "app.web.app.fetch_chatgpt_conversation_history",
+                        "app.web.agent_routes.fetch_chatgpt_conversation_history",
                         return_value={
                             "conversation_url": "https://chatgpt.com/c/demo-session",
                             "title": "Demo session",
@@ -3248,7 +3311,7 @@ class WebAppTests(unittest.TestCase):
         }
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
-            with patch("app.web.app.list_agent_sources", return_value=payload) as sources:
+            with patch("app.web.agent_routes.list_agent_sources", return_value=payload) as sources:
                 with app.test_client() as client:
                     response = client.get("/api/agent/sources?platform=gemini&browser=edge")
 
@@ -3315,12 +3378,12 @@ class WebAppTests(unittest.TestCase):
                 with TemporaryDirectory() as raw_root:
                     app = create_app(Path(raw_root) / "local_store")
                     with patch(
-                        f"app.web.app.{collector_name}",
+                        f"app.web.agent_routes.{collector_name}",
                         side_effect=[
                             (first_status_payload, first_source_payload),
                             (second_status_payload, second_source_payload),
                         ],
-                    ) as bootstrap, patch("app.web.app.list_agent_sources") as sources:
+                    ) as bootstrap, patch("app.web.agent_routes.list_agent_sources") as sources:
                         with app.test_client() as client:
                             first_response = client.get(
                                 f"/api/browser-session?platform={platform}&browser=edge&scope=agent"
@@ -3415,7 +3478,7 @@ class WebAppTests(unittest.TestCase):
                 payload=status_payload,
                 now=datetime(2000, 1, 1, tzinfo=timezone.utc),
             )
-            with patch("app.web.app.probe_and_collect_chatgpt_sources") as bootstrap:
+            with patch("app.web.agent_routes.probe_and_collect_chatgpt_sources") as bootstrap:
                 with app.test_client() as client:
                     response = client.get(
                         "/api/browser-session?platform=chatgpt&browser=edge&scope=agent"
@@ -3455,7 +3518,7 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
             with patch(
-                "app.web.app.probe_and_collect_chatgpt_sources",
+                "app.web.agent_routes.probe_and_collect_chatgpt_sources",
                 side_effect=[
                     (ready_status_payload, source_payload),
                     (unavailable_status_payload, None),
@@ -3511,7 +3574,7 @@ class WebAppTests(unittest.TestCase):
                 now=datetime(2000, 1, 1, tzinfo=timezone.utc),
             )
             with patch(
-                "app.web.app.list_agent_sources",
+                "app.web.agent_routes.list_agent_sources",
                 return_value=refreshed_payload,
             ) as sources:
                 with app.test_client() as client:
@@ -3558,7 +3621,7 @@ class WebAppTests(unittest.TestCase):
                 source_kind="sources",
                 payload=cached_payload,
             )
-            with patch("app.web.app.list_agent_sources") as sources:
+            with patch("app.web.agent_routes.list_agent_sources") as sources:
                 with app.test_client() as client:
                     response = client.get(
                         "/api/agent/sources?platform=gemini&browser=edge"
@@ -3596,7 +3659,7 @@ class WebAppTests(unittest.TestCase):
         }
         with TemporaryDirectory() as raw_root:
             app = create_app(Path(raw_root) / "local_store")
-            with patch("app.web.app.list_agent_project_sessions", return_value=payload) as sessions:
+            with patch("app.web.agent_routes.list_agent_project_sessions", return_value=payload) as sessions:
                 with app.test_client() as client:
                     response = client.get(
                         "/api/agent/project-sessions?platform=grok&browser=edge&project_url="
@@ -3633,8 +3696,8 @@ class WebAppTests(unittest.TestCase):
                 project_url=legal_url,
                 payload=cached_payload,
             )
-            with patch("app.web.app.list_chatgpt_project_sessions") as chatgpt_sessions, patch(
-                "app.web.app.list_agent_project_sessions"
+            with patch("app.web.agent_routes.list_chatgpt_project_sessions") as chatgpt_sessions, patch(
+                "app.web.agent_routes.list_agent_project_sessions"
             ) as agent_sessions:
                 with app.test_client() as client:
                     responses = []
@@ -3703,7 +3766,7 @@ class WebAppTests(unittest.TestCase):
                 now=datetime(2000, 1, 1, tzinfo=timezone.utc),
             )
             with patch(
-                "app.web.app.list_agent_project_sessions",
+                "app.web.agent_routes.list_agent_project_sessions",
                 return_value=refreshed_payload,
             ) as sessions:
                 with app.test_client() as client:
@@ -3725,7 +3788,7 @@ class WebAppTests(unittest.TestCase):
     def test_agent_session_history_route_rejects_non_chatgpt_urls(self) -> None:
         app = create_app()
 
-        with patch("app.web.app.fetch_chatgpt_conversation_history") as history:
+        with patch("app.web.agent_routes.fetch_chatgpt_conversation_history") as history:
             with app.test_client() as client:
                 response = client.get(
                     "/api/agent/chatgpt-session-history?browser=edge&conversation_url=https://example.com/c/demo"
@@ -3770,7 +3833,7 @@ class WebAppTests(unittest.TestCase):
                 payload={"title": "Legacy", "history": []},
             )
             with patch(
-                "app.web.app.fetch_grok_conversation_history",
+                "app.web.agent_routes.fetch_grok_conversation_history",
                 return_value=payload,
             ) as history:
                 with app.test_client() as client:
@@ -3980,7 +4043,7 @@ class WebAppTests(unittest.TestCase):
         selected_path = Path("/tmp/OneDrive/AICaches")
         app = create_app()
 
-        with patch("app.web.app.choose_shadow_backup_destination", return_value=selected_path) as picker:
+        with patch("app.web.settings_routes.choose_shadow_backup_destination", return_value=selected_path) as picker:
             with app.test_client() as client:
                 response = client.post(
                     "/api/settings/shadow-backup/destination",
@@ -4007,7 +4070,7 @@ class WebAppTests(unittest.TestCase):
         selected_path = Path("/tmp/Chrome/User Data")
         app = create_app()
 
-        with patch("app.web.app.choose_settings_directory", return_value=selected_path) as picker:
+        with patch("app.web.settings_routes.choose_settings_directory", return_value=selected_path) as picker:
             with app.test_client() as client:
                 response = client.post(
                     "/api/settings/directory",
@@ -4110,7 +4173,7 @@ class WebAppTests(unittest.TestCase):
             return_value=ComputerUseSettings(),
         ):
             app = create_app()
-            with patch("app.web.app.save_config"), patch(
+            with patch("app.web.config_store.save_config"), patch(
                 "app.core.computer_use_agent.save_computer_use_settings"
             ) as save_computer_use_settings:
                 with app.test_client() as client:
@@ -5478,7 +5541,7 @@ class WebAppTests(unittest.TestCase):
             image_path.write_bytes(b"image")
             stable_id = stable_media_id("x/demo/image.jpg")
             app = create_app(root)
-            with patch("app.web.app.reveal_media_path") as reveal:
+            with patch("app.web.local_resource_routes.reveal_media_path") as reveal:
                 with app.test_client() as client:
                     local_response = client.post(f"/api/browser/media/{stable_id}/reveal")
                     remote_response = client.post(
@@ -5497,7 +5560,7 @@ class WebAppTests(unittest.TestCase):
         with TemporaryDirectory() as raw_root:
             root = Path(raw_root) / "local_store"
             app = create_app(root)
-            with patch("app.web.app.open_directory_path") as open_directory:
+            with patch("app.web.cache_routes.open_directory_path") as open_directory:
                 with app.test_client() as client:
                     local_response = client.post("/api/cache/chatgpt/output-directory/open")
                     remote_response = client.post(
@@ -5719,7 +5782,7 @@ def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> Non
         "zhihu": "app.core.zhihu_history_service.ZhihuHistoryService.start",
     }
     for source, target in services.items():
-        with patch(target) as start, patch("app.web.app.save_config"):
+        with patch(target) as start, patch("app.web.config_store.save_config"):
             response = application.test_client().post(
                 f"/cache/{source}/start",
                 data={"cache_content_mode": "text", f"{source}_browser": "edge"},

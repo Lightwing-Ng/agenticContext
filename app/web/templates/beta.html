@@ -72,7 +72,7 @@
                             <div class="beta-material-tools">
                                 <button type="button" class="secondary-button settings-inline-button" data-beta-import>Import {{ fields.source|lower }}</button>
                                 <input type="file" accept=".txt,.md,.json,text/plain,text/markdown,application/json" data-beta-file hidden>
-                                <a class="beta-text-link" href="{{ url_for('browser', view='text', source='chatgpt', kind='all', q='', sort='newest', session_view='1') }}" target="_blank" rel="noopener">Browse Local resources <span aria-hidden="true">↗</span></a>
+                                <a class="beta-text-link" href="{{ url_for('local_resources.browser', view='text', source='chatgpt', kind='all', q='', sort='newest', session_view='1') }}" target="_blank" rel="noopener">Browse Local resources <span aria-hidden="true">↗</span></a>
                             </div>
                             <p class="beta-help" id="beta_material_help">Paste a copy, or import a text, Markdown, or JSON file up to 240 KB. Original resources stay in place.</p>
                             {% if beta_experiment.id == 'context-capsule' %}

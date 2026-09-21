@@ -29,11 +29,9 @@ from app.core.agent.compute_jobs import (
     validate_optimizer_checkpoint,
     write_optimizer_checkpoint_atomic,
 )
-from app.core.computer_use_agent import (
-    ComputerUseSettings,
-    WorkspaceController,
-    _workspace_mutation_fingerprint,
-)
+from app.core.computer_use_agent import ComputerUseSettings
+from app.core.workspace.controller import WorkspaceController
+from app.core.workspace.evidence import _workspace_mutation_fingerprint
 from app.web.app import create_app
 
 

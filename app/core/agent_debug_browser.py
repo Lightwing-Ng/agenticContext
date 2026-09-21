@@ -15,7 +15,7 @@ Windows, so an already authorized window stays running even in Stage Manager.
 macOS launches a new Edge instance against the project profile instead of
 activating the daily browser, and leaves that window open for later reattach.
 
-Code version: v1.24.6-codex.0
+Code version: v1.24.8-codex.0
 """
 
 from __future__ import annotations
@@ -182,10 +182,7 @@ def _resolve_browser_executable(browser_id: str) -> str | None:
             ),
             None,
         )
-    # Lazy import: computer_use_agent imports browser_sessions, which would form a
-    # cycle if this module imported it at load time. The call below only runs after
-    # the application has finished importing, so the deferred import is safe.
-    from .computer_use_agent import resolve_windows_browser_executable
+    from .browser_executables import resolve_windows_browser_executable
 
     return resolve_windows_browser_executable(browser_id)
 

@@ -18,10 +18,10 @@ from app.core.agent.browser_acceptance import (
     validate_browser_acceptance_target,
     validate_browser_request_url,
 )
-from app.core.computer_use_agent import (
-    ComputerUseSettings,
-    WorkspaceController,
-    _activity_detail,
+from app.core.computer_use_agent import ComputerUseSettings
+from app.core.agent.action_protocol import activity_detail
+from app.core.workspace.controller import WorkspaceController
+from app.core.workspace.process_io import (
     _process_group_options,
     _stop_process,
 )
@@ -43,7 +43,7 @@ def _request(tmp_path: Path, root: Path, **changes: object) -> BrowserAcceptance
 
 
 def test_browser_acceptance_activity_detail_is_specific_and_bounded() -> None:
-    assert _activity_detail(
+    assert activity_detail(
         {
             "action": "browser_acceptance",
             "root": "public",
