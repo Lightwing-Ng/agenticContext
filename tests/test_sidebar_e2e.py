@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.50.0-codex.0
+Code version: v1.51.0-codex.0
 """
 
 from __future__ import annotations
@@ -2935,13 +2935,13 @@ def test_shared_literal_status_fields_reduce_generic_account_copy_and_preserve_i
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize(("width", "height"), ((994, 863), (390, 844)))
-def test_agent_compact_browser_status_uses_annotated_spacing(
+def test_agent_browser_status_reuses_cache_surface_spacing(
     disposable_browser: Browser,
     sidebar_server_url: str,
     width: int,
     height: int,
 ) -> None:
-    """Measure the compact Agent status card at desktop and narrow viewports."""
+    """Measure the Cache-aligned Agent status surface at desktop and narrow viewports."""
     page, context = _open_page(
         disposable_browser,
         f"{sidebar_server_url}/agent/edge/chatgpt",
@@ -2994,8 +2994,8 @@ def test_agent_compact_browser_status_uses_annotated_spacing(
             }"""
         )
         assert geometry is not None
-        assert geometry["paddingTop"] == "4px"
-        assert geometry["paddingBottom"] == "4px"
+        assert geometry["paddingTop"] == "12px"
+        assert geometry["paddingBottom"] == "12px"
         assert geometry["accountRowGap"] == "2px"
         assert geometry["terminalRowGap"] == "2px"
         assert abs(geometry["terminalHeight"] - 28) <= 1

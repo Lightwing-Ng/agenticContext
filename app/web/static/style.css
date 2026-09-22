@@ -1,4 +1,4 @@
-/* Code version: v2.141.0-codex.0 */
+/* Code version: v2.142.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -1741,7 +1741,8 @@ h2 {
 }
 
 .browser-session-panel.is-browser-ready .browser-session-status-card,
-.agent-browser-session-field.is-browser-ready .browser-session-status-card {
+.agent-browser-session-field.is-browser-ready .browser-session-status-card,
+.agent-tunnel-session-field .browser-session-status-card[data-agent-tunnel-ready="true"] {
     border-radius: var(--radius-panel);
     background: color-mix(in srgb, var(--theme-success) 6%, var(--glass-surface-background-strong));
 }
@@ -4217,10 +4218,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-tunnel-session-field .browser-session-status-card {
     margin: 0;
-}
-
-.agent-tunnel-session-field .browser-session-status-card[data-agent-tunnel-ready="true"] {
-    background: color-mix(in srgb, var(--theme-success) 6%, var(--glass-surface-background-strong));
 }
 
 .agent-tunnel-status-message {
@@ -13134,8 +13131,6 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
 /* Agent-only sidebar icon rail; the Dock is outside this form. */
 #agent_runtime_form {
     --agent-sidebar-icon-slot: 28px;
-    --agent-sidebar-control-inset: 10px;
-    --agent-status-card-padding-block: 4px;
     --agent-status-row-gap: 2px;
 }
 
@@ -13145,12 +13140,8 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
 }
 
 #agent_runtime_form .browser-session-status-card {
-    padding-inline: var(--agent-sidebar-control-inset);
-    border-inline: var(--control-liquid-border);
-}
-
-#agent_runtime_form .browser-session-status-card-compact {
-    padding-block: var(--agent-status-card-padding-block);
+    padding: 12px;
+    border-width: 0;
 }
 
 #agent_runtime_form .browser-session-status-copy {

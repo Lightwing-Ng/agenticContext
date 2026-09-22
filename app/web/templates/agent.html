@@ -1,4 +1,4 @@
-<!-- Code version: v3.65.1-codex.0 -->
+<!-- Code version: v3.66.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,9 +9,9 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.141.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.142.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.0.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.1.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -167,24 +167,33 @@
                                     <p class="browser-session-status-message agent-tunnel-status-message agent-tunnel-status-hint" data-agent-tunnel-hint aria-live="polite"{% if not tunnel_view.hint %} hidden{% endif %}>{{ tunnel_view.hint }}</p>
                                 </div>
                             </div>
-                            <div class="agent-tunnel-usage" data-agent-tunnel-usage aria-label="Tunnel token usage">
-                                <p>Estimated tool tokens</p>
-                                {% set active_calls = tunnel_status.active_calls | default([]) %}
-                                {% set recent_calls = tunnel_status.recent_calls | default([]) %}
-                                {% for kind, calls in [('current', active_calls), ('recent', recent_calls)] %}
-                                {% set call = (calls | last if kind == 'current' else calls | first) if calls else none %}
-                                {% set count = call.estimated_tokens if call and call.estimated_tokens is defined else none %}
-                                {% set detail = ('#' ~ call.call_id ~ ' ' ~ call.project ~ ' · ' ~ call.tool ~ ' · ' ~ call.state ~ (' · request only' if kind == 'current' else '')) if call and call.call_id is defined else ('No running calls' if kind == 'current' else 'No recent calls') %}
-                                <div class="agent-tunnel-usage-row" data-tunnel-usage-row="{{ kind }}">
-                                    <p class="agent-tunnel-usage-detail" data-tunnel-usage-detail title="{{ detail }}">{{ 'Current call' if kind == 'current' else 'Recent call' }}{% if call %} · {{ 'Running' if kind == 'current' else ('Failed' if call.state == 'failed' else 'Completed') }}{% endif %}{% if kind == 'current' and calls | length > 1 %} ({{ calls | length }} running){% endif %}: {{ detail }}</p>
-                                    <div class="agent-tunnel-usage-value" tabindex="0" aria-label="{{ 'Current' if kind == 'current' else 'Recent' }} tool call token estimate" role="group">
-                                        <span class="investment-holdings-allocation-badge" data-tunnel-token-badge{% if count is none %} hidden{% endif %}><span class="investment-holdings-allocation-badge-value"><span class="workspace-metric-value-major" data-tunnel-token-digits>{% if count is not none %}{% for glyph in '{:,}'.format(count) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}{% endif %}</span></span></span>
-                                        <span data-tunnel-token-unit{% if count is none %} hidden{% endif %}>{{ 'token' if count == 1 else 'tokens' }}</span>
-                                        <span data-tunnel-token-unavailable{% if count is not none %} hidden{% endif %}>Unavailable</span>
+                            {% set active_calls = tunnel_status.active_calls | default([]) %}
+                            {% set token_summary = namespace(total=0, available=true) %}
+                            {% for call in active_calls %}
+                                {% if call.estimated_tokens is defined and call.estimated_tokens is integer and call.estimated_tokens >= 0 %}
+                                    {% set token_summary.total = token_summary.total + call.estimated_tokens %}
+                                {% else %}
+                                    {% set token_summary.available = false %}
+                                {% endif %}
+                            {% endfor %}
+                            <div class="agent-tunnel-usage" data-agent-tunnel-usage aria-label="Tunnel usage">
+                                <dl class="agent-tunnel-usage-list">
+                                    <div class="agent-tunnel-usage-row">
+                                        <dt class="agent-tunnel-usage-label">Total calls:</dt>
+                                        <dd class="agent-tunnel-usage-value" data-tunnel-call-count>{{ '{:,}'.format(tunnel_status.call_count | default(0)) }}</dd>
                                     </div>
-                                </div>
-                                {% endfor %}
-                                <p class="agent-tunnel-usage-note">Task usage: Unavailable. Running calls: request only. Excludes full conversation context and model reasoning.</p>
+                                    <div class="agent-tunnel-usage-row">
+                                        <dt class="agent-tunnel-usage-label">Active call:</dt>
+                                        <dd class="agent-tunnel-usage-value" data-tunnel-active-count>{{ '{:,}'.format(active_calls | length) }}</dd>
+                                    </div>
+                                    <div class="agent-tunnel-usage-row">
+                                        <dt class="agent-tunnel-usage-label">Current tokens:</dt>
+                                        <dd class="agent-tunnel-usage-value agent-tunnel-current-tokens" tabindex="0">
+                                            <span class="investment-holdings-allocation-badge" data-tunnel-token-badge{% if not token_summary.available %} hidden{% endif %}><span class="investment-holdings-allocation-badge-value"><span class="workspace-metric-value-major" data-tunnel-token-digits>{% if token_summary.available %}{% for glyph in '{:,}'.format(token_summary.total) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}{% endif %}</span></span></span>
+                                            <span data-tunnel-token-unavailable{% if token_summary.available %} hidden{% endif %}>Unavailable</span>
+                                        </dd>
+                                    </div>
+                                </dl>
                             </div>
                         </div>
                     </div>
@@ -692,6 +701,6 @@
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.58.0-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.59.0-codex.0') }}"></script>
 </body>
 </html>

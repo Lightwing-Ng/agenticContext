@@ -1,4 +1,4 @@
-/* Code version: v3.58.0-codex.0 */
+/* Code version: v3.59.0-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -1288,48 +1288,44 @@
     }
 
     function syncTunnelUsage(payload) {
-        const rows = elements.tunnelStatus?.querySelectorAll("[data-tunnel-usage-row]") || [];
         const active = Array.isArray(payload.active_calls) ? payload.active_calls : [];
-        const recent = Array.isArray(payload.recent_calls) ? payload.recent_calls : [];
-        rows.forEach((row) => {
-            const current = row.dataset.tunnelUsageRow === "current";
-            const call = current ? active.at(-1) : recent[0];
-            const label = (current ? "Current call" : "Recent call")
-                + (call ? " · " + (current ? "Running" : (call.state === "failed" ? "Failed" : "Completed")) : "");
-            const running = current && active.length > 1
-                ? " (" + active.length.toLocaleString("en-US") + " running)" : "";
-            const detail = call && call.call_id != null
-                ? "#" + call.call_id + " " + (call.project || "") + " · "
-                    + call.tool + " · " + call.state + (current ? " · request only" : "")
-                : (current ? "No running calls" : "No recent calls");
-            const description = row.querySelector("[data-tunnel-usage-detail]");
-            const text = label + running + ": " + detail;
-            if (description.textContent !== text) description.textContent = text;
-            description.title = text;
-            row.dataset.callId = call?.call_id == null ? "" : String(call.call_id);
+        const totalCalls = payload.call_count;
+        const totalCallsAvailable = Number.isSafeInteger(totalCalls) && totalCalls >= 0;
+        const totalCallsOutput = elements.tunnelStatus?.querySelector("[data-tunnel-call-count]");
+        const activeCountOutput = elements.tunnelStatus?.querySelector("[data-tunnel-active-count]");
+        if (totalCallsOutput) {
+            totalCallsOutput.textContent = totalCallsAvailable
+                ? totalCalls.toLocaleString("en-US")
+                : "Unavailable";
+        }
+        if (activeCountOutput) {
+            activeCountOutput.textContent = active.length.toLocaleString("en-US");
+        }
 
-            // Reject unsafe numbers rather than rounding or coercing unknown to zero.
-            const value = call?.estimated_tokens;
-            const available = Number.isSafeInteger(value) && value >= 0;
-            const badge = row.querySelector("[data-tunnel-token-badge]");
-            const digits = row.querySelector("[data-tunnel-token-digits]");
-            const unit = row.querySelector("[data-tunnel-token-unit]");
-            const unavailable = row.querySelector("[data-tunnel-token-unavailable]");
-            const formatted = available ? value.toLocaleString("en-US") : "";
-            if (digits.textContent !== formatted) {
-                const glyphs = Array.from(formatted, (glyph) => {
-                    const span = document.createElement("span");
-                    span.className = "investment-holdings-allocation-badge-glyph";
-                    span.textContent = glyph;
-                    return span;
-                });
-                digits.replaceChildren(...glyphs);
-            }
-            badge.hidden = !available;
-            unit.hidden = !available;
-            unavailable.hidden = available;
-            unit.textContent = value === 1 ? "token" : "tokens";
-        });
+        // Any unknown estimate makes the aggregate unknown instead of silently
+        // converting a partial total into a precise-looking zero.
+        const currentTokensAvailable = active.every((call) => (
+            Number.isSafeInteger(call?.estimated_tokens) && call.estimated_tokens >= 0
+        ));
+        const currentTokens = currentTokensAvailable
+            ? active.reduce((total, call) => total + call.estimated_tokens, 0)
+            : null;
+        const safeCurrentTokens = Number.isSafeInteger(currentTokens) && currentTokens >= 0;
+        const badge = elements.tunnelStatus?.querySelector("[data-tunnel-token-badge]");
+        const digits = elements.tunnelStatus?.querySelector("[data-tunnel-token-digits]");
+        const unavailable = elements.tunnelStatus?.querySelector("[data-tunnel-token-unavailable]");
+        const formatted = safeCurrentTokens ? currentTokens.toLocaleString("en-US") : "";
+        if (digits && digits.textContent !== formatted) {
+            const glyphs = Array.from(formatted, (glyph) => {
+                const span = document.createElement("span");
+                span.className = "investment-holdings-allocation-badge-glyph";
+                span.textContent = glyph;
+                return span;
+            });
+            digits.replaceChildren(...glyphs);
+        }
+        if (badge) badge.hidden = !safeCurrentTokens;
+        if (unavailable) unavailable.hidden = safeCurrentTokens;
     }
 
     function applyTunnelStatus(payload, requestedPlatform = selectedPlatform()) {
@@ -1359,6 +1355,7 @@
                 : emptyGeminiAuthorization(),
             active_calls: Array.isArray(payload.active_calls) ? payload.active_calls : [],
             recent_calls: Array.isArray(payload.recent_calls) ? payload.recent_calls : [],
+            call_count: payload.call_count,
             usageKnown: true,
         };
         tunnelSnapshots.set(requestedPlatform, snapshot);

@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.80.0-codex.0
+Code version: v1.81.0-codex.0
 """
 
 import hashlib
@@ -2373,7 +2373,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.141.0-codex.0 */",
+        "/* Code version: v2.142.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -3138,20 +3138,21 @@ def test_agent_compact_status_card_has_no_border() -> None:
     assert "border-width: 0;" in card_rule
 
 
-def test_agent_compact_status_card_uses_annotated_spacing_tokens() -> None:
-    """Keep compact Agent account and terminal rows on their scoped spacing geometry."""
+def test_agent_status_card_reuses_cache_surface_spacing() -> None:
+    """Reuse the Cache card surface while retaining Agent row alignment."""
     stylesheet = _stylesheet()
 
     root_start = stylesheet.index("#agent_runtime_form {")
     root_rule = stylesheet[root_start:stylesheet.index("\n}", root_start)]
-    assert "--agent-status-card-padding-block: 4px;" in root_rule
+    assert "--agent-status-card-padding-block" not in root_rule
     assert "--agent-status-row-gap: 2px;" in root_rule
 
     card_start = stylesheet.index(
-        "#agent_runtime_form .browser-session-status-card-compact {"
+        "#agent_runtime_form .browser-session-status-card {"
     )
     card_rule = stylesheet[card_start:stylesheet.index("\n}", card_start)]
-    assert "padding-block: var(--agent-status-card-padding-block);" in card_rule
+    assert "padding: 12px;" in card_rule
+    assert "border-width: 0;" in card_rule
 
     copy_start = stylesheet.index("#agent_runtime_form .browser-session-status-copy {")
     copy_rule = stylesheet[copy_start:stylesheet.index("\n}", copy_start)]

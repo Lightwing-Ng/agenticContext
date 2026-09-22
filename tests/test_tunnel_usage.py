@@ -1,4 +1,4 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.0.1-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.1.0-codex.0."""
 
 from __future__ import annotations
 
@@ -164,10 +164,14 @@ def test_status_endpoint_and_initial_html_share_the_call_record(tmp_path, monkey
         payload = client.get("/api/agent/tunnel/status").get_json()
         assert payload["active_calls"][0]["call_id"] == call_id
         html = client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
-        assert "Estimated tool tokens" in html
-        assert "Task usage: Unavailable" in html
-        assert "request only" in html
-        assert 'data-tunnel-token-unit>token</span>' in html
+        assert '<dt class="agent-tunnel-usage-label">Total calls:</dt>' in html
+        assert '<dd class="agent-tunnel-usage-value" data-tunnel-call-count>0</dd>' in html
+        assert '<dt class="agent-tunnel-usage-label">Active call:</dt>' in html
+        assert '<dd class="agent-tunnel-usage-value" data-tunnel-active-count>1</dd>' in html
+        assert '<dt class="agent-tunnel-usage-label">Current tokens:</dt>' in html
+        assert "Estimated tool tokens" not in html
+        assert "Task usage:" not in html
+        assert "Recent call:" not in html
 
 
 def usage_record(identity, count, state="running"):
@@ -178,8 +182,8 @@ def usage_record(identity, count, state="running"):
     }
 
 
-@pytest.mark.parametrize("width", [1280, 390, 320])
-def test_badge_polling_states_and_long_integer_geometry(
+@pytest.mark.parametrize("width", [1280, 875, 390, 320])
+def test_summary_polling_states_and_long_integer_geometry(
     disposable_browser, sidebar_server_url, width
 ):
     context = disposable_browser.new_context(
@@ -191,6 +195,7 @@ def test_badge_polling_states_and_long_integer_geometry(
     page.on("pageerror", lambda error: errors.append(str(error)))
     payload = {
         "presentation": {"tone": "ready", "label": "Ready", "hint": ""},
+        "call_count": 0,
         "active_calls": [], "recent_calls": [],
     }
     page.route(
@@ -201,10 +206,26 @@ def test_badge_polling_states_and_long_integer_geometry(
         page.goto(f"{sidebar_server_url}/agent/tunnel/chatgpt")
         if width < 900:
             page.get_by_role("button", name="Toggle sidebar", exact=True).click()
-        current = page.locator('[data-tunnel-usage-row="current"]')
-        recent = page.locator('[data-tunnel-usage-row="recent"]')
+        total = page.locator("[data-tunnel-call-count]")
+        active_count = page.locator("[data-tunnel-active-count]")
+        current = page.locator(".agent-tunnel-current-tokens")
         panel = page.locator("[data-agent-tunnel-usage]")
-        expect(current.locator("[data-tunnel-token-unavailable]")).to_be_visible()
+        badge = current.locator("[data-tunnel-token-badge]")
+        expect(total).to_have_text("0")
+        expect(active_count).to_have_text("0")
+        expect(current.locator("[data-tunnel-token-digits]")).to_have_text("0")
+        expect(page.locator("[data-tunnel-usage-row]")).to_have_count(0)
+        expect(panel.locator(".agent-tunnel-usage-label")).to_have_text(
+            ["Total calls:", "Active call:", "Current tokens:"]
+        )
+        assert all(
+            height <= 20
+            for height in panel.locator(".agent-tunnel-usage-label").evaluate_all(
+                "labels => labels.map(label => label.getBoundingClientRect().height)"
+            )
+        )
+        expect(panel).not_to_contain_text("Recent call")
+        expect(panel).not_to_contain_text("Task usage")
         page.evaluate("document.fonts.ready")
         initial_height = panel.bounding_box()["height"]
 
@@ -213,24 +234,27 @@ def test_badge_polling_states_and_long_integer_geometry(
             with page.expect_response("**/api/agent/tunnel/status?platform=chatgpt"):
                 page.clock.run_for(10_100)
 
+        payload["call_count"] = 1
         payload["active_calls"] = [usage_record(1, 1)]
         refresh()
         expect(current.locator("[data-tunnel-token-digits]")).to_have_text("1")
-        expect(current.locator("[data-tunnel-token-unit]")).to_have_text("token")
-        expect(current.locator("[data-tunnel-usage-detail]")).to_contain_text("request only")
-        payload["active_calls"] = [usage_record(1, 12_345_678)]
+        expect(total).to_have_text("1")
+        expect(active_count).to_have_text("1")
+        payload["call_count"] = 1_293
+        payload["active_calls"] = [
+            usage_record(1, 12_345),
+            usage_record(2, 70_475),
+            usage_record(3, 0),
+        ]
         refresh()
-        expect(current.locator("[data-tunnel-token-digits]")).to_have_text("12,345,678")
-        expect(current.locator("[data-tunnel-token-unit]")).to_have_text("tokens")
-        badge = current.locator("[data-tunnel-token-badge]")
+        expect(total).to_have_text("1,293")
+        expect(active_count).to_have_text("3")
+        expect(current.locator("[data-tunnel-token-digits]")).to_have_text("82,820")
         expect(badge).to_have_css("border-radius", "2px")
         expect(badge).to_have_css("padding", "2px 6px")
         expect(badge).to_have_css("font-variant-numeric", "tabular-nums")
         assert badge.bounding_box()["width"] > 52
         assert badge.evaluate("e => e.scrollWidth <= e.clientWidth + 1")
-        assert current.locator("[data-tunnel-token-unit]").evaluate(
-            "e => !e.closest('[data-tunnel-token-badge]')"
-        )
         payload["active_calls"] = [usage_record(1, 9_007_199_254_740_991)]
         refresh()
         expect(current.locator("[data-tunnel-token-digits]")).to_have_text("9,007,199,254,740,991")
@@ -239,21 +263,109 @@ def test_badge_polling_states_and_long_integer_geometry(
         payload["active_calls"] = []
         payload["recent_calls"] = [usage_record(1, 12_345_678, "completed")]
         refresh()
-        expect(current.locator("[data-tunnel-token-unavailable]")).to_be_visible()
-        expect(recent.locator("[data-tunnel-usage-detail]")).to_contain_text("#1 main")
-        expect(recent.locator("[data-tunnel-usage-detail]")).to_contain_text("completed")
-        payload["active_calls"] = [usage_record(2, None), usage_record(3, 1)]
-        payload["recent_calls"] = [usage_record(1, 2, "failed")]
-        refresh()
-        expect(current.locator("[data-tunnel-usage-detail]")).to_contain_text("2 running")
-        expect(recent.locator("[data-tunnel-usage-detail]")).to_contain_text("failed")
+        expect(active_count).to_have_text("0")
+        expect(current.locator("[data-tunnel-token-digits]")).to_have_text("0")
         for unknown in [None, -1, 9_007_199_254_740_992, "12", True]:
-            payload["recent_calls"] = [usage_record(1, unknown, "failed")]
+            payload["active_calls"] = [usage_record(1, unknown)]
             refresh()
-            expect(recent.locator("[data-tunnel-token-unavailable]")).to_be_visible()
+            expect(current.locator("[data-tunnel-token-unavailable]")).to_be_visible()
+        payload["active_calls"] = []
+        refresh()
         assert abs(panel.bounding_box()["height"] - initial_height) <= 1
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(875, 1222), (390, 900), (875, 420)],
+)
+def test_agent_status_cards_reuse_cache_status_surface(
+    disposable_browser, sidebar_server_url, width, height
+):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": height}, reduced_motion="reduce"
+    )
+    browser_payload = {
+        "browser": "edge",
+        "browser_label": "Edge",
+        "logged_in": True,
+        "can_download": True,
+        "account_name": "Signed in",
+        "message": "The selected browser session is ready.",
+        "agent_sources": {"projects": [], "recent_sessions": []},
+    }
+    tunnel_payload = {
+        "presentation": {"tone": "ready", "label": "Ready", "hint": ""},
+        "call_count": 1_293,
+        "active_calls": [
+            usage_record(1, 12_345),
+            usage_record(2, 70_475),
+            usage_record(3, 0),
+        ],
+        "recent_calls": [],
+    }
+    surface_script = """element => {
+        const style = getComputedStyle(element);
+        return {
+            padding: style.padding,
+            background: style.background,
+            borderWidth: style.borderWidth,
+            borderRadius: style.borderRadius,
+            boxShadow: style.boxShadow,
+            backdropFilter: style.backdropFilter,
+        };
+    }"""
+    cache_page = context.new_page()
+    browser_page = context.new_page()
+    tunnel_page = context.new_page()
+    for page in (cache_page, browser_page):
+        page.route("**/api/browser-session**", lambda route: route.fulfill(json=browser_payload))
+    tunnel_page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=tunnel_payload),
+    )
+    try:
+        cache_page.goto(f"{sidebar_server_url}/cache/chatgpt/text/edge")
+        browser_page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+        tunnel_page.goto(f"{sidebar_server_url}/agent/tunnel/chatgpt")
+        if width <= 900:
+            for page in (cache_page, browser_page, tunnel_page):
+                page.get_by_role("button", name="Toggle sidebar", exact=True).click()
+
+        cache_card = cache_page.locator("aside .browser-session-status-card")
+        browser_card = browser_page.locator(
+            '#agent_runtime_form .browser-session-status-card[data-role="browser-session-status"]'
+        )
+        tunnel_card = tunnel_page.locator("[data-agent-tunnel-status]")
+        for card in (cache_card, browser_card, tunnel_card):
+            expect(card).to_be_visible()
+        reference_surface = cache_card.evaluate(surface_script)
+        assert reference_surface["padding"] == "12px"
+        assert reference_surface["borderWidth"] == "0px"
+        assert browser_card.evaluate(surface_script) == reference_surface
+        assert tunnel_card.evaluate(surface_script) == reference_surface
+        expect(tunnel_card.locator("[data-tunnel-call-count]")).to_have_text("1,293")
+        expect(tunnel_card.locator("[data-tunnel-active-count]")).to_have_text("3")
+        expect(tunnel_card.locator("[data-tunnel-token-digits]")).to_have_text("82,820")
+        for page in (cache_page, browser_page, tunnel_page):
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        if height == 420:
+            scroll_state = tunnel_page.evaluate(
+                """() => {
+                    const sidebar = document.querySelector('#agent_sidebar');
+                    return {
+                        documentScrolls: document.documentElement.scrollHeight > innerHeight + 1,
+                        sidebarScrolls: sidebar.scrollHeight > sidebar.clientHeight + 1,
+                        sidebarOverflowY: getComputedStyle(sidebar).overflowY,
+                    };
+                }"""
+            )
+            assert not scroll_state["documentScrolls"]
+            assert scroll_state["sidebarScrolls"]
+            assert scroll_state["sidebarOverflowY"] == "auto"
     finally:
         context.close()
 
@@ -289,7 +401,7 @@ def test_live_reference_badge_contract(disposable_browser, sidebar_server_url, w
         }))
         local_page.goto(f"{sidebar_server_url}/agent/tunnel/chatgpt")
         local_badge = local_page.locator(
-            '[data-tunnel-usage-row="current"] [data-tunnel-token-badge]'
+            '[data-agent-tunnel-usage] [data-tunnel-token-badge]'
         )
         expect(local_badge).to_have_js_property("hidden", False)
         local_style = local_badge.evaluate(styles)
