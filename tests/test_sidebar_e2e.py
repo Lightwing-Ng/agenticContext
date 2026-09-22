@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.51.0-codex.0
+Code version: v1.52.0-codex.0
 """
 
 from __future__ import annotations
@@ -1234,11 +1234,11 @@ def test_browser_filters_omit_page_reset_and_refresh_actions_across_viewports(
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_browser_message_timestamps_keep_two_rows_across_viewports(
+def test_browser_message_timestamps_share_the_card_header_across_viewports(
     disposable_browser: Browser,
     seeded_chatgpt_browser_server_url: str,
 ) -> None:
-    """Keep the date and clock on separate rendered rows at every supported width."""
+    """Keep the date and clock on one muted header row of each message card."""
     page, context = _open_page(
         disposable_browser,
         f"{seeded_chatgpt_browser_server_url}/browser?view=text&source=chatgpt&sort=newest&session_view=1",
@@ -1259,7 +1259,7 @@ def test_browser_message_timestamps_keep_two_rows_across_viewports(
                 wait_until="domcontentloaded",
             )
             timestamp = page.locator(
-                ".browser-session-detail-table time.browser-session-message-time"
+                ".browser-chat-message-header time.browser-session-message-time"
             )
             expect(timestamp).to_have_count(1)
             expect(timestamp).to_be_visible()
@@ -1273,19 +1273,22 @@ def test_browser_message_timestamps_keep_two_rows_across_viewports(
                 "      const rect = child.getBoundingClientRect();"
                 "      return {text: child.textContent.trim(), top: rect.top};"
                 "    }),"
+                "    overflow: document.documentElement.scrollWidth - innerWidth,"
                 "  };"
                 "}"
             )
-            assert geometry["display"] == "inline-grid", (width, geometry)
-            assert geometry["whiteSpace"] == "normal", (width, geometry)
+            # A flex item blockifies inline-flex, so both computed values are one row.
+            assert geometry["display"] in {"flex", "inline-flex"}, (width, geometry)
+            assert geometry["whiteSpace"] == "nowrap", (width, geometry)
             assert [line["text"] for line in geometry["lines"]] == [
                 "12/08/2026",
                 "13:00:00 (HKT)",
             ], (width, geometry)
-            assert geometry["lines"][1]["top"] > geometry["lines"][0]["top"], (
+            assert abs(geometry["lines"][1]["top"] - geometry["lines"][0]["top"]) <= 1, (
                 width,
                 geometry,
             )
+            assert geometry["overflow"] <= 1, (width, geometry)
     finally:
         context.close()
 
@@ -11154,7 +11157,7 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
         page.locator('#browser_search_input').press("Enter")
         expect(page.locator('[data-chat-message-id]')).to_have_count(1)
         expect(page.locator('[data-browser-session-tag]')).to_be_visible()
-        expect(page.locator('.browser-session-detail-table')).to_contain_text("crosspage needle")
+        expect(page.locator('.browser-chat-list')).to_contain_text("crosspage needle")
         assert "page=2" not in page.url
         page.locator('[data-browser-session-scope-remove]').click()
         expect(page.locator('[data-browser-session-tag]')).to_have_count(0)
@@ -11396,51 +11399,48 @@ def test_cache_overview_groups_unique_metrics_and_keeps_run_progress_current(
 
 
 @pytest.mark.parametrize("width", [1280, 390])
-def test_all_cached_messages_reuse_the_numbered_frosted_table(
+def test_cached_messages_read_as_conversation_cards(
     disposable_browser: Browser, seeded_chatgpt_browser_server_url: str, width: int,
 ) -> None:
-    """Keep the ungrouped Text view readable in the existing session table."""
+    """Render LLM text as full-height conversation cards instead of a clamped table."""
     page, context = _open_page(
         disposable_browser,
         f"{seeded_chatgpt_browser_server_url}/browser?view=text&session_view=0&source=all&sort=newest&q=",
         width, 959, touch=False,
     )
     try:
-        header_table = page.get_by_role("table", name="Cached message headings", exact=True)
-        body_table = page.get_by_role("table", name="Cached messages", exact=True)
-        expect(header_table).to_be_visible()
-        expect(body_table).to_be_visible()
-        expect(header_table.locator("th")).to_have_text(["No.", "Time", "Role", "Message"])
-        expect(body_table.locator("tbody .browser-session-table-number")).to_have_text("1")
-        expect(body_table.locator(".browser-session-table-message")).to_have_text(
+        cards = page.get_by_label("Cached messages", exact=True)
+        expect(cards).to_be_visible()
+        expect(page.locator(".browser-session-detail-table")).to_have_count(0)
+        card = cards.locator("article.browser-chat-message")
+        expect(card).to_have_count(1)
+        expect(card.locator(".browser-chat-message-role")).to_have_text("You")
+        expect(card.locator(".browser-chat-message-number")).to_have_text("#1")
+        expect(card.locator(".browser-chat-message-title")).to_have_text("ChatGPT timestamp wrapping")
+        expect(card.locator(".browser-chat-message-content")).to_have_text(
             "A timestamp layout regression fixture."
         )
-        expect(page.locator(".browser-chat-message-role, .browser-chat-message-title")).to_have_count(0)
-        geometry = page.locator(".browser-session-detail-shell").evaluate("""shell => {
-            const header = shell.querySelector(':scope > table[data-table-header]');
-            const scroll = shell.querySelector(':scope > [data-table-scroll]');
-            const body = scroll.querySelector(':scope > table[data-table-body]');
-            const headerCell = header.querySelector('th');
-            const content = body.querySelector('.browser-session-table-message');
+        expect(card.get_by_role("link", name="Open session")).to_have_attribute(
+            "href", "https://chatgpt.com/c/chatgpt-wrap-demo"
+        )
+        expect(page.locator("[data-browser-session-message-toggle]")).to_have_count(0)
+        geometry = cards.evaluate("""list => {
+            const card = list.querySelector('.browser-chat-message');
+            const content = card.querySelector('.browser-chat-message-content');
             return {
-                directHeader: header.parentElement === shell,
-                directScroll: scroll.parentElement === shell,
-                bodyInScroll: body.parentElement === scroll,
-                position: getComputedStyle(header).position,
-                blur: getComputedStyle(headerCell).backdropFilter,
-                scrollOverflow: getComputedStyle(scroll).overflowX,
+                overflowY: getComputedStyle(list).overflowY,
+                cardHeight: card.getBoundingClientRect().height,
+                cardContentHeight: card.scrollHeight,
                 contentHeight: content.getBoundingClientRect().height,
+                contentScrollHeight: content.scrollHeight,
                 lineHeight: parseFloat(getComputedStyle(content).lineHeight),
                 bodyOverflow: document.documentElement.scrollWidth - innerWidth,
             };
         }""")
-        assert geometry["directHeader"]
-        assert geometry["directScroll"]
-        assert geometry["bodyInScroll"]
-        assert geometry["position"] == "absolute"
-        assert geometry["scrollOverflow"] == "auto"
-        assert "blur(" in geometry["blur"]
+        assert geometry["overflowY"] == "auto"
         assert geometry["contentHeight"] + 1 >= geometry["lineHeight"]
+        assert geometry["contentHeight"] + 1 >= geometry["contentScrollHeight"]
+        assert geometry["cardHeight"] + 1 >= geometry["cardContentHeight"]
         assert geometry["bodyOverflow"] <= 1
     finally:
         context.close()
@@ -11512,7 +11512,7 @@ def test_text_source_selection_survives_global_search_form_submission(
             re.compile(r"[?&]source=chatgpt(?:&|$)"),
             wait_until="domcontentloaded",
         )
-        expect(page.get_by_role("table", name="Cached messages", exact=True)).to_contain_text("timestamp layout")
+        expect(page.get_by_label("Cached messages", exact=True)).to_contain_text("timestamp layout")
     finally:
         context.close()
 
@@ -11532,13 +11532,13 @@ def test_returning_to_text_restores_session_table(
             "aria-label",
             "Source: ChatGPT",
         )
-        expect(page.locator('.browser-session-table:not(.browser-session-detail-table)')).to_be_visible()
+        expect(page.locator('.browser-session-index-table[data-table-body]')).to_be_visible()
         assert "source=chatgpt" in page.url
         assert "session_view=1" in page.url
         assert "sort=oldest" in page.url
-        expect(page.locator('.browser-session-detail-table')).to_have_count(0)
+        expect(page.locator('.browser-chat-list')).to_have_count(0)
         page.locator('.browser-session-table-title').first.click()
-        expect(page.locator('.browser-session-detail-table')).to_be_visible()
+        expect(page.locator('.browser-chat-list')).to_be_visible()
     finally:
         context.close()
 

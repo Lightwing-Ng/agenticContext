@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.21.0-codex.0`
+Documentation version: `v1.22.0-codex.0`
 
 ## Supported commands
 
@@ -429,6 +429,9 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   HTML, complete Local resources answer rendering, source-specific Answerer filtering, query-state
   preservation, removed answer IDs/Projects/Clear filters, literal detail headings, default Edge
   controls, login-probe routing, and the single-character vector logo.
+- Local resources reader tests seed an isolated ChatGPT history and verify that LLM text renders as
+  full-height conversation cards with wrapped source-link chips, a one-row header timestamp at
+  1280, 715, and 390 px, and no document-level horizontal overflow, while Zhihu keeps its table.
 - Computer Use Agent tests build context packages in temporary projects, execute the controller
   through deterministic actions, and replace the signed-in browser runner with a fake.
 - Durable compute-job tests construct a temporary approval manifest whose entrypoint SHA-256

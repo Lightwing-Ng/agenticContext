@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.44.0-codex.0`
+Documentation version: `v1.45.0-codex.0`
 
 ## Runtime flow
 
@@ -575,6 +575,13 @@ filters the message set before session aggregation, metrics, search, sorting, ne
 and pagination; non-Zhihu requests discard it. Each one-answer detail uses its literal author label
 instead of Role and renders without the generic collapsed-message cap. Merges are cumulative across
 default and answerer modes.
+
+LLM text (ChatGPT, Gemini, Grok, and Claude) in Local resources reads as conversation cards
+rather than a numbered table, both in a single-session detail and in the ungrouped message list.
+Each card carries the role, message number, timestamp, and the complete rendered Markdown body
+without the collapsed-message cap. Source links wrap as compact `Source N` chips in the card
+footer, so a message with dozens of citations no longer stacks one link per row. The card list is
+the text view's only scroll owner. Zhihu answers keep the answerer table described above.
 
 ### ChatGPT image cache
 

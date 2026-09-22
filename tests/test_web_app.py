@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.131.0-codex.0
+# Code version: v1.132.0-codex.0
 
 from __future__ import annotations
 
@@ -866,7 +866,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.142.0-codex.0"
+                expected_style_version = "style-v2.143.0-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1292,7 +1292,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.142.0-codex.0', local_body)
+        self.assertIn('style-v2.143.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -4711,7 +4711,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.142.0-codex.0", body)
+            self.assertIn("style-v2.143.0-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.34.0-codex.0', body)
@@ -4845,6 +4845,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="browser-content-toolbar"', browser_template)
         self.assertIn('class="browser-session-table-number"', browser_template)
         self.assertIn('class="browser-chat-role-mark"', browser_template)
+        self.assertIn('class="browser-chat-message-links"', browser_template)
+        self.assertIn('aria-label="Open source link {{ loop.index }}">Source {{ loop.index }}</a>', browser_template)
         self.assertIn('aria-label="Cached Gemini sessions"', text_body)
         self.assertIn("Session", text_body)
         self.assertIn("Session name", text_body)
@@ -4874,14 +4876,17 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("<strong>Rich</strong> cached text message", detail_body)
         self.assertEqual(filtered_detail_response.status_code, 200)
         self.assertIn("Demo conversation", filtered_detail_body)
-        self.assertIn("browser-session-detail-table", filtered_detail_body)
+        self.assertIn('class="local-store-pagination-host browser-chat-list"', filtered_detail_body)
+        self.assertIn('class="browser-chat-message browser-chat-message--', filtered_detail_body)
+        self.assertNotIn("browser-session-detail-table", filtered_detail_body)
         self.assertIn("browser-session-detail-actions--session", filtered_detail_body)
         self.assertIn("<strong>Rich</strong> cached text message", filtered_detail_body)
         self.assertEqual(filtered_detail_body.count('data-chat-message-id='), 1)
         self.assertEqual(empty_detail_response.status_code, 200)
         self.assertIn("No matching messages found.", empty_detail_body)
         self.assertNotIn("<strong>Rich</strong> cached text message", empty_detail_body)
-        self.assertIn("browser-session-message-toggle", detail_body)
+        self.assertNotIn("data-browser-session-message-toggle", detail_body)
+        self.assertIn('class="browser-chat-message-meta"', detail_body)
         self.assertIn("browser-session-actions", detail_body)
         self.assertNotIn('<p class="workspace-kicker">Session</p>', detail_body)
         self.assertNotIn('class="browser-session-detail-summary"', detail_body)

@@ -1,4 +1,4 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.1.0-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.1.1-codex.0."""
 
 from __future__ import annotations
 
@@ -333,7 +333,15 @@ def test_agent_status_cards_reuse_cache_status_surface(
         tunnel_page.goto(f"{sidebar_server_url}/agent/tunnel/chatgpt")
         if width <= 900:
             for page in (cache_page, browser_page, tunnel_page):
-                page.get_by_role("button", name="Toggle sidebar", exact=True).click()
+                page.evaluate(
+                    """() => window.setSidebarOpen(true, {
+                        animate: false,
+                        persist: false,
+                    })"""
+                )
+                expect(
+                    page.get_by_role("button", name="Toggle sidebar", exact=True)
+                ).to_have_attribute("aria-expanded", "true")
 
         cache_card = cache_page.locator("aside .browser-session-status-card")
         browser_card = browser_page.locator(

@@ -1,4 +1,4 @@
-<!-- Code version: v1.74.3-codex.0 -->
+<!-- Code version: v1.75.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.142.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.143.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.2-codex.1') }}">
@@ -804,7 +804,83 @@
                         </div>
                     </div>
                     {% elif filters.view == "text" and (text_page.session_detail or (not filters.session_view and text_page.items)) %}
-                    {% if text_page.items %}
+                    {% if text_page.items and not is_zhihu_text %}
+                    <div class="local-store-pagination-host browser-chat-list" aria-label="{{ ('Cached ' ~ (text_page.current_session.source|capitalize) ~ ' session messages') if text_page.session_detail else 'Cached messages' }}">
+                        {% for message in text_page.items %}
+                        {% set message_number = ((text_page.current_page - 1) * text_page.page_size) + loop.index %}
+                        {% set is_media_response = message.role == "assistant" and message.media_refs and message.content_text.lstrip().startswith("{") %}
+                        {% set show_media_previews = is_media_response and ('"size"' in message.content_text or '"n"' in message.content_text) %}
+                        {% set role_icon = namespace(filename="") %}
+                        {% if message.role == "assistant" %}
+                            {% for source in chat_history_sources %}
+                                {% if message.source == source.key %}{% set role_icon.filename = source.icon_filename %}{% endif %}
+                            {% endfor %}
+                        {% endif %}
+                        <article
+                            class="browser-chat-message browser-chat-message--{{ message.role }}"
+                            {% if text_page.session_detail %}data-chat-session-id="{{ text_page.current_session.stable_id }}" {% endif %}data-chat-message-id="{{ message.stable_id }}"
+                            aria-labelledby="browser_chat_message_role_{{ message.stable_id }}"
+                        >
+                            <header class="browser-chat-message-header">
+                                <div class="browser-chat-message-identity">
+                                    {% if role_icon.filename %}
+                                    <span class="browser-chat-role-mark" aria-hidden="true">
+                                        <img class="browser-chat-role-icon" src="{{ url_for('static', filename=role_icon.filename) }}" alt="">
+                                    </span>
+                                    {% endif %}
+                                    <span class="browser-chat-message-role browser-chat-message-role-{{ message.role }}" id="browser_chat_message_role_{{ message.stable_id }}">{{ message.author_label }}</span>
+                                    <span class="browser-chat-message-number">#{{ message_number }}</span>
+                                    {% if not text_page.session_detail and message.conversation_title %}
+                                    {% if message.conversation_url %}
+                                    <a class="browser-chat-message-title" lang="zh-CN" href="{{ message.conversation_url }}" target="_blank" rel="noopener noreferrer">{{ message.conversation_title }}</a>
+                                    {% else %}
+                                    <span class="browser-chat-message-title" lang="zh-CN">{{ message.conversation_title }}</span>
+                                    {% endif %}
+                                    {% endif %}
+                                </div>
+                                <div class="browser-chat-message-meta">
+                                    {{ render_browser_message_time(message.last_seen_at) }}
+                                {% if message.role == "user" %}
+                                    {% set message_prompt_key = prompt_pointer_key(message.source, message.conversation_id, message.message_key) %}
+                                    <div class="browser-session-message-actions">
+                                        <button
+                                            type="button"
+                                            class="browser-prompt-add-button{% if message_prompt_key in saved_prompt_keys %} is-added{% endif %}"
+                                            data-prompt-add
+                                            data-prompt-source="{{ message.source }}"
+                                            data-prompt-conversation-id="{{ message.conversation_id }}"
+                                            data-prompt-message-key="{{ message.message_key }}"
+                                            aria-label="{{ 'Added as prompt' if message_prompt_key in saved_prompt_keys else 'Add as prompt' }}"
+                                            title="{{ 'Added as prompt' if message_prompt_key in saved_prompt_keys else 'Add as prompt' }}"
+                                            {% if message_prompt_key in saved_prompt_keys %}disabled{% endif %}
+                                        ><span class="icon browser-prompt-add-icon" aria-hidden="true"></span><span class="browser-prompt-add-feedback" data-prompt-add-feedback aria-live="polite"></span></button>
+                                    </div>
+                                {% endif %}
+                                </div>
+                            </header>
+                            {% if not is_media_response %}
+                            <div
+                                class="browser-session-table-message browser-chat-message-content"
+                                id="browser_session_message_{{ message.stable_id }}"
+                                lang="zh-CN"
+                                data-browser-session-message-source
+                            >{{ render_cached_message(message.content_text, message.content_html) }}</div>
+                            {% endif %}
+                            {{ render_browser_media_previews(message.media_refs if show_media_previews else []) }}
+                            {% if message.source_links or (message.conversation_url and not text_page.session_detail) %}
+                            <footer class="browser-chat-message-links" aria-label="Sources for message {{ message_number }}">
+                                {% for source_link in message.source_links %}
+                                <a class="browser-chat-message-link" href="{{ source_link }}" target="_blank" rel="noopener noreferrer" title="{{ source_link }}" aria-label="Open source link {{ loop.index }}">Source {{ loop.index }}</a>
+                                {% endfor %}
+                                {% if message.conversation_url and not text_page.session_detail %}
+                                <a class="browser-chat-message-link" href="{{ message.conversation_url }}" target="_blank" rel="noopener noreferrer">Open session</a>
+                                {% endif %}
+                            </footer>
+                            {% endif %}
+                        </article>
+                        {% endfor %}
+                    </div>
+                    {% elif text_page.items %}
                     <div class="events-table-shell scrollable-data-table-shell local-store-pagination-host browser-session-table-shell browser-session-detail-shell">
                         <table class="events-table scrollable-data-table browser-session-table browser-session-detail-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" data-table-header aria-label="Cached message headings">
                             <thead>

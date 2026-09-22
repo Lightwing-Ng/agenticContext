@@ -1,4 +1,4 @@
-/* Code version: v2.142.0-codex.0 */
+/* Code version: v2.143.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -7933,6 +7933,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-session-table-message-shell:hover .browser-prompt-add-button,
 .browser-session-table-message-shell:focus-within .browser-prompt-add-button,
+.browser-chat-message:hover .browser-prompt-add-button,
+.browser-chat-message:focus-within .browser-prompt-add-button,
 .browser-prompt-add-button:focus-visible {
     opacity: 1;
     pointer-events: auto;
@@ -8868,6 +8870,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-chat-list {
     display: grid;
+    grid-auto-rows: max-content;
+    align-content: start;
     gap: 12px;
     min-width: 0;
 }
@@ -9019,6 +9023,48 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-chat-message-link:focus-visible {
     background: var(--accent-surface-muted);
     color: var(--accent-text-hover);
+}
+
+.browser-chat-message-identity > .browser-chat-role-mark {
+    flex: 0 0 auto;
+}
+
+.browser-chat-message-number {
+    color: var(--theme-muted);
+    font-size: var(--font-ui-xs);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+
+.browser-chat-message-header .browser-session-message-time {
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    color: var(--theme-muted);
+    font-size: var(--font-ui-xs);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.35;
+    white-space: nowrap;
+}
+
+.browser-chat-message--user {
+    background: color-mix(in srgb, var(--accent-surface-muted) 55%, var(--workspace-article-background));
+}
+
+.browser-chat-message-meta {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.browser-chat-message-meta > .browser-session-message-actions {
+    min-height: 0;
+}
+
+.browser-chat-message-meta .browser-prompt-add-button {
+    margin: 0;
 }
 
 .browser-chat-message-media-icon {
@@ -10742,7 +10788,7 @@ dialog.browser-dialog:not([open]) {
         flex-direction: column;
     }
 
-    .browser-chat-message-header time {
+    .browser-chat-message-header .browser-chat-message-meta {
         align-self: flex-start;
     }
 
