@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.78.0-codex.0
+Code version: v1.79.0-codex.0
 """
 
 import hashlib
@@ -435,6 +435,22 @@ def test_settings_directory_picker_uses_the_folder_icon() -> None:
     assert 'mask: url("/static/images/folder.fill.svg") center/contain no-repeat;' in stylesheet
 
 
+def test_settings_directory_browser_has_one_bounded_scroll_owner() -> None:
+    """Keep the local folder dialog responsive without nested page scrolling."""
+    stylesheet = _stylesheet()
+    dialog_start = stylesheet.index(".settings-directory-browser-dialog {")
+    dialog_rule = stylesheet[dialog_start:stylesheet.index("\n}", dialog_start)]
+    list_start = stylesheet.index(".settings-directory-browser-list-shell {")
+    list_rule = stylesheet[list_start:stylesheet.index("\n}", list_start)]
+
+    assert "max-height: min(720px, calc(var(--viewport-block-size) - 32px));" in dialog_rule
+    assert "overflow: hidden;" in dialog_rule
+    assert "overflow-y: auto;" in list_rule
+    assert "overscroll-behavior: contain;" in list_rule
+    assert "width: min(calc(100% - 20px), 720px);" in stylesheet
+    assert 'mask: url("/static/images/folder.fill.svg") center/contain no-repeat;' in stylesheet
+
+
 def test_cache_status_message_hangs_under_the_account_label() -> None:
     """Keep wrapped readiness copy aligned after the leading status icon."""
     stylesheet = _stylesheet()
@@ -501,6 +517,8 @@ def test_settings_action_packages_reuse_the_sibling_composite_card() -> None:
         ".settings-action-package-copy {",
         "display: contents;",
         ".settings-action-package-live-marker {",
+        "--settings-action-package-live-marker-duration: var(--live-marker-duration);",
+        "@keyframes live-marker-breath {",
         ".settings-action-package-form {",
         "justify-self: end;",
         ".settings-action-package:has(.settings-service-name) {",
@@ -512,8 +530,6 @@ def test_settings_action_packages_reuse_the_sibling_composite_card() -> None:
     )
     for fragment in expected_fragments:
         assert fragment in stylesheet
-
-    assert "settings-action-package-live-breath" not in stylesheet
 
     inline_button_start = stylesheet.index(".settings-inline-button-primary {")
     inline_button_rule = stylesheet[
@@ -772,18 +788,26 @@ def test_sidebar_titles_reuse_sibling_hero_tokens() -> None:
     assert ".hero::after" not in stylesheet
 
 
-def test_cache_source_heading_uses_the_shared_picker_and_static_status_marker() -> None:
-    """Keep the cache heading aligned while status decoration remains static."""
+def test_cache_source_heading_uses_the_shared_picker_and_live_marker() -> None:
+    """Keep the cache heading aligned while live status uses the shared marker."""
     stylesheet = _stylesheet()
 
     expected_tokens = (
-        "--cache-phase-live-marker-size: 6px;",
+        "--live-marker-core-size: 6px;",
+        "--live-marker-inner-ring-size: 16px;",
+        "--live-marker-outer-ring-size: 24px;",
+        "--live-marker-inner-start-scale: 0.375;",
+        "--live-marker-outer-start-scale: 0.25;",
+        "--live-marker-duration: 1.8s;",
+        "--live-marker-stagger: 0.9s;",
+        "--cache-phase-live-marker-size: var(--live-marker-core-size);",
         "--cache-phase-live-marker-color: var(--theme-accent-positive);",
         ".section-heading > .cache-source-switcher-combobox {",
         "flex: 1 1 auto;",
         ".cache-source-switcher-combobox.is-cache-source-menu-open .cache-source-switcher-dropdown {",
         ".cache-phase-live-marker {",
-        "0 0 0 4px color-mix(in srgb, var(--cache-phase-live-marker-color) 18%, transparent),",
+        "0 0 0 var(--live-marker-core-halo-size) color-mix(in srgb, var(--live-marker-color) 18%, transparent),",
+        "@keyframes live-marker-breath {",
     )
 
     for token in expected_tokens:
@@ -794,7 +818,6 @@ def test_cache_source_heading_uses_the_shared_picker_and_static_status_marker() 
         "agentActivityLiveBreathInner",
         "statusChipHeartbeat",
         "statusProgressIndeterminate",
-        "settings-action-package-live-breath",
         "cacheTrainingProgressPending",
     ):
         assert retired_motion not in stylesheet
@@ -2348,7 +2371,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-            "/* Code version: v2.138.0-codex.0 */",
+        "/* Code version: v2.140.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',

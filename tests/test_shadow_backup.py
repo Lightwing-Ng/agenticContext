@@ -1,76 +1,74 @@
 """Regression tests for the one-way shadow cloud backup.
 
-Code version: v1.2.2-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
-from unittest.mock import patch
 
 import pytest
 
 from app.core.config import CrawlConfig
 from app.core.job_lock import CacheTaskLock
 from app.core.shadow_backup import (
-    MACOS_DIRECTORY_PICKER_APPLESCRIPT,
+    SettingsDirectoryBrowserError,
     ShadowBackupError,
     ShadowBackupService,
-    choose_settings_directory,
+    browse_settings_directory,
     sync_shadow_backup,
 )
 
 
-def test_macos_directory_picker_uses_one_system_panel_without_activating_finder(
+def test_settings_directory_browser_lists_real_paths_and_symlink_state(tmp_path: Path) -> None:
+    root = tmp_path / "Folder browser"
+    empty = root / "空 目录 'quoted'"
+    target = root / "target"
+    empty.mkdir(parents=True)
+    target.mkdir()
+    (root / "not-a-folder.txt").write_text("content", encoding="utf-8")
+    link = root / "target link"
+    link.symlink_to(target, target_is_directory=True)
+    broken_link = root / "deleted link"
+    broken_link.symlink_to(root / "missing", target_is_directory=True)
+
+    listing = browse_settings_directory(root, fallback_path=tmp_path)
+
+    assert listing.path == root.resolve()
+    assert listing.parent == tmp_path.resolve()
+    assert [entry.name for entry in listing.directories] == [
+        "deleted link",
+        "target",
+        "target link",
+        "空 目录 'quoted'",
+    ]
+    entries = {entry.name: entry for entry in listing.directories}
+    assert entries["target link"].is_symlink is True
+    assert entries["target link"].path == target.resolve()
+    assert entries["deleted link"].accessible is False
+    assert "unavailable" in entries["deleted link"].reason
+    assert "not-a-folder.txt" not in entries
+
+
+def test_settings_directory_browser_recovers_missing_initial_path_to_existing_parent(
     tmp_path: Path,
 ) -> None:
-    selected_path = tmp_path / "selected"
-    selected_path.mkdir()
-    completed = subprocess.CompletedProcess(
-        args=[],
-        returncode=0,
-        stdout=f"{selected_path}\n",
-        stderr="",
+    root = tmp_path / "existing"
+    root.mkdir()
+
+    listing = browse_settings_directory(
+        root / "deleted" / "child",
+        fallback_path=tmp_path,
+        recover_invalid=True,
     )
 
-    with patch("app.core.shadow_backup.is_windows_host", return_value=False), patch(
-        "app.core.shadow_backup.subprocess.run",
-        return_value=completed,
-    ) as run:
-        result = choose_settings_directory(tmp_path, "Select project folder")
-
-    assert result == selected_path.resolve()
-    run.assert_called_once_with(
-        [
-            "/usr/bin/osascript",
-            "-e",
-            MACOS_DIRECTORY_PICKER_APPLESCRIPT,
-            "Select project folder",
-            tmp_path.as_posix(),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert MACOS_DIRECTORY_PICKER_APPLESCRIPT.count("choose folder") == 1
-    assert 'tell application "Finder"' not in MACOS_DIRECTORY_PICKER_APPLESCRIPT
-    assert "activate" not in MACOS_DIRECTORY_PICKER_APPLESCRIPT
+    assert listing.path == root.resolve()
+    assert listing.recovered_from.endswith("deleted/child")
 
 
-def test_macos_directory_picker_treats_user_cancel_as_no_selection(tmp_path: Path) -> None:
-    completed = subprocess.CompletedProcess(
-        args=[],
-        returncode=1,
-        stdout="",
-        stderr="execution error: User canceled. (-128)\n",
-    )
-
-    with patch("app.core.shadow_backup.is_windows_host", return_value=False), patch(
-        "app.core.shadow_backup.subprocess.run",
-        return_value=completed,
-    ):
-        assert choose_settings_directory(tmp_path, "Select project folder") is None
+def test_settings_directory_browser_rejects_relative_navigation(tmp_path: Path) -> None:
+    with pytest.raises(SettingsDirectoryBrowserError, match="absolute"):
+        browse_settings_directory(Path("relative/path"), fallback_path=tmp_path)
 
 
 def test_shadow_backup_copies_changes_and_optionally_mirrors_deletions(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.43.4-codex.0`
+Documentation version: `v1.44.0-codex.0`
 
 ## Runtime flow
 
@@ -63,6 +63,17 @@ app.web route blueprints
 
 Core modules must not import `app.web`, templates, or frontend JavaScript. A domain façade should
 export only the symbols needed by its caller and should not become a second implementation file.
+
+The shared Settings and Agent directory controls use a page-owned folder browser instead of a
+backend-native picker. `/api/settings/directory` accepts only registered directory-field identities,
+requires loopback after the global trusted-network and same-origin request guards, and returns one
+directory level: canonical current and parent paths, breadcrumbs, child-directory names, symlink
+state, and accessibility state. It reads no file content and performs no persistence. The client
+has one active dialog, aborts superseded or cancelled requests, rejects late responses by request
+generation, and applies a selected path only after the existing validation endpoint succeeds.
+That final field `change` remains the sole bridge into Settings persistence or Agent project
+switching, so browsing does not widen `WorkspaceAccess`. Public Gemini Tunnel routing admits none
+of these console paths.
 
 `tests/test_core_architecture.py` enforces these directions rather than a file layout. It scans
 `app/web` and `app/core` recursively, resolves relative imports to absolute module names, and checks

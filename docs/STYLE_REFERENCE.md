@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.14.0-codex.0`
+Documentation version: `v1.14.1-codex.0`
 
 ## Authority
 
@@ -171,6 +171,13 @@ card shadows, blur, translated controls, or focus rings must escape. Effect host
 uses the 48px effect bleed where needed. The browser content card and cache overview
 content are explicit data scrollports; local tables, answer panes, dropdowns, and
 media viewers may retain clipping only as their documented viewport.
+
+The product-specific local directory browser reuses the Workspace modal surface, Secondary and
+primary buttons, text-input material, folder asset, radii, typography, and color tokens. Its dialog
+is viewport-bounded and overflow-hidden; the folder list is its single vertical scroll owner.
+Breadcrumbs may scroll horizontally as path navigation, while the document and dialog do not.
+At 600 px and below, path controls become two rows and folder metadata wraps without changing
+selection semantics or introducing a positional selector.
 
 ## Component catalog alignment, 8 Sep 2026
 

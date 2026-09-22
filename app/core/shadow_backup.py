@@ -1,6 +1,6 @@
 """One-way shadow cloud backup for the local cache.
 
-Code version: v1.2.2-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import logging
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 from threading import RLock, Thread
 
@@ -29,6 +28,32 @@ SHADOW_BACKUP_RUNTIME_LOCK_NAME = ".cache_task.lock"
 
 class ShadowBackupError(RuntimeError):
     """Raised when a shadow backup cannot safely be completed."""
+
+
+class SettingsDirectoryBrowserError(RuntimeError):
+    """Raised when the local Settings directory browser cannot read a location."""
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsDirectoryEntry:
+    """Describe one child directory without reading any file content."""
+
+    name: str
+    path: Path
+    is_symlink: bool = False
+    accessible: bool = True
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsDirectoryListing:
+    """Represent one canonical directory and its immediate child directories."""
+
+    path: Path
+    parent: Path | None
+    breadcrumbs: tuple[tuple[str, Path], ...]
+    directories: tuple[SettingsDirectoryEntry, ...]
+    recovered_from: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,72 +145,83 @@ def sync_shadow_backup(
     )
 
 
-MACOS_DIRECTORY_PICKER_APPLESCRIPT = """
-on run argv
-    set pickerPrompt to item 1 of argv
-    set defaultPath to item 2 of argv
-    set selectedFolder to choose folder with prompt pickerPrompt default location POSIX file defaultPath
-    return POSIX path of selectedFolder
-end run
-""".strip()
+def browse_settings_directory(
+    requested_path: Path,
+    *,
+    fallback_path: Path,
+    recover_invalid: bool = False,
+) -> SettingsDirectoryListing:
+    """List one local directory for the in-page Settings folder browser.
 
-
-def choose_settings_directory(initial_path: Path, prompt: str) -> Path | None:
-    """Open the host-native folder picker and return the selected directory.
-
-    ``None`` represents a user-cancelled dialog. The app only invokes this from its
-    local Settings page, where the browser and filesystem belong to the same host.
+    The result contains directory names and canonical paths only. It never reads file
+    content, changes the selected Agent workspace, or widens workspace authorization.
     """
-    default_location = _nearest_existing_directory(initial_path)
-    if is_windows_host():
-        try:
-            from tkinter import Tk
-            from tkinter.filedialog import askdirectory
-        except ImportError as exc:
-            raise ShadowBackupError("Windows could not load its folder picker.") from exc
+    expanded = requested_path.expanduser()
+    recovered_from = ""
+    if not expanded.is_absolute():
+        if not recover_invalid:
+            raise SettingsDirectoryBrowserError("The directory path must be absolute.")
+        recovered_from = str(requested_path)
+        expanded = fallback_path.expanduser()
 
-        root = Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
+    try:
+        directory = _resolve_browsable_directory(expanded)
+    except SettingsDirectoryBrowserError:
+        if not recover_invalid:
+            raise
+        recovered_from = str(requested_path)
+        directory = _nearest_browsable_directory(expanded, fallback_path)
+
+    try:
+        children = tuple(directory.iterdir())
+    except PermissionError as exc:
+        raise SettingsDirectoryBrowserError("Permission denied for this directory.") from exc
+    except OSError as exc:
+        raise SettingsDirectoryBrowserError(str(exc)[:200]) from exc
+
+    entries: list[SettingsDirectoryEntry] = []
+    access_mode = os.R_OK | (0 if is_windows_host() else os.X_OK)
+    for child in children:
+        is_symlink = child.is_symlink()
         try:
-            selected_folder = askdirectory(
-                parent=root,
-                initialdir=str(default_location),
-                title=prompt,
+            resolved = child.resolve(strict=True)
+        except (OSError, RuntimeError):
+            if is_symlink:
+                entries.append(
+                    SettingsDirectoryEntry(
+                        name=child.name,
+                        path=child.absolute(),
+                        is_symlink=True,
+                        accessible=False,
+                        reason="The symbolic link target is unavailable.",
+                    )
+                )
+            continue
+        try:
+            is_directory = resolved.is_dir()
+        except OSError:
+            is_directory = False
+        if not is_directory:
+            continue
+        accessible = os.access(resolved, access_mode)
+        entries.append(
+            SettingsDirectoryEntry(
+                name=child.name,
+                path=resolved,
+                is_symlink=is_symlink,
+                accessible=accessible,
+                reason="" if accessible else "Permission denied.",
             )
-        finally:
-            root.destroy()
-        return Path(selected_folder).expanduser().resolve(strict=False) if selected_folder else None
+        )
 
-    completed = subprocess.run(
-        [
-            "/usr/bin/osascript",
-            "-e",
-            MACOS_DIRECTORY_PICKER_APPLESCRIPT,
-            prompt,
-            default_location.as_posix(),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode == 0:
-        selected_path = completed.stdout.strip()
-        if selected_path:
-            return Path(selected_path).expanduser().resolve(strict=False)
-        return None
-
-    error_text = (completed.stderr or "").strip()
-    if "User canceled" in error_text or "-128" in error_text:
-        return None
-    raise ShadowBackupError(error_text or "macOS could not open the folder picker.")
-
-
-def choose_shadow_backup_destination(initial_path: Path) -> Path | None:
-    """Open the native picker for the shadow backup destination."""
-    return choose_settings_directory(
-        initial_path,
-        "Select shadow cloud backup destination",
+    entries.sort(key=lambda item: (item.name.casefold(), item.name))
+    parent = None if directory.parent == directory else directory.parent
+    return SettingsDirectoryListing(
+        path=directory,
+        parent=parent,
+        breadcrumbs=_directory_breadcrumbs(directory),
+        directories=tuple(entries),
+        recovered_from=recovered_from,
     )
 
 
@@ -435,10 +471,50 @@ def _remove_cloud_only_entries(
     return deleted_files, deleted_directories
 
 
-def _nearest_existing_directory(path: Path) -> Path:
-    """Find a safe initial location for the native folder chooser."""
-    candidate = path.expanduser().resolve(strict=False)
-    for directory in (candidate, *candidate.parents):
-        if directory.is_dir():
-            return directory
-    return Path("/")
+def _resolve_browsable_directory(path: Path) -> Path:
+    """Resolve one existing, readable directory without guessing its identity."""
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise SettingsDirectoryBrowserError("The directory no longer exists.") from exc
+    except (OSError, RuntimeError) as exc:
+        raise SettingsDirectoryBrowserError(str(exc)[:200]) from exc
+    if not resolved.is_dir():
+        raise SettingsDirectoryBrowserError("The path is not a directory.")
+    access_mode = os.R_OK | (0 if is_windows_host() else os.X_OK)
+    if not os.access(resolved, access_mode):
+        raise SettingsDirectoryBrowserError("Permission denied for this directory.")
+    return resolved
+
+
+def _nearest_browsable_directory(path: Path, fallback_path: Path) -> Path:
+    """Recover an invalid initial path to its nearest readable existing parent."""
+    candidates: list[Path] = []
+    for starting_path in (path, fallback_path.expanduser(), Path.home(), Path.cwd()):
+        try:
+            candidate = starting_path.resolve(strict=False)
+        except (OSError, RuntimeError):
+            continue
+        candidates.extend((candidate, *candidate.parents))
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            return _resolve_browsable_directory(candidate)
+        except SettingsDirectoryBrowserError:
+            continue
+    raise SettingsDirectoryBrowserError("No readable parent directory is available.")
+
+
+def _directory_breadcrumbs(path: Path) -> tuple[tuple[str, Path], ...]:
+    """Build root-to-current path navigation without platform-specific parsing in JavaScript."""
+    directories = tuple(reversed((path, *path.parents)))
+    return tuple(
+        (
+            directory.name or directory.anchor or str(directory),
+            directory,
+        )
+        for directory in directories
+    )

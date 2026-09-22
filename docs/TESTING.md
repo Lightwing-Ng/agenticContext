@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.20.0-codex.0`
+Documentation version: `v1.21.0-codex.0`
 
 ## Supported commands
 
@@ -183,6 +183,28 @@ The ChatGPT and Gemini Tunnel onboarding UI runs in the disposable Chromium laye
 ```bash
 ./scripts/test.sh tests/test_agent_sessions_e2e.py -k "tunnel or connection_mode"
 ```
+
+The local project directory browser has a separate observable-behavior slice:
+
+```bash
+./scripts/test.sh \
+  tests/test_shadow_backup.py \
+  tests/test_web_app.py \
+  tests/test_style_tokens.py
+./scripts/test.sh tests/test_agent_sessions_e2e.py -k agent_directory_browser
+```
+
+The source and route cases cover real canonical paths, empty and Unicode folders, spaces and
+quotes, same-name-safe exact paths, valid and broken symlinks, invalid-path recovery, relative-path
+rejection, registered fields, and the loopback boundary. Disposable-browser cases cover desktop
+and 390 px narrow geometry, one-click dialog visibility, child and absolute-path navigation,
+selection plus the existing Agent preference save, cancellation without a project change, focus
+restoration, duplicate-click suppression, abort cleanup, and rejection of a simulated late
+response. Directory browsing intentionally has no fixed session timeout; cancellation owns request
+cleanup. These tests do not replace a macOS foreground-app acceptance: before handoff, an actual
+host browser must be foregrounded and checked for one-click dialog visibility, correct absolute
+path selection, cancellation, and no Terminal or Dock interaction. Run that acceptance on an
+isolated loopback service, never by restarting the user-owned 8666 service.
 
 It measures the rendered page at 1,280, 876, and 390 px wide, including a 420 px short viewport: the
 Agent workspace is the only content scrollport; the outer `Step 1` through `Step 4` markers align

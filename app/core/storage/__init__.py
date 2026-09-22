@@ -1,6 +1,6 @@
 """Durable local-resource boundary for catalogs, history, and backups."""
 
-# Code version: v1.2.1-codex.1
+# Code version: v1.3.0-codex.0
 
 from ..chat_history_browser import (
     attach_media_references,
@@ -25,10 +25,11 @@ from ..local_media_browser import (
 )
 from ..prompt_store import PromptPage, PromptStore, SavedPrompt, prompt_pointer_key
 from ..shadow_backup import (
+    SettingsDirectoryBrowserError,
+    SettingsDirectoryListing,
     ShadowBackupError,
     ShadowBackupService,
-    choose_settings_directory,
-    choose_shadow_backup_destination,
+    browse_settings_directory,
 )
 
 __all__ = [
@@ -36,12 +37,13 @@ __all__ = [
     "PromptPage",
     "PromptStore",
     "SavedPrompt",
+    "SettingsDirectoryBrowserError",
+    "SettingsDirectoryListing",
     "ShadowBackupError",
     "ShadowBackupService",
     "attach_media_references",
+    "browse_settings_directory",
     "build_chat_history_markdown",
-    "choose_settings_directory",
-    "choose_shadow_backup_destination",
     "DISPLAY_TIMEZONE",
     "file_manager_open_directory_command",
     "format_captured_at_label",

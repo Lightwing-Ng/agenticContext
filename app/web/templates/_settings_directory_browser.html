@@ -1,0 +1,54 @@
+<!-- Code version: v1.0.0-codex.0 -->
+<div
+    id="settings_directory_browser"
+    class="workspace-modal-overlay settings-directory-browser"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="settings_directory_browser_title"
+    aria-describedby="settings_directory_browser_copy"
+    data-settings-directory-browser
+    hidden
+>
+    <section class="workspace-modal-dialog settings-directory-browser-dialog">
+        <button
+            type="button"
+            class="workspace-modal-close settings-directory-browser-close"
+            data-directory-browser-close
+            aria-label="Cancel folder selection"
+        >
+            <span class="cache-wait-modal-close-icon" aria-hidden="true"></span>
+        </button>
+        <h2 id="settings_directory_browser_title" class="workspace-modal-title settings-directory-browser-title">Choose a folder</h2>
+        <p id="settings_directory_browser_copy" class="workspace-modal-copy settings-directory-browser-copy">Browse local folders, then choose the current folder.</p>
+
+        <nav class="settings-directory-breadcrumbs" data-directory-browser-breadcrumbs aria-label="Folder path"></nav>
+
+        <div class="settings-directory-path-controls">
+            <button type="button" class="secondary-button settings-directory-up" data-directory-browser-up>Up</button>
+            <label class="settings-directory-path-field">
+                <input
+                    type="text"
+                    class="text-input-control path-display-input"
+                    data-directory-browser-path
+                    aria-label="Absolute folder path"
+                    spellcheck="false"
+                    autocomplete="off"
+                >
+            </label>
+            <button type="button" class="secondary-button settings-directory-go" data-directory-browser-go>Go</button>
+        </div>
+
+        <div class="settings-directory-browser-list-shell" data-directory-browser-list-shell aria-busy="false">
+            <span class="suggestion-loading-spinner settings-directory-browser-spinner" data-directory-browser-spinner aria-hidden="true" hidden></span>
+            <div class="settings-directory-browser-list" data-directory-browser-list role="group" aria-label="Folders"></div>
+            <p class="settings-directory-browser-empty" data-directory-browser-empty hidden>This folder has no subfolders. You can still choose it.</p>
+        </div>
+
+        <p class="settings-directory-browser-status" data-directory-browser-status role="status" aria-live="polite" hidden></p>
+
+        <div class="settings-directory-browser-actions">
+            <button type="button" class="secondary-button settings-directory-browser-cancel" data-directory-browser-cancel>Cancel</button>
+            <button type="button" class="settings-inline-button settings-inline-button-primary" data-directory-browser-select>Select current folder</button>
+        </div>
+    </section>
+</div>

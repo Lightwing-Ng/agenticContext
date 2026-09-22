@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.0 */
+/* Code version: v1.1.0-codex.0 */
 
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
@@ -36,6 +36,33 @@ test("integer and nonnumeric values keep their exact text", () => {
     assert.deepEqual(
         Array.from(numericDisplay.getNumericDisplayParts("No session"), part => ({...part})),
         [{className: "workspace-metric-value-major", text: "No session"}],
+    );
+});
+
+test("money display follows explicit minor-unit metadata", () => {
+    assert.equal(numericDisplay.getCurrencyMinorUnitDigits("RMB"), 2);
+    assert.equal(numericDisplay.getCurrencyMinorUnitDigits("USD"), 2);
+    assert.equal(numericDisplay.getCurrencyMinorUnitDigits("JPY"), 0);
+    assert.deepEqual(
+        Array.from(
+            numericDisplay.getMonetaryDisplayParts("RMB 5,440.00", "CNY"),
+            part => ({...part}),
+        ),
+        [
+            {className: "workspace-metric-value-major", text: "RMB 5,440"},
+            {className: "workspace-metric-value-minor", text: ".00"},
+        ],
+    );
+    assert.deepEqual(
+        Array.from(
+            numericDisplay.getMonetaryDisplayParts("JPY 5,440.00", "JPY"),
+            part => ({...part}),
+        ),
+        [{className: "workspace-metric-value-major", text: "JPY 5,440.00"}],
+    );
+    assert.deepEqual(
+        Array.from(numericDisplay.getNumericDisplayParts("JPY 5,440.00"), part => ({...part})),
+        [{className: "workspace-metric-value-major", text: "JPY 5,440.00"}],
     );
 });
 
@@ -86,4 +113,51 @@ test("renderer preserves one complete accessible value while hiding visual fragm
     assert.equal(element.attributes["aria-label"], "30.51%");
     assert.equal(element.children.map(child => child.textContent).join(""), "30.51%");
     assert.ok(element.children.every(child => child.attributes["aria-hidden"] === "true"));
+});
+
+test("renderer changes currency mode without losing the accessible value", () => {
+    class FakeElement {
+        constructor() {
+            this.attributes = {};
+            this.children = [];
+            this.dataset = {};
+        }
+
+        replaceChildren(fragment) {
+            this.children = fragment.children;
+        }
+
+        setAttribute(name, value) {
+            this.attributes[name] = value;
+        }
+    }
+
+    const fakeDocument = {
+        readyState: "loading",
+        addEventListener() {},
+        createDocumentFragment() {
+            return {
+                children: [],
+                append(element) { this.children.push(element); },
+            };
+        },
+        createElement() {
+            const element = new FakeElement();
+            element.setAttribute = FakeElement.prototype.setAttribute;
+            return element;
+        },
+    };
+    const domContext = {document: fakeDocument, Element: FakeElement};
+    vm.runInNewContext(source, domContext);
+    const element = new FakeElement();
+
+    domContext.SHARED_NUMERIC_DISPLAY.renderNumericDisplayElement(
+        element,
+        "JPY 5,440.00",
+        "JPY",
+    );
+
+    assert.equal(element.attributes["aria-label"], "JPY 5,440.00");
+    assert.equal(element.children.length, 1);
+    assert.equal(element.children[0].textContent, "JPY 5,440.00");
 });

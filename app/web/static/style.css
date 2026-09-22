@@ -1,4 +1,4 @@
-/* Code version: v2.138.0-codex.0 */
+/* Code version: v2.140.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -383,7 +383,19 @@
     --settings-form-shell-max-width: var(--layout-content-width);
     --settings-form-control-min-width: 220px;
     --settings-form-control-max-width: var(--layout-control-width);
-    --cache-phase-live-marker-size: 6px;
+    --live-marker-core-size: 6px;
+    --live-marker-inner-ring-size: 16px;
+    --live-marker-outer-ring-size: 24px;
+    --live-marker-ring-border-width: 2px;
+    --live-marker-inner-start-scale: 0.375;
+    --live-marker-outer-start-scale: 0.25;
+    --live-marker-inner-start-opacity: 0.52;
+    --live-marker-outer-start-opacity: 0.72;
+    --live-marker-core-halo-size: 2px;
+    --live-marker-color: var(--theme-accent-positive);
+    --live-marker-duration: 1.8s;
+    --live-marker-stagger: 0.9s;
+    --cache-phase-live-marker-size: var(--live-marker-core-size);
     --cache-phase-live-marker-color: var(--theme-accent-positive);
     --workspace-title-rail-control-height: var(--settings-round-icon-button-size);
     --workspace-title-rail-pad-block-start: var(--page-edge-pad);
@@ -1122,16 +1134,98 @@ h2 {
     transform: rotate(180deg);
 }
 
-.cache-phase-live-marker {
+.live-marker,
+.cache-phase-live-marker,
+.settings-action-package-live-marker {
     position: relative;
-    flex: 0 0 var(--cache-phase-live-marker-size);
-    width: var(--cache-phase-live-marker-size);
-    height: var(--cache-phase-live-marker-size);
-    border-radius: 50%;
-    background: var(--cache-phase-live-marker-color);
+    display: inline-block;
+    flex: 0 0 var(--live-marker-core-size);
+    width: var(--live-marker-core-size);
+    height: var(--live-marker-core-size);
+    border-radius: var(--radius-pill);
+    background: var(--live-marker-color);
     box-shadow:
-        0 0 0 4px color-mix(in srgb, var(--cache-phase-live-marker-color) 18%, transparent),
-        0 0 10px color-mix(in srgb, var(--cache-phase-live-marker-color) 42%, transparent);
+        0 0 0 var(--live-marker-core-halo-size) color-mix(in srgb, var(--live-marker-color) 18%, transparent),
+        0 0 8px color-mix(in srgb, var(--live-marker-color) 34%, transparent);
+}
+
+.cache-phase-live-marker {
+    --live-marker-color: var(--cache-phase-live-marker-color);
+}
+
+:is(.live-marker, .cache-phase-live-marker, .settings-action-package-live-marker)::before,
+:is(.live-marker, .cache-phase-live-marker, .settings-action-package-live-marker)::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    box-sizing: border-box;
+    border: var(--live-marker-ring-border-width) solid color-mix(in srgb, var(--live-marker-color) 78%, transparent);
+    border-radius: var(--radius-pill);
+    background: transparent;
+    content: "";
+    opacity: var(--live-marker-start-opacity);
+    pointer-events: none;
+    transform: translate(-50%, -50%) scale(var(--live-marker-start-scale));
+    animation: live-marker-breath var(--live-marker-duration) var(--motion-emphasized) infinite;
+}
+
+:is(.live-marker, .cache-phase-live-marker, .settings-action-package-live-marker)::before {
+    --live-marker-start-opacity: var(--live-marker-outer-start-opacity);
+    --live-marker-start-scale: var(--live-marker-outer-start-scale);
+    width: var(--live-marker-outer-ring-size);
+    height: var(--live-marker-outer-ring-size);
+}
+
+:is(.live-marker, .cache-phase-live-marker, .settings-action-package-live-marker)::after {
+    --live-marker-start-opacity: var(--live-marker-inner-start-opacity);
+    --live-marker-start-scale: var(--live-marker-inner-start-scale);
+    width: var(--live-marker-inner-ring-size);
+    height: var(--live-marker-inner-ring-size);
+    animation-delay: var(--live-marker-stagger);
+}
+
+.cache-phase-live-marker[data-phase]::before,
+.cache-phase-live-marker[data-phase]::after {
+    content: none;
+    animation: none;
+}
+
+.cache-phase-live-marker:is([data-phase="running"], [data-phase="collecting"])::before,
+.cache-phase-live-marker:is([data-phase="running"], [data-phase="collecting"])::after {
+    content: "";
+    animation: live-marker-breath var(--live-marker-duration) var(--motion-emphasized) infinite;
+}
+
+.cache-phase-live-marker:is([data-phase="running"], [data-phase="collecting"])::after {
+    animation-delay: var(--live-marker-stagger);
+}
+
+@keyframes live-marker-breath {
+    0% {
+        opacity: var(--live-marker-start-opacity);
+        transform: translate(-50%, -50%) scale(var(--live-marker-start-scale));
+    }
+
+    100% {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(1);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :is(.live-marker, .cache-phase-live-marker, .settings-action-package-live-marker)::before,
+    :is(.live-marker, .cache-phase-live-marker, .settings-action-package-live-marker)::after {
+        animation: none !important;
+        transform: translate(-50%, -50%) scale(1);
+    }
+
+    :is(.live-marker, .cache-phase-live-marker, .settings-action-package-live-marker)::before {
+        opacity: 0;
+    }
+
+    :is(.live-marker, .cache-phase-live-marker, .settings-action-package-live-marker)::after {
+        opacity: 0.42;
+    }
 }
 
 .cache-phase-live-marker:is([data-phase="running"], [data-phase="collecting"]) {
@@ -5784,8 +5878,9 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     --settings-action-package-background: var(--frosted-glass-background);
     --settings-action-package-border: var(--frosted-glass-border);
     --settings-action-package-max-width: var(--layout-content-width);
-    --settings-action-package-live-marker-size: 8px;
-    --settings-action-package-live-marker-color: var(--theme-accent-positive);
+    --settings-action-package-live-marker-size: var(--live-marker-core-size);
+    --settings-action-package-live-marker-color: var(--live-marker-color);
+    --settings-action-package-live-marker-duration: var(--live-marker-duration);
     --settings-action-button-radius: var(--radius-pill);
     --settings-action-button-pad-block: 0px;
     --settings-action-button-pad-inline: 18px;
@@ -5945,6 +6040,273 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     line-height: 1.45;
     text-align: left;
     overflow-wrap: anywhere;
+}
+
+body.has-settings-directory-browser {
+    overflow: hidden;
+}
+
+.settings-directory-browser-dialog {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto;
+    gap: 12px;
+    width: min(720px, calc(100vw - 32px));
+    max-height: min(720px, calc(var(--viewport-block-size) - 32px));
+    padding: 20px;
+    overflow: hidden;
+}
+
+.settings-directory-browser-title,
+.settings-directory-browser-copy {
+    grid-column: 1;
+    min-width: 0;
+    padding-inline-start: calc(var(--workspace-modal-close-size) + 10px);
+}
+
+.settings-directory-browser-title {
+    grid-row: 1;
+}
+
+.settings-directory-browser-copy {
+    grid-row: 2;
+}
+
+.settings-directory-breadcrumbs {
+    grid-row: 3;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    min-height: 30px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: var(--glass-chip-border);
+    border-radius: var(--radius-pill);
+    background: var(--glass-surface-background-soft);
+    padding: 3px;
+}
+
+.settings-directory-breadcrumb {
+    position: relative;
+    flex: 0 0 auto;
+    min-height: 24px;
+    padding: 3px 10px;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--font-family-base);
+    font-size: var(--font-ui-sm);
+    cursor: pointer;
+}
+
+.settings-directory-breadcrumb + .settings-directory-breadcrumb {
+    margin-inline-start: 8px;
+}
+
+.settings-directory-breadcrumb + .settings-directory-breadcrumb::before {
+    content: "/";
+    position: absolute;
+    inset-inline-start: -7px;
+    color: var(--muted);
+}
+
+.settings-directory-breadcrumb:hover,
+.settings-directory-breadcrumb:focus-visible,
+.settings-directory-breadcrumb[aria-current="location"] {
+    outline: none;
+    background: var(--glass-chip-background-hover);
+    color: var(--accent-text);
+}
+
+.settings-directory-path-controls {
+    grid-row: 4;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.settings-directory-path-field {
+    min-width: 0;
+}
+
+.settings-directory-path-field input {
+    width: 100%;
+    min-width: 0;
+}
+
+.settings-directory-up,
+.settings-directory-go {
+    min-height: 36px;
+    margin: 0;
+}
+
+.settings-directory-browser-list-shell {
+    position: relative;
+    grid-row: 5;
+    min-height: min(320px, 42vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: var(--frosted-glass-border);
+    border-radius: var(--radius-soft);
+    background: var(--glass-surface-background-soft);
+}
+
+.settings-directory-browser-list {
+    display: grid;
+    align-content: start;
+    min-width: 0;
+    padding: 6px;
+}
+
+.settings-directory-browser-entry {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 42px;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: var(--radius-soft);
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font-family-base);
+    font-size: var(--font-form-control);
+    text-align: start;
+    cursor: pointer;
+}
+
+.settings-directory-browser-entry:hover,
+.settings-directory-browser-entry:focus-visible {
+    outline: none;
+    background: var(--glass-chip-background-hover);
+    box-shadow: var(--frosted-glass-shadow-active);
+}
+
+.settings-directory-browser-entry:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+    box-shadow: none;
+}
+
+.settings-directory-browser-entry-icon {
+    width: 20px;
+    height: 20px;
+    background-color: var(--accent-fill);
+    mask: url("/static/images/folder.fill.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/folder.fill.svg") center/contain no-repeat;
+}
+
+.settings-directory-browser-entry-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-directory-browser-entry-detail {
+    color: var(--muted);
+    font-size: var(--font-ui-sm);
+    white-space: nowrap;
+}
+
+.settings-directory-browser-empty {
+    margin: 0;
+    padding: 24px;
+    color: var(--muted);
+    font-size: var(--font-form-label);
+    text-align: center;
+}
+
+.settings-directory-browser-empty[hidden] {
+    display: none;
+}
+
+.settings-directory-browser-spinner {
+    position: absolute;
+    inset: calc(50% - 14px) auto auto calc(50% - 14px);
+    z-index: var(--layer-control-affordance);
+    --loading-spinner-size: 28px;
+}
+
+.settings-directory-browser-list-shell[aria-busy="true"] .settings-directory-browser-list,
+.settings-directory-browser-list-shell[aria-busy="true"] .settings-directory-browser-empty {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+.settings-directory-browser-status {
+    grid-row: 6;
+    min-height: 20px;
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--font-ui-sm);
+    line-height: 1.4;
+}
+
+.settings-directory-browser-status.field-status--error {
+    color: var(--theme-error-strong);
+}
+
+.settings-directory-browser-status[hidden] {
+    visibility: hidden;
+}
+
+.settings-directory-browser-actions {
+    grid-row: 7;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+}
+
+.settings-directory-browser-actions > button {
+    margin: 0;
+}
+
+@media (max-width: 600px) {
+    .settings-directory-browser-dialog {
+        width: min(calc(100% - 20px), 720px);
+        max-height: calc(var(--viewport-block-size) - 20px);
+        padding: 16px;
+    }
+
+    .settings-directory-path-controls {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .settings-directory-path-field {
+        grid-column: 1 / -1;
+        grid-row: 1;
+    }
+
+    .settings-directory-up,
+    .settings-directory-go {
+        grid-row: 2;
+    }
+
+    .settings-directory-go {
+        justify-self: end;
+    }
+
+    .settings-directory-browser-list-shell {
+        min-height: min(280px, 38vh);
+    }
+
+    .settings-directory-browser-entry {
+        grid-template-columns: 24px minmax(0, 1fr);
+    }
+
+    .settings-directory-browser-entry-detail {
+        grid-column: 2;
+        white-space: normal;
+    }
+
+    .settings-directory-browser-actions {
+        flex-wrap: wrap;
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -10818,12 +11180,7 @@ dialog.browser-dialog:not([open]) {
 .settings-action-package-live-marker {
     position: absolute;
     top: 50%;
-    left: calc(var(--settings-action-package-live-marker-size) * -1.25);
-    width: var(--settings-action-package-live-marker-size);
-    height: var(--settings-action-package-live-marker-size);
-    border-radius: 50%;
-    background: var(--settings-action-package-live-marker-color);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--settings-action-package-live-marker-color) 18%, transparent);
+    left: calc(var(--live-marker-core-size) * -1.25);
     transform: translateY(-50%);
 }
 

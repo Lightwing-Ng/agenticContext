@@ -1,4 +1,4 @@
-"""Shared component annotation regressions. Code version: v1.4.0-codex.0."""
+"""Shared component annotation regressions. Code version: v1.5.0-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -242,6 +242,25 @@ def test_shared_primitive_catalog_geometry_and_states(
         assert metric.locator(":scope > span").evaluate_all(
             "nodes => nodes.every(node => node.getAttribute('aria-hidden') === 'true')"
         )
+
+        monetary_value = page.locator(
+            '[data-style-token-demo="scrollable-data-table"] '
+            'span[data-numeric-display-value][data-currency-code="USD"]'
+        )
+        expect(monetary_value).to_have_attribute("aria-label", "$7,089.68")
+        expect(
+            monetary_value.locator(".workspace-metric-value-major")
+        ).to_have_text("$7,089")
+        expect(
+            monetary_value.locator(".workspace-metric-value-minor")
+        ).to_have_text(".68")
+        monetary_sizes = monetary_value.evaluate(
+            """node => ({
+                major: parseFloat(getComputedStyle(node.querySelector('.workspace-metric-value-major')).fontSize),
+                minor: parseFloat(getComputedStyle(node.querySelector('.workspace-metric-value-minor')).fontSize),
+            })"""
+        )
+        assert abs(monetary_sizes["minor"] / monetary_sizes["major"] - 0.76) < 0.01
 
         table_shell = page.locator(".style-token-table-demo-surface")
         table_geometry = table_shell.evaluate(

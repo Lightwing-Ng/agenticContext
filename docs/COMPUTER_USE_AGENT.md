@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.76.14-codex.0`
+Documentation version: `v3.76.15-codex.0`
 
 ## Purpose
 
@@ -146,6 +146,12 @@ keeps only the latest event visible and shows the shared green breathing live
 marker beside the heading. Polling updates that current event without reopening
 history; a new run can open history again. Completed runs hide the current-only
 preview, while their history remains available on demand.
+
+The live marker uses the three-project contract: a stable `6px` core, `16px`
+inner ring, and `24px` outer ring. Both rings begin at a `6px` visual diameter,
+then expand and fade over the existing `1.8s` period with a `0.9s` inner-ring
+delay. Reduced Motion replaces the animation with one static inner ring. Static
+completion, failure, and non-running Cache phases do not use the breathing rings.
 
 Completed events use the local `checkmark.circle.svg` mask with
 `--theme-success-strong`; running events reuse `cache-phase-live-marker` in the
@@ -1171,11 +1177,9 @@ card reuses the control border token; its 18px glyph stays centered in that slot
 The Dock is outside this form and has no changed selector or markup. Live
 before/after DOM checks confirmed identical Dock position and size.
 
-Activity live indicators now match Worthward Investment's 6px glowing core,
-20px outer ring, 14px inner ring, 1.8-second period, and 0.9-second inner delay.
-The inner ring starts at scale 0.48 and the outer at 0.36; both expand and fade.
-The Activity panel allows the halo to escape. Reduced-motion behavior is retained.
-The shared Cache marker outside the Agent response card remains unchanged.
+That historical implementation used Worthward Investment's earlier `6px` core,
+`20px` outer ring, and `14px` inner ring. It was superseded on 22 Sep 2026 by
+the shared `6px`/`16px`/`24px` contract documented in Activity history above.
 
 Validation: 225 Style/Web tests and 539 subtests passed; four Activity motion
 cases and two sidebar/project-icon cases passed at desktop and narrow widths.

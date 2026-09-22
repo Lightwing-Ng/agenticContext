@@ -260,7 +260,7 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert "data-table-header" in html
     assert "data-table-scroll" in html
     assert "data-table-body" in html
-    assert "numeric-display-v1.0.0-codex.0" in html
+    assert "numeric-display-v1.1.0-codex.0" in html
     assert "scrollable-data-table-v1.0.0-codex.0" in html
     assert 'data-style-token-card="style-token-color-and-status"' not in html
     assert 'data-style-token-card="style-token-layout-and-motion"' not in html

@@ -6,7 +6,7 @@ in ``app.web.form_config``; this module owns validation of what a submitted form
 for Agent settings, shadow backup, and local directories.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.1.1-codex.0
 
 from __future__ import annotations
 
@@ -37,9 +37,9 @@ from app.core.foundation import (
     get_log_file_path,
 )
 from app.core.storage import (
+    SettingsDirectoryBrowserError,
     ShadowBackupError,
-    choose_settings_directory,
-    choose_shadow_backup_destination,
+    browse_settings_directory,
 )
 from app.web.config_store import SavedConfigStore
 from app.web.form_config import parse_form_config
@@ -155,69 +155,73 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
 
     @blueprint.post("/api/settings/shadow-backup/destination")
     def choose_shadow_backup_destination_route():
+        """Fail closed for cached clients that still call the retired native picker."""
         if not is_loopback_address(request.remote_addr):
-            return jsonify({"error": "The folder picker is only available on the local host."}), 403
-
-        payload = request.get_json(silent=True) or {}
-        requested_initial_path = payload.get("initial_path")
-        initial_value = (
-            requested_initial_path.strip()
-            if isinstance(requested_initial_path, str)
-            else str(context.config_store.config.shadow_backup_destination)
+            return jsonify({"error": "Directory browsing is only available on the local host."}), 403
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "The native folder picker has been retired. "
+                        "Reload this page to use the in-page directory browser."
+                    )
+                }
+            ),
+            410,
         )
-        try:
-            selected_path = choose_shadow_backup_destination(
-                Path(initial_value or str(context.config_store.config.shadow_backup_destination))
-            )
-        except ShadowBackupError as exc:
-            return jsonify({"error": str(exc)}), 500
-
-        if selected_path is None:
-            return jsonify({"cancelled": True})
-        return jsonify({"destination": str(selected_path)})
 
     @blueprint.post("/api/settings/directory")
     def choose_settings_directory_route():
+        """Return one level of local directories for the in-page folder browser."""
         if not is_loopback_address(request.remote_addr):
-            return jsonify({"error": "The folder picker is only available on the local host."}), 403
+            return jsonify({"error": "Directory browsing is only available on the local host."}), 403
 
         directory_options = {
-            "chrome_user_data_dir": (
-                context.config_store.config.chrome_user_data_dir,
-                "Select Chrome user data directory",
-            ),
-            "shadow_backup_destination": (
-                context.config_store.config.shadow_backup_destination,
-                "Select shadow cloud backup destination",
-            ),
-            "agent_allowed_root": (
-                Path(context.computer_use_settings.settings.workspace_path),
-                "Select local Agent project folder",
-            ),
+            "chrome_user_data_dir": context.config_store.config.chrome_user_data_dir,
+            "shadow_backup_destination": context.config_store.config.shadow_backup_destination,
+            "agent_allowed_root": Path(context.computer_use_settings.settings.workspace_path),
         }
         payload = request.get_json(silent=True) or {}
         field_name = payload.get("field")
         if field_name not in directory_options:
             return jsonify({"error": "Unknown Settings directory field."}), 400
 
-        default_path, picker_prompt = directory_options[field_name]
-        requested_initial_path = payload.get("initial_path")
-        initial_value = (
-            requested_initial_path.strip()
-            if isinstance(requested_initial_path, str)
-            else str(default_path)
-        )
+        default_path = Path(directory_options[field_name])
+        requested_path = payload.get("path")
+        path_value = requested_path.strip() if isinstance(requested_path, str) else str(default_path)
+        if len(path_value) > 4_096:
+            return jsonify({"error": "The directory path is too long."}), 400
         try:
-            selected_path = choose_settings_directory(
-                Path(initial_value or str(default_path)),
-                picker_prompt,
+            listing = browse_settings_directory(
+                Path(path_value or str(default_path)),
+                fallback_path=default_path,
+                recover_invalid=payload.get("recover_invalid") is True,
             )
-        except ShadowBackupError as exc:
-            return jsonify({"error": str(exc)}), 500
+        except SettingsDirectoryBrowserError as exc:
+            return jsonify({"error": str(exc)}), 400
 
-        if selected_path is None:
-            return jsonify({"cancelled": True})
-        return jsonify({"directory": str(selected_path)})
+        body = {
+            "current_path": str(listing.path),
+            "parent_path": str(listing.parent) if listing.parent is not None else "",
+            "breadcrumbs": [
+                {"label": label, "path": str(path)}
+                for label, path in listing.breadcrumbs
+            ],
+            "directories": [
+                {
+                    "name": entry.name,
+                    "path": str(entry.path),
+                    "is_symlink": entry.is_symlink,
+                    "accessible": entry.accessible,
+                    "reason": entry.reason,
+                }
+                for entry in listing.directories
+            ],
+            "recovered": bool(listing.recovered_from),
+        }
+        if listing.recovered_from:
+            body["notice"] = "The starting path was unavailable. Opened the nearest readable directory."
+        return jsonify(body)
 
     @blueprint.post("/api/settings/directory/validate")
     def validate_settings_directory_route():
@@ -225,14 +229,13 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
         if not is_loopback_address(request.remote_addr):
             return jsonify({"error": "Path validation is only available on the local host."}), 403
         payload = request.get_json(silent=True) or {}
-        raw_path = str(payload.get("path") or "").strip()
+        raw_value = payload.get("path")
+        raw_path = raw_value.strip() if isinstance(raw_value, str) else ""
         valid, reason, resolved = validate_local_directory_path(raw_path)
         body: dict[str, Any] = {"valid": valid, "reason": reason}
         if resolved:
             body["path"] = resolved
         return jsonify(body)
-
-
     app.register_blueprint(blueprint)
 
 

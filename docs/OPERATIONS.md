@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.31.3-codex.0`
+Documentation version: `v1.32.0-codex.0`
 
 ## Launch
 
@@ -50,8 +50,17 @@ On Windows:
 On macOS, the launcher prefers `python3` from `PATH`, then tries unversioned platform Python
 installations. It skips an otherwise supported interpreter when required application modules are
 missing, so an already prepared platform installation can still start the app without a manual
-interpreter override. On macOS, directory controls open one host-native folder picker directly
-through Standard Additions; they do not activate an extra Finder window or route through Terminal.
+interpreter override.
+
+Directory controls use an in-page local folder browser on macOS and Windows. The browser starts
+from the current valid value or the nearest readable existing parent, supports breadcrumbs, Up,
+absolute-path navigation, empty folders, and cancellation, and writes the canonical absolute path
+only after `Select current folder`. It does not invoke Terminal, Finder, AppleScript, an OS-native
+panel, `showDirectoryPicker()`, uploads, probe files, or same-name path guessing. Manual path entry
+continues to use the existing validation route. Browsing is loopback-only and remains subject to
+the application's Host, same-origin write, and LAN-session boundaries; it does not change Agent
+workspace authority or persisted settings until the existing field save flow runs. A running Agent
+task keeps its project control locked.
 
 The normal server address is `http://127.0.0.1:8666`, and the application binds only to loopback by
 default. To opt in to trusted-LAN access, set `AGENTIC_CONTEXT_HOST=0.0.0.0` and set

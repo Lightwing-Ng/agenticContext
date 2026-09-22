@@ -1,7 +1,7 @@
 """Focused tests for controller hardening: model verification, action parser,
 directory picker, recent-session catalog, and browser interruption recovery.
 
-Code version: v3.50.4-codex.1
+Code version: v3.51.0-codex.0
 """
 
 from __future__ import annotations
@@ -1207,17 +1207,20 @@ class TestDirectoryPickerValidation:
         for fragment in (
             'input.removeAttribute("readonly")',
             "AbortController",
+            "navigateToDirectory",
+            "session.controller?.abort()",
             "/api/settings/directory/validate",
             "The server returned a malformed response.",
-            "The folder picker did not respond. You can type the path directly.",
             "Selection cancelled.",
             "Path validation timed out",
             'input.setAttribute("aria-invalid", "true")',
-            "clearLoadingState",
+            "setDialogBusy",
         ):
             assert fragment in script
-        assert 'renderStatus("", false);' in script
-        assert 'renderStatus("Path validated.", false);' not in script
+        assert "PICKER_TIMEOUT_MS" not in script
+        assert "showDirectoryPicker" not in script
+        assert "webkitRelativePath" not in script
+        assert 'renderFieldStatus(context, "Path validated.", false);' not in script
         assert "silently ignore" not in script
 
 

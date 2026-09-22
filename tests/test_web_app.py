@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.129.0-codex.0
+# Code version: v1.130.0-codex.0
 
 from __future__ import annotations
 
@@ -714,7 +714,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
         self.assertIn('cache-page.js?v=cache-page-v1.17.0-codex.0', chatgpt_body)
-        self.assertIn('numeric-display.js?v=numeric-display-v1.0.0-codex.0', chatgpt_body)
+        self.assertIn('numeric-display.js?v=numeric-display-v1.1.0-codex.0', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt/text/edge"', chatgpt_body)
@@ -866,7 +866,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.138.0-codex.0"
+                expected_style_version = "style-v2.140.0-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1008,7 +1008,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="chatgpt_scan_wait_seconds"', settings_body)
         self.assertIn('name="max_media_file_size_mib"', settings_body)
         self.assertIn('class="path-display-input"', settings_body)
-        self.assertEqual(settings_body.count("path-display-input"), 3)
+        self.assertEqual(settings_body.count("path-display-input"), 4)
         self.assertNotIn('class="cache-common-config-scope"', settings_body)
         self.assertNotIn("All cache sources", settings_body)
         self.assertIn('data-number-max="8"', settings_body)
@@ -1042,7 +1042,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-terminal-authorization-button', settings_body)
         self.assertIn('class="settings-inline-button settings-inline-button-primary shadow-backup-sync-button"', settings_body)
         self.assertIn('shadow-backup-settings.js?v=shadow-backup-settings-v1.3.0-codex.2', settings_body)
-        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', settings_body)
+        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.0.0-codex.0', settings_body)
         self.assertNotIn("Reset Grok state", settings_body)
         self.assertNotIn("Reset ChatGPT state", settings_body)
 
@@ -1288,11 +1288,11 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<span class="field-label">Workspace</span>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
-        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v1.3.1-codex.1', local_body)
+        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.0.0-codex.0', local_body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.138.0-codex.0', local_body)
+        self.assertIn('style-v2.140.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -2547,25 +2547,38 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn(sentinel, body)
 
     def test_agent_project_picker_uses_the_shared_directory_route(self) -> None:
-        selected_path = Path("/tmp/Selected Agent Project")
-        app = create_app()
-
-        with patch("app.web.settings_routes.choose_settings_directory", return_value=selected_path) as picker:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root) / "Existing Agent Project"
+            child = root / "Selected Agent Project"
+            child.mkdir(parents=True)
+            app = create_app()
             with app.test_client() as client:
                 response = client.post(
                     "/api/settings/directory",
                     json={
                         "field": "agent_allowed_root",
-                        "initial_path": "/tmp/Existing Agent Project",
+                        "path": str(root),
+                        "recover_invalid": True,
                     },
                 )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"directory": str(selected_path)})
-        picker.assert_called_once_with(
-            Path("/tmp/Existing Agent Project"),
-            "Select local Agent project folder",
+        payload = response.get_json()
+        self.assertEqual(payload["current_path"], str(root.resolve()))
+        self.assertEqual(payload["parent_path"], str(root.parent.resolve()))
+        self.assertEqual(
+            payload["directories"],
+            [
+                {
+                    "accessible": True,
+                    "is_symlink": False,
+                    "name": "Selected Agent Project",
+                    "path": str(child.resolve()),
+                    "reason": "",
+                }
+            ],
         )
+        self.assertFalse(payload["recovered"])
 
     def test_agent_project_picker_syncs_runtime_workspace_and_project_name(self) -> None:
         script = COMPUTER_USE_AGENT_SCRIPT_PATH.read_text(encoding="utf-8")
@@ -4048,20 +4061,27 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="operating_system" value="macos"', agent_body)
         self.assertNotIn("Gemini Agent", agent_body)
 
-    def test_shadow_backup_destination_control_uses_the_macos_folder_picker(self) -> None:
-        selected_path = Path("/tmp/OneDrive/AICaches")
+    def test_settings_directory_browser_rejects_non_loopback_requests(self) -> None:
         app = create_app()
 
-        with patch("app.web.settings_routes.choose_shadow_backup_destination", return_value=selected_path) as picker:
-            with app.test_client() as client:
-                response = client.post(
-                    "/api/settings/shadow-backup/destination",
-                    json={"initial_path": "/tmp/OneDrive"},
-                )
+        with app.test_client() as client:
+            response = client.post(
+                "/api/settings/directory",
+                json={"field": "shadow_backup_destination", "path": "/tmp"},
+                environ_base={"REMOTE_ADDR": "8.8.8.8"},
+            )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"destination": str(selected_path)})
-        picker.assert_called_once_with(Path("/tmp/OneDrive"))
+        self.assertEqual(response.status_code, 403)
+        self.assertIsNone(response.get_json(silent=True))
+
+    def test_retired_native_shadow_backup_picker_fails_closed(self) -> None:
+        app = create_app()
+
+        with app.test_client() as client:
+            response = client.post("/api/settings/shadow-backup/destination")
+
+        self.assertEqual(response.status_code, 410)
+        self.assertIn("in-page directory browser", response.get_json()["error"])
 
     def test_shadow_backup_sync_redirects_back_to_cloud_category(self) -> None:
         app = create_app()
@@ -4076,16 +4096,17 @@ class WebAppTests(unittest.TestCase):
         start_sync.assert_called_once()
 
     def test_settings_directory_picker_supports_registered_path_fields(self) -> None:
-        selected_path = Path("/tmp/Chrome/User Data")
-        app = create_app()
-
-        with patch("app.web.settings_routes.choose_settings_directory", return_value=selected_path) as picker:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root) / "Chrome"
+            selected_path = root / "User Data"
+            selected_path.mkdir(parents=True)
+            app = create_app()
             with app.test_client() as client:
                 response = client.post(
                     "/api/settings/directory",
                     json={
                         "field": "chrome_user_data_dir",
-                        "initial_path": "/tmp/Chrome",
+                        "path": str(root),
                     },
                 )
                 unknown_response = client.post(
@@ -4094,12 +4115,10 @@ class WebAppTests(unittest.TestCase):
                 )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"directory": str(selected_path)})
+        payload = response.get_json()
+        self.assertEqual(payload["current_path"], str(root.resolve()))
+        self.assertEqual(payload["directories"][0]["path"], str(selected_path.resolve()))
         self.assertEqual(unknown_response.status_code, 400)
-        picker.assert_called_once_with(
-            Path("/tmp/Chrome"),
-            "Select Chrome user data directory",
-        )
 
     def test_settings_page_groups_controls_into_accessible_categories(self) -> None:
         app = create_app()
@@ -4165,16 +4184,29 @@ class WebAppTests(unittest.TestCase):
         )
         for fragment in (
             'document.querySelectorAll("[data-settings-directory-picker]")',
-            'fetch("/api/settings/directory"',
-            "field: fieldName",
-            "initial_path: input.value",
+            '"/api/settings/directory",',
+            "field: session.context.fieldName",
+            "recover_invalid: Boolean(recoverInvalid)",
+            "navigateToDirectory",
+            "closeSession",
             'input.setAttribute("aria-invalid", "true")',
             "AbortController",
             "/api/settings/directory/validate",
-            "The folder picker did not respond. You can type the path directly.",
+            "Path validation timed out. Check the folder path and try again.",
         ):
             with self.subTest(directory_picker_fragment=fragment):
                 self.assertIn(fragment, directory_picker_script)
+        for forbidden_fragment in (
+            "CacheWaitModal",
+            "showDirectoryPicker",
+            "webkitRelativePath",
+            "PICKER_TIMEOUT_MS",
+        ):
+            with self.subTest(forbidden_directory_picker_fragment=forbidden_fragment):
+                self.assertNotIn(forbidden_fragment, directory_picker_script)
+        self.assertIn('role="dialog"', body)
+        self.assertIn('data-settings-directory-browser', body)
+        self.assertIn("Select current folder", body)
 
     def test_computer_use_settings_live_in_the_agent_category_and_persist(self) -> None:
         with patch(
@@ -4679,7 +4711,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.138.0-codex.0", body)
+            self.assertIn("style-v2.140.0-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.34.0-codex.0', body)

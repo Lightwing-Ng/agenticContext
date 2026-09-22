@@ -1,4 +1,4 @@
-<!-- Code version: v1.12.0-codex.0 -->
+<!-- Code version: v1.14.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,8 +8,8 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.138.0-codex.0') }}">
-    <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.0.0-codex.0') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.140.0-codex.0') }}">
+    <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
@@ -131,7 +131,7 @@
                             >
                                 <span class="settings-nav-icon-shell settings-action-package-icon-shell settings-callout-icon-shell" aria-hidden="true"><span class="icon icon-store-maintain"></span></span>
                                 <div class="settings-action-package-copy settings-callout-text">
-                                    <p class="settings-service-name"><span class="settings-action-package-live-marker" data-action-package-live-marker role="img" aria-label="Live refresh is active" title="Live refresh is active" hidden></span>{{ row.sample_title }}</p>
+                                    <p class="settings-service-name"><span class="live-marker settings-action-package-live-marker" data-action-package-live-marker role="img" aria-label="Live refresh is active" title="Live refresh is active" hidden></span>{{ row.sample_title }}</p>
                                     <p class="settings-service-note" data-style-token-action-copy data-action-package-copy>{{ row.sample_copy }}</p>
                                 </div>
                                 <div class="settings-action-package-form">
@@ -404,25 +404,25 @@
                                                 </tr>
                                                 <tr data-style-token-table-summary-row>
                                                     <td colspan="3"><span data-style-token-table-filter-summary>6 filtered of 12 total</span></td>
-                                                    <td colspan="2">Net <span data-numeric-display-value="$7,089.68">$7,089.68</span></td>
+                                                    <td colspan="2">Net <span data-numeric-display-value="$7,089.68" data-currency-code="USD">$7,089.68</span></td>
                                                 </tr>
                                         </thead>
                                     </table>
                                     <div class="events-table-scroll scrollable-data-table-scroll style-token-table-demo-scroll" data-table-scroll data-style-token-table-scroll>
                                         <table class="events-table scrollable-data-table style-token-scrollable-table" data-table-body data-style-token-table-body aria-label="Transaction history rows">
                                             <tbody id="style_token_table_body">
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>12</td><td data-numeric-display-cell>02/04/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>NVDA @ 123.45 x 10</td><td data-numeric-display-cell>$1,234.50</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="deposit"><td data-numeric-display-cell>11</td><td data-numeric-display-cell>01/04/2026</td><td data-numeric-display-cell>Deposit</td><td data-numeric-display-cell>--</td><td data-numeric-display-cell>$5,000.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="dividend"><td data-numeric-display-cell>10</td><td data-numeric-display-cell>31/03/2026</td><td data-numeric-display-cell>Dividend</td><td data-numeric-display-cell>AAPL</td><td data-numeric-display-cell>$42.18</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td data-numeric-display-cell>9</td><td data-numeric-display-cell>28/03/2026</td><td data-numeric-display-cell>Sell</td><td data-numeric-display-cell>TSLA @ 271.00 x 3</td><td data-numeric-display-cell>$813.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>8</td><td data-numeric-display-cell>27/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>MSFT @ 410.00 x 2</td><td data-numeric-display-cell>$820.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>7</td><td data-numeric-display-cell>26/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>AAPL @ 172.00 x 3</td><td data-numeric-display-cell>$516.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td data-numeric-display-cell>6</td><td data-numeric-display-cell>25/03/2026</td><td data-numeric-display-cell>Sell</td><td data-numeric-display-cell>GOOGL @ 150.00 x 4</td><td data-numeric-display-cell>$600.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="deposit"><td data-numeric-display-cell>5</td><td data-numeric-display-cell>24/03/2026</td><td data-numeric-display-cell>Deposit</td><td data-numeric-display-cell>--</td><td data-numeric-display-cell>$2,500.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="dividend"><td data-numeric-display-cell>4</td><td data-numeric-display-cell>23/03/2026</td><td data-numeric-display-cell>Dividend</td><td data-numeric-display-cell>NVDA</td><td data-numeric-display-cell>$18.40</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>3</td><td data-numeric-display-cell>22/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>AMD @ 180.00 x 2</td><td data-numeric-display-cell>$360.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td data-numeric-display-cell>2</td><td data-numeric-display-cell>21/03/2026</td><td data-numeric-display-cell>Sell</td><td data-numeric-display-cell>AMZN @ 175.00 x 1</td><td data-numeric-display-cell>$175.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>1</td><td data-numeric-display-cell>20/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>META @ 490.00 x 1</td><td data-numeric-display-cell>$490.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>12</td><td data-numeric-display-cell>02/04/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>NVDA @ 123.45 x 10</td><td data-numeric-display-cell data-currency-code="USD">$1,234.50</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="deposit"><td data-numeric-display-cell>11</td><td data-numeric-display-cell>01/04/2026</td><td data-numeric-display-cell>Deposit</td><td data-numeric-display-cell>--</td><td data-numeric-display-cell data-currency-code="USD">$5,000.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="dividend"><td data-numeric-display-cell>10</td><td data-numeric-display-cell>31/03/2026</td><td data-numeric-display-cell>Dividend</td><td data-numeric-display-cell>AAPL</td><td data-numeric-display-cell data-currency-code="USD">$42.18</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td data-numeric-display-cell>9</td><td data-numeric-display-cell>28/03/2026</td><td data-numeric-display-cell>Sell</td><td data-numeric-display-cell>TSLA @ 271.00 x 3</td><td data-numeric-display-cell data-currency-code="USD">$813.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>8</td><td data-numeric-display-cell>27/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>MSFT @ 410.00 x 2</td><td data-numeric-display-cell data-currency-code="USD">$820.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>7</td><td data-numeric-display-cell>26/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>AAPL @ 172.00 x 3</td><td data-numeric-display-cell data-currency-code="USD">$516.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td data-numeric-display-cell>6</td><td data-numeric-display-cell>25/03/2026</td><td data-numeric-display-cell>Sell</td><td data-numeric-display-cell>GOOGL @ 150.00 x 4</td><td data-numeric-display-cell data-currency-code="USD">$600.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="deposit"><td data-numeric-display-cell>5</td><td data-numeric-display-cell>24/03/2026</td><td data-numeric-display-cell>Deposit</td><td data-numeric-display-cell>--</td><td data-numeric-display-cell data-currency-code="USD">$2,500.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="dividend"><td data-numeric-display-cell>4</td><td data-numeric-display-cell>23/03/2026</td><td data-numeric-display-cell>Dividend</td><td data-numeric-display-cell>NVDA</td><td data-numeric-display-cell data-currency-code="USD">$18.40</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>3</td><td data-numeric-display-cell>22/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>AMD @ 180.00 x 2</td><td data-numeric-display-cell data-currency-code="USD">$360.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td data-numeric-display-cell>2</td><td data-numeric-display-cell>21/03/2026</td><td data-numeric-display-cell>Sell</td><td data-numeric-display-cell>AMZN @ 175.00 x 1</td><td data-numeric-display-cell data-currency-code="USD">$175.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>1</td><td data-numeric-display-cell>20/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>META @ 490.00 x 1</td><td data-numeric-display-cell data-currency-code="USD">$490.00</td></tr>
                                             </tbody>
                                         </table>
                                     </div>

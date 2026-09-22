@@ -1,4 +1,4 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.0.12-codex.1."""
+"""Activity disclosure and status glyph regressions. Code version: v1.1.0-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -177,8 +177,13 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
             '.agent-activity-item[data-status="running"] .cache-phase-live-marker'
         )
         expect(running).to_be_visible()
-        assert running.evaluate("e => getComputedStyle(e, '::before').animationName") == "none"
-        assert running.evaluate("e => getComputedStyle(e, '::after').animationName") == "none"
+        expected_live_animation = "live-marker-breath" if motion == "no-preference" else "none"
+        assert running.evaluate(
+            "e => getComputedStyle(e, '::before').animationName"
+        ) == expected_live_animation
+        assert running.evaluate(
+            "e => getComputedStyle(e, '::after').animationName"
+        ) == expected_live_animation
         expect(running).to_have_css("width", "6px")
         status_light = page.locator('[data-agent-response-status-spinner]')
         expect(status_light).to_have_class('agent-response-status-spinner cache-phase-live-marker')
@@ -244,7 +249,9 @@ def test_activity_preserves_collapse_and_tracks_current(disposable_browser, side
 
 
 @pytest.mark.parametrize("motion", ["no-preference", "reduce"])
-def test_running_status_markers_are_static(disposable_browser, sidebar_server_url, motion):
+def test_running_status_markers_share_breathing_contract(
+    disposable_browser, sidebar_server_url, motion
+):
     context = disposable_browser.new_context(viewport={"width": 1138, "height": 959}, reduced_motion=motion)
     page = context.new_page()
     payload = fixtures._finished_chatgpt_agent_payload()
@@ -264,12 +271,53 @@ def test_running_status_markers_are_static(disposable_browser, sidebar_server_ur
         activity = page.locator('#agent_activity_list [data-status="running"] .cache-phase-live-marker')
         expect(status).to_be_visible()
         expect(activity).to_be_visible()
-        assert status.evaluate(
-            "e => [getComputedStyle(e, '::before').animationName, getComputedStyle(e, '::after').animationName]"
-        ) == ["none", "none"]
-        assert activity.evaluate(
-            "e => [getComputedStyle(e, '::before').animationName, getComputedStyle(e, '::after').animationName]"
-        ) == ["none", "none"]
+        contracts = [status, activity]
+        for marker in contracts:
+            contract = marker.evaluate(
+                """e => {
+                    const root = getComputedStyle(document.documentElement);
+                    const core = getComputedStyle(e);
+                    const outer = getComputedStyle(e, '::before');
+                    const inner = getComputedStyle(e, '::after');
+                    const px = value => Number.parseFloat(value);
+                    return {
+                        coreSize: px(core.width),
+                        duration: outer.animationDuration,
+                        innerDelay: inner.animationDelay,
+                        innerDiameter: px(inner.width),
+                        innerMinimumDiameter: px(inner.width)
+                            * Number.parseFloat(root.getPropertyValue(
+                                '--live-marker-inner-start-scale'
+                            )),
+                        innerName: inner.animationName,
+                        innerOpacity: Number.parseFloat(inner.opacity),
+                        outerDiameter: px(outer.width),
+                        outerMinimumDiameter: px(outer.width)
+                            * Number.parseFloat(root.getPropertyValue(
+                                '--live-marker-outer-start-scale'
+                            )),
+                        outerName: outer.animationName,
+                        outerOpacity: Number.parseFloat(outer.opacity),
+                        ringBorderWidth: px(outer.borderTopWidth),
+                    };
+                }"""
+            )
+            assert contract["coreSize"] == pytest.approx(6)
+            assert contract["innerDiameter"] == pytest.approx(16)
+            assert contract["innerMinimumDiameter"] == pytest.approx(6)
+            assert contract["outerDiameter"] == pytest.approx(24)
+            assert contract["outerMinimumDiameter"] == pytest.approx(6)
+            assert contract["ringBorderWidth"] == pytest.approx(2)
+            if motion == "reduce":
+                assert contract["innerName"] == "none"
+                assert contract["outerName"] == "none"
+                assert contract["innerOpacity"] == pytest.approx(0.42)
+                assert contract["outerOpacity"] == pytest.approx(0)
+            else:
+                assert contract["duration"] == "1.8s"
+                assert contract["innerDelay"] == "0.9s"
+                assert contract["innerName"] == "live-marker-breath"
+                assert contract["outerName"] == "live-marker-breath"
     finally:
         context.close()
 

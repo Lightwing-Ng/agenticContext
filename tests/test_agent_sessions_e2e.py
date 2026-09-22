@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.22.0-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.23.0-codex.0."""
 
 import re
 from copy import deepcopy
@@ -1733,6 +1733,209 @@ def test_agent_project_path_input_survives_an_immediate_reload(
 
         page.reload(wait_until="domcontentloaded")
         expect(page.locator("#agent_project_path")).to_have_value(remembered_path)
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1_160, 390], ids=("desktop", "narrow"))
+def test_agent_directory_browser_selects_a_real_path_and_persists_project(
+    disposable_browser,
+    agent_selection_server_url,
+    tmp_path,
+    width,
+):
+    """Select the current local folder without leaving the browser workflow."""
+    root = tmp_path / "Folder browser root"
+    selected = root / "空 目录 'quoted'"
+    selected.mkdir(parents=True)
+    for index in range(30):
+        (root / f"Sibling {index:02d}").mkdir()
+
+    context = disposable_browser.new_context(viewport={"width": width, "height": 760})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(
+            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            wait_until="domcontentloaded",
+        )
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        project_input = page.locator("#agent_project_path")
+        project_input.evaluate("(input, path) => { input.value = path; }", str(root))
+
+        page.locator("#agent_project_path_choose").click()
+        dialog = page.locator("[data-settings-directory-browser]")
+        expect(dialog).to_be_visible()
+        expect(page.locator("[data-directory-browser-path]")).to_have_value(str(root.resolve()))
+        geometry = dialog.locator(".settings-directory-browser-dialog").bounding_box()
+        assert geometry is not None
+        assert geometry["x"] >= 0
+        assert geometry["x"] + geometry["width"] <= width + 1
+        assert geometry["y"] >= 0
+        assert geometry["y"] + geometry["height"] <= 761
+
+        page.locator("[data-directory-browser-entry]").filter(has_text=selected.name).click()
+        expect(page.locator("[data-directory-browser-path]")).to_have_value(
+            str(selected.resolve())
+        )
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/agent/preferences")
+            and response.request.method == "POST"
+            and response.request.post_data_json.get("workspace_path")
+            == str(selected.resolve())
+        ):
+            page.get_by_role("button", name="Select current folder").click()
+
+        expect(dialog).to_be_hidden()
+        expect(project_input).to_have_value(str(selected.resolve()))
+        expect(page.locator('input[name="workspace_path"]')).to_have_value(
+            str(selected.resolve())
+        )
+        expect(page.locator("[data-agent-project-name]")).to_have_text(selected.name)
+        assert page.evaluate("() => document.activeElement?.id") == "agent_project_path"
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_agent_directory_browser_cancel_preserves_the_project_and_restores_focus(
+    disposable_browser,
+    agent_selection_server_url,
+    tmp_path,
+):
+    """Cancel after browsing without changing or saving the selected project."""
+    root = tmp_path / "Cancel root"
+    child = root / "Same name"
+    child.mkdir(parents=True)
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 820})
+    page = context.new_page()
+    preference_requests = []
+    page.on(
+        "request",
+        lambda request: preference_requests.append(request.post_data_json)
+        if request.url.endswith("/api/agent/preferences") and request.method == "POST"
+        else None,
+    )
+    try:
+        page.goto(
+            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            wait_until="domcontentloaded",
+        )
+        project_input = page.locator("#agent_project_path")
+        project_input.evaluate("(input, path) => { input.value = path; }", str(root))
+        preference_requests.clear()
+
+        page.locator("#agent_project_path_choose").click()
+        page.locator("[data-directory-browser-entry]").filter(has_text=child.name).click()
+        expect(page.locator("[data-directory-browser-path]")).to_have_value(
+            str(child.resolve())
+        )
+        page.get_by_role("button", name="Cancel", exact=True).click()
+
+        expect(page.locator("[data-settings-directory-browser]")).to_be_hidden()
+        expect(project_input).to_have_value(str(root))
+        assert page.evaluate("() => document.activeElement?.id") == "agent_project_path_choose"
+        assert preference_requests == []
+    finally:
+        context.close()
+
+
+def test_agent_directory_browser_cancel_aborts_pending_request_and_ignores_late_result(
+    disposable_browser,
+    agent_selection_server_url,
+    tmp_path,
+):
+    """A duplicate click stays single-instance, and cancel invalidates pending work."""
+    root = tmp_path / "Pending root"
+    root.mkdir()
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 820})
+    page = context.new_page()
+    try:
+        page.goto(
+            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            wait_until="domcontentloaded",
+        )
+        original_path = str(root)
+        page.locator("#agent_project_path").evaluate(
+            "(input, path) => { input.value = path; }",
+            original_path,
+        )
+        page.evaluate(
+            """() => {
+                const originalFetch = window.fetch.bind(window);
+                const probe = {calls: 0, aborted: false, resolve: null};
+                window.__directoryPickerProbe = probe;
+                window.fetch = (url, options = {}) => {
+                    if (String(url) !== "/api/settings/directory") {
+                        return originalFetch(url, options);
+                    }
+                    probe.calls += 1;
+                    return new Promise((resolve, reject) => {
+                        probe.resolve = () => resolve(new Response(JSON.stringify({
+                            current_path: "/late/result",
+                            parent_path: "/late",
+                            breadcrumbs: [],
+                            directories: [],
+                        }), {status: 200, headers: {"Content-Type": "application/json"}}));
+                        options.signal?.addEventListener("abort", () => {
+                            probe.aborted = true;
+                            reject(new DOMException("Aborted", "AbortError"));
+                        }, {once: true});
+                    });
+                };
+            }"""
+        )
+
+        page.locator("#agent_project_path_choose").evaluate(
+            "button => { button.click(); button.click(); }"
+        )
+        expect(page.locator("[data-settings-directory-browser]")).to_be_visible()
+        assert page.evaluate("() => window.__directoryPickerProbe.calls") == 1
+        page.get_by_role("button", name="Cancel", exact=True).click()
+        assert page.evaluate("() => window.__directoryPickerProbe.aborted") is True
+        page.evaluate("() => window.__directoryPickerProbe.resolve()")
+        page.wait_for_timeout(50)
+
+        expect(page.locator("[data-settings-directory-browser]")).to_be_hidden()
+        expect(page.locator("#agent_project_path")).to_have_value(original_path)
+        assert page.evaluate("() => document.activeElement?.id") == "agent_project_path_choose"
+    finally:
+        context.close()
+
+
+def test_agent_directory_browser_recovers_initial_path_and_reports_navigation_error(
+    disposable_browser,
+    agent_selection_server_url,
+    tmp_path,
+):
+    """Recover deleted starting paths while keeping explicit bad navigation visible."""
+    missing = tmp_path / "existing parent" / "deleted" / "child"
+    missing.parent.parent.mkdir()
+    context = disposable_browser.new_context(viewport={"width": 1_160, "height": 820})
+    page = context.new_page()
+    try:
+        page.goto(
+            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            wait_until="domcontentloaded",
+        )
+        project_input = page.locator("#agent_project_path")
+        project_input.evaluate("(input, path) => { input.value = path; }", str(missing))
+        page.locator("#agent_project_path_choose").click()
+
+        expect(page.locator("[data-directory-browser-status]")).to_contain_text(
+            "starting path was unavailable"
+        )
+        recovered_path = str(missing.parent.parent.resolve())
+        expect(page.locator("[data-directory-browser-path]")).to_have_value(recovered_path)
+        page.locator("[data-directory-browser-path]").fill("relative/path")
+        page.get_by_role("button", name="Go", exact=True).click()
+        expect(page.locator("[data-directory-browser-status]")).to_have_text(
+            "The directory path must be absolute."
+        )
+        page.get_by_role("button", name="Cancel", exact=True).click()
+        expect(project_input).to_have_value(str(missing))
     finally:
         context.close()
 
