@@ -1,4 +1,4 @@
-"""Shared select keyboard adapters. Code version: v1.0.0-codex.1."""
+"""Shared select keyboard adapters. Code version: v1.1.0-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -58,6 +58,99 @@ def test_select_keyboard_adapters(disposable_browser, sidebar_server_url, width,
             expect(menu).to_be_visible()
             page.locator("h1").first.click()
             expect(menu).to_be_hidden()
+        assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1024, 390])
+def test_settings_operating_system_uses_standard_shared_select(
+    disposable_browser, sidebar_server_url, width,
+):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 900})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def keep_settings_read_only(route):
+        if route.request.method == "POST":
+            route.abort()
+        else:
+            route.continue_()
+
+    page.route("**/settings", keep_settings_read_only)
+    try:
+        page.goto(f"{sidebar_server_url}/settings#settings-agent")
+        native = page.locator("#agent_operating_system")
+        field = page.locator('[data-shared-select-kind="agent-operating-system"]')
+        trigger = field.locator("[data-shared-select-trigger]")
+        menu = page.locator("#" + trigger.get_attribute("aria-controls"))
+
+        expect(native).to_be_hidden()
+        expect(native).to_have_attribute("aria-hidden", "true")
+        expect(native).to_have_attribute("tabindex", "-1")
+        expect(trigger).to_be_visible()
+        expect(trigger).to_have_attribute("aria-label", re.compile(r"^Operating system: .+"))
+        assert round(trigger.bounding_box()["height"]) == 30
+
+        page.evaluate(
+            """() => {
+                window.__settingsSharedSelectChanges = 0;
+                document.querySelector('#agent_operating_system').addEventListener(
+                    'change', () => window.__settingsSharedSelectChanges += 1
+                );
+            }"""
+        )
+        closed_transform = field.locator(".browser-picker-trigger-chevron").evaluate(
+            "element => getComputedStyle(element).transform"
+        )
+        trigger.press("ArrowDown")
+        selected = menu.locator('[aria-selected="true"]')
+        expect(selected).to_be_focused()
+        page.wait_for_timeout(350)
+        assert round(selected.bounding_box()["height"]) >= 36
+        materials = page.evaluate(
+            """({trigger, menu}) => ({
+                triggerBlur: getComputedStyle(trigger).backdropFilter,
+                menuBlur: getComputedStyle(menu).backdropFilter,
+                triggerBackground: getComputedStyle(trigger).backgroundImage,
+                menuBackground: getComputedStyle(menu).backgroundImage,
+            })""",
+            {"trigger": trigger.element_handle(), "menu": menu.element_handle()},
+        )
+        assert materials["triggerBlur"] == "blur(12px)"
+        assert materials["menuBlur"] == "blur(12px)"
+        assert materials["triggerBackground"] != "none"
+        assert materials["menuBackground"] != "none"
+        open_transform = field.locator(".browser-picker-trigger-chevron").evaluate(
+            "element => getComputedStyle(element).transform"
+        )
+        assert open_transform != closed_transform
+        assert selected.locator(":scope > .trade-strategy-dropdown-check").count() == 1
+        assert selected.locator(":scope > .trade-strategy-dropdown-text").count() == 1
+
+        selected.press("Enter")
+        expect(menu).to_be_hidden()
+        expect(trigger).to_be_focused()
+        assert page.evaluate("window.__settingsSharedSelectChanges") == 0
+
+        target = menu.locator('[role="option"]:not([aria-selected="true"])').first
+        trigger.click()
+        target_value = target.get_attribute("data-shared-select-option")
+        target.click()
+        expect(trigger).to_be_focused()
+        expect(native).to_have_value(target_value)
+        assert page.evaluate("window.__settingsSharedSelectChanges") == 1
+        assert native.evaluate(
+            "select => Array.from(select.options).every(option => "
+            "option.selected === option.defaultSelected)"
+        )
+
+        trigger.press("ArrowDown")
+        page.keyboard.press("Escape")
+        expect(menu).to_be_hidden()
+        expect(trigger).to_be_focused()
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         assert not errors
     finally:
         context.close()

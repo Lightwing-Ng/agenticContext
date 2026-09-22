@@ -1,4 +1,4 @@
-"""Regression coverage for the shared floating-banner contract. Code version: v0.1.1-codex.1."""
+"""Regression coverage for the shared floating-banner contract. Code version: v0.2.0-codex.0."""
 
 from pathlib import Path
 
@@ -38,24 +38,43 @@ def test_browser_refresh_banner_reuses_the_shared_macro_and_controller() -> None
     assert 'src="/static/notice-banner.js?v=notice-banner-v0.1.0-codex.1"' in body
 
 
-def test_banner_styles_follow_the_sibling_top_aligned_contract() -> None:
+def test_banner_styles_follow_the_shared_title_and_body_rows() -> None:
     stylesheet = (STATIC_ROOT / "style.css").read_text(encoding="utf-8")
 
     for token in (
         ".notice-floating-banner {",
         "display: grid !important;",
-        "var(--workspace-modal-close-size)",
+        "minmax(var(--workspace-modal-title-row-min-height), auto)",
         "var(--workspace-modal-icon-size)",
         "minmax(0, 1fr)",
+        "row-gap: var(--workspace-modal-row-gap);",
         "align-items: start !important;",
         ".notice-floating-banner-content {",
+        "display: contents;",
+        ".notice-floating-banner-heading {",
+        "grid-row: 1;",
         ".notice-floating-banner-copy {",
+        ".notice-floating-banner-list {",
+        "grid-row: 2;",
+        "margin: 0;",
+        "padding-inline-start: var(--workspace-modal-list-padding-inline-start);",
         "list-style-position: outside;",
+        "padding-inline-start: var(--workspace-modal-list-marker-gap);",
         ".notice-floating-banner .notice-close {",
         ".icon-dismiss-control {",
         "transform: translate3d(-50%, 0, 0);",
     ):
         assert token in stylesheet
+
+    assert 'class="notice-floating-banner-content"' in (
+        TEMPLATE_ROOT / "_notice_banner.html"
+    ).read_text(encoding="utf-8")
+    assert '<ol{% if message_id %} id="{{ message_id }}"{% endif %} class="notice-floating-banner-list"' in (
+        TEMPLATE_ROOT / "_notice_banner.html"
+    ).read_text(encoding="utf-8")
+    assert '<div{% if message_id %} id="{{ message_id }}"{% endif %} class="notice-floating-banner-list"' not in (
+        TEMPLATE_ROOT / "_notice_banner.html"
+    ).read_text(encoding="utf-8")
 
 
 def test_banner_surface_reuses_the_modal_dialog_material_and_close_contract() -> None:

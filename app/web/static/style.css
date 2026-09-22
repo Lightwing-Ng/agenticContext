@@ -1,4 +1,4 @@
-/* Code version: v2.135.0-codex.0 */
+/* Code version: v2.138.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -139,6 +139,19 @@
     --agent-composer-control-height: 32px;
     --agent-response-toolbar-padding: 0px;
     --local-store-pagination-slot-size: 30px;
+    --local-store-pagination-gap: 10px;
+    --local-store-pagination-button-radius: var(--radius-pill);
+    --local-store-pagination-indicator-radius: var(--radius-pill);
+    --local-store-pagination-indicator-background: var(--accent-fill);
+    --local-store-pagination-indicator-shadow: 0 8px 18px var(--accent-shadow-strong), inset 0 1px 0 color-mix(in srgb, var(--theme-glass-highlight) 36%, transparent);
+    --local-store-pagination-button-background: var(--frosted-glass-background);
+    --local-store-pagination-button-border: 1px solid var(--accent-border-strong);
+    --local-store-pagination-button-shadow: var(--frosted-glass-shadow);
+    --local-store-pagination-button-blur: var(--frosted-glass-blur);
+    --local-store-pagination-button-color: var(--theme-text);
+    --local-store-pagination-button-color-hover: var(--accent-text);
+    --local-store-pagination-motion-duration: var(--motion-duration-spatial);
+    --local-store-pagination-motion-easing: var(--motion-bouncy);
     --sidebar-action-primary-background: var(--theme-accent-primary);
     --sidebar-action-primary-background-hover: color-mix(in srgb, var(--theme-accent-primary) 88%, var(--color-white-adaptive));
     --sidebar-action-primary-background-disabled: color-mix(in srgb, var(--theme-muted) 28%, transparent);
@@ -207,7 +220,9 @@
     --collapse-icon-height: 8px;
     --collapse-icon-gap: 8px;
     --collapse-icon-closed: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.41 1.59 6 6.17l4.59-4.58L12 3l-6 5-6-5z' fill='currentColor'/%3E%3C/svg%3E");
+    --collapse-icon-closed-rotation: -90deg;
     --collapse-icon-open: var(--collapse-icon-closed);
+    --collapse-icon-open-rotation: 0deg;
     --collapse-summary-padding: 10px 0;
     --collapse-body-padding: 0 10px 10px;
     --collapse-font-size: var(--font-ui-lg);
@@ -291,17 +306,30 @@
     --page-mobile-active-bottom-pad: var(--page-mobile-scroll-bottom-pad-base);
     --sidebar-dock-mobile-bottom-gap: 4px;
     --sidebar-dock-mobile-shadow: 0 -10px 24px var(--theme-glass-border), 0 0 0 1px color-mix(in srgb, var(--theme-glass-highlight) 44%, transparent);
-    --settings-round-icon-button-size: 36px;
-    --settings-round-icon-button-icon-size: 18px;
-    --settings-round-icon-button-radius: var(--radius-pill);
-    --settings-round-icon-button-background: var(--glass-chip-background-strong);
-    --settings-round-icon-button-background-hover: var(--glass-chip-background-hover);
-    --settings-round-icon-button-shadow: var(--glass-chip-shadow);
-    --settings-round-icon-button-shadow-hover: var(--glass-chip-shadow-hover);
-    --settings-round-icon-button-shadow-active: var(--glass-chip-shadow-active);
-    --settings-round-icon-button-color: color-mix(in srgb, var(--theme-text) 70%, transparent);
-    --settings-round-icon-button-color-hover: var(--accent-text);
-    --settings-round-icon-button-material: var(--frosted-glass-background);
+    --circular-icon-button-size: 36px;
+    --circular-icon-button-icon-size: 18px;
+    --circular-icon-button-radius: var(--radius-pill);
+    --circular-icon-button-material: var(--frosted-glass-background);
+    --circular-icon-button-background: var(--circular-icon-button-material);
+    --circular-icon-button-background-hover: var(--frosted-glass-background-hover);
+    --circular-icon-button-border: var(--frosted-glass-border);
+    --circular-icon-button-shadow: var(--frosted-glass-shadow);
+    --circular-icon-button-shadow-hover: var(--frosted-glass-shadow-hover);
+    --circular-icon-button-shadow-active: var(--frosted-glass-shadow-active);
+    --circular-icon-button-color: color-mix(in srgb, var(--theme-text) 70%, transparent);
+    --circular-icon-button-color-hover: var(--accent-text);
+    --settings-round-icon-button-size: var(--circular-icon-button-size);
+    --settings-round-icon-button-icon-size: var(--circular-icon-button-icon-size);
+    --settings-round-icon-button-radius: var(--circular-icon-button-radius);
+    --settings-round-icon-button-background: var(--circular-icon-button-background);
+    --settings-round-icon-button-background-hover: var(--circular-icon-button-background-hover);
+    --settings-round-icon-button-border: var(--circular-icon-button-border);
+    --settings-round-icon-button-shadow: var(--circular-icon-button-shadow);
+    --settings-round-icon-button-shadow-hover: var(--circular-icon-button-shadow-hover);
+    --settings-round-icon-button-shadow-active: var(--circular-icon-button-shadow-active);
+    --settings-round-icon-button-color: var(--circular-icon-button-color);
+    --settings-round-icon-button-color-hover: var(--circular-icon-button-color-hover);
+    --settings-round-icon-button-material: var(--circular-icon-button-material);
     --settings-action-package-material: var(--frosted-glass-background);
     --workspace-modal-material: var(--frosted-glass-background);
     --notice-floating-material: var(--frosted-glass-background);
@@ -309,13 +337,27 @@
     --scrollable-data-table-header-material: var(--frosted-glass-background);
     --shared-select-control-height: 30px;
     --shared-select-trigger-material: var(--frosted-glass-background);
-    --shared-select-dropdown-material: var(--frosted-glass-opaque-background);
+    --shared-select-trigger-material-hover: var(--frosted-glass-background-hover);
+    --shared-select-dropdown-material: var(--frosted-glass-background);
+    --shared-select-border: var(--frosted-glass-border);
+    --shared-select-shadow: var(--frosted-glass-shadow);
+    --shared-select-shadow-hover: var(--frosted-glass-shadow-hover);
+    --shared-select-blur: blur(12px);
     --shared-select-dropdown-padding: 10px;
     --shared-select-dropdown-radius: var(--radius-soft);
+    --shared-select-dropdown-max-width: var(--layout-control-width);
     --shared-select-dropdown-max-height: min(360px, 55vh);
     --shared-select-option-padding: 9px 10px;
     --shared-select-option-min-height: 36px;
     --shared-select-option-radius: var(--radius-pill);
+    --shared-select-trigger-padding-inline-end: 36px;
+    --shared-select-chevron-mask: var(--browser-picker-chevron-image);
+    --shared-select-chevron-width: 12px;
+    --shared-select-chevron-height: 8px;
+    --shared-select-chevron-inline-end: 12px;
+    --shared-select-chevron-closed-rotation: 0deg;
+    --shared-select-chevron-open-rotation: 180deg;
+    --shared-select-chevron-transition-duration: 180ms;
     --strategy-tune-button-size: var(--shared-select-control-height);
     --strategy-tune-button-icon-size: 14px;
     --strategy-tune-button-radius: var(--radius-pill);
@@ -354,9 +396,12 @@
     --workspace-modal-close-offset: 12px;
     --workspace-modal-close-size: 24px;
     --workspace-modal-close-center-offset: calc(var(--workspace-modal-close-offset) + (var(--workspace-modal-close-size) / 2));
+    --workspace-modal-title-row-min-height: var(--workspace-modal-close-size);
     --workspace-modal-icon-size: 36px;
     --workspace-modal-column-gap: 12px;
     --workspace-modal-row-gap: 4px;
+    --workspace-modal-list-padding-inline-start: 1.35rem;
+    --workspace-modal-list-marker-gap: 0.18rem;
     --workspace-modal-title-margin-end: 0px;
     --style-token-demo-width: var(--layout-control-width);
     --style-token-column-gap: 24px;
@@ -542,6 +587,19 @@
     --scrollable-data-table-min-width: 376px;
     --scrollable-data-table-header-color: color-mix(in srgb, var(--theme-text) 92%, var(--color-white-adaptive) 8%);
     --scrollable-data-table-scrollbar-gutter: stable;
+    --scrollable-data-table-shell-radius: var(--radius-panel);
+    --scrollable-data-table-shell-background: var(--frosted-glass-background);
+    --scrollable-data-table-shell-border: var(--frosted-glass-border);
+    --scrollable-data-table-shell-shadow: var(--frosted-glass-shadow);
+    --scrollable-data-table-shell-blur: var(--frosted-glass-blur);
+    --scrollable-data-table-scroll-background: transparent;
+    --scrollable-data-table-scrollbar-color: color-mix(in srgb, var(--theme-muted) 62%, transparent);
+    --scrollable-data-table-header-background: color-mix(in srgb, var(--scrollable-data-table-header-material) 92%, var(--panel-strong));
+    --scrollable-data-table-header-border: 1px solid var(--theme-glass-border);
+    --scrollable-data-table-body-color: var(--text);
+    --scrollable-data-table-body-font-size: var(--font-table-body);
+    --scrollable-data-table-body-line-height: 1.35;
+    --scrollable-data-table-body-row-border: 1px solid var(--theme-glass-border);
     --scrollable-data-table-row-background: var(--panel-strong);
     --scrollable-data-table-row-background-alt: color-mix(in srgb, var(--panel-strong) 82%, var(--glass-surface-background-strong));
     --scrollable-data-table-summary-background: var(--frosted-glass-background);
@@ -759,38 +817,82 @@ html.sidebar-memory-collapsed .page {
     display: none;
 }
 
+.circular-icon-button,
+.settings-round-icon-button,
+.global-quick-action-button,
 .sidebar-toggle {
-    width: var(--settings-round-icon-button-size);
-    height: var(--settings-round-icon-button-size);
+    width: var(--circular-icon-button-size);
+    min-width: var(--circular-icon-button-size);
+    height: var(--circular-icon-button-size);
+    min-height: var(--circular-icon-button-size);
     padding: 0;
-    border: var(--settings-round-icon-button-border);
-    border-radius: var(--settings-round-icon-button-radius);
-    background: var(--settings-round-icon-button-background);
-    box-shadow: var(--settings-round-icon-button-shadow);
+    border: var(--circular-icon-button-border);
+    border-radius: var(--circular-icon-button-radius);
+    background: var(--circular-icon-button-background);
+    box-shadow: var(--circular-icon-button-shadow);
     backdrop-filter: var(--frosted-glass-blur);
     -webkit-backdrop-filter: var(--frosted-glass-blur);
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: var(--settings-round-icon-button-color);
+    color: var(--circular-icon-button-color);
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: background 160ms var(--motion-standard), box-shadow 160ms var(--motion-standard), color 160ms var(--motion-standard), transform 460ms var(--motion-press);
+}
+
+.circular-icon-button:hover,
+.circular-icon-button:focus-visible,
+.settings-round-icon-button:hover,
+.settings-round-icon-button:focus-visible,
+.global-quick-action-button:hover,
+.global-quick-action-button:focus-visible,
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible {
+    outline: none;
+    background: var(--circular-icon-button-background-hover);
+    color: var(--circular-icon-button-color-hover);
+    box-shadow: var(--circular-icon-button-shadow-hover);
+}
+
+.circular-icon-button:active,
+.settings-round-icon-button:active,
+.global-quick-action-button:active,
+.sidebar-toggle:active {
+    box-shadow: var(--circular-icon-button-shadow-active);
+}
+
+.circular-icon-button .icon,
+.settings-round-icon-button .icon,
+.global-quick-action-button .icon,
+.sidebar-toggle .icon {
+    width: var(--circular-icon-button-icon-size);
+    height: var(--circular-icon-button-icon-size);
+    background-color: currentColor;
+    mask-repeat: no-repeat;
+    -webkit-mask-repeat: no-repeat;
+    mask-position: center;
+    -webkit-mask-position: center;
+    mask-size: contain;
+    -webkit-mask-size: contain;
+}
+
+.sidebar-toggle {
     position: absolute;
     top: var(--sidebar-toggle-top);
     left: var(--sidebar-toggle-left);
     z-index: var(--layer-fixed-dock);
     transform: translate3d(var(--sidebar-toggle-x), 0, 0);
-    transition: background 160ms var(--motion-standard), box-shadow 160ms var(--motion-standard), color 160ms var(--motion-standard), transform var(--sidebar-motion-duration) var(--motion-emphasized);
+    transition-duration: 160ms, 160ms, 160ms, var(--sidebar-motion-duration);
+    transition-timing-function: var(--motion-standard), var(--motion-standard), var(--motion-standard), var(--motion-emphasized);
 }
 
 .sidebar-toggle:hover,
 .sidebar-toggle:focus-visible {
-    background: var(--settings-round-icon-button-background-hover);
-    color: var(--settings-round-icon-button-color-hover);
-    box-shadow: var(--settings-round-icon-button-shadow-hover);
     transform: translate3d(var(--sidebar-toggle-x), -1px, 0);
 }
 
 .sidebar-toggle:active {
-    box-shadow: var(--settings-round-icon-button-shadow-active);
     transform: translate3d(var(--sidebar-toggle-x), 1px, 0);
 }
 
@@ -808,46 +910,13 @@ html.sidebar-memory-collapsed .page {
     height: var(--settings-round-icon-button-size);
 }
 
-.global-quick-action-button {
-    width: var(--settings-round-icon-button-size);
-    height: var(--settings-round-icon-button-size);
-    padding: 0;
-    border: var(--settings-round-icon-button-border);
-    border-radius: var(--settings-round-icon-button-radius);
-    background: var(--settings-round-icon-button-background);
-    box-shadow: var(--settings-round-icon-button-shadow);
-    backdrop-filter: var(--frosted-glass-blur);
-    -webkit-backdrop-filter: var(--frosted-glass-blur);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--settings-round-icon-button-color);
-    transition: background 160ms var(--motion-standard), box-shadow 160ms var(--motion-standard), color 160ms var(--motion-standard), transform 460ms var(--motion-press);
-}
-
 .global-quick-action-button:hover,
 .global-quick-action-button:focus-visible {
-    outline: none;
-    background: var(--settings-round-icon-button-background-hover);
-    color: var(--settings-round-icon-button-color-hover);
-    box-shadow: var(--settings-round-icon-button-shadow-hover);
     transform: translateY(-1px);
 }
 
 .global-quick-action-button:active {
-    box-shadow: var(--settings-round-icon-button-shadow-active);
     transform: translateY(1px);
-}
-
-.global-quick-action-button .icon {
-    width: var(--settings-round-icon-button-icon-size);
-    height: var(--settings-round-icon-button-icon-size);
-    mask-repeat: no-repeat;
-    -webkit-mask-repeat: no-repeat;
-    mask-position: center;
-    -webkit-mask-position: center;
-    mask-size: contain;
-    -webkit-mask-size: contain;
 }
 
 .global-theme-toggle[data-effective-theme="light"] .icon {
@@ -1287,16 +1356,16 @@ h2 {
 }
 
 .browser-picker-trigger-chevron {
-    width: 12px;
-    height: 8px;
-    flex: 0 0 12px;
+    width: var(--shared-select-chevron-width);
+    height: var(--shared-select-chevron-height);
+    flex: 0 0 var(--shared-select-chevron-width);
     color: var(--text);
     font-size: 0;
     line-height: 0;
     background-color: currentColor;
-    mask: var(--browser-picker-chevron-image) center / 12px 8px no-repeat;
-    -webkit-mask: var(--browser-picker-chevron-image) center / 12px 8px no-repeat;
-    transition: transform 180ms var(--motion-standard);
+    mask: var(--shared-select-chevron-mask) center / contain no-repeat;
+    -webkit-mask: var(--shared-select-chevron-mask) center / contain no-repeat;
+    transition: transform var(--shared-select-chevron-transition-duration) var(--motion-standard);
 }
 
 .browser-picker-trigger-chevron::before {
@@ -1312,18 +1381,18 @@ h2 {
     top: calc(100% + 4px);
     left: 0;
     right: 0;
-    padding: 10px;
-    border-radius: var(--radius-soft);
+    padding: var(--shared-select-dropdown-padding);
+    border-radius: var(--shared-select-dropdown-radius);
     color: var(--text);
     background: var(--shared-select-dropdown-material);
-    box-shadow: var(--frosted-glass-shadow);
-    backdrop-filter: var(--frosted-glass-blur);
-    -webkit-backdrop-filter: var(--frosted-glass-blur);
-    border: var(--frosted-glass-border);
+    box-shadow: var(--shared-select-shadow);
+    backdrop-filter: var(--shared-select-blur);
+    -webkit-backdrop-filter: var(--shared-select-blur);
+    border: var(--shared-select-border);
     z-index: var(--layer-inline-overlay);
     isolation: isolate;
     background-clip: padding-box;
-    max-height: min(320px, 48vh);
+    max-height: var(--shared-select-dropdown-max-height);
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -1394,14 +1463,14 @@ h2 {
 .trade-strategy-dropdown-option {
     width: 100%;
     min-height: var(--shared-select-option-min-height);
-    padding: 9px 10px;
+    padding: var(--shared-select-option-padding);
     border: 0;
     border-radius: var(--shared-select-option-radius);
     background: transparent;
     color: var(--text);
     display: grid;
     grid-template-columns: 16px minmax(0, 1fr);
-    column-gap: 8px;
+    column-gap: var(--shared-select-option-gap);
     align-items: center;
     text-align: left;
     font-size: var(--font-form-label);
@@ -1598,7 +1667,8 @@ h2 {
     gap: 8px;
 }
 
-.field > span {
+.field > span,
+.field > .field-title {
     margin: 0;
     font-size: var(--field-title-font-size);
     line-height: var(--field-title-line-height);
@@ -2469,6 +2539,27 @@ html.sidebar-memory-collapsed .app-shell .cache-overview-title-card {
     font-weight: var(--workspace-metric-value-font-weight);
     color: var(--text);
     word-break: break-word;
+    --workspace-metric-decimal-scale-local: var(--workspace-metric-decimal-scale);
+}
+
+.workspace-metric-value-major,
+.workspace-metric-value-minor,
+.workspace-metric-value-suffix {
+    display: inline-block;
+    white-space: nowrap;
+}
+
+.workspace-metric-value-major,
+.workspace-metric-value-suffix {
+    font-size: 1em;
+    line-height: inherit;
+}
+
+.workspace-metric-value-minor {
+    font-size: calc(1em * var(--workspace-metric-decimal-scale-local, var(--workspace-metric-decimal-scale)));
+    line-height: 1;
+    transform: translateY(0.055em);
+    transform-origin: left bottom;
 }
 
 .metric-card:nth-child(2) strong,
@@ -2794,6 +2885,7 @@ a.ghost-link[href$="/settings"] {
     color: var(--accent-secondary);
 }
 
+.scrollable-data-table-shell,
 .events-table-shell {
     --events-pagination-edge-inset: 13px;
     --events-pagination-shell-padding: 4px;
@@ -2806,24 +2898,32 @@ a.ghost-link[href$="/settings"] {
     width: 100%;
     max-width: 100%;
     margin: 0;
-    border-radius: var(--radius-panel);
-    background: var(--frosted-glass-background);
-    color: var(--text);
-    border: var(--frosted-glass-border);
-    box-shadow: var(--frosted-glass-shadow);
-    backdrop-filter: var(--frosted-glass-blur);
-    -webkit-backdrop-filter: var(--frosted-glass-blur);
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--scrollable-data-table-shell-radius);
+    background: var(--scrollable-data-table-shell-background);
+    color: var(--scrollable-data-table-body-color);
+    border: var(--scrollable-data-table-shell-border);
+    box-shadow: var(--scrollable-data-table-shell-shadow);
+    backdrop-filter: var(--scrollable-data-table-shell-blur);
+    -webkit-backdrop-filter: var(--scrollable-data-table-shell-blur);
     overflow: hidden;
     isolation: isolate;
 }
 
+.scrollable-data-table-scroll,
 .events-table-scroll {
+    min-height: 0;
     height: 100%;
     overflow: auto;
+    background: var(--scrollable-data-table-scroll-background);
     scrollbar-gutter: var(--scrollable-data-table-scrollbar-gutter);
+    scrollbar-color: var(--scrollable-data-table-scrollbar-color) transparent;
+    scroll-padding-block-start: var(--scrollable-data-table-header-height);
     scroll-padding-block-end: var(--events-pagination-clearance);
 }
 
+.scrollable-data-table-scroll::after,
 .events-table-scroll::after {
     content: "";
     display: block;
@@ -2832,6 +2932,7 @@ a.ghost-link[href$="/settings"] {
     pointer-events: none;
 }
 
+.scrollable-data-table,
 .events-table {
     width: 100%;
     min-width: var(--scrollable-data-table-min-width);
@@ -2839,6 +2940,31 @@ a.ghost-link[href$="/settings"] {
     table-layout: fixed;
 }
 
+.scrollable-data-table-shell > .scrollable-data-table[data-table-header] {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    z-index: calc(var(--layer-surface-content) + 1);
+    pointer-events: none;
+    background: var(--scrollable-data-table-header-background);
+    border-bottom: var(--scrollable-data-table-header-border);
+    border-radius: var(--scrollable-data-table-shell-radius) var(--scrollable-data-table-shell-radius) 0 0;
+    overflow: hidden;
+    will-change: translate;
+}
+
+.scrollable-data-table-shell > .scrollable-data-table[data-table-interactive-header] {
+    pointer-events: auto;
+    overflow: visible;
+    z-index: var(--layer-global-popover);
+}
+
+.scrollable-data-table-scroll > .scrollable-data-table[data-table-body] {
+    margin-block-start: var(--scrollable-data-table-header-height);
+    --workspace-metric-decimal-scale-local: var(--workspace-metric-decimal-scale);
+}
+
+.scrollable-data-table thead th,
 .events-table thead th {
     position: sticky;
     top: 0;
@@ -2849,27 +2975,33 @@ a.ghost-link[href$="/settings"] {
     font-weight: var(--field-title-font-weight);
     letter-spacing: var(--field-title-letter-spacing);
     text-transform: none;
-    color: var(--field-title-color);
-    background: color-mix(in srgb, var(--frosted-glass-background) 92%, var(--panel-strong));
+    color: var(--scrollable-data-table-header-color);
+    background: var(--scrollable-data-table-header-background);
     backdrop-filter: var(--frosted-glass-blur);
     -webkit-backdrop-filter: var(--frosted-glass-blur);
     padding: var(--scrollable-data-table-header-padding);
-    border-bottom: 1px solid var(--theme-glass-border);
+    border-bottom: var(--scrollable-data-table-header-border);
     vertical-align: middle;
+    white-space: normal;
+    overflow-wrap: break-word;
+    word-break: normal;
 }
 
+.scrollable-data-table tbody tr,
 .events-table tbody tr {
     background: var(--scrollable-data-table-row-background);
 }
 
+.scrollable-data-table tbody tr:nth-child(even),
 .events-table tbody tr:nth-child(even) {
     background: var(--scrollable-data-table-row-background-alt);
 }
 
+.scrollable-data-table tbody td,
 .events-table tbody td {
-    font-size: var(--font-table-body);
-    line-height: 1.35;
-    color: var(--text);
+    font-size: var(--scrollable-data-table-body-font-size);
+    line-height: var(--scrollable-data-table-body-line-height);
+    color: var(--scrollable-data-table-body-color);
     padding: var(--scrollable-data-table-cell-padding);
     vertical-align: top;
     white-space: normal;
@@ -2877,8 +3009,9 @@ a.ghost-link[href$="/settings"] {
     word-break: break-word;
 }
 
+.scrollable-data-table tbody tr + tr td,
 .events-table tbody tr + tr td {
-    border-top: 1px solid var(--theme-glass-border);
+    border-top: var(--scrollable-data-table-body-row-border);
 }
 
 .notice[data-dismissible-notice],
@@ -2917,11 +3050,13 @@ a.ghost-link[href$="/settings"] {
 .notice-floating-banner {
     display: grid !important;
     grid-template-columns:
-        var(--workspace-modal-close-size)
         var(--workspace-modal-icon-size)
         minmax(0, 1fr);
+    grid-template-rows:
+        minmax(var(--workspace-modal-title-row-min-height), auto)
+        auto;
     column-gap: var(--workspace-modal-column-gap);
-    row-gap: 0;
+    row-gap: var(--workspace-modal-row-gap);
     align-items: start !important;
     padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline);
     border-radius: var(--workspace-modal-radius);
@@ -2953,52 +3088,62 @@ a.ghost-link[href$="/settings"] {
 }
 
 .notice-floating-banner-icon {
-    grid-column: 2;
-    grid-row: 1;
+    grid-column: 1;
+    grid-row: 2;
     align-self: start;
-    margin-top: 2px;
+    margin-top: 0;
     background-color: var(--accent-fill);
 }
 
 .notice-floating-banner-content {
-    grid-column: 3;
-    grid-row: 1;
+    grid-column: 2;
+    grid-row: 2;
     min-width: 0;
     margin: 0;
-    margin-right: 0;
     align-self: start;
     font-weight: var(--font-weight-regular);
 }
 
 .notice-floating-banner-heading {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
     margin: 0;
+    align-self: center;
     color: var(--text);
     font-size: var(--font-ui-lg);
     font-weight: var(--font-weight-bold);
     line-height: 1.2;
     text-align: left;
+    overflow-wrap: anywhere;
 }
 
 .notice-floating-banner-list {
-    margin: 8px 0 0;
-    padding-inline-start: 1.35rem;
+    min-width: 0;
+    margin: 0;
+    padding-inline-start: var(--workspace-modal-list-padding-inline-start);
+    align-self: start;
     color: inherit;
     font-size: var(--font-form-label);
     font-weight: var(--font-weight-regular);
     line-height: 1.45;
     list-style-position: outside;
+    overflow-wrap: anywhere;
 }
 
 .notice-floating-banner-copy {
-    margin: 8px 0 0;
+    min-width: 0;
+    margin: 0;
+    align-self: start;
     color: var(--text);
     font-size: var(--font-form-label);
     font-weight: var(--font-weight-regular);
     line-height: 1.45;
+    overflow-wrap: anywhere;
 }
 
 .notice-floating-banner-list li {
-    padding-inline-start: 0.18rem;
+    padding-inline-start: var(--workspace-modal-list-marker-gap);
 }
 
 .notice-floating-banner-list li + li {
@@ -3021,8 +3166,8 @@ a.ghost-link[href$="/settings"] {
 
 .notice-floating-banner .notice-close {
     position: absolute;
-    top: var(--workspace-modal-close-offset);
-    left: var(--workspace-modal-close-offset);
+    top: calc(var(--workspace-modal-close-center-offset) - (var(--workspace-modal-close-size) / 2));
+    left: calc(var(--workspace-modal-close-center-offset) - (var(--workspace-modal-close-size) / 2));
 }
 
 .dismiss-button {
@@ -3085,11 +3230,13 @@ a.ghost-link[href$="/settings"] {
 
 .browser-session-refresh-banner {
     grid-template-columns:
-        var(--workspace-modal-close-size)
         var(--workspace-modal-icon-size)
         minmax(0, 1fr);
+    grid-template-rows:
+        minmax(var(--workspace-modal-title-row-min-height), auto)
+        auto;
     column-gap: var(--workspace-modal-column-gap);
-    row-gap: 0;
+    row-gap: var(--workspace-modal-row-gap);
     align-items: start;
     padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline);
 }
@@ -3099,21 +3246,29 @@ a.ghost-link[href$="/settings"] {
 }
 
 .browser-session-refresh-banner-icon {
-    grid-column: 2;
-    grid-row: 1;
+    grid-column: 1;
+    grid-row: 2;
     align-self: start;
-    margin-top: 2px;
+    margin-top: 0;
     background-color: var(--accent-fill);
     mask: url("/static/images/info.circle.fill.svg") center/contain no-repeat;
     -webkit-mask: url("/static/images/info.circle.fill.svg") center/contain no-repeat;
 }
 
 .browser-session-refresh-banner-content {
+    grid-column: 2;
+    grid-row: 2;
     min-width: 0;
+    margin: 0;
+    align-self: start;
 }
 
 .browser-session-refresh-banner-heading {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
     margin: 0;
+    align-self: center;
     color: var(--text);
     font-size: var(--font-ui-lg);
     font-weight: var(--font-weight-semibold);
@@ -3122,7 +3277,11 @@ a.ghost-link[href$="/settings"] {
 }
 
 .browser-session-refresh-banner-copy {
-    margin: 8px 0 0;
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    margin: 0;
+    align-self: start;
     color: var(--text);
     font-size: var(--font-form-label);
     font-weight: var(--font-weight-regular);
@@ -3671,9 +3830,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 }
 
 .agent-doctor-panel {
-    --agent-doctor-collapse-icon-size: 12px;
-    --agent-doctor-collapse-icon-height: 8px;
-    --agent-doctor-collapse-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.41 1.59 6 6.17l4.59-4.58L12 3l-6 5-6-5z' fill='currentColor'/%3E%3C/svg%3E");
     margin-top: 12px;
     border: 1px solid var(--theme-warning);
     border-radius: var(--radius-soft);
@@ -3685,7 +3841,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-doctor-panel > summary {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto var(--agent-doctor-collapse-icon-size);
+    grid-template-columns: minmax(0, 1fr) auto var(--collapse-icon-size);
     align-items: center;
     column-gap: 12px;
     min-height: 44px;
@@ -3706,19 +3862,21 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     content: "";
     grid-column: 3;
     grid-row: 1;
-    width: var(--agent-doctor-collapse-icon-size);
-    height: var(--agent-doctor-collapse-icon-height);
+    width: var(--collapse-icon-size);
+    height: var(--collapse-icon-height);
     background-color: currentColor;
-    mask: var(--agent-doctor-collapse-icon) center/contain no-repeat;
-    -webkit-mask: var(--agent-doctor-collapse-icon) center/contain no-repeat;
-    transform: rotate(0deg);
+    mask: var(--collapse-icon-closed) center/contain no-repeat;
+    -webkit-mask: var(--collapse-icon-closed) center/contain no-repeat;
+    transform: rotate(var(--collapse-icon-closed-rotation));
     transform-origin: center;
     transition: transform 180ms var(--motion-standard);
     pointer-events: none;
 }
 
 .agent-doctor-panel[open] > summary::after {
-    transform: rotate(180deg);
+    mask-image: var(--collapse-icon-open);
+    -webkit-mask-image: var(--collapse-icon-open);
+    transform: rotate(var(--collapse-icon-open-rotation));
 }
 
 .agent-doctor-panel > summary:focus-visible {
@@ -4087,7 +4245,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     background-color: currentColor;
     mask: var(--collapse-icon-closed) center/contain no-repeat;
     -webkit-mask: var(--collapse-icon-closed) center/contain no-repeat;
-    transform: rotate(0deg);
+    transform: rotate(var(--collapse-icon-closed-rotation));
     transform-origin: center;
     transition: transform 180ms var(--motion-standard);
     pointer-events: none;
@@ -4096,7 +4254,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 .ui-collapse[open] > summary::after {
     mask-image: var(--collapse-icon-open);
     -webkit-mask-image: var(--collapse-icon-open);
-    transform: rotate(180deg);
+    transform: rotate(var(--collapse-icon-open-rotation));
 }
 
 .ui-collapse > summary:focus-visible {
@@ -5637,12 +5795,12 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     --settings-action-button-background-disabled: color-mix(in srgb, var(--theme-muted) 28%, transparent);
     --settings-action-button-color-disabled: color-mix(in srgb, var(--settings-action-button-color) 72%, transparent);
     --settings-action-button-background-pending: color-mix(in srgb, var(--settings-action-button-background) 76%, white 24%);
-    --settings-round-icon-button-background: var(--frosted-glass-background);
-    --settings-round-icon-button-background-hover: var(--frosted-glass-background-hover);
-    --settings-round-icon-button-border: var(--frosted-glass-border);
-    --settings-round-icon-button-shadow: var(--frosted-glass-shadow);
-    --settings-round-icon-button-shadow-hover: var(--frosted-glass-shadow-hover);
-    --settings-round-icon-button-shadow-active: var(--frosted-glass-shadow-active);
+    --circular-icon-button-background: var(--frosted-glass-background);
+    --circular-icon-button-background-hover: var(--frosted-glass-background-hover);
+    --circular-icon-button-border: var(--frosted-glass-border);
+    --circular-icon-button-shadow: var(--frosted-glass-shadow);
+    --circular-icon-button-shadow-hover: var(--frosted-glass-shadow-hover);
+    --circular-icon-button-shadow-active: var(--frosted-glass-shadow-active);
     --workspace-article-background: var(--glass-surface-background-strong);
     --workspace-article-blur: var(--frosted-glass-blur);
     --workspace-article-heading-background: var(--frosted-glass-background);
@@ -5695,9 +5853,11 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     z-index: var(--layer-modal-dialog);
     display: grid;
     grid-template-columns:
-        var(--workspace-modal-close-size)
         var(--workspace-modal-icon-size)
         minmax(0, 1fr);
+    grid-template-rows:
+        minmax(var(--workspace-modal-title-row-min-height), auto)
+        auto;
     column-gap: var(--workspace-modal-column-gap);
     row-gap: var(--workspace-modal-row-gap);
     align-items: start;
@@ -5715,18 +5875,18 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
 }
 
 .workspace-modal-icon {
-    grid-column: 2;
-    grid-row: 1;
+    grid-column: 1;
+    grid-row: 2;
     --loading-spinner-size: var(--workspace-modal-icon-size);
     width: var(--workspace-modal-icon-size);
     height: var(--workspace-modal-icon-size);
-    align-self: center;
+    align-self: start;
 }
 
 .workspace-modal-close {
     position: absolute;
-    top: var(--workspace-modal-close-offset);
-    left: var(--workspace-modal-close-offset);
+    top: calc(var(--workspace-modal-close-center-offset) - (var(--workspace-modal-close-size) / 2));
+    left: calc(var(--workspace-modal-close-center-offset) - (var(--workspace-modal-close-size) / 2));
     z-index: var(--layer-control-affordance);
     display: inline-grid;
     width: var(--workspace-modal-close-size);
@@ -5762,7 +5922,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
 }
 
 .workspace-modal-title {
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 1;
     margin: 0;
     align-self: center;
@@ -5771,16 +5931,20 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     font-weight: var(--font-weight-semibold);
     line-height: 1.2;
     text-align: left;
+    overflow-wrap: anywhere;
 }
 
 .workspace-modal-copy {
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 2;
+    min-width: 0;
     margin: 0;
+    align-self: start;
     color: var(--muted);
     font-size: var(--font-form-label);
     line-height: 1.45;
     text-align: left;
+    overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -6267,7 +6431,6 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 .segmented-control,
 .range-mode-shell {
     --segmented-option-count: 2;
-    --segmented-option-min-width: 0px;
     --segmented-thumb-duration: 325ms;
     --segmented-thumb-easing: var(--motion-bouncy);
     position: relative;
@@ -6277,7 +6440,7 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     border-radius: var(--mode-switch-radius);
     background: var(--control-glass-background);
     display: grid;
-    grid-template-columns: repeat(var(--segmented-option-count), minmax(var(--segmented-option-min-width), 1fr));
+    grid-template-columns: repeat(var(--segmented-option-count), minmax(0, 1fr));
     gap: var(--mode-switch-gap);
     align-items: stretch;
     box-shadow: inset 0 1px 0 var(--theme-glass-highlight), inset 0 -1px 0 var(--theme-glass-border), var(--frosted-glass-shadow);
@@ -6418,6 +6581,17 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     outline-offset: 2px;
 }
 
+@media (prefers-reduced-motion: reduce) {
+    .segmented-control,
+    .range-mode-shell,
+    .segmented-control::before,
+    .range-mode-shell::before,
+    .segmented-control-option span,
+    .range-mode-option span {
+        transition: none;
+    }
+}
+
 .browser-content-mode-control {
     width: fit-content;
     max-width: 100%;
@@ -6454,7 +6628,8 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 .browser-filter-select {
     position: relative;
     z-index: var(--layer-surface-content);
-    width: 100%;
+    width: min(100%, var(--shared-select-dropdown-max-width));
+    min-width: 0;
 }
 
 .browser-filter-select.is-open {
@@ -6462,8 +6637,35 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 }
 
 .browser-filter-select-trigger {
-    min-height: var(--control-form-height);
-    padding: 7px 10px;
+    position: relative;
+    box-sizing: border-box;
+    height: var(--shared-select-control-height);
+    min-height: var(--shared-select-control-height);
+    padding: 0 var(--shared-select-trigger-padding-inline-end) 0 10px;
+    border: var(--shared-select-border);
+    border-radius: var(--radius-pill);
+    background: var(--shared-select-trigger-material);
+    box-shadow: var(--shared-select-shadow);
+    backdrop-filter: var(--shared-select-blur);
+    -webkit-backdrop-filter: var(--shared-select-blur);
+    transition: background 180ms var(--motion-standard), box-shadow 180ms var(--motion-standard), border-color 180ms var(--motion-standard);
+}
+
+.browser-filter-select-trigger:hover,
+.browser-filter-select-trigger:focus,
+.browser-filter-select-trigger:focus-visible,
+.browser-filter-select-trigger[aria-expanded="true"] {
+    border: var(--shared-select-border);
+    background: var(--shared-select-trigger-material-hover);
+    box-shadow: var(--shared-select-shadow-hover);
+}
+
+.browser-filter-select-trigger .browser-picker-trigger-chevron {
+    position: absolute;
+    top: 50%;
+    inset-inline-end: var(--shared-select-chevron-inline-end);
+    transform: translateY(-50%) rotate(var(--shared-select-chevron-closed-rotation));
+    transform-origin: center;
 }
 
 .browser-filter-select-dropdown {
@@ -6476,7 +6678,13 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 }
 
 .browser-filter-select.is-open .browser-picker-trigger-chevron {
-    transform: rotate(180deg);
+    transform: translateY(-50%) rotate(var(--shared-select-chevron-open-rotation));
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .browser-filter-select .browser-picker-trigger-chevron {
+        transition: none;
+    }
 }
 
 .trade-strategy-select.browser-source-filter-trigger {
@@ -9370,18 +9578,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-pagination {
-    --local-store-pagination-gap: 10px;
     --local-store-pagination-floating-shell-padding: 4px;
-    --local-store-pagination-button-radius: var(--radius-pill);
-    --local-store-pagination-indicator-radius: var(--radius-pill);
-    --local-store-pagination-indicator-background: var(--accent-fill);
-    --local-store-pagination-indicator-shadow: 0 8px 18px var(--accent-shadow-strong), inset 0 1px 0 color-mix(in srgb, var(--theme-glass-highlight) 36%, transparent);
-    --local-store-pagination-button-background: var(--frosted-glass-background);
-    --local-store-pagination-button-border: 1px solid var(--accent-border-strong);
-    --local-store-pagination-button-shadow: var(--frosted-glass-shadow);
-    --local-store-pagination-button-blur: var(--frosted-glass-blur);
-    --local-store-pagination-motion-duration: var(--motion-duration-spatial);
-    --local-store-pagination-motion-easing: var(--motion-bouncy);
     position: relative;
     isolation: isolate;
     contain: layout;
@@ -9456,7 +9653,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     border: var(--local-store-pagination-button-border);
     border-radius: 50%;
     border-color: transparent;
-    color: var(--theme-text);
+    color: var(--local-store-pagination-button-color);
     background: transparent;
     box-shadow: none;
     backdrop-filter: none;
@@ -9490,6 +9687,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     border: var(--frosted-glass-border);
     background: var(--frosted-glass-background-hover);
     box-shadow: var(--frosted-glass-shadow-active);
+    color: var(--local-store-pagination-button-color-hover);
+    outline: none;
 }
 
 .browser-pagination .local-store-page-ellipsis {
@@ -9512,6 +9711,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     border: var(--frosted-glass-border);
     background: var(--frosted-glass-background-hover);
     box-shadow: var(--frosted-glass-shadow-active);
+    color: var(--local-store-pagination-button-color-hover);
 }
 
 .browser-pagination.agent-response-pagination .local-store-page-ellipsis {
@@ -9555,6 +9755,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     border-color: var(--theme-glass-border);
     background: var(--frosted-glass-background-hover);
     box-shadow: var(--frosted-glass-shadow-active);
+    color: var(--local-store-pagination-button-color-hover);
 }
 
 .browser-pagination-range-trigger:active {
@@ -9727,6 +9928,18 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
         opacity: 1;
         transform: translate3d(var(--shared-popover-translate-x, calc(-50% + var(--pagination-range-menu-shift-x))), 0, 0) scale(1);
         filter: saturate(100%);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .browser-pagination {
+        --local-store-pagination-motion-duration: 1ms;
+        --local-store-pagination-motion-easing: linear;
+    }
+
+    .browser-pagination-range-picker.is-open .browser-pagination-range-menu {
+        animation-duration: 1ms;
+        animation-timing-function: linear;
     }
 }
 
@@ -11669,7 +11882,7 @@ dialog.browser-dialog:not([open]) {
 .style-token-table-demo-surface {
     height: auto;
     min-height: 0;
-    overflow: visible;
+    overflow: hidden;
 }
 
 .style-token-table-demo-scroll {
@@ -11793,7 +12006,7 @@ dialog.browser-dialog:not([open]) {
 
 .style-token-table-demo-surface thead tr[data-style-token-table-summary-row] td {
     padding: var(--scrollable-data-table-summary-padding);
-    border-top: 1px solid var(--theme-glass-border);
+    border-top: var(--scrollable-data-table-summary-border);
     background: var(--scrollable-data-table-summary-background);
     box-shadow: var(--scrollable-data-table-summary-shadow);
     backdrop-filter: var(--scrollable-data-table-summary-blur);
@@ -12370,69 +12583,16 @@ dialog.browser-dialog:not([open]) {
     flex-direction: column;
 }
 
-.style-token-page .settings-round-icon-button,
-.style-token-page .global-quick-action-button,
-.style-token-page .sidebar-toggle {
-    width: var(--settings-round-icon-button-size);
-    min-width: var(--settings-round-icon-button-size);
-    height: var(--settings-round-icon-button-size);
-    min-height: var(--settings-round-icon-button-size);
-    padding: 0;
-    border: var(--settings-round-icon-button-border);
-    border-radius: var(--settings-round-icon-button-radius);
-    background: var(--settings-round-icon-button-background);
-    box-shadow: var(--settings-round-icon-button-shadow);
-    backdrop-filter: var(--frosted-glass-blur);
-    -webkit-backdrop-filter: var(--frosted-glass-blur);
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--settings-round-icon-button-color);
-    cursor: pointer;
-    font: 700 15px / normal var(--font-family-base);
-    transition: background 160ms var(--motion-standard), box-shadow 160ms var(--motion-standard), color 160ms var(--motion-standard), transform 460ms var(--motion-press);
+/* Override the catalog's generic full-width child preview for this compact control. */
+.style-token-page .style-token-round-icon-demo {
+    width: var(--circular-icon-button-size);
+    min-width: var(--circular-icon-button-size);
+    max-width: var(--circular-icon-button-size);
 }
 
 /* Keep navigation geometry on the shared spatial clock while demo controls retain press timing. */
 .style-token-page .sidebar-toggle {
     transition: background 160ms var(--motion-standard), box-shadow 160ms var(--motion-standard), color 160ms var(--motion-standard), transform var(--sidebar-motion-duration) var(--motion-emphasized);
-}
-
-.style-token-page .global-quick-action-button {
-    display: flex;
-}
-
-.style-token-page .settings-round-icon-button:hover,
-.style-token-page .settings-round-icon-button:focus-visible,
-.style-token-page .global-quick-action-button:hover,
-.style-token-page .global-quick-action-button:focus-visible,
-.style-token-page .sidebar-toggle:hover,
-.style-token-page .sidebar-toggle:focus-visible {
-    background: var(--settings-round-icon-button-background-hover);
-    color: var(--settings-round-icon-button-color-hover);
-    box-shadow: var(--settings-round-icon-button-shadow-hover);
-}
-
-.style-token-page .settings-round-icon-button:active,
-.style-token-page .global-quick-action-button:active,
-.style-token-page .sidebar-toggle:active {
-    box-shadow: var(--settings-round-icon-button-shadow-active);
-}
-
-.style-token-page .settings-round-icon-button .icon,
-.style-token-page .global-quick-action-button .icon,
-.style-token-page .sidebar-toggle .icon {
-    width: var(--settings-round-icon-button-icon-size);
-    height: var(--settings-round-icon-button-icon-size);
-    display: block;
-    background-color: currentColor;
-    mask-repeat: no-repeat;
-    -webkit-mask-repeat: no-repeat;
-    mask-position: center;
-    -webkit-mask-position: center;
-    mask-size: contain;
-    -webkit-mask-size: contain;
 }
 
 .style-token-page .global-theme-toggle[data-effective-theme="dark"] .icon {

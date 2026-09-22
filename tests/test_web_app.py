@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.127.0-codex.0
+# Code version: v1.129.0-codex.0
 
 from __future__ import annotations
 
@@ -713,7 +713,8 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.16.0-codex.0', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.17.0-codex.0', chatgpt_body)
+        self.assertIn('numeric-display.js?v=numeric-display-v1.0.0-codex.0', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt/text/edge"', chatgpt_body)
@@ -865,12 +866,12 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.135.0-codex.0"
+                expected_style_version = "style-v2.138.0-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
                 self.assertIn('id="global_theme_toggle"', body)
-                self.assertIn('class="global-quick-action-button global-theme-toggle"', body)
+                self.assertIn('class="circular-icon-button global-quick-action-button global-theme-toggle"', body)
                 self.assertIn('class="sidebar-dock-label"', dock_markup)
                 self.assertNotIn("cachelikes:browser-sidebar-open", body)
                 self.assertIn('waiting-modal.js?v=waiting-modal-v1.1.0-codex.1', body)
@@ -1291,7 +1292,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.135.0-codex.0', local_body)
+        self.assertIn('style-v2.138.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -1442,7 +1443,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-browser-session-message-toggle', local_body)
         self.assertEqual(local_body.count('class="browser-session-message-toggle agent-response-overflow-toggle"'), 1)
         self.assertIn('class="agent-response-answer browser-media-prompt-markdown', local_body)
-        self.assertIn('class="global-quick-action-button agent-response-copy"', local_body)
+        self.assertIn('class="circular-icon-button global-quick-action-button agent-response-copy"', local_body)
         self.assertIn('data-agent-response-copy', local_body)
         self.assertIn('data-agent-response-copy-feedback', local_body)
         self.assertIn('aria-label="Copy answer"', local_body)
@@ -1454,7 +1455,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("Starts a new root-level ChatGPT session for this task.", local_body)
         self.assertNotIn("Choose where this task continues; new session is the default.", local_body)
         self.assertIn('data-agent-combobox-spinner', local_body)
-        self.assertIn('class="browser-media-round-action browser-media-source-link agent-conversation-link"', local_body)
+        self.assertIn('class="circular-icon-button browser-media-round-action browser-media-source-link agent-conversation-link"', local_body)
         self.assertIn('href="https://chatgpt.com/"', local_body)
         self.assertIn('data-agent-open-conversation', local_body)
         self.assertIn('data-agent-browser="edge"', local_body)
@@ -4204,10 +4205,19 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-settings-panel="agent"', settings_body)
         self.assertIn('id="settings-agent"', settings_body)
         self.assertIn('name="agent_operating_system"', settings_body)
+        self.assertIn('id="agent_operating_system"', settings_body)
+        self.assertIn('aria-label="Operating system"', settings_body)
+        self.assertIn('data-shared-select-auto', settings_body)
+        self.assertIn('data-shared-select-kind="agent-operating-system"', settings_body)
+        self.assertIn('<label class="field-title" for="agent_operating_system">', settings_body)
         self.assertIn('data-agent-settings-operating-system', settings_body)
         self.assertIn('data-agent-terminal-authorization-button', settings_body)
         self.assertIn('data-agent-terminal-authorization-status', settings_body)
         self.assertIn('agent-settings.js?v=agent-settings-v1.0.0-codex.1', settings_body)
+        self.assertIn('select-controller.js?v=select-controller-v1.0.1', settings_body)
+        self.assertIn('browser-filter-select.js?v=browser-filter-select-v1.2.0-codex.1', settings_body)
+        self.assertLess(settings_body.index("select-controller.js"), settings_body.index("browser-filter-select.js"))
+        self.assertLess(settings_body.index("browser-filter-select.js"), settings_body.index("agent-settings.js"))
         self.assertIn('name="agent_context_limit_mib"', settings_body)
         self.assertIn('name="agent_max_turns"', settings_body)
         self.assertIn('name="agent_max_turns" type="number" min="2" max="2048"', settings_body)
@@ -4419,7 +4429,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('type="module"', body)
         self.assertIn("browser-search.js?v=browser-search-v2.2.1-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
-        self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.1.1-codex.1", body)
+        self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.2.0-codex.1", body)
         self.assertLess(
             body.index("select-controller.js?v=select-controller-v1.0.1"),
             body.index("browser-filter-select.js"),
@@ -4473,7 +4483,12 @@ class WebAppTests(unittest.TestCase):
 
         filter_select_script = BROWSER_FILTER_SELECT_SCRIPT_PATH.read_text(encoding="utf-8")
         for fragment in (
-            'document.querySelectorAll(".browser-filter-form select.form-select")',
+            'const selectSelector = ".browser-filter-form select.form-select, select[data-shared-select-auto]";',
+            'selectShell.dataset.sharedSelectField = "";',
+            "nativeOption.defaultSelected = isSelected;",
+            'select.addEventListener("shared-select:refresh", renderOptions);',
+            "new MutationObserver((records) => {",
+            "window.SHARED_SELECT_AUTO = Object.freeze({initialize: initializeSelect, refresh: refreshSelect});",
             'aria-haspopup", "listbox"',
             'className = "trade-strategy-dropdown browser-filter-select-dropdown"',
             'select.dispatchEvent(new Event("change", {bubbles: true}))',
@@ -4664,10 +4679,10 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.135.0-codex.0", body)
+            self.assertIn("style-v2.138.0-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.33.1-codex.1', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.34.0-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -5054,11 +5069,11 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("Session resources", first_body)
         self.assertIn("Current session", first_body)
         self.assertIn("Newest session", first_body)
-        self.assertIn("1 / 2", first_body)
+        self.assertIn('data-numeric-display-value="1">1</span> / <span data-numeric-display-value="2">2</span>', first_body)
         self.assertNotIn("resources in this session", first_body)
         self.assertNotIn("Latest image", first_body)
         self.assertIn("browser-session-controls-row", first_body)
-        self.assertIn('class="browser-session-control-button browser-session-view-button"', first_body)
+        self.assertIn('class="circular-icon-button browser-session-control-button browser-session-view-button"', first_body)
         self.assertIn('aria-label="Session View"', first_body)
         self.assertIn('aria-pressed="true"', first_body)
         self.assertIn('class="icon browser-session-view-icon"', first_body)
@@ -5071,7 +5086,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Refresh this session", first_body)
         self.assertIn('data-chatgpt-session-refresh', first_body)
         self.assertIn('data-chatgpt-session-label="Newest session"', first_body)
-        self.assertIn('class="browser-session-control-button browser-session-refresh-button"', first_body)
+        self.assertIn('class="circular-icon-button browser-session-control-button browser-session-refresh-button"', first_body)
         self.assertIn('aria-label="Refresh this session"', first_body)
         self.assertIn('class="icon browser-session-refresh-icon"', first_body)
         self.assertIn('id="browser_session_refresh_tooltip"', first_body)
@@ -5091,7 +5106,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("new-latest.png", first_body)
         self.assertNotIn("older-session.png", first_body)
         self.assertIn("Older session", second_body)
-        self.assertIn("2 / 2", second_body)
+        self.assertIn('data-numeric-display-value="2">2</span> / <span data-numeric-display-value="2">2</span>', second_body)
         self.assertIn("older-session.png", second_body)
         self.assertNotIn("new-latest.png", second_body)
         self.assertIn('data-chatgpt-session-view', chronological_body)
@@ -5151,7 +5166,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Cached media browser", body)
         self.assertIn('data-browser-source-filter-selected-label>ChatGPT</span>', body)
         self.assertIn('aria-label="ChatGPT sessions"', body)
-        self.assertIn("1 / 2", body)
+        self.assertIn('data-numeric-display-value="1">1</span> / <span data-numeric-display-value="2">2</span>', body)
 
     def test_theme_toggle_reuses_sibling_light_dark_behavior(self) -> None:
         script = THEME_MODE_SCRIPT_PATH.read_text(encoding="utf-8")

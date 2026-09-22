@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.7.0-codex.0
+Code version: v1.10.0-codex.0
 """
 
 import re
@@ -93,9 +93,11 @@ def test_style_token_component_rows_form_a_complete_sorted_component_catalog() -
         "--collapse-font-size",
         "--collapse-font-weight",
         "--collapse-icon-closed",
+        "--collapse-icon-closed-rotation",
         "--collapse-icon-gap",
         "--collapse-icon-height",
         "--collapse-icon-open",
+        "--collapse-icon-open-rotation",
         "--collapse-icon-size",
         "--collapse-section-gap",
         "--collapse-summary-padding",
@@ -130,6 +132,32 @@ def test_style_token_component_rows_form_a_complete_sorted_component_catalog() -
         "value": "max",
         "label": "Max",
     }
+    assert {token["name"] for token in rows_by_id["shared-select-filter"]["tokens"]} == {
+        "--shared-select-control-height",
+        "--shared-select-trigger-material",
+        "--shared-select-trigger-material-hover",
+        "--shared-select-dropdown-material",
+        "--shared-select-border",
+        "--shared-select-shadow",
+        "--shared-select-shadow-hover",
+        "--shared-select-blur",
+        "--shared-select-trigger-padding-inline-end",
+        "--shared-select-chevron-mask",
+        "--shared-select-chevron-width",
+        "--shared-select-chevron-height",
+        "--shared-select-chevron-inline-end",
+        "--shared-select-chevron-closed-rotation",
+        "--shared-select-chevron-open-rotation",
+        "--shared-select-chevron-transition-duration",
+        "--shared-select-dropdown-padding",
+        "--shared-select-dropdown-radius",
+        "--shared-select-dropdown-max-width",
+        "--shared-select-dropdown-max-height",
+        "--shared-select-option-min-height",
+        "--shared-select-option-padding",
+        "--shared-select-option-radius",
+        "--shared-select-option-gap",
+    }
     assert rows_by_id["settings-action-package"]["related_styles"] == (
         {"name": "Settings execution option", "target_id": "settings-execution-option"},
     )
@@ -160,6 +188,35 @@ def test_style_token_component_rows_form_a_complete_sorted_component_catalog() -
             token.get("reference_target_id") == "frosted-glass"
             for token in rows_by_id[row_id]["tokens"]
         )
+    for row_id in ("modal-dialog", "modal-dialog-banner-message"):
+        token_names = {token["name"] for token in rows_by_id[row_id]["tokens"]}
+        assert "--workspace-modal-title-row-min-height" in token_names
+        assert "--workspace-modal-row-gap" in token_names
+        assert "--workspace-modal-list-padding-inline-start" in token_names
+        assert "--workspace-modal-list-marker-gap" in token_names
+    assert len(rows_by_id["modal-dialog-banner-message"]["sample_items"]) == 2
+    assert rows_by_id["workspace-metric-value"]["sample_value"] == "2,032.15%"
+    assert {
+        "--circular-icon-button-size",
+        "--circular-icon-button-material",
+        "--circular-icon-button-border",
+        "--circular-icon-button-color-hover",
+    }.issubset({token["name"] for token in rows_by_id["circular-icon-button"]["tokens"]})
+    circular_material = next(
+        token
+        for token in rows_by_id["circular-icon-button"]["tokens"]
+        if token["name"] == "--circular-icon-button-material"
+    )
+    assert circular_material["reference_target_id"] == "frosted-glass"
+    assert {
+        "--local-store-pagination-button-color",
+        "--local-store-pagination-button-color-hover",
+    }.issubset({token["name"] for token in rows_by_id["pagination"]["tokens"]})
+    assert {
+        "--scrollable-data-table-header-material",
+        "--scrollable-data-table-summary-line-height",
+        "--scrollable-data-table-scrollbar-gutter",
+    }.issubset({token["name"] for token in rows_by_id["scrollable-data-table"]["tokens"]})
     assert not expected_ids.intersection(
         {
             "investment-holdings-allocation-badge",
@@ -187,7 +244,7 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert 'aria-label="Frosted glass demo"' in html
     assert 'class="metric-card foundation-metric-card metric-card-accent style-token-metric-card-demo"' in html
     assert ">Total trades</span>" in html
-    assert ">2</strong>" in html
+    assert 'data-numeric-display-value="2,032.15%">2,032.15%</strong>' in html
     for dead_demo in (
         "status-states",
         "control-playground",
@@ -195,9 +252,16 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
         "product-summary",
     ):
         assert f'data-style-token-demo="{dead_demo}"' not in html
-    assert 'class="range-mode-shell"' in html
+    assert 'class="segmented-control range-mode-shell"' in html
     assert 'data-segmented-pill="measured"' in html
     assert 'class="range-mode-option"' in html
+    assert 'class="circular-icon-button settings-round-icon-button style-token-round-icon-demo"' in html
+    assert 'class="events-table-shell scrollable-data-table-shell local-store-pagination-host style-token-table-demo-surface"' in html
+    assert "data-table-header" in html
+    assert "data-table-scroll" in html
+    assert "data-table-body" in html
+    assert "numeric-display-v1.0.0-codex.0" in html
+    assert "scrollable-data-table-v1.0.0-codex.0" in html
     assert 'data-style-token-card="style-token-color-and-status"' not in html
     assert 'data-style-token-card="style-token-layout-and-motion"' not in html
     assert 'data-style-token-card="style-token-product-components"' not in html

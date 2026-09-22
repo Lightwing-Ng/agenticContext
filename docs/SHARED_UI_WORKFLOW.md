@@ -1,22 +1,31 @@
 # Shared UI workflow
 
-Documentation version: `v1.1.0-codex.0`
+Documentation version: `v1.2.0-codex.0`
 
 ## Shared select keyboard adapter
 
 `app/web/static/select-controller.js` v1.0.1 is vendored byte-for-byte from
 Worthward's `app/web/static/assets/js/select-controller.js`. The keyboard
 contract is owned by the sibling's `docs/SHARED_UI_WORKFLOW.md`.
-`browser-filter-select.js` and `browser-source-filter.js` delegate navigation
-and DOM focus to this controller; submission, metadata, pointer dismissal, and
-header-menu positioning remain local. Escape is consumed by the nested select so
-it cannot close an enclosing overlay. Opening with ArrowUp/ArrowDown now focuses
-the selected option consistently; it no longer advances the native-select adapter
-on its first key press. Other pickers remain unmigrated.
-Both entrypoints also import the controller when a cached template lacks its
-script tag, before upgrading the original form controls.
+`browser-filter-select.js` is the standard single-value adapter for Local resources
+filters and explicitly marked `select[data-shared-select-auto]` consumers, including
+the Settings operating-system field. It keeps the native select authoritative,
+generates the shared trigger and listbox, and owns rendering, pointer dismissal,
+native synchronization, and the explicit `SHARED_SELECT_AUTO.refresh(select)`
+boundary for programmatic option replacement or value assignment. The controller
+owns DOM focus and keyboard navigation. Both entrypoints also import the controller
+when a cached template lacks its script tag, before upgrading the original controls.
 
-Run `node --test tests/test_select_controller.mjs` and
+`browser-source-filter.js` and product-specific model, browser-session, source, and
+searchable pickers reuse shared visual tokens or the keyboard controller but remain
+explicit adapters. They are not standard-select migrations unless they implement the
+complete standard single-value contract. Escape is consumed by the nested select so
+it cannot close an enclosing overlay. ArrowUp, ArrowDown, Home, and End focus an
+enabled option without committing; Enter or Space commits once, Escape restores the
+trigger, and Tab keeps native traversal.
+
+Run `node --test tests/test_select_controller.mjs`,
+`./scripts/test.sh tests/test_web_app.py tests/test_style_tokens.py`, and
 `./scripts/test.sh tests/test_select_keyboard_e2e.py` for focused validation.
 
 This is the short entrypoint for shared visual and interaction work. The only

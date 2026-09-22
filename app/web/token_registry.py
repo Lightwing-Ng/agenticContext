@@ -1,6 +1,6 @@
 """Read the local CSS foundation token registry for the Style tokens page.
 
-Code version: v0.10.0-codex.0
+Code version: v0.13.0-codex.0
 """
 
 from __future__ import annotations
@@ -247,8 +247,8 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "id": "circular-icon-button",
             "name": "Circular icon button",
             "sample_kind": "round-icon-button",
-            "token_names": ("--settings-round-icon-button-material", "--settings-round-icon-button-size", "--settings-round-icon-button-icon-size", "--settings-round-icon-button-radius", "--settings-round-icon-button-background", "--settings-round-icon-button-background-hover", "--settings-round-icon-button-shadow", "--settings-round-icon-button-shadow-hover", "--settings-round-icon-button-shadow-active", "--settings-round-icon-button-color", "--settings-round-icon-button-color-hover"),
-            "material_names": ("--settings-round-icon-button-material",),
+            "token_names": ("--circular-icon-button-size", "--circular-icon-button-icon-size", "--circular-icon-button-radius", "--circular-icon-button-material", "--circular-icon-button-background", "--circular-icon-button-background-hover", "--circular-icon-button-border", "--circular-icon-button-shadow", "--circular-icon-button-shadow-hover", "--circular-icon-button-shadow-active", "--circular-icon-button-color", "--circular-icon-button-color-hover"),
+            "material_names": ("--circular-icon-button-material",),
         },
         {
             "id": "collapse",
@@ -260,7 +260,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
                 {"label": "Chip window", "value": "41", "unit": "days"},
                 {"label": "Prior strength", "value": "1.51", "unit": ""},
             ),
-            "token_names": ("--collapse-body-padding", "--collapse-font-size", "--collapse-font-weight", "--collapse-icon-closed", "--collapse-icon-gap", "--collapse-icon-height", "--collapse-icon-open", "--collapse-icon-size", "--collapse-section-gap", "--collapse-summary-padding"),
+            "token_names": ("--collapse-body-padding", "--collapse-font-size", "--collapse-font-weight", "--collapse-icon-closed", "--collapse-icon-closed-rotation", "--collapse-icon-gap", "--collapse-icon-height", "--collapse-icon-open", "--collapse-icon-open-rotation", "--collapse-icon-size", "--collapse-section-gap", "--collapse-summary-padding"),
         },
         {
             "id": "frosted-glass",
@@ -275,7 +275,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "name": "Global theme toggle",
             "sample_kind": "global-theme-toggle",
             "sample_title": "Appearance",
-            "token_names": ("--settings-round-icon-button-size", "--settings-round-icon-button-icon-size", "--settings-round-icon-button-radius", "--settings-round-icon-button-background", "--settings-round-icon-button-background-hover", "--settings-round-icon-button-shadow", "--settings-round-icon-button-shadow-hover", "--settings-round-icon-button-color", "--settings-round-icon-button-color-hover", "--frosted-glass-blur"),
+            "token_names": ("--circular-icon-button-size", "--circular-icon-button-icon-size", "--circular-icon-button-radius", "--circular-icon-button-background", "--circular-icon-button-background-hover", "--circular-icon-button-border", "--circular-icon-button-shadow", "--circular-icon-button-shadow-hover", "--circular-icon-button-shadow-active", "--circular-icon-button-color", "--circular-icon-button-color-hover"),
         },
         {
             "id": "modal-dialog",
@@ -283,7 +283,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "sample_kind": "modal-dialog",
             "sample_title": "Refreshing local cache",
             "sample_copy": "We are checking the local catalog for new items. Keep this page open while the refresh finishes.",
-            "token_names": ("--workspace-modal-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-icon-size", "--workspace-modal-column-gap", "--workspace-modal-row-gap"),
+            "token_names": ("--workspace-modal-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-title-row-min-height", "--workspace-modal-icon-size", "--workspace-modal-column-gap", "--workspace-modal-row-gap", "--workspace-modal-list-padding-inline-start", "--workspace-modal-list-marker-gap"),
             "material_names": ("--workspace-modal-material",),
         },
         {
@@ -292,7 +292,11 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "sample_kind": "floating-banner",
             "sample_title": "Cache settings updated",
             "sample_copy": "New browser sessions will use the saved settings.",
-            "token_names": ("--notice-floating-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-icon-size", "--workspace-modal-column-gap"),
+            "sample_items": (
+                "New browser sessions will use the saved settings and retain the selected local cache policy.",
+                "Existing sessions keep their current settings until the next refresh.",
+            ),
+            "token_names": ("--notice-floating-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-title-row-min-height", "--workspace-modal-icon-size", "--workspace-modal-column-gap", "--workspace-modal-row-gap", "--workspace-modal-list-padding-inline-start", "--workspace-modal-list-marker-gap"),
             "material_names": ("--notice-floating-material",),
             "related_styles": ({"name": "Modal dialog", "target_id": "modal-dialog"},),
         },
@@ -301,7 +305,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "name": "Pagination",
             "sample_kind": "local-store-pagination",
             "sample_title": "Sessions",
-            "token_names": ("--local-store-pagination-material", "--radius-pill", "--accent-fill", "--accent-shadow-strong", "--font-table-body", "--motion-duration-spatial", "--motion-bouncy"),
+            "token_names": ("--local-store-pagination-material", "--local-store-pagination-slot-size", "--local-store-pagination-gap", "--local-store-pagination-button-radius", "--local-store-pagination-indicator-radius", "--local-store-pagination-indicator-background", "--local-store-pagination-indicator-shadow", "--local-store-pagination-button-background", "--local-store-pagination-button-border", "--local-store-pagination-button-shadow", "--local-store-pagination-button-blur", "--local-store-pagination-button-color", "--local-store-pagination-button-color-hover", "--local-store-pagination-motion-duration", "--local-store-pagination-motion-easing"),
             "material_names": ("--local-store-pagination-material",),
         },
         {
@@ -323,7 +327,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "name": "Scrollable data table",
             "sample_kind": "scrollable-data-table",
             "sample_title": "Cache history",
-            "token_names": ("--scrollable-data-table-header-material", "--scrollable-data-table-header-padding", "--scrollable-data-table-cell-padding", "--scrollable-data-table-summary-padding", "--scrollable-data-table-header-height", "--scrollable-data-table-min-width", "--scrollable-data-table-header-color", "--scrollable-data-table-scrollbar-gutter", "--scrollable-data-table-row-background", "--scrollable-data-table-row-background-alt", "--scrollable-data-table-summary-background", "--scrollable-data-table-summary-border", "--scrollable-data-table-summary-shadow", "--scrollable-data-table-summary-blur", "--field-title-font-size", "--field-title-line-height", "--field-title-letter-spacing", "--field-title-font-weight", "--field-title-color"),
+            "token_names": ("--scrollable-data-table-header-material", "--scrollable-data-table-header-padding", "--scrollable-data-table-cell-padding", "--scrollable-data-table-summary-line-height", "--scrollable-data-table-summary-padding", "--scrollable-data-table-header-height", "--scrollable-data-table-min-width", "--scrollable-data-table-header-color", "--scrollable-data-table-scrollbar-gutter", "--scrollable-data-table-row-background", "--scrollable-data-table-row-background-alt", "--scrollable-data-table-summary-background", "--scrollable-data-table-summary-border", "--scrollable-data-table-summary-shadow", "--scrollable-data-table-summary-blur"),
             "material_names": ("--scrollable-data-table-header-material",),
         },
         {
@@ -377,7 +381,32 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "name": "Shared select filter",
             "sample_kind": "shared-select-filter",
             "sample_title": "Sort cached text",
-            "token_names": ("--shared-select-control-height", "--shared-select-trigger-material", "--shared-select-dropdown-padding", "--shared-select-dropdown-radius", "--shared-select-dropdown-max-height", "--shared-select-option-min-height", "--shared-select-option-padding", "--shared-select-option-radius", "--shared-select-option-gap", "--control-liquid-background", "--control-liquid-background-hover", "--control-liquid-border"),
+            "token_names": (
+                "--shared-select-control-height",
+                "--shared-select-trigger-material",
+                "--shared-select-trigger-material-hover",
+                "--shared-select-dropdown-material",
+                "--shared-select-border",
+                "--shared-select-shadow",
+                "--shared-select-shadow-hover",
+                "--shared-select-blur",
+                "--shared-select-trigger-padding-inline-end",
+                "--shared-select-chevron-mask",
+                "--shared-select-chevron-width",
+                "--shared-select-chevron-height",
+                "--shared-select-chevron-inline-end",
+                "--shared-select-chevron-closed-rotation",
+                "--shared-select-chevron-open-rotation",
+                "--shared-select-chevron-transition-duration",
+                "--shared-select-dropdown-padding",
+                "--shared-select-dropdown-radius",
+                "--shared-select-dropdown-max-width",
+                "--shared-select-dropdown-max-height",
+                "--shared-select-option-min-height",
+                "--shared-select-option-padding",
+                "--shared-select-option-radius",
+                "--shared-select-option-gap",
+            ),
             "material_names": ("--shared-select-trigger-material", "--shared-select-dropdown-material"),
         },
         {
@@ -427,7 +456,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "name": "Workspace metric value",
             "sample_kind": "metric-value",
             "sample_title": "Total trades",
-            "sample_value": "2",
+            "sample_value": "2,032.15%",
             "token_names": ("--workspace-metric-label-font-size", "--workspace-metric-label-line-height", "--workspace-metric-label-letter-spacing", "--workspace-metric-label-font-weight", "--workspace-metric-label-color", "--workspace-metric-value-font-size", "--workspace-metric-value-line-height", "--workspace-metric-value-letter-spacing", "--workspace-metric-value-font-weight", "--workspace-metric-decimal-scale", "--workspace-metric-card-padding", "--workspace-metric-card-row-gap", "--workspace-metric-card-radius", "--workspace-metric-card-label-min-height", "--workspace-metric-card-min-height"),
         },
     )
@@ -439,6 +468,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
         row = {key: value for key, value in spec.items() if key not in {"token_names", "material_names"}}
         row.setdefault("sample_title", "")
         row.setdefault("sample_copy", "")
+        row.setdefault("sample_items", ())
         row.setdefault("sample_value", "")
         row.setdefault("sample_options", ())
         row.setdefault("related_styles", ())

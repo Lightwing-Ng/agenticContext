@@ -1,4 +1,4 @@
-{# Code version: v0.1.0-codex.1 #}
+{# Code version: v0.2.0-codex.0 #}
 
 {% macro render_notice_banner(
     title='',
@@ -30,13 +30,13 @@
     <span{% if icon_id %} id="{{ icon_id }}"{% endif %}
           class="icon workspace-modal-icon notice-floating-banner-icon {{ icon_class }}"
           aria-hidden="true"></span>
+    {% if title or title_id or title_attrs %}<p{% if title_id %} id="{{ title_id }}"{% endif %} class="notice-floating-banner-heading"{% if title_attrs %} {{ title_attrs|safe }}{% endif %}>{{ title }}</p>{% endif %}
     {% if message_container %}
     <div{% if message_id %} id="{{ message_id }}"{% endif %} class="notice-floating-banner-content"{% if message_attrs %} {{ message_attrs|safe }}{% endif %}></div>
     {% else %}
     <div class="notice-floating-banner-content">
-        {% if title or title_id or title_attrs %}<p{% if title_id %} id="{{ title_id }}"{% endif %} class="notice-floating-banner-heading"{% if title_attrs %} {{ title_attrs|safe }}{% endif %}>{{ title }}</p>{% endif %}
         {% if caller is defined %}
-            {% if numbered %}<div{% if message_id %} id="{{ message_id }}"{% endif %} class="notice-floating-banner-list"{% if message_attrs %} {{ message_attrs|safe }}{% endif %}>{{ caller() }}</div>{% else %}<p{% if message_id %} id="{{ message_id }}"{% endif %} class="notice-floating-banner-copy"{% if message_attrs %} {{ message_attrs|safe }}{% endif %}>{{ caller() }}</p>{% endif %}
+            {% if numbered %}<ol{% if message_id %} id="{{ message_id }}"{% endif %} class="notice-floating-banner-list"{% if message_attrs %} {{ message_attrs|safe }}{% endif %}>{{ caller() }}</ol>{% else %}<p{% if message_id %} id="{{ message_id }}"{% endif %} class="notice-floating-banner-copy"{% if message_attrs %} {{ message_attrs|safe }}{% endif %}>{{ caller() }}</p>{% endif %}
         {% endif %}
     </div>
     {% endif %}

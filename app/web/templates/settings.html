@@ -1,4 +1,4 @@
-<!-- Code version: v1.36.14-codex.0 -->
+<!-- Code version: v1.37.2-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,13 +8,15 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.135.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.138.0-codex.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-navigation.js', v='settings-navigation-v1.2.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v1.3.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-auto-save.js', v='settings-auto-save-v1.0.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='agent-settings.js', v='agent-settings-v1.0.0-codex.1') }}"></script>
 </head>
 <body>
@@ -24,7 +26,7 @@
 <main class="page">
     <button
         type="button"
-        class="sidebar-toggle"
+        class="circular-icon-button sidebar-toggle"
         id="sidebar_toggle"
         data-layout-role="sidebar-toggle"
         aria-label="Toggle sidebar"
@@ -198,11 +200,15 @@
                                             <span>{{ agent_runtime_snapshot.message }}</span>
                                         </span>
                                     </div>
-                                    <label class="field">
-                                        <span>Operating system</span>
+                                    <div class="field">
+                                        <label class="field-title" for="agent_operating_system">Operating system</label>
                                         <select
                                             class="form-select"
+                                            id="agent_operating_system"
                                             name="agent_operating_system"
+                                            aria-label="Operating system"
+                                            data-shared-select-auto
+                                            data-shared-select-kind="agent-operating-system"
                                             data-agent-settings-operating-system
                                             data-agent-host-operating-system="{{ agent_runtime_snapshot.host_operating_system }}"
                                         >
@@ -210,7 +216,7 @@
                                             <option value="windows"{% if agent_settings.operating_system == 'windows' %} selected{% endif %}>Windows</option>
                                         </select>
                                         <span class="field-help">The Agent uses the host operating system automatically. Windows runs through PowerShell and Edge or Chrome.</span>
-                                    </label>
+                                    </div>
                                     <section
                                         class="settings-action-package settings-callout-card-primary settings-agent-terminal-action"
                                         aria-labelledby="agent_terminal_permissions_heading"

@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.49.0-codex.0
+Code version: v1.50.0-codex.0
 """
 
 from __future__ import annotations
@@ -1600,6 +1600,9 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
         expect(collapse).not_to_have_attribute("open", "")
         expect(collapse_body).to_be_hidden()
         assert collapse_summary.evaluate(
+            "element => getComputedStyle(element, '::after').transform"
+        ) == "matrix(0, -1, 1, 0, 0, 0)"
+        assert collapse_summary.evaluate(
             """element => {
                 const style = getComputedStyle(element);
                 return {
@@ -1621,7 +1624,7 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
         ) == "0px 10px 10px"
         assert collapse_summary.evaluate(
             "element => getComputedStyle(element, '::after').transform"
-        ) == "matrix(-1, 0, 0, -1, 0, 0)"
+        ) == "matrix(1, 0, 0, 1, 0, 0)"
 
         period_trigger = page.locator(
             "#shared-select-dropdown [data-style-token-shared-filter-trigger]"
@@ -1792,13 +1795,13 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
         expect(page.locator("[data-style-token-table-pagination]")).to_be_hidden()
 
         token_control = page.locator(
-            '[data-style-token-name="--settings-round-icon-button-size"]'
+            '[data-style-token-name="--circular-icon-button-size"]'
         ).first
         expect(token_control).to_have_attribute("data-style-token-value", "36")
         token_control.locator('[data-style-token-stepper="up"]').click()
         expect(token_control).to_have_attribute("data-style-token-value", "37")
         assert page.locator("[data-style-token-shell]").evaluate(
-            "element => element.style.getPropertyValue('--settings-round-icon-button-size')"
+            "element => element.style.getPropertyValue('--circular-icon-button-size')"
         ) == "37px"
     finally:
         context.close()
@@ -11403,26 +11406,39 @@ def test_all_cached_messages_reuse_the_numbered_frosted_table(
         width, 959, touch=False,
     )
     try:
-        table = page.get_by_role("table", name="Cached messages", exact=True)
-        expect(table).to_be_visible()
-        expect(table.locator("th")).to_have_text(["No.", "Time", "Role", "Message"])
-        expect(table.locator("tbody .browser-session-table-number")).to_have_text("1")
-        expect(table.locator(".browser-session-table-message")).to_have_text(
+        header_table = page.get_by_role("table", name="Cached message headings", exact=True)
+        body_table = page.get_by_role("table", name="Cached messages", exact=True)
+        expect(header_table).to_be_visible()
+        expect(body_table).to_be_visible()
+        expect(header_table.locator("th")).to_have_text(["No.", "Time", "Role", "Message"])
+        expect(body_table.locator("tbody .browser-session-table-number")).to_have_text("1")
+        expect(body_table.locator(".browser-session-table-message")).to_have_text(
             "A timestamp layout regression fixture."
         )
         expect(page.locator(".browser-chat-message-role, .browser-chat-message-title")).to_have_count(0)
-        geometry = table.evaluate("""table => {
-            const header = table.querySelector('th');
-            const content = table.querySelector('.browser-session-table-message');
+        geometry = page.locator(".browser-session-detail-shell").evaluate("""shell => {
+            const header = shell.querySelector(':scope > table[data-table-header]');
+            const scroll = shell.querySelector(':scope > [data-table-scroll]');
+            const body = scroll.querySelector(':scope > table[data-table-body]');
+            const headerCell = header.querySelector('th');
+            const content = body.querySelector('.browser-session-table-message');
             return {
+                directHeader: header.parentElement === shell,
+                directScroll: scroll.parentElement === shell,
+                bodyInScroll: body.parentElement === scroll,
                 position: getComputedStyle(header).position,
-                blur: getComputedStyle(header).backdropFilter,
+                blur: getComputedStyle(headerCell).backdropFilter,
+                scrollOverflow: getComputedStyle(scroll).overflowX,
                 contentHeight: content.getBoundingClientRect().height,
                 lineHeight: parseFloat(getComputedStyle(content).lineHeight),
                 bodyOverflow: document.documentElement.scrollWidth - innerWidth,
             };
         }""")
-        assert geometry["position"] == "sticky"
+        assert geometry["directHeader"]
+        assert geometry["directScroll"]
+        assert geometry["bodyInScroll"]
+        assert geometry["position"] == "absolute"
+        assert geometry["scrollOverflow"] == "auto"
         assert "blur(" in geometry["blur"]
         assert geometry["contentHeight"] + 1 >= geometry["lineHeight"]
         assert geometry["bodyOverflow"] <= 1

@@ -1,4 +1,4 @@
-<!-- Code version: v3.63.0-codex.0 -->
+<!-- Code version: v3.64.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.135.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.138.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.0.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
@@ -22,7 +22,7 @@
 {% set selected_model_options = model_options_by_platform.get(settings.platform, ()) %}
 {% set selected_model = selected_model_options | selectattr('key', 'equalto', settings.model) | list | first %}
 <main class="page agent-page" data-agent-route-prefix="/agent" data-agent-connection-mode="{{ connection_mode }}" data-agent-safari-execution-platforms="{{ safari_agent_execution_platforms }}" data-agent-running="{{ 'true' if agent_snapshot.running else 'false' }}" data-agent-run-id="{{ agent_snapshot.run_id or agent_snapshot.started_at }}" data-agent-run-revision="{{ agent_snapshot.run_revision }}" data-agent-started-at="{{ agent_snapshot.started_at }}">
-    <button type="button" class="sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+    <button type="button" class="circular-icon-button sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
         <span class="icon sidebar-toggle-icon" aria-hidden="true"></span>
     </button>
     <div class="app-shell is-sidebar-open" id="app_shell">
@@ -477,7 +477,7 @@
                             </ol>
                         </details>
                             <a
-                                class="browser-media-round-action browser-media-source-link agent-conversation-link"
+                                class="circular-icon-button browser-media-round-action browser-media-source-link agent-conversation-link"
                                 id="agent_conversation_link"
                                 href="{{ selected_platform.home_url }}"
                                 target="_blank"
@@ -565,7 +565,7 @@
                                 </div>
                                 <button
                                     type="button"
-                                    class="global-quick-action-button agent-response-copy"
+                                    class="circular-icon-button global-quick-action-button agent-response-copy"
                                     data-agent-response-copy
                                     aria-label="Copy answer"
                                     title="Copy answer"

@@ -1,4 +1,4 @@
-<!-- Code version: v1.4.4-codex.0 -->
+<!-- Code version: v1.4.7-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.135.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.138.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='jury.css', v='jury-v1.2.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
@@ -18,7 +18,7 @@
 <body>
 {% include "_sidebar_bootstrap.html" %}
 <main class="page agent-page jury-page" data-jury-root data-jury-browser="{{ settings.browser }}">
-    <button type="button" class="sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false"><span class="icon sidebar-toggle-icon" aria-hidden="true"></span></button>
+    <button type="button" class="circular-icon-button sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false"><span class="icon sidebar-toggle-icon" aria-hidden="true"></span></button>
     <div class="app-shell is-sidebar-open" id="app_shell">
         {% include "_theme_toggle.html" %}
         <button type="button" class="sidebar-backdrop" id="sidebar_backdrop" aria-label="Close sidebar" aria-hidden="true" tabindex="-1" hidden></button>
@@ -141,7 +141,7 @@
                                     </section>
                                     <div class="jury-rounds" data-jury-rounds></div>
                                 </div>
-                                <button type="button" class="global-quick-action-button agent-response-copy" data-jury-copy aria-label="Copy Jury discussion" title="Copy Jury discussion" hidden><span class="icon agent-response-copy-icon" aria-hidden="true"></span><span class="agent-response-copy-feedback" data-jury-copy-feedback aria-live="polite"></span></button>
+                                <button type="button" class="circular-icon-button global-quick-action-button agent-response-copy" data-jury-copy aria-label="Copy Jury discussion" title="Copy Jury discussion" hidden><span class="icon agent-response-copy-icon" aria-hidden="true"></span><span class="agent-response-copy-feedback" data-jury-copy-feedback aria-live="polite"></span></button>
                             </div>
                         </div>
                     </article>

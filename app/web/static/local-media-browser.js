@@ -1,4 +1,4 @@
-/* Code version: v1.33.1-codex.1 */
+/* Code version: v1.34.0-codex.0 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -1115,7 +1115,7 @@
         const isPrevious = direction < 0;
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "settings-round-icon-button browser-video-nav-button";
+        button.className = "circular-icon-button settings-round-icon-button browser-video-nav-button";
         button.setAttribute("aria-label", isPrevious ? "Previous video" : "Next video");
         button.title = isPrevious ? "Previous video" : "Next video";
         button.disabled = !getAdjacentVideoItem(item, direction);

@@ -1,4 +1,4 @@
-<!-- Code version: v1.73.20-codex.0 -->
+<!-- Code version: v1.74.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,18 +9,20 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.135.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.138.0-codex.0') }}">
+    <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.0.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.2-codex.1') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.33.1-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.34.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.5.1-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.1.1-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-actions.js', v='browser-session-actions-v1.1.1-codex.1') }}"></script>
 </head>
 <body>
@@ -77,7 +79,7 @@
 
     <button
         type="button"
-        class="sidebar-toggle"
+        class="circular-icon-button sidebar-toggle"
         id="sidebar_toggle"
         data-layout-role="sidebar-toggle"
         aria-label="Toggle sidebar"
@@ -275,23 +277,23 @@
                             <nav class="browser-session-neighbor-nav" aria-label="{{ 'Answerer navigation' if is_zhihu_text else 'Session navigation' }}">
                                 {% if text_page.previous_session %}
                                 <a
-                                    class="browser-session-control-button browser-session-neighbor-button"
+                                    class="circular-icon-button browser-session-control-button browser-session-neighbor-button"
                                     href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.previous_session.stable_id, session_page=filters.session_page, page=1) }}"
                                     aria-label="{{ 'Previous answerer' if is_zhihu_text else 'Previous session' }}"
                                     title="{{ 'Previous answerer' if is_zhihu_text else 'Previous session' }}: {{ text_page.previous_session.conversation_title }}"
                                 ><span class="icon browser-session-neighbor-prev-icon" aria-hidden="true"></span></a>
                                 {% else %}
-                                <button type="button" class="browser-session-control-button browser-session-neighbor-button" disabled aria-label="{{ 'No previous answerer' if is_zhihu_text else 'No previous session' }}" title="{{ 'No previous answerer' if is_zhihu_text else 'No previous session' }}"><span class="icon browser-session-neighbor-prev-icon" aria-hidden="true"></span></button>
+                                <button type="button" class="circular-icon-button browser-session-control-button browser-session-neighbor-button" disabled aria-label="{{ 'No previous answerer' if is_zhihu_text else 'No previous session' }}" title="{{ 'No previous answerer' if is_zhihu_text else 'No previous session' }}"><span class="icon browser-session-neighbor-prev-icon" aria-hidden="true"></span></button>
                                 {% endif %}
                                 {% if text_page.next_session %}
                                 <a
-                                    class="browser-session-control-button browser-session-neighbor-button"
+                                    class="circular-icon-button browser-session-control-button browser-session-neighbor-button"
                                     href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.next_session.stable_id, session_page=filters.session_page, page=1) }}"
                                     aria-label="{{ 'Next answerer' if is_zhihu_text else 'Next session' }}"
                                     title="{{ 'Next answerer' if is_zhihu_text else 'Next session' }}: {{ text_page.next_session.conversation_title }}"
                                 ><span class="icon browser-session-neighbor-next-icon" aria-hidden="true"></span></a>
                                 {% else %}
-                                <button type="button" class="browser-session-control-button browser-session-neighbor-button" disabled aria-label="{{ 'No next answerer' if is_zhihu_text else 'No next session' }}" title="{{ 'No next answerer' if is_zhihu_text else 'No next session' }}"><span class="icon browser-session-neighbor-next-icon" aria-hidden="true"></span></button>
+                                <button type="button" class="circular-icon-button browser-session-control-button browser-session-neighbor-button" disabled aria-label="{{ 'No next answerer' if is_zhihu_text else 'No next session' }}" title="{{ 'No next answerer' if is_zhihu_text else 'No next session' }}"><span class="icon browser-session-neighbor-next-icon" aria-hidden="true"></span></button>
                                 {% endif %}
                             </nav>
                             <div
@@ -388,11 +390,11 @@
                         {% if media_page.pagination_unit == "session" %}
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Total resources</span>
-                            <strong>{{ "{:,}".format(media_page.total_count) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(media_page.total_count) }}">{{ "{:,}".format(media_page.total_count) }}</strong>
                         </div>
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Sessions</span>
-                            <strong>{{ "{:,}".format(media_page.current_page if media_page.session_count else 0) }} / {{ "{:,}".format(media_page.session_count) }}</strong>
+                            <strong><span data-numeric-display-value="{{ '{:,}'.format(media_page.current_page if media_page.session_count else 0) }}">{{ "{:,}".format(media_page.current_page if media_page.session_count else 0) }}</span> / <span data-numeric-display-value="{{ '{:,}'.format(media_page.session_count) }}">{{ "{:,}".format(media_page.session_count) }}</span></strong>
                         </div>
                         <div class="metric-card foundation-metric-card metric-card-accent browser-session-name-metric">
                             <span class="metric-label">Current session</span>
@@ -401,15 +403,15 @@
                         {% else %}
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Total results</span>
-                            <strong>{{ "{:,}".format(media_page.total_count) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(media_page.total_count) }}">{{ "{:,}".format(media_page.total_count) }}</strong>
                         </div>
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Images</span>
-                            <strong>{{ "{:,}".format(media_page.image_count) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(media_page.image_count) }}">{{ "{:,}".format(media_page.image_count) }}</strong>
                         </div>
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Videos</span>
-                            <strong>{{ "{:,}".format(media_page.video_count) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(media_page.video_count) }}">{{ "{:,}".format(media_page.video_count) }}</strong>
                         </div>
                         {% endif %}
                     </div>
@@ -417,11 +419,11 @@
                     <div class="metric-grid browser-metric-grid browser-text-metric-grid" aria-label="Saved prompt totals">
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Saved prompts</span>
-                            <strong>{{ "{:,}".format(prompt_page.total_count) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(prompt_page.total_count) }}">{{ "{:,}".format(prompt_page.total_count) }}</strong>
                         </div>
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Sources</span>
-                            <strong>{{ "{:,}".format(prompt_page.items|map(attribute="source")|unique|list|length) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(prompt_page.items|map(attribute='source')|unique|list|length) }}">{{ "{:,}".format(prompt_page.items|map(attribute="source")|unique|list|length) }}</strong>
                         </div>
                     </div>
                     {% else %}
@@ -429,24 +431,24 @@
                         {% if is_zhihu_text %}
                         <div class="metric-card foundation-metric-card metric-card-accent{% if text_page.session_detail %} browser-zhihu-answerer-metric{% endif %}">
                             <span class="metric-label">{{ "Answerer" if text_page.session_detail else "Answerers" }}</span>
-                            <strong{% if text_page.session_detail %} title="{{ text_page.current_session.latest_author_label }}"{% endif %}>{{ text_page.current_session.latest_author_label if text_page.session_detail else "{:,}".format(text_page.conversation_count) }}</strong>
+                            <strong{% if text_page.session_detail %} title="{{ text_page.current_session.latest_author_label }}"{% else %} data-numeric-display-value="{{ '{:,}'.format(text_page.conversation_count) }}"{% endif %}>{{ text_page.current_session.latest_author_label if text_page.session_detail else "{:,}".format(text_page.conversation_count) }}</strong>
                         </div>
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Answers</span>
-                            <strong>{{ "{:,}".format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}">{{ "{:,}".format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}</strong>
                         </div>
                         {% else %}
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Sessions</span>
-                            <strong>{{ "{:,}".format(1 if text_page.session_detail else text_page.conversation_count) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(1 if text_page.session_detail else text_page.conversation_count) }}">{{ "{:,}".format(1 if text_page.session_detail else text_page.conversation_count) }}</strong>
                         </div>
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Messages</span>
-                            <strong>{{ "{:,}".format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}">{{ "{:,}".format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}</strong>
                         </div>
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Projects</span>
-                            <strong>{{ "{:,}".format(text_page.project_count) }}</strong>
+                            <strong data-numeric-display-value="{{ '{:,}'.format(text_page.project_count) }}">{{ "{:,}".format(text_page.project_count) }}</strong>
                         </div>
                         {% endif %}
                     </div>
@@ -458,7 +460,7 @@
                         <div class="browser-result-controls">
                             <button
                                 type="button"
-                                class="browser-session-control-button browser-session-view-button"
+                                class="circular-icon-button browser-session-control-button browser-session-view-button"
                                 data-chatgpt-session-view
                                 aria-label="Session View"
                                 aria-describedby="browser_session_view_tooltip"
@@ -477,7 +479,7 @@
                             {% if media_page.current_session_url %}
                             <button
                                 type="button"
-                                class="browser-session-control-button browser-session-refresh-button"
+                                class="circular-icon-button browser-session-control-button browser-session-refresh-button"
                                 data-chatgpt-session-refresh
                                 data-chatgpt-session-url="{{ media_page.current_session_url }}"
                                 data-chatgpt-session-key="{{ media_page.current_session_key }}"
@@ -528,7 +530,7 @@
                             {% if filters.source == "chatgpt" %}
                             <button
                                 type="button"
-                                class="browser-session-control-button browser-session-view-button"
+                                class="circular-icon-button browser-session-control-button browser-session-view-button"
                                 data-chatgpt-session-view
                                 aria-label="Session View"
                                 aria-describedby="browser_session_view_tooltip"
@@ -658,7 +660,7 @@
                             <div class="browser-media-source-actions">
                                 {% if item.source_url %}
                                 <a
-                                    class="browser-media-round-action browser-media-source-link"
+                                    class="circular-icon-button browser-media-round-action browser-media-source-link"
                                     data-media-source-link
                                     href="{{ item.source_url }}"
                                     target="_blank"
@@ -670,7 +672,7 @@
                                 </a>
                                 <button
                                     type="button"
-                                    class="browser-media-round-action browser-media-copy-source-url"
+                                    class="circular-icon-button browser-media-round-action browser-media-copy-source-url"
                                     data-media-copy-source-url
                                     aria-label="Copy original URL for {{ item.filename }}"
                                     title="Copy URL"
@@ -681,7 +683,7 @@
                                 {% endif %}
                                 <button
                                     type="button"
-                                    class="browser-media-round-action browser-media-reveal"
+                                    class="circular-icon-button browser-media-round-action browser-media-reveal"
                                     data-media-reveal
                                     data-default-label="Show {{ item.filename }} in {{ file_manager_label }}"
                                     aria-label="Show {{ item.filename }} in {{ file_manager_label }}"
@@ -714,17 +716,19 @@
                         <option value="{{ remark }}">{{ remark }}</option>
                         {% endfor %}
                     </datalist>
-                    <div class="events-table-shell browser-session-table-shell browser-prompt-table-shell">
-                        <div class="events-table-scroll browser-session-table-scroll">
-                            <table class="events-table browser-session-table browser-prompt-table" aria-label="Saved prompts">
-                                <thead>
-                                    <tr>
-                                        <th scope="col" class="browser-prompt-col-number">No.</th>
-                                        <th scope="col" class="browser-prompt-col-content">Prompt</th>
-                                        <th scope="col" class="browser-prompt-col-source">Source</th>
-                                        <th scope="col" class="browser-prompt-col-remarks">Remarks</th>
-                                    </tr>
-                                </thead>
+                    <div class="events-table-shell scrollable-data-table-shell local-store-pagination-host browser-session-table-shell browser-prompt-table-shell">
+                        <table class="events-table scrollable-data-table browser-session-table browser-prompt-table" data-table-header aria-label="Saved prompt headings">
+                            <thead>
+                                <tr>
+                                    <th scope="col" class="browser-prompt-col-number">No.</th>
+                                    <th scope="col" class="browser-prompt-col-content">Prompt</th>
+                                    <th scope="col" class="browser-prompt-col-source">Source</th>
+                                    <th scope="col" class="browser-prompt-col-remarks">Remarks</th>
+                                </tr>
+                            </thead>
+                        </table>
+                        <div class="events-table-scroll scrollable-data-table-scroll browser-session-table-scroll" data-table-scroll>
+                            <table class="events-table scrollable-data-table browser-session-table browser-prompt-table" data-table-body aria-label="Saved prompt rows">
                                 <tbody>
                                     {% for prompt in prompt_page.items %}
                                     <tr data-prompt-id="{{ prompt.stable_id }}">
@@ -732,7 +736,7 @@
                                         <td class="browser-prompt-table-prompt-cell">
                                             <button
                                                 type="button"
-                                                class="browser-media-round-action browser-prompt-copy-button"
+                                                class="circular-icon-button browser-media-round-action browser-prompt-copy-button"
                                                 data-prompt-copy
                                                 data-prompt-text="{{ prompt.content_text }}"
                                                 aria-label="Copy prompt"
@@ -801,17 +805,19 @@
                     </div>
                     {% elif filters.view == "text" and (text_page.session_detail or (not filters.session_view and text_page.items)) %}
                     {% if text_page.items %}
-                    <div class="events-table-shell browser-session-table-shell browser-session-detail-shell">
-                        <div class="events-table-scroll browser-session-table-scroll">
-                            <table class="events-table browser-session-table browser-session-detail-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" aria-label="{{ ('Cached Zhihu answers by ' ~ text_page.current_session.latest_author_label) if is_zhihu_text and text_page.session_detail else ('Cached ' ~ (text_page.current_session.source|capitalize) ~ ' session messages' if text_page.session_detail else 'Cached messages') }}">
-                                <thead>
-                                    <tr>
-                                        <th scope="col" class="browser-session-col-number">No.</th>
-                                        <th scope="col" class="browser-session-col-time">Time</th>
-                                        <th scope="col" class="browser-session-col-role">{{ "Question" if is_zhihu_text else "Role" }}</th>
-                                        <th scope="col" class="browser-session-col-message">{{ "Answer" if is_zhihu_text else "Message" }}</th>
-                                    </tr>
-                                </thead>
+                    <div class="events-table-shell scrollable-data-table-shell local-store-pagination-host browser-session-table-shell browser-session-detail-shell">
+                        <table class="events-table scrollable-data-table browser-session-table browser-session-detail-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" data-table-header aria-label="Cached message headings">
+                            <thead>
+                                <tr>
+                                    <th scope="col" class="browser-session-col-number">No.</th>
+                                    <th scope="col" class="browser-session-col-time">Time</th>
+                                    <th scope="col" class="browser-session-col-role">{{ "Question" if is_zhihu_text else "Role" }}</th>
+                                    <th scope="col" class="browser-session-col-message">{{ "Answer" if is_zhihu_text else "Message" }}</th>
+                                </tr>
+                            </thead>
+                        </table>
+                        <div class="events-table-scroll scrollable-data-table-scroll browser-session-table-scroll" data-table-scroll>
+                            <table class="events-table scrollable-data-table browser-session-table browser-session-detail-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" data-table-body aria-label="{{ ('Cached Zhihu answers by ' ~ text_page.current_session.latest_author_label) if is_zhihu_text and text_page.session_detail else ('Cached ' ~ (text_page.current_session.source|capitalize) ~ ' session messages' if text_page.session_detail else 'Cached messages') }}">
                                 <tbody>
                                     {% for message in text_page.items %}
                                     {% set is_media_response = message.role == "assistant" and message.media_refs and message.content_text.lstrip().startswith("{") %}
@@ -899,9 +905,8 @@
                     </div>
                     {% endif %}
                     {% elif filters.view == "text" and filters.session_view and text_page.sessions %}
-                    <div class="events-table-shell browser-session-table-shell browser-session-index-shell">
-                        <div class="events-table-scroll browser-session-table-scroll">
-                            <table class="events-table browser-session-table browser-session-index-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" aria-label="{{ 'Cached Zhihu answerers' if is_zhihu_text else ('Cached ' ~ (filters.source|capitalize if filters.source != 'all' else 'chat') ~ ' sessions') }}">
+                    <div class="events-table-shell scrollable-data-table-shell local-store-pagination-host browser-session-table-shell browser-session-index-shell">
+                            <table class="events-table scrollable-data-table browser-session-table browser-session-index-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" data-table-header data-table-interactive-header aria-label="Cached session headings">
                                 <thead>
                                     <tr>
                                         <th scope="col" class="browser-session-col-number">No.</th>
@@ -975,6 +980,9 @@
                                         </th>
                                     </tr>
                                 </thead>
+                            </table>
+                        <div class="events-table-scroll scrollable-data-table-scroll browser-session-table-scroll" data-table-scroll>
+                            <table class="events-table scrollable-data-table browser-session-table browser-session-index-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" data-table-body aria-label="{{ 'Cached Zhihu answerers' if is_zhihu_text else ('Cached ' ~ (filters.source|capitalize if filters.source != 'all' else 'chat') ~ ' sessions') }}">
                                 <tbody>
                                     {% for session in text_page.sessions %}
                                     <tr data-chat-session-id="{{ session.stable_id }}">

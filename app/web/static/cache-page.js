@@ -1,4 +1,4 @@
-/* Code version: v1.16.0-codex.0 */
+/* Code version: v1.17.0-codex.0 */
 
 (() => {
     "use strict";
@@ -197,6 +197,17 @@
         if (!element) return;
         const normalizedValue = String(value ?? "");
         if (element.textContent !== normalizedValue) element.textContent = normalizedValue;
+    }
+
+    function setNumericDisplayIfChanged(element, value) {
+        if (!element) return;
+        const normalizedValue = String(value ?? "");
+        const numericDisplay = window.SHARED_NUMERIC_DISPLAY;
+        if (numericDisplay?.renderNumericDisplayElement) {
+            numericDisplay.renderNumericDisplayElement(element, normalizedValue);
+            return;
+        }
+        setTextIfChanged(element, normalizedValue);
     }
 
     function setStatusValueIfChanged(element, value) {
@@ -431,7 +442,7 @@
             if (!fieldName) return;
             const rawValue = resolveStatusFieldValue(element, data, fieldName);
             if (element.dataset.statusFormat === "number") {
-                setStatusValueIfChanged(element, formatMetricNumber(rawValue));
+                setNumericDisplayIfChanged(element, formatMetricNumber(rawValue));
                 return;
             }
             const fallback = element.dataset.statusFallback || "";

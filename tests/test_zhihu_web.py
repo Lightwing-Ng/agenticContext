@@ -1,6 +1,6 @@
 """Route and asset coverage for the formal Zhihu cache source.
 
-Code version: v1.6.1-codex.0
+Code version: v1.6.2-codex.0
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def test_zhihu_cache_page_uses_edge_login_and_text_first_controls(tmp_path: Path
     assert "Answers available" in body
     assert "Answers queued" not in body
     assert "Answers found" not in body
-    assert 'cache-page.js?v=cache-page-v1.16.0-codex.0' in body
+    assert 'cache-page.js?v=cache-page-v1.17.0-codex.0' in body
 
 
 def test_zhihu_routes_probe_and_dispatch_the_selected_edge_session(tmp_path: Path) -> None:

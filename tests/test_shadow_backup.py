@@ -1,6 +1,6 @@
 """Regression tests for the one-way shadow cloud backup.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -22,7 +22,9 @@ from app.core.shadow_backup import (
 )
 
 
-def test_macos_directory_picker_uses_finder_and_restores_browser_focus(tmp_path: Path) -> None:
+def test_macos_directory_picker_uses_one_system_panel_without_activating_finder(
+    tmp_path: Path,
+) -> None:
     selected_path = tmp_path / "selected"
     selected_path.mkdir()
     completed = subprocess.CompletedProcess(
@@ -51,11 +53,9 @@ def test_macos_directory_picker_uses_finder_and_restores_browser_focus(tmp_path:
         capture_output=True,
         text=True,
     )
-    assert 'tell application "Finder"' in MACOS_DIRECTORY_PICKER_APPLESCRIPT
-    assert "activate" in MACOS_DIRECTORY_PICKER_APPLESCRIPT
-    assert "restorePreviousApplication" in MACOS_DIRECTORY_PICKER_APPLESCRIPT
-    assert 'currentFrontmostProcessName is "Finder"' in MACOS_DIRECTORY_PICKER_APPLESCRIPT
-    assert 'tell application "Terminal"' not in MACOS_DIRECTORY_PICKER_APPLESCRIPT
+    assert MACOS_DIRECTORY_PICKER_APPLESCRIPT.count("choose folder") == 1
+    assert 'tell application "Finder"' not in MACOS_DIRECTORY_PICKER_APPLESCRIPT
+    assert "activate" not in MACOS_DIRECTORY_PICKER_APPLESCRIPT
 
 
 def test_macos_directory_picker_treats_user_cancel_as_no_selection(tmp_path: Path) -> None:

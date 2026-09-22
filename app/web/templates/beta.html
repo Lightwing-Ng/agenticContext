@@ -1,4 +1,4 @@
-{# Code version: v0.5.30-codex.0 #}
+{# Code version: v0.5.33-codex.0 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.135.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.138.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='beta/beta.css', v=beta_version) }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script type="module" src="{{ url_for('static', filename='beta/beta.js', v=beta_version) }}"></script>
@@ -25,7 +25,7 @@
 } %}
 {% set fields = field_configs[beta_experiment.id] %}
 <main class="page beta-page" data-beta-root data-beta-experiment="{{ beta_experiment.id }}" data-beta-version="{{ beta_version }}">
-    <button type="button" class="sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+    <button type="button" class="circular-icon-button sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
         <span class="icon sidebar-toggle-icon" aria-hidden="true"></span>
     </button>
     <div class="app-shell is-sidebar-open" id="app_shell">

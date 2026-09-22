@@ -1,4 +1,4 @@
-{# Code version: v1.2.0-codex.1 #}
+{# Code version: v1.3.0-codex.0 #}
 
 {% from "_browser_session_status.html" import render_browser_session_status %}
 
@@ -70,6 +70,7 @@
         {% if element_id %}id="{{ element_id }}"{% endif %}
         data-status-field="{{ field }}"
         data-status-format="number"
+        data-numeric-display-value="{{ '{:,}'.format(value) }}"
     >{{ "{:,}".format(value) }}</strong>
 </div>
 {%- endmacro %}
@@ -85,6 +86,7 @@
         {% if element_id %}id="{{ element_id }}"{% endif %}
         data-status-field="{{ field }}"
         data-status-format="number"
+        data-numeric-display-value="{{ '{:,}'.format(value) }}"
     >{{ "{:,}".format(value) }}</strong>
 </div>
 {%- endmacro %}

@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.11.0-codex.0`
+Documentation version: `v1.14.0-codex.0`
 
 ## Authority
 
@@ -80,6 +80,38 @@ rules deliberately; do not blindly paste whole product view styles.
 If the sibling project changes materially, compare its current CSS modules with this
 compatibility layer and update this document when the synchronization strategy changes.
 
+## Shared Collapse
+
+Worthward's `templates/_collapse.html`, `components/collapse.css`, and foundation
+tokens are the canonical shared Collapse implementation. Shared disclosures keep the
+native `details.ui-collapse > summary + .ui-collapse-body` structure so browser
+keyboard activation and open-state semantics remain authoritative. The single `12px`
+by `8px` down-chevron mask points right while closed through
+`--collapse-icon-closed-rotation: -90deg` and points down while open through
+`--collapse-icon-open-rotation: 0deg`; the transition uses the standard `180ms`
+motion and becomes immediate under Reduced Motion. Product-specific disclosures may
+retain their own geometry and content, but any repeated chevron affordance reuses the
+same mask, size, and rotation tokens instead of defining another direction system.
+
+## Shared Select
+
+Worthward's standard single-value Shared select is the canonical replacement for an
+ordinary native select. AgenticContext's `browser-filter-select.js` adapts both Local
+resources filters and fields marked `data-shared-select-auto`: the hidden native
+select remains the sole form and application-state authority, while the generated
+button and listbox expose the shared accessible and keyboard contract. Product-owned
+model, browser-session, source, multi-select, or searchable pickers may reuse the same
+tokens and controller without being treated as standard-select consumers.
+
+The standard trigger is a `30px` pill and its options have a `36px` minimum height.
+The trigger and menu use the shared translucent Frosted Glass material, semantic
+border, shadow, hover shadow, and blur aliases. The menu opens `4px` from the trigger,
+uses `10px` padding and the soft radius, and is bounded by `min(360px, 55vh)`. Its
+`12px` by `8px` current-color chevron points down when closed and rotates `180deg`
+when open over `180ms`; Reduced Motion removes the transition. Text-only options use
+only check and text columns. Standard fields stay within the smaller of their parent
+inline size and the shared `384px` control width.
+
 ## Shared Settings Dimensions
 
 Settings pages consume the same foundation layout aliases as the sibling project:
@@ -157,11 +189,49 @@ muted-to-accent state change. Style tokens uses the shared sparkles symbol, and 
 optional Beta Dock destination uses the same local `sparkles.2.svg` asset in both
 projects. Modal and floating-notice close actions are error red and
 hover-revealed on fine pointers, with keyboard-focus and touch visibility retained.
+Both surfaces use the same two-column semantic grid. The absolute 24px close action
+keeps equal 12px top and left insets; a 24px-minimum title row places the title in
+the flexible column and vertically centers a single line on the close-action center.
+The unchanged 36px topic icon and the paragraph or outside-marker list begin together
+in the second row. List markers remain outside the content box so wrapped lines use a
+hanging indent through the shared modal list-padding and marker-gap tokens, and the
+shared 4px row gap owns all space between title and body.
 See tests/test_style_alignment_e2e.py for isolated responsive acceptance checks.
+
+Circular actions use `.circular-icon-button` as the reusable primitive. Its 36px
+control, 18px icon, pill radius, `--circular-icon-button-material` Frosted Glass
+surface, border, shadow, and state colors come from `--circular-icon-button-*`; the former
+`--settings-round-icon-button-*` names are compatibility aliases only. Sidebar,
+global, Browser session, and media actions keep their semantic classes as adapters
+and also expose the canonical class in markup.
+
+Pagination keeps `.local-store-pagination` and `.local-store-page-button` as its
+public markup contract. Non-active page, arrow, and ellipsis controls inherit
+`--local-store-pagination-button-color` and change the text and current-color glyph
+together to `--local-store-pagination-button-color-hover` on hover or
+`:focus-visible`. Spatial movement remains tokenized, with a 1ms linear Reduced
+Motion adaptation.
+
+Scrollable tables use one clipped `.scrollable-data-table-shell` with a direct-child
+fixed `table[data-table-header]` and one `.scrollable-data-table-scroll` owner that
+contains `table[data-table-body]`. The controller synchronizes columns, scrollbar
+compensation, header height, and horizontal scroll. The shared header, cell, summary,
+row, minimum-width, and scrollbar-gutter visuals consume the canonical
+`--scrollable-data-table-*` tokens. AgenticContext-only shell and body aliases remain
+local adapters; product table classes only adapt column semantics and content.
+
+Segmented controls use `.segmented-control`, shrink-wrap with `fit-content`, remain
+centered within `max-width: 100%`, and create equal tracks with
+`repeat(var(--segmented-option-count), minmax(0, 1fr))`. A measured pill is an
+explicit adapter for content-driven widths, not the default overflow strategy.
 
 Workspace metric labels use the Agent runtime form-field label as their shared
 typographic reference: 15px regular primary text with normal line height and
 letter spacing. Numeric values remain 24px regular. Metric cards reserve an
 18px label line and 48px minimum height, then grow when a narrow column wraps
-the label. Both Style tokens catalogs use the same `Total trades` and `2`
-specimen; Worthward's production Workspace cards consume the same tokens.
+the label. The shared numeric renderer preserves the complete text value while
+splitting integer, decimal, and suffix fragments into
+`.workspace-metric-value-major`, `.workspace-metric-value-minor`, and
+`.workspace-metric-value-suffix`. The Style tokens catalog uses `Total trades` and
+`2,032.15%`; Browser and Cache metric consumers use the same renderer without
+changing their accessible text.

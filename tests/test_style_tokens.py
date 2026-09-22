@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.75.1-codex.0
+Code version: v1.78.0-codex.0
 """
 
 import hashlib
@@ -224,7 +224,7 @@ def test_routine_labels_use_restrained_font_weights() -> None:
     expected_rules = {
         ".workspace-kicker,": "font-weight: var(--font-weight-semibold);",
         ".browser-session-panel-label {": "font-weight: var(--font-weight-regular);",
-        ".field > span {": "font-weight: var(--field-title-font-weight);",
+        ".field > span,": "font-weight: var(--field-title-font-weight);",
         ".field > .field-help {": "font-weight: var(--font-weight-regular);",
         ".cache-common-config-title {": "font-weight: var(--font-weight-regular);",
         ".cache-number-label {": "font-weight: var(--font-weight-regular);",
@@ -243,7 +243,7 @@ def test_routine_labels_use_restrained_font_weights() -> None:
         selector_rule = stylesheet[selector_start:stylesheet.index("\n}", selector_start)]
         assert "font-size: var(--font-form-label);" in selector_rule
 
-    field_start = stylesheet.index(".field > span {")
+    field_start = stylesheet.index(".field > span,")
     field_rule = stylesheet[field_start:stylesheet.index("\n}", field_start)]
     assert "font-size: var(--field-title-font-size);" in field_rule
     help_start = stylesheet.index(".field > .field-help {")
@@ -345,11 +345,11 @@ def test_chart_tooltip_title_uses_the_medium_weight_token() -> None:
 def test_field_titles_and_scrollable_headers_use_the_agent_reference_role() -> None:
     """Keep annotated titles on the exact Agent form-field typography role."""
     stylesheet = _stylesheet()
-    for selector in (
-        ".browser-filter-field > span {",
-        ".events-table thead th {",
-        ".style-token-component-kicker {",
-        ".style-token-shared-select-field > span:first-child,",
+    for selector, color_token in (
+        (".browser-filter-field > span {", "--field-title-color"),
+        (".events-table thead th {", "--scrollable-data-table-header-color"),
+        (".style-token-component-kicker {", "--field-title-color"),
+        (".style-token-shared-select-field > span:first-child,", "--field-title-color"),
     ):
         selector_start = stylesheet.index(selector)
         selector_rule = stylesheet[selector_start:stylesheet.index("\n}", selector_start)]
@@ -358,9 +358,9 @@ def test_field_titles_and_scrollable_headers_use_the_agent_reference_role() -> N
             "line-height: var(--field-title-line-height);",
             "letter-spacing: var(--field-title-letter-spacing);",
             "font-weight: var(--field-title-font-weight);",
-            "color: var(--field-title-color);",
         ):
             assert declaration in selector_rule
+        assert f"color: var({color_token});" in selector_rule
 
 
 def test_form_inputs_use_regular_weight_brand_text() -> None:
@@ -884,9 +884,13 @@ def test_waiting_feedback_uses_the_sibling_vector_spinner_and_modal() -> None:
         ".workspace-modal-overlay {",
         "place-items: center;",
         ".workspace-modal-dialog {",
-        "var(--workspace-modal-close-size)",
+        "minmax(var(--workspace-modal-title-row-min-height), auto)",
         "var(--workspace-modal-icon-size)",
         "minmax(0, 1fr)",
+        ".workspace-modal-title {",
+        "grid-row: 1;",
+        ".workspace-modal-icon {",
+        "grid-row: 2;",
         ".workspace-modal-copy {",
         ".browser-media-loading-notice {",
         ".shadow-backup-status-spinner {",
@@ -904,7 +908,7 @@ def test_browser_session_refresh_uses_the_modal_dialog_banner_message() -> None:
         ".browser-session-refresh-banner {",
         ".notice-floating-banner-global.browser-session-refresh-banner {",
         "animation-name: browserSessionRefreshBannerFadeIn;",
-        "var(--workspace-modal-close-size)",
+        "minmax(var(--workspace-modal-title-row-min-height), auto)",
         "var(--workspace-modal-icon-size)",
         "minmax(0, 1fr)",
         "padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline);",
@@ -1281,13 +1285,19 @@ def test_style_token_component_catalog_consumes_the_sibling_control_contracts() 
 
     for token in (
         "--segmented-control-material: var(--frosted-glass-background);",
-        "--settings-round-icon-button-material: var(--frosted-glass-background);",
+        "--circular-icon-button-material: var(--frosted-glass-background);",
+        "--settings-round-icon-button-material: var(--circular-icon-button-material);",
         "--settings-action-package-material: var(--frosted-glass-background);",
         "--workspace-modal-material: var(--frosted-glass-background);",
         "--notice-floating-material: var(--frosted-glass-background);",
         "--scrollable-data-table-header-material: var(--frosted-glass-background);",
         "--shared-select-trigger-material: var(--frosted-glass-background);",
-        "--shared-select-dropdown-material: var(--frosted-glass-opaque-background);",
+        "--shared-select-trigger-material-hover: var(--frosted-glass-background-hover);",
+        "--shared-select-dropdown-material: var(--frosted-glass-background);",
+        "--shared-select-border: var(--frosted-glass-border);",
+        "--shared-select-shadow: var(--frosted-glass-shadow);",
+        "--shared-select-shadow-hover: var(--frosted-glass-shadow-hover);",
+        "--shared-select-blur: blur(12px);",
     ):
         assert token in stylesheet
 
@@ -1367,13 +1377,14 @@ def test_browser_filter_select_uses_one_shared_frosted_surface() -> None:
     open_rule = stylesheet[open_rule_start:stylesheet.index("\n}", open_rule_start)]
 
     for token in (
-        "border-radius: var(--radius-soft);",
+        "border-radius: var(--shared-select-dropdown-radius);",
         "background: var(--shared-select-dropdown-material);",
-        "box-shadow: var(--frosted-glass-shadow);",
-        "backdrop-filter: var(--frosted-glass-blur);",
-        "-webkit-backdrop-filter: var(--frosted-glass-blur);",
-        "border: var(--frosted-glass-border);",
+        "box-shadow: var(--shared-select-shadow);",
+        "backdrop-filter: var(--shared-select-blur);",
+        "-webkit-backdrop-filter: var(--shared-select-blur);",
+        "border: var(--shared-select-border);",
         "background-clip: padding-box;",
+        "max-height: var(--shared-select-dropdown-max-height);",
     ):
         assert token in dropdown_rule
     agent_dropdown_start = stylesheet.index(
@@ -1416,6 +1427,8 @@ def test_shared_select_reuses_regular_labels_pill_options_and_browser_height() -
     text_input_rule = stylesheet[
         text_input_start:stylesheet.index("\n}", text_input_start)
     ]
+    trigger_start = stylesheet.index(".browser-filter-select-trigger {")
+    trigger_rule = stylesheet[trigger_start:stylesheet.index("\n}", trigger_start)]
 
     assert "font-weight: var(--font-weight-regular);" in label_rule
     assert "border-radius: var(--shared-select-option-radius);" in option_rule
@@ -1425,6 +1438,17 @@ def test_shared_select_reuses_regular_labels_pill_options_and_browser_height() -
     assert "--shared-select-option-min-height: 36px;" in stylesheet
     assert "min-height: var(--control-form-height);" in agent_browser_rule
     assert "padding-block: 3px;" in agent_browser_rule
+    for declaration in (
+        "height: var(--shared-select-control-height);",
+        "min-height: var(--shared-select-control-height);",
+        "padding: 0 var(--shared-select-trigger-padding-inline-end) 0 10px;",
+        "border: var(--shared-select-border);",
+        "border-radius: var(--radius-pill);",
+        "background: var(--shared-select-trigger-material);",
+        "box-shadow: var(--shared-select-shadow);",
+        "backdrop-filter: var(--shared-select-blur);",
+    ):
+        assert declaration in trigger_rule
     for declaration in (
         "height: var(--shared-select-control-height);",
         "min-height: var(--shared-select-control-height);",
@@ -1523,7 +1547,7 @@ def test_browser_pagination_matches_the_sibling_floating_control_states() -> Non
         "background: transparent;",
         "box-shadow: none;",
         "backdrop-filter: none;",
-        "color: var(--theme-text);",
+            "color: var(--local-store-pagination-button-color);",
     ):
         assert token in button_rule
 
@@ -1668,7 +1692,7 @@ def test_segmented_control_uses_the_sibling_generic_pill_contract() -> None:
     for token in (
         ".segmented-control,\n.range-mode-shell {",
         "--segmented-option-count: 2;",
-        "grid-template-columns: repeat(var(--segmented-option-count), minmax(var(--segmented-option-min-width), 1fr));",
+        "grid-template-columns: repeat(var(--segmented-option-count), minmax(0, 1fr));",
         "--mode-switch-radius: var(--radius-pill);",
         "--mode-switch-gap: 4px;",
         "border: 0;",
@@ -2203,13 +2227,14 @@ def test_browser_picker_arrow_matches_the_shared_select_arrow() -> None:
     arrow_rule = stylesheet[arrow_start:stylesheet.index("\n}", arrow_start)]
 
     for token in (
-        "width: 12px;",
-        "height: 8px;",
+        "width: var(--shared-select-chevron-width);",
+        "height: var(--shared-select-chevron-height);",
         "color: var(--text);",
         "font-size: 0;",
         "background-color: currentColor;",
-        "mask: var(--browser-picker-chevron-image) center / 12px 8px no-repeat;",
-        "-webkit-mask: var(--browser-picker-chevron-image) center / 12px 8px no-repeat;",
+        "mask: var(--shared-select-chevron-mask) center / contain no-repeat;",
+        "-webkit-mask: var(--shared-select-chevron-mask) center / contain no-repeat;",
+        "transition: transform var(--shared-select-chevron-transition-duration) var(--motion-standard);",
     ):
         assert token in arrow_rule
 
@@ -2323,7 +2348,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.135.0-codex.0 */",
+            "/* Code version: v2.138.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2446,7 +2471,9 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
         "--collapse-icon-height: 8px;",
         "--collapse-icon-gap: 8px;",
         '--collapse-icon-closed: url("data:image/svg+xml,',
+        "--collapse-icon-closed-rotation: -90deg;",
         "--collapse-icon-open: var(--collapse-icon-closed);",
+        "--collapse-icon-open-rotation: 0deg;",
         "--collapse-summary-padding: 10px 0;",
         "--collapse-body-padding: 0 10px 10px;",
         "--collapse-font-size: var(--font-ui-lg);",
@@ -2454,6 +2481,8 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     ):
         assert token in root_rule
     assert stylesheet.count("--collapse-icon-closed:") == 1
+    assert stylesheet.count("--collapse-icon-closed-rotation:") == 1
+    assert stylesheet.count("--collapse-icon-open-rotation:") == 1
     assert stylesheet.count("--collapse-summary-padding:") == 1
 
     summary_icon_start = stylesheet.index(".ui-collapse > summary::after {")
@@ -2462,6 +2491,7 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     ]
     assert "mask: var(--collapse-icon-closed) center/contain no-repeat;" in summary_icon_rule
     assert "-webkit-mask: var(--collapse-icon-closed) center/contain no-repeat;" in summary_icon_rule
+    assert "transform: rotate(var(--collapse-icon-closed-rotation));" in summary_icon_rule
     assert "data:image" not in summary_icon_rule
     summary_open_start = stylesheet.index(".ui-collapse[open] > summary::after {")
     summary_open_rule = stylesheet[
@@ -2469,7 +2499,7 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     ]
     assert "mask-image: var(--collapse-icon-open);" in summary_open_rule
     assert "-webkit-mask-image: var(--collapse-icon-open);" in summary_open_rule
-    assert "transform: rotate(180deg);" in summary_open_rule
+    assert "transform: rotate(var(--collapse-icon-open-rotation));" in summary_open_rule
     shared_body_start = stylesheet.index(".ui-collapse-body {")
     shared_body_rule = stylesheet[
         shared_body_start:stylesheet.index("\n}", shared_body_start)
@@ -2525,7 +2555,6 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     ]
     assert "font-size: inherit;" in guide_title_rule
     assert "font-size: inherit;" in guide_description_rule
-
     step_number_start = stylesheet.index(".agent-tunnel-step-number {")
     step_number_rule = stylesheet[
         step_number_start:stylesheet.index("\n}", step_number_start)
@@ -2641,6 +2670,33 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
         agent_template + guide_template + chatgpt_guide_template
     )
     assert "data-agent-tunnel-toggle" not in agent_template
+
+
+def test_shared_collapse_consumers_keep_native_keyboard_semantics() -> None:
+    """Keep every shared disclosure on native details and summary elements."""
+    template_root = PROJECT_ROOT / "app/web/templates"
+    template_paths = sorted(template_root.glob("*.html"))
+    collapse_class = re.compile(r'class="ui-collapse(?:\s|\")')
+    native_summary = re.compile(
+        r'<details\s+class="ui-collapse[^>]*>\s*<summary(?:\s|>)',
+        re.DOTALL,
+    )
+    native_body = re.compile(
+        r'</summary>\s*<div class="ui-collapse-body(?:\s|\")',
+        re.DOTALL,
+    )
+
+    consumer_count = 0
+    for template_path in template_paths:
+        template = template_path.read_text(encoding="utf-8")
+        collapse_count = len(collapse_class.findall(template))
+        if not collapse_count:
+            continue
+        consumer_count += collapse_count
+        assert len(native_summary.findall(template)) == collapse_count, template_path
+        assert len(native_body.findall(template)) == collapse_count, template_path
+
+    assert consumer_count > 0
 
 
 def test_agent_composer_right_aligns_all_footer_controls_with_action_gap() -> None:
@@ -3185,6 +3241,12 @@ def test_agent_doctor_actions_keep_spatial_effects_unclipped() -> None:
     summary_rule = stylesheet[summary_start:stylesheet.index("\n}", summary_start)]
     focus_start = stylesheet.index(".agent-doctor-panel > summary:focus-visible {")
     focus_rule = stylesheet[focus_start:stylesheet.index("\n}", focus_start)]
+    icon_start = stylesheet.index(".agent-doctor-panel > summary::after {")
+    icon_rule = stylesheet[icon_start:stylesheet.index("\n}", icon_start)]
+    open_icon_start = stylesheet.index(".agent-doctor-panel[open] > summary::after {")
+    open_icon_rule = stylesheet[
+        open_icon_start:stylesheet.index("\n}", open_icon_start)
+    ]
     events_start = stylesheet.index(".agent-doctor-events {")
     events_rule = stylesheet[events_start:stylesheet.index("\n}", events_start)]
 
@@ -3193,9 +3255,12 @@ def test_agent_doctor_actions_keep_spatial_effects_unclipped() -> None:
     assert "box-shadow: inset 0 1px 0 var(--theme-glass-highlight);" in panel_rule
     assert "overflow: visible;" in panel_rule
     assert "color: var(--theme-warning-text);" in summary_rule
-    assert "grid-template-columns: minmax(0, 1fr) auto var(--agent-doctor-collapse-icon-size);" in summary_rule
-    assert ".agent-doctor-panel > summary::after {" in stylesheet
-    assert ".agent-doctor-panel[open] > summary::after {" in stylesheet
+    assert "grid-template-columns: minmax(0, 1fr) auto var(--collapse-icon-size);" in summary_rule
+    assert "mask: var(--collapse-icon-closed) center/contain no-repeat;" in icon_rule
+    assert "transform: rotate(var(--collapse-icon-closed-rotation));" in icon_rule
+    assert "mask-image: var(--collapse-icon-open);" in open_icon_rule
+    assert "transform: rotate(var(--collapse-icon-open-rotation));" in open_icon_rule
+    assert "--agent-doctor-collapse-icon" not in stylesheet
     assert "outline: 2px solid var(--accent-text);" in focus_rule
     assert "overflow-y: auto;" in events_rule
 
@@ -3549,3 +3614,91 @@ def test_agent_sidebar_primary_comboboxes_use_the_compact_form_height() -> None:
         "padding-block: 3px;",
     ):
         assert token in rule
+
+
+def test_circular_icon_button_has_canonical_tokens_and_real_consumers() -> None:
+    stylesheet = _stylesheet()
+    browser_template = (
+        Path(__file__).parents[1] / "app/web/templates/browser.html"
+    ).read_text(encoding="utf-8")
+    style_token_template = (
+        Path(__file__).parents[1] / "app/web/templates/settings_style_tokens.html"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "--circular-icon-button-size: 36px;",
+        "--circular-icon-button-icon-size: 18px;",
+        "--circular-icon-button-material: var(--frosted-glass-background);",
+        "--circular-icon-button-background: var(--circular-icon-button-material);",
+        "--circular-icon-button-border: var(--frosted-glass-border);",
+        "--settings-round-icon-button-size: var(--circular-icon-button-size);",
+        ".circular-icon-button,",
+    ):
+        assert token in stylesheet
+    assert ".style-token-page .circular-icon-button," not in stylesheet
+    assert 'class="circular-icon-button settings-round-icon-button style-token-round-icon-demo"' in style_token_template
+    assert 'class="circular-icon-button sidebar-toggle"' in browser_template
+    assert 'class="circular-icon-button browser-media-round-action browser-media-source-link"' in browser_template
+
+
+def test_pagination_hover_and_focus_share_accent_color_and_motion_tokens() -> None:
+    stylesheet = _stylesheet()
+    assert "--local-store-pagination-button-color: var(--theme-text);" in stylesheet
+    assert "--local-store-pagination-button-color-hover: var(--accent-text);" in stylesheet
+    hover_start = stylesheet.index(
+        ".browser-pagination .local-store-page-button:not(.is-active):not(.local-store-page-placeholder):hover,"
+    )
+    hover_rule = stylesheet[hover_start:stylesheet.index("\n}", hover_start)]
+    assert ":focus-visible" in hover_rule
+    assert "color: var(--local-store-pagination-button-color-hover);" in hover_rule
+    assert "transition: transform var(--local-store-pagination-motion-duration)" in stylesheet
+    assert "@media (prefers-reduced-motion: reduce)" in stylesheet
+
+
+def test_scrollable_table_uses_canonical_direct_child_structure() -> None:
+    template = (
+        Path(__file__).parents[1] / "app/web/templates/browser.html"
+    ).read_text(encoding="utf-8")
+    style_token_template = (
+        Path(__file__).parents[1] / "app/web/templates/settings_style_tokens.html"
+    ).read_text(encoding="utf-8")
+    controller = (
+        Path(__file__).parents[1] / "app/web/static/scrollable-data-table.js"
+    ).read_text(encoding="utf-8")
+
+    assert template.count("scrollable-data-table-shell local-store-pagination-host") >= 3
+    assert template.count("data-table-header") >= 3
+    assert template.count("data-table-scroll") >= 3
+    assert template.count("data-table-body") >= 3
+    assert "scrollable-data-table-shell local-store-pagination-host style-token-table-demo-surface" in style_token_template
+    for token in (
+        'directChild(shell, "table[data-table-header]")',
+        'directChild(shell, "[data-table-scroll]")',
+        'scroll?.querySelector("table[data-table-body]")',
+        "scrollbarWidth",
+        "ResizeObserver",
+    ):
+        assert token in controller
+
+
+def test_numeric_display_is_shared_by_catalog_and_real_metrics() -> None:
+    browser_template = (
+        Path(__file__).parents[1] / "app/web/templates/browser.html"
+    ).read_text(encoding="utf-8")
+    cache_components = (
+        Path(__file__).parents[1] / "app/web/templates/_cache_page_components.html"
+    ).read_text(encoding="utf-8")
+    numeric_script = (
+        Path(__file__).parents[1] / "app/web/static/numeric-display.js"
+    ).read_text(encoding="utf-8")
+
+    assert browser_template.count("data-numeric-display-value=") >= 10
+    assert "data-numeric-display-value" in cache_components
+    for token in (
+        "workspace-metric-value-major",
+        "workspace-metric-value-minor",
+        "workspace-metric-value-suffix",
+        "getNumericDisplayParts",
+        "renderNumericDisplayElement",
+    ):
+        assert token in numeric_script

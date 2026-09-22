@@ -1,6 +1,6 @@
 """One-way shadow cloud backup for the local cache.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -121,37 +121,10 @@ def sync_shadow_backup(
 
 
 MACOS_DIRECTORY_PICKER_APPLESCRIPT = """
-on restorePreviousApplication(previousFrontmostProcessName)
-    if previousFrontmostProcessName is "" or previousFrontmostProcessName is "Finder" then return
-    tell application "System Events"
-        try
-            set currentFrontmostProcessName to name of first application process whose frontmost is true
-            if currentFrontmostProcessName is "Finder" then
-                set frontmost of process previousFrontmostProcessName to true
-            end if
-        end try
-    end tell
-end restorePreviousApplication
-
 on run argv
     set pickerPrompt to item 1 of argv
     set defaultPath to item 2 of argv
-    set previousFrontmostProcessName to ""
-    tell application "System Events"
-        try
-            set previousFrontmostProcessName to name of first application process whose frontmost is true
-        end try
-    end tell
-    try
-        tell application "Finder"
-            activate
-            set selectedFolder to choose folder with prompt pickerPrompt default location POSIX file defaultPath
-        end tell
-    on error errorMessage number errorNumber
-        my restorePreviousApplication(previousFrontmostProcessName)
-        error errorMessage number errorNumber
-    end try
-    my restorePreviousApplication(previousFrontmostProcessName)
+    set selectedFolder to choose folder with prompt pickerPrompt default location POSIX file defaultPath
     return POSIX path of selectedFolder
 end run
 """.strip()

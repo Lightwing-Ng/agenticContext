@@ -1,4 +1,4 @@
-<!-- Code version: v1.10.4-codex.0 -->
+<!-- Code version: v1.12.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,9 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.135.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.138.0-codex.0') }}">
+    <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.0.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='resizer.js', v='resizer-v1.0.0-codex.1') }}"></script>
@@ -21,7 +23,7 @@
 <main class="page style-token-page">
     <button
         type="button"
-        class="sidebar-toggle"
+        class="circular-icon-button sidebar-toggle"
         id="sidebar_toggle"
         data-layout-role="sidebar-toggle"
         aria-label="Toggle sidebar"
@@ -66,7 +68,7 @@
                     <section id="{{ row.id }}" class="style-token-card" data-style-token-card="{{ row.id }}">
                         <div class="style-token-demo">
                             {% if row.sample_kind == "round-icon-button" %}
-                            <button type="button" class="settings-round-icon-button style-token-round-icon-demo" aria-label="Add item">
+                            <button type="button" class="circular-icon-button settings-round-icon-button style-token-round-icon-demo" aria-label="Add item">
                                 <span class="icon icon-style-token-plus" aria-hidden="true"></span>
                             </button>
                             {% elif row.sample_kind == "glass-surface" %}
@@ -93,7 +95,7 @@
                             <div class="style-token-modal-shell">
                                 <section class="workspace-modal-dialog style-token-modal-demo" data-style-token-dismissible aria-label="Modal dialog demo">
                                     <span class="workspace-modal-icon suggestion-loading-spinner" aria-hidden="true"></span>
-                                    <button type="button" class="workspace-modal-close" data-style-token-dismiss aria-label="Dismiss modal">×</button>
+                                    <button type="button" class="dismiss-button workspace-modal-close" data-style-token-dismiss aria-label="Dismiss modal"><span class="icon icon-dismiss-control" aria-hidden="true"></span></button>
                                     <h2 class="workspace-modal-title">{{ row.sample_title }}</h2>
                                     <p class="workspace-modal-copy">{{ row.sample_copy }}</p>
                                 </section>
@@ -102,14 +104,18 @@
                             <div class="style-token-modal-shell">
                                 <section class="notice-floating notice-floating-banner style-token-modal-demo" data-style-token-dismissible aria-label="Banner message demo">
                                     <span class="workspace-modal-icon style-token-banner-icon" aria-hidden="true">i</span>
-                                    <button type="button" class="workspace-modal-close" data-style-token-dismiss aria-label="Dismiss banner">×</button>
-                                    <h2 class="workspace-modal-title">{{ row.sample_title }}</h2>
-                                    <p class="workspace-modal-copy">{{ row.sample_copy }}</p>
+                                    <button type="button" class="dismiss-button workspace-modal-close notice-close" data-style-token-dismiss aria-label="Dismiss banner"><span class="icon icon-dismiss-control" aria-hidden="true"></span></button>
+                                    <h2 class="notice-floating-banner-heading">{{ row.sample_title }}</h2>
+                                    <div class="notice-floating-banner-content">
+                                        <ol class="notice-floating-banner-list">
+                                            {% for item in row.sample_items %}<li>{{ item }}</li>{% endfor %}
+                                        </ol>
+                                    </div>
                                 </section>
                             </div>
                             {% elif row.sample_kind == "range-mode" %}
                             <section class="style-token-range-mode-demo" data-style-token-demo="range-mode" aria-label="Segmented control">
-                                <div class="range-mode-shell" data-active="overview" data-option-count="3" data-segmented-pill="measured" data-segmented-active-index="0" style="--segmented-option-count: 3; --segmented-active-index: 0;" role="radiogroup" aria-label="Style token range mode">
+                                <div class="segmented-control range-mode-shell" data-active="overview" data-option-count="3" data-segmented-pill="measured" data-segmented-active-index="0" style="--segmented-option-count: 3; --segmented-active-index: 0;" role="radiogroup" aria-label="Style token range mode">
                                     <label class="range-mode-option" for="style_token_range_overview"><input id="style_token_range_overview" name="style_token_range_mode" type="radio" value="overview" checked><span>Overview</span></label>
                                     <label class="range-mode-option" for="style_token_range_details"><input id="style_token_range_details" name="style_token_range_mode" type="radio" value="details"><span>Details</span></label>
                                     <label class="range-mode-option" for="style_token_range_metrics"><input id="style_token_range_metrics" name="style_token_range_mode" type="radio" value="metrics"><span>Metrics</span></label>
@@ -207,7 +213,7 @@
                             </div>
                             {% elif row.sample_kind == "metric-value" %}
                             <div class="style-token-metric-demo-shell">
-                                <article class="metric-card foundation-metric-card metric-card-accent style-token-metric-card-demo"><span class="metric-label">{{ row.sample_title }}</span><strong>{{ row.sample_value }}</strong></article>
+                                <article class="metric-card foundation-metric-card metric-card-accent style-token-metric-card-demo"><span class="metric-label">{{ row.sample_title }}</span><strong data-numeric-display-value="{{ row.sample_value }}">{{ row.sample_value }}</strong></article>
                             </div>
                             {% elif row.sample_kind == "secondary-button" %}
                             <section class="style-token-component-demo style-token-secondary-button-demo" data-style-token-demo="secondary-button" aria-label="Secondary button demo">
@@ -236,7 +242,7 @@
                                 <div class="style-token-theme-toggle-preview">
                                     <button
                                         type="button"
-                                        class="global-quick-action-button global-theme-toggle style-token-theme-toggle"
+                                        class="circular-icon-button global-quick-action-button global-theme-toggle style-token-theme-toggle"
                                         data-style-token-theme-toggle
                                         data-effective-theme="light"
                                         aria-label="Switch to Dark mode"
@@ -373,10 +379,9 @@
                             </section>
                             {% elif row.sample_kind == "scrollable-data-table" %}
                             <section class="style-token-component-demo style-token-table-demo-shell" data-style-token-demo="scrollable-data-table" data-style-token-table-demo data-style-token-table-page-size="6" aria-label="Scrollable data table demo">
-                                <div class="events-table-shell style-token-table-demo-surface">
-                                    <div class="events-table-scroll style-token-table-demo-scroll" data-style-token-table-scroll>
-                                        <table class="events-table style-token-scrollable-table" data-style-token-table-body aria-label="Transaction history">
-                                            <thead>
+                                <div class="events-table-shell scrollable-data-table-shell local-store-pagination-host style-token-table-demo-surface">
+                                    <table class="events-table scrollable-data-table style-token-scrollable-table" data-table-header data-table-interactive-header aria-label="Transaction history headings">
+                                        <thead>
                                                 <tr>
                                                     <th>No.</th>
                                                     <th>Time</th>
@@ -399,22 +404,25 @@
                                                 </tr>
                                                 <tr data-style-token-table-summary-row>
                                                     <td colspan="3"><span data-style-token-table-filter-summary>6 filtered of 12 total</span></td>
-                                                    <td colspan="2">Net <span>$7,089.68</span></td>
+                                                    <td colspan="2">Net <span data-numeric-display-value="$7,089.68">$7,089.68</span></td>
                                                 </tr>
-                                            </thead>
+                                        </thead>
+                                    </table>
+                                    <div class="events-table-scroll scrollable-data-table-scroll style-token-table-demo-scroll" data-table-scroll data-style-token-table-scroll>
+                                        <table class="events-table scrollable-data-table style-token-scrollable-table" data-table-body data-style-token-table-body aria-label="Transaction history rows">
                                             <tbody id="style_token_table_body">
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td>12</td><td>02/04/2026</td><td>Buy</td><td>NVDA @ 123.45 x 10</td><td>$1,234.50</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="deposit"><td>11</td><td>01/04/2026</td><td>Deposit</td><td>--</td><td>$5,000.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="dividend"><td>10</td><td>31/03/2026</td><td>Dividend</td><td>AAPL</td><td>$42.18</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td>9</td><td>28/03/2026</td><td>Sell</td><td>TSLA @ 271.00 x 3</td><td>$813.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td>8</td><td>27/03/2026</td><td>Buy</td><td>MSFT @ 410.00 x 2</td><td>$820.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td>7</td><td>26/03/2026</td><td>Buy</td><td>AAPL @ 172.00 x 3</td><td>$516.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td>6</td><td>25/03/2026</td><td>Sell</td><td>GOOGL @ 150.00 x 4</td><td>$600.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="deposit"><td>5</td><td>24/03/2026</td><td>Deposit</td><td>--</td><td>$2,500.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="dividend"><td>4</td><td>23/03/2026</td><td>Dividend</td><td>NVDA</td><td>$18.40</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td>3</td><td>22/03/2026</td><td>Buy</td><td>AMD @ 180.00 x 2</td><td>$360.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td>2</td><td>21/03/2026</td><td>Sell</td><td>AMZN @ 175.00 x 1</td><td>$175.00</td></tr>
-                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td>1</td><td>20/03/2026</td><td>Buy</td><td>META @ 490.00 x 1</td><td>$490.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>12</td><td data-numeric-display-cell>02/04/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>NVDA @ 123.45 x 10</td><td data-numeric-display-cell>$1,234.50</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="deposit"><td data-numeric-display-cell>11</td><td data-numeric-display-cell>01/04/2026</td><td data-numeric-display-cell>Deposit</td><td data-numeric-display-cell>--</td><td data-numeric-display-cell>$5,000.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="dividend"><td data-numeric-display-cell>10</td><td data-numeric-display-cell>31/03/2026</td><td data-numeric-display-cell>Dividend</td><td data-numeric-display-cell>AAPL</td><td data-numeric-display-cell>$42.18</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td data-numeric-display-cell>9</td><td data-numeric-display-cell>28/03/2026</td><td data-numeric-display-cell>Sell</td><td data-numeric-display-cell>TSLA @ 271.00 x 3</td><td data-numeric-display-cell>$813.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>8</td><td data-numeric-display-cell>27/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>MSFT @ 410.00 x 2</td><td data-numeric-display-cell>$820.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>7</td><td data-numeric-display-cell>26/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>AAPL @ 172.00 x 3</td><td data-numeric-display-cell>$516.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td data-numeric-display-cell>6</td><td data-numeric-display-cell>25/03/2026</td><td data-numeric-display-cell>Sell</td><td data-numeric-display-cell>GOOGL @ 150.00 x 4</td><td data-numeric-display-cell>$600.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="deposit"><td data-numeric-display-cell>5</td><td data-numeric-display-cell>24/03/2026</td><td data-numeric-display-cell>Deposit</td><td data-numeric-display-cell>--</td><td data-numeric-display-cell>$2,500.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="dividend"><td data-numeric-display-cell>4</td><td data-numeric-display-cell>23/03/2026</td><td data-numeric-display-cell>Dividend</td><td data-numeric-display-cell>NVDA</td><td data-numeric-display-cell>$18.40</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>3</td><td data-numeric-display-cell>22/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>AMD @ 180.00 x 2</td><td data-numeric-display-cell>$360.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="sell"><td data-numeric-display-cell>2</td><td data-numeric-display-cell>21/03/2026</td><td data-numeric-display-cell>Sell</td><td data-numeric-display-cell>AMZN @ 175.00 x 1</td><td data-numeric-display-cell>$175.00</td></tr>
+                                                <tr data-style-token-table-row data-style-token-table-filter-value="buy"><td data-numeric-display-cell>1</td><td data-numeric-display-cell>20/03/2026</td><td data-numeric-display-cell>Buy</td><td data-numeric-display-cell>META @ 490.00 x 1</td><td data-numeric-display-cell>$490.00</td></tr>
                                             </tbody>
                                         </table>
                                     </div>
@@ -426,7 +434,7 @@
                         <div class="style-token-meta">
                             <div class="style-token-title-row">
                                 <p class="style-token-title">{{ row.name }}</p>
-                                <button type="button" class="settings-round-icon-button style-token-copy-button" data-style-token-copy="{{ row.name }}" aria-label="Copy style name" title="Copy style name">
+                                <button type="button" class="circular-icon-button settings-round-icon-button style-token-copy-button" data-style-token-copy="{{ row.name }}" aria-label="Copy style name" title="Copy style name">
                                     <span class="icon icon-style-token-copy" aria-hidden="true"></span>
                                 </button>
                             </div>
