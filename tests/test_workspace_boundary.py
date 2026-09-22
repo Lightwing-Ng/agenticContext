@@ -5,11 +5,12 @@ break: path isolation, read-only refusal, read-receipt expiry, MCP response cont
 route compatibility, application-instance isolation, and shutdown behavior.
 """
 
-# Code version: v1.0.3-codex.0
+# Code version: v1.0.5-codex.0
 
 from __future__ import annotations
 
 import hashlib
+from itertools import count
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,9 @@ from app.core.workspace import (
 )
 from app.core.workspace.capabilities import FileSnapshot, TextReplacement
 from app.web.app import create_app
+
+
+_TUNNEL_REQUEST_SEQUENCE = count(1)
 
 
 class _Settings:
@@ -521,7 +525,18 @@ def tunnel_service(tmp_path: Path, project: Path):
 
 
 def tunnel_call(service, name: str, arguments: dict, project: str = "main") -> dict:
-    payload = {"name": name, "arguments": {**arguments, "project": project}}
+    scoped_arguments = {**arguments, "project": project}
+    if name in {"apply_edits", "write_file", "delete_file"}:
+        scoped_arguments.setdefault(
+            "request_id",
+            f"boundary-test-{next(_TUNNEL_REQUEST_SEQUENCE):08d}",
+        )
+    if name != "project_overview":
+        scoped_arguments.setdefault(
+            "project_identity",
+            service.registry.resolve(project, service._fallback_workspace()).identity,
+        )
+    payload = {"name": name, "arguments": scoped_arguments}
     status, body = service.handle(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": payload}, {}
     )
@@ -558,7 +573,7 @@ def test_tunnel_write_to_an_existing_file_requires_the_read_digest(tunnel_servic
         {"path": "app.py", "content": "x\n", "expected_sha256": "0" * 64},
     )
     assert stale["isError"] is True
-    assert "read the current file first" in stale["content"][0]["text"]
+    assert "read the file" in stale["content"][0]["text"]
 
 
 def test_tunnel_apply_edits_reports_each_changed_file(tunnel_service) -> None:

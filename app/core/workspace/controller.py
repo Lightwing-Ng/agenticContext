@@ -1,6 +1,6 @@
 """The workspace controller: one action protocol over one selected project root."""
 
-# Code version: v1.0.2-codex.0
+# Code version: v1.3.0-codex.0
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from ..config import (
     runtime_root_is_overridden,
 )
 from .action_state import ActionState
-from .capabilities import FileSnapshot, TextReplacement
+from .capabilities import FileSnapshot, TextReplacement, describe_workspace_error
 from .command_policy import inspection_command_parts
 from .evidence import (
     WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS,
@@ -129,6 +129,24 @@ _ANCHORED_MUTATION_SUPPORTED = bool(
     _ANCHORED_DELETE_SUPPORTED
     and os.mkdir in getattr(os, "supports_dir_fd", set())
 )
+
+
+def _text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class _PublishedReplacementError(RuntimeError):
+    """Report a replacement that failed only after publishing the new file.
+
+    The target may already contain the requested replacement (or a later concurrent
+    edit), while ``recovery_path`` still preserves the displaced entry. Batch recovery
+    must treat this as a committed step and compare-and-swap it back instead of
+    claiming that the failed file never changed.
+    """
+
+    def __init__(self, message: str, *, recovery_path: str) -> None:
+        super().__init__(message)
+        self.recovery_path = recovery_path
 
 
 def _registered_action_capability(action_name: str):
@@ -603,8 +621,20 @@ class WorkspaceController:
         quarantine_path.unlink()
         return True
 
-    def _replace_text_file(self, relative: Path, old: str, new: str) -> str:
-        """Compare and atomically replace one existing text file."""
+    def _replace_text_file(
+        self,
+        relative: Path,
+        old: str,
+        new: str,
+        *,
+        exact: bool = False,
+    ) -> str:
+        """Compare and atomically replace one existing text file.
+
+        With ``exact``, ``old`` is the complete expected file text rather than one
+        unique fragment, so a file that gained or lost any text since it was read is
+        refused instead of receiving a whole-file replacement.
+        """
         if _ANCHORED_MUTATION_SUPPORTED:
             directory_fd, leaf_name, _created = self._open_anchored_parent(relative)
             source_fd = -1
@@ -622,6 +652,10 @@ class WorkspaceController:
                     self._read_anchored_file(directory_fd, leaf_name)
                 )
                 source = source_bytes.decode("utf-8")
+                if exact and source != old:
+                    raise RuntimeError(
+                        "The file changed since it was read; read it again before retrying."
+                    )
                 occurrences = source.count(old)
                 if occurrences != 1:
                     raise ValueError(
@@ -748,9 +782,10 @@ class WorkspaceController:
                             f"displaced version was preserved as {backup_name}."
                         ) from exc
                 elif backup_exists and replacement_published:
-                    raise RuntimeError(
+                    raise _PublishedReplacementError(
                         "The replacement could not be verified. The prior version was preserved "
-                        f"as {backup_name}."
+                        f"as {backup_name}.",
+                        recovery_path=(relative.parent / backup_name).as_posix(),
                     ) from exc
                 raise
             finally:
@@ -773,9 +808,16 @@ class WorkspaceController:
                 "Safe workspace replacement is unavailable without anchored directory "
                 "operations or Windows directory handles."
             )
-        return self._replace_text_file_windows(relative, old, new)
+        return self._replace_text_file_windows(relative, old, new, exact=exact)
 
-    def _replace_text_file_windows(self, relative: Path, old: str, new: str) -> str:
+    def _replace_text_file_windows(
+        self,
+        relative: Path,
+        old: str,
+        new: str,
+        *,
+        exact: bool = False,
+    ) -> str:
         """Hold the Windows workspace path stable through a guarded replacement."""
         path = self._resolve_path(relative)
         workspace_identity = self._windows_workspace_identity
@@ -788,13 +830,15 @@ class WorkspaceController:
             expected_workspace_identity=workspace_identity,
             expected_parent_identity=parent_identity,
         ):
-            return self._replace_text_file_path_guarded(relative, old, new)
+            return self._replace_text_file_path_guarded(relative, old, new, exact=exact)
 
     def _replace_text_file_path_guarded(
         self,
         relative: Path,
         old: str,
         new: str,
+        *,
+        exact: bool = False,
     ) -> str:
         """Replace one file after a platform guard has fenced every parent path."""
         path = self._resolve_path(relative)
@@ -802,6 +846,10 @@ class WorkspaceController:
             self._current_file_snapshot(path)
         )
         source = source_bytes.decode("utf-8")
+        if exact and source != old:
+            raise RuntimeError(
+                "The file changed since it was read; read it again before retrying."
+            )
         occurrences = source.count(old)
         if occurrences != 1:
             raise ValueError(
@@ -921,9 +969,10 @@ class WorkspaceController:
                         f"displaced version was preserved as {backup_path.name}."
                     ) from exc
             elif backup_exists and replacement_published:
-                raise RuntimeError(
+                raise _PublishedReplacementError(
                     "The replacement could not be verified. The prior version was preserved "
-                    f"as {backup_path.name}."
+                    f"as {backup_path.name}.",
+                    recovery_path=backup_path.relative_to(self.workspace).as_posix(),
                 ) from exc
             raise
         finally:
@@ -1332,7 +1381,34 @@ class WorkspaceController:
             )
 
     def apply_text_replacements(self, replacements: Sequence[TextReplacement]) -> None:
-        """Apply one atomic batch of whole-text replacements as a single edit."""
+        """Apply one batch of whole-text replacements, or raise after recovering.
+
+        This is the raising form of :meth:`apply_text_replacement_batch`; callers
+        that must report per-file outcomes use that method directly.
+        """
+        result = self.apply_text_replacement_batch(replacements)
+        if result["outcome"] != "committed":
+            raise RuntimeError(str(result.get("error") or "The edit batch was not applied."))
+
+    def apply_text_replacement_batch(
+        self,
+        replacements: Sequence[TextReplacement],
+    ) -> dict[str, Any]:
+        """Apply whole-text replacements in order and recover truthfully on failure.
+
+        Each file is replaced atomically with an exact compare-and-swap against the
+        text the caller planned from. The batch is not a filesystem transaction, so
+        when one file fails after earlier files were written, each earlier file is
+        restored with the same exact compare-and-swap. A file that someone changed
+        after this batch wrote it is never overwritten by recovery; it is reported as
+        a conflict together with the recovery copy of its pre-batch text.
+
+        The outcome is ``committed`` (every file written), ``rolled_back`` (a failure
+        happened and every earlier file was restored), or ``partial`` (at least one
+        earlier file could not be restored safely). Each file reports ``written``,
+        ``rolled_back``, ``conflict``, ``recovery_failed``, ``failed``, or
+        ``not_started``.
+        """
         self._require_not_stopped()
         self._require_writable()
         planned = [
@@ -1341,17 +1417,247 @@ class WorkspaceController:
         ]
         self._require_not_stopped()
         self._mark_edit()
-        for relative, item in planned:
-            self._replace_text_file(relative, item.source, item.text)
+        committed: list[tuple[Path, TextReplacement, str]] = []
+        failure: BaseException | None = None
+        failed_index = -1
+        published_failure = False
+        for index, (relative, item) in enumerate(planned):
+            try:
+                recovery = self._replace_text_file(
+                    relative,
+                    item.source,
+                    item.text,
+                    exact=True,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                failure = exc
+                failed_index = index
+                if isinstance(exc, _PublishedReplacementError):
+                    # The new file reached its final name before verification failed.
+                    # Recover it exactly like every earlier committed file.
+                    committed.append((relative, item, exc.recovery_path))
+                    published_failure = True
+                break
+            committed.append((relative, item, recovery))
+        if failure is None:
+            written = []
+            for relative, item, recovery in committed:
+                discarded = self._discard_recovery_file(relative, recovery, item.source)
+                record: dict[str, Any] = {
+                    "path": relative.as_posix(),
+                    "status": "written",
+                    "sha256": _text_sha256(item.text),
+                }
+                if not discarded:
+                    record["recovery_path"] = recovery
+                written.append(record)
+            return {"outcome": "committed", "files": written}
+
+        records: list[dict[str, Any]] = []
+        rollback_complete = True
+        for relative, item, recovery in reversed(committed):
+            try:
+                undo_recovery = self._replace_text_file(
+                    relative,
+                    item.text,
+                    item.source,
+                    exact=True,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                rollback_complete = False
+                current_sha256 = self._current_sha256_or_none(relative)
+                batch_sha256 = _text_sha256(item.text)
+                concurrent_change = (
+                    current_sha256 is not None and current_sha256 != batch_sha256
+                )
+                records.append(
+                    {
+                        "path": relative.as_posix(),
+                        "status": "conflict" if concurrent_change else "recovery_failed",
+                        "error": (
+                            "Written by this batch, then changed by someone else, so it was "
+                            "not restored. The current file was left as is."
+                            if concurrent_change
+                            else "The file still has this batch's content (or could not be "
+                            "read), but restoring the prior content failed. The recovery "
+                            "copy was preserved."
+                        ),
+                        "detail": describe_workspace_error(exc),
+                        "current_sha256": current_sha256,
+                        "batch_sha256": batch_sha256,
+                        "original_sha256": _text_sha256(item.source),
+                        "recovery_path": recovery,
+                    }
+                )
+                continue
+            undo_discarded = self._discard_recovery_file(
+                relative,
+                undo_recovery,
+                item.text,
+            )
+            original_discarded = self._discard_recovery_file(
+                relative,
+                recovery,
+                item.source,
+            )
+            record = {
+                "path": relative.as_posix(),
+                "status": "rolled_back",
+                "sha256": _text_sha256(item.source),
+            }
+            if published_failure and relative == planned[failed_index][0]:
+                record["write_error"] = describe_workspace_error(failure)
+            if not original_discarded:
+                record["recovery_path"] = recovery
+            if not undo_discarded:
+                record["rollback_recovery_path"] = undo_recovery
+            records.append(record)
+        records.reverse()
+        failed_relative, failed_item = planned[failed_index]
+        if not published_failure:
+            records.append(
+                {
+                    "path": failed_relative.as_posix(),
+                    "status": "failed",
+                    "error": describe_workspace_error(failure),
+                    "current_sha256": self._current_sha256_or_none(failed_relative),
+                    "original_sha256": _text_sha256(failed_item.source),
+                }
+            )
+        records.extend(
+            {"path": relative.as_posix(), "status": "not_started"}
+            for relative, _item in planned[failed_index + 1 :]
+        )
+        outcome = "rolled_back" if rollback_complete else "partial"
+        return {
+            "outcome": outcome,
+            "files": records,
+            "error": (
+                f"{failed_relative.as_posix()} could not be written: "
+                f"{describe_workspace_error(failure)} "
+                + (
+                    "Every file published by this batch was restored, so no project file changed."
+                    if rollback_complete
+                    else "Some published files could not be restored; see each file's "
+                    "status and recovery path before retrying."
+                )
+            ),
+        }
 
     def overwrite_text_file(self, relative_path: str, *, source: str, content: str) -> None:
-        """Replace one existing text file's contents as a single edit."""
+        """Replace one existing text file's exact contents as a single edit."""
         self._require_not_stopped()
         self._require_writable()
         relative = Path(self.project_relative_path(relative_path))
         self._require_not_stopped()
         self._mark_edit()
-        self._replace_text_file(relative, source, content)
+        recovery = self._replace_text_file(relative, source, content, exact=True)
+        self._discard_recovery_file(relative, recovery, source)
+
+    def _current_sha256_or_none(self, relative: Path) -> str | None:
+        """Return the file's current digest for a diagnostic, or ``None`` if unreadable."""
+        try:
+            digest, _size, _identity = self._current_file_sha256(self._resolve_path(relative))
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return digest
+
+    def _discard_recovery_file(self, relative: Path, recovery: str, expected_text: str) -> bool:
+        """Remove one recovery copy this controller made, only while it still holds
+        ``expected_text``. A recovery copy that cannot be proven is kept."""
+        recovery_name = Path(str(recovery or "")).name
+        if not recovery_name or Path(recovery).parent != relative.parent:
+            return False
+        expected = _text_sha256(expected_text)
+        try:
+            if _ANCHORED_MUTATION_SUPPORTED:
+                directory_fd, _leaf, _created = self._open_anchored_parent(relative)
+                try:
+                    digest, _size, _identity, file_fd = self._hash_anchored_file(
+                        directory_fd, recovery_name
+                    )
+                    os.close(file_fd)
+                    if digest != expected:
+                        return False
+                    os.unlink(recovery_name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                    return True
+                finally:
+                    os.close(directory_fd)
+            path = self._resolve_path(relative).with_name(recovery_name)
+            if _path_is_link_like(path):
+                return False
+            digest, _size, _identity = self._current_file_sha256(path)
+            if digest != expected:
+                return False
+            path.unlink()
+            return True
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    def begin_external_verification(self) -> dict[str, Any]:
+        """Record the exact workspace version a detached verification will check.
+
+        The returned evidence is later passed to :meth:`finish_external_verification`.
+        """
+        self._require_not_stopped()
+        self._require_workspace_identity()
+        snapshot_id, complete = _workspace_mutation_fingerprint(
+            self.workspace,
+            should_stop=self.should_stop,
+        )
+        if not complete:
+            self._record_workspace_snapshot(snapshot_id, complete=False)
+            raise RuntimeError(
+                "The check was not started because the project could not be fingerprinted "
+                "completely; its result could not be tied to the checked files."
+            )
+        self._record_workspace_snapshot(snapshot_id, complete=True)
+        return {
+            "snapshot_id": snapshot_id,
+            "edit_generation": self.state.edit_generation,
+            "workspace_generation": self.state.workspace_generation,
+        }
+
+    def finish_external_verification(
+        self,
+        evidence: dict[str, Any],
+        *,
+        command: str,
+        succeeded: bool,
+        allow_generation_rebind: bool = False,
+    ) -> dict[str, Any]:
+        """Count a finished detached check only if the checked files are still current."""
+        self._require_workspace_identity()
+        after, complete = _workspace_mutation_fingerprint(
+            self.workspace,
+            should_stop=self.should_stop,
+        )
+        workspace_changed = not complete or after != evidence.get("snapshot_id")
+        same_generation = (
+            evidence.get("edit_generation") == self.state.edit_generation
+            and evidence.get("workspace_generation") == self.state.workspace_generation
+        )
+        evaluation: dict[str, Any] = {
+            "verification": "not_recorded",
+            "workspace_changed": workspace_changed,
+        }
+        if workspace_changed:
+            self._record_workspace_snapshot(after, complete=complete)
+            evaluation["reason"] = "The project changed after the check started."
+        elif succeeded and (same_generation or allow_generation_rebind):
+            self._record_workspace_snapshot(after, complete=True)
+            self.state.verification_generation = self.state.edit_generation
+            self.state.verification_workspace_generation = self.state.workspace_generation
+            self.state.verification_snapshot_id = after
+            self.state.successful_checks.append(command)
+            evaluation["verification"] = "recorded"
+        elif succeeded:
+            evaluation["reason"] = "The project was edited after the check started."
+        elif same_generation or allow_generation_rebind:
+            # A failing check of the current files withdraws any earlier pass for them.
+            self._invalidate_verification_order()
+        return evaluation
 
     def create_file(self, relative_path: str, data: bytes) -> int:
         """Create one new file that does not exist yet and return its byte count."""
@@ -1556,26 +1862,125 @@ class WorkspaceController:
                 "script instead."
             )
         content_bytes, sha256, _file_bytes, identity = self._current_file_snapshot(path)
-        text = content_bytes.decode("utf-8", errors="replace").splitlines()
+        try:
+            decoded = content_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                "The requested file is not UTF-8 text; it can be listed but not read or edited."
+            ) from exc
+        text = decoded.splitlines()
         start = max(1, int(payload.get("start_line", 1)))
-        end = min(len(text), max(start, int(payload.get("end_line", start + 239))))
-        lines = [f"{index}: {text[index - 1]}" for index in range(start, end + 1)]
-        content = _truncate_text("\n".join(lines), MAX_FILE_READ_CHARS)
+        start_character = max(0, int(payload.get("start_character", 0)))
+        character_limit = max(
+            1,
+            min(
+                MAX_FILE_READ_CHARS,
+                int(payload.get("max_characters", MAX_FILE_READ_CHARS)),
+            ),
+        )
+        requested_end = min(
+            len(text),
+            max(start, int(payload.get("end_line", start + 239))),
+        )
         relative_path = path.relative_to(self.workspace).as_posix()
         self.state.read_receipts[relative_path] = (
             sha256,
             identity,
             self.state.workspace_generation,
         )
+        if start_character:
+            if start > len(text) or start_character >= len(text[start - 1]):
+                raise ValueError(
+                    "start_character must identify unread text on start_line; use the "
+                    "next_start_line and next_start_character from the prior read."
+                )
+        if start <= len(text):
+            current_line = text[start - 1]
+            prefix = f"{start}: "
+            segment_capacity = max(1, character_limit - len(prefix))
+            remaining_line = current_line[start_character:]
+            if start_character or len(prefix) + len(remaining_line) > character_limit:
+                fragment = remaining_line[:segment_capacity]
+                next_character = start_character + len(fragment)
+                line_has_more = next_character < len(current_line)
+                later_lines = start < len(text)
+                has_more = line_has_more or later_lines
+                next_line = start if line_has_more else (start + 1 if later_lines else None)
+                return {
+                    "ok": True,
+                    "action": "read",
+                    "path": relative_path,
+                    "start_line": start,
+                    "end_line": start,
+                    "start_character": start_character,
+                    "total_lines": len(text),
+                    "content": prefix + fragment,
+                    "sha256": sha256,
+                    "utf8": True,
+                    "content_truncated": line_has_more or requested_end > start,
+                    "line_segmented": True,
+                    "line_truncated": line_has_more,
+                    "has_more": has_more,
+                    "next_start_line": next_line,
+                    "next_start_character": next_character if line_has_more else None,
+                    "continuation_note": (
+                        "Read again with the same next_start_line and the returned "
+                        "next_start_character to continue this line."
+                        if line_has_more
+                        else "Read again from next_start_line to continue with later lines."
+                    ) if has_more else "This completes the segmented line.",
+                }
+        lines = [
+            f"{index}: {text[index - 1]}"
+            for index in range(start, requested_end + 1)
+        ]
+        joined = "\n".join(lines)
+        content_truncated = len(joined) > character_limit
+        # The last line shown completely decides where a continued read starts.
+        last_complete = requested_end
+        line_truncated = False
+        if content_truncated:
+            used = 0
+            last_complete = start - 1
+            complete_lines: list[str] = []
+            for index, line in enumerate(lines, start=start):
+                added = len(line) + (1 if complete_lines else 0)
+                if used + added > character_limit:
+                    if not complete_lines:
+                        complete_lines.append(_truncate_text(line, character_limit))
+                        last_complete = start
+                        line_truncated = True
+                    break
+                complete_lines.append(line)
+                used += added
+                last_complete = index
+            joined = "\n".join(complete_lines)
+        content = joined
         return {
             "ok": True,
             "action": "read",
             "path": relative_path,
             "start_line": start,
-            "end_line": end,
+            "end_line": last_complete,
             "total_lines": len(text),
             "content": content,
             "sha256": sha256,
+            "utf8": True,
+            "content_truncated": content_truncated,
+            "has_more": last_complete < len(text),
+            "next_start_line": last_complete + 1 if last_complete < len(text) else None,
+            "next_start_character": None,
+            **(
+                {
+                    "line_truncated": True,
+                    "continuation_note": (
+                        "Read again with the same next_start_line and the returned "
+                        "next_start_character to continue this line."
+                    ),
+                }
+                if line_truncated
+                else {}
+            ),
         }
 
     def _search(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1625,6 +2030,16 @@ class WorkspaceController:
                 "matches": matches,
                 "truncated": len(matches) >= max_results,
                 "engine": "python-fallback",
+                **(
+                    {
+                        "next_step": (
+                            "Search again with a narrower project-relative path or inclusive "
+                            "glob (or a larger max_results up to 300)."
+                        )
+                    }
+                    if len(matches) >= max_results
+                    else {}
+                ),
             }
         command = [
             str(ripgrep),
@@ -1692,6 +2107,16 @@ class WorkspaceController:
                 "matches": matches,
                 "truncated": len(matches) >= max_results,
                 "engine": "python-fallback",
+                **(
+                    {
+                        "next_step": (
+                            "Search again with a narrower project-relative path or inclusive "
+                            "glob (or a larger max_results up to 300)."
+                        )
+                    }
+                    if len(matches) >= max_results
+                    else {}
+                ),
             }
 
         if process.stdout is None or process.stderr is None:
@@ -1850,6 +2275,16 @@ class WorkspaceController:
             "matches": matches,
             "truncated": truncated,
             "engine": "rg",
+            **(
+                {
+                    "next_step": (
+                        "Search again with a narrower project-relative path or inclusive "
+                        "glob (or a larger max_results up to 300)."
+                    )
+                }
+                if truncated
+                else {}
+            ),
         }
 
     def _replace(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.132.0-codex.0
+# Code version: v1.140.0-codex.0
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from unittest.mock import ANY, patch
 
 from app.core.state import TaskSnapshot
 from app.core.config import CrawlConfig
+from app.core.foundation import is_macos_host
 from app.core.chat_history_browser import query_chat_history
 from app.core.computer_use_agent import ComputerUseSettings
 from app.core.local_media_browser import LocalMediaCatalog, LocalMediaPage, local_file_manager_label, stable_media_id
@@ -748,7 +749,7 @@ class WebAppTests(unittest.TestCase):
                 stop_form_end = body.index(">", stop_form_start)
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', chatgpt_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', chatgpt_body)
         self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.8.2-codex.0', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
@@ -866,7 +867,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.143.0-codex.0"
+                expected_style_version = "style-v2.148.0-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1289,17 +1290,17 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.0.0-codex.0', local_body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.2-codex.0', local_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.143.0-codex.0', local_body)
+        self.assertIn('style-v2.148.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.59.0-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.63.0-codex.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -1309,12 +1310,25 @@ class WebAppTests(unittest.TestCase):
         gemini_body = local_body[onboarding_end:gemini_end]
         self.assertIn('starting with tunnel_', onboarding_body)
         self.assertIn('sk-proj-••••••••', onboarding_body)
+        self.assertIn(
+            '<ol class="agent-tunnel-onboarding-steps" role="list">',
+            onboarding_body,
+        )
         for step_number in range(1, 5):
             self.assertIn(
                 '<span class="agent-tunnel-step-number" aria-hidden="true">'
-                f'Step {step_number}</span>',
+                f'{step_number}</span>',
                 onboarding_body,
             )
+        self.assertEqual(
+            onboarding_body.count('<h3 class="agent-tunnel-step-heading">'),
+            4,
+        )
+        self.assertEqual(
+            onboarding_body.count('data-agent-tunnel-process-continues'),
+            3,
+        )
+        self.assertEqual(gemini_body.count('data-agent-tunnel-process-continues'), 3)
         guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list ')
         guide_end = onboarding_body.index('</ol>', guide_start) + len('</ol>')
         guide_body = onboarding_body[guide_start:guide_end]
@@ -2080,6 +2094,131 @@ class WebAppTests(unittest.TestCase):
         history.assert_not_called()
         background_refresh.assert_not_called()
 
+    def test_tunnel_project_selection_is_local_exact_and_revision_guarded(self) -> None:
+        """Expose local roots while selecting only registered ids with CAS."""
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "project-a"
+            second = root / "project-b"
+            first.mkdir()
+            second.mkdir()
+            registry_path = root / "settings" / "tunnel-projects.json"
+            registry_path.parent.mkdir()
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "projects": [
+                            {"id": "alpha", "root": str(first), "writable": True},
+                            {"id": "reference", "root": str(second), "writable": False},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            with app.test_client() as client:
+                initial = client.get("/api/agent/tunnel/project").get_json()["project_context"]
+                self.assertEqual(initial["revision"], 0)
+                self.assertIsNone(initial["current"])
+                self.assertEqual(initial["projects"][0]["root"], str(first.resolve()))
+                self.assertEqual(initial["projects"][0]["access"], "Read and write")
+                self.assertEqual(initial["projects"][1]["access"], "Read only")
+                self.assertTrue(all(item["registered"] for item in initial["projects"]))
+
+                selected = client.post(
+                    "/api/agent/tunnel/project",
+                    json={"project_id": "alpha", "expected_revision": 0},
+                )
+                self.assertEqual(selected.status_code, 200)
+                current = selected.get_json()["project_context"]
+                self.assertEqual(current["current"]["id"], "alpha")
+                self.assertEqual(current["revision"], 1)
+                self.assertRegex(current["current"]["identity"], r"^[0-9a-f]{16}$")
+
+                service = app.extensions["tunnel_mcp_service"]
+                rpc_status, rpc_body = service.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "current_project", "arguments": {}},
+                    },
+                    {},
+                )
+                self.assertEqual(rpc_status, 200)
+                discovered = rpc_body["result"]["structuredContent"]
+                self.assertEqual(discovered["current_project"]["id"], "alpha")
+                self.assertEqual(
+                    discovered["current_project"]["identity"],
+                    current["current"]["identity"],
+                )
+                self.assertEqual(discovered["selection"]["revision"], 1)
+                self.assertNotIn(str(first.resolve()), json.dumps(discovered))
+                self.assertNotIn(str(second.resolve()), json.dumps(discovered))
+
+                stale = client.post(
+                    "/api/agent/tunnel/project",
+                    json={"project_id": "reference", "expected_revision": 0},
+                )
+                self.assertEqual(stale.status_code, 409)
+                self.assertEqual(
+                    app.extensions["tunnel_mcp_service"].selection_store.load().project_id,
+                    "alpha",
+                )
+                injected = client.post(
+                    "/api/agent/tunnel/project",
+                    json={
+                        "project_id": "reference",
+                        "expected_revision": 1,
+                        "root": str(second),
+                    },
+                )
+                self.assertEqual(injected.status_code, 400)
+
+    def test_tunnel_same_credentials_trigger_recovery_and_writable_availability(self) -> None:
+        """A deliberate re-save recovers the client and write access is truthful."""
+        from app.core.tunnel_projects import TunnelProject, project_availability
+
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            credentials_path = root / "settings" / "tunnel-credentials.json"
+            credentials_path.parent.mkdir()
+            tunnel_id = "tunnel_" + "a" * 32
+            credentials_path.write_text(
+                json.dumps({"tunnel_id": tunnel_id, "api_key": "sk-valid-test-key"}),
+                encoding="utf-8",
+            )
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_credentials_path=credentials_path,
+                agent_external_operations_enabled=False,
+            )
+            runtime = app.extensions["tunnel_runtime"]
+            with patch.object(runtime, "request_restart") as restart:
+                with app.test_client() as client:
+                    response = client.post(
+                        "/api/agent/tunnel/credentials",
+                        json={"tunnel_id": tunnel_id, "api_key": ""},
+                    )
+                self.assertEqual(response.status_code, 200)
+                restart.assert_called_once_with(delay=0.05)
+
+            project_root = root / "writable-project"
+            project_root.mkdir()
+            project = TunnelProject("main", project_root.resolve(), True)
+            with patch("app.core.tunnel_projects.os.access") as access:
+                access.side_effect = lambda _path, mode: mode != 2
+                self.assertIn("not writable", project_availability(project))
+
     def test_isolated_agent_app_injects_private_state_and_blocks_external_operations(
         self,
     ) -> None:
@@ -2100,6 +2239,27 @@ class WebAppTests(unittest.TestCase):
             agent_service = app.extensions["computer_use_agent_service"]
             self.assertEqual(settings_store._settings_path, settings_path)
             self.assertEqual(agent_service._runtime_root, runtime_root)
+
+            tunnel_service = app.extensions["tunnel_mcp_service"]
+            tunnel_runtime = app.extensions["tunnel_runtime"]
+            tunnel_root = runtime_root / "tunnel"
+            self.assertEqual(
+                app.extensions["tunnel_credentials_path"],
+                settings_path.with_name("tunnel-credentials.json"),
+            )
+            self.assertEqual(
+                app.extensions["tunnel_projects_path"],
+                settings_path.with_name("tunnel-projects.json"),
+            )
+            self.assertEqual(app.extensions["tunnel_runtime_root"], tunnel_root)
+            self.assertEqual(tunnel_service.registry.path, app.extensions["tunnel_projects_path"])
+            self.assertEqual(
+                tunnel_service.selection_store.path,
+                settings_path.with_name("tunnel-selection.json"),
+            )
+            self.assertEqual(tunnel_service._checks.root, tunnel_root / "tunnel-checks")
+            self.assertEqual(tunnel_service._journal._root, tunnel_root / "tunnel-requests")
+            self.assertEqual(tunnel_runtime._state_root, tunnel_root)
 
             calls: list[str] = []
 
@@ -2684,7 +2844,37 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), opened)
         self.assertEqual(remote_response.status_code, 403)
-        open_login.assert_called_once_with("chatgpt", "edge", config=config)
+        open_login.assert_called_once_with(
+            "chatgpt",
+            "edge",
+            config=config,
+            use_debug_profile=not is_macos_host(),
+        )
+
+    def test_browser_session_login_route_keeps_macos_cache_in_the_daily_profile(self) -> None:
+        app = create_app()
+        opened = {"opened": True}
+
+        with (
+            patch("app.web.agent_routes.is_macos_host", return_value=True),
+            patch("app.web.agent_routes.open_browser_for_login", return_value=opened) as open_login,
+        ):
+            with app.test_client() as client:
+                cache_response = client.post(
+                    "/api/browser-session/open-login",
+                    json={"platform": "chatgpt", "browser": "edge"},
+                )
+                agent_response = client.post(
+                    "/api/browser-session/open-login",
+                    json={"platform": "chatgpt", "browser": "edge", "scope": "agent"},
+                )
+
+        self.assertEqual(cache_response.status_code, 200)
+        self.assertEqual(agent_response.status_code, 200)
+        self.assertEqual(
+            [call.kwargs["use_debug_profile"] for call in open_login.call_args_list],
+            [False, True],
+        )
 
     def test_browser_session_login_route_rejects_invalid_selection(self) -> None:
         app = create_app()
@@ -2718,7 +2908,9 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(failed.status_code, 409)
         self.assertIn("could not be found", failed.get_json()["error"])
-        open_login.assert_called_once_with("chatgpt", "edge", config=ANY)
+        open_login.assert_called_once_with(
+            "chatgpt", "edge", config=ANY, use_debug_profile=ANY
+        )
 
         isolated_app = create_app(agent_external_operations_enabled=False)
         with patch("app.web.agent_routes.open_browser_for_login") as isolated_open_login:
@@ -2745,7 +2937,7 @@ class WebAppTests(unittest.TestCase):
         for fragment in (
             "payload.logged_in === false",
             'fetch("/api/browser-session/open-login"',
-            'body: JSON.stringify({platform: requestPlatform, browser: requestBrowser})',
+            'body: JSON.stringify({platform: requestPlatform, browser: requestBrowser, scope})',
             'loginButton.textContent = payload.human_verification',
             '`Open ${browserLabel} to complete verification now`',
             '`Open ${browserLabel} to sign in`',
@@ -2855,7 +3047,7 @@ class WebAppTests(unittest.TestCase):
         script = COMPUTER_USE_AGENT_SCRIPT_PATH.read_text(encoding="utf-8")
 
         self.assertTrue(
-            script.startswith("/* Code version: v3.59.0-codex.0 */")
+            script.startswith("/* Code version: v3.63.0-codex.0 */")
         )
         for fragment in (
             'geminiAuthorization: document.querySelector("[data-agent-gemini-authorization]")',
@@ -2923,7 +3115,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.59.0-codex.0',
+            'computer-use-agent-v3.63.0-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -4711,7 +4903,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.143.0-codex.0", body)
+            self.assertIn("style-v2.148.0-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.34.0-codex.0', body)

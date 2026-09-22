@@ -1,4 +1,4 @@
-<!-- Code version: v3.66.0-codex.0 -->
+<!-- Code version: v3.74.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,9 +9,9 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.143.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.148.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.1.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.2.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -39,7 +39,9 @@
 
             <form class="agent-runtime-form" id="agent_runtime_form">
                 <input name="target_url" type="hidden" value="{{ settings.target_url }}" data-agent-target-url>
-                <label class="field">
+                {% set tunnel_project_context = tunnel_status.project_context | default({}) %}
+                {% set tunnel_current_project = tunnel_project_context.current | default(none) %}
+                <label class="field" data-agent-browser-mode-field{% if connection_mode == 'tunnel' %} hidden{% endif %}>
                     <span class="field-label agent-project-label">Current project: <span data-agent-project-name>{{ agent_project_name }}</span></span>
                     <span class="shadow-backup-destination-control settings-directory-control">
                         <input
@@ -69,6 +71,71 @@
                     </span>
                     <span id="agent_project_path_status" class="settings-directory-status" data-directory-picker-status role="status" aria-live="polite" hidden></span>
                 </label>
+
+                <div
+                    class="field agent-tunnel-project-field"
+                    data-agent-tunnel-project-field
+                    data-agent-tunnel-project-url="{{ url_for('tunnel.api_project') }}"
+                    data-agent-tunnel-project-initial='{{ tunnel_project_context | tojson }}'
+                    {% if connection_mode != 'tunnel' %}hidden{% endif %}
+                >
+                    <span class="field-label">Current Tunnel project</span>
+                    <div class="trade-strategy-combobox agent-combobox agent-tunnel-project-combobox" data-agent-tunnel-project-combobox>
+                        <input type="hidden" value="{{ tunnel_current_project.id if tunnel_current_project else '' }}" data-agent-tunnel-project-input>
+                        <button
+                            type="button"
+                            class="trade-strategy-select form-select trade-strategy-trigger agent-combobox-trigger"
+                            data-agent-tunnel-project-trigger
+                            aria-haspopup="listbox"
+                            aria-expanded="false"
+                            aria-label="Current Tunnel project: {{ tunnel_current_project.id if tunnel_current_project else 'not selected' }}"
+                        >
+                            <span class="trade-strategy-trigger-label" data-agent-tunnel-project-selected-label>{{ tunnel_current_project.id if tunnel_current_project else 'Choose a registered project' }}</span>
+                            <span class="browser-picker-trigger-chevron" aria-hidden="true"></span>
+                        </button>
+                        <div class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown agent-combobox-dropdown" data-agent-tunnel-project-menu role="listbox" aria-label="Choose a registered Tunnel project" hidden>
+                            {% for project in tunnel_project_context.projects | default([]) %}
+                            <button
+                                type="button"
+                                class="trade-strategy-dropdown-option agent-combobox-option{% if tunnel_current_project and tunnel_current_project.id == project.id %} is-selected is-active{% endif %}"
+                                data-agent-tunnel-project-option="{{ project.id }}"
+                                role="option"
+                                aria-selected="{{ 'true' if tunnel_current_project and tunnel_current_project.id == project.id else 'false' }}"
+                                aria-disabled="{{ 'false' if project.available and project.registered else 'true' }}"
+                                {% if not project.available or not project.registered %}disabled{% endif %}
+                                tabindex="-1"
+                            >
+                                <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+                                <span class="trade-strategy-dropdown-text">{{ project.id }} · {{ project.access }}{% if not project.registered %} · Not registered{% elif not project.available %} · Unavailable{% endif %}</span>
+                            </button>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <dl class="agent-tunnel-project-facts" data-agent-tunnel-project-facts>
+                        <div class="agent-tunnel-project-fact">
+                            <dt>Project ID</dt>
+                            <dd data-agent-tunnel-project-id>{{ tunnel_current_project.id if tunnel_current_project else 'Not selected' }}</dd>
+                        </div>
+                        <div class="agent-tunnel-project-fact">
+                            <dt>Identity</dt>
+                            <dd data-agent-tunnel-project-identity>{{ tunnel_current_project.identity if tunnel_current_project else 'Unavailable' }}</dd>
+                        </div>
+                        <div class="agent-tunnel-project-fact agent-tunnel-project-root-fact">
+                            <dt>Path</dt>
+                            <dd data-agent-tunnel-project-root>{{ tunnel_current_project.root if tunnel_current_project else 'Unavailable' }}</dd>
+                        </div>
+                        <div class="agent-tunnel-project-fact">
+                            <dt>Access</dt>
+                            <dd data-agent-tunnel-project-access>{{ tunnel_current_project.access if tunnel_current_project else 'Unavailable' }}</dd>
+                        </div>
+                        <div class="agent-tunnel-project-fact">
+                            <dt>Availability</dt>
+                            <dd data-agent-tunnel-project-availability>{{ tunnel_current_project.availability if tunnel_current_project else 'Unavailable' }}{% if tunnel_current_project and not tunnel_current_project.registered %} · Not registered{% endif %}</dd>
+                        </div>
+                    </dl>
+                    {% set tunnel_project_problem = tunnel_project_context.problem | default('') %}
+                    <p class="settings-directory-status agent-tunnel-project-status" data-agent-tunnel-project-status role="status" aria-live="polite"{% if not tunnel_project_problem %} hidden{% endif %}>{{ tunnel_project_problem }}</p>
+                </div>
 
                 <div class="agent-connect-fields">
                     <label class="field">
@@ -145,6 +212,7 @@
                         data-agent-tunnel-platforms="{{ tunnel_supported_platforms }}"
                         data-agent-tunnel-status-url="{{ url_for('tunnel.api_status') }}"
                         data-agent-tunnel-credentials-url="{{ url_for('tunnel.api_credentials') }}"
+                        data-agent-tunnel-connect-url="{{ url_for('tunnel.api_connect') }}"
                         data-agent-gemini-config-url="/api/agent/tunnel/gemini/config"
                         data-agent-gemini-copy-value-url="/api/agent/tunnel/gemini/copy-value"
                         data-agent-gemini-authorization-url="/api/agent/tunnel/gemini/authorization"
@@ -164,36 +232,43 @@
                                             <span class="browser-session-status-field-value" data-agent-tunnel-state>{{ tunnel_view.label }}</span>
                                         </span>
                                     </div>
-                                    <p class="browser-session-status-message agent-tunnel-status-message agent-tunnel-status-hint" data-agent-tunnel-hint aria-live="polite"{% if not tunnel_view.hint %} hidden{% endif %}>{{ tunnel_view.hint }}</p>
+                                    {% set tunnel_problem = (tunnel_view.hint or tunnel_view.message) if tunnel_view.tone == 'error' else '' %}
+                                    <p class="browser-session-status-message agent-tunnel-status-message" data-agent-tunnel-problem aria-live="polite"{% if not tunnel_problem %} hidden{% endif %}>{{ tunnel_problem }}</p>
+                                    {% set recent_usage = tunnel_status.recent_usage | default({}) %}
+                                    {% set active_calls = tunnel_status.active_calls | default([]) %}
+                                    {% set recent_calls = tunnel_status.recent_calls | default([]) %}
+                                    {% set recent_tokens_available = (recent_usage.complete | default(false)) and (recent_usage.estimated_tokens is integer) and recent_usage.estimated_tokens >= 0 %}
+                                    <div class="agent-tunnel-usage" data-agent-tunnel-usage aria-label="Tunnel usage">
+                                        <dl class="agent-tunnel-usage-list">
+                                            <div class="agent-tunnel-usage-row">
+                                                <dt class="agent-tunnel-usage-label">Total calls:</dt>
+                                                <dd class="agent-tunnel-usage-value" data-tunnel-call-count>{{ '{:,}'.format(tunnel_status.call_count) if tunnel_status.call_count is integer and tunnel_status.call_count >= 0 else 'Unavailable' }}</dd>
+                                            </div>
+                                            <div class="agent-tunnel-usage-row">
+                                                <dt class="agent-tunnel-usage-label">Active calls:</dt>
+                                                <dd class="agent-tunnel-usage-value" data-tunnel-active-count>{{ '{:,}'.format(active_calls | length) }}</dd>
+                                            </div>
+                                            <div class="agent-tunnel-usage-row">
+                                                <dt class="agent-tunnel-usage-label">Recent completed calls:</dt>
+                                                <dd class="agent-tunnel-usage-value" data-tunnel-recent-count>{{ '{:,}'.format(recent_calls | length) }}</dd>
+                                            </div>
+                                            <div class="agent-tunnel-usage-row">
+                                                <dt class="agent-tunnel-usage-label">Recent tool text (est.):</dt>
+                                                <dd class="agent-tunnel-usage-value agent-tunnel-recent-tokens" tabindex="0">
+                                                    <span class="investment-holdings-allocation-badge" data-tunnel-recent-token-badge{% if not recent_tokens_available %} hidden{% endif %}><span class="investment-holdings-allocation-badge-value"><span class="workspace-metric-value-major" data-tunnel-recent-token-digits>{% if recent_tokens_available %}{% for glyph in '{:,}'.format(recent_usage.estimated_tokens) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}{% endif %}</span></span></span>
+                                                    <span data-tunnel-recent-token-unavailable{% if recent_tokens_available %} hidden{% endif %}>Unavailable</span>
+                                                </dd>
+                                            </div>
+                                            <div class="agent-tunnel-usage-row">
+                                                <dt class="agent-tunnel-usage-label">Task/model billing:</dt>
+                                                <dd class="agent-tunnel-usage-value" data-tunnel-task-billing>Unavailable</dd>
+                                            </div>
+                                        </dl>
+                                    </div>
                                 </div>
                             </div>
-                            {% set active_calls = tunnel_status.active_calls | default([]) %}
-                            {% set token_summary = namespace(total=0, available=true) %}
-                            {% for call in active_calls %}
-                                {% if call.estimated_tokens is defined and call.estimated_tokens is integer and call.estimated_tokens >= 0 %}
-                                    {% set token_summary.total = token_summary.total + call.estimated_tokens %}
-                                {% else %}
-                                    {% set token_summary.available = false %}
-                                {% endif %}
-                            {% endfor %}
-                            <div class="agent-tunnel-usage" data-agent-tunnel-usage aria-label="Tunnel usage">
-                                <dl class="agent-tunnel-usage-list">
-                                    <div class="agent-tunnel-usage-row">
-                                        <dt class="agent-tunnel-usage-label">Total calls:</dt>
-                                        <dd class="agent-tunnel-usage-value" data-tunnel-call-count>{{ '{:,}'.format(tunnel_status.call_count | default(0)) }}</dd>
-                                    </div>
-                                    <div class="agent-tunnel-usage-row">
-                                        <dt class="agent-tunnel-usage-label">Active call:</dt>
-                                        <dd class="agent-tunnel-usage-value" data-tunnel-active-count>{{ '{:,}'.format(active_calls | length) }}</dd>
-                                    </div>
-                                    <div class="agent-tunnel-usage-row">
-                                        <dt class="agent-tunnel-usage-label">Current tokens:</dt>
-                                        <dd class="agent-tunnel-usage-value agent-tunnel-current-tokens" tabindex="0">
-                                            <span class="investment-holdings-allocation-badge" data-tunnel-token-badge{% if not token_summary.available %} hidden{% endif %}><span class="investment-holdings-allocation-badge-value"><span class="workspace-metric-value-major" data-tunnel-token-digits>{% if token_summary.available %}{% for glyph in '{:,}'.format(token_summary.total) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}{% endif %}</span></span></span>
-                                            <span data-tunnel-token-unavailable{% if token_summary.available %} hidden{% endif %}>Unavailable</span>
-                                        </dd>
-                                    </div>
-                                </dl>
+                            <div class="agent-tunnel-status-actions">
+                                <button type="button" class="secondary-button" data-agent-tunnel-reconnect{% if tunnel_status.platform != 'chatgpt' or not tunnel_credentials.qualified %} hidden{% endif %}>Reconnect</button>
                             </div>
                         </div>
                     </div>
@@ -341,18 +416,18 @@
 
             <div class="workspace-grid workspace-content-card agent-workspace-grid">
                 <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-onboarding data-agent-tunnel-provider-panel="chatgpt"{% if connection_mode != 'tunnel' or settings.platform != 'chatgpt' %} hidden{% endif %}>
-                    <ol class="agent-tunnel-onboarding-steps">
-                        <li class="agent-tunnel-onboarding-step">
-                            <span class="agent-tunnel-step-number" aria-hidden="true">Step 1</span>
+                    <ol class="agent-tunnel-onboarding-steps" role="list">
+                        <li class="agent-tunnel-onboarding-step" data-agent-tunnel-process-continues>
+                            <span class="agent-tunnel-step-number" aria-hidden="true">1</span>
                             <div class="agent-tunnel-step-copy agent-tunnel-setup-copy">
-                                <h4>Create the OpenAI credentials</h4>
+                                <h3 class="agent-tunnel-step-heading">Create the OpenAI credentials</h3>
                                 {% include "_agent_tunnel_credential_guides.html" %}
                             </div>
                         </li>
-                        <li class="agent-tunnel-onboarding-step agent-tunnel-credential-step">
-                            <span class="agent-tunnel-step-number" aria-hidden="true">Step 2</span>
+                        <li class="agent-tunnel-onboarding-step agent-tunnel-credential-step" data-agent-tunnel-process-continues>
+                            <span class="agent-tunnel-step-number" aria-hidden="true">2</span>
                             <div class="agent-tunnel-step-copy">
-                                <h4>Enter the Tunnel credentials</h4>
+                                <h3 class="agent-tunnel-step-heading">Enter the Tunnel credentials</h3>
                                 <ol class="agent-tunnel-numbered-list agent-tunnel-credential-fields" aria-label="Tunnel credential fields">
                                     <li class="agent-tunnel-numbered-item">
                                         <span class="agent-tunnel-substep-number" aria-hidden="true">➊</span>
@@ -383,27 +458,28 @@
                                 </ol>
                             </div>
                         </li>
-                        <li class="agent-tunnel-onboarding-step">
-                            <span class="agent-tunnel-step-number" aria-hidden="true">Step 3</span>
+                        <li class="agent-tunnel-onboarding-step" data-agent-tunnel-process-continues>
+                            <span class="agent-tunnel-step-number" aria-hidden="true">3</span>
                             <div class="agent-tunnel-step-copy">
-                                <h4>Create the ChatGPT plugin</h4>
+                                <h3 class="agent-tunnel-step-heading">Create the ChatGPT plugin</h3>
                                 {% include "_agent_tunnel_chatgpt_guides.html" %}
                             </div>
                         </li>
                         <li class="agent-tunnel-onboarding-step">
-                            <span class="agent-tunnel-step-number" aria-hidden="true">Step 4</span>
+                            <span class="agent-tunnel-step-number" aria-hidden="true">4</span>
                             <div class="agent-tunnel-step-copy">
-                                <h4>Run one real project task</h4>
-                                {% set tunnel_kickoff_ready = (tunnel_credentials.qualified | default(false)) and tunnel_view.tone == 'ready' and (tunnel_status.activity_observed | default(false)) %}
+                                <h3 class="agent-tunnel-step-heading">Run one real project task</h3>
+                                {% set tunnel_project_ready = tunnel_current_project and (tunnel_current_project.available | default(false)) and (tunnel_current_project.registered | default(false)) %}
+                                {% set tunnel_kickoff_ready = (tunnel_credentials.qualified | default(false)) and tunnel_view.tone == 'ready' and tunnel_project_ready %}
                                 {% if not (tunnel_credentials.qualified | default(false)) %}
                                     {% set tunnel_kickoff_title = 'Complete the Tunnel credentials' %}
                                     {% set tunnel_kickoff_state = 'credentials' %}
                                 {% elif tunnel_view.tone != 'ready' %}
                                     {% set tunnel_kickoff_title = 'Wait for the Tunnel to be ready' %}
                                     {% set tunnel_kickoff_state = 'tunnel' %}
-                                {% elif not (tunnel_status.activity_observed | default(false)) %}
-                                    {% set tunnel_kickoff_title = 'Create the AgenticContext plugin' %}
-                                    {% set tunnel_kickoff_state = 'plugin' %}
+                                {% elif not tunnel_project_ready %}
+                                    {% set tunnel_kickoff_title = 'Choose an available Tunnel project' %}
+                                    {% set tunnel_kickoff_state = 'project' %}
                                 {% else %}
                                     {% set tunnel_kickoff_title = 'Describe your project task' %}
                                     {% set tunnel_kickoff_state = 'ready' %}
@@ -414,7 +490,9 @@
                                             <span class="agent-tunnel-substep-number" aria-hidden="true">➊</span>
                                             <div class="agent-tunnel-numbered-copy">
                                                 <label id="agent_tunnel_kickoff_title" class="agent-tunnel-kickoff-title" for="agent_tunnel_kickoff" data-agent-tunnel-kickoff-title data-agent-tunnel-kickoff-state="{{ tunnel_kickoff_state }}" aria-live="polite">{{ tunnel_kickoff_title }}</label>
-                                                <textarea id="agent_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-tunnel-kickoff aria-labelledby="agent_tunnel_kickoff_title" rows="1"{% if not tunnel_kickoff_ready %} hidden disabled{% endif %}>Use @AgenticContext to read the selected project's instructions and current changes, then implement and verify the following task without altering unrelated work:
+                                                <textarea id="agent_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-tunnel-kickoff aria-labelledby="agent_tunnel_kickoff_title" rows="1"{% if not tunnel_kickoff_ready %} hidden disabled{% endif %}>Use @AgenticContext for project ID "{{ tunnel_current_project.id if tunnel_current_project else '' }}" (identity "{{ tunnel_current_project.identity if tunnel_current_project else '' }}", selection revision {{ tunnel_project_context.revision | default(0) }}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.
+
+Task:
 [describe your task].</textarea>
                                                 <div class="settings-action-package-form agent-tunnel-action-package-form" data-agent-tunnel-kickoff-copy-form{% if not tunnel_kickoff_ready %} hidden{% endif %}>
                                                     <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-tunnel-copy-action data-agent-tunnel-copy-kickoff aria-label="Copy this prompt" aria-controls="agent_tunnel_kickoff"{% if not tunnel_kickoff_ready %} disabled{% endif %}>
@@ -447,7 +525,7 @@
                     </ol>
                 </article>
                 <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-onboarding data-agent-tunnel-provider-panel="gemini"{% if connection_mode != 'tunnel' or settings.platform != 'gemini' %} hidden{% endif %}>
-                    <ol class="agent-tunnel-onboarding-steps">
+                    <ol class="agent-tunnel-onboarding-steps" role="list">
                         {% include "_agent_tunnel_gemini_guides.html" %}
                     </ol>
                 </article>
@@ -695,12 +773,12 @@
 {% include "_settings_directory_browser.html" %}
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.24.1-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.0.0-codex.0') }}"></script>
-<script src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.13.2-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.13.3-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.59.0-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.63.0-codex.0') }}"></script>
 </body>
 </html>

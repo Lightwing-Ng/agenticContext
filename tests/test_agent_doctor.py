@@ -315,7 +315,7 @@ def test_capability_and_doctor_routes_are_local_and_bounded(client) -> None:
     assert remote_response.status_code == 403
     capabilities = capabilities_response.get_json()
     doctor = doctor_response.get_json()
-    assert capabilities["version"] == "1.5.0"
+    assert capabilities["version"] == "1.6.0"
     assert len(capabilities["capabilities"]) == 29
     browser_acceptance = next(
         item
@@ -324,7 +324,7 @@ def test_capability_and_doctor_routes_are_local_and_bounded(client) -> None:
     )
     assert browser_acceptance["handler_name"] == "_browser_acceptance"
     assert browser_acceptance["read_only"] is True
-    assert doctor["capability_registry_version"] == "1.5.0"
+    assert doctor["capability_registry_version"] == "1.6.0"
     assert "prompt" not in doctor
     assert "response" not in doctor
 

@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.0.1-codex.0
+Code version: v1.2.0-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -10,22 +10,36 @@ directory happens to live.
 
 The registry is the user-owned ``tunnel-projects.json`` file beside
 ``settings.json``. When that file is absent, the Agent's selected workspace is
-registered as one writable project only if it is itself a Git work-tree root, so a
-parent folder such as the Desktop never becomes an implicit project.
+offered as one read-only project only if it is itself a Git work-tree root, so a
+parent folder such as the Desktop never becomes an implicit project and choosing a
+folder never grants write access; only a registry entry does.
+
+The local Tunnel page selects one registered project as the *current* project. That
+selection is stored in ``tunnel-selection.json`` beside the registry, carries a
+revision that increases on every change, and never grants authority by itself: it
+only names which registered project a new ChatGPT task should start from.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.core.config import default_settings_path
 
+LOGGER = logging.getLogger(__name__)
+
 TUNNEL_PROJECTS_FILENAME = "tunnel-projects.json"
+TUNNEL_SELECTION_FILENAME = "tunnel-selection.json"
+TUNNEL_SELECTION_SCHEMA_VERSION = 1
 TUNNEL_PROJECTS_SCHEMA_VERSION = 1
 MAX_TUNNEL_PROJECTS = 32
 MAX_REGISTRY_BYTES = 64 * 1024
@@ -48,18 +62,118 @@ class TunnelProject:
     root: Path
     writable: bool
     description: str = ""
+    filesystem_identity: tuple[int, int, int] | None = None
+
+    def __post_init__(self) -> None:
+        """Pin the native directory identity that this authority admitted."""
+        if self.filesystem_identity is None:
+            object.__setattr__(
+                self,
+                "filesystem_identity",
+                _root_filesystem_identity(self.root),
+            )
+
+    @property
+    def identity(self) -> str:
+        """Return a short fingerprint of this exact id, root, and authority.
+
+        A task pins it when it starts; if the same id is later remapped to another
+        root or its write authority changes, the fingerprint no longer matches.
+        """
+        material = (
+            f"{self.id}\0{self.root}\0{int(self.writable)}\0{self.filesystem_identity}"
+        ).encode("utf-8")
+        return hashlib.sha256(material).hexdigest()[:16]
+
+    def filesystem_identity_matches(self) -> bool:
+        """Return whether the registered path still names the admitted directory."""
+        try:
+            return _root_filesystem_identity(self.root) == self.filesystem_identity
+        except (OSError, RuntimeError):
+            return False
 
     def public_record(self) -> dict[str, Any]:
         """Return the model-facing record; absolute host paths are never included."""
-        record: dict[str, Any] = {"id": self.id, "writable": self.writable}
+        record: dict[str, Any] = {
+            "id": self.id,
+            "writable": self.writable,
+            "identity": self.identity,
+        }
         if self.description:
             record["description"] = self.description
         return record
 
 
+def _root_filesystem_identity(root: Path) -> tuple[int, int, int]:
+    """Return a stable native identity for one directory on POSIX and Windows.
+
+    Python exposes the volume/device and native file id as ``st_dev`` and
+    ``st_ino`` on both platforms. A birth timestamp, or Windows creation time on
+    older Python builds, further protects against a quickly reused native file id
+    without changing when files inside the directory are edited.
+    """
+    metadata = root.stat()
+    if not os.path.isdir(root):
+        raise NotADirectoryError(str(root))
+    birth_ns = int(getattr(metadata, "st_birthtime_ns", 0) or 0)
+    if not birth_ns:
+        birth_ns = int(float(getattr(metadata, "st_birthtime", 0.0) or 0.0) * 1_000_000_000)
+    if os.name == "nt" and not birth_ns:
+        birth_ns = int(metadata.st_ctime_ns)
+    return int(metadata.st_dev), int(metadata.st_ino), birth_ns
+
+
+def _refresh_project_filesystem_identity(project: TunnelProject) -> TunnelProject:
+    """Return the same registration bound to the directory currently at its path."""
+    try:
+        current = project.root.resolve(strict=True)
+        if current != project.root or not current.is_dir():
+            return project
+        filesystem_identity = _root_filesystem_identity(current)
+    except (OSError, RuntimeError):
+        return project
+    if filesystem_identity == project.filesystem_identity:
+        return project
+    return TunnelProject(
+        project.id,
+        project.root,
+        project.writable,
+        project.description,
+        filesystem_identity,
+    )
+
+
+def project_availability(project: TunnelProject) -> str:
+    """Return an empty string when the project root is usable, else the problem."""
+    try:
+        current = project.root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return "The project folder is missing on this computer."
+    if current != project.root or not current.is_dir():
+        return "The project folder moved or was replaced; review the project registry."
+    if not project.filesystem_identity_matches():
+        return (
+            "The project folder was replaced after this project identity was resolved; "
+            "discover the project again before starting a new task."
+        )
+    if not os.access(current, os.R_OK | os.X_OK):
+        return "The project folder is not readable by this service."
+    if project.writable and not os.access(current, os.W_OK):
+        return (
+            "The project is registered for read and write access, but its folder is "
+            "not writable by this service."
+        )
+    return ""
+
+
 def default_tunnel_projects_path() -> Path:
     """Return the registry file beside the current settings file."""
     return default_settings_path().parent / TUNNEL_PROJECTS_FILENAME
+
+
+def default_tunnel_selection_path() -> Path:
+    """Return the current-project selection file beside the registry."""
+    return default_settings_path().parent / TUNNEL_SELECTION_FILENAME
 
 
 def _canonical_root(raw_root: Any, label: str) -> Path:
@@ -140,7 +254,11 @@ def parse_project_registry(payload: Any) -> tuple[TunnelProject, ...]:
 
 
 def _fallback_project(workspace_path: str) -> tuple[TunnelProject, ...]:
-    """Register the selected Agent workspace only when it is one Git repository root."""
+    """Offer the selected Agent workspace read-only when it is one Git repository root.
+
+    Choosing a folder never grants write access; a writable project must be listed
+    in the registry.
+    """
     if not workspace_path:
         return ()
     try:
@@ -152,7 +270,14 @@ def _fallback_project(workspace_path: str) -> tuple[TunnelProject, ...]:
     if root == Path(root.anchor) or root == Path.home().resolve():
         return ()
     project_id = root.name if _PROJECT_ID_RE.fullmatch(root.name) else "project"
-    return (TunnelProject(project_id, root, True, "The Agent's selected project."),)
+    return (
+        TunnelProject(
+            project_id,
+            root,
+            False,
+            "The Agent's selected folder; read-only until it is registered.",
+        ),
+    )
 
 
 class ProjectRegistry:
@@ -168,6 +293,10 @@ class ProjectRegistry:
     def path(self) -> Path:
         return self._path if self._path is not None else default_tunnel_projects_path()
 
+    def uses_fallback(self) -> bool:
+        """Return whether no registry file exists, so only the fallback applies."""
+        return not self.path.exists()
+
     def projects(self, fallback_workspace: str = "") -> tuple[TunnelProject, ...]:
         """Return the registered projects; an invalid registry fails closed."""
         path = self.path
@@ -180,7 +309,7 @@ class ProjectRegistry:
         cache_key = (str(path), int(metadata.st_mtime_ns), int(metadata.st_size))
         with self._lock:
             if self._cache_key == cache_key:
-                return self._cache
+                return tuple(_refresh_project_filesystem_identity(project) for project in self._cache)
         if path.is_symlink() or not path.is_file():
             raise ProjectRegistryError("The project registry must be a regular file.")
         if metadata.st_size > MAX_REGISTRY_BYTES:
@@ -218,3 +347,145 @@ class ProjectRegistry:
         raise ProjectRegistryError(
             f"Unknown project: {project_id[:64]}. Registered projects: {known}."
         )
+
+
+class ProjectSelectionConflict(ProjectRegistryError):
+    """Raised when a selection was saved against an older selection revision."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectSelection:
+    """The current-project choice made on the local Tunnel page."""
+
+    project_id: str = ""
+    revision: int = 0
+    selected_at: float = 0.0
+
+
+class ProjectSelectionStore:
+    """Persist the current-project choice with a monotonically increasing revision."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+
+    @property
+    def path(self) -> Path:
+        return self._path if self._path is not None else default_tunnel_selection_path()
+
+    def load(self) -> ProjectSelection:
+        """Return the saved selection; a missing or unreadable file means none."""
+        path = self.path
+        try:
+            if path.is_symlink() or path.stat().st_size > 4_096:
+                return ProjectSelection()
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return ProjectSelection()
+        except (OSError, UnicodeError, ValueError):
+            LOGGER.warning("The Tunnel project selection file is unreadable; ignoring it.")
+            return ProjectSelection()
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != TUNNEL_SELECTION_SCHEMA_VERSION
+        ):
+            return ProjectSelection()
+        project_id = payload.get("project_id")
+        revision = payload.get("revision")
+        selected_at = payload.get("selected_at")
+        if (
+            not isinstance(project_id, str)
+            or (project_id and not _PROJECT_ID_RE.fullmatch(project_id))
+            or not isinstance(revision, int)
+            or isinstance(revision, bool)
+            or revision < 0
+            or not isinstance(selected_at, (int, float))
+        ):
+            return ProjectSelection()
+        return ProjectSelection(project_id, revision, float(selected_at))
+
+    def save(self, project_id: str, *, expected_revision: int | None = None) -> ProjectSelection:
+        """Save a new selection; refuse it if the page saw an older revision."""
+        _validate_project_id(project_id, "Selected project")
+        with self._lock:
+            current = self.load()
+            if expected_revision is not None and expected_revision != current.revision:
+                raise ProjectSelectionConflict(
+                    "The current project changed in another window. Review the selection "
+                    "and choose again."
+                )
+            selection = ProjectSelection(project_id, current.revision + 1, time.time())
+            path = self.path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": TUNNEL_SELECTION_SCHEMA_VERSION,
+                        "project_id": selection.project_id,
+                        "revision": selection.revision,
+                        "selected_at": selection.selected_at,
+                    },
+                    handle,
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            return selection
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentProject:
+    """The resolved current project and how it was chosen."""
+
+    project: TunnelProject | None
+    selection: ProjectSelection
+    source: str
+    problem: str = ""
+
+
+def resolve_current_project(
+    projects: tuple[TunnelProject, ...],
+    selection: ProjectSelection,
+    fallback_workspace: str = "",
+) -> CurrentProject:
+    """Choose the current project from registered projects only.
+
+    An explicit selection wins. Without one, a registry with exactly one project,
+    or a saved Agent folder that lies inside exactly one registered root, is used.
+    Otherwise nothing is current and the user must choose.
+    """
+    by_id = {project.id: project for project in projects}
+    if selection.project_id:
+        project = by_id.get(selection.project_id)
+        if project is None:
+            return CurrentProject(
+                None,
+                selection,
+                "selection",
+                f"The selected project {selection.project_id} is no longer registered. "
+                "Choose a registered project.",
+            )
+        return CurrentProject(project, selection, "selection")
+    if len(projects) == 1:
+        return CurrentProject(projects[0], selection, "only_project")
+    if fallback_workspace:
+        try:
+            folder = Path(fallback_workspace).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            folder = None
+        if folder is not None:
+            matches = [
+                project
+                for project in projects
+                if folder == project.root or project.root in folder.parents
+            ]
+            if len(matches) == 1:
+                return CurrentProject(matches[0], selection, "agent_folder")
+    return CurrentProject(
+        None,
+        selection,
+        "none",
+        "No current project is selected. Choose one of the registered projects.",
+    )

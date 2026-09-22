@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.81.0-codex.0
+Code version: v1.86.0-codex.0
 """
 
 import hashlib
@@ -2373,7 +2373,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.143.0-codex.0 */",
+        "/* Code version: v2.148.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2466,7 +2466,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
 
 
 def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None:
-    """Keep effect bleed on the scroll owner and every onboarding step divider-free."""
+    """Keep one scroll owner and a structural process-list track between steps."""
     stylesheet = _stylesheet()
 
     workspace_selector = 'main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace {'
@@ -2483,10 +2483,40 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
 
     step_start = stylesheet.index(".agent-tunnel-onboarding-step {")
     step_rule = stylesheet[step_start:stylesheet.index("\n}", step_start)]
-    assert "grid-template-columns: max-content minmax(0, 1fr);" in step_rule
+    assert "position: relative;" in step_rule
+    assert (
+        "grid-template-columns: var(--agent-tunnel-process-counter-size) minmax(0, 1fr);"
+        in step_rule
+    )
     assert "border: 0;" in step_rule
     assert ".agent-tunnel-onboarding-step:first-child" not in stylesheet
+    assert ".agent-tunnel-onboarding-step:last-child" not in stylesheet
+    assert ".agent-tunnel-onboarding-step:nth-child" not in stylesheet
     assert ".agent-tunnel-onboarding-step-continued" not in stylesheet
+
+    process_list_start = stylesheet.index(".agent-tunnel-onboarding-steps {")
+    process_list_rule = stylesheet[
+        process_list_start:stylesheet.index("\n}", process_list_start)
+    ]
+    assert "gap: var(--agent-tunnel-process-step-gap);" in process_list_rule
+    assert "list-style: none;" in process_list_rule
+
+    connector_start = stylesheet.index(
+        ".agent-tunnel-onboarding-step[data-agent-tunnel-process-continues]::before {"
+    )
+    connector_rule = stylesheet[
+        connector_start:stylesheet.index("\n}", connector_start)
+    ]
+    for token in (
+        "inset-block-start: var(--agent-tunnel-process-connector-start);",
+        "inset-block-end: var(--agent-tunnel-process-connector-tail);",
+        "inset-inline-start: var(--agent-tunnel-process-connector-inset);",
+        "width: var(--agent-tunnel-process-connector-width);",
+        "border-radius: var(--radius-pill);",
+        "background: var(--agent-tunnel-process-connector-color);",
+        'content: "";',
+    ):
+        assert token in connector_rule
 
     root_start = stylesheet.index(":root {")
     root_rule = stylesheet[root_start:stylesheet.index("\n}", root_start)]
@@ -2584,10 +2614,61 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     step_number_rule = stylesheet[
         step_number_start:stylesheet.index("\n}", step_number_start)
     ]
+    assert "width: var(--agent-tunnel-process-counter-size);" in step_number_rule
+    assert "height: var(--agent-tunnel-process-counter-size);" in step_number_rule
+    assert "border-radius: 50%;" in step_number_rule
+    assert "var(--agent-tunnel-process-connector-color);" in step_number_rule
+    assert "background: var(--agent-tunnel-process-counter-background);" in step_number_rule
+    assert "color: var(--agent-tunnel-process-counter-color);" in step_number_rule
     assert "font-size: var(--font-ui-lg);" in step_number_rule
     assert "font-weight: var(--font-weight-medium);" in step_number_rule
-    assert "line-height: 1.35;" in step_number_rule
+    assert "line-height: 1;" in step_number_rule
+    step_heading_start = stylesheet.index(".agent-tunnel-step-heading {")
+    step_heading_rule = stylesheet[
+        step_heading_start:stylesheet.index("\n}", step_heading_start)
+    ]
+    assert "min-height: var(--agent-tunnel-process-counter-size);" in step_heading_rule
     assert ".guide-button-small" not in stylesheet
+
+    process_tokens_start = stylesheet.index(".agent-tunnel-onboarding-card {")
+    process_tokens = stylesheet[
+        process_tokens_start:stylesheet.index("\n}", process_tokens_start)
+    ]
+    for token in (
+        "--agent-tunnel-process-counter-size: 32px;",
+        "--agent-tunnel-process-counter-border-width: 2px;",
+        "--agent-tunnel-process-counter-background: var(--theme-background);",
+        "--agent-tunnel-process-counter-color: var(--theme-accent-primary);",
+        "--agent-tunnel-process-connector-color: var(--theme-accent-primary);",
+        "--agent-tunnel-process-connector-width: 2px;",
+        "--agent-tunnel-process-connector-inset: calc(",
+        "(var(--agent-tunnel-process-counter-size) - var(--agent-tunnel-process-connector-width)) / 2",
+        "--agent-tunnel-process-connector-start: calc(",
+        "--agent-tunnel-process-connector-tail: calc(",
+    ):
+        assert token in process_tokens
+
+    guide_motion_start = stylesheet.index(".agent-tunnel-guide::details-content {")
+    guide_motion_rule = stylesheet[
+        guide_motion_start:stylesheet.index("\n}", guide_motion_start)
+    ]
+    for token in (
+        "block-size: 0;",
+        "overflow: clip;",
+        "opacity: 0;",
+        "block-size var(--motion-duration-emphasized) var(--motion-emphasized)",
+        "content-visibility var(--motion-duration-emphasized) allow-discrete",
+        "opacity var(--motion-duration-standard) var(--motion-standard)",
+    ):
+        assert token in guide_motion_rule
+    guide_open_start = stylesheet.index(".agent-tunnel-guide[open]::details-content {")
+    guide_open_rule = stylesheet[
+        guide_open_start:stylesheet.index("\n}", guide_open_start)
+    ]
+    assert "block-size: auto;" in guide_open_rule
+    assert "opacity: 1;" in guide_open_rule
+    assert "@starting-style {" in stylesheet
+    assert ".agent-tunnel-guide::details-content {\n        transition: none;" in stylesheet
 
     numbered_list_start = stylesheet.index(".agent-tunnel-numbered-list {")
     numbered_list_rule = stylesheet[
@@ -2625,6 +2706,9 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     ).read_text(encoding="utf-8")
     chatgpt_guide_template = (
         STYLE_PATH.parents[1] / "templates/_agent_tunnel_chatgpt_guides.html"
+    ).read_text(encoding="utf-8")
+    gemini_guide_template = (
+        STYLE_PATH.parents[1] / "templates/_agent_tunnel_gemini_guides.html"
     ).read_text(encoding="utf-8")
     assert guide_template.count('<details class="ui-collapse agent-tunnel-guide"') == 4
     assert guide_template.count('<svg class="agent-tunnel-guide-svg"') == 4
@@ -2676,6 +2760,20 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert chatgpt_guide_rects
     assert all(re.search(r'\brx="10"', rect) for rect in chatgpt_guide_rects)
     assert agent_template.count('class="agent-tunnel-substep-number"') == 4
+    assert agent_template.count('class="agent-tunnel-onboarding-steps" role="list"') == 2
+    assert agent_template.count('class="agent-tunnel-step-heading"') == 4
+    assert gemini_guide_template.count('class="agent-tunnel-step-heading"') == 4
+    assert agent_template.count("data-agent-tunnel-process-continues") == 3
+    assert gemini_guide_template.count("data-agent-tunnel-process-continues") == 3
+    for step_number in range(1, 5):
+        marker = (
+            '<span class="agent-tunnel-step-number" aria-hidden="true">'
+            f"{step_number}</span>"
+        )
+        assert marker in agent_template
+        assert marker in gemini_guide_template
+    assert agent_template.count('<h3 class="agent-tunnel-step-heading">') == 4
+    assert gemini_guide_template.count('<h3 class="agent-tunnel-step-heading">') == 4
     assert 'class="agent-tunnel-numbered-list agent-tunnel-credential-fields"' in agent_template
     assert 'class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence"' in agent_template
     assert 'class="agent-tunnel-kickoff-editor"' in agent_template
@@ -3625,9 +3723,10 @@ def test_agent_activity_expansion_uses_shared_gel_motion() -> None:
 
 
 def test_agent_sidebar_primary_comboboxes_use_the_compact_form_height() -> None:
-    """Keep Web service and Session source controls on the shared 36px rail."""
+    """Keep Tunnel project, Web service, and Session source on the shared 36px rail."""
     stylesheet = _stylesheet()
     selector = (
+        ".agent-tunnel-project-combobox .agent-combobox-trigger,\n"
         ".agent-platform-combobox .agent-combobox-trigger,\n"
         ".agent-session-mode-combobox .agent-combobox-trigger {"
     )

@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.23.0-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.30.1-codex.0."""
 
 import re
 from copy import deepcopy
@@ -109,7 +109,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
                 return platform.nextElementSibling === document.querySelector('[data-agent-connection-mode-control]');
             }"""
         )
-        expect(browser_fields).to_have_count(3)
+        expect(browser_fields).to_have_count(4)
         for field in browser_fields.all():
             expect(field).to_be_visible()
         expect(recent_sessions).to_be_visible()
@@ -132,10 +132,10 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         expect(workspace).to_have_attribute("data-layout-role", "content-scrollport")
         expect(page.locator("[data-agent-heading]")).to_have_text("Connect ChatGPT to this local project")
         assert onboarding.locator(".agent-tunnel-step-number").all_inner_texts() == [
-            "Step 1",
-            "Step 2",
-            "Step 3",
-            "Step 4",
+            "1",
+            "2",
+            "3",
+            "4",
         ]
         assert onboarding.locator(".agent-tunnel-guide-number").all_inner_texts() == [
             "➊",
@@ -186,12 +186,46 @@ TUNNEL_ONBOARDING_ID = "tunnel_" + "b" * 32
 TUNNEL_ONBOARDING_KEY = "sk-proj-onboarding-test-ABCD"
 
 
+def _tunnel_project_context(project_id="main", *, revision=1, registered=True):
+    project = {
+        "id": project_id,
+        "identity": f"{project_id:0<16}"[:16],
+        "root": f"/tmp/{project_id}",
+        "writable": True,
+        "access": "Read and write",
+        "registered": registered,
+        "available": True,
+        "availability": "Available",
+        "problem": "",
+        "description": "Frontend test project",
+        "source": "selection",
+    }
+    return {
+        "registry_configured": registered,
+        "revision": revision,
+        "selected_at": 1,
+        "source": "selection",
+        "current": project,
+        "projects": [project],
+        "problem": "",
+    }
+
+
 def _tunnel_onboarding_status(enabled=True, *, activity_observed=True):
     return {
+        "platform": "chatgpt",
         "enabled": enabled,
         "state": "ready" if enabled else "disconnected",
         "ready": enabled,
         "activity_observed": activity_observed,
+        "project_context": _tunnel_project_context(),
+        "status_observed_at": 1,
+        "runtime_instance_id": "runtime-a",
+        "generation": 9,
+        "state_revision": 9,
+        "active_calls": [],
+        "recent_calls": [],
+        "recent_usage": {"estimated_tokens": 0, "complete": True},
         "credentials": {
             "tunnel_id": TUNNEL_ONBOARDING_ID,
             "tunnel_id_valid": True,
@@ -281,9 +315,12 @@ def test_tunnel_kickoff_copy_and_approved_technical_typeface(
         onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
         kickoff = onboarding.locator("[data-agent-tunnel-kickoff]")
         expect(kickoff).to_have_value(re.compile(r"@AgenticContext"))
+        expect(kickoff).to_have_value(re.compile(r'project ID "main"'))
+        expect(kickoff).to_have_value(re.compile(r'selection revision 1'))
+        expect(kickoff).to_have_value(re.compile(r"current_project"))
         expect(kickoff).to_have_value(re.compile(r"\[describe your task\]"))
         assert kickoff.input_value().endswith(
-            "without altering unrelated work:\n[describe your task]."
+            "Task:\n[describe your task]."
         )
         expect(onboarding).to_contain_text("named AgenticContext")
         expect(onboarding).to_contain_text("starting with tunnel_")
@@ -382,11 +419,11 @@ def test_tunnel_kickoff_copy_and_approved_technical_typeface(
         context.close()
 
 
-def test_tunnel_kickoff_unlocks_only_after_credentials_and_plugin_activity(
+def test_tunnel_kickoff_allows_the_first_task_without_prior_plugin_activity(
     disposable_browser,
     sidebar_server_url,
 ):
-    """Keep the task editor behind the verified setup preconditions."""
+    """Qualified credentials, transport, and a registered project allow first use."""
     context = disposable_browser.new_context(viewport={"width": 876, "height": 1_100})
     page = context.new_page()
     status = _tunnel_onboarding_status(activity_observed=False)
@@ -424,12 +461,13 @@ def test_tunnel_kickoff_unlocks_only_after_credentials_and_plugin_activity(
         expect(action_step).to_be_hidden()
 
         status.update(_tunnel_onboarding_status(activity_observed=False))
+        status["project_context"] = _tunnel_project_context(registered=False)
         refresh_tunnel_status()
-        expect(title).to_have_text("Create the AgenticContext plugin")
+        expect(title).to_have_text("Choose an available Tunnel project")
         expect(kickoff).to_be_hidden()
         expect(action_step).to_be_hidden()
 
-        status["activity_observed"] = True
+        status["project_context"] = _tunnel_project_context(registered=True)
         refresh_tunnel_status()
         expect(title).to_have_text("Describe your project task")
         expect(kickoff).to_be_visible()
@@ -443,18 +481,326 @@ def test_tunnel_kickoff_unlocks_only_after_credentials_and_plugin_activity(
         context.close()
 
 
-@pytest.mark.parametrize("width", [1280, 390])
+def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_body(
+    disposable_browser,
+    sidebar_server_url,
+):
+    """The selector is server-confirmed, revision guarded, and preserves the task body."""
+    context = disposable_browser.new_context(viewport={"width": 876, "height": 1_100})
+    page = context.new_page()
+    status = _tunnel_onboarding_status(activity_observed=False)
+    alpha = deepcopy(status["project_context"]["current"])
+    alpha["id"] = "alpha"
+    alpha["identity"] = "alpha00000000000"
+    alpha["root"] = "/tmp/alpha"
+    beta = deepcopy(alpha)
+    beta.update({
+        "id": "beta",
+        "identity": "beta000000000000",
+        "root": "/tmp/beta",
+        "writable": False,
+        "access": "Read only",
+    })
+    status["project_context"] = {
+        **status["project_context"],
+        "revision": 1,
+        "current": alpha,
+        "projects": [alpha, beta],
+    }
+    requests = []
+
+    def fulfill_status(route):
+        route.fulfill(json=deepcopy(status))
+
+    def fulfill_project(route):
+        payload = route.request.post_data_json
+        requests.append(payload)
+        if payload["project_id"] == "beta":
+            status["project_context"] = {
+                **status["project_context"],
+                "revision": 2,
+                "current": beta,
+            }
+            status["status_observed_at"] = 2
+            route.fulfill(json=deepcopy(status))
+            return
+        route.fulfill(
+            status=409,
+            json={
+                "error": "The selection was rejected for this test.",
+                "project_context": deepcopy(status["project_context"]),
+            },
+        )
+
+    page.route("**/api/agent/tunnel/status?platform=chatgpt", fulfill_status)
+    page.route("**/api/agent/tunnel/project?platform=chatgpt", fulfill_project)
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        page.locator("#sidebar_toggle").click()
+        selected = page.locator("[data-agent-tunnel-project-selected-label]")
+        expect(selected).to_have_text("alpha")
+        trigger = page.locator("[data-agent-tunnel-project-trigger]")
+        trigger_metrics = trigger.evaluate(
+            """element => {
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return {
+                    height: rect.height,
+                    computedHeight: style.height,
+                    minHeight: style.minHeight,
+                    paddingTop: style.paddingTop,
+                    paddingBottom: style.paddingBottom,
+                };
+            }"""
+        )
+        assert trigger_metrics == {
+            "height": 36,
+            "computedHeight": "36px",
+            "minHeight": "36px",
+            "paddingTop": "3px",
+            "paddingBottom": "3px",
+        }
+        prompt = page.locator("[data-agent-tunnel-kickoff]")
+        prompt.fill(prompt.input_value().replace("[describe your task].", "Keep this exact body."))
+
+        trigger.click()
+        page.locator('[data-agent-tunnel-project-option="beta"]').click()
+        expect(selected).to_have_text("beta")
+        expect(page.locator("[data-agent-tunnel-project-root]")).to_have_text("/tmp/beta")
+        expect(prompt).to_have_value(re.compile(r'project ID "beta"'))
+        expect(prompt).to_have_value(re.compile(r"selection revision 2"))
+        expect(prompt).to_have_value(re.compile(r"Keep this exact body\."))
+
+        trigger.click()
+        page.locator('[data-agent-tunnel-project-option="alpha"]').click()
+        expect(selected).to_have_text("beta")
+        expect(page.locator("[data-agent-tunnel-project-status]")).to_contain_text(
+            "selection was rejected"
+        )
+        assert requests == [
+            {"project_id": "beta", "expected_revision": 1},
+            {"project_id": "alpha", "expected_revision": 2},
+        ]
+    finally:
+        context.close()
+
+
+def test_tunnel_status_503_and_timeout_revoke_ready_then_recover(
+    disposable_browser,
+    sidebar_server_url,
+):
+    """HTTP and hung status checks revoke stale green state and later recover."""
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(
+        """const nativeFetch = window.fetch.bind(window);
+        window.__hangTunnelStatus = false;
+        window.__tunnelStatusHung = false;
+        window.fetch = (input, options = {}) => {
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            if (url.pathname === '/api/agent/tunnel/status' && window.__hangTunnelStatus) {
+                window.__tunnelStatusHung = true;
+                return new Promise((_resolve, reject) => {
+                    options.signal?.addEventListener('abort', () => {
+                        reject(new DOMException('Aborted', 'AbortError'));
+                    }, {once: true});
+                });
+            }
+            return nativeFetch(input, options);
+        };"""
+    )
+    page = context.new_page()
+    page.clock.install()
+    status = _tunnel_onboarding_status(activity_observed=False)
+    mode = {"value": "ready"}
+
+    def fulfill_status(route):
+        if mode["value"] == "503":
+            route.fulfill(
+                status=503,
+                json={"error": "Tunnel status failed with HTTP 503."},
+            )
+            return
+        route.fulfill(json=deepcopy(status))
+
+    page.route("**/api/agent/tunnel/status?platform=chatgpt", fulfill_status)
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        state = page.locator("[data-agent-tunnel-state]")
+        expect(page.locator("[data-agent-tunnel-hint]")).to_have_count(0)
+        expect(state).to_have_text("Tunnel ready")
+
+        mode["value"] = "503"
+        page.clock.run_for(10_100)
+        expect(state).to_have_text("Status unavailable")
+        expect(page.locator("[data-agent-tunnel-problem]")).to_contain_text("HTTP 503")
+        expect(page.locator("[data-agent-tunnel-problem]")).to_contain_text(
+            "Last successful status"
+        )
+        expect(page.locator("[data-agent-tunnel-checkmark]")).to_have_attribute(
+            "data-status-state", "error"
+        )
+
+        mode["value"] = "ready"
+        status["status_observed_at"] = 2
+        page.clock.run_for(3_100)
+        expect(state).to_have_text("Tunnel ready")
+        expect(page.locator("[data-agent-tunnel-problem]")).to_be_hidden()
+
+        status["status_observed_at"] = 3
+        status["presentation"] = {
+            "tone": "error",
+            "label": "Reconnect required",
+            "message": "The saved Tunnel client exited unexpectedly.",
+            "hint": "",
+            "action": None,
+        }
+        page.clock.run_for(10_100)
+        expect(state).to_have_text("Reconnect required")
+        expect(page.locator("[data-agent-tunnel-problem]")).to_have_text(
+            "The saved Tunnel client exited unexpectedly."
+        )
+        status["status_observed_at"] = 4
+        status["presentation"] = {
+            "tone": "ready",
+            "label": "Tunnel ready",
+            "message": "Ready for a project tool call.",
+            "hint": "",
+            "action": None,
+        }
+        page.clock.run_for(3_100)
+        expect(state).to_have_text("Tunnel ready")
+
+        page.evaluate("window.__hangTunnelStatus = true")
+        page.clock.run_for(10_100)
+        page.wait_for_function("window.__tunnelStatusHung")
+        page.clock.run_for(8_100)
+        expect(state).to_have_text("Status unavailable")
+        expect(page.locator("[data-agent-tunnel-problem]")).to_contain_text(
+            "timed out after 8 seconds"
+        )
+
+        page.evaluate("window.__hangTunnelStatus = false")
+        status["status_observed_at"] = 5
+        for input_id in ("agent_connection_browser", "agent_connection_tunnel"):
+            page.locator(f"#{input_id}").evaluate(
+                """element => {
+                    element.checked = true;
+                    element.dispatchEvent(new Event('change', {bubbles: true}));
+                }"""
+            )
+        expect(state).to_have_text("Tunnel ready")
+    finally:
+        context.close()
+
+
+def test_tunnel_reconnect_accepts_a_new_runtime_and_ignores_its_late_old_status(
+    disposable_browser,
+    sidebar_server_url,
+):
+    """A newer runtime replaces high counters, while its late old reply stays ignored."""
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(
+        """const nativeFetch = window.fetch.bind(window);
+        window.__holdNextTunnelStatus = false;
+        window.__heldTunnelStatus = null;
+        window.fetch = (input, options = {}) => {
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            if (url.pathname === '/api/agent/tunnel/status' && window.__holdNextTunnelStatus) {
+                window.__holdNextTunnelStatus = false;
+                return new Promise((resolve) => { window.__heldTunnelStatus = resolve; });
+            }
+            return nativeFetch(input, options);
+        };"""
+    )
+    page = context.new_page()
+    initial = _tunnel_onboarding_status(activity_observed=False)
+    fresh = deepcopy(initial)
+    fresh["status_observed_at"] = 3
+    fresh["runtime_instance_id"] = "runtime-b"
+    fresh["generation"] = 2
+    fresh["state_revision"] = 2
+    fresh["presentation"] = {
+        **fresh["presentation"],
+        "label": "Reconnected",
+        "message": "Fresh reconnect response.",
+    }
+    stale = deepcopy(initial)
+    stale["status_observed_at"] = 2
+    stale["runtime_instance_id"] = "runtime-b"
+    stale["generation"] = 1
+    stale["state_revision"] = 1
+    stale["presentation"] = {
+        **stale["presentation"],
+        "label": "Stale response",
+        "message": "This response must be ignored.",
+    }
+    reconnect_requests = []
+    shutdown_requests = []
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=deepcopy(initial)),
+    )
+    page.route(
+        "**/api/agent/tunnel/connect",
+        lambda route: (
+            reconnect_requests.append(route.request.method),
+            route.fulfill(json=deepcopy(fresh)),
+        )[-1],
+    )
+    for endpoint in ("disconnect", "restart"):
+        page.route(
+            f"**/api/agent/tunnel/{endpoint}",
+            lambda route: (
+                shutdown_requests.append(route.request.url),
+                route.fulfill(json={"ok": True}),
+            )[-1],
+        )
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        page.evaluate("window.__holdNextTunnelStatus = true")
+        for input_id in ("agent_connection_browser", "agent_connection_tunnel"):
+            page.locator(f"#{input_id}").evaluate(
+                """element => {
+                    element.checked = true;
+                    element.dispatchEvent(new Event('change', {bubbles: true}));
+                }"""
+            )
+        page.wait_for_function("() => Boolean(window.__heldTunnelStatus)")
+        page.locator("[data-agent-tunnel-reconnect]").click()
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Reconnected")
+        page.evaluate(
+            """payload => window.__heldTunnelStatus(new Response(JSON.stringify(payload), {
+                status: 200,
+                headers: {'Content-Type': 'application/json'},
+            }))""",
+            stale,
+        )
+        page.wait_for_timeout(100)
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Reconnected")
+        assert reconnect_requests == ["POST"]
+        page.close()
+        assert shutdown_requests == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "color_scheme"),
+    [(1280, "light"), (390, "dark")],
+)
 def test_tunnel_guides_use_native_disclosure_and_vector_cards(
     disposable_browser,
     sidebar_server_url,
     width,
+    color_scheme,
 ):
-    """Keep all six visual guides native, independent, and closed by default."""
+    """Keep six native guides themed and animated through shared motion tokens."""
     context = disposable_browser.new_context(viewport={"width": width, "height": 900})
     page = context.new_page()
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
+        page.emulate_media(color_scheme=color_scheme, reduced_motion="no-preference")
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
         if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
             page.locator("#sidebar_toggle").click()
@@ -462,6 +808,36 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
         guides = onboarding.locator("details.ui-collapse[data-agent-tunnel-guide]")
         summaries = guides.locator("summary")
+        process_theme = onboarding.evaluate(
+            """node => {
+                const resolveColor = (token) => {
+                    const probe = document.createElement('span');
+                    probe.style.color = `var(${token})`;
+                    node.append(probe);
+                    const color = getComputedStyle(probe).color;
+                    probe.remove();
+                    return color;
+                };
+                const step = node.querySelector('.agent-tunnel-onboarding-step');
+                const marker = step.querySelector('.agent-tunnel-step-number');
+                const markerStyle = getComputedStyle(marker);
+                const connectorStyle = getComputedStyle(step, '::before');
+                return {
+                    accent: resolveColor('--theme-accent-primary'),
+                    background: resolveColor('--theme-background'),
+                    markerBorder: markerStyle.borderTopColor,
+                    markerColor: markerStyle.color,
+                    markerBackground: markerStyle.backgroundColor,
+                    connectorColor: connectorStyle.backgroundColor,
+                    connectorRadius: connectorStyle.borderRadius,
+                };
+            }"""
+        )
+        assert process_theme["markerBorder"] == process_theme["accent"]
+        assert process_theme["markerColor"] == process_theme["accent"]
+        assert process_theme["markerBackground"] == process_theme["background"]
+        assert process_theme["connectorColor"] == process_theme["accent"]
+        assert process_theme["connectorRadius"] == "999px"
         expect(guides).to_have_count(6)
         expect(summaries).to_have_count(6)
         assert onboarding.locator(".agent-tunnel-guide-title").all_inner_texts() == [
@@ -491,8 +867,46 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         for svg in onboarding.locator("[data-agent-tunnel-guide] svg[role='img']").all():
             expect(svg).to_be_hidden()
 
+        motion_contract = guides.nth(0).evaluate(
+            """details => {
+                const detailsStyle = getComputedStyle(details);
+                const contentStyle = getComputedStyle(details, '::details-content');
+                return {
+                    interpolateSize: detailsStyle.interpolateSize,
+                    transitionProperties: contentStyle.transitionProperty.split(',').map(
+                        value => value.trim()
+                    ),
+                    transitionTimingFunctions: contentStyle.transitionTimingFunction,
+                };
+            }"""
+        )
+        assert motion_contract["interpolateSize"] == "allow-keywords"
+        assert motion_contract["transitionProperties"] == [
+            "block-size",
+            "content-visibility",
+            "opacity",
+        ]
+        assert "cubic-bezier(0.16, 1, 0.3, 1)" in motion_contract[
+            "transitionTimingFunctions"
+        ]
+
+        closed_height = guides.nth(0).evaluate(
+            "details => details.getBoundingClientRect().height"
+        )
         summaries.nth(0).focus()
         summaries.nth(0).press("Enter")
+        opening_start = guides.nth(0).evaluate(
+            "details => details.getBoundingClientRect().height"
+        )
+        page.wait_for_timeout(80)
+        opening_middle = guides.nth(0).evaluate(
+            "details => details.getBoundingClientRect().height"
+        )
+        page.wait_for_timeout(500)
+        opening_end = guides.nth(0).evaluate(
+            "details => details.getBoundingClientRect().height"
+        )
+        assert closed_height <= opening_start < opening_middle < opening_end
         expect(guides.nth(0)).to_have_attribute("open", "")
         expect(guides.nth(0).locator("svg")).to_be_visible()
         expect(summaries.nth(0)).to_be_focused()
@@ -504,12 +918,32 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         expect(summaries.nth(1)).to_be_focused()
 
         summaries.nth(0).click()
+        closing_start = guides.nth(0).evaluate(
+            "details => details.getBoundingClientRect().height"
+        )
+        page.wait_for_timeout(80)
+        closing_middle = guides.nth(0).evaluate(
+            "details => details.getBoundingClientRect().height"
+        )
+        page.wait_for_timeout(500)
+        closing_end = guides.nth(0).evaluate(
+            "details => details.getBoundingClientRect().height"
+        )
+        assert closing_start > closing_middle > closing_end
+        assert abs(closing_end - closed_height) <= 1
         expect(guides.nth(0)).not_to_have_attribute("open", "")
         expect(guides.nth(1)).to_have_attribute("open", "")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
         page.reload()
         assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 6
+        page.emulate_media(reduced_motion="reduce")
+        assert guides.nth(0).evaluate(
+            "details => getComputedStyle(details, '::details-content').transitionProperty"
+        ) == "none"
+        summaries.nth(0).click()
+        expect(guides.nth(0)).to_have_attribute("open", "")
+        expect(guides.nth(0).locator("svg")).to_be_visible()
         assert not errors
     finally:
         context.close()
@@ -517,7 +951,7 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
 
 @pytest.mark.parametrize(
     ("width", "height"),
-    [(1280, 420), (390, 420), (1280, 900), (876, 1190)],
+    [(1280, 420), (390, 420), (830, 1171), (1280, 900), (876, 1190)],
 )
 def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
     disposable_browser,
@@ -535,6 +969,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         lambda route: route.fulfill(json=_tunnel_onboarding_status()),
     )
     try:
+        page.emulate_media(reduced_motion="reduce")
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
         if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
             page.locator("#sidebar_toggle").click()
@@ -545,7 +980,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         expect(steps).to_have_count(4)
         expect(page.locator("[data-agent-tunnel-message]")).to_have_count(0)
         expect(page.locator("[data-agent-tunnel-activity]")).to_have_count(0)
-        expect(page.locator("[data-agent-tunnel-hint]")).to_be_hidden()
+        expect(page.locator("[data-agent-tunnel-hint]")).to_have_count(0)
 
         guides = onboarding.locator("details[data-agent-tunnel-guide]")
         expect(guides).to_have_count(6)
@@ -586,7 +1021,11 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     right: workspaceRect.left + workspace.clientLeft + workspace.clientWidth,
                 };
                 const actionRect = action.getBoundingClientRect();
-                const headings = steps.map((step) => step.querySelector('h4'));
+                const headings = steps.map((step) => step.querySelector('.agent-tunnel-step-heading'));
+                const markerRects = steps.map((step) =>
+                    step.querySelector('.agent-tunnel-step-number').getBoundingClientRect()
+                );
+                const connectorStyles = steps.map((step) => getComputedStyle(step, '::before'));
                 const paragraphs = steps.flatMap((step) => [...step.querySelectorAll('.agent-tunnel-step-copy p')]);
                 const actionPackages = [...card.querySelectorAll('.agent-tunnel-action-package')];
                 const guideItems = [...card.querySelectorAll('.agent-tunnel-guide-item')];
@@ -639,6 +1078,43 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     markerTexts: steps.map((step) =>
                         step.querySelector('.agent-tunnel-step-number').textContent.trim()
                     ),
+                    markerSizes: markerRects.map((rect) => ({width: rect.width, height: rect.height})),
+                    markerBorderWidths: steps.map((step) => parseFloat(
+                        getComputedStyle(step.querySelector('.agent-tunnel-step-number')).borderTopWidth
+                    )),
+                    markerBorderRadii: steps.map((step) =>
+                        getComputedStyle(step.querySelector('.agent-tunnel-step-number')).borderRadius
+                    ),
+                    markerBorderColors: steps.map((step) =>
+                        getComputedStyle(step.querySelector('.agent-tunnel-step-number')).borderTopColor
+                    ),
+                    headingTags: headings.map((heading) => heading.tagName),
+                    processListRole: card.querySelector('.agent-tunnel-onboarding-steps').getAttribute('role'),
+                    processContinues: steps.map((step) =>
+                        step.hasAttribute('data-agent-tunnel-process-continues')
+                    ),
+                    connectorWidths: connectorStyles.slice(0, 3).map((style) => parseFloat(style.width)),
+                    connectorColors: connectorStyles.slice(0, 3).map((style) => style.backgroundColor),
+                    connectorCenterDeltas: steps.slice(0, 3).map((step, index) => {
+                        const stepRect = step.getBoundingClientRect();
+                        const style = connectorStyles[index];
+                        const connectorCenter = stepRect.left + parseFloat(style.left)
+                            + parseFloat(style.width) / 2;
+                        return Math.abs(connectorCenter - (markerRects[index].left + markerRects[index].width / 2));
+                    }),
+                    connectorStartDeltas: steps.slice(0, 3).map((step, index) => {
+                        const stepRect = step.getBoundingClientRect();
+                        const style = connectorStyles[index];
+                        return Math.abs(
+                            stepRect.top + parseFloat(style.top) - markerRects[index].bottom
+                        );
+                    }),
+                    connectorEndDeltas: steps.slice(0, 3).map((step, index) => {
+                        const stepRect = step.getBoundingClientRect();
+                        const style = connectorStyles[index];
+                        const connectorBottom = stepRect.bottom - parseFloat(style.bottom);
+                        return Math.abs(connectorBottom - markerRects[index + 1].top);
+                    }),
                     headingColors: headings.map((heading) => getComputedStyle(heading).color),
                     guideMarkerTexts: guideItems.map((item) =>
                         item.querySelector('.agent-tunnel-guide-number').textContent.trim()
@@ -806,19 +1282,35 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["workspaceScrollPaddingBlockEnd"] == geometry["effectBleedToken"]
         assert geometry["gridScrollable"] is False
         assert geometry["cardScrollable"] is False
+        assert set(geometry["scrollOwners"]) <= {
+            "agent_workspace",
+            "agent_tunnel_kickoff",
+        }
         if height <= 420:
             assert geometry["workspaceScrollable"] is True
+        if geometry["workspaceScrollable"]:
             assert geometry["scrollOwners"][0] == "agent_workspace"
-            assert set(geometry["scrollOwners"]) <= {
-                "agent_workspace",
-                "agent_tunnel_kickoff",
-            }
-        else:
-            assert geometry["scrollOwners"] in ([], ["agent_workspace"])
         assert max(geometry["markerHeadingCenterDeltas"]) <= 1, geometry["markerHeadingCenterDeltas"]
         assert geometry["markerFontSizes"] == [geometry["markerToken"]]
-        assert geometry["markerColors"] == geometry["headingColors"]
-        assert geometry["markerTexts"] == ["Step 1", "Step 2", "Step 3", "Step 4"]
+        assert geometry["markerColors"] == geometry["markerBorderColors"]
+        assert geometry["markerTexts"] == ["1", "2", "3", "4"]
+        assert geometry["markerSizes"] == [{"width": 32, "height": 32}] * 4
+        assert geometry["markerBorderWidths"] == [2] * 4
+        assert geometry["markerBorderRadii"] == ["50%"] * 4
+        assert geometry["headingTags"] == ["H3"] * 4
+        assert geometry["processListRole"] == "list"
+        assert geometry["processContinues"] == [True, True, True, False]
+        assert geometry["connectorWidths"] == [2] * 3
+        assert geometry["connectorColors"] == geometry["markerBorderColors"][:3]
+        assert max(geometry["connectorCenterDeltas"]) <= 0.5
+        assert all(
+            abs(delta - 4) <= 0.5
+            for delta in geometry["connectorStartDeltas"]
+        )
+        assert all(
+            abs(delta - 4) <= 0.5
+            for delta in geometry["connectorEndDeltas"]
+        )
         assert geometry["guideMarkerTexts"] == ["➊", "➋", "➌", "➍", "➊", "➋"]
         assert geometry["guideMarkerFontSizes"] == geometry["guideTitleFontSizes"]
         assert geometry["guideSummaryTexts"] == [
@@ -886,7 +1378,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["bodyToken"] < geometry["headingToken"]
         assert geometry["paragraphCounts"] == [0, 0, 0, 0]
         assert geometry["actionPackageParagraphCounts"] == [0]
-        assert geometry["credentialCopyChildren"] == ["H4", "OL"]
+        assert geometry["credentialCopyChildren"] == ["H3", "OL"]
         assert geometry["credentialFieldChildren"] == ["LI", "LI"]
         assert geometry["credentialSubstepMarkers"] == ["➊", "➋"]
         assert geometry["kickoffSubstepMarkers"] == ["➊", "➋"]
@@ -898,7 +1390,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["stepFourActionLabels"] == ["Copy this prompt", "Ask in ChatGPT"]
         assert geometry["kickoffHasExplicitBreak"] is False
         assert geometry["kickoffText"].endswith(
-            "without altering unrelated work:\n[describe your task]."
+            "Task:\n[describe your task]."
         )
         assert geometry["kickoffTagName"] == "TEXTAREA"
         assert geometry["kickoffReadOnly"] is False
@@ -980,7 +1472,7 @@ def test_tunnel_saved_key_is_only_a_mask_and_not_resubmitted(
         with page.expect_response("**/api/agent/tunnel/credentials"):
             page.locator("#chatgpt_tunnel_id").fill(TUNNEL_ONBOARDING_ID)
         # A successful save leaves no extra status copy behind.
-        expect(page.locator("[data-agent-tunnel-hint]")).to_be_hidden()
+        expect(page.locator("[data-agent-tunnel-hint]")).to_have_count(0)
         expect(page.locator("[data-agent-tunnel-key-check]")).to_be_visible()
         assert submitted and all(item["api_key"] == "" for item in submitted)
         key.fill(TUNNEL_ONBOARDING_KEY)
@@ -993,7 +1485,7 @@ def test_tunnel_saved_key_is_only_a_mask_and_not_resubmitted(
         context.close()
 
 
-def test_tunnel_credential_errors_use_the_sidebar_hint_not_step_copy(
+def test_tunnel_credential_format_errors_mark_fields_without_status_copy(
     disposable_browser,
     sidebar_server_url,
 ):
@@ -1011,19 +1503,14 @@ def test_tunnel_credential_errors_use_the_sidebar_hint_not_step_copy(
     )
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
-        hint = page.locator("[data-agent-tunnel-hint]")
         tunnel_id = page.locator("#chatgpt_tunnel_id")
-        expect(hint).to_be_hidden()
-        expect(hint).to_have_attribute("aria-live", "polite")
+        expect(page.locator("[data-agent-tunnel-hint]")).to_have_count(0)
 
         tunnel_id.fill("tunnel_short")
-        expect(hint).to_be_visible()
-        expect(hint).to_contain_text("Tunnel ID must be tunnel_")
         expect(tunnel_id).to_have_attribute("aria-invalid", "true")
 
         tunnel_id.fill(TUNNEL_ONBOARDING_ID)
         expect(tunnel_id).to_have_attribute("aria-invalid", "false")
-        expect(hint).to_have_text("Enter the API key for this Tunnel.")
         onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
         assert onboarding.locator(".agent-tunnel-credential-step p").count() == 0
         assert errors == []
@@ -1702,7 +2189,7 @@ def test_agent_project_path_input_survives_an_immediate_reload(
     page = context.new_page()
     try:
         page.goto(
-            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            f"{agent_selection_server_url}/agent/edge/chatgpt",
             wait_until="domcontentloaded",
         )
         page.locator("#agent_project_path").evaluate(
@@ -1757,7 +2244,7 @@ def test_agent_directory_browser_selects_a_real_path_and_persists_project(
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
         page.goto(
-            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            f"{agent_selection_server_url}/agent/edge/chatgpt",
             wait_until="domcontentloaded",
         )
         if width < 900:
@@ -1820,7 +2307,7 @@ def test_agent_directory_browser_cancel_preserves_the_project_and_restores_focus
     )
     try:
         page.goto(
-            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            f"{agent_selection_server_url}/agent/edge/chatgpt",
             wait_until="domcontentloaded",
         )
         project_input = page.locator("#agent_project_path")
@@ -1854,7 +2341,7 @@ def test_agent_directory_browser_cancel_aborts_pending_request_and_ignores_late_
     page = context.new_page()
     try:
         page.goto(
-            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            f"{agent_selection_server_url}/agent/edge/chatgpt",
             wait_until="domcontentloaded",
         )
         original_path = str(root)
@@ -1917,7 +2404,7 @@ def test_agent_directory_browser_recovers_initial_path_and_reports_navigation_er
     page = context.new_page()
     try:
         page.goto(
-            f"{agent_selection_server_url}/agent/tunnel/chatgpt",
+            f"{agent_selection_server_url}/agent/edge/chatgpt",
             wait_until="domcontentloaded",
         )
         project_input = page.locator("#agent_project_path")
@@ -3106,8 +3593,9 @@ def test_agent_sidebar_trailing_controls_share_the_toggle_centerline(
                 ),
                 pillChevronCenters: Array.from(
                     document.querySelectorAll('#agent_runtime_form .browser-picker-trigger-chevron'),
-                    chevron => centerX(chevron.getBoundingClientRect()),
-                ),
+                ).filter(
+                    chevron => chevron.getClientRects().length > 0,
+                ).map(chevron => centerX(chevron.getBoundingClientRect())),
                 toggleEdgeDelta: Math.abs(
                     centerY(toggle) - sidebar.top - (sidebar.right - centerX(toggle)),
                 ),

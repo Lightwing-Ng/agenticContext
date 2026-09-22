@@ -1019,12 +1019,14 @@ def open_browser_for_login(
     browser: str,
     *,
     config: CrawlConfig | None = None,
+    use_debug_profile: bool = True,
 ) -> dict[str, Any]:
     """Compatibility wrapper for the extracted browser login handoff."""
     return _browser_transport.open_browser_for_login(
         platform,
         browser,
         config=config,
+        use_debug_profile=use_debug_profile,
         _windows_host_check=is_windows_host,
         _browser_opener=open_agent_in_browser,
         _debug_login_opener=_open_login_in_debug_browser,

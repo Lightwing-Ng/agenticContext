@@ -1,9 +1,11 @@
-/* Code version: v3.59.0-codex.0 */
+/* Code version: v3.63.0-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
     const TUNNEL_UI_PLATFORMS = new Set(["chatgpt", "gemini"]);
     const TUNNEL_KICKOFF_MAX_HEIGHT = 96;
+    const TUNNEL_STATUS_TIMEOUT_MS = 8_000;
+    const TUNNEL_MUTATION_TIMEOUT_MS = 10_000;
     const AGENT_SESSION_SELECTION_CACHE_VERSION = 1;
     const AGENT_SESSION_SELECTION_CACHE_PREFIX = "cachelikes:agent-session-selection";
     const MAX_AGENT_SESSION_CACHE_VALUE_LENGTH = 2048;
@@ -99,7 +101,20 @@
         tunnelCheckmark: document.querySelector("[data-agent-tunnel-checkmark]"),
         tunnelSpinner: document.querySelector("[data-agent-tunnel-spinner]"),
         tunnelState: document.querySelector("[data-agent-tunnel-state]"),
-        tunnelHint: document.querySelector("[data-agent-tunnel-hint]"),
+        tunnelProblem: document.querySelector("[data-agent-tunnel-problem]"),
+        tunnelReconnect: document.querySelector("[data-agent-tunnel-reconnect]"),
+        tunnelProjectField: document.querySelector("[data-agent-tunnel-project-field]"),
+        tunnelProjectCombobox: document.querySelector("[data-agent-tunnel-project-combobox]"),
+        tunnelProjectInput: document.querySelector("[data-agent-tunnel-project-input]"),
+        tunnelProjectTrigger: document.querySelector("[data-agent-tunnel-project-trigger]"),
+        tunnelProjectMenu: document.querySelector("[data-agent-tunnel-project-menu]"),
+        tunnelProjectSelectedLabel: document.querySelector("[data-agent-tunnel-project-selected-label]"),
+        tunnelProjectId: document.querySelector("[data-agent-tunnel-project-id]"),
+        tunnelProjectIdentity: document.querySelector("[data-agent-tunnel-project-identity]"),
+        tunnelProjectRoot: document.querySelector("[data-agent-tunnel-project-root]"),
+        tunnelProjectAccess: document.querySelector("[data-agent-tunnel-project-access]"),
+        tunnelProjectAvailability: document.querySelector("[data-agent-tunnel-project-availability]"),
+        tunnelProjectStatus: document.querySelector("[data-agent-tunnel-project-status]"),
         tunnelOnboardings: Array.from(document.querySelectorAll("[data-agent-tunnel-onboarding]")),
         tunnelUnsupported: document.querySelector("[data-agent-tunnel-unsupported]"),
         tunnelUnsupportedHeading: document.querySelector("[data-agent-tunnel-unsupported-heading]"),
@@ -888,6 +903,73 @@
         }
     }
 
+    function emptyTunnelProjectContext() {
+        return {
+            registryConfigured: false,
+            revision: 0,
+            selectedAt: 0,
+            source: "none",
+            current: null,
+            projects: [],
+            problem: "No Tunnel project is available.",
+        };
+    }
+
+    function safeTunnelProjectRecord(value) {
+        if (!value || typeof value !== "object") return null;
+        const id = typeof value.id === "string" ? value.id : "";
+        const identity = typeof value.identity === "string" ? value.identity : "";
+        if (!id || !identity) return null;
+        return {
+            id,
+            identity,
+            root: typeof value.root === "string" ? value.root : "",
+            writable: Boolean(value.writable),
+            access: typeof value.access === "string"
+                ? value.access
+                : (value.writable ? "Read and write" : "Read only"),
+            registered: Boolean(value.registered),
+            available: Boolean(value.available),
+            availability: typeof value.availability === "string"
+                ? value.availability
+                : (value.available ? "Available" : "Unavailable"),
+            problem: typeof value.problem === "string" ? value.problem : "",
+            description: typeof value.description === "string" ? value.description : "",
+            source: typeof value.source === "string" ? value.source : "",
+        };
+    }
+
+    function safeTunnelProjectContext(value) {
+        if (!value || typeof value !== "object") return emptyTunnelProjectContext();
+        const projects = Array.isArray(value.projects)
+            ? value.projects.map(safeTunnelProjectRecord).filter(Boolean)
+            : [];
+        const current = safeTunnelProjectRecord(value.current);
+        const revision = Number.isSafeInteger(value.revision) && value.revision >= 0
+            ? value.revision : 0;
+        return {
+            registryConfigured: Boolean(value.registry_configured ?? value.registryConfigured),
+            revision,
+            selectedAt: Number.isFinite(value.selected_at)
+                ? Number(value.selected_at)
+                : (Number.isFinite(value.selectedAt) ? Number(value.selectedAt) : 0),
+            source: typeof value.source === "string" ? value.source : "none",
+            current,
+            projects,
+            problem: typeof value.problem === "string" ? value.problem : "",
+        };
+    }
+
+    function readTunnelProjectContext() {
+        try {
+            return safeTunnelProjectContext(JSON.parse(
+                elements.tunnelProjectField?.dataset.agentTunnelProjectInitial || "null",
+            ));
+        } catch (_error) {
+            return emptyTunnelProjectContext();
+        }
+    }
+
     function defaultTunnelPresentation(platform) {
         const provider = platform === "gemini" ? "Gemini" : "Tunnel";
         return {
@@ -971,6 +1053,7 @@
     const initialTunnelSnapshot = {
         presentation: readTunnelPresentation(),
         credentials: readTunnelCredentials(),
+        projectContext: readTunnelProjectContext(),
         activityObserved: elements.tunnelLiveMarkers.some((marker) => !marker.hidden),
         config: safeGeminiConfig(null),
         authorization: emptyGeminiAuthorization(),
@@ -979,6 +1062,7 @@
     const tunnelSnapshots = new Map([[initialTunnelPlatform, initialTunnelSnapshot]]);
     let tunnelPresentation = initialTunnelSnapshot.presentation;
     let tunnelCredentials = initialTunnelSnapshot.credentials;
+    let tunnelProjectContext = initialTunnelSnapshot.projectContext;
     let tunnelActivityObserved = initialTunnelSnapshot.activityObserved;
     let tunnelPollTimer = null;
     let tunnelPollRevision = 0;
@@ -987,6 +1071,13 @@
     let tunnelCredentialSaveTimer = null;
     let tunnelCredentialSaveRevision = 0;
     let tunnelCredentialNotice = "";
+    let tunnelProjectSaveRevision = 0;
+    let tunnelProjectBusy = false;
+    let tunnelProjectNotice = "";
+    let tunnelReconnectRevision = 0;
+    let tunnelReconnectBusy = false;
+    let tunnelKickoffPrefixValue = "";
+    const tunnelLastSuccessfulStatusAt = new Map([[initialTunnelPlatform, Date.now()]]);
     let geminiConfig = safeGeminiConfig(null);
     let geminiConfigBusy = false;
     let geminiConfigDirty = false;
@@ -1027,6 +1118,185 @@
         };
     }
 
+    function invalidateTunnelStatusRequest() {
+        tunnelPollRevision += 1;
+        tunnelPollController?.abort();
+        tunnelPollController = null;
+        tunnelPollPlatform = "";
+    }
+
+    async function tunnelRequestJson(url, options = {}, timeoutMs = TUNNEL_MUTATION_TIMEOUT_MS) {
+        const controller = new AbortController();
+        let timedOut = false;
+        const timer = window.setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, timeoutMs);
+        try {
+            const response = await fetch(url, {
+                ...options,
+                cache: "no-store",
+                signal: controller.signal,
+                headers: {
+                    Accept: "application/json",
+                    "Content-Type": "application/json",
+                    ...(options.headers || {}),
+                },
+            });
+            const text = await response.text();
+            let payload = {};
+            if (text) {
+                try {
+                    payload = JSON.parse(text);
+                } catch (_error) {
+                    throw new Error(`Tunnel returned invalid JSON (HTTP ${response.status}).`);
+                }
+            }
+            if (!response.ok) {
+                const requestError = new Error(
+                    String(payload.error || payload.message || `Tunnel request failed with HTTP ${response.status}.`),
+                );
+                requestError.payload = payload;
+                throw requestError;
+            }
+            return payload;
+        } catch (error) {
+            if (timedOut && error?.name === "AbortError") {
+                const timeoutError = new Error("Tunnel request timed out; its result is not yet confirmed.");
+                timeoutError.resultUncertain = true;
+                throw timeoutError;
+            }
+            throw error;
+        } finally {
+            window.clearTimeout(timer);
+        }
+    }
+
+    function tunnelKickoffPrefix(context = tunnelProjectContext) {
+        const project = context?.current;
+        if (!project?.id || !project?.identity) return "";
+        return `Use @AgenticContext for project ID "${project.id}" (identity "${project.identity}", selection revision ${context.revision}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.`;
+    }
+
+    function syncTunnelKickoffProjectPrompt() {
+        const prompt = elements.tunnelKickoffPrompt;
+        if (!(prompt instanceof HTMLTextAreaElement)) return;
+        const nextPrefix = tunnelKickoffPrefix();
+        if (!nextPrefix || nextPrefix === tunnelKickoffPrefixValue) {
+            tunnelKickoffPrefixValue = nextPrefix;
+            return;
+        }
+        const currentValue = prompt.value;
+        const taskMarker = "\n\nTask:\n";
+        let taskBody = "";
+        if (tunnelKickoffPrefixValue && currentValue.startsWith(tunnelKickoffPrefixValue)) {
+            taskBody = currentValue.slice(tunnelKickoffPrefixValue.length);
+        } else {
+            const markerIndex = currentValue.indexOf(taskMarker);
+            taskBody = markerIndex >= 0
+                ? currentValue.slice(markerIndex)
+                : `${taskMarker}${currentValue || "[describe your task]."}`;
+        }
+        prompt.value = nextPrefix + taskBody;
+        tunnelKickoffPrefixValue = nextPrefix;
+        resetTunnelKickoffCopyState();
+        resizeTunnelKickoffPrompt();
+    }
+
+    function closeTunnelProjectMenu() {
+        elements.tunnelProjectCombobox?.classList.remove("is-agent-combobox-open");
+        elements.tunnelProjectTrigger?.setAttribute("aria-expanded", "false");
+        if (elements.tunnelProjectMenu) elements.tunnelProjectMenu.hidden = true;
+    }
+
+    function syncTunnelProjectUi() {
+        if (!elements.tunnelProjectField) return;
+        const current = tunnelProjectContext.current;
+        const projectId = current?.id || "";
+        if (elements.tunnelProjectInput) elements.tunnelProjectInput.value = projectId;
+        if (elements.tunnelProjectSelectedLabel) {
+            elements.tunnelProjectSelectedLabel.textContent = projectId || "Choose a registered project";
+        }
+        if (elements.tunnelProjectTrigger) {
+            elements.tunnelProjectTrigger.disabled = tunnelProjectBusy
+                || !tunnelProjectContext.projects.some((project) => (
+                    project.available && project.registered
+                ));
+            elements.tunnelProjectTrigger.setAttribute(
+                "aria-label",
+                `Current Tunnel project: ${projectId || "not selected"}`,
+            );
+        }
+        if (elements.tunnelProjectMenu) {
+            const options = tunnelProjectContext.projects.map((project) => {
+                const option = document.createElement("button");
+                option.type = "button";
+                option.className = "trade-strategy-dropdown-option agent-combobox-option";
+                option.dataset.agentTunnelProjectOption = project.id;
+                option.setAttribute("role", "option");
+                const selected = project.id === projectId;
+                option.setAttribute("aria-selected", String(selected));
+                option.setAttribute("aria-disabled", String(!project.available || !project.registered));
+                option.tabIndex = -1;
+                option.disabled = tunnelProjectBusy || !project.available || !project.registered;
+                option.classList.toggle("is-selected", selected);
+                option.classList.toggle("is-active", selected);
+                const check = document.createElement("span");
+                check.className = "trade-strategy-dropdown-check";
+                check.setAttribute("aria-hidden", "true");
+                const text = document.createElement("span");
+                text.className = "trade-strategy-dropdown-text";
+                const qualification = !project.registered
+                    ? " · Not registered"
+                    : (!project.available ? " · Unavailable" : "");
+                text.textContent = `${project.id} · ${project.access}${qualification}`;
+                option.append(check, text);
+                return option;
+            });
+            elements.tunnelProjectMenu.replaceChildren(...options);
+        }
+        if (elements.tunnelProjectId) {
+            elements.tunnelProjectId.textContent = projectId || "Not selected";
+        }
+        if (elements.tunnelProjectIdentity) {
+            elements.tunnelProjectIdentity.textContent = current?.identity || "Unavailable";
+        }
+        if (elements.tunnelProjectRoot) {
+            elements.tunnelProjectRoot.textContent = current?.root || "Unavailable";
+        }
+        if (elements.tunnelProjectAccess) {
+            elements.tunnelProjectAccess.textContent = current?.access || "Unavailable";
+        }
+        if (elements.tunnelProjectAvailability) {
+            const registration = current && !current.registered ? " · Not registered" : "";
+            elements.tunnelProjectAvailability.textContent = current
+                ? `${current.availability}${registration}`
+                : "Unavailable";
+        }
+        if (elements.tunnelProjectStatus) {
+            let notice = tunnelProjectNotice || tunnelProjectContext.problem || current?.problem || "";
+            if (!notice && current && !current.registered) {
+                notice = "This is a read-only fallback. Register it before selecting it for Tunnel tasks.";
+            }
+            elements.tunnelProjectStatus.textContent = notice;
+            elements.tunnelProjectStatus.hidden = !notice;
+        }
+        syncTunnelKickoffProjectPrompt();
+    }
+
+    function adoptTunnelProjectContext(value) {
+        const next = safeTunnelProjectContext(value);
+        if (next.revision < tunnelProjectContext.revision) {
+            syncTunnelProjectUi();
+            return tunnelProjectContext;
+        }
+        const changed = JSON.stringify(next) !== JSON.stringify(tunnelProjectContext);
+        tunnelProjectContext = next;
+        if (changed) tunnelProjectNotice = "";
+        syncTunnelProjectUi();
+        return next;
+    }
+
     function resetTunnelKickoffCopyState() {
         if (elements.tunnelKickoffCopyLabel) {
             elements.tunnelKickoffCopyLabel.textContent = "Copy this prompt";
@@ -1061,8 +1331,11 @@
         if (!tunnelAvailability().ready) {
             return {ready: false, state: "tunnel", title: "Wait for the Tunnel to be ready"};
         }
-        if (!tunnelActivityObserved) {
-            return {ready: false, state: "plugin", title: "Create the AgenticContext plugin"};
+        if (
+            !tunnelProjectContext.current?.available
+            || !tunnelProjectContext.current?.registered
+        ) {
+            return {ready: false, state: "project", title: "Choose an available Tunnel project"};
         }
         return {ready: true, state: "ready", title: "Describe your project task"};
     }
@@ -1115,16 +1388,6 @@
         const typedKeyInvalid = Boolean(state.typedKey) && !state.typedKeyValid;
         elements.tunnelIdInput?.setAttribute("aria-invalid", String(tunnelIdInvalid));
         elements.tunnelKeyInput?.setAttribute("aria-invalid", String(typedKeyInvalid));
-        if (elements.tunnelHint) {
-            // Step ➋ has no status paragraph: progress, save errors, and format errors
-            // reuse the sidebar status hint, which stays hidden while there is nothing to say.
-            let hint = tunnelCredentialNotice;
-            if (!hint && tunnelIdInvalid) hint = "Tunnel ID must be tunnel_ plus 32 lowercase hex characters.";
-            if (!hint && typedKeyInvalid) hint = "API key must start with sk-.";
-            hint = hint || String(tunnelPresentation?.hint || "");
-            elements.tunnelHint.textContent = hint;
-            elements.tunnelHint.hidden = !hint;
-        }
         syncTunnelKickoffUi();
     }
 
@@ -1225,6 +1488,7 @@
         tunnelPresentation = snapshot?.presentation || defaultTunnelPresentation(platform);
         tunnelCredentials = snapshot?.credentials || emptyTunnelCredentials();
         tunnelActivityObserved = Boolean(snapshot?.activityObserved);
+        if (snapshot?.projectContext) adoptTunnelProjectContext(snapshot.projectContext);
         if (
             platform === "chatgpt"
             && elements.tunnelIdInput
@@ -1273,26 +1537,40 @@
         }
         if (elements.tunnelSpinner) elements.tunnelSpinner.hidden = !loading;
         if (elements.tunnelState) elements.tunnelState.textContent = view.label || "";
+        if (elements.tunnelProblem) {
+            const problem = tone === "error"
+                ? String(view.hint || view.message || "Tunnel status is unavailable.")
+                : "";
+            elements.tunnelProblem.textContent = problem;
+            elements.tunnelProblem.hidden = !problem;
+        }
         const platform = selectedPlatform();
         if (supported && platform === "chatgpt") {
             syncTunnelCredentialUi();
-        } else if (elements.tunnelHint) {
-            const hint = String(view.hint || view.message || "");
-            elements.tunnelHint.textContent = hint;
-            elements.tunnelHint.hidden = !hint;
         }
         if (platform === "gemini") syncGeminiConfigUi();
+        if (elements.tunnelReconnect) {
+            elements.tunnelReconnect.hidden = platform !== "chatgpt"
+                || !Boolean(tunnelCredentials.qualified);
+            elements.tunnelReconnect.disabled = tunnelReconnectBusy;
+            elements.tunnelReconnect.textContent = tunnelReconnectBusy
+                ? "Reconnecting…"
+                : "Reconnect";
+        }
         syncGeminiAuthorizationUi();
+        syncTunnelProjectUi();
         syncTunnelLiveMarkers();
         syncTunnelKickoffUi();
     }
 
     function syncTunnelUsage(payload) {
         const active = Array.isArray(payload.active_calls) ? payload.active_calls : [];
+        const recent = Array.isArray(payload.recent_calls) ? payload.recent_calls : [];
         const totalCalls = payload.call_count;
         const totalCallsAvailable = Number.isSafeInteger(totalCalls) && totalCalls >= 0;
         const totalCallsOutput = elements.tunnelStatus?.querySelector("[data-tunnel-call-count]");
         const activeCountOutput = elements.tunnelStatus?.querySelector("[data-tunnel-active-count]");
+        const recentCountOutput = elements.tunnelStatus?.querySelector("[data-tunnel-recent-count]");
         if (totalCallsOutput) {
             totalCallsOutput.textContent = totalCallsAvailable
                 ? totalCalls.toLocaleString("en-US")
@@ -1301,20 +1579,24 @@
         if (activeCountOutput) {
             activeCountOutput.textContent = active.length.toLocaleString("en-US");
         }
+        if (recentCountOutput) {
+            recentCountOutput.textContent = recent.length.toLocaleString("en-US");
+        }
 
-        // Any unknown estimate makes the aggregate unknown instead of silently
-        // converting a partial total into a precise-looking zero.
-        const currentTokensAvailable = active.every((call) => (
-            Number.isSafeInteger(call?.estimated_tokens) && call.estimated_tokens >= 0
-        ));
-        const currentTokens = currentTokensAvailable
-            ? active.reduce((total, call) => total + call.estimated_tokens, 0)
-            : null;
-        const safeCurrentTokens = Number.isSafeInteger(currentTokens) && currentTokens >= 0;
-        const badge = elements.tunnelStatus?.querySelector("[data-tunnel-token-badge]");
-        const digits = elements.tunnelStatus?.querySelector("[data-tunnel-token-digits]");
-        const unavailable = elements.tunnelStatus?.querySelector("[data-tunnel-token-unavailable]");
-        const formatted = safeCurrentTokens ? currentTokens.toLocaleString("en-US") : "";
+        // Recent usage is bounded retained tool text, not a model or billing total.
+        // Incomplete estimates stay unavailable instead of becoming a partial zero.
+        const recentUsage = payload.recent_usage && typeof payload.recent_usage === "object"
+            ? payload.recent_usage : {};
+        const recentTokens = recentUsage.estimated_tokens;
+        const recentTokensAvailable = recentUsage.complete === true
+            && Number.isSafeInteger(recentTokens)
+            && recentTokens >= 0;
+        const badge = elements.tunnelStatus?.querySelector("[data-tunnel-recent-token-badge]");
+        const digits = elements.tunnelStatus?.querySelector("[data-tunnel-recent-token-digits]");
+        const unavailable = elements.tunnelStatus?.querySelector(
+            "[data-tunnel-recent-token-unavailable]",
+        );
+        const formatted = recentTokensAvailable ? recentTokens.toLocaleString("en-US") : "";
         if (digits && digits.textContent !== formatted) {
             const glyphs = Array.from(formatted, (glyph) => {
                 const span = document.createElement("span");
@@ -1324,8 +1606,8 @@
             });
             digits.replaceChildren(...glyphs);
         }
-        if (badge) badge.hidden = !safeCurrentTokens;
-        if (unavailable) unavailable.hidden = safeCurrentTokens;
+        if (badge) badge.hidden = !recentTokensAvailable;
+        if (unavailable) unavailable.hidden = recentTokensAvailable;
     }
 
     function applyTunnelStatus(payload, requestedPlatform = selectedPlatform()) {
@@ -1336,12 +1618,52 @@
         // mistaken for a Gemini status snapshot.
         if (requestedPlatform === "gemini" && declaredPlatform !== "gemini") return false;
         const previous = tunnelSnapshots.get(requestedPlatform);
+        const observedAt = Number(payload.status_observed_at || 0);
+        const instanceId = String(payload.runtime_instance_id || "").trim();
+        const generation = Number.isSafeInteger(payload.generation) ? payload.generation : null;
+        const stateRevision = Number.isSafeInteger(payload.state_revision)
+            ? payload.state_revision : null;
+        if (previous) {
+            if (observedAt > 0 && previous.statusObservedAt > observedAt) return false;
+            const sameInstance = Boolean(
+                instanceId
+                && previous.instanceId
+                && instanceId === previous.instanceId
+            );
+            if (
+                sameInstance
+                && generation !== null
+                && previous.generation !== null
+                && previous.generation !== undefined
+                && generation < previous.generation
+            ) return false;
+            if (
+                sameInstance
+                && generation !== null
+                && generation === previous.generation
+                && stateRevision !== null
+                && previous.stateRevision !== null
+                && previous.stateRevision !== undefined
+                && stateRevision < previous.stateRevision
+            ) return false;
+        }
+        const presentation = payload.presentation && typeof payload.presentation === "object"
+            ? payload.presentation
+            : {
+                tone: "error",
+                label: "Status unavailable",
+                message: "Tunnel returned an invalid status response.",
+                hint: "Tunnel returned an invalid status response. Use Reconnect and try again.",
+                action: null,
+            };
         const snapshot = {
-            presentation: payload.presentation || previous?.presentation
-                || defaultTunnelPresentation(requestedPlatform),
+            presentation,
             credentials: requestedPlatform === "chatgpt"
                 ? (payload.credentials || previous?.credentials || emptyTunnelCredentials())
                 : emptyTunnelCredentials(),
+            projectContext: Object.hasOwn(payload, "project_context")
+                ? safeTunnelProjectContext(payload.project_context)
+                : (previous?.projectContext || tunnelProjectContext),
             activityObserved: Object.hasOwn(payload, "activity_observed")
                 ? Boolean(payload.activity_observed)
                 : Boolean(previous?.activityObserved),
@@ -1355,15 +1677,49 @@
                 : emptyGeminiAuthorization(),
             active_calls: Array.isArray(payload.active_calls) ? payload.active_calls : [],
             recent_calls: Array.isArray(payload.recent_calls) ? payload.recent_calls : [],
+            recent_usage: payload.recent_usage && typeof payload.recent_usage === "object"
+                ? payload.recent_usage : {},
             call_count: payload.call_count,
+            statusObservedAt: observedAt,
+            instanceId,
+            generation,
+            stateRevision,
             usageKnown: true,
         };
         tunnelSnapshots.set(requestedPlatform, snapshot);
+        tunnelLastSuccessfulStatusAt.set(requestedPlatform, Date.now());
         if (selectedPlatform() !== requestedPlatform) return true;
         activateTunnelSnapshot(requestedPlatform);
         syncTunnelStatus();
         if (lastPayload) renderResponseStatus(lastPayload.agent, readinessState(lastPayload));
         return true;
+    }
+
+    function markTunnelStatusUnavailable(requestedPlatform, reason) {
+        const previous = tunnelSnapshots.get(requestedPlatform) || {};
+        const lastSuccessful = tunnelLastSuccessfulStatusAt.get(requestedPlatform);
+        const lastSuccessfulText = lastSuccessful
+            ? new Date(lastSuccessful).toLocaleTimeString("en-US", {
+                hour: "numeric",
+                minute: "2-digit",
+                second: "2-digit",
+            })
+            : "unavailable";
+        const problem = String(reason || "Local Tunnel status is unavailable.");
+        tunnelSnapshots.set(requestedPlatform, {
+            ...previous,
+            presentation: {
+                tone: "error",
+                label: "Status unavailable",
+                message: problem,
+                hint: `${problem} Last successful status: ${lastSuccessfulText}. Use Reconnect or wait for the next check.`,
+                action: null,
+            },
+            activityObserved: false,
+        });
+        if (selectedPlatform() !== requestedPlatform) return;
+        activateTunnelSnapshot(requestedPlatform);
+        syncTunnelStatus();
     }
 
     async function refreshTunnelStatus() {
@@ -1376,6 +1732,11 @@
         const controller = new AbortController();
         tunnelPollController = controller;
         tunnelPollPlatform = requestedPlatform;
+        let timedOut = false;
+        const timeout = window.setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, TUNNEL_STATUS_TIMEOUT_MS);
         const requestUrl = new URL(url, window.location.href);
         requestUrl.searchParams.set("platform", requestedPlatform);
         try {
@@ -1384,17 +1745,151 @@
                 headers: {Accept: "application/json"},
                 signal: controller.signal,
             });
-            if (!response.ok) return;
-            const payload = await response.json();
+            const text = await response.text();
+            let payload = {};
+            if (text) {
+                try {
+                    payload = JSON.parse(text);
+                } catch (_error) {
+                    throw new Error(`Tunnel status returned invalid JSON (HTTP ${response.status}).`);
+                }
+            }
+            if (!response.ok) {
+                throw new Error(
+                    String(payload.error || payload.message || `Tunnel status failed with HTTP ${response.status}.`),
+                );
+            }
             if (revision !== tunnelPollRevision || selectedPlatform() !== requestedPlatform) return;
-            applyTunnelStatus(payload, requestedPlatform);
+            if (!applyTunnelStatus(payload, requestedPlatform)) {
+                markTunnelStatusUnavailable(requestedPlatform, "Tunnel returned a stale or invalid status response.");
+            }
         } catch (error) {
-            if (error?.name === "AbortError") return;
-            // Keep the last known Tunnel state; the next poll retries.
+            if (revision !== tunnelPollRevision || selectedPlatform() !== requestedPlatform) return;
+            if (error?.name === "AbortError" && !timedOut) return;
+            const reason = timedOut
+                ? "Tunnel status timed out after 8 seconds."
+                : String(error?.message || "Local Tunnel status is unavailable.");
+            markTunnelStatusUnavailable(requestedPlatform, reason);
         } finally {
+            window.clearTimeout(timeout);
             if (tunnelPollController === controller) {
                 tunnelPollController = null;
                 tunnelPollPlatform = "";
+            }
+        }
+    }
+
+    async function selectTunnelProject(projectId) {
+        const url = elements.tunnelProjectField?.dataset.agentTunnelProjectUrl;
+        const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
+        if (
+            !url
+            || tunnelProjectBusy
+            || !project?.registered
+            || !project.available
+        ) return false;
+        if (projectId === tunnelProjectContext.current?.id) {
+            closeTunnelProjectMenu();
+            return true;
+        }
+        closeTunnelProjectMenu();
+        const operationRevision = ++tunnelProjectSaveRevision;
+        const expectedRevision = tunnelProjectContext.revision;
+        const requestedPlatform = selectedPlatform();
+        invalidateTunnelStatusRequest();
+        tunnelProjectBusy = true;
+        tunnelProjectNotice = `Saving ${projectId} as the current project…`;
+        syncTunnelProjectUi();
+        let resultUncertain = false;
+        try {
+            const requestUrl = new URL(url, window.location.href);
+            requestUrl.searchParams.set("platform", requestedPlatform);
+            const payload = await tunnelRequestJson(requestUrl.toString(), {
+                method: "POST",
+                body: JSON.stringify({project_id: projectId, expected_revision: expectedRevision}),
+            });
+            if (operationRevision !== tunnelProjectSaveRevision) return true;
+            const returnedContext = safeTunnelProjectContext(payload.project_context);
+            if (
+                returnedContext.current?.id !== projectId
+                || returnedContext.revision <= expectedRevision
+            ) {
+                throw new Error("The server did not confirm the requested project selection.");
+            }
+            if (!applyTunnelStatus(payload, requestedPlatform)) {
+                throw new Error("The server returned an invalid project selection response.");
+            }
+            tunnelProjectNotice = `Current project saved as ${projectId}.`;
+            syncTunnelProjectUi();
+            scheduleTunnelPoll();
+            return true;
+        } catch (error) {
+            if (operationRevision !== tunnelProjectSaveRevision) return false;
+            if (error?.payload?.project_context) {
+                adoptTunnelProjectContext(error.payload.project_context);
+            }
+            resultUncertain = Boolean(error?.resultUncertain);
+            tunnelProjectNotice = String(
+                error?.message || "Unable to save the current Tunnel project.",
+            );
+            syncTunnelProjectUi();
+            return false;
+        } finally {
+            if (operationRevision === tunnelProjectSaveRevision) {
+                tunnelProjectBusy = false;
+                syncTunnelProjectUi();
+                if (resultUncertain) void refreshTunnelStatus();
+            }
+        }
+    }
+
+    async function reconnectTunnel() {
+        const url = elements.tunnelField?.dataset.agentTunnelConnectUrl;
+        if (
+            !url
+            || selectedPlatform() !== "chatgpt"
+            || !tunnelCredentials.qualified
+            || tunnelReconnectBusy
+        ) return false;
+        const operationRevision = ++tunnelReconnectRevision;
+        invalidateTunnelStatusRequest();
+        tunnelReconnectBusy = true;
+        const previous = tunnelSnapshots.get("chatgpt") || {};
+        tunnelSnapshots.set("chatgpt", {
+            ...previous,
+            presentation: {
+                tone: "loading",
+                label: "Reconnecting",
+                message: "Reconnecting with the saved Tunnel credentials…",
+                hint: "Reconnecting with the saved Tunnel credentials…",
+                action: null,
+            },
+            activityObserved: false,
+        });
+        activateTunnelSnapshot("chatgpt");
+        syncTunnelStatus();
+        let resultUncertain = false;
+        try {
+            const payload = await tunnelRequestJson(url, {method: "POST", body: "{}"});
+            if (operationRevision !== tunnelReconnectRevision) return true;
+            if (!applyTunnelStatus(payload, "chatgpt")) {
+                throw new Error("The server returned an invalid reconnect response.");
+            }
+            scheduleTunnelPoll();
+            return true;
+        } catch (error) {
+            if (operationRevision !== tunnelReconnectRevision) return false;
+            resultUncertain = Boolean(error?.resultUncertain);
+            markTunnelStatusUnavailable(
+                "chatgpt",
+                String(error?.message || "Unable to reconnect the Tunnel."),
+            );
+            return false;
+        } finally {
+            if (operationRevision === tunnelReconnectRevision) {
+                tunnelReconnectBusy = false;
+                syncTunnelStatus();
+                if (resultUncertain) void refreshTunnelStatus();
             }
         }
     }
@@ -1552,11 +2047,13 @@
         if (!state.tunnelId && !allowClear) return false;
         if (state.tunnelId && !state.qualified) return false;
         const revision = ++tunnelCredentialSaveRevision;
+        invalidateTunnelStatusRequest();
         const submittedKey = state.typedKey;
         tunnelCredentialNotice = state.tunnelId ? "Checking and saving credentials…" : "Clearing saved credentials…";
         syncTunnelCredentialUi();
+        let resultUncertain = false;
         try {
-            const payload = await requestJson(url, {
+            const payload = await tunnelRequestJson(url, {
                 method: "POST",
                 body: JSON.stringify({tunnel_id: state.tunnelId, api_key: submittedKey}),
             });
@@ -1566,15 +2063,22 @@
             }
             // The field checkmarks and the Tunnel status already confirm a save.
             tunnelCredentialNotice = "";
-            applyTunnelStatus(payload, "chatgpt");
+            if (!applyTunnelStatus(payload, "chatgpt")) {
+                throw new Error("The server returned an invalid credential response.");
+            }
             scheduleTunnelPoll();
             return true;
         } catch (error) {
             if (revision === tunnelCredentialSaveRevision) {
+                resultUncertain = Boolean(error?.resultUncertain);
                 tunnelCredentialNotice = error.message;
                 syncTunnelCredentialUi();
             }
             return false;
+        } finally {
+            if (revision === tunnelCredentialSaveRevision && resultUncertain) {
+                void refreshTunnelStatus();
+            }
         }
     }
 
@@ -1599,6 +2103,7 @@
         elements.browserModeFields.forEach((field) => {
             field.hidden = !browserMode;
         });
+        if (elements.tunnelProjectField) elements.tunnelProjectField.hidden = browserMode;
         if (elements.browserTask) elements.browserTask.hidden = !browserMode;
         elements.tunnelOnboardings.forEach((panel) => {
             panel.hidden = browserMode
@@ -1636,10 +2141,7 @@
         } else {
             if (tunnelPollTimer !== null) window.clearTimeout(tunnelPollTimer);
             tunnelPollTimer = null;
-            tunnelPollRevision += 1;
-            tunnelPollController?.abort();
-            tunnelPollController = null;
-            tunnelPollPlatform = "";
+            invalidateTunnelStatusRequest();
         }
         // The Browser session probe can launch a browser, so Tunnel defers it.
         if (browserMode) initializeBrowserSessionStatus();
@@ -2894,6 +3396,34 @@
         }
         storePendingPreferencePayload(preferencePayload());
         await flushPreferenceSave();
+    }
+
+    function initializeTunnelProjectSelector() {
+        const combobox = elements.tunnelProjectCombobox;
+        const trigger = elements.tunnelProjectTrigger;
+        const menu = elements.tunnelProjectMenu;
+        if (!combobox || !trigger || !menu) return;
+        trigger.addEventListener("click", () => {
+            const opening = !combobox.classList.contains("is-agent-combobox-open");
+            combobox.classList.toggle("is-agent-combobox-open", opening);
+            trigger.setAttribute("aria-expanded", String(opening));
+            menu.hidden = !opening;
+        });
+        menu.addEventListener("click", (event) => {
+            if (!(event.target instanceof Element)) return;
+            const option = event.target.closest("[data-agent-tunnel-project-option]");
+            if (!(option instanceof HTMLButtonElement) || option.disabled) return;
+            void selectTunnelProject(String(option.dataset.agentTunnelProjectOption || ""));
+        });
+        document.addEventListener("click", (event) => {
+            if (!(event.target instanceof Element) || !event.target.closest(
+                "[data-agent-tunnel-project-combobox]",
+            )) closeTunnelProjectMenu();
+        });
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") closeTunnelProjectMenu();
+        });
+        syncTunnelProjectUi();
     }
 
     function flushPreferenceSaveOnPageHide() {
@@ -4875,6 +5405,9 @@
             );
         });
     });
+    elements.tunnelReconnect?.addEventListener("click", () => {
+        void reconnectTunnel();
+    });
     elements.tunnelIdInput?.addEventListener("input", scheduleTunnelCredentialSave);
     elements.tunnelKeyInput?.addEventListener("input", scheduleTunnelCredentialSave);
     elements.tunnelClearButtons.forEach((button) => {
@@ -4943,6 +5476,7 @@
         }
         pendingPreferencePayload = null;
     }
+    initializeTunnelProjectSelector();
     initializeComboboxes();
     initializeBrowserSessionStatus();
     syncPlatformState();

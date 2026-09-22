@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.22.0-codex.0`
+Documentation version: `v1.24.0-codex.0`
 
 ## Supported commands
 
@@ -143,25 +143,39 @@ Run the Secure MCP Tunnel contract independently with:
 ```bash
 ./scripts/test.sh \
   tests/test_tunnel_mcp.py \
+  tests/test_tunnel_checks.py \
   tests/test_tunnel_runtime.py \
   tests/test_tunnel_credentials.py \
-  tests/test_gemini_tunnel.py
+  tests/test_gemini_tunnel.py \
+  tests/test_tunnel_workflow_e2e.py
 ```
 
-The Tunnel tests pin the exact ten-tool public catalog, closed-schema enforcement,
+The Tunnel tests pin the exact fourteen-tool public catalog, closed-schema enforcement,
 discovery/dispatcher agreement, rejection of removed compatibility names, direct invocation
-without runtime selectors, prevalidated batch-edit behavior, stale-write and delete SHA protection,
-workspace confinement, bounded status/patch inspection, `git status`, `node --check`,
-destructive-command refusal, current-evidence bodycheck, and loopback bearer authentication.
-They also cover the project registry (exact identities, unknown and path-like ids, read-only
-projects, cross-project and absolute-path escapes, symlinks, project-scoped instruction
-discovery, per-project SHA guards across switching, re-registration, invalid registries failing
-closed, and no Desktop-wide fallback); staged/unstaged/path-scoped Git inspection, bounded patch
-truncation, non-Git projects, the discovery ceiling, and per-project lock scope. Tunnel runtime
-tests also hold a preflight doctor call across disconnect and restart to prove a superseded
-generation cannot launch a process or overwrite the current health/state cache. These are
-offline tests with temporary projects, registries, and runtime roots; live ChatGPT and Gemini
-round trips are separate, provider-specific transport evidence.
+without runtime selectors, current-project discovery, durable selection revisions, and explicit
+project identities. They cover prevalidated and write-failure batch recovery, concurrent-edit
+rollback conflicts, duplicate-safe mutation requests, three-state batch reads, stale-write and
+delete SHA protection, truncation continuation, workspace confinement, bounded status/patch
+inspection, `git status`, approved checks, durable check deduplication/cancellation/restart query,
+runner-loss `unknown` recovery, bounded output and retained-job counts, stale-verification
+rejection, destructive-command refusal, current-evidence bodycheck, and loopback bearer
+authentication. The isolated workflow test uses one application instance to save a registered
+page selection, discover it through authenticated `/mcp`, create/read/edit/re-read/delete a file,
+confirm absence, run a check, finish `review_changes`, and reject a write to the read-only
+reference project.
+
+The project registry cases use temporary writable and read-only roots and cover unknown and
+path-like ids, cross-project and absolute-path escapes, same-name files, symlinks,
+project-scoped instruction discovery, per-project SHA guards across switching, re-registration,
+same-path root replacement, admission-time replacement races, invalid registries failing closed,
+and no Desktop-wide fallback. Runtime cases cover transient
+preflight recovery, ready-then-lost connectivity, a live but persistently unhealthy client,
+bounded retry, HTTP status failures, status-fetch timeout/cancellation, and superseded-generation
+results. Browser cases prove the first-use path has no historical-activity gate, a failed
+selection save cannot change the shown project, the generated prompt updates its exact id without
+discarding the user's task text, and stale or failed polling revokes a previous green state.
+These tests are offline and use temporary projects, registries, runtime roots, and disposable
+browser contexts; live ChatGPT and Gemini round trips remain separate provider-specific evidence.
 
 The Gemini transport tests independently cover strict public-origin validation, atomic private
 credential storage with POSIX owner-only mode checks, safe snapshots, protected-resource and
@@ -169,7 +183,8 @@ authorization-server metadata, exact
 client/resource/scope/redirect binding, mandatory PKCE S256, one-time authorization codes,
 short-lived access tokens, refresh tokens, signature and expiry failure, public-Host path
 confinement, exact pending-callback review and single-use local approval, bearer challenges, credential-
-generation-scoped Active evidence, provider-attributed activity, and identical ten-tool discovery.
+generation-scoped Active evidence, provider-attributed activity, and identical fourteen-tool
+discovery.
 They must also prove that the client secret, signing key, and bearer values do not appear in HTML,
 initial JSON, status payloads, URLs, or logs; copying a secret does not approve a callback; pending,
 approved, denied, stale-review-id, empty-state, changed-state, and changed-callback cases fail closed;

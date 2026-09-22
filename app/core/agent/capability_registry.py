@@ -1,6 +1,6 @@
 """One registry for Agent actions, page observations, and WebMCP tools.
 
-Code version: v1.7.0-claude.0
+Code version: v1.8.0-codex.0
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Any
 from ..brand import PRODUCT_DESCRIPTION, PRODUCT_NAME, SITE_ID
 
 
-CAPABILITY_REGISTRY_VERSION = "1.5.0"
+CAPABILITY_REGISTRY_VERSION = "1.6.0"
 AGENT_OPTIMIZATION_CONTRACT_VERSION = "1.1.0"
 AGENT_OPTIMIZATION_PROFILE = "openai-site-tools-2026-08-28"
 
@@ -391,6 +391,16 @@ CAPABILITY_REGISTRY: tuple[CapabilityDefinition, ...] = (
                     "First one-based line to read.",
                     minimum=1,
                     maximum=1_000_000,
+                ),
+                "start_character": _integer_property(
+                    "Zero-based character offset returned when one line is segmented.",
+                    minimum=0,
+                    maximum=20 * 1_024 * 1_024,
+                ),
+                "max_characters": _integer_property(
+                    "Maximum text characters returned by this bounded read.",
+                    minimum=1,
+                    maximum=120_000,
                 ),
                 "end_line": _integer_property(
                     "Last one-based line to read.",

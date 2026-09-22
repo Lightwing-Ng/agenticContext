@@ -1,6 +1,6 @@
 """Focused regression tests for Grok media sync dedupe."""
 
-# Code version: v1.6.0-codex.1
+# Code version: v1.7.0-codex.0
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import unittest
 import json
 import os
 from pathlib import Path
+from urllib.error import HTTPError
 from unittest.mock import patch
 
 from app.core.grok_downloader import (
@@ -17,6 +18,7 @@ from app.core.grok_downloader import (
     GrokMediaCatalog,
     GrokCatalogEntry,
     GrokDownloadAuth,
+    GrokAuthenticationRequiredError,
     GrokDownloadManifest,
     GrokMediaCandidate,
     DownloadSizeLimitError,
@@ -26,12 +28,14 @@ from app.core.grok_downloader import (
     compute_sha256,
     download_candidate,
     entry_needs_remote_image_upgrade,
+    mark_grok_authentication_required,
     resolve_grok_download_worker_count,
+    run_download_worker,
     stream_candidate_download,
 )
 from app.core.config import CrawlConfig
 from app.core.resource_persistence import LEGACY_GROK_CATALOG_FILENAME
-from app.core.state import TaskState
+from app.core.state import TaskSnapshot, TaskState
 
 
 _JPEG_BYTES = b"\xff\xd8\xff\xe0test-image"
@@ -228,6 +232,77 @@ class GrokDownloaderTests(unittest.TestCase):
             self.assertFalse(resumed)
             self.assertEqual(temp_path.read_bytes(), _JPEG_BYTES)
             self.assertEqual(mock_urlopen.call_count, 2)
+
+    def test_stream_fails_fast_when_grok_rejects_authentication(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir) / "asset.part"
+            candidate = GrokMediaCandidate(
+                source_url="https://assets.grok.com/users/demo/generated/cebf0764-8ee5-44f5-9653-753701bfdb96/image.jpg",
+                asset_id="cebf0764-8ee5-44f5-9653-753701bfdb96",
+                asset_name="image",
+                media_kind="image",
+                identity="cebf0764-8ee5-44f5-9653-753701bfdb96/image",
+            )
+            unauthorized = HTTPError(candidate.source_url, 401, "Unauthorized", {}, None)
+
+            with patch(
+                "app.core.grok_downloader.urlopen",
+                side_effect=unauthorized,
+            ) as mock_urlopen, patch("app.core.grok_downloader.time.sleep") as sleep:
+                with self.assertRaises(GrokAuthenticationRequiredError) as error:
+                    stream_candidate_download(
+                        candidate,
+                        GrokDownloadAuth(),
+                        temp_path,
+                        lambda: False,
+                    )
+
+            self.assertEqual(error.exception.status, 401)
+            self.assertIn("Sign in to Grok again", str(error.exception))
+            self.assertEqual(mock_urlopen.call_count, 1)
+            sleep.assert_not_called()
+
+    def test_download_worker_preserves_authentication_required_outcome(self) -> None:
+        candidate = GrokMediaCandidate(
+            source_url="https://assets.grok.com/example/image.jpg",
+            asset_id="cebf0764-8ee5-44f5-9653-753701bfdb96",
+            asset_name="image",
+            media_kind="image",
+            identity="cebf0764-8ee5-44f5-9653-753701bfdb96/image",
+        )
+
+        with patch(
+            "app.core.grok_downloader.download_candidate",
+            side_effect=GrokAuthenticationRequiredError(403),
+        ) as download:
+            outcome = run_download_worker(
+                catalog=None,
+                manifest=None,
+                target_dir=Path(tempfile.gettempdir()) / "grok-auth-test",
+                candidate=candidate,
+                auth=GrokDownloadAuth(),
+                should_stop=lambda: False,
+            )
+
+        self.assertEqual(download.call_count, 1)
+        self.assertTrue(outcome.authentication_required)
+        self.assertEqual(outcome.authentication_status, 403)
+        self.assertFalse(outcome.failed)
+
+    def test_authentication_failure_marks_status_for_login(self) -> None:
+        state = TaskState(
+            "test",
+            snapshot_factory=lambda version: TaskSnapshot(version=version),
+        )
+        error = GrokAuthenticationRequiredError(401)
+
+        mark_grok_authentication_required(state, error)
+
+        snapshot = state.snapshot()
+        self.assertEqual(snapshot["phase"], "failed")
+        self.assertEqual(snapshot["last_error"], str(error))
+        self.assertEqual(snapshot["message"], str(error))
+        self.assertTrue(snapshot["performance_metrics"]["authentication_required"])
 
     def test_catalog_contains_asset_id_requires_a_valid_local_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

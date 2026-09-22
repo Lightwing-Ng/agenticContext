@@ -259,7 +259,7 @@
                 const response = await fetch("/api/browser-session/open-login", {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({platform: requestPlatform, browser: requestBrowser}),
+                    body: JSON.stringify({platform: requestPlatform, browser: requestBrowser, scope}),
                     credentials: "same-origin",
                 });
                 const payload = await response.json();

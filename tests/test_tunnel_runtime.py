@@ -1,6 +1,6 @@
 """tunnel-client supervision tests with a local fake client.
 
-Code version: v1.2.0-codex.0
+Code version: v1.4.0-codex.0
 """
 
 from __future__ import annotations
@@ -107,6 +107,24 @@ def test_valid_tunnel_ids_and_host_assets() -> None:
         host_tunnel_client_asset("plan9", "mips")
 
 
+def test_snapshot_identifies_one_service_runtime_instance(tmp_path: Path) -> None:
+    first = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(),
+        state_root=tmp_path / "first",
+    )
+    second = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(),
+        state_root=tmp_path / "second",
+    )
+
+    first_id = first.snapshot()["runtime_instance_id"]
+
+    assert len(first_id) == 32
+    assert all(character in "0123456789abcdef" for character in first_id)
+    assert first.snapshot()["runtime_instance_id"] == first_id
+    assert second.snapshot()["runtime_instance_id"] != first_id
+
+
 def test_outbound_proxy_prefers_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1082")
     assert detect_outbound_proxy() == "http://127.0.0.1:1082"
@@ -193,6 +211,474 @@ class _FakeRunningProcess:
     def kill(self) -> None:
         self.terminated = True
         self.returncode = -9
+
+
+def _fast_supervisor(monkeypatch: pytest.MonkeyPatch, *, backoff: float = 0.2) -> None:
+    monkeypatch.setattr(tunnel_runtime, "TUNNEL_INITIAL_BACKOFF_SECONDS", backoff)
+    monkeypatch.setattr(tunnel_runtime, "TUNNEL_MAX_BACKOFF_SECONDS", backoff)
+    monkeypatch.setattr(tunnel_runtime, "TUNNEL_CONNECTING_PROBE_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(tunnel_runtime, "TUNNEL_HEALTH_PROBE_INTERVAL_SECONDS", 0.01)
+
+
+def test_transient_preflight_failure_retries_with_redacted_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fast_supervisor(monkeypatch, backoff=0.3)
+    binary = tmp_path / "fake-tunnel-client"
+    binary.write_text("fake")
+    binary.chmod(0o755)
+    monkeypatch.setenv(tunnel_runtime.TUNNEL_CLIENT_BIN_ENV, str(binary))
+    monkeypatch.setattr(tunnel_runtime, "detect_outbound_proxy", lambda: "")
+    doctor_calls = 0
+    process = _FakeRunningProcess()
+
+    def fake_run(command, **_kwargs):
+        nonlocal doctor_calls
+        doctor_calls += 1
+        if doctor_calls == 1:
+            return tunnel_runtime.subprocess.CompletedProcess(
+                command,
+                1,
+                stdout=json.dumps(
+                    {
+                        "error": (
+                            "HTTP 503 temporarily unavailable; "
+                            "api_key=sk-proj-super-secret; "
+                            "Authorization: Bearer delivery-secret"
+                        )
+                    }
+                ),
+                stderr="",
+            )
+        return tunnel_runtime.subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"ok": True}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(tunnel_runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(tunnel_runtime.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    monkeypatch.setattr(runtime, "_stop_orphan", lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "_probe_ready",
+        lambda _generation: tunnel_runtime._HealthProbe(True),
+    )
+
+    runtime.enable("http://127.0.0.1:8666/mcp")
+    try:
+        assert wait_for(lambda: runtime.snapshot()["state"] == "retrying")
+        retrying = runtime.snapshot()
+        assert retrying["problem_code"] == "preflight_transient"
+        assert retrying["retryable"] is True
+        assert retrying["retry_attempt"] == 1
+        assert retrying["next_retry_at"] > time.time()
+        assert "HTTP 503 temporarily unavailable" in retrying["message"]
+        assert "super-secret" not in retrying["message"]
+        assert "delivery-secret" not in retrying["message"]
+        assert "[REDACTED]" in retrying["message"]
+        assert wait_for(lambda: runtime.snapshot()["ready"])
+        assert doctor_calls == 2
+    finally:
+        runtime.stop()
+
+
+def test_configuration_preflight_failure_does_not_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fast_supervisor(monkeypatch)
+    binary = tmp_path / "fake-tunnel-client"
+    binary.write_text("fake")
+    binary.chmod(0o755)
+    monkeypatch.setenv(tunnel_runtime.TUNNEL_CLIENT_BIN_ENV, str(binary))
+    monkeypatch.setattr(tunnel_runtime, "detect_outbound_proxy", lambda: "")
+    doctor_calls = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal doctor_calls
+        doctor_calls += 1
+        return tunnel_runtime.subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps({"message": "HTTP 401 unauthorized: sk-proj-do-not-show"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(tunnel_runtime.subprocess, "run", fake_run)
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    monkeypatch.setattr(runtime, "_stop_orphan", lambda: None)
+
+    runtime.enable("http://127.0.0.1:8666/mcp")
+    try:
+        assert wait_for(lambda: runtime.snapshot()["state"] == "error")
+        failed = runtime.snapshot()
+        assert failed["problem_code"] == "preflight_configuration_error"
+        assert failed["retryable"] is False
+        assert "HTTP 401 unauthorized" in failed["message"]
+        assert "do-not-show" not in failed["message"]
+        assert doctor_calls == 1
+    finally:
+        runtime.stop()
+
+
+def test_transient_binary_download_recovers_without_manual_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fast_supervisor(monkeypatch, backoff=0.3)
+    monkeypatch.delenv(tunnel_runtime.TUNNEL_CLIENT_BIN_ENV, raising=False)
+    payload = b"#!/bin/sh\nexit 0\n"
+    archive = _zip_with("tunnel-client", payload)
+    asset = TunnelClientAsset(
+        "test-host",
+        hashlib.sha256(archive).hexdigest(),
+        hashlib.sha256(payload).hexdigest(),
+        "tunnel-client",
+    )
+
+    class FlakyOpener:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def open(self, _request, timeout=None):
+            del timeout
+            self.calls += 1
+            if self.calls == 1:
+                raise tunnel_runtime.urllib.error.URLError("temporary DNS failure")
+            return io.BytesIO(archive)
+
+    opener = FlakyOpener()
+    monkeypatch.setattr(tunnel_runtime, "host_tunnel_client_asset", lambda: asset)
+    monkeypatch.setattr(tunnel_runtime, "detect_outbound_proxy", lambda: "")
+    monkeypatch.setattr(
+        tunnel_runtime.urllib.request,
+        "build_opener",
+        lambda *_handlers: opener,
+    )
+    process = _FakeRunningProcess()
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    monkeypatch.setattr(runtime, "_spawn", lambda *_args: process)
+    monkeypatch.setattr(
+        runtime,
+        "_probe_ready",
+        lambda _generation: tunnel_runtime._HealthProbe(True),
+    )
+
+    runtime.enable("http://127.0.0.1:8666/mcp")
+    try:
+        assert wait_for(lambda: runtime.snapshot()["state"] == "retrying")
+        retrying = runtime.snapshot()
+        assert retrying["problem_code"] == "client_download_unreachable"
+        assert "temporary DNS failure" in retrying["message"]
+        assert wait_for(lambda: runtime.snapshot()["ready"])
+        assert opener.calls == 2
+        installed = runtime.tools_root / asset.target / asset.member_name
+        assert installed.read_bytes() == payload
+    finally:
+        runtime.stop()
+
+
+def test_living_client_that_never_becomes_ready_is_recycled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fast_supervisor(monkeypatch, backoff=0.2)
+    monkeypatch.setattr(tunnel_runtime, "TUNNEL_READY_TIMEOUT_SECONDS", 0.08)
+    processes: list[_FakeRunningProcess] = []
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    monkeypatch.setattr(runtime, "_resolve_binary", lambda _generation: tmp_path / "client")
+
+    def fake_spawn(*_args):
+        process = _FakeRunningProcess()
+        processes.append(process)
+        return process
+
+    def fake_probe(_generation):
+        return tunnel_runtime._HealthProbe(
+            len(processes) > 1,
+            "simulated health endpoint timeout",
+            "health_unreachable",
+        )
+
+    monkeypatch.setattr(runtime, "_spawn", fake_spawn)
+    monkeypatch.setattr(runtime, "_probe_ready", fake_probe)
+    runtime.enable("http://127.0.0.1:8666/mcp")
+    try:
+        assert wait_for(lambda: runtime.snapshot()["state"] == "retrying")
+        retrying = runtime.snapshot()
+        assert processes[0].terminated is True
+        assert "did not become ready" in retrying["message"]
+        assert retrying["problem_code"] == "health_unreachable"
+        assert wait_for(lambda: len(processes) >= 2 and runtime.snapshot()["ready"])
+    finally:
+        runtime.stop()
+
+
+def test_never_ready_client_degrades_early_but_recycles_at_ready_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fast_supervisor(monkeypatch, backoff=0.5)
+    monkeypatch.setattr(tunnel_runtime, "TUNNEL_INITIAL_DEGRADED_SECONDS", 0.04)
+    monkeypatch.setattr(tunnel_runtime, "TUNNEL_READY_TIMEOUT_SECONDS", 0.35)
+    process = _FakeRunningProcess()
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    monkeypatch.setattr(runtime, "_resolve_binary", lambda _generation: tmp_path / "client")
+    monkeypatch.setattr(runtime, "_spawn", lambda *_args: process)
+    monkeypatch.setattr(
+        runtime,
+        "_probe_ready",
+        lambda _generation: tunnel_runtime._HealthProbe(
+            False,
+            "simulated HTTP 503; api_key=sk-proj-never-show",
+            "health_http_status",
+        ),
+    )
+
+    runtime.enable("http://127.0.0.1:8666/mcp")
+    try:
+        assert wait_for(lambda: runtime.snapshot()["state"] == "degraded")
+        degraded = runtime.snapshot()
+        assert process.terminated is False
+        assert degraded["ready"] is False
+        assert degraded["retryable"] is True
+        assert degraded["problem_code"] == "health_http_status"
+        assert "simulated HTTP 503" in degraded["message"]
+        assert "never-show" not in degraded["message"]
+        assert "[REDACTED]" in degraded["message"]
+
+        assert wait_for(lambda: runtime.snapshot()["state"] == "retrying")
+        retrying = runtime.snapshot()
+        assert process.terminated is True
+        assert "did not become ready" in retrying["message"]
+    finally:
+        runtime.stop()
+
+
+def test_ready_loss_revokes_ready_then_recovers_and_marks_inflight_uncertain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fast_supervisor(monkeypatch, backoff=0.1)
+    monkeypatch.setattr(tunnel_runtime, "TUNNEL_UNHEALTHY_RESTART_SECONDS", 0.25)
+    active_call = {
+        "call_id": 17,
+        "provider": "chatgpt",
+        "tool": "apply_edits",
+        "project": "demo",
+        "target": "demo: app.py",
+        "started_at": time.time(),
+    }
+    processes: list[_FakeRunningProcess] = []
+    first_probe_count = 0
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+        activity_provider=lambda: {"active_calls": [active_call]},
+    )
+    monkeypatch.setattr(runtime, "_resolve_binary", lambda _generation: tmp_path / "client")
+
+    def fake_spawn(*_args):
+        process = _FakeRunningProcess()
+        processes.append(process)
+        return process
+
+    def fake_probe(_generation):
+        nonlocal first_probe_count
+        if len(processes) == 1:
+            first_probe_count += 1
+            if first_probe_count == 1:
+                return tunnel_runtime._HealthProbe(True)
+            return tunnel_runtime._HealthProbe(
+                False,
+                "simulated HTTP 503",
+                "health_http_status",
+            )
+        return tunnel_runtime._HealthProbe(True)
+
+    monkeypatch.setattr(runtime, "_spawn", fake_spawn)
+    monkeypatch.setattr(runtime, "_probe_ready", fake_probe)
+    runtime.enable("http://127.0.0.1:8666/mcp")
+    try:
+        assert wait_for(lambda: runtime.snapshot()["state"] == "degraded")
+        degraded = runtime.snapshot()
+        generation = degraded["generation"]
+        assert degraded["ready"] is False
+        assert degraded["retryable"] is True
+        assert "simulated HTTP 503" in degraded["message"]
+        assert wait_for(lambda: len(processes) >= 2 and runtime.snapshot()["ready"])
+        recovered = runtime.snapshot()
+        assert recovered["generation"] == generation
+        assert recovered["last_ready_at"] is not None
+        assert recovered["last_probe_at"] is not None
+        assert processes[0].terminated is True
+        assert recovered["outcome_uncertain"] is True
+        assert recovered["uncertain_calls"][0]["call_id"] == 17
+        assert "Read the affected state" in recovered["uncertain_calls"][0]["guidance"]
+        presentation = describe_tunnel_status(
+            recovered,
+            project_name="demo",
+            settings_url="/settings",
+        )
+        assert "response delivery cannot be confirmed" in presentation["hint"]
+    finally:
+        runtime.stop()
+
+
+def test_late_probe_from_old_generation_cannot_overwrite_ready_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fast_supervisor(monkeypatch)
+    first_probe_started = threading.Event()
+    release_first_probe = threading.Event()
+    first_probe_returned = threading.Event()
+    probe_calls = 0
+    processes: list[_FakeRunningProcess] = []
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    monkeypatch.setattr(runtime, "_resolve_binary", lambda _generation: tmp_path / "client")
+
+    def fake_spawn(*_args):
+        process = _FakeRunningProcess()
+        processes.append(process)
+        return process
+
+    def fake_probe(_generation):
+        nonlocal probe_calls
+        probe_calls += 1
+        if probe_calls == 1:
+            first_probe_started.set()
+            assert release_first_probe.wait(5)
+            first_probe_returned.set()
+            return tunnel_runtime._HealthProbe(
+                False,
+                "stale HTTP 503",
+                "health_http_status",
+            )
+        return tunnel_runtime._HealthProbe(True)
+
+    monkeypatch.setattr(runtime, "_spawn", fake_spawn)
+    monkeypatch.setattr(runtime, "_probe_ready", fake_probe)
+    runtime.enable("http://127.0.0.1:8666/mcp")
+    try:
+        assert first_probe_started.wait(3)
+        first_generation = runtime.snapshot()["generation"]
+        runtime.restart()
+        assert wait_for(
+            lambda: runtime.snapshot()["generation"] > first_generation
+            and runtime.snapshot()["ready"]
+        )
+        current_generation = runtime.snapshot()["generation"]
+        release_first_probe.set()
+        assert first_probe_returned.wait(3)
+        assert wait_for(lambda: runtime.snapshot()["state"] == "ready")
+        current = runtime.snapshot()
+        assert current["generation"] == current_generation
+        assert current["problem_code"] == ""
+        assert "stale HTTP 503" not in current["message"]
+        assert len(processes) == 2
+    finally:
+        release_first_probe.set()
+        runtime.stop()
+
+
+def test_stable_ready_period_resets_retry_backoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    processes: list[_FakeRunningProcess] = []
+    monitor_results = iter(
+        [
+            tunnel_runtime._MonitorResult("first failure", "client_exited", 0.0),
+            tunnel_runtime._MonitorResult(
+                "failure after stable recovery",
+                "client_exited",
+                tunnel_runtime.TUNNEL_BACKOFF_RESET_SECONDS + 1,
+            ),
+        ]
+    )
+    retry_delays: list[float] = []
+    monkeypatch.setattr(runtime, "_resolve_binary", lambda _generation: tmp_path / "client")
+
+    def fake_spawn(*_args):
+        process = _FakeRunningProcess()
+        processes.append(process)
+        return process
+
+    def fake_monitor(_generation, process):
+        process.returncode = 1
+        return next(monitor_results)
+
+    def fake_wait_to_retry(_generation, **kwargs):
+        retry_delays.append(kwargs["delay"])
+        if len(retry_delays) == 2:
+            runtime.disconnect()
+            return False
+        return True
+
+    monkeypatch.setattr(runtime, "_spawn", fake_spawn)
+    monkeypatch.setattr(runtime, "_monitor", fake_monitor)
+    monkeypatch.setattr(runtime, "_wait_to_retry", fake_wait_to_retry)
+    with runtime._lock:
+        runtime._enabled = True
+        runtime._mcp_url = "http://127.0.0.1:8666/mcp"
+        runtime._generation = 1
+    runtime._supervise(1)
+    assert retry_delays == [
+        tunnel_runtime.TUNNEL_INITIAL_BACKOFF_SECONDS,
+        tunnel_runtime.TUNNEL_INITIAL_BACKOFF_SECONDS,
+    ]
+
+
+def test_log_problem_and_state_messages_redact_credentials(tmp_path: Path) -> None:
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    runtime.log_path.parent.mkdir(parents=True)
+    runtime.log_path.write_text(
+        json.dumps(
+            {
+                "level": "error",
+                "message": "upstream refused sk-proj-log-secret",
+                "error": "Authorization: Bearer bearer-log-secret",
+            }
+        )
+        + "\n"
+    )
+    detail = runtime._last_log_problem()
+    assert "log-secret" not in detail
+    assert "bearer-log-secret" not in detail
+    assert detail.count("[REDACTED]") == 2
+    runtime._set_state("error", f"failed: {detail}", problem_code="test")
+    snapshot = runtime.snapshot()
+    assert "secret" not in snapshot["message"]
 
 
 def test_disconnect_during_blocked_doctor_does_not_launch_stale_client(
@@ -350,6 +836,26 @@ def test_ready_presentation_distinguishes_local_readiness_from_tool_activity() -
         settings_url="/s",
     )
     assert error["action"] is None
+    assert error["message"] == "boom"
+    assert error["hint"] == "boom"
+
+    retrying = describe_tunnel_status(
+        {"state": "retrying", "message": "HTTP 503; retrying."},
+        project_name="d",
+        settings_url="/s",
+    )
+    assert retrying["label"] == "Reconnecting"
+    assert retrying["tone"] == "loading"
+    assert retrying["hint"] == "HTTP 503; retrying."
+
+    degraded = describe_tunnel_status(
+        {"state": "degraded", "message": "Health probe timed out."},
+        project_name="d",
+        settings_url="/s",
+    )
+    assert degraded["label"] == "Connection lost"
+    assert degraded["tone"] == "error"
+    assert degraded["hint"] == "Health probe timed out."
 
 
 def _zip_with(member: str, payload: bytes) -> bytes:

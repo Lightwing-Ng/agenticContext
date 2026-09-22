@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.11.3-codex.0
+# Code version: v2.12.0-codex.0
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import pytest
 from app.core.safari_automation import (
     SAFARI_CONTEXT_CREATION_SETTLE_SECONDS,
     SAFARI_CONTEXT_LEASE_VERSION,
+    SafariAuthenticationRequiredError,
     SafariContext,
     SafariNativeActivationError,
     SafariPage,
@@ -41,17 +42,14 @@ def test_safari_page_downloads_one_authenticated_range(tmp_path: Path) -> None:
         "contentLength": "4",
         "bytes": len(content),
         "error": "",
+        "encoded": base64.b64encode(content).decode(),
+        "nextOffset": len(content),
     }
 
-    with patch.object(page, "keep_rendering_in_background"), patch.object(
+    with patch.object(
         page,
         "evaluate",
-        side_effect=[
-            True,
-            metadata,
-            base64.b64encode(content).decode(),
-            True,
-        ],
+        side_effect=[True, metadata],
     ):
         content_type, resumed = page.download_to_path(
             "https://assets.grok.com/example/image.jpg",
@@ -88,12 +86,14 @@ def test_safari_page_restarts_when_a_stale_partial_gets_http_416(tmp_path: Path)
         "contentLength": "12",
         "bytes": len(content),
         "error": "",
+        "encoded": base64.b64encode(content).decode(),
+        "nextOffset": len(content),
     }
 
-    with patch.object(page, "keep_rendering_in_background"), patch.object(
+    with patch.object(
         page,
         "evaluate",
-        side_effect=[True, rejected, True, True, accepted, base64.b64encode(content).decode(), True],
+        side_effect=[True, rejected, True, accepted],
     ):
         content_type, resumed = page.download_to_path(
             "https://assets.grok.com/example/file.bin",
@@ -120,12 +120,14 @@ def test_safari_page_finishes_when_cross_origin_hides_content_range(tmp_path: Pa
         "contentLength": str(len(content)),
         "bytes": len(content),
         "error": "",
+        "encoded": base64.b64encode(content).decode(),
+        "nextOffset": len(content),
     }
 
-    with patch.object(page, "keep_rendering_in_background"), patch.object(
+    with patch.object(
         page,
         "evaluate",
-        side_effect=[True, hidden_range, base64.b64encode(content).decode(), True],
+        side_effect=[True, hidden_range],
     ) as evaluate:
         content_type, resumed = page.download_to_path(
             "https://assets.grok.com/example/generated_video.mp4",
@@ -136,7 +138,7 @@ def test_safari_page_finishes_when_cross_origin_hides_content_range(tmp_path: Pa
     assert content_type == "video/mp4"
     assert resumed is False
     assert destination.read_bytes() == content
-    assert evaluate.call_count == 4
+    assert evaluate.call_count == 2
 
 
 def test_safari_page_treats_http_416_after_full_chunks_as_eof(tmp_path: Path) -> None:
@@ -152,15 +154,15 @@ def test_safari_page_treats_http_416_after_full_chunks_as_eof(tmp_path: Path) ->
         "contentRange": "",
         "bytes": len(content),
         "error": "",
+        "encoded": base64.b64encode(content).decode(),
+        "nextOffset": len(content),
     }
     past_eof = {"state": "ready", "status": 416, "contentRange": "", "bytes": 0, "error": ""}
 
     with patch("app.core.safari_automation.SAFARI_DOWNLOAD_RANGE_BYTES", len(content)), patch.object(
-        page, "keep_rendering_in_background"
-    ), patch.object(
         page,
         "evaluate",
-        side_effect=[True, full_chunk, base64.b64encode(content).decode(), True, True, past_eof, True],
+        side_effect=[True, full_chunk, True, past_eof],
     ):
         content_type, resumed = page.download_to_path(
             "https://assets.grok.com/example/generated_video.mp4",
@@ -186,14 +188,14 @@ def test_safari_page_uses_expected_size_when_content_range_is_hidden(tmp_path: P
         "contentRange": "",
         "bytes": len(content),
         "error": "",
+        "encoded": base64.b64encode(content).decode(),
+        "nextOffset": len(content),
     }
 
     with patch("app.core.safari_automation.SAFARI_DOWNLOAD_RANGE_BYTES", len(content)), patch.object(
-        page, "keep_rendering_in_background"
-    ), patch.object(
         page,
         "evaluate",
-        side_effect=[True, full_chunk, base64.b64encode(content).decode(), True],
+        side_effect=[True, full_chunk],
     ):
         page.download_to_path(
             "https://assets.grok.com/example/content",
@@ -220,7 +222,97 @@ def test_safari_page_download_retries_never_activate_safari(tmp_path: Path) -> N
             page.evaluate("() => true")
 
     wake.assert_not_called()
-    assert keep_background.call_count >= 1
+    keep_background.assert_not_called()
+
+
+def test_safari_page_download_emits_only_non_mutating_background_applescript(tmp_path: Path) -> None:
+    context = SafariContext("https://grok.com/files")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    destination = tmp_path / "asset.part"
+    content = b"background-only"
+    scripts: list[str] = []
+
+    def run_script(source: str, **_kwargs: object) -> str:
+        scripts.append(source)
+        if "firstSliceEnd" in source:
+            return json.dumps(
+                {
+                    "ok": True,
+                    "value": {
+                        "state": "ready",
+                        "status": 200,
+                        "contentType": "application/octet-stream",
+                        "contentRange": "",
+                        "contentLength": str(len(content)),
+                        "bytes": len(content),
+                        "error": "",
+                        "encoded": base64.b64encode(content).decode(),
+                        "nextOffset": len(content),
+                    },
+                }
+            )
+        return json.dumps({"ok": True, "value": True})
+
+    with patch("app.core.safari_automation.run_applescript", side_effect=run_script):
+        page.download_to_path(
+            "https://assets.grok.com/example/file.bin",
+            destination,
+            lambda: False,
+        )
+
+    assert destination.read_bytes() == content
+    assert len(scripts) == 2
+    for source in scripts:
+        lowered = source.casefold()
+        assert "\nactivate\n" not in lowered
+        assert "set frontmost of process" not in lowered
+        assert "set index of" not in lowered
+        assert "set visible of" not in lowered
+        assert "set miniaturized of" not in lowered
+        assert "set current tab of" not in lowered
+    assert page._background_only_depth == 0
+
+
+def test_safari_page_download_reports_http_authentication_failure_once(tmp_path: Path) -> None:
+    context = SafariContext("https://grok.com/files")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    unauthorized = {
+        "state": "ready",
+        "status": 401,
+        "contentType": "",
+        "contentRange": "",
+        "contentLength": "0",
+        "bytes": 0,
+        "error": "",
+        "encoded": "",
+        "nextOffset": 0,
+    }
+
+    with patch.object(page, "evaluate", side_effect=[True, unauthorized]) as evaluate:
+        with pytest.raises(SafariAuthenticationRequiredError) as error:
+            page.download_to_path(
+                "https://assets.grok.com/example/file.bin",
+                tmp_path / "asset.part",
+                lambda: False,
+            )
+
+    assert error.value.status == 401
+    assert evaluate.call_count == 2
+
+
+def test_safari_page_background_transfer_rejects_window_mutation_before_execution() -> None:
+    page = SafariPage(SafariContext("https://grok.com/files"), window_id=123)
+
+    with patch("app.core.safari_automation.run_applescript") as run:
+        with page._background_only_transfer(), pytest.raises(
+            RuntimeError,
+            match="cannot change foreground or window state",
+        ):
+            page._run_in_window("set visible of targetWindow to true")
+
+    run.assert_not_called()
 
 
 def test_safari_page_evaluate_invokes_page_function_and_decodes_value() -> None:
@@ -886,6 +978,8 @@ def test_safari_page_restarts_a_resume_when_server_returns_the_wrong_range(tmp_p
         "contentType": "image/png",
         "contentRange": "bytes 0-4/5",
         "bytes": len(payload),
+        "encoded": base64.b64encode(payload).decode(),
+        "nextOffset": len(payload),
     }
     correct_range = {
         "state": "ready",
@@ -893,12 +987,14 @@ def test_safari_page_restarts_a_resume_when_server_returns_the_wrong_range(tmp_p
         "contentType": "image/png",
         "contentRange": "",
         "bytes": len(payload),
+        "encoded": base64.b64encode(payload).decode(),
+        "nextOffset": len(payload),
     }
 
-    with patch.object(page, "keep_rendering_in_background"), patch.object(
+    with patch.object(
         page,
         "evaluate",
-        side_effect=[True, wrong_range, True, correct_range, "ZnJlc2g=", True],
+        side_effect=[True, wrong_range, True, correct_range],
     ):
         content_type, resumed = page.download_to_path(
             "https://chatgpt.com/image.png",
@@ -924,7 +1020,7 @@ def test_safari_page_compatibility_background_method_keeps_window_available() ->
     assert "set bounds of targetWindow" not in script
     assert "set index of targetWindow" not in script
     assert "targetWindowStillFront" in script
-    assert "canRestorePreviousSafariWindow" in script
+    assert "canRestorePreviousSafariWindow" not in script
 
 
 def test_safari_page_does_not_spawn_a_replacement_when_closed_externally() -> None:
@@ -1100,10 +1196,10 @@ def test_safari_context_creates_a_standard_visible_background_window() -> None:
     assert "set visible of targetWindow to true" in script
     assert "set miniaturized of targetWindow to false" in script
     assert "targetWindowStillFront" in script
-    assert "canRestorePreviousSafariWindow" in script
+    assert "canRestorePreviousSafariWindow" not in script
     assert "set bounds of targetWindow" not in script
     assert 'Safari did not create an owned window.' in script
-    assert "canRestorePreviousSafariWindow and previousWindowId is not 0" in script
+    assert "targetWindowStillFront and previousWindowId is not 0" in script
     assert script.index("set URL of current tab of targetWindow") < script.index(
         "set miniaturized of targetWindow to false"
     )
@@ -2068,7 +2164,7 @@ def test_safari_context_adds_additional_pages_as_tabs_in_the_owned_window() -> N
     assert "make new document" not in script
     assert "frontmost of process previousFrontmostProcessName" in script
     assert "targetWindowStillFront" in script
-    assert "canRestorePreviousSafariWindow" in script
+    assert "canRestorePreviousSafariWindow" not in script
     assert "set current tab of targetWindow to newTab" in script
     goto.assert_called_once_with(
         "about:blank",
@@ -2131,7 +2227,7 @@ def test_safari_page_evaluate_binds_the_owned_tab() -> None:
     assert "set targetTab to tab 2 of targetWindow" in script
     assert "set current tab of targetWindow to targetTab" in script
     assert "delay 0.05" in script
-    assert "in current tab of targetWindow" in script.split("do JavaScript", 1)[1]
+    assert "in targetTab" in script.split("do JavaScript", 1)[1]
 
 
 def test_safari_page_evaluate_retries_an_unreadable_background_tab_result() -> None:
@@ -2159,7 +2255,7 @@ def test_safari_page_evaluate_retries_an_unreadable_background_tab_result() -> N
     background_scripts = [
         script
         for script in scripts
-        if "set canRestorePreviousSafariWindow" in script
+        if "set targetWindowStillFront" in script
         and "set miniaturized of targetWindow to false" in script
     ]
     assert len(background_scripts) == 1
@@ -2185,7 +2281,7 @@ def test_safari_page_evaluate_uses_a_restorable_wake_only_after_background_retry
         if 'set previousFrontmostProcessName to "Codex"' in statement:
             events.append("restore")
             return ""
-        if "set canRestorePreviousSafariWindow" in statement:
+        if "set miniaturized of targetWindow to false" in statement:
             events.append("keep")
             return ""
         if "return JSON.stringify({ok:true,value})" in statement:

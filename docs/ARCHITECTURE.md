@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.45.0-codex.0`
+Documentation version: `v1.47.0-codex.0`
 
 ## Runtime flow
 
@@ -269,29 +269,40 @@ undocumented consumer callback hostname is assumed. The first approved complete 
 then pinned for that process. OAuth and MCP request streams have
 parser-enforced byte ceilings, including requests without a Content-Length header.
 
-The public catalog contains exactly the ten tools documented in
-[OPERATIONS.md](OPERATIONS.md). Runtime selection is server-side; callers do not select an
-adaptive or full-operator runtime and no public schema contains a runtime selector. Tool names
-returned by `tools/list` are resolved by the same dispatcher table, so removed compatibility
-names are neither advertised nor callable. Every call is validated against its published
-closed schema before dispatch (`validate_closed_schema` in the capability registry), so an
-undeclared or mistyped field fails instead of being ignored.
+The public catalog contains fourteen tools documented in
+[OPERATIONS.md](OPERATIONS.md): one project-less discovery tool and thirteen project-scoped
+operations, including three durable-check lifecycle tools. Runtime selection remains server-side;
+callers do not select an adaptive or full-operator runtime and no public schema contains a runtime
+selector. Tool names returned by `tools/list` are resolved by the same dispatcher table, so
+removed compatibility names are neither advertised nor callable. Every call is validated against
+its published closed schema before dispatch (`validate_closed_schema` in the capability
+registry), so an undeclared or mistyped field fails instead of being ignored.
 
 Authority boundary. `app/core/tunnel_projects.py` owns the project registry. A project is an
 identity (`[A-Za-z][A-Za-z0-9._-]{0,63}`, matched exactly) mapped to one canonical root and an
-explicit `writable` flag; identifiers are never interpreted as paths, and write authority never
-follows from where a directory lives. The registry rejects overlapping roots, the filesystem
+explicit `writable` flag; its authority fingerprint also binds the root directory's native
+filesystem identity, so replacing a directory at the same path changes the project identity.
+Identifiers are never interpreted as paths, and write authority never follows from where a
+directory lives. The registry rejects overlapping roots, the filesystem
 root, and the home folder, and an invalid registry fails closed. When no registry file exists,
 the Agent's selected workspace becomes the only project, and only when it is itself a Git
-work-tree root; a parent folder such as the Desktop never becomes an implicit project. Every
-tool requires the configured `project` id; project inventory is not exposed as a public MCP
-capability. A read-only project rejects every mutating tool
-before the filesystem is touched, and its workspace access is also created read-only. Model paths
-must be project-relative; absolute and `~` paths are refused before resolution, and the
+work-tree root; a parent folder such as the Desktop never becomes an implicit project. The local
+Tunnel page may choose only one currently registered project. That choice is persisted separately
+with a monotonically increasing revision and never changes authority. The project-less,
+read-only `current_project` tool returns the selected project's id, identity, permission,
+availability, and selection revision, plus bounded records for the other authorized projects; it
+does not disclose host paths. `project_overview` resolves one explicit configured id and returns
+its identity; every subsequent project-scoped tool requires both that id and the returned
+`project_identity`, failing closed if the registry mapping or authority changed. A page selection
+made later therefore cannot silently redirect an existing task. A read-only project
+rejects every mutating tool before the filesystem is touched, and its workspace access is also
+created read-only. Model paths must be project-relative; absolute and `~` paths are refused before resolution, and the
 workspace confinement, symlink, ignored-directory, and credential-file rules then apply to
 the selected root. Each project keeps its own workspace binding, so read receipts, SHA-256 guards,
-edit generations, and verification evidence never cross projects, and a re-registered root
-rebinds a fresh workspace. ChatGPT and Gemini are two authenticated transports for the same local
+edit generations, and verification evidence never cross projects, and a re-registered or replaced
+root rebinds a fresh workspace. A request that detects root replacement fails as `project_changed`;
+it is never replayed automatically against the replacement. ChatGPT and Gemini are two
+authenticated transports for the same local
 operator authority: they intentionally share that project binding and serialize mutations under
 the same per-project lock. Provider attribution is recorded on active and recent calls, but it is
 not a model-supplied tool argument and never enters a public tool schema. Instruction discovery is
@@ -310,19 +321,28 @@ withholding protected path names from every model-visible summary. When
 controller-internal file segments. Untracked files remain visible in status; Git does not emit
 a unified patch for them until they are tracked.
 
-Verification. `run_check` uses the controller's bounded approved-command policy and runs no
-shell. A successful command is tied to the current workspace fingerprint; a command that changes
-the workspace does not count as verification. `review_changes` is the non-mutating final gate and
+Verification. `run_check` uses the controller's bounded approved-command policy and runs no shell.
+For a command that can exceed one MCP request, `start_check` launches the same approved command in
+a bounded detached runner, `observe_check` retrieves status and bounded output, and `stop_check`
+cancels it using recorded process identity. Durable metadata distinguishes running, terminal, and
+unknown-after-restart outcomes, deduplicates a repeated start, and remains tied to the exact
+project identity. A successful synchronous or observed background command counts as verification
+only when its captured workspace fingerprint still matches; a command that changed the workspace,
+or code changed after the check, does not count. Terminal reconciliation is persisted and ordered:
+re-observing an older failed job cannot withdraw a newer pass, while a persisted successful job is
+revalidated against the current fingerprint before it is reported as current. `review_changes` is
+the non-mutating final gate and
 requires current verification evidence after the latest edit or observed workspace change.
 Approved checks are trusted project code, not a hermetic security sandbox: they execute as the
 AgenticContext service account and can use that account's ambient filesystem and network access.
 The MCP bridge confines command selection, arguments, working directory, output, duration, and
 process cleanup, but operators must register only trusted projects and checks.
 
-Concurrency. Calls for one project run under that project's lock in arrival order, preserving
-controller state, edit-generation, and verification ordering. Different projects do not block
-each other, and `show_changes` takes no project lock because it only reads Git state and never
-touches controller state.
+Concurrency. Mutations, synchronous checks, and final review for one project run under that
+project's lock in arrival order, preserving edit-generation and verification ordering. Different
+projects do not block each other. Read-only filesystem/Git observation and durable-check status do
+not wait behind a long synchronous check; their filesystem results still carry hashes and explicit
+partial-failure state instead of implying a stable snapshot.
 
 The catalog is static for one Python process. The server therefore advertises
 `tools.listChanged=false`; a source-level catalog change becomes live only after the

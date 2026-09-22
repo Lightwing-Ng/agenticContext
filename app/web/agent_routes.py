@@ -10,7 +10,7 @@ Jury, and Cache route modules borrow those few Agent capabilities without import
 this module's internals or duplicating the gate.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
@@ -684,6 +684,7 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 platform=platform,
                 tunnel_mcp_service=context.tunnel_mcp_service,
                 gemini_gateway=current_app.extensions.get("gemini_tunnel_gateway"),
+                credentials_path=current_app.extensions.get("tunnel_credentials_path"),
             ),
             tunnel_supported_platforms=",".join(sorted(TUNNEL_SUPPORTED_PLATFORMS)),
         )
@@ -1471,6 +1472,7 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
             payload = {}
         platform_name = str(payload.get("platform", "")).strip().lower()
         browser_name = str(payload.get("browser", "")).strip().lower()
+        scope = str(payload.get("scope", "")).strip().lower()
         is_zhihu_selection = (
             platform_name == "zhihu"
             and browser_name in {"edge", "chrome"}
@@ -1487,7 +1489,14 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
             result = (
                 open_zhihu_browser_for_login(browser_name, context.config_store.config)
                 if is_zhihu_selection
-                else open_browser_for_login(platform_name, browser_name, config=context.config_store.config)
+                else open_browser_for_login(
+                    platform_name,
+                    browser_name,
+                    config=context.config_store.config,
+                    # macOS cache workers clone the daily Edge profile, so the
+                    # cache sign-in must happen there, not in the Agent profile.
+                    use_debug_profile=scope == "agent" or not is_macos_host(),
+                )
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400

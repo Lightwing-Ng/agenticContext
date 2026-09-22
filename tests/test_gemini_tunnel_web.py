@@ -1,6 +1,6 @@
 """Gemini HTTPS/OAuth MCP ingress and local UI API tests.
 
-Code version: v1.5.0-codex.0
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from app.web.app import create_app
 
 
 EXPECTED_TOOLS = [
+    "current_project",
     "project_overview",
     "list_files",
     "search_files",
@@ -27,6 +28,9 @@ EXPECTED_TOOLS = [
     "write_file",
     "delete_file",
     "run_check",
+    "start_check",
+    "observe_check",
+    "stop_check",
     "show_changes",
     "review_changes",
 ]

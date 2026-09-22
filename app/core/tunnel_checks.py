@@ -1,14 +1,15 @@
 """Durable, identity-checked verification jobs for the Secure MCP Tunnel.
 
-Code version: v1.0.0-claude.0
+Code version: v1.3.0-codex.0
 
 A check job runs one command that the controller's approved verification policy
 already accepted (the same policy ``run_check`` uses) through the stdlib-only
 ``tunnel_check_runner``. Jobs live under the Agent runtime root, keyed by the exact
 project identity and root, so they survive a slow MCP request and a service
-restart. Starting is deduplicated by an idempotency key and limited to one active
-check per project; stopping signals only the runner whose recorded birth identity
-still matches.
+restart. Starting is deduplicated by an idempotency key, an identical running
+check is shared instead of started twice, and one check runs per project at a
+time; stopping signals only the runner whose recorded birth identity still
+matches.
 
 This deliberately does not reuse ``ComputeJobManager`` for execution: that manager
 admits only SHA-pinned Python optimizer entrypoints from a workspace manifest,
@@ -145,6 +146,20 @@ class TunnelCheckStore:
             return str(result["outcome"]), result
         return "unknown", None
 
+    @staticmethod
+    def _orphaned_command_active(job_dir: Path) -> bool:
+        """Return whether a runner-less POSIX command still has its birth identity."""
+        if os.name != "posix":
+            return False
+        try:
+            child = _jobs()._read_json_object(
+                job_dir / "child.json",
+                maximum_bytes=4 * 1024,
+            )
+        except _jobs().ComputeJobError:
+            return False
+        return _jobs()._identity_matches(child.get("pid"), child.get("identity"))
+
     def status(self, job_dir: Path, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         """Return a bounded model-facing status with an output tail."""
         metadata = metadata if metadata is not None else self._load(job_dir)
@@ -164,9 +179,16 @@ class TunnelCheckStore:
         else:
             status["elapsed_seconds"] = round(max(0.0, time.time() - created), 1)
         if state == "unknown":
+            orphaned = self._orphaned_command_active(job_dir)
+            status["command_process_active"] = orphaned
             status["message"] = (
                 "The check runner is gone and recorded no result, so its outcome cannot be "
-                "proven. Treat it as unverified; stop_check ends any command it left running."
+                "proven. Treat it as unverified; "
+                + (
+                    "stop_check must end the still-running command before another check starts."
+                    if orphaned
+                    else "no identity-matching command is still running."
+                )
             )
         elif state == "timeout":
             status["message"] = f"The check exceeded its {metadata.get('timeout_seconds')}-second limit."
@@ -223,10 +245,19 @@ class TunnelCheckStore:
                         )
                     return job_dir, metadata, True
                 for job_dir, metadata in records:
-                    if self._state(job_dir, metadata)[0] in ACTIVE_STATES:
+                    state = self._state(job_dir, metadata)[0]
+                    if state in ACTIVE_STATES:
+                        if metadata.get("request_fingerprint") == fingerprint:
+                            # The same check is already running; share it.
+                            return job_dir, metadata, True
                         raise CheckJobError(
                             f"Check {metadata.get('job_id')} is still running in this project. "
                             "Observe or stop it before starting another."
+                        )
+                    if state == "unknown" and self._orphaned_command_active(job_dir):
+                        raise CheckJobError(
+                            f"Check {metadata.get('job_id')} lost its runner while its command "
+                            "is still active. Stop that job before starting another."
                         )
                 self._prune(records)
                 return self._launch(
@@ -332,7 +363,10 @@ class TunnelCheckStore:
         for job_dir, metadata in records:
             if excess <= 0:
                 break
-            if self._state(job_dir, metadata)[0] in TERMINAL_STATES:
+            state = self._state(job_dir, metadata)[0]
+            if state in TERMINAL_STATES and not (
+                state == "unknown" and self._orphaned_command_active(job_dir)
+            ):
                 shutil.rmtree(job_dir, ignore_errors=True)
                 excess -= 1
 
@@ -348,8 +382,19 @@ class TunnelCheckStore:
         return [
             str(metadata.get("job_id"))
             for job_dir, metadata in self._records(project_dir)
-            if self._state(job_dir, metadata)[0] in ACTIVE_STATES
+            if (
+                self._state(job_dir, metadata)[0] in ACTIVE_STATES
+                or self._orphaned_command_active(job_dir)
+            )
         ]
+
+    def latest_evaluated_job(self, project_id: str, project_root: Path) -> str | None:
+        """Return the newest job whose terminal result was reconciled."""
+        project_dir = self._project_dir(project_id, project_root)
+        for job_dir, metadata in reversed(self._records(project_dir)):
+            if self.evaluation(job_dir) is not None:
+                return str(metadata.get("job_id") or "") or None
+        return None
 
     def stop(self, job_dir: Path, metadata: dict[str, Any]) -> dict[str, Any]:
         """Ask only the identity-verified runner to stop its own process group."""
@@ -362,6 +407,18 @@ class TunnelCheckStore:
         pid = int(metadata.get("pid") or 0)
         if pid <= 0 or not _jobs()._identity_matches(pid, metadata.get("process_identity")):
             return self.status(job_dir, metadata)
+        # The launcher can return after recording the runner identity but just before
+        # the runner installs its signal handler. Its output file is created only
+        # after that handler is ready, so briefly wait for that marker before asking
+        # it to stop.
+        ready_deadline = time.monotonic() + 2.0
+        while (
+            time.monotonic() < ready_deadline
+            and self._result(job_dir) is None
+            and not (job_dir / "output.log").exists()
+            and _jobs()._identity_matches(pid, metadata.get("process_identity"))
+        ):
+            time.sleep(0.02)
         try:
             if os.name == "nt":
                 os.kill(pid, getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
@@ -370,9 +427,12 @@ class TunnelCheckStore:
         except OSError:
             pass
         deadline = time.monotonic() + STOP_WAIT_SECONDS
+        runner_gone_at: float | None = None
         while time.monotonic() < deadline and self._result(job_dir) is None:
             if not _jobs()._identity_matches(pid, metadata.get("process_identity")):
-                break
+                runner_gone_at = runner_gone_at or time.monotonic()
+                if time.monotonic() - runner_gone_at >= 1.0:
+                    break
             time.sleep(0.1)
         return self.status(job_dir, metadata)
 

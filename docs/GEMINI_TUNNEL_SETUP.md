@@ -1,12 +1,12 @@
 # Gemini Tunnel setup
 
-Documentation version: `v1.3.2-codex.0`
+Documentation version: `v1.4.0-codex.0`
 
-Last verified against the linked provider documentation: 21 Sep 2026.
+Last verified against the linked provider documentation: 22 Sep 2026.
 
 ## What this connection is
 
-AgenticContext gives Gemini the same ten project-scoped MCP tools used by the ChatGPT
+AgenticContext gives Gemini the same fourteen MCP tools used by the ChatGPT
 connection, but it does not send Gemini through OpenAI Secure MCP Tunnel. Gemini Custom Apps
 connect to a public HTTPS Streamable HTTP endpoint. AgenticContext therefore keeps the two
 transports separate:
@@ -16,7 +16,7 @@ ChatGPT -> OpenAI Secure MCP Tunnel -> loopback /mcp
 Gemini  -> dedicated public HTTPS hostname -> OAuth 2.1 -> /mcp/gemini
                                               |
                                               v
-                                the same ten-tool MCP service
+                                the same fourteen-tool MCP service
 ```
 
 The Gemini hostname exposes only OAuth discovery, authorization, token exchange, and
@@ -136,6 +136,7 @@ an authenticated Gemini tool call reaches this process.
 
 The expected catalog contains exactly:
 
+- `current_project`
 - `project_overview`
 - `list_files`
 - `search_files`
@@ -144,6 +145,9 @@ The expected catalog contains exactly:
 - `write_file`
 - `delete_file`
 - `run_check`
+- `start_check`
+- `observe_check`
+- `stop_check`
 - `show_changes`
 - `review_changes`
 
@@ -161,7 +165,7 @@ In a new Gemini conversation, type `@AgenticContext` and select the connected ap
 read-only request, for example:
 
 ```text
-@AgenticContext Use project_overview for project agenticContext, then list the top-level files.
+@AgenticContext Check the current project, read its project overview, then list the top-level files.
 Do not change any files.
 ```
 

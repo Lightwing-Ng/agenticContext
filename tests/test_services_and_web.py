@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.5-codex.0
+Code version: v1.8.6-codex.0
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from app.web.cache_sources import CACHE_SOURCE_VIEWS
 
 NEW_GEMINI_TUNNEL_ENDPOINTS = frozenset(
     {
+        "tunnel.api_project",
         "tunnel.api_gemini_config",
         "tunnel.api_gemini_copy_value",
         "tunnel.api_gemini_authorization",

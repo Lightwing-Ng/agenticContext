@@ -262,11 +262,16 @@ def open_browser_for_login(
     browser: str,
     *,
     config: CrawlConfig | None = None,
+    use_debug_profile: bool = True,
     _windows_host_check: WindowsHostCheck | None = None,
     _browser_opener: BrowserOpener | None = None,
     _debug_login_opener: BrowserOpener | None = None,
 ) -> dict[str, Any]:
-    """Open a visible supported browser at its platform home for sign-in."""
+    """Open a visible supported browser at its platform home for sign-in.
+
+    Cache pages pass ``use_debug_profile=False`` because their workers clone the
+    daily profile; signing in to the Agent debug profile would never reach them.
+    """
     selected_platform = str(platform or "").strip().lower()
     selected_browser = str(browser or "").strip().lower()
     if selected_platform not in SUPPORTED_AGENT_PLATFORMS:
@@ -280,7 +285,7 @@ def open_browser_for_login(
     # later Agent tasks reattach instead of launching another authorized window.
     from ..agent_debug_browser import debug_browser_supported
 
-    if debug_browser_supported(selected_browser):
+    if use_debug_profile and debug_browser_supported(selected_browser):
         debug_login_opener = _debug_login_opener or _open_login_in_debug_browser
         return debug_login_opener(
             selected_platform,

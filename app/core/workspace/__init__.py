@@ -10,7 +10,7 @@ Depend on :class:`WorkspaceAccess` unless you are the Agent run loop itself; it 
 narrow surface that keeps controller internals out of other modules.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.1.0-claude.0
 
 from __future__ import annotations
 
@@ -18,9 +18,15 @@ from pathlib import Path
 from typing import Callable
 
 from .action_state import ActionState
-from .capabilities import FileSnapshot, TextReplacement, WorkspaceAccess
+from .capabilities import (
+    FileSnapshot,
+    TextReplacement,
+    WorkspaceAccess,
+    describe_workspace_error,
+)
 from .command_policy import inspection_command_parts, validate_inspection_command
 from .controller import (
+    MAX_CONTROLLER_DELETE_BYTES as MAX_WORKSPACE_FILE_BYTES,
     MAX_FILE_READ_CHARS,
     WorkspaceCommandSettings,
     WorkspaceController,
@@ -69,6 +75,7 @@ def is_withheld_workspace_path(relative: Path) -> bool:
 
 __all__ = [
     "MAX_FILE_READ_CHARS",
+    "MAX_WORKSPACE_FILE_BYTES",
     "ActionState",
     "FileSnapshot",
     "TextReplacement",
@@ -76,6 +83,7 @@ __all__ = [
     "WorkspaceCommandSettings",
     "WorkspaceController",
     "collect_instruction_files",
+    "describe_workspace_error",
     "filtered_git_status",
     "inspection_command_parts",
     "is_safe_context_directory",

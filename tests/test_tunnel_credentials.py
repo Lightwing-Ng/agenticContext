@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.5.0-codex.0
+Code version: v1.7.0-codex.0
 """
 
 from __future__ import annotations
@@ -89,11 +89,14 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         'data-agent-tunnel-provider-panel="gemini"', onboarding_start
     )
     onboarding_body = empty_body[onboarding_start:onboarding_end]
+    assert '<ol class="agent-tunnel-onboarding-steps" role="list">' in onboarding_body
     for step_number in range(1, 5):
         assert (
             '<span class="agent-tunnel-step-number" aria-hidden="true">'
-            f"Step {step_number}</span>"
+            f"{step_number}</span>"
         ) in onboarding_body
+    assert onboarding_body.count('<h3 class="agent-tunnel-step-heading">') == 4
+    assert onboarding_body.count("data-agent-tunnel-process-continues") == 3
     guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list ')
     guide_end = onboarding_body.index("</ol>", guide_start) + len("</ol>")
     guide_body = onboarding_body[guide_start:guide_end]
@@ -218,7 +221,8 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
     assert "Install and prepare" not in empty_body
     assert onboarding_body.count('class="secondary-button agent-tunnel-step-action"') == 6
     assert 'data-agent-tunnel-toggle' not in empty_body
-    assert 'data-agent-tunnel-connect-url' not in empty_body
+    assert 'data-agent-tunnel-connect-url="/api/agent/tunnel/connect"' in empty_body
+    assert 'data-agent-tunnel-reconnect' in empty_body
     assert 'data-agent-tunnel-disconnect-url' not in empty_body
     assert 'data-agent-tunnel-message' not in empty_body
     assert 'data-agent-tunnel-activity' not in empty_body

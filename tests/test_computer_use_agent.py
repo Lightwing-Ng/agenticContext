@@ -4557,6 +4557,33 @@ def test_open_browser_for_login_macos_edge_uses_debug_browser_over_http(
     daily_handoff.assert_not_called()
 
 
+def test_open_browser_for_login_macos_cache_signs_in_to_daily_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS cache workers clone daily Edge, so cache sign-in must stay there."""
+    from unittest.mock import Mock
+
+    import app.core.computer_use_agent as computer_use_agent
+
+    monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
+    _patch_workspace_global(monkeypatch, "is_windows_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: False)
+    debug_login = Mock(side_effect=AssertionError("cache login must not open the Agent profile"))
+    monkeypatch.setattr(computer_use_agent, "_open_login_in_debug_browser", debug_login)
+    daily_handoff = Mock(return_value={"opened": True})
+    monkeypatch.setattr(computer_use_agent, "open_agent_in_browser", daily_handoff)
+
+    result = open_browser_for_login(
+        "chatgpt", "edge", config=CrawlConfig(), use_debug_profile=False
+    )
+
+    assert result == {"opened": True}
+    debug_login.assert_not_called()
+    daily_handoff.assert_called_once()
+    assert daily_handoff.call_args.args[:3] == ("chatgpt", "edge", "https://chatgpt.com/")
+
+
 def test_open_browser_for_login_does_not_reload_a_cloudflare_challenge(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

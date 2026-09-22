@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.32.0-codex.0`
+Documentation version: `v1.34.0-codex.0`
 
 ## Launch
 
@@ -317,7 +317,9 @@ One-time setup:
 2. Enter the Tunnel ID and API key in Agent → Tunnel, Step 2; a qualified pair saves
    automatically. The key is written to `tunnel-credentials.json` beside `settings.json` with
    owner-only permissions and is never rendered back into the page; a blank key field keeps the
-   saved key. Save and format errors appear in the sidebar Tunnel status hint.
+   saved key. Save and format errors appear in the sidebar Tunnel status hint. Saving the same
+   qualified pair is also an explicit reconnect request, so recovery never requires rotating or
+   re-entering a working secret.
 3. In ChatGPT, enable Developer mode (Settings → Security and login) and create an app with
    Connection **Tunnel** (the same Tunnel), Authentication **No auth**. After switching the server
    behind an existing Tunnel app, refresh that app under ChatGPT Settings → Apps so it lists the
@@ -344,16 +346,20 @@ One-time setup:
    home folder; any invalid entry disables every project until it is fixed. Without this file,
    the Agent's selected workspace is the only project, and only when it is a Git repository
    root, so a parent folder such as the Desktop is never exposed as one project.
+5. Return to Agent → Tunnel and choose the current project from the registered-project list. The
+   local page shows its exact id, host path, read/write authority, identity fingerprint, and
+   availability. The choice is saved only after the service accepts its current selection
+   revision. Choosing an Agent folder never registers it or grants write access.
 
 Runtime behavior:
 
-- `python3 main.py` starts the Tunnel when credentials exist. Saving new credentials restarts it
-  after a short debounce; the onboarding page intentionally has no manual disconnect or reconnect
-  control. Test and isolated app instances never start `tunnel-client`.
+- `python3 main.py` starts the Tunnel when credentials exist. Saving credentials requests a
+  reconnect after a short debounce, and the ChatGPT status card also exposes Retry/Reconnect using
+  the saved pair. Test and isolated app instances never start `tunnel-client`.
 - State lives in `tunnel/` beside `settings.json`: the pinned client under `tools/`, the client log
-  (`tunnel-client.log`, previous run in `.log.1`), its pid file, health URL, and a per-start bearer
-  token file (`0600`). A client left behind by a killed service is found by its state path and
-  stopped before a new one starts.
+  (`tunnel-client.log`, previous run in `.log.1`), its pid file, health URL, a per-start bearer
+  token file (`0600`), durable check jobs, and mutation request records. A client left behind by a
+  killed service is found by its state path and stopped before a new one starts.
 - The API key reaches the child only as `CONTROL_PLANE_API_KEY`. The child receives a strict
   cross-platform allowlist of process, locale, temporary-directory, and CA-certificate variables;
   unrelated host credentials are not inherited. The control-plane proxy comes from
@@ -362,38 +368,81 @@ Runtime behavior:
 - `/mcp` accepts only loopback callers that present the current bearer token. `GET /mcp` returns
   405 (no SSE stream). An `OAuth discovery failed` warning in the client log is expected: the app
   uses No auth, so no OAuth metadata is published and readiness does not depend on it.
-- Every tool names one registered `project`; each id matches exactly and is never interpreted as
-  a path. The id comes from the user-owned registry and is intentionally not discoverable through
-  a separate inventory tool. Paths are relative to that project's root (absolute and `~` paths
-  are refused),
-  and every path goes through the Browser Agent's confinement, symlink, ignored-folder, and
-  credential-file rules for that root. Read-only projects refuse `apply_edits`, `write_file`,
-  `delete_file`, and `run_check` before touching anything. Each
-  project keeps its own read receipts, SHA-256 guards, and verification evidence.
-- The public catalog is exactly: `project_overview` (writability, root and nested instruction
-  files of that project only, bounded Git status); `list_files`; `search_files`; `read_files`
-  (1-8 files or ranges with SHA-256); `apply_edits` (1-16 exact replacements, validated as one
-  batch before any file changes); `write_file` (new files, or whole-file replacement only with
-  the SHA-256 from `read_files`; supplying a caller-computed digest without that read receipt is
-  refused, and new files are not executable); `delete_file` (the SHA-256 from `read_files`; an
-  unrelated edit does not invalidate an existing receipt, but a changed file is refused);
-  `run_check`; `show_changes` (status, staged/unstaged stats, and an optional
-  bounded patch); and `review_changes` (bodycheck, the final gate). Arguments are validated
-  against the published closed schemas, so unknown fields fail. The removed `read_file`,
-  `replace_in_file`, `create_file`, and `call_runtime_tool` names are not compatibility
-  entrypoints. `list_projects`, `start_check`, `observe_check`, `stop_check`, `git_log`, and
-  `git_diff_hunks` are also outside this public contract and are not dispatchable.
+- Credentials configured, transport ready, a tool request observed, and a successful operation in
+  the selected project are separate status facts. A configured, currently ready transport may
+  start its first read-only check or normal task without any historical call. Historical success
+  does not keep the card green after a status timeout, HTTP failure, stale response, or readiness
+  loss. The page bounds and cancels status fetches, shows the last successful status time and the
+  current redacted problem, and offers Retry/Reconnect with the saved credentials.
+- Preflight, download, and transient network failures use bounded exponential retry; a stable
+  ready interval resets the backoff. A client process that remains alive but unhealthy past its
+  readiness deadline is recycled under its current generation. Superseded process or status
+  results cannot overwrite a newer connection, and uncertain in-flight work is surfaced for
+  reconciliation instead of being assumed successful. Closing the management page has no effect
+  on the service-owned Tunnel process.
+- `current_project` is the only project-less tool. It lets a direct natural-language request such
+  as `@AgenticContext check the current project` discover the locally selected registered id,
+  identity, permission, availability, and selection revision before calling `project_overview`.
+  It also returns bounded records for the other authorized projects so one task may explicitly
+  consult a read-only reference. Host paths stay local to the management page and are not returned
+  to the model.
+- Every other tool names one resolved `project`; the normal page workflow requires a registered
+  project. The no-registry compatibility fallback is explicitly unregistered and read-only, and
+  the page will not present it as authorized or enable kickoff. Each id matches exactly and is never
+  interpreted as a path. `project_overview` establishes the id and identity; every later
+  project-scoped call
+  must carry the returned `project_identity`, so changing the page selection cannot redirect an
+  older request. The identity also binds the directory's native filesystem identity: replacing a
+  root at the same path invalidates the old identity, and the failed request is never replayed
+  against the replacement. Paths are relative to
+  that project's root (absolute and `~` paths are refused), and every path goes through the Browser
+  Agent's confinement, symlink, ignored-folder, and credential-file rules for that root. Read-only
+  projects refuse every mutation or check before touching anything. Each project keeps its own read
+  receipts, SHA-256 guards, edit generation, and verification evidence.
+- The public catalog is exactly: `current_project`; `project_overview` (writability, root and nested
+  instruction files of that project only, bounded Git status); `list_files`; `search_files`;
+  `read_files` (1-8 files or ranges with SHA-256, truncation, and the next line and optional
+  character offset to request);
+  `apply_edits` (1-16 exact replacements with write-stage recovery); `write_file` (new UTF-8 files
+  with optional project-local parent creation, or whole-file replacement only with the SHA-256
+  from `read_files`); `delete_file` (the current SHA-256 from `read_files`); `run_check`;
+  `start_check`; `observe_check`; `stop_check`; `show_changes` (status, staged/unstaged stats, and an
+  optional bounded patch); and `review_changes` (bodycheck, the final gate). Arguments are
+  validated against published closed schemas, so unknown fields fail. Removed compatibility names
+  such as `read_file`, `replace_in_file`, `create_file`, `call_runtime_tool`, `list_projects`,
+  `git_log`, and `git_diff_hunks` are not dispatchable.
+- Batch reads distinguish `all_succeeded`, `partial`, and `all_failed`; a top-level success never
+  hides an item failure. Their combined model-facing file content is bounded, and a single long
+  line can be continued with the returned `next_start_line` and `next_start_character`. Every
+  mutation requires a stable `request_id`. A completed retry returns the durable recorded result
+  instead of applying it again; a record whose final outcome is unknown refuses blind replay and
+  tells the caller to read and reconcile first. Multi-file
+  edits preflight the entire batch, verify every published file, and compare current content before
+  rollback. A concurrent edit is preserved and reported as a recovery conflict instead of being
+  overwritten. The result names committed, uncommitted, rolled-back, and conflicted files so it
+  cannot claim all-or-nothing after a partial write.
 - `show_changes` always reports path-scoped status and staged/unstaged stats. Set
   `include_patch=true` for a bounded unified patch; `staged=true` selects the staged patch, and
   `path` confines status, stats, and patch together. Credential and controller-internal names
   and patch segments are withheld from every model-visible Git summary. An ordinary untracked
   file appears in status but has no Git patch yet.
 - `run_check` invokes only the controller's approved, shell-free command forms with a confined
-  project working directory and bounded time, output, and process cleanup. The invoked test or
-  build remains trusted project code: it runs as the AgenticContext service account and is not
-  placed in a hermetic filesystem or network sandbox. Register only trusted projects and checks.
-- Calls for one project are serialized; different projects do not block each other, and Git
-  observation tools do not wait behind a running `run_check`.
+  project working directory and bounded time, output, and process cleanup. For longer work,
+  `start_check` launches the same allowlisted command in a durable bounded runner;
+  `observe_check` retrieves status and a bounded output tail across MCP requests or a service
+  restart, and `stop_check` cancels only the runner whose recorded process identity still matches.
+  An identical active command or repeated idempotency key is deduplicated. A runner that vanished
+  without a terminal result is reported as `unknown`, never left permanently `running`. Terminal
+  reconciliation is durable and ordered, so querying an older failed job cannot revoke a newer
+  pass; every reported successful verification is still rechecked against the current workspace
+  fingerprint. The
+  invoked test or build remains trusted project code: it runs as the AgenticContext service
+  account and is not placed in a hermetic filesystem or network sandbox. Register only trusted
+  projects and checks.
+- Mutations, synchronous checks, and final review for one project are serialized; different
+  projects do not block each other. Read-only file/Git/check-status observation does not wait
+  behind a long synchronous check. Only a successful check whose captured workspace fingerprint
+  still matches can satisfy `review_changes`; later edits invalidate it.
 - Runtime selection is internal to AgenticContext. No public tool accepts or requires
   `runtime`, `runtime_name`, `execution_mode`, `runtime_gateway`, `adaptive_runtime`, or
   `full_operator_runtime`. Transport-added routing metadata is ignored before closed-schema
@@ -412,11 +461,31 @@ Runtime behavior:
 - Every tool call is logged as
   `Tunnel tool <name> provider=<provider> ok=<bool> duration=<s> project=<id> target=<path or command>` in the
   application log, so a ChatGPT session can be audited after a restart.
+- The status card separates in-flight calls from retained recent calls. Its tool-text tokens are a
+  bounded estimate for MCP request/response text, not ChatGPT billing, account balance, or a model
+  task total; unavailable task-level data stays labeled unavailable rather than being fabricated.
 - Arbitrary shell commands, arbitrary executables, and general background processes are
-  intentionally not exposed; only the approved verification commands run through the Tunnel,
-  synchronously through `run_check`.
+  intentionally not exposed; only the approved verification commands run through `run_check` or
+  the bounded durable-check lifecycle.
 - WebCodex Desktop, its DMG, GUI helper processes, and desktop IPC are not part of this path and
   are not required at runtime.
+
+Daily two-page workflow:
+
+1. Open `http://localhost:8666/agent/tunnel/chatgpt`, choose an available registered project, and
+   wait for the saved selection revision. Confirm the page shows the intended id, path, permission,
+   and a currently Ready transport; use Retry/Reconnect if the transport is stale or failed.
+2. Open ChatGPT, choose `@AgenticContext`, and describe the task normally. Copying the local prompt
+   is optional; when used, it includes the exact project id and preserves the user's task text as
+   the selection changes.
+3. A task with no supplied id calls `current_project`, pins the returned id/identity, then reads
+   `project_overview` and the applicable instructions before any file operation. Every later call
+   still sends that explicit id.
+4. After changes, read back hashes or inspect changes, run an approved synchronous or durable
+   check, and call `review_changes`. A successful check from older workspace content is rejected.
+5. Ordinary project switching or transport recovery needs no plugin recreation. After a source
+   change to tool names, schemas, or descriptions, restart the AgenticContext service, reconnect
+   the Tunnel, refresh the AgenticContext connection in ChatGPT Apps, and start a new chat.
 
 Maintaining the client when OpenAI changes it:
 
@@ -437,7 +506,7 @@ Maintaining the client when OpenAI changes it:
 ### Gemini Custom App connection
 
 Select **Gemini** in Agent → Tunnel to configure the independent Gemini transport. It reuses the
-same exact ten-tool catalog and project authority but does not reuse the OpenAI Tunnel ID, API key,
+same exact fourteen-tool catalog and project authority but does not reuse the OpenAI Tunnel ID, API key,
 control plane, local bearer, or supervised process. Gemini requires a stable public HTTPS MCP URL,
 so the operator supplies a dedicated reverse tunnel and AgenticContext supplies a static OAuth 2.1
 client with PKCE S256.

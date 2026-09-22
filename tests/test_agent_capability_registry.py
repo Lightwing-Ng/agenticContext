@@ -81,7 +81,7 @@ def test_public_manifest_is_derived_from_the_registry_and_stays_bounded() -> Non
 
 def test_internal_snapshot_contains_transport_schemas_but_no_runtime_content() -> None:
     snapshot = capability_registry_snapshot()
-    assert snapshot["version"] == "1.5.0"
+    assert snapshot["version"] == "1.6.0"
     records = {record["key"]: record for record in snapshot["capabilities"]}
     assert records["agent.action.replace"]["read_only"] is False
     assert records["agent.action.delete"]["handler_name"] == "_delete"

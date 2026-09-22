@@ -1,4 +1,4 @@
-/* Code version: v2.143.0-codex.0 */
+/* Code version: v2.148.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -4230,6 +4230,25 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 }
 
 .agent-tunnel-onboarding-card {
+    --agent-tunnel-process-counter-size: 32px;
+    --agent-tunnel-process-counter-border-width: 2px;
+    --agent-tunnel-process-counter-gap-width: 4px;
+    --agent-tunnel-process-counter-background: var(--theme-background);
+    --agent-tunnel-process-counter-color: var(--theme-accent-primary);
+    --agent-tunnel-process-connector-color: var(--theme-accent-primary);
+    --agent-tunnel-process-connector-width: 2px;
+    --agent-tunnel-process-connector-inset: calc(
+        (var(--agent-tunnel-process-counter-size) - var(--agent-tunnel-process-connector-width)) / 2
+    );
+    --agent-tunnel-process-step-gap: 24px;
+    --agent-tunnel-process-connector-start: calc(
+        var(--agent-tunnel-process-counter-size)
+        + var(--agent-tunnel-process-counter-gap-width)
+    );
+    --agent-tunnel-process-connector-tail: calc(
+        var(--agent-tunnel-process-counter-gap-width)
+        - var(--agent-tunnel-process-step-gap)
+    );
     display: grid;
     align-content: start;
     gap: 18px;
@@ -4239,49 +4258,79 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 
 .agent-tunnel-onboarding-steps {
     display: grid;
-    gap: 18px;
+    gap: var(--agent-tunnel-process-step-gap);
     margin: 0;
     padding: 0;
     list-style: none;
 }
 
 .agent-tunnel-onboarding-step {
+    position: relative;
     display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
+    grid-template-columns: var(--agent-tunnel-process-counter-size) minmax(0, 1fr);
     align-items: start;
-    column-gap: 14px;
+    column-gap: 16px;
     min-width: 0;
-    padding: 4px 0;
+    padding: 0;
     border: 0;
 }
 
+.agent-tunnel-onboarding-step[data-agent-tunnel-process-continues]::before {
+    position: absolute;
+    z-index: 0;
+    inset-block-start: var(--agent-tunnel-process-connector-start);
+    inset-block-end: var(--agent-tunnel-process-connector-tail);
+    inset-inline-start: var(--agent-tunnel-process-connector-inset);
+    width: var(--agent-tunnel-process-connector-width);
+    border-radius: var(--radius-pill);
+    background: var(--agent-tunnel-process-connector-color);
+    content: "";
+    pointer-events: none;
+}
+
 .agent-tunnel-step-number {
+    position: relative;
+    z-index: 1;
     grid-column: 1;
-    display: flex;
-    align-items: center;
-    /* Size the marker box to the heading's first line so it centers on the
-       title rather than the top of the taller multi-line copy column. */
-    min-height: calc(var(--font-ui-lg) * 1.35);
-    color: var(--text);
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    width: var(--agent-tunnel-process-counter-size);
+    height: var(--agent-tunnel-process-counter-size);
+    border: var(--agent-tunnel-process-counter-border-width) solid
+        var(--agent-tunnel-process-connector-color);
+    border-radius: 50%;
+    background: var(--agent-tunnel-process-counter-background);
+    box-shadow: 0 0 0 var(--agent-tunnel-process-counter-gap-width)
+        var(--theme-background);
+    color: var(--agent-tunnel-process-counter-color);
     font-size: var(--font-ui-lg);
     font-weight: var(--font-weight-medium);
-    line-height: 1.35;
+    line-height: 1;
     white-space: nowrap;
 }
 
 .agent-tunnel-step-copy {
+    position: relative;
+    z-index: 1;
     grid-column: 2;
     min-width: 0;
 }
 
-.agent-tunnel-step-copy :is(h4, p) {
+.agent-tunnel-step-copy :is(.agent-tunnel-step-heading, h4, p) {
     margin: 0;
 }
 
-.agent-tunnel-step-copy h4 {
+.agent-tunnel-step-copy :is(.agent-tunnel-step-heading, h4) {
     font-size: var(--font-ui-lg);
     font-weight: var(--font-weight-medium);
     line-height: 1.35;
+}
+
+.agent-tunnel-step-heading {
+    display: flex;
+    align-items: center;
+    min-height: var(--agent-tunnel-process-counter-size);
 }
 
 .agent-tunnel-step-copy p {
@@ -4372,6 +4421,32 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     margin: 10px 0 0;
     padding: 0;
     list-style: none;
+}
+
+.agent-tunnel-guide {
+    interpolate-size: allow-keywords;
+}
+
+.agent-tunnel-guide::details-content {
+    block-size: 0;
+    overflow: clip;
+    opacity: 0;
+    transition:
+        block-size var(--motion-duration-emphasized) var(--motion-emphasized),
+        content-visibility var(--motion-duration-emphasized) allow-discrete,
+        opacity var(--motion-duration-standard) var(--motion-standard);
+}
+
+.agent-tunnel-guide[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+}
+
+@starting-style {
+    .agent-tunnel-guide[open]::details-content {
+        block-size: 0;
+        opacity: 0;
+    }
 }
 
 .agent-tunnel-guide-item {
@@ -4613,6 +4688,10 @@ details.agent-tunnel-guide > summary {
     .ui-collapse > summary::after {
         transition: none;
     }
+
+    .agent-tunnel-guide::details-content {
+        transition: none;
+    }
 }
 
 .agent-tunnel-action-package {
@@ -4794,6 +4873,7 @@ details.agent-tunnel-guide > summary {
     padding-block: 3px;
 }
 
+.agent-tunnel-project-combobox .agent-combobox-trigger,
 .agent-platform-combobox .agent-combobox-trigger,
 .agent-session-mode-combobox .agent-combobox-trigger {
     height: var(--control-form-height);

@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.11.3-codex.0
+# Code version: v2.12.0-codex.0
 
 from __future__ import annotations
 
@@ -23,10 +23,12 @@ from urllib.parse import urlsplit
 from .platform_lock import lock_file, unlock_file
 
 
-SAFARI_DOWNLOAD_RANGE_BYTES = 512 * 1024
-SAFARI_BASE64_SLICE_BYTES = 96 * 1024
+SAFARI_DOWNLOAD_RANGE_BYTES = 2 * 1024 * 1024
+# Keep Apple Event replies bounded while reducing slice calls per transferred byte.
+SAFARI_BASE64_SLICE_BYTES = 128 * 1024
 SAFARI_RESPONSE_TEXT_SLICE_CHARS = 96 * 1024
 SAFARI_POLL_INTERVAL_SECONDS = 0.2
+SAFARI_DOWNLOAD_POLL_INTERVAL_SECONDS = 0.5
 SAFARI_APPLESCRIPT_RETRY_LIMIT = 2
 SAFARI_APPLESCRIPT_RETRY_DELAY_SECONDS = 0.25
 SAFARI_APPLESCRIPT_TIMEOUT_SECONDS = 20.0
@@ -95,17 +97,25 @@ try
 end try
 """.strip()
 SAFARI_RESTORE_FRONT_WINDOW_APPLESCRIPT = """
-if previousWindowId is not 0 and previousWindowWasVisible and not previousWindowWasMiniaturized then
+set shouldRestorePreviousFocus to false
+tell application "System Events"
     try
-        set index of (first window whose id is previousWindowId) to 1
+        set shouldRestorePreviousFocus to (name of first application process whose frontmost is true) is "Safari"
     end try
-end if
-if previousFrontmostProcessName is not "" and previousFrontmostProcessName is not "Safari" then
-    tell application "System Events"
+end tell
+if shouldRestorePreviousFocus then
+    if previousWindowId is not 0 and previousWindowWasVisible and not previousWindowWasMiniaturized then
         try
-            set frontmost of process previousFrontmostProcessName to true
+            set index of (first window whose id is previousWindowId) to 1
         end try
-    end tell
+    end if
+    if previousFrontmostProcessName is not "" and previousFrontmostProcessName is not "Safari" then
+        tell application "System Events"
+            try
+                set frontmost of process previousFrontmostProcessName to true
+            end try
+        end tell
+    end if
 end if
 """.strip()
 SAFARI_RESTORE_FRONT_WINDOW_IF_TARGET_STILL_FRONT_APPLESCRIPT = """
@@ -121,8 +131,7 @@ if currentFrontmostProcessName is "Safari" then
         set targetWindowStillFront to (id of front window) is (id of targetWindow)
     end try
 end if
-set canRestorePreviousSafariWindow to (currentFrontmostProcessName is not "Safari") or targetWindowStillFront
-if canRestorePreviousSafariWindow and previousWindowId is not 0 and previousWindowWasVisible and not previousWindowWasMiniaturized then
+if targetWindowStillFront and previousWindowId is not 0 and previousWindowWasVisible and not previousWindowWasMiniaturized then
     try
         set index of (first window whose id is previousWindowId) to 1
     end try
@@ -205,6 +214,16 @@ class SafariNativeActivationError(RuntimeError):
         self.input_attempted = bool(input_attempted)
 
 
+class SafariAuthenticationRequiredError(RuntimeError):
+    """Report that an authenticated Safari media request lost authorization."""
+
+    def __init__(self, status: int) -> None:
+        self.status = int(status)
+        super().__init__(
+            f"Safari media request requires renewed authentication (HTTP {self.status})."
+        )
+
+
 def is_missing_safari_window_error(error: BaseException) -> bool:
     """Return whether Safari rejected an operation for a window that vanished."""
     message = str(error).lower()
@@ -257,6 +276,22 @@ def safari_navigation_matches(target_url: str, current_url: str) -> bool:
 def escape_applescript_text(value: str) -> str:
     """Escape text embedded in an AppleScript string literal."""
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _applescript_changes_foreground_or_window(source: str) -> bool:
+    """Return whether executable AppleScript mutates foreground or window state."""
+    executable = re.sub(r'"(?:\\.|[^"\\])*"', '""', source, flags=re.DOTALL)
+    return any(
+        re.search(pattern, executable, flags=re.IGNORECASE | re.MULTILINE)
+        for pattern in (
+            r"\bactivate\b",
+            r"\bset\s+frontmost\b",
+            r"\bset\s+index\s+of\b",
+            r"\bset\s+visible\s+of\b",
+            r"\bset\s+miniaturized\s+of\b",
+            r"\bset\s+current\s+tab\s+of\b",
+        )
+    )
 
 
 def run_applescript(source: str, *, retry_transient: bool = True) -> str:
@@ -1302,24 +1337,24 @@ return pageUrlValue & linefeed & pageStateValue
         )
         statement = (
             f'return do JavaScript "{escape_applescript_text(wrapper)}" '
-            "in current tab of targetWindow"
+            "in targetTab"
         )
         last_raw = ""
         last_error: Exception | None = None
         for attempt_index in range(SAFARI_JAVASCRIPT_RETRY_LIMIT + 1):
             if attempt_index:
-                if not self._native_input_transaction_depth:
+                if not self._native_input_transaction_depth and not self._background_only_depth:
                     with contextlib.suppress(RuntimeError):
-                        if attempt_index == 1 or self._background_only_depth:
-                            # Background transfers must never activate Safari:
-                            # restoring the previous app afterward flashes
-                            # other windows (such as Terminal) to the front.
+                        if attempt_index == 1:
                             self.keep_rendering_in_background()
                         else:
                             self.wake_for_javascript()
                 time.sleep(SAFARI_POLL_INTERVAL_SECONDS * attempt_index)
             try:
-                raw_result = self._run_in_window(statement, reveal_tab=True)
+                raw_result = self._run_in_window(
+                    statement,
+                    reveal_tab=not self._background_only_depth,
+                )
             except RuntimeError as exc:
                 last_error = exc
                 if attempt_index >= SAFARI_JAVASCRIPT_RETRY_LIMIT:
@@ -1612,6 +1647,8 @@ return receiptState
 
     def wake_for_javascript(self) -> None:
         """Briefly activate the owned tab so page JavaScript can run, then restore focus."""
+        if self._background_only_depth:
+            raise RuntimeError("Safari cannot activate during a background-only transfer.")
         with self.native_input_transaction():
             self._run_in_window(
                 SAFARI_WAIT_FOR_NATIVE_FOCUS_APPLESCRIPT,
@@ -1625,6 +1662,8 @@ return receiptState
         Restoration is skipped when the user has already switched away from the
         owned Safari window, so cleanup cannot steal a different foreground app.
         """
+        if self._background_only_depth:
+            raise RuntimeError("Safari native input is unavailable during a background-only transfer.")
         if self._native_input_transaction_depth:
             self._native_input_transaction_depth += 1
             try:
@@ -1683,10 +1722,14 @@ set previousWindowWasMiniaturized to {str(previous_window_miniaturized).lower()}
 
     def bring_to_front(self) -> None:
         """Bring the owned Safari window forward."""
+        if self._background_only_depth:
+            raise RuntimeError("Safari cannot move forward during a background-only transfer.")
         self._run_in_window("set index of targetWindow to 1")
 
     def keep_rendering_in_background(self) -> None:
         """Keep a standard Safari window rendered without replacing the front window."""
+        if self._background_only_depth:
+            return
         self._run_in_window(
             f"""
 {SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
@@ -1827,9 +1870,6 @@ return "closed"
     ) -> tuple[str, bool]:
         """Stream an authenticated media URL from Safari into a local file."""
         with self._context.download_lock, self._background_only_transfer():
-            if not self._rendering_active:
-                with contextlib.suppress(RuntimeError):
-                    self.keep_rendering_in_background()
             destination_path.parent.mkdir(parents=True, exist_ok=True)
             initial_bytes = destination_path.stat().st_size if destination_path.exists() else 0
             range_start = initial_bytes
@@ -1888,12 +1928,6 @@ return "closed"
                 if status == 416 and received_this_call > 0 and expected_total == 0:
                     # The previous chunk ended exactly at EOF but the size was
                     # not readable, so the follow-up range is unsatisfiable.
-                    self.evaluate(
-                        """() => {
-                            delete window.__cachelikesSafariDownload;
-                            return true;
-                        }"""
-                    )
                     break
                 if status == 416 and range_start > 0 and not restarted_after_range_error:
                     # A stale partial file can be exactly at the remote EOF, or the
@@ -1905,13 +1939,9 @@ return "closed"
                     content_type = ""
                     restarted_after_range_error = True
                     received_this_call = 0
-                    self.evaluate(
-                        """() => {
-                            delete window.__cachelikesSafariDownload;
-                            return true;
-                        }"""
-                    )
                     continue
+                if status in {401, 403}:
+                    raise SafariAuthenticationRequiredError(status)
                 if status not in {200, 206} or chunk_bytes <= 0:
                     raise RuntimeError(
                         f"Safari media request returned HTTP {status} with {chunk_bytes:,} bytes."
@@ -1955,33 +1985,38 @@ return "closed"
                 content_type = str(metadata.get("contentType") or content_type)
                 mode = "ab" if range_start > 0 else "wb"
                 with destination_path.open(mode) as handle:
-                    slice_start = 0
+                    encoded = str(metadata.get("encoded") or "")
+                    slice_start = int(metadata.get("nextOffset") or 0)
+                    if encoded:
+                        handle.write(base64.b64decode(encoded))
                     while slice_start < chunk_bytes:
                         if should_stop():
                             raise RuntimeError("Stop requested while downloading browser media.")
                         slice_end = min(chunk_bytes, slice_start + SAFARI_BASE64_SLICE_BYTES)
-                        encoded = self.evaluate(
+                        slice_payload = self.evaluate(
                             """(bounds) => {
                                 const bytes = window.__cachelikesSafariDownload.bytes;
+                                const end = Math.min(bytes.byteLength, bounds.end);
                                 let binary = "";
-                                for (let index = bounds.start; index < bounds.end; index += 1) {
+                                for (let index = bounds.start; index < end; index += 1) {
                                     binary += String.fromCharCode(bytes[index]);
                                 }
-                                return btoa(binary);
+                                const result = { encoded: btoa(binary), end };
+                                if (end >= bytes.byteLength) delete window.__cachelikesSafariDownload;
+                                return result;
                             }""",
                             {"start": slice_start, "end": slice_end},
                         )
-                        handle.write(base64.b64decode(str(encoded)))
-                        slice_start = slice_end
+                        if not isinstance(slice_payload, dict):
+                            raise RuntimeError("Safari returned an invalid media slice.")
+                        handle.write(base64.b64decode(str(slice_payload.get("encoded") or "")))
+                        next_offset = int(slice_payload.get("end") or 0)
+                        if next_offset <= slice_start:
+                            raise RuntimeError("Safari returned an invalid media slice offset.")
+                        slice_start = next_offset
 
                 range_start += chunk_bytes
                 received_this_call += chunk_bytes
-                self.evaluate(
-                    """() => {
-                        delete window.__cachelikesSafariDownload;
-                        return true;
-                    }"""
-                )
                 if status == 200:
                     break
 
@@ -1993,9 +2028,9 @@ return "closed"
             if should_stop():
                 raise RuntimeError("Stop requested while downloading Grok media.")
             metadata = self.evaluate(
-                """() => {
-                    const current = window.__cachelikesSafariDownload || { state: "missing" };
-                    return {
+                f"""() => {{
+                    const current = window.__cachelikesSafariDownload || {{ state: "missing" }};
+                    const result = {{
                         state: current.state || "missing",
                         status: current.status || 0,
                         contentType: current.contentType || "",
@@ -2003,14 +2038,34 @@ return "closed"
                         contentLength: current.contentLength || "",
                         bytes: current.bytes ? current.bytes.byteLength : 0,
                         error: current.error || "",
-                    };
-                }"""
+                        encoded: "",
+                        nextOffset: 0,
+                    }};
+                    if (current.state === "ready" && current.bytes) {{
+                        const firstSliceEnd = Math.min(
+                            current.bytes.byteLength,
+                            {SAFARI_BASE64_SLICE_BYTES},
+                        );
+                        let binary = "";
+                        for (let index = 0; index < firstSliceEnd; index += 1) {{
+                            binary += String.fromCharCode(current.bytes[index]);
+                        }}
+                        result.encoded = btoa(binary);
+                        result.nextOffset = firstSliceEnd;
+                        if (firstSliceEnd >= current.bytes.byteLength) {{
+                            delete window.__cachelikesSafariDownload;
+                        }}
+                    }} else if (current.state === "ready" || current.state === "failed") {{
+                        delete window.__cachelikesSafariDownload;
+                    }}
+                    return result;
+                }}"""
             )
             if isinstance(metadata, dict) and metadata.get("state") == "ready":
                 return metadata
             if isinstance(metadata, dict) and metadata.get("state") == "failed":
                 raise RuntimeError(f"Safari media request failed: {metadata.get('error') or 'unknown error'}")
-            time.sleep(SAFARI_POLL_INTERVAL_SECONDS)
+            time.sleep(SAFARI_DOWNLOAD_POLL_INTERVAL_SECONDS)
         raise RuntimeError("Safari media request timed out.")
 
     def _owned_tab_script(self, *, reveal: bool = False) -> str:
@@ -2047,7 +2102,15 @@ return "closed"
     ) -> str:
         if self._closed:
             raise RuntimeError("Safari window is already closed.")
-        tab_binding = self._owned_tab_script(reveal=reveal_tab) if bind_tab else ""
+        if (
+            self._background_only_depth
+            and _applescript_changes_foreground_or_window(statement)
+        ):
+            raise RuntimeError(
+                "Safari background-only transfers cannot change foreground or window state."
+            )
+        safe_reveal_tab = reveal_tab and not self._background_only_depth
+        tab_binding = self._owned_tab_script(reveal=safe_reveal_tab) if bind_tab else ""
         source = f"""
 tell application "Safari"
     set targetWindow to first window whose id is {self.window_id}

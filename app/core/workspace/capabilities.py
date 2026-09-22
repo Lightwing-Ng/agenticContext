@@ -8,10 +8,11 @@ internals, never resolve absolute paths themselves, and never see the mutable re
 store.
 """
 
-# Code version: v1.0.1-codex.0
+# Code version: v1.3.0-codex.0
 
 from __future__ import annotations
 
+import errno
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, Sequence, runtime_checkable
@@ -41,6 +42,43 @@ class TextReplacement:
     relative_path: str
     source: str
     text: str
+
+
+def describe_workspace_error(error: BaseException | None) -> str:
+    """Return one actionable, path-free explanation for a failed workspace operation.
+
+    Operating-system errors carry absolute host paths and errno jargon; callers
+    that report to a model or a user get the cause and the next step instead.
+    """
+    if error is None:
+        return "The operation failed."
+    if isinstance(error, PermissionError):
+        return (
+            "Permission denied by the operating system. Check the file and folder "
+            "permissions on this computer, then read the file again before retrying."
+        )
+    if isinstance(error, FileNotFoundError):
+        return (
+            "The file or one of its folders no longer exists. List or read it again "
+            "before retrying."
+        )
+    if isinstance(error, IsADirectoryError):
+        return "The path is a folder, not a regular file."
+    if isinstance(error, OSError):
+        if error.errno in {errno.ENOSPC, getattr(errno, "EDQUOT", -1)}:
+            return (
+                "The disk is full or over quota, so nothing was written. Free space, "
+                "then retry."
+            )
+        if error.errno == errno.EROFS:
+            return "The file system is read-only on this computer."
+        if error.errno in {errno.EAGAIN, getattr(errno, "EWOULDBLOCK", -1)}:
+            return (
+                "Another local operation holds this folder; wait a moment and retry."
+            )
+        reason = error.strerror or type(error).__name__
+        return f"The operating system refused the operation ({reason})."
+    return str(error)[:2_000] or type(error).__name__
 
 
 @runtime_checkable
@@ -92,7 +130,17 @@ class WorkspaceAccess(Protocol):
         """Return a snapshot only when it matches this access's current read receipt."""
 
     def apply_text_replacements(self, replacements: Sequence[TextReplacement]) -> None:
-        """Apply one atomic batch of whole-text replacements as a single edit."""
+        """Apply one batch of whole-text replacements, or raise after recovering."""
+
+    def apply_text_replacement_batch(
+        self,
+        replacements: Sequence[TextReplacement],
+    ) -> dict[str, Any]:
+        """Apply whole-text replacements and report each file's true outcome.
+
+        See ``WorkspaceController.apply_text_replacement_batch`` for the recovery
+        contract: ``committed``, ``rolled_back``, or ``partial``.
+        """
 
     def overwrite_text_file(self, relative_path: str, *, source: str, content: str) -> None:
         """Replace one existing text file's contents as a single edit."""
@@ -100,9 +148,31 @@ class WorkspaceAccess(Protocol):
     def create_file(self, relative_path: str, data: bytes) -> int:
         """Create one new file that does not exist yet and return its byte count."""
 
+    def begin_external_verification(self) -> dict[str, Any]:
+        """Record the workspace version a detached verification command will check."""
+
+    def refresh_workspace_evidence(self) -> dict[str, Any]:
+        """Return a fresh content fingerprint and invalidate stale verification."""
+
+    def finish_external_verification(
+        self,
+        evidence: dict[str, Any],
+        *,
+        command: str,
+        succeeded: bool,
+        allow_generation_rebind: bool = False,
+    ) -> dict[str, Any]:
+        """Count a detached check only while its checked files are current.
+
+        ``allow_generation_rebind`` is reserved for a durable check observed by a
+        newly started service after the same registered project identity is restored.
+        The content fingerprint remains mandatory.
+        """
+
 
 __all__ = [
     "FileSnapshot",
     "TextReplacement",
     "WorkspaceAccess",
+    "describe_workspace_error",
 ]

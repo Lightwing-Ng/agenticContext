@@ -1,6 +1,6 @@
 """Grok media sync helpers."""
 
-# Code version: v1.18.1-codex.1
+# Code version: v1.19.0-codex.0
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ from .resource_persistence import (
     retire_legacy_file,
     write_parquet_rows_atomic,
 )
-from .safari_automation import SafariContext
+from .safari_automation import SafariAuthenticationRequiredError, SafariContext
 from .state import TaskSnapshot, TaskState, utc_now
 
 try:  # pragma: no cover - depends on the local runtime
@@ -192,6 +192,8 @@ class GrokDownloadOutcome:
     resumed: bool = False
     error: str = ""
     skipped_size: bool = False
+    authentication_required: bool = False
+    authentication_status: int = 0
 
 
 @dataclass(slots=True)
@@ -232,6 +234,32 @@ class DownloadPayloadIntegrityError(RuntimeError):
 
 class DownloadSizeLimitError(RuntimeError):
     """Raised when a Grok asset exceeds the universal cache file-size limit."""
+
+
+class GrokAuthenticationRequiredError(RuntimeError):
+    """Report that Grok rejected the selected browser's media authorization."""
+
+    def __init__(self, status: int) -> None:
+        self.status = int(status)
+        super().__init__(
+            f"Grok media authorization was rejected (HTTP {self.status}). "
+            "Sign in to Grok again in the selected browser, then restart the media sync."
+        )
+
+
+def mark_grok_authentication_required(
+    state: TaskState,
+    error: GrokAuthenticationRequiredError,
+) -> None:
+    """Publish a terminal, actionable status for expired Grok authorization."""
+    metrics = dict(state.snapshot().get("performance_metrics") or {})
+    metrics["authentication_required"] = True
+    state.update(
+        phase="failed",
+        last_error=str(error),
+        performance_metrics=metrics,
+    )
+    state.append_event(str(error))
 
 
 def resolve_grok_download_worker_count(config: CrawlConfig, browser_engine: str) -> int:
@@ -2787,6 +2815,8 @@ def stream_candidate_download(
             )
         except HTTPError as exc:
             last_error = exc
+            if exc.code in {401, 403}:
+                raise GrokAuthenticationRequiredError(exc.code) from exc
             if exc.code == 416:
                 with contextlib.suppress(FileNotFoundError):
                     temp_path.unlink()
@@ -2980,6 +3010,8 @@ def repair_cached_preview_images(
                 browser_streamer=browser_streamer,
                 max_file_size_bytes=max_file_size_bytes,
             )
+        except GrokAuthenticationRequiredError:
+            raise
         except DownloadStoppedError:
             break
         except DownloadSizeLimitError:
@@ -3049,6 +3081,13 @@ def run_download_worker(
         return GrokDownloadOutcome(candidate=candidate, stopped=True)
     except DownloadSizeLimitError as exc:
         return GrokDownloadOutcome(candidate=candidate, skipped_size=True, error=str(exc))
+    except GrokAuthenticationRequiredError as exc:
+        return GrokDownloadOutcome(
+            candidate=candidate,
+            authentication_required=True,
+            authentication_status=exc.status,
+            error=str(exc),
+        )
     except Exception as exc:  # pragma: no cover
         logger.exception(
             "Grok asset download failed.",
@@ -3171,6 +3210,8 @@ def sync_grok_media(
                             stop_requested,
                             expected_bytes=candidate.expected_bytes,
                         )
+                    except SafariAuthenticationRequiredError as exc:
+                        raise GrokAuthenticationRequiredError(exc.status) from exc
                     except RuntimeError as exc:
                         if stop_requested():
                             raise DownloadStoppedError(str(exc)) from exc
@@ -3281,6 +3322,11 @@ def sync_grok_media(
                             state.append_event(
                                 f"Skipped Grok asset {candidate.asset_id}/{candidate.asset_name}: "
                                 f"above the {runtime_config.max_media_file_size_mib:,} MiB cache limit."
+                            )
+                        elif outcome.authentication_required:
+                            work_queue.mark_download_failed(candidate, outcome.error)
+                            raise GrokAuthenticationRequiredError(
+                                outcome.authentication_status or 401
                             )
                         elif outcome.failed:
                             failed_count += 1
@@ -3515,6 +3561,9 @@ def sync_grok_media(
                 cached_images=cached_images,
                 cached_videos=cached_videos,
             )
+    except GrokAuthenticationRequiredError as exc:
+        mark_grok_authentication_required(state, exc)
+        raise
     except PlaywrightError as exc:
         raise RuntimeError(f"Grok browser automation failed: {exc}") from exc
     finally:

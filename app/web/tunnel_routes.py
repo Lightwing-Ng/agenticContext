@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.7.0-codex.0
+# Code version: v1.8.0-codex.0
 
 from __future__ import annotations
 
@@ -38,6 +38,8 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from app.core.agent import (
     MCP_SCOPE,
+    ProjectRegistryError,
+    ProjectSelectionConflict,
     SUPPORTED_AGENT_PLATFORMS,
     ComputerUseSettingsStore,
     GeminiOAuthAuthority,
@@ -54,6 +56,8 @@ from app.core.agent import (
     load_tunnel_credentials,
     merge_tunnel_credentials,
     protected_resource_metadata,
+    project_availability,
+    resolve_current_project,
     save_tunnel_credentials,
     valid_tunnel_id,
     www_authenticate_challenge,
@@ -392,12 +396,91 @@ class TunnelRouteContext:
     render_locked_agent_access: Callable[[], Any]
     render_agent_page: Callable[..., Any]
     available_agent_browser_keys: Callable[[], set[str]]
+    credentials_path: Path | None = None
 
 
 def default_tunnel_platform(settings_store: ComputerUseSettingsStore) -> str:
     """Return the saved Agent provider, falling back to the default Tunnel provider."""
     platform = settings_store.settings.platform
     return platform if platform in SUPPORTED_AGENT_PLATFORMS else "chatgpt"
+
+
+def _local_project_context(
+    settings_store: ComputerUseSettingsStore,
+    tunnel_mcp_service: Any | None,
+) -> dict[str, Any]:
+    """Return the local-only project catalog, including absolute host roots.
+
+    This payload is available only behind the local Agent request gate or while
+    rendering the unlocked local page. Model-facing MCP records continue to omit
+    absolute host paths.
+    """
+    empty = {
+        "registry_configured": False,
+        "revision": 0,
+        "selected_at": 0.0,
+        "source": "none",
+        "current": None,
+        "projects": [],
+        "problem": "The Tunnel project registry service is unavailable.",
+    }
+    if tunnel_mcp_service is None:
+        return empty
+
+    workspace_path = str(settings_store.settings.workspace_path or "")
+    registry = tunnel_mcp_service.registry
+    selection_store = tunnel_mcp_service.selection_store
+    selection = selection_store.load()
+    registry_configured = not registry.uses_fallback()
+    try:
+        projects = registry.projects(workspace_path)
+        resolved = resolve_current_project(projects, selection, workspace_path)
+    except ProjectRegistryError as exc:
+        return {
+            **empty,
+            "registry_configured": registry_configured,
+            "revision": selection.revision,
+            "selected_at": selection.selected_at,
+            "problem": str(exc),
+        }
+
+    records: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for project in projects:
+        problem = project_availability(project)
+        record = {
+            "id": project.id,
+            "identity": project.identity,
+            "root": str(project.root),
+            "writable": project.writable,
+            "access": "Read and write" if project.writable else "Read only",
+            "registered": registry_configured,
+            "available": not problem,
+            "availability": "Available" if not problem else "Unavailable",
+            "problem": problem,
+            "description": project.description,
+        }
+        records.append(record)
+        by_id[project.id] = record
+
+    current_record = None
+    current_problem = resolved.problem
+    if resolved.project is not None:
+        current_record = {
+            **by_id[resolved.project.id],
+            "source": resolved.source,
+        }
+        current_problem = current_problem or str(current_record.get("problem") or "")
+
+    return {
+        "registry_configured": registry_configured,
+        "revision": selection.revision,
+        "selected_at": selection.selected_at,
+        "source": resolved.source,
+        "current": current_record,
+        "projects": records,
+        "problem": current_problem,
+    }
 
 
 def tunnel_status_payload(
@@ -407,6 +490,7 @@ def tunnel_status_payload(
     platform: str = "chatgpt",
     tunnel_mcp_service: Any | None = None,
     gemini_gateway: GeminiTunnelGateway | None = None,
+    credentials_path: Path | None = None,
 ) -> dict[str, Any]:
     """Return one provider's Tunnel status and UI-safe configuration.
 
@@ -414,7 +498,14 @@ def tunnel_status_payload(
     services it reads instead of the whole route context.
     """
     workspace = Path(settings_store.settings.workspace_path)
-    project_name = workspace.name or str(workspace)
+    project_context = _local_project_context(settings_store, tunnel_mcp_service)
+    current_project = project_context.get("current")
+    project_name = (
+        str(current_project.get("id") or "")
+        if isinstance(current_project, dict)
+        else ""
+    ) or workspace.name or str(workspace)
+    observed_at = time.time()
     selected_platform = str(platform or "").strip().lower()
     if selected_platform == "gemini":
         service = tunnel_mcp_service or (
@@ -509,6 +600,8 @@ def tunnel_status_payload(
             "configured": config.configured,
             "activity_observed": activity_observed,
             "project_name": project_name,
+            "project_context": project_context,
+            "status_observed_at": observed_at,
             "credentials": {
                 "configured": False,
                 "tunnel_id": "",
@@ -537,6 +630,8 @@ def tunnel_status_payload(
             "usage_scope": "tool_call",
             "usage_encoding": "o200k_base",
             "project_name": project_name,
+            "project_context": project_context,
+            "status_observed_at": observed_at,
             "credentials": {
                 "configured": False,
                 "tunnel_id": "",
@@ -557,24 +652,40 @@ def tunnel_status_payload(
             },
         }
     snapshot = tunnel_runtime.snapshot()
-    credentials = load_tunnel_credentials().snapshot()
+    if tunnel_mcp_service is not None:
+        activity = tunnel_mcp_service.activity_snapshot("chatgpt")
+        snapshot.update(activity)
+    credentials = load_tunnel_credentials(credentials_path).snapshot()
     tunnel_id = str(credentials.get("tunnel_id") or "")
     credentials["tunnel_id_valid"] = valid_tunnel_id(tunnel_id) if tunnel_id else False
     credentials["qualified"] = bool(
         credentials["tunnel_id_valid"] and credentials.get("api_key_saved")
     )
     ready_since = float(snapshot.get("ready_since") or 0)
-    recent_calls = snapshot.get("recent_calls") or []
+    last_success_by_project = snapshot.get("last_success_by_project") or {}
+    current_project_id = (
+        str(current_project.get("id") or "")
+        if isinstance(current_project, dict)
+        else ""
+    )
+    last_success = (
+        last_success_by_project.get(current_project_id)
+        if isinstance(last_success_by_project, dict) and current_project_id
+        else None
+    )
     activity_observed = bool(
         snapshot.get("ready")
         and ready_since
-        and any(float(call.get("at") or 0) >= ready_since for call in recent_calls)
+        and isinstance(last_success, dict)
+        and float(last_success.get("at") or 0) >= ready_since
     )
     snapshot["activity_observed"] = activity_observed
     return {
         **snapshot,
         "platform": "chatgpt",
         "project_name": project_name,
+        "project_context": project_context,
+        "status_observed_at": observed_at,
         "credentials": credentials,
         "presentation": describe_tunnel_status(
             snapshot,
@@ -710,6 +821,7 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             platform=platform,
             tunnel_mcp_service=context.tunnel_mcp_service,
             gemini_gateway=gemini_gateway,
+            credentials_path=context.credentials_path,
         )
 
     def route_browser() -> str:
@@ -758,7 +870,7 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             return jsonify({"error": "Send a JSON object with a Tunnel ID and optional API key."}), 400
         tunnel_id = payload["tunnel_id"].strip()
         submitted_key = payload.get("api_key", "").strip()
-        current = load_tunnel_credentials()
+        current = load_tunnel_credentials(context.credentials_path)
         if not tunnel_id:
             next_credentials = merge_tunnel_credentials(current, "", "")
         else:
@@ -782,8 +894,16 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             )
             if not next_credentials.api_key:
                 return jsonify({"error": "Enter the API key for this Tunnel."}), 400
+            if (
+                not next_credentials.api_key.startswith("sk-")
+                or len(next_credentials.api_key) < 12
+            ):
+                return jsonify({"error": "OpenAI API key must start with sk-."}), 400
         if next_credentials != current:
-            save_tunnel_credentials(next_credentials)
+            save_tunnel_credentials(next_credentials, context.credentials_path)
+        if next_credentials.configured:
+            # A successful re-save is also an explicit recovery request. This keeps
+            # the existing credential pair while replacing an unhealthy client.
             context.tunnel_runtime.request_restart(delay=0.05)
         return jsonify(status_payload())
 
@@ -793,6 +913,85 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         platform = str(request.args.get("platform") or "chatgpt").strip().lower()
         if platform not in {"chatgpt", "gemini"}:
             return jsonify({"error": "Tunnel status supports ChatGPT and Gemini."}), 400
+        return jsonify(status_payload(platform))
+
+    @blueprint.route("/api/agent/tunnel/project", methods=["GET", "POST"])
+    def api_project():
+        """Read or select one registered local Tunnel project by exact identity."""
+        context.require_local_agent_request()
+        if request.method == "GET":
+            return jsonify(
+                {
+                    "project_context": _local_project_context(
+                        context.settings_store,
+                        context.tunnel_mcp_service,
+                    )
+                }
+            )
+
+        payload = request.get_json(silent=True)
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"project_id", "expected_revision"}
+            or not isinstance(payload.get("project_id"), str)
+            or not isinstance(payload.get("expected_revision"), int)
+            or isinstance(payload.get("expected_revision"), bool)
+            or payload["expected_revision"] < 0
+        ):
+            return jsonify(
+                {
+                    "error": (
+                        "Send exactly one project_id string and one non-negative "
+                        "expected_revision integer."
+                    )
+                }
+            ), 400
+
+        registry = context.tunnel_mcp_service.registry
+        if registry.uses_fallback():
+            return jsonify(
+                {
+                    "error": (
+                        "Register this project in tunnel-projects.json before selecting "
+                        "it for Tunnel tasks."
+                    )
+                }
+            ), 409
+        workspace_path = str(context.settings_store.settings.workspace_path or "")
+        try:
+            project = registry.resolve(payload["project_id"], workspace_path)
+            problem = project_availability(project)
+            if problem:
+                return jsonify({"error": problem}), 409
+            context.tunnel_mcp_service.selection_store.save(
+                project.id,
+                expected_revision=payload["expected_revision"],
+            )
+        except ProjectSelectionConflict as exc:
+            return jsonify(
+                {
+                    "error": str(exc),
+                    "project_context": _local_project_context(
+                        context.settings_store,
+                        context.tunnel_mcp_service,
+                    ),
+                }
+            ), 409
+        except ProjectRegistryError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except OSError:
+            return jsonify(
+                {
+                    "error": (
+                        "The project selection could not be saved. Check the local "
+                        "Tunnel configuration folder and try again."
+                    )
+                }
+            ), 500
+
+        platform = str(request.args.get("platform") or "chatgpt").strip().lower()
+        if platform not in {"chatgpt", "gemini"}:
+            platform = "chatgpt"
         return jsonify(status_payload(platform))
 
     @blueprint.post("/api/agent/tunnel/gemini/config")
@@ -1097,7 +1296,7 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
     def api_connect():
         """Start or reconnect the Tunnel using the saved credential pair."""
         context.require_local_agent_request()
-        credentials = load_tunnel_credentials()
+        credentials = load_tunnel_credentials(context.credentials_path)
         if (
             not credentials.configured
             or not valid_tunnel_id(credentials.tunnel_id)

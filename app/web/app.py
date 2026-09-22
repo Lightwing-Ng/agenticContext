@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.1.3-codex.0
+# Code version: v2.2.0-codex.0
 
 from __future__ import annotations
 
@@ -32,11 +32,15 @@ from app.core.agent import (
     ComputerUseAgentService,
     ComputerUseSettingsStore,
     JuryService,
+    ProjectRegistry,
+    ProjectSelectionStore,
     is_allowed_agent_network_request,
     is_loopback_address,
     TunnelMcpService,
     TunnelRuntime,
     default_tunnel_credentials_path,
+    default_tunnel_projects_path,
+    default_tunnel_selection_path,
     load_tunnel_credentials,
 )
 from app.core.foundation import (
@@ -270,6 +274,9 @@ def create_app(
     *,
     computer_use_settings_path: Path | None = None,
     computer_use_runtime_root: Path | None = None,
+    tunnel_credentials_path: Path | None = None,
+    tunnel_projects_path: Path | None = None,
+    tunnel_runtime_root: Path | None = None,
     agent_external_operations_enabled: bool = True,
     beta_enabled: bool | None = None,
     beta_experiments: Iterable[str] | None = None,
@@ -389,14 +396,48 @@ def create_app(
     )
     app.extensions["jury_service"] = jury_service
 
-    tunnel_mcp_service = TunnelMcpService(lambda: computer_use_settings.settings)
+    if tunnel_credentials_path is not None:
+        effective_tunnel_credentials_path = Path(tunnel_credentials_path).expanduser()
+    elif computer_use_settings_path is not None:
+        effective_tunnel_credentials_path = Path(computer_use_settings_path).expanduser().with_name(
+            default_tunnel_credentials_path().name
+        )
+    else:
+        effective_tunnel_credentials_path = default_tunnel_credentials_path()
+    effective_tunnel_projects_path = (
+        Path(tunnel_projects_path).expanduser()
+        if tunnel_projects_path is not None
+        else effective_tunnel_credentials_path.with_name(default_tunnel_projects_path().name)
+    )
+    effective_tunnel_runtime_root = (
+        Path(tunnel_runtime_root).expanduser()
+        if tunnel_runtime_root is not None
+        else (
+            Path(computer_use_runtime_root).expanduser() / "tunnel"
+            if computer_use_runtime_root is not None
+            else effective_tunnel_credentials_path.parent / "tunnel"
+        )
+    )
+    project_registry = ProjectRegistry(effective_tunnel_projects_path)
+    project_selection_store = ProjectSelectionStore(
+        effective_tunnel_projects_path.with_name(default_tunnel_selection_path().name)
+    )
+    tunnel_mcp_service = TunnelMcpService(
+        lambda: computer_use_settings.settings,
+        registry=project_registry,
+        selection_store=project_selection_store,
+        runtime_root=effective_tunnel_runtime_root,
+    )
     tunnel_runtime = TunnelRuntime(
-        credentials_loader=load_tunnel_credentials,
-        state_root=default_tunnel_credentials_path().parent / "tunnel",
+        credentials_loader=lambda: load_tunnel_credentials(effective_tunnel_credentials_path),
+        state_root=effective_tunnel_runtime_root,
         activity_provider=lambda: tunnel_mcp_service.activity_snapshot("chatgpt"),
     )
     app.extensions["tunnel_mcp_service"] = tunnel_mcp_service
     app.extensions["tunnel_runtime"] = tunnel_runtime
+    app.extensions["tunnel_credentials_path"] = effective_tunnel_credentials_path
+    app.extensions["tunnel_projects_path"] = effective_tunnel_projects_path
+    app.extensions["tunnel_runtime_root"] = effective_tunnel_runtime_root
     gemini_tunnel_gateway = GeminiTunnelGateway(tunnel_mcp_service)
     app.extensions["gemini_tunnel_gateway"] = gemini_tunnel_gateway
 
@@ -617,6 +658,7 @@ def create_app(
             settings_store=computer_use_settings,
             tunnel_runtime=tunnel_runtime,
             tunnel_mcp_service=tunnel_mcp_service,
+            credentials_path=effective_tunnel_credentials_path,
             gemini_gateway=gemini_tunnel_gateway,
             require_local_agent_request=agent_surface.require_local_agent_request,
             is_agent_access_unlocked=agent_surface.is_agent_access_unlocked,

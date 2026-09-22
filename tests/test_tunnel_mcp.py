@@ -1,11 +1,13 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.3.2-codex.0
+Code version: v2.7.0-codex.0
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
+from itertools import count
 import json
 import re
 import subprocess
@@ -35,6 +37,7 @@ from app.core.tunnel_projects import (
 from app.web.app import create_app
 
 EXPECTED_TOOLS = [
+    "current_project",
     "project_overview",
     "list_files",
     "search_files",
@@ -43,9 +46,13 @@ EXPECTED_TOOLS = [
     "write_file",
     "delete_file",
     "run_check",
+    "start_check",
+    "observe_check",
+    "stop_check",
     "show_changes",
     "review_changes",
 ]
+_REQUEST_SEQUENCE = count(1)
 
 
 def write_registry(path: Path, projects: list[dict]) -> ProjectRegistry:
@@ -128,11 +135,48 @@ def call(
     arguments = dict(arguments or {})
     if project is not None:
         arguments.setdefault("project", project)
+        if name != "project_overview" and "project_identity" not in arguments:
+            try:
+                arguments["project_identity"] = service.registry.resolve(
+                    project, service._fallback_workspace()
+                ).identity
+            except ValueError:
+                # Invalid-project tests must still exercise the public validator.
+                pass
+    if TUNNEL_TOOLS_BY_NAME.get(name) and TUNNEL_TOOLS_BY_NAME[name].journaled:
+        arguments.setdefault("request_id", f"test-auto-{next(_REQUEST_SEQUENCE):08d}")
+    return rpc(service, "tools/call", {"name": name, "arguments": arguments})["result"]
+
+
+def call_without_test_defaults(
+    service: TunnelMcpService,
+    name: str,
+    arguments: dict,
+) -> dict:
+    """Exercise the exact public schema without helper-injected safety fields."""
     return rpc(service, "tools/call", {"name": name, "arguments": arguments})["result"]
 
 
 def content(result: dict) -> dict:
     return result["structuredContent"]
+
+
+def wait_for_check(
+    service: TunnelMcpService,
+    job_id: str,
+    *,
+    project: str = "main",
+    timeout_seconds: float = 15.0,
+) -> dict:
+    """Poll one disposable check without hiding its terminal MCP result."""
+    deadline = time.monotonic() + timeout_seconds
+    latest: dict = {}
+    while time.monotonic() < deadline:
+        latest = call(service, "observe_check", {"job_id": job_id}, project=project)
+        if content(latest)["job"]["state"] not in {"starting", "running"}:
+            return latest
+        time.sleep(0.05)
+    pytest.fail(f"Check {job_id} did not finish: {latest}")
 
 
 def provider_rpc(
@@ -265,15 +309,25 @@ def test_tool_list_is_closed_and_project_scoped() -> None:
         schema = tool["inputSchema"]
         assert "action" not in schema.get("properties", {})
         assert schema["additionalProperties"] is False
-        assert schema["required"][0] == "project", name
+        if name == "current_project":
+            assert "project" not in schema.get("properties", {})
+        else:
+            assert schema["required"][0] == "project", name
     assert tools["delete_file"]["inputSchema"]["required"] == [
         "project",
+        "project_identity",
         "path",
         "expected_sha256",
+        "request_id",
     ]
-    assert tools["read_files"]["inputSchema"]["required"] == ["project", "files"]
+    assert tools["read_files"]["inputSchema"]["required"] == [
+        "project",
+        "project_identity",
+        "files",
+    ]
     assert set(tools["show_changes"]["inputSchema"]["properties"]) == {
         "project",
+        "project_identity",
         "path",
         "include_patch",
         "staged",
@@ -282,8 +336,16 @@ def test_tool_list_is_closed_and_project_scoped() -> None:
     assert tools["show_changes"]["annotations"]["readOnlyHint"] is True
     assert tools["write_file"]["annotations"]["destructiveHint"] is True
     assert tools["delete_file"]["annotations"]["destructiveHint"] is True
-    for mutating in ("apply_edits", "write_file", "delete_file", "run_check"):
+    for mutating in (
+        "apply_edits",
+        "write_file",
+        "delete_file",
+        "run_check",
+        "start_check",
+        "stop_check",
+    ):
         assert tools[mutating]["annotations"]["readOnlyHint"] is False
+    assert tools["observe_check"]["annotations"]["readOnlyHint"] is True
     public_text = f"{SERVER_INSTRUCTIONS}\n{json.dumps(list(tools.values()))}"
     for removed in (
         "read_file",
@@ -291,9 +353,6 @@ def test_tool_list_is_closed_and_project_scoped() -> None:
         "create_file",
         "call_runtime_tool",
         "list_projects",
-        "start_check",
-        "observe_check",
-        "stop_check",
         "git_log",
         "git_diff_hunks",
     ):
@@ -324,6 +383,7 @@ def test_every_listed_tool_accepts_a_behavior_valid_call(
 ) -> None:
     (repo / "temporary.txt").write_text("temporary\n")
     results: dict[str, dict] = {
+        "current_project": call(service, "current_project", project=None),
         "project_overview": call(service, "project_overview"),
         "list_files": call(service, "list_files", {"path": "."}),
         "search_files": call(service, "search_files", {"query": "print"}),
@@ -351,6 +411,24 @@ def test_every_listed_tool_accepts_a_behavior_valid_call(
     results["run_check"] = call(
         service, "run_check", {"command": "node --check check.js"}
     )
+    started = call(
+        service,
+        "start_check",
+        {
+            "command": "node --check check.js",
+            "idempotency_key": "catalog-check-0001",
+            "timeout_seconds": 60,
+        },
+    )
+    results["start_check"] = started
+    job_id = content(started)["job"]["job_id"]
+    for _ in range(100):
+        observed = call(service, "observe_check", {"job_id": job_id})
+        if content(observed)["job"]["state"] not in {"starting", "running"}:
+            break
+        time.sleep(0.02)
+    results["observe_check"] = observed
+    results["stop_check"] = call(service, "stop_check", {"job_id": job_id})
     results["show_changes"] = call(service, "show_changes", {"include_patch": True})
     results["review_changes"] = call(service, "review_changes")
 
@@ -428,9 +506,6 @@ def test_runtime_selectors_are_neither_published_nor_required(
         "create_file",
         "call_runtime_tool",
         "list_projects",
-        "start_check",
-        "observe_check",
-        "stop_check",
         "git_log",
         "git_diff_hunks",
         "select_project",
@@ -504,6 +579,174 @@ def test_tools_run_through_the_workspace_controller(
     assert activity["recent_calls"][0]["target"].startswith("main: ")
 
 
+def test_read_files_reports_all_three_batch_outcomes_and_utf8_failures(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    (workspace / "binary.dat").write_bytes(b"\xff\xfe\x00")
+
+    succeeded = call(
+        service,
+        "read_files",
+        {"files": [{"path": "app.py"}, {"path": "AGENTS.md"}]},
+    )
+    partial = call(
+        service,
+        "read_files",
+        {"files": [{"path": "app.py"}, {"path": "missing.txt"}]},
+    )
+    failed = call(
+        service,
+        "read_files",
+        {"files": [{"path": "missing.txt"}, {"path": "binary.dat"}]},
+    )
+
+    assert succeeded["isError"] is False
+    assert content(succeeded)["outcome"] == "all_succeeded"
+    assert content(succeeded)["succeeded"] == 2
+    assert partial["isError"] is True
+    assert content(partial)["outcome"] == "partial"
+    assert (content(partial)["succeeded"], content(partial)["failed"]) == (1, 1)
+    assert failed["isError"] is True
+    assert content(failed)["outcome"] == "all_failed"
+    assert content(failed)["succeeded"] == 0
+    assert content(failed)["files"][1]["code"] == "not_text"
+
+
+def test_read_only_observation_does_not_wait_for_a_long_synchronous_check(
+    service: TunnelMcpService,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    original_execute = service._execute_action
+    check_result: list[dict] = []
+
+    def execute(project, action, arguments):
+        if action == "run":
+            started.set()
+            assert release.wait(timeout=5)
+            return {"ok": True, "action": "run", "command": arguments["command"]}
+        return original_execute(project, action, arguments)
+
+    monkeypatch.setattr(service, "_execute_action", execute)
+    worker = threading.Thread(
+        target=lambda: check_result.append(
+            call(service, "run_check", {"command": "git status --short"})
+        ),
+        daemon=True,
+    )
+    worker.start()
+    assert started.wait(timeout=2)
+    try:
+        observations = [
+            call(service, "project_overview"),
+            call(service, "list_files", {"path": ".", "depth": 1}),
+            call(service, "search_files", {"query": "print", "path": "."}),
+            call(service, "read_files", {"files": [{"path": "app.py"}]}),
+        ]
+        assert all(result["isError"] is False for result in observations)
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert check_result and check_result[0]["isError"] is False
+
+
+def test_read_files_exposes_a_lossless_line_range_continuation(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    target = workspace / "large.txt"
+    target.write_text(
+        "".join(f"line-{index:04d} " + ("x" * 1_000) + "\n" for index in range(300)),
+        encoding="utf-8",
+    )
+
+    first = content(call(service, "read_files", {"files": [{"path": "large.txt"}]}))[
+        "files"
+    ][0]
+    assert first["content_truncated"] is True
+    assert first["has_more"] is True
+    assert first["next_start_line"] == first["end_line"] + 1
+
+    continued = content(
+        call(
+            service,
+            "read_files",
+            {"files": [{"path": "large.txt", "start_line": first["next_start_line"]}]},
+        )
+    )["files"][0]
+    assert continued["start_line"] == first["next_start_line"]
+    assert continued["content"].startswith(f"{continued['start_line']}: line-")
+
+
+def test_read_files_losslessly_continues_one_oversized_utf8_line(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    expected = ("αβγ" * 90_000) + "tail"
+    (workspace / "single-line.txt").write_text(expected, encoding="utf-8")
+    request = {"path": "single-line.txt", "start_line": 1}
+    fragments: list[str] = []
+
+    while True:
+        result = content(call(service, "read_files", {"files": [request]}))["files"][0]
+        assert result["sha256"] == hashlib.sha256(expected.encode("utf-8")).hexdigest()
+        prefix = f"{result['start_line']}: "
+        assert result["content"].startswith(prefix)
+        fragments.append(result["content"][len(prefix):])
+        if not result["has_more"]:
+            break
+        assert result["next_start_line"] == 1
+        assert isinstance(result["next_start_character"], int)
+        request = {
+            "path": "single-line.txt",
+            "start_line": result["next_start_line"],
+            "start_character": result["next_start_character"],
+        }
+
+    assert "".join(fragments) == expected
+
+
+def test_truncated_search_explains_how_to_continue(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    (workspace / "one.txt").write_text("needle\n", encoding="utf-8")
+    (workspace / "two.txt").write_text("needle\n", encoding="utf-8")
+
+    result = content(
+        call(service, "search_files", {"query": "needle", "max_results": 1})
+    )
+
+    assert result["truncated"] is True
+    assert "narrower project-relative path" in result["next_step"]
+
+
+def test_multi_file_read_keeps_the_text_projection_valid_and_bounded(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    paths = []
+    for index in range(8):
+        path = f"large-{index}.txt"
+        (workspace / path).write_text("λ" * 40_000, encoding="utf-8")
+        paths.append({"path": path})
+
+    result = call(service, "read_files", {"files": paths})
+    projected = result["content"][0]["text"]
+    parsed_projection = json.loads(projected)
+    observation = content(result)
+
+    assert parsed_projection["outcome"] == "all_succeeded"
+    assert len(projected) <= 200_000
+    assert sum(len(item["content"]) for item in observation["files"]) <= 150_000
+    assert all(item["has_more"] for item in observation["files"])
+    assert all(item["next_start_character"] for item in observation["files"])
+
+
 def test_apply_edits_is_all_or_nothing(
     service: TunnelMcpService, workspace: Path
 ) -> None:
@@ -540,6 +783,413 @@ def test_apply_edits_is_all_or_nothing(
     assert batch["isError"] is False
     assert [item["replacements"] for item in content(batch)["files"]] == [1, 2]
     assert (workspace / "lib.py").read_text() == "value = 2\nvalue = 2\n"
+
+
+def test_apply_edits_rolls_back_a_second_file_that_failed_after_publication(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = workspace / "first.txt"
+    second = workspace / "second.txt"
+    first.write_text("first-before\n", encoding="utf-8")
+    second.write_text("second-before\n", encoding="utf-8")
+    access = service._workspace_for(registry.resolve("main"))
+    original_snapshot = access._current_file_sha256
+    replacement_sha = hashlib.sha256(b"second-after\n").hexdigest()
+    failed_after_publish = False
+
+    def fail_post_publish(path: Path):
+        nonlocal failed_after_publish
+        snapshot = original_snapshot(path)
+        if (
+            not failed_after_publish
+            and path.name == "second.txt"
+            and snapshot[0] == replacement_sha
+        ):
+            failed_after_publish = True
+            raise OSError(5, "simulated post-publication verification failure")
+        return snapshot
+
+    monkeypatch.setattr(access, "_current_file_sha256", fail_post_publish)
+
+    result = call(
+        service,
+        "apply_edits",
+        {
+            "edits": [
+                {"path": "first.txt", "old_text": "before", "new_text": "after"},
+                {"path": "second.txt", "old_text": "before", "new_text": "after"},
+            ]
+        },
+    )
+
+    assert failed_after_publish is True
+    assert result["isError"] is True
+    assert content(result)["outcome"] == "rolled_back"
+    assert [record["status"] for record in content(result)["files"]] == [
+        "rolled_back",
+        "rolled_back",
+    ]
+    assert first.read_text(encoding="utf-8") == "first-before\n"
+    assert second.read_text(encoding="utf-8") == "second-before\n"
+
+
+def test_apply_edits_preserves_a_concurrent_edit_when_rollback_cannot_compare_swap(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = workspace / "first.txt"
+    second = workspace / "second.txt"
+    first.write_text("first-before\n", encoding="utf-8")
+    second.write_text("second-before\n", encoding="utf-8")
+    access = service._workspace_for(registry.resolve("main"))
+    original_replace = access._replace_text_file
+
+    def fail_second(relative: Path, old: str, new: str, **kwargs):
+        if relative.as_posix() == "second.txt":
+            first.write_text("concurrent-user-edit\n", encoding="utf-8")
+            raise OSError(28, "simulated disk full")
+        return original_replace(relative, old, new, **kwargs)
+
+    monkeypatch.setattr(access, "_replace_text_file", fail_second)
+
+    result = call(
+        service,
+        "apply_edits",
+        {
+            "edits": [
+                {"path": "first.txt", "old_text": "before", "new_text": "after"},
+                {"path": "second.txt", "old_text": "before", "new_text": "after"},
+            ]
+        },
+    )
+
+    assert result["isError"] is True
+    observation = content(result)
+    assert observation["outcome"] == "partial"
+    assert observation["files"][0]["status"] == "conflict"
+    recovery = workspace / observation["files"][0]["recovery_path"]
+    assert first.read_text(encoding="utf-8") == "concurrent-user-edit\n"
+    assert recovery.read_text(encoding="utf-8") == "first-before\n"
+    assert second.read_text(encoding="utf-8") == "second-before\n"
+
+
+def test_apply_edits_reports_a_recovery_write_failure_as_not_concurrent(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = workspace / "first.txt"
+    second = workspace / "second.txt"
+    first.write_text("first-before\n", encoding="utf-8")
+    second.write_text("second-before\n", encoding="utf-8")
+    access = service._workspace_for(registry.resolve("main"))
+    original_replace = access._replace_text_file
+
+    def fail_write_or_recovery(relative: Path, old: str, new: str, **kwargs):
+        if relative.as_posix() == "second.txt":
+            raise OSError(28, "simulated disk full during second write")
+        if relative.as_posix() == "first.txt" and old == "first-after\n":
+            raise OSError(28, "simulated disk full during recovery")
+        return original_replace(relative, old, new, **kwargs)
+
+    monkeypatch.setattr(access, "_replace_text_file", fail_write_or_recovery)
+
+    result = call(
+        service,
+        "apply_edits",
+        {
+            "edits": [
+                {"path": "first.txt", "old_text": "before", "new_text": "after"},
+                {"path": "second.txt", "old_text": "before", "new_text": "after"},
+            ]
+        },
+    )
+
+    assert result["isError"] is True
+    observation = content(result)
+    assert observation["outcome"] == "partial"
+    assert observation["files"][0]["status"] == "recovery_failed"
+    assert "disk" in observation["files"][0]["detail"].casefold()
+    assert "concurrent" not in observation["error"].casefold()
+    assert first.read_text(encoding="utf-8") == "first-after\n"
+    assert (workspace / observation["files"][0]["recovery_path"]).read_text(
+        encoding="utf-8"
+    ) == "first-before\n"
+
+
+def test_path_guarded_recovery_cleanup_removes_the_verified_copy_once(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    access = service._workspace_for(registry.resolve("main"))
+    recovery = ".app.py.agent-backup-test.tmp"
+    recovery_path = workspace / recovery
+    recovery_path.write_text('print("hi")\n', encoding="utf-8")
+    monkeypatch.setattr("app.core.workspace.controller._ANCHORED_MUTATION_SUPPORTED", False)
+
+    removed = access._discard_recovery_file(
+        Path("app.py"), recovery, 'print("hi")\n'
+    )
+
+    assert removed is True
+    assert not recovery_path.exists()
+
+
+def test_request_id_replays_the_recorded_result_in_process_and_after_restart(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+) -> None:
+    target = workspace / "retry.txt"
+    target.write_text("a\n", encoding="utf-8")
+    arguments = {
+        "request_id": "durable-retry-0001",
+        "edits": [
+            {
+                "path": "retry.txt",
+                "old_text": "a",
+                "new_text": "aa",
+                "replace_all": True,
+            }
+        ],
+    }
+
+    first = call(service, "apply_edits", arguments)
+    replayed = call(service, "apply_edits", arguments)
+    restarted = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=tmp_path / "runtime",
+    )
+    replayed_after_restart = call(restarted, "apply_edits", arguments)
+
+    assert first["isError"] is False
+    assert content(replayed)["replayed"] is True
+    assert content(replayed_after_restart)["replayed"] is True
+    assert target.read_text(encoding="utf-8") == "aa\n"
+
+
+def test_mutation_without_request_id_is_refused_before_touching_disk(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    identity = service.registry.resolve("main", service._fallback_workspace()).identity
+
+    result = call_without_test_defaults(
+        service,
+        "apply_edits",
+        {
+            "project": "main",
+            "project_identity": identity,
+            "edits": [{"path": "app.py", "old_text": "hi", "new_text": "changed"}],
+        },
+    )
+
+    assert result["isError"] is True
+    assert content(result)["code"] == "invalid_arguments"
+    assert "request_id is required" in content(result)["error"]
+    assert (workspace / "app.py").read_text(encoding="utf-8") == 'print("hi")\n'
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "guidance"),
+    [
+        (
+            PermissionError(errno.EACCES, "Permission denied", "/private/hidden.txt"),
+            "permission_denied",
+            "Check the file and folder permissions",
+        ),
+        (
+            OSError(errno.ENOSPC, "No space left on device", "/private/hidden.txt"),
+            "disk_full",
+            "Free space",
+        ),
+    ],
+)
+def test_mutation_os_failures_return_path_free_actionable_diagnostics(
+    service: TunnelMcpService,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: OSError,
+    code: str,
+    guidance: str,
+) -> None:
+    def fail_write(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(service, "_dispatch_tool", fail_write)
+    result = call(
+        service,
+        "write_file",
+        {"path": "diagnostic.txt", "content": "not written\n"},
+    )
+
+    assert result["isError"] is True
+    assert content(result)["code"] == code
+    assert guidance in content(result)["error"]
+    assert "/private/hidden.txt" not in json.dumps(result)
+    assert not (workspace / "diagnostic.txt").exists()
+
+
+def test_request_id_refuses_to_mutate_without_a_durable_started_record(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+) -> None:
+    target = workspace / "retry.txt"
+    target.write_text("a\n", encoding="utf-8")
+    runtime = tmp_path / "blocked-runtime"
+    runtime.mkdir()
+    (runtime / "tunnel-requests").write_text("not a directory", encoding="utf-8")
+    unavailable = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=runtime,
+    )
+
+    result = call(
+        unavailable,
+        "apply_edits",
+        {
+            "request_id": "durable-retry-0002",
+            "edits": [
+                {
+                    "path": "retry.txt",
+                    "old_text": "a",
+                    "new_text": "aa",
+                    "replace_all": True,
+                }
+            ],
+        },
+    )
+
+    assert result["isError"] is True
+    assert content(result)["code"] == "journal_unavailable"
+    assert target.read_text(encoding="utf-8") == "a\n"
+
+
+def test_request_id_with_an_unrecorded_outcome_is_never_replayed_blindly(
+    service: TunnelMcpService,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = workspace / "retry.txt"
+    target.write_text("a\n", encoding="utf-8")
+    arguments = {
+        "request_id": "lost-response-0001",
+        "edits": [
+            {
+                "path": "retry.txt",
+                "old_text": "a",
+                "new_text": "aa",
+                "replace_all": True,
+            }
+        ],
+    }
+    original_dispatch = service._dispatch_tool
+
+    class SimulatedLostResponse(BaseException):
+        pass
+
+    def apply_then_lose_response(*args, **kwargs):
+        original_dispatch(*args, **kwargs)
+        raise SimulatedLostResponse
+
+    monkeypatch.setattr(service, "_dispatch_tool", apply_then_lose_response)
+    with pytest.raises(SimulatedLostResponse):
+        call(service, "apply_edits", arguments)
+    monkeypatch.setattr(service, "_dispatch_tool", original_dispatch)
+
+    refused = call(service, "apply_edits", arguments)
+    assert refused["isError"] is True
+    assert content(refused)["code"] == "outcome_unknown"
+    assert target.read_text(encoding="utf-8") == "aa\n"
+
+
+def test_request_id_with_a_corrupt_existing_record_is_never_replayed(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+) -> None:
+    target = workspace / "retry.txt"
+    target.write_text("a\n", encoding="utf-8")
+    runtime = tmp_path / "corrupt-runtime"
+    request_id = "corrupt-record-0001"
+    project = registry.resolve("main")
+    key = hashlib.sha256(
+        f"{project.id}\0{project.identity}\0{request_id}".encode("utf-8")
+    ).hexdigest()[:40]
+    journal = runtime / "tunnel-requests"
+    journal.mkdir(parents=True)
+    (journal / f"{key}.json").write_text("{broken", encoding="utf-8")
+    restarted = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=runtime,
+    )
+
+    result = call(
+        restarted,
+        "apply_edits",
+        {
+            "request_id": request_id,
+            "edits": [
+                {
+                    "path": "retry.txt",
+                    "old_text": "a",
+                    "new_text": "aa",
+                    "replace_all": True,
+                }
+            ],
+        },
+    )
+
+    assert result["isError"] is True
+    assert content(result)["code"] == "outcome_unknown"
+    assert target.read_text(encoding="utf-8") == "a\n"
+
+
+def test_request_journal_refuses_growth_when_all_records_are_uncertain(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+) -> None:
+    target = workspace / "retry.txt"
+    target.write_text("a\n", encoding="utf-8")
+    runtime = tmp_path / "full-runtime"
+    journal = runtime / "tunnel-requests"
+    journal.mkdir(parents=True)
+    for index in range(256):
+        (journal / f"uncertain-{index:03d}.json").write_text("{broken", encoding="utf-8")
+    bounded = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=runtime,
+    )
+
+    result = call(
+        bounded,
+        "apply_edits",
+        {
+            "request_id": "bounded-journal-0001",
+            "edits": [{"path": "retry.txt", "old_text": "a", "new_text": "aa"}],
+        },
+    )
+
+    assert result["isError"] is True
+    assert content(result)["code"] == "journal_unavailable"
+    assert "256 unresolved" in content(result)["error"]
+    assert target.read_text(encoding="utf-8") == "a\n"
+    assert len(list(journal.glob("*.json"))) == 256
 
 
 def test_write_file_requires_the_current_sha_to_replace(
@@ -622,7 +1272,8 @@ def test_write_file_rejects_a_receipt_after_an_external_change(
     )
 
     assert result["isError"] is True
-    assert "no longer matches" in content(result)["error"]
+    assert content(result)["code"] == "stale_file"
+    assert "changed since you read it" in content(result)["error"]
     assert (workspace / "app.py").read_text(encoding="utf-8") == "changed elsewhere\n"
 
 
@@ -775,11 +1426,14 @@ def test_apply_edits_rejects_missing_text_and_applies_same_file_edits_in_order(
         },
     )
     assert ordered["isError"] is False
+    assert content(ordered)["outcome"] == "committed"
     assert content(ordered)["files"] == [
         {
             "path": "seq.txt",
+            "status": "written",
             "replacements": 2,
             "sha256": content(ordered)["files"][0]["sha256"],
+            "verified": True,
         }
     ]
     assert (workspace / "seq.txt").read_text() == "three\n"
@@ -834,7 +1488,518 @@ def test_run_check_supports_required_commands_and_refuses_destruction(
     assert (workspace / "app.py").exists()
 
 
+def test_background_check_deduplicates_and_survives_service_restart(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+) -> None:
+    (workspace / "check_long.py").write_text(
+        "import time\ntime.sleep(0.4)\nprint('checked')\n",
+        encoding="utf-8",
+    )
+    arguments = {
+        "command": "python check_long.py",
+        "idempotency_key": "long-check-0001",
+        "timeout_seconds": 60,
+    }
+
+    started = call(service, "start_check", arguments)
+    duplicate = call(service, "start_check", arguments)
+    job_id = content(started)["job"]["job_id"]
+    assert content(duplicate)["job"]["job_id"] == job_id
+    assert content(duplicate)["deduplicated"] is True
+
+    restarted = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=tmp_path / "runtime",
+    )
+    finished = wait_for_check(restarted, job_id)
+
+    assert finished["isError"] is False, content(finished)
+    assert content(finished)["job"]["state"] == "succeeded"
+    assert content(finished)["job"]["verification"] == "recorded"
+    reviewed = call(restarted, "review_changes")
+    assert reviewed["isError"] is False, content(reviewed)
+
+
+def test_completed_background_check_rebinds_verification_after_restart(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+) -> None:
+    (workspace / "check_completed.py").write_text(
+        "print('checked')\n",
+        encoding="utf-8",
+    )
+    started = call(
+        service,
+        "start_check",
+        {
+            "command": "python check_completed.py",
+            "idempotency_key": "completed-check-0001",
+            "timeout_seconds": 60,
+        },
+    )
+    job_id = content(started)["job"]["job_id"]
+    completed = wait_for_check(service, job_id)
+    assert completed["isError"] is False, content(completed)
+
+    restarted = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=tmp_path / "runtime",
+    )
+    recovered = call(restarted, "observe_check", {"job_id": job_id})
+
+    assert recovered["isError"] is False, content(recovered)
+    assert content(recovered)["job"]["verification"] == "recorded"
+    assert call(restarted, "review_changes")["isError"] is False
+
+
+def test_background_check_can_be_cancelled(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    (workspace / "check_cancel.py").write_text(
+        "import time\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    started = call(
+        service,
+        "start_check",
+        {
+            "command": "python check_cancel.py",
+            "idempotency_key": "cancel-check-0001",
+            "timeout_seconds": 60,
+        },
+    )
+    job_id = content(started)["job"]["job_id"]
+
+    stopped = call(service, "stop_check", {"job_id": job_id})
+
+    assert stopped["isError"] is False, content(stopped)
+    assert content(stopped)["job"]["state"] == "stopped"
+    observed = call(service, "observe_check", {"job_id": job_id})
+    assert observed["isError"] is True
+    assert content(observed)["job"]["state"] == "stopped"
+
+
+def test_background_check_evidence_expires_after_an_external_edit(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    (workspace / "check_quick.py").write_text("print('checked')\n", encoding="utf-8")
+    started = call(
+        service,
+        "start_check",
+        {
+            "command": "python check_quick.py",
+            "idempotency_key": "fresh-check-0001",
+            "timeout_seconds": 60,
+        },
+    )
+    job_id = content(started)["job"]["job_id"]
+    finished = wait_for_check(service, job_id)
+    assert finished["isError"] is False, content(finished)
+
+    (workspace / "app.py").write_text('print("changed later")\n', encoding="utf-8")
+    stale = call(service, "observe_check", {"job_id": job_id})
+
+    assert stale["isError"] is True
+    assert content(stale)["code"] == "stale_verification"
+    assert content(stale)["job"]["workspace_changed"] is True
+    assert call(service, "review_changes")["isError"] is True
+
+
+def test_reobserving_old_failed_check_does_not_revoke_a_newer_pass(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    (workspace / "check_fail.py").write_text(
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    (workspace / "check_pass.py").write_text("print('passed')\n", encoding="utf-8")
+    failed_start = call(
+        service,
+        "start_check",
+        {
+            "command": "python check_fail.py",
+            "idempotency_key": "ordered-check-fail-0001",
+            "timeout_seconds": 60,
+        },
+    )
+    failed_job = content(failed_start)["job"]["job_id"]
+    failed = wait_for_check(service, failed_job)
+    assert failed["isError"] is True
+    assert content(failed)["job"]["state"] == "failed"
+
+    passed_start = call(
+        service,
+        "start_check",
+        {
+            "command": "python check_pass.py",
+            "idempotency_key": "ordered-check-pass-0001",
+            "timeout_seconds": 60,
+        },
+    )
+    passed_job = content(passed_start)["job"]["job_id"]
+    passed = wait_for_check(service, passed_job)
+    assert passed["isError"] is False, content(passed)
+    assert content(call(service, "project_overview"))["verification_current"] is True
+    assert call(service, "review_changes")["isError"] is False
+
+    observed_old = call(service, "observe_check", {"job_id": failed_job})
+
+    assert observed_old["isError"] is True
+    assert content(observed_old)["job"]["state"] == "failed"
+    assert content(call(service, "project_overview"))["verification_current"] is True
+    assert call(service, "review_changes")["isError"] is False
+
+
+def test_reobserving_old_success_does_not_override_a_newer_failure(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    (workspace / "check_pass_first.py").write_text(
+        "print('passed')\n",
+        encoding="utf-8",
+    )
+    (workspace / "check_fail_later.py").write_text(
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    passed_start = call(
+        service,
+        "start_check",
+        {
+            "command": "python check_pass_first.py",
+            "idempotency_key": "ordered-pass-first-0001",
+            "timeout_seconds": 60,
+        },
+    )
+    passed_job = content(passed_start)["job"]["job_id"]
+    assert wait_for_check(service, passed_job)["isError"] is False
+
+    failed_start = call(
+        service,
+        "start_check",
+        {
+            "command": "python check_fail_later.py",
+            "idempotency_key": "ordered-fail-later-0001",
+            "timeout_seconds": 60,
+        },
+    )
+    failed_job = content(failed_start)["job"]["job_id"]
+    assert wait_for_check(service, failed_job)["isError"] is True
+    assert call(service, "review_changes")["isError"] is True
+
+    observed_old = call(service, "observe_check", {"job_id": passed_job})
+
+    assert observed_old["isError"] is True
+    assert content(observed_old)["code"] == "stale_verification"
+    assert content(observed_old)["job"]["verification"] == "not_recorded"
+    assert call(service, "review_changes")["isError"] is True
+
+
 # Explicit project registry -----------------------------------------------------
+
+
+def test_current_project_reports_the_exact_saved_authority_without_host_paths(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    reference: Path,
+) -> None:
+    saved = service.selection_store.save("main")
+
+    discovered = call(service, "current_project", project=None)
+
+    assert discovered["isError"] is False
+    observation = content(discovered)
+    selected = observation["current_project"]
+    expected = registry.resolve("main")
+    assert selected == {
+        "id": "main",
+        "writable": True,
+        "identity": expected.identity,
+        "registered": True,
+        "available": True,
+    }
+    assert observation["selection"]["revision"] == saved.revision
+    assert observation["selection"]["source"] == "selection"
+    rendered = json.dumps(observation)
+    assert str(workspace) not in rendered
+    assert str(reference) not in rendered
+
+
+def test_switching_the_saved_project_does_not_redirect_a_pinned_task(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+) -> None:
+    first_selection = service.selection_store.save("main")
+    resolved = content(call(service, "current_project", project=None))["current_project"]
+
+    service.selection_store.save("ref", expected_revision=first_selection.revision)
+    switched = content(call(service, "current_project", project=None))
+    pinned = call(
+        service,
+        "read_files",
+        {
+            "project_identity": resolved["identity"],
+            "files": [{"path": "app.py"}],
+        },
+        project="main",
+    )
+
+    assert switched["current_project"]["id"] == "ref"
+    assert switched["current_project"]["writable"] is False
+    assert content(pinned)["files"][0]["content"] == '1: print("hi")'
+    assert content(pinned)["files"][0]["sha256"] == hashlib.sha256(
+        b'print("hi")\n'
+    ).hexdigest()
+    assert registry.resolve("main").identity == resolved["identity"]
+
+
+def test_current_project_reports_unselected_stale_and_invalid_registry_states(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    reference: Path,
+    workspace: Path,
+    tmp_path: Path,
+) -> None:
+    unselected = call(service, "current_project", project=None)
+    assert unselected["isError"] is False
+    assert content(unselected)["current_project"] is None
+    assert content(unselected)["selection"]["source"] == "none"
+    assert "select" in content(unselected)["next_step"].casefold()
+
+    service.selection_store.save("main")
+    write_registry(
+        registry.path,
+        [{"id": "ref", "root": str(reference), "writable": False}],
+    )
+    stale = call(service, "current_project", project=None)
+    assert stale["isError"] is False
+    assert content(stale)["current_project"] is None
+    assert "no longer registered" in content(stale)["problem"]
+
+    invalid_path = tmp_path / "invalid-current-project.json"
+    invalid_path.write_text("{not-json", encoding="utf-8")
+    invalid = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(invalid_path),
+        runtime_root=tmp_path / "invalid-runtime",
+    )
+    failed = call(invalid, "current_project", project=None)
+    assert failed["isError"] is True
+    assert content(failed)["code"] == "project_unavailable"
+    for result in (unselected, stale, failed):
+        rendered = json.dumps(result)
+        assert str(workspace) not in rendered
+        assert str(reference) not in rendered
+
+
+def test_discovery_reports_when_background_checks_are_not_configured(
+    registry: ProjectRegistry,
+    workspace: Path,
+) -> None:
+    without_runtime = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=None,
+    )
+
+    discovered = content(call(without_runtime, "current_project", project=None))
+    overview = content(call(without_runtime, "project_overview"))
+
+    assert discovered["limits"]["background_checks"] is False
+    assert overview["limits"]["background_checks"] is False
+
+
+def test_project_overview_fails_closed_when_the_registered_root_is_unavailable(
+    service: TunnelMcpService,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.core.tunnel_mcp.project_availability",
+        lambda _project: "The project folder is not readable by this service.",
+    )
+
+    result = call(service, "project_overview")
+
+    assert result["isError"] is True
+    assert content(result)["code"] == "project_unavailable"
+    assert "not readable" in content(result)["error"]
+    assert str(workspace) not in json.dumps(result)
+
+
+def test_pinned_project_identity_refuses_a_later_registration_remap(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "original"
+    replacement = tmp_path / "replacement-project"
+    for root, value in ((original, "original\n"), (replacement, "replacement\n")):
+        root.mkdir()
+        (root / "note.txt").write_text(value, encoding="utf-8")
+    registry_path = tmp_path / "identity-registry.json"
+    registry = write_registry(
+        registry_path,
+        [{"id": "work", "root": str(original), "writable": True}],
+    )
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(),
+        registry=registry,
+        runtime_root=tmp_path / "identity-runtime",
+    )
+    service.selection_store.save("work")
+    identity = content(call(service, "current_project", project=None))["current_project"][
+        "identity"
+    ]
+
+    write_registry(
+        registry_path,
+        [{"id": "work", "root": str(replacement), "writable": True}],
+    )
+    refused = call(
+        service,
+        "read_files",
+        {"project_identity": identity, "files": [{"path": "note.txt"}]},
+        project="work",
+    )
+
+    assert refused["isError"] is True
+    assert content(refused)["code"] == "project_changed"
+    assert "re-registered" in content(refused)["error"]
+    assert str(original) not in json.dumps(refused)
+    assert str(replacement) not in json.dumps(refused)
+
+
+def test_pinned_project_identity_refuses_same_path_root_replacement(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "note.txt").write_text("original\n", encoding="utf-8")
+    registry = write_registry(
+        tmp_path / "identity-registry.json",
+        [{"id": "work", "root": str(project_root), "writable": True}],
+    )
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(),
+        registry=registry,
+        runtime_root=tmp_path / "identity-runtime",
+    )
+    service.selection_store.save("work")
+    identity = content(call(service, "current_project", project=None))["current_project"][
+        "identity"
+    ]
+
+    admitted_root = tmp_path / "admitted-project"
+    project_root.rename(admitted_root)
+    project_root.mkdir()
+    replacement_note = project_root / "note.txt"
+    replacement_note.write_text("replacement\n", encoding="utf-8")
+
+    refused_read = call(
+        service,
+        "read_files",
+        {"project_identity": identity, "files": [{"path": "note.txt"}]},
+        project="work",
+    )
+    refused_write = call(
+        service,
+        "write_file",
+        {
+            "project_identity": identity,
+            "path": "created.txt",
+            "content": "must not be written\n",
+        },
+        project="work",
+    )
+
+    for refused in (refused_read, refused_write):
+        assert refused["isError"] is True
+        assert content(refused)["code"] == "project_changed"
+        assert "current_project or project_overview" in content(refused)["error"]
+    assert replacement_note.read_text(encoding="utf-8") == "replacement\n"
+    assert not (project_root / "created.txt").exists()
+    assert (admitted_root / "note.txt").read_text(encoding="utf-8") == "original\n"
+
+    rediscovered = content(call(service, "current_project", project=None))["current_project"]
+    assert rediscovered["identity"] != identity
+    reread = call(
+        service,
+        "read_files",
+        {
+            "project_identity": rediscovered["identity"],
+            "files": [{"path": "note.txt"}],
+        },
+        project="work",
+    )
+    assert content(reread)["files"][0]["content"] == "1: replacement"
+
+
+def test_controller_identity_failure_is_not_replayed_against_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "note.txt").write_text("admitted\n", encoding="utf-8")
+    registry = write_registry(
+        tmp_path / "identity-registry.json",
+        [{"id": "work", "root": str(project_root), "writable": True}],
+    )
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(),
+        registry=registry,
+        runtime_root=tmp_path / "identity-runtime",
+    )
+    service.selection_store.save("work")
+    identity = content(call(service, "current_project", project=None))["current_project"][
+        "identity"
+    ]
+    assert call(
+        service,
+        "read_files",
+        {"project_identity": identity, "files": [{"path": "note.txt"}]},
+        project="work",
+    )["isError"] is False
+
+    from app.core.tunnel_projects import project_availability as check_availability
+
+    admitted_root = tmp_path / "admitted-project"
+    swapped = False
+
+    def swap_after_admission(project: TunnelProject) -> str:
+        nonlocal swapped
+        problem = check_availability(project)
+        if not swapped:
+            swapped = True
+            project_root.rename(admitted_root)
+            project_root.mkdir()
+            (project_root / "note.txt").write_text("replacement\n", encoding="utf-8")
+        return problem
+
+    monkeypatch.setattr("app.core.tunnel_mcp.project_availability", swap_after_admission)
+    refused = call(
+        service,
+        "read_files",
+        {"project_identity": identity, "files": [{"path": "note.txt"}]},
+        project="work",
+    )
+
+    assert refused["isError"] is True
+    assert content(refused)["code"] == "project_changed"
+    assert "nothing was replayed" in content(refused)["error"]
+    assert "files" not in content(refused)
+    assert (project_root / "note.txt").read_text(encoding="utf-8") == "replacement\n"
+    assert (admitted_root / "note.txt").read_text(encoding="utf-8") == "admitted\n"
 
 
 @pytest.mark.parametrize(
@@ -856,6 +2021,22 @@ def test_missing_project_argument_is_refused(service: TunnelMcpService) -> None:
     result = call(service, "read_files", {"files": [{"path": "app.py"}]}, project=None)
     assert result["isError"] is True
     assert "project is required" in content(result)["error"]
+
+
+def test_project_identity_is_required_after_project_discovery(
+    service: TunnelMcpService,
+) -> None:
+    result = rpc(
+        service,
+        "tools/call",
+        {
+            "name": "read_files",
+            "arguments": {"project": "main", "files": [{"path": "app.py"}]},
+        },
+    )["result"]
+
+    assert result["isError"] is True
+    assert "project_identity is required" in content(result)["error"]
 
 
 def test_read_only_projects_reject_every_mutation_before_touching_files(
@@ -1085,6 +2266,10 @@ def test_git_root_workspace_is_the_only_fallback_project(tmp_path: Path) -> None
         runtime_root=tmp_path / "rt",
     )
     assert call(service, "project_overview", project="solo")["isError"] is False
+    discovered = content(call(service, "current_project", project=None))
+    assert discovered["current_project"]["id"] == "solo"
+    assert discovered["current_project"]["registered"] is False
+    assert discovered["current_project"]["writable"] is False
 
 
 @pytest.mark.parametrize(
@@ -1370,7 +2555,7 @@ def test_git_discovery_never_climbs_above_the_project_root(tmp_path: Path) -> No
 # Lock scope -------------------------------------------------------------------
 
 
-def test_projects_do_not_block_each_other_and_git_observation_is_lock_free(
+def test_project_reads_and_git_observation_are_lock_free(
     service: TunnelMcpService,
     registry: ProjectRegistry,
     workspace: Path,
@@ -1392,19 +2577,18 @@ def test_projects_do_not_block_each_other_and_git_observation_is_lock_free(
         observation = threading.Thread(
             target=run, args=("changes", "show_changes", {}, "main")
         )
-        blocked = threading.Thread(
+        reader = threading.Thread(
             target=run,
             args=("main", "read_files", {"files": [{"path": "app.py"}]}, "main"),
         )
-        for thread in (other, observation, blocked):
+        for thread in (other, observation, reader):
             thread.start()
         other.join(timeout=10)
         observation.join(timeout=10)
-        blocked.join(timeout=0.3)
+        reader.join(timeout=10)
         assert results["ref"]["isError"] is False
         assert results["changes"]["isError"] is False
-        assert "main" not in results
-    blocked.join(timeout=10)
+        assert results["main"]["isError"] is False
     assert results["main"]["isError"] is False
 
 

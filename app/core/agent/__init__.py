@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.15.0-codex.0
+# Code version: v1.16.0-codex.0
 
 from typing import TYPE_CHECKING
 
@@ -50,6 +50,16 @@ from ..tunnel_credentials import (
     save_tunnel_credentials,
 )
 from ..tunnel_runtime import TunnelRuntime, describe_tunnel_status, valid_tunnel_id
+from ..tunnel_projects import (
+    ProjectRegistry,
+    ProjectRegistryError,
+    ProjectSelectionConflict,
+    ProjectSelectionStore,
+    default_tunnel_projects_path,
+    default_tunnel_selection_path,
+    project_availability,
+    resolve_current_project,
+)
 from .action_protocol import parse_agent_action, render_final_action as render_final_agent_action
 from .platform_catalog import (
     AGENT_MODEL_OPTIONS_BY_PLATFORM,
@@ -170,6 +180,10 @@ __all__ = [
     "MCP_SCOPE",
     "OPERATING_SYSTEM_OPTIONS",
     "PAGE_OBSERVATIONS",
+    "ProjectRegistry",
+    "ProjectRegistryError",
+    "ProjectSelectionConflict",
+    "ProjectSelectionStore",
     "SUPPORTED_AGENT_PLATFORMS",
     "SUPPORTED_BROWSERS",
     "SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS",
@@ -190,6 +204,8 @@ __all__ = [
     "configure_gemini_tunnel",
     "controller_action_prompt_schema",
     "default_model_for_platform",
+    "default_tunnel_projects_path",
+    "default_tunnel_selection_path",
     "default_tunnel_credentials_path",
     "describe_tunnel_status",
     "valid_tunnel_id",
@@ -215,7 +231,9 @@ __all__ = [
     "probe_and_collect_grok_sources",
     "protected_resource_metadata",
     "protected_resource_metadata_url",
+    "project_availability",
     "render_final_agent_action",
+    "resolve_current_project",
     "save_tunnel_credentials",
     "validate_agent_access_password",
     "validate_computer_use_settings",
