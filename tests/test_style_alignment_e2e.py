@@ -1,4 +1,4 @@
-"""Shared component annotation regressions. Code version: v1.5.0-codex.0."""
+"""Shared component annotation regressions. Code version: v1.6.0-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -219,9 +219,21 @@ def test_shared_primitive_catalog_geometry_and_states(
                 const owner = node.closest('.style-token-demo').getBoundingClientRect();
                 const box = node.getBoundingClientRect();
                 const widths = Array.from(node.querySelectorAll('.range-mode-option'), child => child.getBoundingClientRect().width);
+                const resolveColor = value => {
+                    const probe = document.createElement('span');
+                    probe.style.color = value;
+                    node.append(probe);
+                    const color = getComputedStyle(probe).color;
+                    probe.remove();
+                    return color;
+                };
                 return {
+                    activeColor: getComputedStyle(node.querySelector('input:checked + span')).color,
+                    activeTokenColor: resolveColor('var(--mode-switch-label-color-active)'),
                     centered: Math.abs((box.left + box.width / 2) - (owner.left + owner.width / 2)),
                     compact: box.width < owner.width,
+                    inactiveColor: getComputedStyle(node.querySelector('input:not(:checked) + span')).color,
+                    inactiveTokenColor: resolveColor('var(--mode-switch-label-color)'),
                     widths,
                     transitionDuration: getComputedStyle(node).transitionDuration,
                 };
@@ -229,6 +241,9 @@ def test_shared_primitive_catalog_geometry_and_states(
         )
         assert segmented_geometry["centered"] <= 1
         assert segmented_geometry["compact"]
+        assert segmented_geometry["activeColor"] == segmented_geometry["activeTokenColor"]
+        assert segmented_geometry["inactiveColor"] == segmented_geometry["inactiveTokenColor"]
+        assert segmented_geometry["activeColor"] != segmented_geometry["inactiveColor"]
         assert max(segmented_geometry["widths"]) - min(segmented_geometry["widths"]) <= 1
         if motion == "reduce":
             assert segmented_geometry["transitionDuration"] in {"0s", "0.001s"}

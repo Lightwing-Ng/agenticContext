@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.79.0-codex.0
+Code version: v1.80.0-codex.0
 """
 
 import hashlib
@@ -1718,6 +1718,8 @@ def test_segmented_control_uses_the_sibling_generic_pill_contract() -> None:
         "grid-template-columns: repeat(var(--segmented-option-count), minmax(0, 1fr));",
         "--mode-switch-radius: var(--radius-pill);",
         "--mode-switch-gap: 4px;",
+        "--mode-switch-label-color: var(--theme-muted);",
+        "--mode-switch-label-color-active: var(--accent-contrast);",
         "border: 0;",
         ".segmented-control[data-option-count]::before,\n.range-mode-shell[data-option-count]::before {",
         "transform: translateX(calc((100% + var(--mode-switch-gap)) * var(--segmented-active-index, 0)));",
@@ -1728,7 +1730,7 @@ def test_segmented_control_uses_the_sibling_generic_pill_contract() -> None:
         ".segmented-control-option input:checked + span,",
         "font-weight: var(--font-weight-regular);",
         "font-weight: var(--font-weight-bold);",
-        "color: var(--color-white-adaptive);",
+        "color: var(--mode-switch-label-color-active);",
         ".browser-chat-list {",
         ".browser-chat-message {",
         ".browser-chat-message-link {",
@@ -2371,7 +2373,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.140.0-codex.0 */",
+        "/* Code version: v2.141.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
