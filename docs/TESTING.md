@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.24.0-codex.0`
+Documentation version: `v1.24.1-codex.0`
 
 ## Supported commands
 
@@ -162,13 +162,14 @@ rejection, destructive-command refusal, current-evidence bodycheck, and loopback
 authentication. The isolated workflow test uses one application instance to save a registered
 page selection, discover it through authenticated `/mcp`, create/read/edit/re-read/delete a file,
 confirm absence, run a check, finish `review_changes`, and reject a write to the read-only
-reference project.
+reference project. A second local-page case keeps one missing registered root visible as
+unavailable, refuses its selection, and proves that another registered project remains usable.
 
 The project registry cases use temporary writable and read-only roots and cover unknown and
 path-like ids, cross-project and absolute-path escapes, same-name files, symlinks,
 project-scoped instruction discovery, per-project SHA guards across switching, re-registration,
 same-path root replacement, admission-time replacement races, invalid registries failing closed,
-and no Desktop-wide fallback. Runtime cases cover transient
+per-project handling of temporarily missing roots, and no Desktop-wide fallback. Runtime cases cover transient
 preflight recovery, ready-then-lost connectivity, a live but persistently unhealthy client,
 bounded retry, HTTP status failures, status-fetch timeout/cancellation, and superseded-generation
 results. Browser cases prove the first-use path has no historical-activity gate, a failed

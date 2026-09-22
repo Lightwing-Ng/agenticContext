@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.47.0-codex.0`
+Documentation version: `v1.47.1-codex.0`
 
 ## Runtime flow
 
@@ -284,7 +284,10 @@ explicit `writable` flag; its authority fingerprint also binds the root director
 filesystem identity, so replacing a directory at the same path changes the project identity.
 Identifiers are never interpreted as paths, and write authority never follows from where a
 directory lives. The registry rejects overlapping roots, the filesystem
-root, and the home folder, and an invalid registry fails closed. When no registry file exists,
+root, and the home folder, and an invalid registry fails closed. A syntactically valid registration
+whose root is temporarily absent remains in discovery as unavailable, without hiding other usable
+projects; resolution still refuses every filesystem action until that root exists and its native
+identity is bound. When no registry file exists,
 the Agent's selected workspace becomes the only project, and only when it is itself a Git
 work-tree root; a parent folder such as the Desktop never becomes an implicit project. The local
 Tunnel page may choose only one currently registered project. That choice is persisted separately

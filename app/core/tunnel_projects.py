@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.0-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -18,6 +18,11 @@ The local Tunnel page selects one registered project as the *current* project. T
 selection is stored in ``tunnel-selection.json`` beside the registry, carries a
 revision that increases on every change, and never grants authority by itself: it
 only names which registered project a new ChatGPT task should start from.
+
+A registered root may be temporarily absent on one computer. The registry still
+loads that authority as unavailable so the local page can diagnose it without
+hiding unrelated usable projects; no tool can open the root until it exists and
+passes the normal native-identity and access checks.
 """
 
 from __future__ import annotations
@@ -67,10 +72,16 @@ class TunnelProject:
     def __post_init__(self) -> None:
         """Pin the native directory identity that this authority admitted."""
         if self.filesystem_identity is None:
+            try:
+                filesystem_identity = _root_filesystem_identity(self.root)
+            except (OSError, RuntimeError):
+                # Keep a missing or inaccessible registered root visible but
+                # unavailable. A later registry read binds it if it appears.
+                return
             object.__setattr__(
                 self,
                 "filesystem_identity",
-                _root_filesystem_identity(self.root),
+                filesystem_identity,
             )
 
     @property
@@ -151,6 +162,8 @@ def project_availability(project: TunnelProject) -> str:
         return "The project folder is missing on this computer."
     if current != project.root or not current.is_dir():
         return "The project folder moved or was replaced; review the project registry."
+    if project.filesystem_identity is None:
+        return "The project folder identity cannot be read by this service."
     if not project.filesystem_identity_matches():
         return (
             "The project folder was replaced after this project identity was resolved; "
@@ -183,10 +196,10 @@ def _canonical_root(raw_root: Any, label: str) -> Path:
     if not candidate.is_absolute():
         raise ProjectRegistryError(f"{label} root must be an absolute path.")
     try:
-        root = candidate.resolve(strict=True)
+        root = candidate.resolve(strict=False)
     except (OSError, RuntimeError) as exc:
-        raise ProjectRegistryError(f"{label} root does not exist.") from exc
-    if not root.is_dir():
+        raise ProjectRegistryError(f"{label} root cannot be resolved.") from exc
+    if root.exists() and not root.is_dir():
         raise ProjectRegistryError(f"{label} root must be a directory.")
     if root == Path(root.anchor) or root == Path.home().resolve():
         # A filesystem root or the home folder would grant every nested project at once.
@@ -325,23 +338,17 @@ class ProjectRegistry:
         return projects
 
     def resolve(self, project_id: Any, fallback_workspace: str = "") -> TunnelProject:
-        """Return the project with exactly this identifier."""
+        """Return the registered authority with exactly this identifier.
+
+        Availability is deliberately separate: callers must run
+        ``project_availability`` before opening the root. This lets discovery show
+        one missing registered project without suppressing every usable entry.
+        """
         if not isinstance(project_id, str) or not project_id:
             raise ProjectRegistryError("Name a registered project by its configured id.")
         projects = self.projects(fallback_workspace)
         for project in projects:
             if project.id == project_id:
-                # The root was canonical when loaded; re-check that it still is.
-                try:
-                    current = project.root.resolve(strict=True)
-                except (OSError, RuntimeError) as exc:
-                    raise ProjectRegistryError(
-                        f"Project {project.id} is unavailable on this computer."
-                    ) from exc
-                if current != project.root or not current.is_dir():
-                    raise ProjectRegistryError(
-                        f"Project {project.id} root changed; review the project registry."
-                    )
                 return project
         known = ", ".join(project.id for project in projects) or "none"
         raise ProjectRegistryError(

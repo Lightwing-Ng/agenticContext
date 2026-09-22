@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.7.0-codex.0
+Code version: v2.8.0-codex.0
 """
 
 from __future__ import annotations
@@ -1801,6 +1801,48 @@ def test_current_project_reports_unselected_stale_and_invalid_registry_states(
         rendered = json.dumps(result)
         assert str(workspace) not in rendered
         assert str(reference) not in rendered
+
+
+def test_missing_registered_root_stays_visible_without_hiding_usable_projects(
+    tmp_path: Path,
+) -> None:
+    """One unavailable registration must not invalidate every other authority."""
+    available = tmp_path / "available"
+    available.mkdir()
+    missing = tmp_path / "missing-reference"
+    registry = write_registry(
+        tmp_path / "mixed-registry.json",
+        [
+            {"id": "available", "root": str(available), "writable": True},
+            {"id": "missing", "root": str(missing), "writable": False},
+        ],
+    )
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(),
+        registry=registry,
+        runtime_root=tmp_path / "runtime",
+    )
+
+    discovered = content(call(service, "current_project", project=None))
+    projects = {item["id"]: item for item in discovered["projects"]}
+
+    assert discovered["ok"] is True
+    assert projects["available"]["available"] is True
+    assert projects["missing"]["available"] is False
+    assert "missing" in projects["missing"]["problem"].casefold()
+    unavailable_identity = projects["missing"]["identity"]
+    refused = call(service, "project_overview", project="missing")
+    assert refused["isError"] is True
+    assert content(refused)["code"] == "project_unavailable"
+    assert call(service, "project_overview", project="available")["isError"] is False
+
+    missing.mkdir()
+    rebound = {
+        item["id"]: item
+        for item in content(call(service, "current_project", project=None))["projects"]
+    }
+    assert rebound["missing"]["available"] is True
+    assert rebound["missing"]["identity"] != unavailable_identity
 
 
 def test_discovery_reports_when_background_checks_are_not_configured(

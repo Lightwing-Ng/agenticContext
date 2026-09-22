@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.34.0-codex.0`
+Documentation version: `v1.34.1-codex.0`
 
 ## Launch
 
@@ -399,6 +399,10 @@ Runtime behavior:
   Agent's confinement, symlink, ignored-folder, and credential-file rules for that root. Read-only
   projects refuse every mutation or check before touching anything. Each project keeps its own read
   receipts, SHA-256 guards, edit generation, and verification evidence.
+- Availability is evaluated per registered project. A root that is temporarily absent remains
+  visible as registered but unavailable and cannot be selected or opened; it does not suppress
+  other usable projects. If that root later appears, discovery binds its native filesystem
+  identity before any tool call can proceed.
 - The public catalog is exactly: `current_project`; `project_overview` (writability, root and nested
   instruction files of that project only, bounded Git status); `list_files`; `search_files`;
   `read_files` (1-8 files or ranges with SHA-256, truncation, and the next line and optional

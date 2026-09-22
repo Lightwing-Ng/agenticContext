@@ -1,6 +1,6 @@
 """Isolated local-page to authenticated MCP workflow acceptance.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -251,3 +251,60 @@ def test_selected_project_completes_authenticated_crud_check_and_review(
         assert refused["isError"] is True
         assert observation(refused)["code"] == "read_only_project"
         assert not (reference / "blocked.txt").exists()
+
+
+def test_local_page_lists_a_missing_registration_without_hiding_a_usable_project(
+    tmp_path: Path,
+) -> None:
+    """Availability is per project, and an unavailable option cannot be selected."""
+    project = tmp_path / "available"
+    project.mkdir()
+    missing = tmp_path / "missing-reference"
+    settings_dir = tmp_path / "settings"
+    settings_dir.mkdir()
+    registry_path = settings_dir / "tunnel-projects.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "projects": [
+                    {"id": "available", "root": str(project), "writable": True},
+                    {"id": "missing", "root": str(missing), "writable": False},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    application = create_app(
+        tmp_path / "store",
+        computer_use_settings_path=settings_dir / "computer-use.json",
+        computer_use_runtime_root=tmp_path / "computer-runtime",
+        tunnel_credentials_path=settings_dir / "tunnel-credentials.json",
+        tunnel_projects_path=registry_path,
+        tunnel_runtime_root=tmp_path / "tunnel-runtime",
+        agent_external_operations_enabled=False,
+    )
+    application.config.update(TESTING=True)
+
+    with application.test_client() as client:
+        response = client.get("/api/agent/tunnel/project")
+        assert response.status_code == 200
+        context = response.get_json()["project_context"]
+        projects = {item["id"]: item for item in context["projects"]}
+        assert projects["available"]["available"] is True
+        assert projects["missing"]["available"] is False
+        assert "missing" in projects["missing"]["problem"].casefold()
+
+        refused = client.post(
+            "/api/agent/tunnel/project",
+            json={"project_id": "missing", "expected_revision": 0},
+        )
+        assert refused.status_code == 409
+        assert "missing" in refused.get_json()["error"].casefold()
+
+        selected = client.post(
+            "/api/agent/tunnel/project",
+            json={"project_id": "available", "expected_revision": 0},
+        )
+        assert selected.status_code == 200
+        assert selected.get_json()["project_context"]["current"]["id"] == "available"
