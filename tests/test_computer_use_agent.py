@@ -1,10 +1,11 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.82.1-codex.0
+Code version: v3.83.0-claude.0
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict
 import hashlib
 from io import BytesIO, StringIO, TextIOWrapper
@@ -11629,6 +11630,9 @@ def test_workspace_controller_delete_rejects_leaf_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+
+    if not workspace_controller._ANCHORED_DELETE_SUPPORTED:
+        pytest.skip("Anchored deletion descriptors are unavailable on this host.")
     workspace = tmp_path / "project"
     nested = workspace / "nested"
     nested.mkdir(parents=True)
@@ -11668,6 +11672,224 @@ def test_workspace_controller_delete_rejects_leaf_replacement(
     assert "identity changed before deletion" in deleted["error"]
     assert original_target.read_text(encoding="utf-8") == "original target\n"
     assert target.read_text(encoding="utf-8") == replacement
+
+
+def _windows_delete_controller(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content: str = "retired fixture\n",
+) -> tuple[WorkspaceController, Path, list[tuple[Path, Path]], dict[str, object]]:
+    """Build a controller that takes the Windows delete decision on this host."""
+    workspace = tmp_path / "project"
+    nested = workspace / "nested"
+    nested.mkdir(parents=True)
+    target = nested / "target.txt"
+    target.write_text(content, encoding="utf-8")
+    controller = WorkspaceController(
+        workspace,
+        ComputerUseSettings(workspace_path=str(workspace)),
+        lambda: False,
+    )
+    receipt = controller.execute({"action": "read", "path": "nested/target.txt"})
+    assert receipt["ok"]
+    guard_calls: list[tuple[Path, Path]] = []
+
+    @contextmanager
+    def fake_guard(
+        workspace_path: Path,
+        parent: Path,
+        *,
+        expected_workspace_identity: tuple[int, int],
+        expected_parent_identity: tuple[int, int],
+    ):
+        assert expected_workspace_identity == (700, 701)
+        assert expected_parent_identity == (700, 701)
+        guard_calls.append((workspace_path, parent))
+        yield
+
+    _patch_workspace_global(monkeypatch, "_ANCHORED_DELETE_SUPPORTED", False)
+    _patch_workspace_global(monkeypatch, "_uses_windows_directory_handles", lambda: True)
+    _patch_workspace_global(monkeypatch, "_windows_directory_identity", lambda _directory: (700, 701))
+    _patch_workspace_global(monkeypatch, "_windows_workspace_mutation_guard", fake_guard)
+    _patch_workspace_global(monkeypatch, "WINDOWS_DELETE_RETRY_SECONDS", 0)
+    controller._windows_workspace_identity = (700, 701)
+    return controller, target, guard_calls, receipt
+
+
+def _delete_tombstones(workspace: Path) -> list[Path]:
+    return sorted(workspace.rglob("*.agent-delete-*.tmp"))
+
+
+def test_windows_delete_fallback_deletes_a_read_verified_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, target, guard_calls, receipt = _windows_delete_controller(
+        tmp_path,
+        monkeypatch,
+    )
+    workspace = controller.workspace
+    original_rename = Path.rename
+    rename_attempts = 0
+
+    def rename_after_transient_scanner_lock(self: Path, destination: Path) -> Path:
+        nonlocal rename_attempts
+        if ".agent-delete-" in Path(destination).name:
+            rename_attempts += 1
+            if rename_attempts == 1:
+                raise PermissionError("scanner holds the file")
+        return original_rename(self, destination)
+
+    monkeypatch.setattr(Path, "rename", rename_after_transient_scanner_lock)
+    edit_generation = controller.state.edit_generation
+    deleted = controller.execute(
+        {
+            "action": "delete",
+            "path": "nested/target.txt",
+            "expected_sha256": receipt["sha256"],
+        }
+    )
+
+    assert deleted == {
+        "ok": True,
+        "action": "delete",
+        "path": "nested/target.txt",
+        "deleted_bytes": len(b"retired fixture\n"),
+    }
+    assert rename_attempts == 2
+    assert guard_calls == [(workspace, target.parent)]
+    assert not target.exists()
+    assert "nested/target.txt" not in controller.state.read_receipts
+    assert controller.state.edit_generation == edit_generation + 1
+    assert _delete_tombstones(workspace) == []
+
+
+def test_windows_delete_fallback_rejects_a_changed_digest_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, target, guard_calls, receipt = _windows_delete_controller(
+        tmp_path,
+        monkeypatch,
+    )
+    target.write_text("changed fixture\n", encoding="utf-8")
+    edit_generation = controller.state.edit_generation
+
+    rejected = controller.execute(
+        {
+            "action": "delete",
+            "path": "nested/target.txt",
+            "expected_sha256": receipt["sha256"],
+        }
+    )
+
+    assert rejected["ok"] is False
+    assert "no longer matches the current read receipt" in rejected["error"]
+    assert len(guard_calls) == 1
+    assert target.read_text(encoding="utf-8") == "changed fixture\n"
+    assert "nested/target.txt" in controller.state.read_receipts
+    assert controller.state.edit_generation == edit_generation
+    assert _delete_tombstones(controller.workspace) == []
+
+
+def test_windows_delete_fallback_rejects_a_stale_receipt_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, target, guard_calls, receipt = _windows_delete_controller(
+        tmp_path,
+        monkeypatch,
+    )
+    controller.state.workspace_generation += 1
+
+    rejected = controller.execute(
+        {
+            "action": "delete",
+            "path": "nested/target.txt",
+            "expected_sha256": receipt["sha256"],
+        }
+    )
+
+    assert rejected["ok"] is False
+    assert "controller to read the current file first" in rejected["error"]
+    assert guard_calls == []
+    assert target.read_text(encoding="utf-8") == "retired fixture\n"
+    assert _delete_tombstones(controller.workspace) == []
+
+
+def test_windows_delete_fallback_restores_the_file_after_a_failed_unlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, target, _guard_calls, receipt = _windows_delete_controller(
+        tmp_path,
+        monkeypatch,
+    )
+    original_unlink = Path.unlink
+    unlink_attempts = 0
+
+    def unlink_blocked_by_scanner(self: Path, missing_ok: bool = False) -> None:
+        nonlocal unlink_attempts
+        if (
+            ".agent-delete-" in self.name
+            and unlink_attempts < workspace_controller.WINDOWS_DELETE_RETRY_ATTEMPTS
+        ):
+            unlink_attempts += 1
+            raise PermissionError("scanner holds the file")
+        original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink_blocked_by_scanner)
+    edit_generation = controller.state.edit_generation
+    failed = controller.execute(
+        {
+            "action": "delete",
+            "path": "nested/target.txt",
+            "expected_sha256": receipt["sha256"],
+        }
+    )
+
+    assert failed["ok"] is False
+    assert "scanner holds the file" in failed["error"]
+    assert unlink_attempts == workspace_controller.WINDOWS_DELETE_RETRY_ATTEMPTS
+    assert target.read_text(encoding="utf-8") == "retired fixture\n"
+    assert controller.state.edit_generation == edit_generation
+    assert _delete_tombstones(controller.workspace) == []
+
+
+def test_windows_delete_fallback_preserves_the_tombstone_when_restore_is_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, target, _guard_calls, receipt = _windows_delete_controller(
+        tmp_path,
+        monkeypatch,
+    )
+    original_unlink = Path.unlink
+
+    def occupy_original_name_then_fail(self: Path, missing_ok: bool = False) -> None:
+        if ".agent-delete-" in self.name:
+            if not target.exists():
+                target.write_text("concurrent user file\n", encoding="utf-8")
+            raise OSError("unlink failed")
+        original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", occupy_original_name_then_fail)
+    failed = controller.execute(
+        {
+            "action": "delete",
+            "path": "nested/target.txt",
+            "expected_sha256": receipt["sha256"],
+        }
+    )
+
+    tombstones = _delete_tombstones(controller.workspace)
+    assert failed["ok"] is False
+    assert len(tombstones) == 1
+    tombstone = tombstones[0]
+    assert re.fullmatch(r"\.target\.txt\.agent-delete-[0-9a-f]{16}\.tmp", tombstone.name)
+    assert f"nested/{tombstone.name}" in failed["error"]
+    assert tombstone.read_text(encoding="utf-8") == "retired fixture\n"
+    assert target.read_text(encoding="utf-8") == "concurrent user file\n"
 
 
 def test_workspace_replace_preserves_concurrent_replacement_at_commit_boundary(
