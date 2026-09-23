@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.1-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import default_settings_path
+from app.core.tunnel_git import is_git_root
 
 LOGGER = logging.getLogger(__name__)
 
@@ -291,7 +292,7 @@ def _fallback_project(workspace_path: str) -> tuple[TunnelProject, ...]:
         root = Path(workspace_path).expanduser().resolve(strict=True)
     except (OSError, RuntimeError):
         return ()
-    if not root.is_dir() or not (root / ".git").exists():
+    if not root.is_dir() or not is_git_root(root):
         return ()
     if root == Path(root.anchor) or root == Path.home().resolve():
         return ()
@@ -312,7 +313,7 @@ class ProjectRegistry:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path
         self._lock = threading.Lock()
-        self._cache_key: tuple[str, int, int] | None = None
+        self._cache_key: tuple[str, int, int, int, int, int] | None = None
         self._cache: tuple[TunnelProject, ...] = ()
 
     @property
@@ -332,7 +333,14 @@ class ProjectRegistry:
             return _fallback_project(fallback_workspace)
         except OSError as exc:
             raise ProjectRegistryError("The project registry cannot be read.") from exc
-        cache_key = (str(path), int(metadata.st_mtime_ns), int(metadata.st_size))
+        cache_key = (
+            str(path),
+            int(metadata.st_dev),
+            int(metadata.st_ino),
+            int(metadata.st_mtime_ns),
+            int(metadata.st_ctime_ns),
+            int(metadata.st_size),
+        )
         with self._lock:
             if self._cache_key == cache_key:
                 return tuple(_refresh_project_filesystem_identity(project) for project in self._cache)

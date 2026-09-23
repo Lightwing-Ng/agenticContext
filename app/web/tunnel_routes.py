@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.9.0-codex.0
+# Code version: v1.9.1-codex.0
 
 from __future__ import annotations
 
@@ -78,7 +78,8 @@ GEMINI_PUBLIC_PATHS = frozenset(
     }
 )
 MAX_OAUTH_FORM_BYTES = 16 * 1024
-MAX_GEMINI_MCP_BODY_BYTES = 2 * 1024 * 1024
+MAX_MCP_BODY_BYTES = 2 * 1024 * 1024
+MAX_GEMINI_MCP_BODY_BYTES = MAX_MCP_BODY_BYTES
 GEMINI_AUTHORIZATION_REVIEW_SECONDS = 10 * 60
 GEMINI_AUTHORIZATION_REVIEW_ID_RE = re.compile(r"[A-Za-z0-9_-]{16,128}", re.ASCII)
 
@@ -847,6 +848,16 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             return jsonify(
                 {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Unauthorized."}}
             ), 401
+        try:
+            _read_bounded_request_body(MAX_MCP_BODY_BYTES)
+        except RequestEntityTooLarge:
+            return jsonify(
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Request is too large."},
+                }
+            ), 413
         body = request.get_json(silent=True, force=True)
         if body is None:
             return jsonify(
@@ -908,12 +919,16 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                 or len(next_credentials.api_key) < 12
             ):
                 return jsonify({"error": "OpenAI API key must start with sk-."}), 400
-        if next_credentials != current:
+        credentials_changed = next_credentials != current
+        if credentials_changed:
             save_tunnel_credentials(next_credentials, context.credentials_path)
         if next_credentials.configured:
             # A successful re-save is also an explicit recovery request. This keeps
             # the existing credential pair while replacing an unhealthy client.
             context.tunnel_runtime.request_restart(delay=0.05)
+        elif credentials_changed:
+            # Revoke the live bearer and client immediately when credentials are cleared.
+            context.tunnel_runtime.restart()
         return jsonify(status_payload())
 
     @blueprint.get("/api/agent/tunnel/status")

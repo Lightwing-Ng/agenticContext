@@ -1,4 +1,4 @@
-"""Shared component annotation regressions. Code version: v1.6.0-codex.0."""
+"""Shared component annotation regressions. Code version: v1.7.0-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -15,6 +15,35 @@ def assert_field_title_contract(locator):
     expect(locator).to_have_css("line-height", "normal")
     expect(locator).to_have_css("letter-spacing", "normal")
     expect(locator).to_have_css("color", "rgb(11, 12, 12)")
+
+
+@pytest.mark.parametrize("width", [830, 390])
+def test_process_list_catalog_specimen(disposable_browser, sidebar_server_url, width):
+    context = disposable_browser.new_context(viewport={"width": width, "height": 863})
+    page = context.new_page()
+    try:
+        page.goto(f"{sidebar_server_url}/settings/style-tokens")
+        process_list = page.locator("#process-list ol.process-list")
+        expect(process_list.locator(":scope > li.process-list-step")).to_have_count(4)
+        geometry = process_list.evaluate(
+            """list => {
+                const steps = Array.from(list.children);
+                const marker = steps[0].querySelector('.process-list-marker').getBoundingClientRect();
+                const heading = steps[0].querySelector('.process-list-heading').getBoundingClientRect();
+                return {
+                    size: [marker.width, marker.height],
+                    aligned: Math.abs((marker.top + marker.height / 2) - (heading.top + heading.height / 2)),
+                    continues: steps.map(step => step.hasAttribute('data-process-continues')),
+                    contained: list.getBoundingClientRect().right <= document.documentElement.clientWidth + 1,
+                };
+            }"""
+        )
+        assert geometry["size"] == [32, 32]
+        assert geometry["aligned"] <= 1
+        assert geometry["continues"] == [True, True, True, False]
+        assert geometry["contained"]
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize("width", [1024, 800, 390])
@@ -191,8 +220,9 @@ def test_shared_primitive_catalog_geometry_and_states(
 
         circular = page.locator(".style-token-round-icon-demo")
         expect(circular).to_have_class("circular-icon-button settings-round-icon-button style-token-round-icon-demo")
-        expect(circular).to_have_css("width", "36px")
-        expect(circular).to_have_css("height", "36px")
+        round_control_size = "44px" if width <= 900 else "36px"
+        expect(circular).to_have_css("width", round_control_size)
+        expect(circular).to_have_css("height", round_control_size)
         circular.focus()
         page.keyboard.press("Shift+Tab")
         page.keyboard.press("Tab")

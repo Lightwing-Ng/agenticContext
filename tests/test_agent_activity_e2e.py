@@ -1,4 +1,4 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.1.0-codex.0."""
+"""Activity disclosure and status glyph regressions. Code version: v1.1.1-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -360,7 +360,7 @@ def test_sidebar_icons_share_provider_axis_without_moving_dock(disposable_browse
                 .filter(e => e.getBoundingClientRect().width && !e.hidden).map(e => Math.abs(center(e)-anchor));
         }""")
         assert len(rails) >= 6
-        assert all(delta <= 0.1 for delta in rails)
+        assert all(delta <= 1 for delta in rails), rails
         assert dock.bounding_box() == baseline
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     finally:

@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.0-codex.0
+Code version: v1.86.2-codex.0
 """
 
 import hashlib
@@ -9,6 +9,7 @@ import re
 import struct
 
 from scripts.build_web_fonts import FACE_NAMES, FACE_SHA256, checksum, extract_face
+from app.web.token_registry import build_style_token_component_rows
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,15 @@ def _stylesheet() -> str:
 
 def _agent_sessions_stylesheet() -> str:
     return AGENT_SESSIONS_STYLE_PATH.read_text(encoding="utf-8")
+
+
+def test_process_list_catalog_publishes_the_production_component() -> None:
+    rows = build_style_token_component_rows()
+    process = next(row for row in rows if row["id"] == "process-list")
+    assert process["sample_kind"] == "process-list"
+    assert len(process["sample_steps"]) == 4
+    assert len(process["tokens"]) == 15
+    assert all(token["value"] for token in process["tokens"])
 
 
 def test_agent_session_scrollport_preserves_physical_effect_bleed() -> None:
@@ -1924,7 +1934,7 @@ def test_browser_session_title_reuses_regular_untagged_link_contract() -> None:
 def test_browser_session_updated_link_reuses_untagged_link_contract() -> None:
     """Keep updated timestamps readable without browser-default underlines."""
     stylesheet = _stylesheet()
-    updated_start = stylesheet.index(".browser-session-table-updated-link {")
+    updated_start = stylesheet.index("\n.browser-session-table-updated-link {")
     updated_rule = stylesheet[updated_start:stylesheet.index("\n}", updated_start)]
 
     assert "text-decoration: none;" in updated_rule
@@ -2373,7 +2383,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.148.0-codex.0 */",
+        "/* Code version: v2.150.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2481,39 +2491,39 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert "overflow: visible;" in grid_rule
     assert "padding-block-end: var(--layout-physical-effect-bleed);" in grid_rule
 
-    step_start = stylesheet.index(".agent-tunnel-onboarding-step {")
+    step_start = stylesheet.index(".process-list > .process-list-step {")
     step_rule = stylesheet[step_start:stylesheet.index("\n}", step_start)]
     assert "position: relative;" in step_rule
     assert (
-        "grid-template-columns: var(--agent-tunnel-process-counter-size) minmax(0, 1fr);"
+        "grid-template-columns: var(--process-list-marker-size) minmax(0, 1fr);"
         in step_rule
     )
     assert "border: 0;" in step_rule
-    assert ".agent-tunnel-onboarding-step:first-child" not in stylesheet
-    assert ".agent-tunnel-onboarding-step:last-child" not in stylesheet
-    assert ".agent-tunnel-onboarding-step:nth-child" not in stylesheet
+    assert ".process-list-step:first-child" not in stylesheet
+    assert ".process-list-step:last-child" not in stylesheet
+    assert ".process-list-step:nth-child" not in stylesheet
     assert ".agent-tunnel-onboarding-step-continued" not in stylesheet
 
-    process_list_start = stylesheet.index(".agent-tunnel-onboarding-steps {")
+    process_list_start = stylesheet.index(".process-list {")
     process_list_rule = stylesheet[
         process_list_start:stylesheet.index("\n}", process_list_start)
     ]
-    assert "gap: var(--agent-tunnel-process-step-gap);" in process_list_rule
+    assert "gap: var(--process-list-step-gap);" in process_list_rule
     assert "list-style: none;" in process_list_rule
 
     connector_start = stylesheet.index(
-        ".agent-tunnel-onboarding-step[data-agent-tunnel-process-continues]::before {"
+        ".process-list-step[data-process-continues]::before {"
     )
     connector_rule = stylesheet[
         connector_start:stylesheet.index("\n}", connector_start)
     ]
     for token in (
-        "inset-block-start: var(--agent-tunnel-process-connector-start);",
-        "inset-block-end: var(--agent-tunnel-process-connector-tail);",
-        "inset-inline-start: var(--agent-tunnel-process-connector-inset);",
-        "width: var(--agent-tunnel-process-connector-width);",
+        "inset-block-start: calc(var(--process-list-marker-size) + var(--process-list-marker-halo-width));",
+        "inset-block-end: calc(var(--process-list-marker-halo-width) - var(--process-list-step-gap));",
+        "inset-inline-start: calc((var(--process-list-marker-size) - var(--process-list-connector-width)) / 2);",
+        "width: var(--process-list-connector-width);",
         "border-radius: var(--radius-pill);",
-        "background: var(--agent-tunnel-process-connector-color);",
+        "background: var(--process-list-connector-color);",
         'content: "";',
     ):
         assert token in connector_rule
@@ -2610,41 +2620,38 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     ]
     assert "font-size: inherit;" in guide_title_rule
     assert "font-size: inherit;" in guide_description_rule
-    step_number_start = stylesheet.index(".agent-tunnel-step-number {")
+    step_number_start = stylesheet.index(".process-list-marker {")
     step_number_rule = stylesheet[
         step_number_start:stylesheet.index("\n}", step_number_start)
     ]
-    assert "width: var(--agent-tunnel-process-counter-size);" in step_number_rule
-    assert "height: var(--agent-tunnel-process-counter-size);" in step_number_rule
+    assert "width: var(--process-list-marker-size);" in step_number_rule
+    assert "height: var(--process-list-marker-size);" in step_number_rule
     assert "border-radius: 50%;" in step_number_rule
-    assert "var(--agent-tunnel-process-connector-color);" in step_number_rule
-    assert "background: var(--agent-tunnel-process-counter-background);" in step_number_rule
-    assert "color: var(--agent-tunnel-process-counter-color);" in step_number_rule
-    assert "font-size: var(--font-ui-lg);" in step_number_rule
-    assert "font-weight: var(--font-weight-medium);" in step_number_rule
+    assert "var(--process-list-connector-color);" in step_number_rule
+    assert "background: var(--process-list-marker-background);" in step_number_rule
+    assert "color: var(--process-list-marker-color);" in step_number_rule
+    assert "font-size: var(--process-list-heading-font-size);" in step_number_rule
+    assert "font-weight: var(--process-list-heading-font-weight);" in step_number_rule
     assert "line-height: 1;" in step_number_rule
-    step_heading_start = stylesheet.index(".agent-tunnel-step-heading {")
+    step_heading_start = stylesheet.index(".process-list-heading {")
     step_heading_rule = stylesheet[
         step_heading_start:stylesheet.index("\n}", step_heading_start)
     ]
-    assert "min-height: var(--agent-tunnel-process-counter-size);" in step_heading_rule
+    assert "min-height: var(--process-list-marker-size);" in step_heading_rule
     assert ".guide-button-small" not in stylesheet
 
-    process_tokens_start = stylesheet.index(".agent-tunnel-onboarding-card {")
+    process_tokens_start = stylesheet.index(":root {")
     process_tokens = stylesheet[
         process_tokens_start:stylesheet.index("\n}", process_tokens_start)
     ]
     for token in (
-        "--agent-tunnel-process-counter-size: 32px;",
-        "--agent-tunnel-process-counter-border-width: 2px;",
-        "--agent-tunnel-process-counter-background: var(--theme-background);",
-        "--agent-tunnel-process-counter-color: var(--theme-accent-primary);",
-        "--agent-tunnel-process-connector-color: var(--theme-accent-primary);",
-        "--agent-tunnel-process-connector-width: 2px;",
-        "--agent-tunnel-process-connector-inset: calc(",
-        "(var(--agent-tunnel-process-counter-size) - var(--agent-tunnel-process-connector-width)) / 2",
-        "--agent-tunnel-process-connector-start: calc(",
-        "--agent-tunnel-process-connector-tail: calc(",
+        "--process-list-marker-size: 32px;",
+        "--process-list-marker-border-width: 2px;",
+        "--process-list-marker-background: var(--theme-background);",
+        "--process-list-marker-color: var(--accent-text);",
+        "--process-list-connector-color: var(--accent-text);",
+        "--process-list-connector-width: 2px;",
+        "--process-list-step-gap: 24px;",
     ):
         assert token in process_tokens
 
@@ -2760,20 +2767,20 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert chatgpt_guide_rects
     assert all(re.search(r'\brx="10"', rect) for rect in chatgpt_guide_rects)
     assert agent_template.count('class="agent-tunnel-substep-number"') == 4
-    assert agent_template.count('class="agent-tunnel-onboarding-steps" role="list"') == 2
-    assert agent_template.count('class="agent-tunnel-step-heading"') == 4
-    assert gemini_guide_template.count('class="agent-tunnel-step-heading"') == 4
-    assert agent_template.count("data-agent-tunnel-process-continues") == 3
-    assert gemini_guide_template.count("data-agent-tunnel-process-continues") == 3
+    assert agent_template.count('class="process-list agent-tunnel-onboarding-steps" role="list"') == 2
+    assert agent_template.count('class="process-list-heading agent-tunnel-step-heading"') == 4
+    assert gemini_guide_template.count('class="process-list-heading agent-tunnel-step-heading"') == 4
+    assert agent_template.count("data-process-continues") == 3
+    assert gemini_guide_template.count("data-process-continues") == 3
     for step_number in range(1, 5):
         marker = (
-            '<span class="agent-tunnel-step-number" aria-hidden="true">'
+            '<span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">'
             f"{step_number}</span>"
         )
         assert marker in agent_template
         assert marker in gemini_guide_template
-    assert agent_template.count('<h3 class="agent-tunnel-step-heading">') == 4
-    assert gemini_guide_template.count('<h3 class="agent-tunnel-step-heading">') == 4
+    assert agent_template.count('<h3 class="process-list-heading agent-tunnel-step-heading">') == 4
+    assert gemini_guide_template.count('<h3 class="process-list-heading agent-tunnel-step-heading">') == 4
     assert 'class="agent-tunnel-numbered-list agent-tunnel-credential-fields"' in agent_template
     assert 'class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence"' in agent_template
     assert 'class="agent-tunnel-kickoff-editor"' in agent_template

@@ -1,6 +1,6 @@
 """Read the local CSS foundation token registry for the Style tokens page.
 
-Code version: v0.13.0-codex.0
+Code version: v0.14.0-codex.0
 """
 
 from __future__ import annotations
@@ -261,6 +261,18 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
                 {"label": "Prior strength", "value": "1.51", "unit": ""},
             ),
             "token_names": ("--collapse-body-padding", "--collapse-font-size", "--collapse-font-weight", "--collapse-icon-closed", "--collapse-icon-closed-rotation", "--collapse-icon-gap", "--collapse-icon-height", "--collapse-icon-open", "--collapse-icon-open-rotation", "--collapse-icon-size", "--collapse-section-gap", "--collapse-summary-padding"),
+        },
+        {
+            "id": "process-list",
+            "name": "Process List",
+            "sample_kind": "process-list",
+            "sample_steps": (
+                ("Prepare the source", "Identify the source and the exact data to use."),
+                ("Review the details", "Check the relevant settings before proceeding."),
+                ("Apply the change", "Complete the intended action in its owning workspace."),
+                ("Verify the result", "Confirm that the result matches the source."),
+            ),
+            "token_names": ("--process-list-step-gap", "--process-list-marker-size", "--process-list-marker-border-width", "--process-list-marker-halo-width", "--process-list-column-gap", "--process-list-connector-width", "--process-list-connector-color", "--process-list-marker-background", "--process-list-marker-color", "--process-list-heading-font-size", "--process-list-heading-font-weight", "--process-list-copy-gap", "--process-list-copy-font-size", "--process-list-copy-line-height", "--process-list-copy-color"),
         },
         {
             "id": "frosted-glass",

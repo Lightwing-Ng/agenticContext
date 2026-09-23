@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.14.1-codex.0`
+Documentation version: `v1.15.0-codex.0`
 
 ## Authority
 
@@ -92,6 +92,18 @@ by `8px` down-chevron mask points right while closed through
 motion and becomes immediate under Reduced Motion. Product-specific disclosures may
 retain their own geometry and content, but any repeated chevron affordance reuses the
 same mask, size, and rotation tokens instead of defining another direction system.
+
+## Shared Process List
+
+The Tunnel ChatGPT and Gemini onboarding pages consume the same `Process List`
+primitive published in both component catalogs. The semantic `ol.process-list`
+contains `li.process-list-step` children with a numbered marker and content
+column. Only continuing steps draw the accent connector. The shared
+`--process-list-*` tokens own marker, gap, connector, heading, and supporting
+copy geometry; Tunnel-specific nested instructions and actions stay within the
+product adapter. neoMe imports the same primitive for future applicable flows
+without adding a fictitious health workflow. The normative geometry and
+acceptance boundaries are in the central shared layout contract.
 
 ## Shared Select
 

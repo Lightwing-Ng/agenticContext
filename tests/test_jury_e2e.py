@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.3.6-codex.0
+Code version: v1.3.7-codex.0
 """
 
 from copy import deepcopy
@@ -289,7 +289,7 @@ def test_jury_recent_sessions_reuses_agent_disclosure_style(
         }
         assert jury_style["chevron"]["width"] == "12px"
         assert jury_style["chevron"]["height"] == "8px"
-        assert jury_style["chevron"]["transform"] == "matrix(-1, 0, 0, -1, 0, 0)"
+        assert jury_style["chevron"]["transform"] == "matrix(1, 0, 0, 1, 0, 0)"
         assert jury_style["body"] == {
             "display": "grid",
             "minWidth": "0px",
@@ -857,9 +857,9 @@ def test_jury_one_start_retains_rounds_evidence_and_dissent(jury_browser, sideba
         assert collapse_geometry["numberBackground"] == "rgba(0, 0, 0, 0)"
         assert collapse_geometry["numberBorderColor"] == collapse_geometry["numberColor"]
         assert collapse_geometry["closedChevron"][:2] == ["12px", "8px"]
-        assert collapse_geometry["closedChevron"][2] == "matrix(1, 0, 0, 1, 0, 0)"
+        assert collapse_geometry["closedChevron"][2] == "matrix(0, -1, 1, 0, 0, 0)"
         assert collapse_geometry["openChevron"][:2] == ["12px", "8px"]
-        assert collapse_geometry["openChevron"][2] == "matrix(-1, 0, 0, -1, 0, 0)"
+        assert collapse_geometry["openChevron"][2] == "matrix(1, 0, 0, 1, 0, 0)"
         assert collapse_geometry["pageFits"] is True
         expect(page.locator("[data-jury-conclusion-title]")).to_have_text("Review outcome")
         expect(page.locator("[data-jury-conclusion]")).to_contain_text("Agreement is not proof")

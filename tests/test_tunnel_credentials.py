@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.7.0-codex.0
+Code version: v1.7.2-codex.0
 """
 
 from __future__ import annotations
@@ -89,14 +89,14 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         'data-agent-tunnel-provider-panel="gemini"', onboarding_start
     )
     onboarding_body = empty_body[onboarding_start:onboarding_end]
-    assert '<ol class="agent-tunnel-onboarding-steps" role="list">' in onboarding_body
+    assert '<ol class="process-list agent-tunnel-onboarding-steps" role="list">' in onboarding_body
     for step_number in range(1, 5):
         assert (
-            '<span class="agent-tunnel-step-number" aria-hidden="true">'
+            '<span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">'
             f"{step_number}</span>"
         ) in onboarding_body
-    assert onboarding_body.count('<h3 class="agent-tunnel-step-heading">') == 4
-    assert onboarding_body.count("data-agent-tunnel-process-continues") == 3
+    assert onboarding_body.count('<h3 class="process-list-heading agent-tunnel-step-heading">') == 4
+    assert onboarding_body.count("data-process-continues") == 3
     guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list ')
     guide_end = onboarding_body.index("</ol>", guide_start) + len("</ol>")
     guide_body = onboarding_body[guide_start:guide_end]
@@ -251,6 +251,29 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
     assert f'value="{tunnel_id}"' in body
     assert 'placeholder="••••••••HMAA"' in body
     assert "sk-proj-secret-HMAA" not in body
+
+
+def test_clearing_saved_credentials_immediately_revokes_the_live_bearer(
+    agent_client,
+    credentials_path: Path,
+) -> None:
+    credentials = TunnelCredentials(
+        "tunnel_" + "b" * 32,
+        "sk-proj-existing-secret",
+    )
+    save_tunnel_credentials(credentials, credentials_path)
+    runtime = agent_client.application.extensions["tunnel_runtime"]
+    runtime._enabled = True
+    runtime._authorization = "Bearer active-test-token"
+
+    response = agent_client.post(
+        "/api/agent/tunnel/credentials",
+        json={"tunnel_id": "", "api_key": ""},
+    )
+
+    assert response.status_code == 200
+    assert not load_tunnel_credentials(credentials_path).configured
+    assert runtime.authorization_matches("Bearer active-test-token") is False
 
 
 def test_agent_tunnel_route_reflects_tunnel_status(agent_client) -> None:

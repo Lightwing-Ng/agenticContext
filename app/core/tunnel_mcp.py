@@ -1,6 +1,6 @@
 """Shared MCP endpoint reached through authenticated provider transports.
 
-Code version: v2.10.0-codex.0
+Code version: v2.11.0-codex.0
 
 ChatGPT and Gemini call the same tool catalog through separate authenticated
 transports. Every project-scoped
@@ -94,11 +94,15 @@ MAX_READ_BATCH_CONTENT_CHARACTERS = 150_000
 MAX_WRITE_CHARACTERS = 1_000_000
 MAX_READ_FILES = 8
 MAX_EDITS = 16
+MAX_MCP_BATCH_ITEMS = 8
 DEFAULT_READ_LINES = 240
 TUNNEL_ACTIVITY_LIMIT = 20
 REQUEST_JOURNAL_DIRNAME = "tunnel-requests"
 REQUEST_JOURNAL_LIMIT = 256
 REQUEST_JOURNAL_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+REQUEST_TOMBSTONE_LIMIT = 100_000
+REQUEST_TOMBSTONE_FILENAME = "expired-ids.log"
+REQUEST_TOMBSTONE_MAX_BYTES = REQUEST_TOMBSTONE_LIMIT * 106
 REQUEST_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
 _REQUEST_ID_RE = re.compile(REQUEST_ID_PATTERN)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -678,6 +682,8 @@ class _RequestJournal:
     def __init__(self, root: Path | None) -> None:
         self._root = root / REQUEST_JOURNAL_DIRNAME if root is not None else None
         self._memory: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._tombstones: dict[str, str] = {}
+        self._tombstones_loaded = False
         self._lock = threading.RLock()
 
     def _path(self, key: str) -> Path | None:
@@ -685,6 +691,10 @@ class _RequestJournal:
 
     def get(self, key: str) -> dict[str, Any] | None:
         with self._lock:
+            self._load_tombstones()
+            fingerprint = self._tombstones.get(key)
+            if fingerprint is not None:
+                return {"fingerprint": fingerprint, "state": "expired"}
             if key in self._memory:
                 record = deepcopy(self._memory[key])
                 self._validate_record(record)
@@ -736,12 +746,133 @@ class _RequestJournal:
         state = record.get("state")
         fingerprint = record.get("fingerprint")
         if (
-            state not in {"started", "completed"}
+            state not in {"started", "completed", "expired"}
             or not isinstance(fingerprint, str)
             or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
             or (state == "completed" and not isinstance(record.get("result"), dict))
         ):
             raise _RequestJournal._unknown_record_error()
+
+    @property
+    def _tombstone_path(self) -> Path | None:
+        return self._root / REQUEST_TOMBSTONE_FILENAME if self._root is not None else None
+
+    def _load_tombstones(self) -> None:
+        """Load compact expired-request receipts before any mutation can be retried."""
+        with self._lock:
+            if self._tombstones_loaded:
+                return
+            path = self._tombstone_path
+            if path is None:
+                self._tombstones_loaded = True
+                return
+            if not path.parent.exists():
+                self._tombstones_loaded = True
+                return
+            if path.parent.is_symlink() or not path.parent.is_dir():
+                raise _RequestJournalError(
+                    "The durable Tunnel request journal is unavailable. Nothing was "
+                    "retried; fix the local runtime directory and try again."
+                )
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                self._tombstones_loaded = True
+                return
+            except OSError as exc:
+                raise _RequestJournalError(
+                    "The expired-request journal cannot be read safely. No change was attempted."
+                ) from exc
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or metadata.st_size > REQUEST_TOMBSTONE_MAX_BYTES
+            ):
+                raise _RequestJournalError(
+                    "The expired-request journal is invalid or exceeds its safe limit. "
+                    "No change was attempted."
+                )
+            try:
+                payload = path.read_bytes()
+                text = payload.decode("ascii")
+            except (OSError, UnicodeError) as exc:
+                raise _RequestJournalError(
+                    "The expired-request journal cannot be validated. No change was attempted."
+                ) from exc
+            tombstones: dict[str, str] = {}
+            for line in text.splitlines():
+                key, separator, fingerprint = line.partition(" ")
+                if (
+                    not separator
+                    or not re.fullmatch(r"[0-9a-f]{40}", key)
+                    or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+                    or key in tombstones
+                ):
+                    raise _RequestJournalError(
+                        "The expired-request journal is corrupt. No change was attempted."
+                    )
+                tombstones[key] = fingerprint
+            if len(tombstones) > REQUEST_TOMBSTONE_LIMIT:
+                raise _RequestJournalError(
+                    "The expired-request journal exceeds its safe record limit. "
+                    "No change was attempted."
+                )
+            self._tombstones = tombstones
+            self._tombstones_loaded = True
+
+    def _remember_tombstone(self, key: str, fingerprint: str) -> None:
+        """Persist an expired id before deleting its replayable result record."""
+        with self._lock:
+            self._load_tombstones()
+            existing = self._tombstones.get(key)
+            if existing is not None:
+                if existing != fingerprint:
+                    raise _RequestOutcomeUnknown(
+                        "The expired-request journal contains a conflicting fingerprint. "
+                        "No change was attempted."
+                    )
+                return
+            if len(self._tombstones) >= REQUEST_TOMBSTONE_LIMIT:
+                raise _RequestJournalError(
+                    f"The durable expired-request journal reached its {REQUEST_TOMBSTONE_LIMIT:,} "
+                    "record safety limit. No further mutation will be attempted until the "
+                    "journal is reviewed."
+                )
+            path = self._tombstone_path
+            if path is None:
+                raise _RequestJournalError(
+                    "The durable Tunnel request journal is not configured. No change was attempted."
+                )
+            line = f"{key} {fingerprint}\n".encode("ascii")
+            if path.exists() and path.stat().st_size + len(line) > REQUEST_TOMBSTONE_MAX_BYTES:
+                raise _RequestJournalError(
+                    "The expired-request journal reached its safe byte limit. "
+                    "No change was attempted."
+                )
+            descriptor = os.open(
+                path,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_APPEND
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            try:
+                if os.name == "posix":
+                    os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "ab") as handle:
+                    descriptor = -1
+                    written = handle.write(line)
+                    if written != len(line):
+                        raise OSError("Incomplete expired-request journal write.")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+            self._tombstones[key] = fingerprint
+            self._memory.pop(key, None)
 
     def remember(self, key: str, record: dict[str, Any]) -> None:
         """Retain one record for retries in the current service process."""
@@ -831,17 +962,20 @@ class _RequestJournal:
     def _prune(self, *, required_slots: int = 0) -> int:
         if self._root is None:
             return 0
+        self._load_tombstones()
         try:
-            entries: list[tuple[float, Path, str]] = []
+            entries: list[tuple[float, Path, str, str | None]] = []
             for entry in self._root.iterdir():
                 if entry.suffix != ".json":
                     continue
                 state = ""
+                fingerprint = None
                 if not entry.is_symlink() and entry.is_file():
                     try:
                         payload = json.loads(entry.read_text(encoding="utf-8"))
                         self._validate_record(payload)
                         state = str(payload["state"])
+                        fingerprint = str(payload["fingerprint"])
                     except (OSError, UnicodeError, ValueError, _RequestJournalError):
                         pass
                 if state not in {"completed", "started"}:
@@ -854,7 +988,7 @@ class _RequestJournal:
                         "The durable Tunnel request journal cannot be inventoried safely. "
                         "No new change was attempted."
                     ) from exc
-                entries.append((modified, entry, state))
+                entries.append((modified, entry, state, fingerprint))
             entries.sort(key=lambda item: item[0])
         except _RequestJournalError:
             raise
@@ -866,14 +1000,18 @@ class _RequestJournal:
         cutoff = time.time() - REQUEST_JOURNAL_MAX_AGE_SECONDS
         remaining = len(entries)
         excess = max(0, remaining - max(0, REQUEST_JOURNAL_LIMIT - required_slots))
-        for modified, entry, state in entries:
+        for modified, entry, state, fingerprint in entries:
             if state == "started":
                 continue
             if excess > 0 or modified < cutoff:
-                try:
-                    entry.unlink()
-                except OSError:
+                if fingerprint is None:
                     continue
+                try:
+                    self._remember_tombstone(entry.stem, fingerprint)
+                    entry.unlink()
+                except (OSError, _RequestJournalError):
+                    continue
+                self._memory.pop(entry.stem, None)
                 remaining -= 1
                 if excess > 0:
                     excess -= 1
@@ -999,6 +1137,12 @@ class TunnelMcpService:
         if isinstance(body, list):
             if not body:
                 return 400, _rpc_error(None, -32600, "Empty JSON-RPC batch.")
+            if len(body) > MAX_MCP_BATCH_ITEMS:
+                return 400, _rpc_error(
+                    None,
+                    -32600,
+                    f"JSON-RPC batches are limited to {MAX_MCP_BATCH_ITEMS} items.",
+                )
             responses = [
                 response
                 for item in body
@@ -1223,9 +1367,50 @@ class TunnelMcpService:
         if request_id:
             return self._run_journaled(tool, project, arguments, str(request_id))
         if not tool.project_lock:
+            project = self._revalidate_project(project, tool)
             return self._dispatch_tool(tool, project, arguments)
         with self._project_lock(project):
+            project = self._revalidate_project(project, tool)
             return self._dispatch_tool(tool, project, arguments)
+
+    def _revalidate_project(
+        self,
+        project: TunnelProject,
+        tool: TunnelTool | None = None,
+    ) -> TunnelProject:
+        """Recheck registry authority after any wait and before touching project state."""
+        try:
+            current = self._registry.resolve(project.id, self._fallback_workspace())
+        except ProjectRegistryError as exc:
+            raise ToolFailure(
+                "project_changed",
+                f"Project {project.id} is no longer authorized by the current registry. "
+                "Call current_project or project_overview again before making another call.",
+                project=project.id,
+            ) from exc
+        if current.identity != project.identity:
+            raise ToolFailure(
+                "project_changed",
+                f"Project {project.id} changed while this call was queued, so it was refused. "
+                "nothing was replayed. Call current_project or project_overview again "
+                "and confirm the current project identity before retrying.",
+                project=project.id,
+            )
+        availability_problem = project_availability(current)
+        if availability_problem:
+            code = (
+                "project_changed"
+                if "replaced after this project identity" in availability_problem
+                else "project_unavailable"
+            )
+            raise ToolFailure(code, availability_problem, project=project.id)
+        if tool is not None and not tool.read_only and not current.writable:
+            raise ToolFailure(
+                "read_only_project",
+                f"Project {project.id} is read-only; {tool.name} is not allowed there.",
+                project=project.id,
+            )
+        return current
 
     def _run_journaled(
         self,
@@ -1247,6 +1432,7 @@ class TunnelMcpService:
             json.dumps({"tool": tool.name, "arguments": arguments}, sort_keys=True).encode("utf-8")
         ).hexdigest()
         with self._project_lock(project):
+            project = self._revalidate_project(project, tool)
             try:
                 existing = self._journal.get(key)
             except _RequestOutcomeUnknown as exc:
@@ -1269,6 +1455,13 @@ class TunnelMcpService:
                             "This is the recorded result of the original request."
                         ),
                     }
+                if existing.get("state") == "expired":
+                    raise ToolFailure(
+                        "outcome_unknown",
+                        "The result for this request_id has expired from replay storage. "
+                        "Nothing was retried. Read the affected paths and reconcile the change "
+                        "before continuing with a new request_id.",
+                    )
                 raise ToolFailure(
                     "outcome_unknown",
                     "An earlier attempt with this request_id started but its outcome was not "
@@ -1915,6 +2108,7 @@ class TunnelMcpService:
         # Recording terminal verification evidence mutates the workspace evidence
         # state, so only that short reconciliation step joins the mutation lock.
         with self._project_lock(project):
+            project = self._revalidate_project(project)
             return self._check_observation(project, job_dir, metadata, status)
 
     def _tool_stop_check(self, project: TunnelProject, arguments: dict[str, Any]) -> dict[str, Any]:

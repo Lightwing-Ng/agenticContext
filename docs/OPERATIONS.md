@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.35.0-codex.0`
+Documentation version: `v1.35.1-codex.0`
 
 ## Launch
 
@@ -378,6 +378,10 @@ Runtime behavior:
 - `/mcp` accepts only loopback callers that present the current bearer token. `GET /mcp` returns
   405 (no SSE stream). An `OAuth discovery failed` warning in the client log is expected: the app
   uses No auth, so no OAuth metadata is published and readiness does not depend on it.
+- Both authenticated MCP ingress routes cap JSON request bodies at 2 MiB. JSON-RPC batches are
+  rejected before dispatch when they contain more than eight items, so an oversized batch cannot
+  partially execute. Each accepted request therefore has a bounded parse cost, dispatch count, and
+  aggregate response fan-out.
 - Credentials configured, transport ready, a tool request observed, and a successful operation in
   the selected project are separate status facts. A configured, currently ready transport may
   start its first read-only check or normal task without any historical call. Historical success
@@ -410,6 +414,14 @@ Runtime behavior:
   Agent's confinement, symlink, ignored-folder, and credential-file rules for that root. Read-only
   projects refuse every mutation or check before touching anything. Each project keeps its own read
   receipts, SHA-256 guards, edit generation, and verification evidence.
+- The registry cache key includes the canonical registry path, device and file identity, modified
+  and change timestamps, and byte size. Replacing a same-sized registry while preserving its
+  modification time therefore invalidates cached authority. Queued project operations resolve and
+  compare the project identity and permission again after acquiring the per-project lock; a
+  revocation or remapping while queued is refused before the operation runs.
+- If the registry file is absent, the read-only compatibility fallback is available only when
+  `git rev-parse --show-toplevel` confirms that the selected directory is itself the work-tree
+  root. A `.git` placeholder or a nested directory is not sufficient.
 - Availability is evaluated per registered project. A root that is temporarily absent remains
   visible as registered but unavailable and cannot be selected or opened; it does not suppress
   other usable projects. If that root later appears, discovery binds its native filesystem
@@ -431,7 +443,11 @@ Runtime behavior:
   line can be continued with the returned `next_start_line` and `next_start_character`. Every
   mutation requires a stable `request_id`. A completed retry returns the durable recorded result
   instead of applying it again; a record whose final outcome is unknown refuses blind replay and
-  tells the caller to read and reconcile first. Multi-file
+  tells the caller to read and reconcile first. When a completed response ages out of the replay
+  journal, a compact request-id tombstone remains so that the same id returns `outcome_unknown`
+  rather than applying the mutation again. Tombstones are capped at 100,000 records; once that
+  safety limit is exhausted, new mutations fail closed instead of discarding older ids. Preserve
+  the `expired-ids.log` file beside the request records. Multi-file
   edits preflight the entire batch, verify every published file, and compare current content before
   rollback. A concurrent edit is preserved and reported as a recovery conflict instead of being
   overwritten. The result names committed, uncommitted, rolled-back, and conflicted files so it

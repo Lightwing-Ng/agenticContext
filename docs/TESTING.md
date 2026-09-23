@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.25.0-codex.0`
+Documentation version: `v1.25.1-codex.0`
 
 ## Supported commands
 
@@ -153,17 +153,20 @@ Run the Secure MCP Tunnel contract independently with:
 The Tunnel tests pin the exact fourteen-tool public catalog, closed-schema enforcement,
 discovery/dispatcher agreement, rejection of removed compatibility names, direct invocation
 without runtime selectors, current-project discovery, durable compare-and-swap selection
-revisions, preferred project sets that do not narrow registry authority, and explicit project
-identities. They cover prevalidated and write-failure batch recovery, concurrent-edit
-rollback conflicts, duplicate-safe mutation requests, three-state batch reads, stale-write and
-delete SHA protection, truncation continuation, workspace confinement, bounded status/patch
-inspection, `git status`, approved checks, durable check deduplication/cancellation/restart query,
+revisions, preferred project sets that do not narrow registry authority, explicit project
+identities, ingress byte and JSON-RPC batch limits, same-size registry replacement with preserved
+modification time, exact Git-root fallback admission, and permission revalidation after a queued
+write acquires its project lock. They cover prevalidated and write-failure batch recovery,
+concurrent-edit rollback conflicts, duplicate-safe mutation requests, three-state batch reads,
+stale-write and delete SHA protection, truncation continuation, workspace confinement, bounded
+status/patch inspection, `git status`, approved checks, durable check deduplication/cancellation/restart query,
 runner-loss `unknown` recovery, bounded output and retained-job counts, stale-verification
-rejection, destructive-command refusal, current-evidence bodycheck, and loopback bearer
-authentication. The isolated workflow test uses one application instance to save a current project
-and preferred set, discover both through authenticated `/mcp`, create/read/edit/re-read/delete a
-file, confirm absence, run a check, finish `review_changes`, and reject a write to the read-only
-reference project. It also proves that an explicit registered reference remains discoverable after
+rejection, request-id replay tombstones after journal pruning, fail-closed tombstone capacity,
+credential-clear bearer revocation, destructive-command refusal, current-evidence bodycheck, and
+loopback bearer authentication. The isolated workflow test uses one application instance to save a
+current project and preferred set, discover both through authenticated `/mcp`, and
+create/read/edit/re-read/delete a file, confirm absence, run a check, finish `review_changes`, and
+reject a write to the read-only reference project. It also proves that an explicit registered reference remains discoverable after
 it is unchecked locally. A second local-page case keeps one missing registered root visible as
 unavailable, permits removing that stale preference, and proves that another registered project
 remains usable and may become the deterministic current fallback.

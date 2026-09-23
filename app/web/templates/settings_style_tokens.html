@@ -1,4 +1,4 @@
-<!-- Code version: v1.14.6-codex.0 -->
+<!-- Code version: v1.15.1-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,7 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.148.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.150.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
@@ -91,6 +91,18 @@
                                     {% endfor %}
                                 </div>
                             </details>
+                            {% elif row.sample_kind == "process-list" %}
+                            <ol class="process-list" role="list" aria-label="Process List example">
+                                {% for title, copy in row.sample_steps %}
+                                <li class="process-list-step"{% if not loop.last %} data-process-continues{% endif %}>
+                                    <span class="process-list-marker" aria-hidden="true">{{ loop.index }}</span>
+                                    <div class="process-list-content">
+                                        <h3 class="process-list-heading">{{ title }}</h3>
+                                        <p class="style-token-process-list-copy">{{ copy }}</p>
+                                    </div>
+                                </li>
+                                {% endfor %}
+                            </ol>
                             {% elif row.sample_kind == "modal-dialog" %}
                             <div class="style-token-modal-shell">
                                 <section class="workspace-modal-dialog style-token-modal-demo" data-style-token-dismissible aria-label="Modal dialog demo">

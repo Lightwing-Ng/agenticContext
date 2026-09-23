@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.52.0-codex.0
+Code version: v1.52.2-codex.0
 """
 
 from __future__ import annotations
@@ -979,9 +979,11 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
     )
     page.reload(wait_until="networkidle")
     try:
-        table = page.locator(".browser-session-index-table")
+        table = page.locator(".browser-session-index-table[data-table-body]")
+        header = page.locator(".browser-session-index-table[data-table-header]")
         expect(table).to_have_count(1)
-        assert table.locator("thead th").all_inner_texts() == [
+        expect(header).to_have_count(1)
+        assert header.locator("thead th").all_inner_texts() == [
             "No.",
             "Answerer",
             "Answers",
@@ -1044,10 +1046,15 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
 
         table.locator(".browser-session-table-title").click()
         page.wait_for_url(re.compile(r"[?&]session=[^&]+(?:&|$)"))
-        expect(page.locator(".browser-session-detail-table")).to_have_count(1)
-        assert page.locator(
-            ".browser-session-detail-table thead th"
-        ).all_inner_texts() == [
+        detail_table = page.locator(
+            ".browser-session-detail-table[data-table-body]"
+        )
+        detail_header = page.locator(
+            ".browser-session-detail-table[data-table-header]"
+        )
+        expect(detail_table).to_have_count(1)
+        expect(detail_header).to_have_count(1)
+        assert detail_header.locator("thead th").all_inner_texts() == [
             "No.",
             "Time",
             "Question",
@@ -1530,7 +1537,8 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
     )
     try:
         cards = page.locator("[data-style-token-card]")
-        expect(cards).to_have_count(22)
+        expect(cards).to_have_count(23)
+        expect(page.locator('[data-style-token-card="process-list"]')).to_have_count(1)
         assert page.evaluate(
             "document.documentElement.scrollWidth === document.documentElement.clientWidth"
         )
@@ -3985,7 +3993,7 @@ def test_overlay_sidebar_is_touch_safe_across_phone_and_ipad_portraits(
                     toggleRightGap: sidebar.right - toggle.right,
                     toggleTop: toggle.top,
                     themeTop: theme.top,
-                    themeRightGap: window.innerWidth - theme.right,
+                    themeRightGap: document.documentElement.clientWidth - theme.right,
                     titleCenterDelta: Math.abs(centerY(title) - centerY(toggle)),
                     horizontalOverflow: Math.max(
                         document.documentElement.scrollWidth,
@@ -9200,7 +9208,9 @@ def test_agent_browser_status_login_action_matches_probe_state(
             expect(login_button).to_have_text("Open Edge to sign in")
             login_button.click()
             expect(login_button).to_be_enabled()
-            assert login_requests == [{"platform": "chatgpt", "browser": "edge"}]
+            assert login_requests == [
+                {"platform": "chatgpt", "browser": "edge", "scope": "agent"}
+            ]
     finally:
         context.close()
 
@@ -11013,7 +11023,11 @@ def test_cache_annotations_keep_static_icons_and_remaining_space(
                 duration: outer.animationDuration, delay: inner.animationDelay,
                 start: outer.transform, shadow: core.boxShadow};
         }""")
-        assert (rings["core"], rings["outer"], rings["inner"]) == ("6px", "auto", "auto")
+        assert (rings["core"], rings["outer"], rings["inner"]) == (
+            "6px",
+            "24px",
+            "16px",
+        )
         assert rings["duration"] == "0s"
         assert rings["delay"] == "0s"
         assert rings["shadow"] != "none"
@@ -11551,19 +11565,25 @@ def test_session_header_source_sort_and_two_line_time(
     page = context.new_page()
     try:
         page.goto(annotated_resources_server_url + "/browser?view=text&source=all&session_view=1&sort=newest&q=crosspage%20needle")
-        table = page.locator('.browser-session-index-table')
-        expect(table.locator('th[aria-sort="descending"]')).to_contain_text("Last updated")
+        table = page.locator('.browser-session-index-table[data-table-body]')
+        header = page.locator('.browser-session-index-table[data-table-header]')
+        expect(header.locator('th[aria-sort="descending"]')).to_contain_text("Last updated")
         stamp = table.locator('.browser-session-message-time').first
         geometry = stamp.evaluate("""node => {
             const date=node.querySelector('.browser-session-message-time-date').getBoundingClientRect();
             const clock=node.querySelector('.browser-session-message-time-clock').getBoundingClientRect();
-            const table=node.closest('table').getBoundingClientRect();
-            return {dateBottom:date.bottom, clockTop:clock.top, right:clock.right, tableRight:table.right};
+            const tableNode=node.closest('table');
+            const table=tableNode.getBoundingClientRect();
+            const cell=node.closest('td');
+            return {dateBottom:date.bottom, clockTop:clock.top, dateRight:date.right,
+                clockRight:clock.right, cellRight:cell.getBoundingClientRect().right,
+                tableRight:table.right};
         }""")
         assert geometry['clockTop'] >= geometry['dateBottom']
-        assert geometry['right'] <= geometry['tableRight'] + 1
+        assert geometry['dateRight'] <= geometry['cellRight'] + 1, geometry
+        assert geometry['clockRight'] <= geometry['cellRight'] + 1, geometry
         assert geometry['tableRight'] <= width
-        table.locator('.browser-session-sort-link').click()
+        header.locator('.browser-session-sort-link').click()
         expect(page.locator('th[aria-sort="ascending"]')).to_be_visible()
         assert 'sort=oldest' in page.url
         trigger = page.locator('[data-browser-header-filter] [data-browser-source-filter-trigger]')

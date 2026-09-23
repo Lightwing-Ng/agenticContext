@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.9.0-codex.0
+Code version: v2.11.0-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import errno
 import hashlib
 from itertools import count
 import json
+import os
 import re
 import subprocess
 import sys
@@ -19,9 +20,11 @@ from unittest.mock import patch
 
 import pytest
 
+from app.core import tunnel_mcp as tunnel_mcp_module
 from app.core.agent.capability_registry import capability_for_action
 from app.core.computer_use_agent import ComputerUseSettings
 from app.core.tunnel_mcp import (
+    MAX_MCP_BATCH_ITEMS,
     MCP_STATELESS_PROTOCOL_VERSION,
     SERVER_INSTRUCTIONS,
     TUNNEL_TOOLS,
@@ -37,6 +40,7 @@ from app.core.tunnel_projects import (
     default_tunnel_browse_root,
     parse_project_registry,
 )
+from app.web.tunnel_routes import MAX_MCP_BODY_BYTES
 from app.web.app import create_app
 
 EXPECTED_TOOLS = [
@@ -288,6 +292,48 @@ def test_notifications_and_batches_follow_json_rpc(service: TunnelMcpService) ->
     assert body == [{"jsonrpc": "2.0", "id": 1, "result": {}}]
     missing = rpc(service, "does/not/exist")
     assert missing["error"]["code"] == -32601
+
+
+def test_oversized_json_rpc_batch_is_rejected_before_any_item_runs(
+    service: TunnelMcpService,
+    workspace: Path,
+) -> None:
+    identity = service.registry.resolve("main", service._fallback_workspace()).identity
+    batch = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "apply_edits",
+                "arguments": {
+                    "project": "main",
+                    "project_identity": identity,
+                    "request_id": "batch-limit-0001",
+                    "edits": [
+                        {
+                            "path": "app.py",
+                            "old_text": "hi",
+                            "new_text": "changed",
+                            "replace_all": True,
+                        }
+                    ],
+                },
+            },
+        },
+        *[
+            {"jsonrpc": "2.0", "id": index, "method": "ping"}
+            for index in range(2, MAX_MCP_BATCH_ITEMS + 2)
+        ],
+    ]
+
+    status, result = service.handle(batch, {})
+
+    assert status == 400
+    assert result["error"]["code"] == -32600
+    assert f"{MAX_MCP_BATCH_ITEMS} items" in result["error"]["message"]
+    assert (workspace / "app.py").read_text(encoding="utf-8") == 'print("hi")\n'
+    assert service.activity_snapshot()["call_count"] == 0
 
 
 def test_stateless_discovery_marks_complete_results(service: TunnelMcpService) -> None:
@@ -979,6 +1025,100 @@ def test_request_id_replays_the_recorded_result_in_process_and_after_restart(
     assert content(replayed)["replayed"] is True
     assert content(replayed_after_restart)["replayed"] is True
     assert target.read_text(encoding="utf-8") == "aa\n"
+
+
+def test_pruned_request_ids_remain_non_replayable_after_restart(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "REQUEST_JOURNAL_LIMIT", 2)
+    monkeypatch.setattr(tunnel_mcp_module, "REQUEST_TOMBSTONE_LIMIT", 10)
+    targets = [workspace / f"journal-{index}.txt" for index in range(1, 4)]
+    for target in targets:
+        target.write_text("a\n", encoding="utf-8")
+    runtime_root = tmp_path / "journal-retention-runtime"
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=runtime_root,
+    )
+
+    requests = [
+        {
+            "request_id": f"pruned-id-000{index}",
+            "edits": [
+                {
+                    "path": target.name,
+                    "old_text": "a",
+                    "new_text": "aa",
+                    "replace_all": True,
+                }
+            ],
+        }
+        for index, target in enumerate(targets, start=1)
+    ]
+    for arguments in requests:
+        assert call(service, "apply_edits", arguments)["isError"] is False
+
+    assert (runtime_root / "tunnel-requests" / "expired-ids.log").is_file()
+    restarted = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=runtime_root,
+    )
+    duplicate = call(restarted, "apply_edits", requests[0])
+
+    assert duplicate["isError"] is True
+    assert content(duplicate)["code"] == "outcome_unknown"
+    assert "Nothing was retried" in content(duplicate)["error"]
+    assert targets[0].read_text(encoding="utf-8") == "aa\n"
+
+
+def test_request_journal_fails_closed_when_tombstone_capacity_is_exhausted(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "REQUEST_JOURNAL_LIMIT", 1)
+    monkeypatch.setattr(tunnel_mcp_module, "REQUEST_TOMBSTONE_LIMIT", 0)
+    first = workspace / "first.txt"
+    second = workspace / "second.txt"
+    first.write_text("a\n", encoding="utf-8")
+    second.write_text("a\n", encoding="utf-8")
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=tmp_path / "journal-full-runtime",
+    )
+
+    initial = call(
+        service,
+        "apply_edits",
+        {
+            "request_id": "retained-id-0001",
+            "edits": [
+                {"path": "first.txt", "old_text": "a", "new_text": "aa", "replace_all": True}
+            ],
+        },
+    )
+    blocked = call(
+        service,
+        "apply_edits",
+        {
+            "request_id": "retained-id-0002",
+            "edits": [
+                {"path": "second.txt", "old_text": "a", "new_text": "aa", "replace_all": True}
+            ],
+        },
+    )
+
+    assert initial["isError"] is False
+    assert blocked["isError"] is True
+    assert content(blocked)["code"] == "journal_unavailable"
+    assert second.read_text(encoding="utf-8") == "a\n"
 
 
 def test_mutation_without_request_id_is_refused_before_touching_disk(
@@ -2392,6 +2532,118 @@ def test_reregistering_a_project_rebinds_its_controller(tmp_path: Path) -> None:
     assert (second / "note.txt").exists() and (first / "note.txt").exists()
 
 
+@pytest.mark.parametrize("in_place", [False, True], ids=["atomic-replace", "same-inode"])
+def test_registry_cache_invalidates_equal_size_replacement_with_preserved_mtime(
+    tmp_path: Path,
+    in_place: bool,
+) -> None:
+    first = tmp_path / "first-root"
+    second = tmp_path / "other-root"
+    first.mkdir()
+    second.mkdir()
+    registry_path = tmp_path / "projects.json"
+    write_registry(
+        registry_path,
+        [{"id": "work", "root": str(first), "writable": True}],
+    )
+    registry = ProjectRegistry(registry_path)
+    previous = registry.resolve("work")
+    previous_stat = registry_path.stat()
+
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "projects": [{"id": "work", "root": str(second), "writable": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(
+        replacement,
+        ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns),
+    )
+    assert replacement.stat().st_size == previous_stat.st_size
+    if in_place:
+        registry_path.write_bytes(replacement.read_bytes())
+        os.utime(
+            registry_path,
+            ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns),
+        )
+    else:
+        os.replace(replacement, registry_path)
+    current_stat = registry_path.stat()
+    assert current_stat.st_size == previous_stat.st_size
+    assert current_stat.st_mtime_ns == previous_stat.st_mtime_ns
+    if in_place:
+        assert current_stat.st_ino == previous_stat.st_ino
+
+    current = registry.resolve("work")
+
+    assert current.root == second.resolve()
+    assert current.identity != previous.identity
+
+
+def test_queued_mutation_rechecks_registry_authority_after_project_lock(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    reference: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = registry.resolve("main", service._fallback_workspace())
+    lock = service._project_lock(project)
+    reached_journal = threading.Event()
+    original_run_journaled = service._run_journaled
+
+    def mark_waiting_for_project_lock(*args, **kwargs):
+        reached_journal.set()
+        return original_run_journaled(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_run_journaled", mark_waiting_for_project_lock)
+    results: list[dict] = []
+    lock.acquire()
+    worker = threading.Thread(
+        target=lambda: results.append(
+            call(
+                service,
+                "apply_edits",
+                {
+                    "request_id": "queued-permission-0001",
+                    "edits": [
+                        {
+                            "path": "app.py",
+                            "old_text": "hi",
+                            "new_text": "changed",
+                            "replace_all": True,
+                        }
+                    ],
+                },
+            )
+        )
+    )
+    worker.start()
+    try:
+        assert reached_journal.wait(timeout=2)
+        write_registry(
+            registry.path,
+            [
+                {"id": "main", "root": str(workspace), "writable": False},
+                {"id": "ref", "root": str(reference), "writable": False},
+            ],
+        )
+    finally:
+        lock.release()
+        worker.join(timeout=3)
+
+    assert not worker.is_alive()
+    assert len(results) == 1
+    assert results[0]["isError"] is True
+    assert content(results[0])["code"] == "project_changed"
+    assert (workspace / "app.py").read_text(encoding="utf-8") == 'print("hi")\n'
+
+
 def test_parent_folder_is_never_an_implicit_project(tmp_path: Path) -> None:
     desktop = tmp_path / "desktop"
     repository = desktop / "repo"
@@ -2421,6 +2673,22 @@ def test_git_root_workspace_is_the_only_fallback_project(tmp_path: Path) -> None
     assert discovered["current_project"]["id"] == "solo"
     assert discovered["current_project"]["registered"] is False
     assert discovered["current_project"]["writable"] is False
+
+
+def test_invalid_git_placeholder_cannot_enter_read_only_fallback(tmp_path: Path) -> None:
+    workspace = tmp_path / "not-a-repository"
+    workspace.mkdir()
+    (workspace / ".git").write_text("placeholder", encoding="utf-8")
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(tmp_path / "missing-registry.json"),
+        runtime_root=tmp_path / "runtime",
+    )
+
+    result = call(service, "project_overview", project=workspace.name)
+
+    assert result["isError"] is True
+    assert content(result)["ok"] is False
 
 
 @pytest.mark.parametrize(
@@ -2783,6 +3051,21 @@ def test_mcp_route_requires_the_tunnel_bearer_token(mcp_client) -> None:
     )
     assert notification.status_code == 202
     assert mcp_client.get("/mcp").status_code == 405
+
+
+def test_chatgpt_mcp_route_rejects_oversized_body_before_json_parsing(mcp_client) -> None:
+    response = mcp_client.post(
+        "/mcp",
+        data=b" " * (MAX_MCP_BODY_BYTES + 1),
+        content_type="application/json",
+        headers={"Authorization": "Bearer test-token"},
+    )
+
+    assert response.status_code == 413
+    assert response.get_json()["error"]["message"] == "Request is too large."
+    assert mcp_client.application.extensions["tunnel_mcp_service"].activity_snapshot()[
+        "call_count"
+    ] == 0
 
 
 def test_mcp_route_rejects_non_loopback_callers(mcp_client) -> None:

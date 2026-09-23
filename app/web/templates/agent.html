@@ -1,4 +1,4 @@
-<!-- Code version: v3.75.2-codex.0 -->
+<!-- Code version: v3.76.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.148.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.150.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.3.0-codex.0') }}">
@@ -140,7 +140,7 @@
                                 >{{ 'Current' if project_current else 'Use' }}</button>
                                 <p class="agent-tunnel-project-details" id="agent_tunnel_project_details_{{ loop.index }}">
                                     <span class="agent-tunnel-project-root">{{ project.root }}</span>
-                                    <span>{{ project.access }} · {{ project.availability }} · ID {{ project.identity }}</span>
+                                    <span>{{ project.access }} · {{ project.availability }} · Identity {{ project.identity }}</span>
                                     {% if project.problem %}<span class="agent-tunnel-project-problem">{{ project.problem }}</span>{% endif %}
                                 </p>
                             </div>
@@ -412,18 +412,18 @@
 
             <div class="workspace-grid workspace-content-card agent-workspace-grid">
                 <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-onboarding data-agent-tunnel-provider-panel="chatgpt"{% if connection_mode != 'tunnel' or settings.platform != 'chatgpt' %} hidden{% endif %}>
-                    <ol class="agent-tunnel-onboarding-steps" role="list">
-                        <li class="agent-tunnel-onboarding-step" data-agent-tunnel-process-continues>
-                            <span class="agent-tunnel-step-number" aria-hidden="true">1</span>
-                            <div class="agent-tunnel-step-copy agent-tunnel-setup-copy">
-                                <h3 class="agent-tunnel-step-heading">Create the OpenAI credentials</h3>
+                    <ol class="process-list agent-tunnel-onboarding-steps" role="list">
+                        <li class="process-list-step agent-tunnel-onboarding-step" data-process-continues>
+                            <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">1</span>
+                            <div class="process-list-content agent-tunnel-step-copy agent-tunnel-setup-copy">
+                                <h3 class="process-list-heading agent-tunnel-step-heading">Create the OpenAI credentials</h3>
                                 {% include "_agent_tunnel_credential_guides.html" %}
                             </div>
                         </li>
-                        <li class="agent-tunnel-onboarding-step agent-tunnel-credential-step" data-agent-tunnel-process-continues>
-                            <span class="agent-tunnel-step-number" aria-hidden="true">2</span>
-                            <div class="agent-tunnel-step-copy">
-                                <h3 class="agent-tunnel-step-heading">Enter the Tunnel credentials</h3>
+                        <li class="process-list-step agent-tunnel-onboarding-step agent-tunnel-credential-step" data-process-continues>
+                            <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">2</span>
+                            <div class="process-list-content agent-tunnel-step-copy">
+                                <h3 class="process-list-heading agent-tunnel-step-heading">Enter the Tunnel credentials</h3>
                                 <ol class="agent-tunnel-numbered-list agent-tunnel-credential-fields" aria-label="Tunnel credential fields">
                                     <li class="agent-tunnel-numbered-item">
                                         <span class="agent-tunnel-substep-number" aria-hidden="true">➊</span>
@@ -454,17 +454,17 @@
                                 </ol>
                             </div>
                         </li>
-                        <li class="agent-tunnel-onboarding-step" data-agent-tunnel-process-continues>
-                            <span class="agent-tunnel-step-number" aria-hidden="true">3</span>
-                            <div class="agent-tunnel-step-copy">
-                                <h3 class="agent-tunnel-step-heading">Create the ChatGPT plugin</h3>
+                        <li class="process-list-step agent-tunnel-onboarding-step" data-process-continues>
+                            <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">3</span>
+                            <div class="process-list-content agent-tunnel-step-copy">
+                                <h3 class="process-list-heading agent-tunnel-step-heading">Create the ChatGPT plugin</h3>
                                 {% include "_agent_tunnel_chatgpt_guides.html" %}
                             </div>
                         </li>
-                        <li class="agent-tunnel-onboarding-step">
-                            <span class="agent-tunnel-step-number" aria-hidden="true">4</span>
-                            <div class="agent-tunnel-step-copy">
-                                <h3 class="agent-tunnel-step-heading">Run one real project task</h3>
+                        <li class="process-list-step agent-tunnel-onboarding-step">
+                            <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">4</span>
+                            <div class="process-list-content agent-tunnel-step-copy">
+                                <h3 class="process-list-heading agent-tunnel-step-heading">Run one real project task</h3>
                                 {% set tunnel_project_ready = tunnel_current_project and (tunnel_current_project.available | default(false)) and (tunnel_current_project.registered | default(false)) %}
                                 {% set tunnel_kickoff_ready = (tunnel_credentials.qualified | default(false)) and tunnel_view.tone == 'ready' and tunnel_project_ready %}
                                 {% if not (tunnel_credentials.qualified | default(false)) %}
@@ -521,7 +521,7 @@ Task:
                     </ol>
                 </article>
                 <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-onboarding data-agent-tunnel-provider-panel="gemini"{% if connection_mode != 'tunnel' or settings.platform != 'gemini' %} hidden{% endif %}>
-                    <ol class="agent-tunnel-onboarding-steps" role="list">
+                    <ol class="process-list agent-tunnel-onboarding-steps" role="list">
                         {% include "_agent_tunnel_gemini_guides.html" %}
                     </ol>
                 </article>

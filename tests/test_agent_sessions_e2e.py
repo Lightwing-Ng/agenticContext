@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.31.2-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.31.3-codex.0."""
 
 import re
 from copy import deepcopy
@@ -1306,7 +1306,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     headingTags: headings.map((heading) => heading.tagName),
                     processListRole: card.querySelector('.agent-tunnel-onboarding-steps').getAttribute('role'),
                     processContinues: steps.map((step) =>
-                        step.hasAttribute('data-agent-tunnel-process-continues')
+                        step.hasAttribute('data-process-continues')
                     ),
                     connectorWidths: connectorStyles.slice(0, 3).map((style) => parseFloat(style.width)),
                     connectorColors: connectorStyles.slice(0, 3).map((style) => style.backgroundColor),

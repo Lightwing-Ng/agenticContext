@@ -1,4 +1,4 @@
-/* Code version: v2.148.0-codex.0 */
+/* Code version: v2.150.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -229,6 +229,21 @@
     --collapse-body-padding: 0 10px 10px;
     --collapse-font-size: var(--font-ui-lg);
     --collapse-font-weight: var(--font-weight-medium);
+    --process-list-step-gap: 24px;
+    --process-list-marker-size: 32px;
+    --process-list-marker-border-width: 2px;
+    --process-list-marker-halo-width: 4px;
+    --process-list-column-gap: 16px;
+    --process-list-connector-width: 2px;
+    --process-list-connector-color: var(--accent-text);
+    --process-list-marker-background: var(--theme-background);
+    --process-list-marker-color: var(--accent-text);
+    --process-list-heading-font-size: var(--font-ui-lg);
+    --process-list-heading-font-weight: var(--font-weight-medium);
+    --process-list-copy-gap: 5px;
+    --process-list-copy-font-size: var(--font-ui-md);
+    --process-list-copy-line-height: 1.55;
+    --process-list-copy-color: var(--theme-muted);
     --control-glass-background: transparent;
     --control-glass-background-hover: color-mix(in srgb, var(--theme-muted) 8%, transparent);
     --layout-content-width: 640px;
@@ -599,7 +614,7 @@
     --scrollable-data-table-summary-padding: 6px 8px;
     --scrollable-data-table-header-height: 28px;
     --scrollable-data-table-min-width: 376px;
-    --scrollable-data-table-header-color: color-mix(in srgb, var(--theme-text) 92%, var(--color-white-adaptive) 8%);
+    --scrollable-data-table-header-color: var(--field-title-color);
     --scrollable-data-table-scrollbar-gutter: stable;
     --scrollable-data-table-shell-radius: var(--radius-panel);
     --scrollable-data-table-shell-background: var(--frosted-glass-background);
@@ -4230,25 +4245,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 }
 
 .agent-tunnel-onboarding-card {
-    --agent-tunnel-process-counter-size: 32px;
-    --agent-tunnel-process-counter-border-width: 2px;
-    --agent-tunnel-process-counter-gap-width: 4px;
-    --agent-tunnel-process-counter-background: var(--theme-background);
-    --agent-tunnel-process-counter-color: var(--theme-accent-primary);
-    --agent-tunnel-process-connector-color: var(--theme-accent-primary);
-    --agent-tunnel-process-connector-width: 2px;
-    --agent-tunnel-process-connector-inset: calc(
-        (var(--agent-tunnel-process-counter-size) - var(--agent-tunnel-process-connector-width)) / 2
-    );
-    --agent-tunnel-process-step-gap: 24px;
-    --agent-tunnel-process-connector-start: calc(
-        var(--agent-tunnel-process-counter-size)
-        + var(--agent-tunnel-process-counter-gap-width)
-    );
-    --agent-tunnel-process-connector-tail: calc(
-        var(--agent-tunnel-process-counter-gap-width)
-        - var(--agent-tunnel-process-step-gap)
-    );
     display: grid;
     align-content: start;
     gap: 18px;
@@ -4256,89 +4252,97 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     min-height: 0;
 }
 
-.agent-tunnel-onboarding-steps {
+.process-list {
     display: grid;
-    gap: var(--agent-tunnel-process-step-gap);
+    gap: var(--process-list-step-gap);
     margin: 0;
     padding: 0;
     list-style: none;
 }
 
-.agent-tunnel-onboarding-step {
+.process-list > .process-list-step {
     position: relative;
     display: grid;
-    grid-template-columns: var(--agent-tunnel-process-counter-size) minmax(0, 1fr);
+    grid-template-columns: var(--process-list-marker-size) minmax(0, 1fr);
     align-items: start;
-    column-gap: 16px;
+    column-gap: var(--process-list-column-gap);
     min-width: 0;
     padding: 0;
     border: 0;
 }
 
-.agent-tunnel-onboarding-step[data-agent-tunnel-process-continues]::before {
+.process-list-step[data-process-continues]::before {
     position: absolute;
     z-index: 0;
-    inset-block-start: var(--agent-tunnel-process-connector-start);
-    inset-block-end: var(--agent-tunnel-process-connector-tail);
-    inset-inline-start: var(--agent-tunnel-process-connector-inset);
-    width: var(--agent-tunnel-process-connector-width);
+    inset-block-start: calc(var(--process-list-marker-size) + var(--process-list-marker-halo-width));
+    inset-block-end: calc(var(--process-list-marker-halo-width) - var(--process-list-step-gap));
+    inset-inline-start: calc((var(--process-list-marker-size) - var(--process-list-connector-width)) / 2);
+    width: var(--process-list-connector-width);
     border-radius: var(--radius-pill);
-    background: var(--agent-tunnel-process-connector-color);
+    background: var(--process-list-connector-color);
     content: "";
     pointer-events: none;
 }
 
-.agent-tunnel-step-number {
+.process-list-marker {
     position: relative;
     z-index: 1;
     grid-column: 1;
     box-sizing: border-box;
     display: grid;
     place-items: center;
-    width: var(--agent-tunnel-process-counter-size);
-    height: var(--agent-tunnel-process-counter-size);
-    border: var(--agent-tunnel-process-counter-border-width) solid
-        var(--agent-tunnel-process-connector-color);
+    width: var(--process-list-marker-size);
+    height: var(--process-list-marker-size);
+    border: var(--process-list-marker-border-width) solid var(--process-list-connector-color);
     border-radius: 50%;
-    background: var(--agent-tunnel-process-counter-background);
-    box-shadow: 0 0 0 var(--agent-tunnel-process-counter-gap-width)
-        var(--theme-background);
-    color: var(--agent-tunnel-process-counter-color);
-    font-size: var(--font-ui-lg);
-    font-weight: var(--font-weight-medium);
+    background: var(--process-list-marker-background);
+    box-shadow: 0 0 0 var(--process-list-marker-halo-width) var(--theme-background);
+    color: var(--process-list-marker-color);
+    font-size: var(--process-list-heading-font-size);
+    font-weight: var(--process-list-heading-font-weight);
     line-height: 1;
     white-space: nowrap;
 }
 
-.agent-tunnel-step-copy {
+.process-list-content {
     position: relative;
     z-index: 1;
     grid-column: 2;
     min-width: 0;
 }
 
-.agent-tunnel-step-copy :is(.agent-tunnel-step-heading, h4, p) {
+.agent-tunnel-step-copy :is(h4, p) {
     margin: 0;
 }
 
-.agent-tunnel-step-copy :is(.agent-tunnel-step-heading, h4) {
+.agent-tunnel-step-copy h4 {
     font-size: var(--font-ui-lg);
     font-weight: var(--font-weight-medium);
     line-height: 1.35;
 }
 
-.agent-tunnel-step-heading {
+.process-list-heading {
     display: flex;
     align-items: center;
-    min-height: var(--agent-tunnel-process-counter-size);
+    min-height: var(--process-list-marker-size);
+    margin: 0;
+    font-size: var(--process-list-heading-font-size);
+    font-weight: var(--process-list-heading-font-weight);
+    line-height: 1.35;
+}
+
+.process-list-content > p {
+    margin: var(--process-list-copy-gap) 0 0;
+    color: var(--process-list-copy-color);
+    font-size: var(--process-list-copy-font-size);
+    line-height: var(--process-list-copy-line-height);
 }
 
 .agent-tunnel-step-copy p {
-    margin-block-start: 5px;
-    color: var(--muted);
-    /* One step below the title so the body copy reads as clearly secondary. */
-    font-size: var(--font-ui-md);
-    line-height: 1.55;
+    margin-block-start: var(--process-list-copy-gap);
+    color: var(--process-list-copy-color);
+    font-size: var(--process-list-copy-font-size);
+    line-height: var(--process-list-copy-line-height);
 }
 
 .agent-tunnel-step-copy :is(code, strong) {
@@ -6510,7 +6514,8 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 
 @media (max-width: 900px) {
     .page {
-        --settings-round-icon-button-size: 44px;
+        --circular-icon-button-size: 44px;
+        --settings-round-icon-button-size: var(--circular-icon-button-size);
         --workspace-title-rail-control-height: var(--settings-round-icon-button-size);
         --workspace-title-rail-height: calc(var(--workspace-title-rail-pad-block-start) + var(--workspace-title-rail-control-height));
         --workspace-title-rail-collapsed-pad-inline-start: calc(var(--settings-round-icon-button-size) + 22px);
@@ -8332,6 +8337,18 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     width: 132px;
 }
 
+.browser-session-index-table .browser-session-table-updated-link {
+    display: inline-block;
+    max-width: 100%;
+    vertical-align: top;
+}
+
+.browser-session-index-table .browser-session-message-time {
+    display: grid;
+    min-width: 0;
+    max-width: 100%;
+}
+
 .browser-session-index-table.is-zhihu-source .browser-session-col-count {
     width: 88px;
 }
@@ -8572,6 +8589,14 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-session-table .browser-session-table-updated-link time {
     color: inherit;
+}
+
+@media (max-width: 560px) {
+    .browser-session-index-table .browser-session-message-time > span {
+        max-width: 100%;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
 }
 
 .browser-session-table-title,

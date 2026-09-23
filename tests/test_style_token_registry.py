@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.10.0-codex.0
+Code version: v1.11.0-codex.0
 """
 
 import re
@@ -63,6 +63,7 @@ def test_style_token_component_rows_form_a_complete_sorted_component_catalog() -
         "modal-dialog-banner-message",
         "pagination",
         "primary-button",
+        "process-list",
         "prompt-tag",
         "scrollable-data-table",
         "secondary-button",
@@ -77,7 +78,7 @@ def test_style_token_component_rows_form_a_complete_sorted_component_catalog() -
         "tooltip",
         "workspace-metric-value",
     }
-    assert len(rows) == 22
+    assert len(rows) == 23
     assert all(row["id"] != "workspace-article" for row in rows)
     assert {row["id"] for row in rows} == expected_ids
     assert len({row["id"] for row in rows}) == len(rows)
@@ -268,7 +269,7 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert 'data-style-token-card="segmented-control"' in html
     assert 'data-style-token-copy="Segmented control"' in html
     assert 'data-style-token-inventory-demo' not in html
-    assert html.count('data-style-token-card=') == 22
+    assert html.count('data-style-token-card=') == 23
     assert 'data-style-token-card="collapse"' in html
     assert 'class="ui-collapse style-token-collapse-demo"' in html
     assert "LSTM parameters" in html

@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.141.1-codex.0
+# Code version: v1.141.3-codex.0
 
 from __future__ import annotations
 
@@ -867,7 +867,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.148.0-codex.0"
+                expected_style_version = "style-v2.150.0-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1293,7 +1293,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.148.0-codex.0', local_body)
+        self.assertIn('style-v2.150.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -1312,24 +1312,24 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('starting with tunnel_', onboarding_body)
         self.assertIn('sk-proj-••••••••', onboarding_body)
         self.assertIn(
-            '<ol class="agent-tunnel-onboarding-steps" role="list">',
+            '<ol class="process-list agent-tunnel-onboarding-steps" role="list">',
             onboarding_body,
         )
         for step_number in range(1, 5):
             self.assertIn(
-                '<span class="agent-tunnel-step-number" aria-hidden="true">'
+                '<span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">'
                 f'{step_number}</span>',
                 onboarding_body,
             )
         self.assertEqual(
-            onboarding_body.count('<h3 class="agent-tunnel-step-heading">'),
+            onboarding_body.count('<h3 class="process-list-heading agent-tunnel-step-heading">'),
             4,
         )
         self.assertEqual(
-            onboarding_body.count('data-agent-tunnel-process-continues'),
+            onboarding_body.count('data-process-continues'),
             3,
         )
-        self.assertEqual(gemini_body.count('data-agent-tunnel-process-continues'), 3)
+        self.assertEqual(gemini_body.count('data-process-continues'), 3)
         guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list ')
         guide_end = onboarding_body.index('</ol>', guide_start) + len('</ol>')
         guide_body = onboarding_body[guide_start:guide_end]
@@ -2125,6 +2125,12 @@ class WebAppTests(unittest.TestCase):
                 agent_external_operations_enabled=False,
             )
             with app.test_client() as client:
+                page = client.get("/agent/tunnel/chatgpt")
+                self.assertEqual(page.status_code, 200)
+                rendered_page = page.get_data(as_text=True)
+                self.assertRegex(rendered_page, r"Identity [0-9a-f]{16}")
+                self.assertNotRegex(rendered_page, r"· ID [0-9a-f]{16}")
+
                 initial = client.get("/api/agent/tunnel/project").get_json()["project_context"]
                 self.assertEqual(initial["revision"], 0)
                 self.assertIsNone(initial["current"])
@@ -4925,7 +4931,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.148.0-codex.0", body)
+            self.assertIn("style-v2.150.0-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.34.0-codex.0', body)
