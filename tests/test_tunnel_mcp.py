@@ -2672,7 +2672,7 @@ def test_git_root_workspace_is_the_only_fallback_project(tmp_path: Path) -> None
     discovered = content(call(service, "current_project", project=None))
     assert discovered["current_project"]["id"] == "solo"
     assert discovered["current_project"]["registered"] is False
-    assert discovered["current_project"]["writable"] is False
+    assert discovered["current_project"]["writable"] is True
 
 
 def test_invalid_git_placeholder_cannot_enter_read_only_fallback(tmp_path: Path) -> None:

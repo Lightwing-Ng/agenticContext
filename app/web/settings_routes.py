@@ -6,13 +6,14 @@ in ``app.web.form_config``; this module owns validation of what a submitted form
 for Agent settings, shadow backup, and local directories.
 """
 
-# Code version: v1.2.0-codex.0
+# Code version: v1.3.0-codex.0
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from flask import (
@@ -37,6 +38,10 @@ from app.core.foundation import (
     DEFAULT_PORT,
     get_log_file_path,
 )
+from app.core.native_directory_picker import (
+    NativeDirectoryPickerError,
+    choose_native_directory,
+)
 from app.core.storage import (
     SettingsDirectoryBrowserError,
     ShadowBackupError,
@@ -49,6 +54,7 @@ from app.web.token_registry import build_style_token_component_rows
 
 
 SETTINGS_BLUEPRINT_NAME = "settings"
+_native_picker_lock = Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +230,39 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
         if listing.recovered_from:
             body["notice"] = "The starting path was unavailable. Opened the nearest readable directory."
         return jsonify(body)
+
+    @blueprint.post("/api/settings/directory/native")
+    def choose_native_tunnel_directory_route():
+        """Open one system folder panel for the local Tunnel project control."""
+        if not is_loopback_address(request.remote_addr):
+            return jsonify({"error": "Folder selection is only available on the local host."}), 403
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or payload.get("field") != "tunnel_project_root":
+            return jsonify({"error": "Unknown native directory field."}), 400
+        requested_path = payload.get("path")
+        if requested_path is not None and (
+            not isinstance(requested_path, str) or len(requested_path) > 4_096
+        ):
+            return jsonify({"error": "Invalid starting directory."}), 400
+        initial_path = (
+            Path(requested_path.strip())
+            if requested_path and requested_path.strip()
+            else default_tunnel_browse_root()
+        )
+        if not initial_path.is_absolute():
+            return jsonify({"error": "The starting directory must be absolute."}), 400
+        if not _native_picker_lock.acquire(blocking=False):
+            return jsonify({"error": "A system folder picker is already open."}), 409
+        try:
+            selected = choose_native_directory(
+                initial_path,
+                "Choose a registered Tunnel project folder",
+            )
+        except NativeDirectoryPickerError as exc:
+            return jsonify({"error": str(exc)}), 503
+        finally:
+            _native_picker_lock.release()
+        return jsonify({"cancelled": selected is None, "path": str(selected) if selected else ""})
 
     @blueprint.post("/api/settings/directory/validate")
     def validate_settings_directory_route():

@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.31.3-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.32.3-codex.0."""
 
 import re
 from copy import deepcopy
@@ -488,7 +488,7 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
     disposable_browser,
     sidebar_server_url,
 ):
-    """The checklist is server-confirmed while one current project stays explicit."""
+    """Multiple checked projects persist while the current project follows selection."""
     context = disposable_browser.new_context(viewport={"width": 876, "height": 1_100})
     page = context.new_page()
     status = _tunnel_onboarding_status(activity_observed=False)
@@ -522,7 +522,7 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
     def fulfill_project(route):
         payload = route.request.post_data_json
         requests.append(payload)
-        if payload["project_id"] == "beta" and len(requests) == 1:
+        if len(requests) == 1:
             alpha["selected"] = True
             beta["selected"] = True
             status["project_context"] = {
@@ -535,11 +535,14 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
             status["status_observed_at"] = 2
             route.fulfill(json=deepcopy(status))
             return
-        if payload["project_id"] == "alpha":
+        if len(requests) == 2:
+            beta["selected"] = False
             status["project_context"] = {
                 **status["project_context"],
                 "revision": 3,
                 "current": alpha,
+                "selected_project_ids": ["alpha"],
+                "projects": [alpha, beta],
             }
             status["status_observed_at"] = 3
             route.fulfill(json=deepcopy(status))
@@ -561,7 +564,10 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
         beta_checkbox = page.locator('[data-agent-tunnel-project-checkbox="beta"]')
         expect(alpha_checkbox).not_to_be_checked()
         expect(beta_checkbox).to_be_checked()
-        expect(page.locator('[data-agent-tunnel-project-use="beta"]')).to_have_text("Current")
+        expect(page.locator('[data-agent-tunnel-project-row="alpha"] [data-agent-tunnel-project-access]')).to_have_count(0)
+        expect(page.locator('[data-agent-tunnel-project-row="beta"] [data-agent-tunnel-project-access]')).to_have_text("Read only")
+        expect(page.locator("[data-agent-tunnel-project-use]")).to_have_count(0)
+        expect(page.locator(".agent-tunnel-project-details")).to_have_count(0)
         expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/beta")
         prompt = page.locator("[data-agent-tunnel-kickoff]")
         prompt.fill(prompt.input_value().replace("[describe your task].", "Keep this exact body."))
@@ -569,17 +575,35 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
         alpha_checkbox.focus()
         alpha_checkbox.press("Space")
         expect(alpha_checkbox).to_be_checked()
-        expect(page.locator('[data-agent-tunnel-project-use="beta"]')).to_have_text("Current")
+        expect(beta_checkbox).to_be_checked()
+        expect(page.locator('[data-agent-tunnel-project-row="alpha"] [data-agent-tunnel-project-access]')).to_have_count(0)
+        expect(page.locator('[data-agent-tunnel-project-row="beta"] [data-agent-tunnel-project-access]')).to_have_text("Read only")
+        status_notice = page.locator("[data-agent-tunnel-project-status]")
+        expect(status_notice).to_have_text("alpha selected.")
+        muted_color = page.evaluate("""() => {
+            const sample = document.createElement('span');
+            sample.style.color = 'var(--muted)';
+            document.body.append(sample);
+            const color = getComputedStyle(sample).color;
+            sample.remove();
+            return color;
+        }""")
+        assert status_notice.evaluate("element => getComputedStyle(element).color") == muted_color
+        expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/beta")
 
-        page.locator('[data-agent-tunnel-project-use="alpha"]').click()
-        expect(page.locator('[data-agent-tunnel-project-use="alpha"]')).to_have_text("Current")
+        beta_checkbox.focus()
+        beta_checkbox.press("Space")
+        expect(beta_checkbox).not_to_be_checked()
+        expect(page.locator('[data-agent-tunnel-project-row="beta"] [data-agent-tunnel-project-access]')).to_have_count(0)
         expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/alpha")
         expect(prompt).to_have_value(re.compile(r'project ID "alpha"'))
         expect(prompt).to_have_value(re.compile(r"selection revision 3"))
         expect(prompt).to_have_value(re.compile(r"Keep this exact body\."))
 
-        page.locator('[data-agent-tunnel-project-use="beta"]').click()
-        expect(page.locator('[data-agent-tunnel-project-use="alpha"]')).to_have_text("Current")
+        beta_checkbox.focus()
+        beta_checkbox.press("Space")
+        expect(beta_checkbox).not_to_be_checked()
+        expect(alpha_checkbox).to_be_checked()
         expect(page.locator("[data-agent-tunnel-project-status]")).to_contain_text(
             "selection was rejected"
         )
@@ -591,12 +615,12 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
             },
             {
                 "project_id": "alpha",
-                "selected_project_ids": ["beta", "alpha"],
+                "selected_project_ids": ["alpha"],
                 "expected_revision": 2,
             },
             {
-                "project_id": "beta",
-                "selected_project_ids": ["beta", "alpha"],
+                "project_id": "alpha",
+                "selected_project_ids": ["alpha", "beta"],
                 "expected_revision": 3,
             },
         ]
@@ -637,13 +661,13 @@ def test_tunnel_project_path_uses_the_server_supplied_desktop_when_none_is_curre
 
 
 @pytest.mark.parametrize("width", [830, 390], ids=("comment-viewport", "narrow"))
-def test_tunnel_project_folder_picker_only_selects_exact_registered_roots(
+def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
     disposable_browser,
     sidebar_server_url,
     tmp_path,
     width,
 ):
-    """The round picker starts locally but never turns an arbitrary path into authority."""
+    """The system picker preserves multi-selection and new-root registration."""
     alpha_root = tmp_path / "alpha"
     beta_root = tmp_path / "beta"
     unregistered_root = tmp_path / "not-registered"
@@ -675,6 +699,9 @@ def test_tunnel_project_folder_picker_only_selects_exact_registered_roots(
     }
     requests = []
     reject_next = {"value": False}
+    register_requests = []
+    native_next = {"path": str(alpha_root)}
+    native_requests = []
 
     page.route(
         "**/api/agent/tunnel/status?platform=chatgpt",
@@ -706,6 +733,22 @@ def test_tunnel_project_folder_picker_only_selects_exact_registered_roots(
         route.fulfill(json=deepcopy(status))
 
     page.route("**/api/agent/tunnel/project?platform=chatgpt", fulfill_project)
+
+    def fulfill_register(route):
+        register_requests.append(route.request.post_data_json)
+        route.fulfill(
+            status=409,
+            json={"error": "Registration was declined for this test."},
+        )
+
+    page.route("**/api/agent/tunnel/project/register?platform=chatgpt", fulfill_register)
+
+    def fulfill_native_picker(route):
+        native_requests.append(route.request.post_data_json)
+        selected_path = native_next["path"]
+        route.fulfill(json={"cancelled": not selected_path, "path": selected_path})
+
+    page.route("**/api/settings/directory/native", fulfill_native_picker)
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
         if width < 900:
@@ -724,46 +767,33 @@ def test_tunnel_project_folder_picker_only_selects_exact_registered_roots(
         project_path.fill(str(unregistered_root))
         project_path.dispatch_event("change")
         expect(page.locator("[data-agent-tunnel-project-status]")).to_contain_text(
-            "not a registered Tunnel project"
+            "Registration was declined"
         )
+        assert register_requests == [
+            {"path": str(unregistered_root.resolve()), "expected_revision": 1}
+        ]
         assert requests == []
         expect(page.locator('[data-agent-tunnel-project-checkbox="beta"]')).not_to_be_checked()
 
         project_path.fill(str(beta_root) + "/")
         project_path.dispatch_event("change")
-        expect(page.locator('[data-agent-tunnel-project-use="beta"]')).to_have_text("Current")
         expect(page.locator('[data-agent-tunnel-project-checkbox="beta"]')).to_be_checked()
+        expect(page.locator('[data-agent-tunnel-project-checkbox="alpha"]')).to_be_checked()
         expect(project_path).to_have_value(str(beta_root))
-        expect(page.locator('[data-agent-tunnel-project-row="beta"]')).to_contain_text(
-            "Read only"
-        )
-        # The hash is the project identity; "ID" is reserved for the project ID.
-        beta_details = page.locator('[data-agent-tunnel-project-row="beta"]').inner_text()
-        assert "Identity beta000000000000" in beta_details
-        assert "ID beta000000000000" not in beta_details
+        beta_row = page.locator('[data-agent-tunnel-project-row="beta"]')
+        expect(beta_row.locator(".selection-list-name")).to_have_text("beta")
+        expect(beta_row.locator("[data-agent-tunnel-project-access]")).to_have_text("Read only")
+        expect(page.locator("[data-agent-tunnel-project-use]")).to_have_count(0)
+        expect(page.locator(".agent-tunnel-project-help")).to_have_count(0)
+        expect(page.locator("#agent_tunnel_project_path_status")).to_have_count(0)
 
         picker.click()
         dialog = page.locator("[data-settings-directory-browser]")
-        expect(dialog).to_be_visible()
-        expect(page.locator("[data-directory-browser-path]")).to_have_value(
-            str(beta_root)
-        )
-        page.get_by_role("button", name="Up", exact=True).click()
-        expect(page.locator("[data-directory-browser-path]")).to_have_value(
-            str(tmp_path)
-        )
-        page.locator("[data-directory-browser-entry]").filter(
-            has_text=alpha_root.name
-        ).click()
-        expect(page.locator("[data-directory-browser-path]")).to_have_value(
-            str(alpha_root)
-        )
-        page.get_by_role("button", name="Select current folder").click()
         expect(dialog).to_be_hidden()
-        expect(page.locator('[data-agent-tunnel-project-use="alpha"]')).to_have_text(
-            "Current"
-        )
         expect(project_path).to_have_value(str(alpha_root))
+        expect(page.locator("[data-agent-tunnel-kickoff]")).to_have_value(
+            re.compile(r'project ID "alpha"')
+        )
         assert requests == [
             {
                 "project_id": "beta",
@@ -776,6 +806,23 @@ def test_tunnel_project_folder_picker_only_selects_exact_registered_roots(
                 "expected_revision": 2,
             },
         ]
+        assert native_requests == [
+            {"field": "tunnel_project_root", "path": str(beta_root)}
+        ]
+
+        native_next["path"] = ""
+        picker.click()
+        expect(dialog).to_be_hidden()
+        expect(picker).to_be_enabled()
+        expect(project_path).to_have_value(str(alpha_root))
+        expect(page.locator(".agent-tunnel-project-field")).not_to_contain_text(
+            "Selection cancelled."
+        )
+        assert len(requests) == 2
+        assert native_requests[-1] == {
+            "field": "tunnel_project_root",
+            "path": str(alpha_root),
+        }
 
         reject_next["value"] = True
         project_path.fill(str(beta_root))
@@ -783,9 +830,7 @@ def test_tunnel_project_folder_picker_only_selects_exact_registered_roots(
         expect(page.locator("[data-agent-tunnel-project-status]")).to_contain_text(
             "folder selection was rejected"
         )
-        expect(page.locator('[data-agent-tunnel-project-use="alpha"]')).to_have_text(
-            "Current"
-        )
+        expect(page.locator('[data-agent-tunnel-project-checkbox="alpha"]')).to_be_checked()
         expect(project_path).to_have_value(str(alpha_root))
         expect(page.locator("[data-agent-tunnel-kickoff]")).to_have_value(
             re.compile(r'project ID "alpha"')

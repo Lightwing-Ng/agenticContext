@@ -1,4 +1,4 @@
-/* Code version: v1.3.0-codex.0 */
+/* Code version: v1.4.3-codex.0 */
 /*
  * Worthward allocation badge adapter.
  * Source: foundation/tokens.css v0.46.0 and views/investment-tables.css v1.1.1.
@@ -91,7 +91,7 @@
     min-height: 0;
     padding-bottom: 0;
     color: inherit;
-    font-size: var(--workspace-metric-value-font-size);
+    font-size: 21px;
     font-weight: var(--workspace-metric-value-font-weight);
     line-height: var(--workspace-metric-value-line-height);
     letter-spacing: var(--workspace-metric-value-letter-spacing);
@@ -136,12 +136,6 @@
     padding: 0;
 }
 
-.agent-tunnel-project-help {
-    margin: 0 0 6px;
-    color: var(--muted);
-    font-size: var(--font-ui-sm);
-}
-
 .agent-tunnel-project-list {
     max-block-size: min(360px, 44vh);
     padding: 8px 10px;
@@ -153,48 +147,30 @@
 }
 
 .agent-tunnel-project-option {
-    grid-template-rows: auto auto;
-    padding-block: 3px 7px;
+    padding-block: 3px;
 }
 
 .agent-tunnel-project-option + .agent-tunnel-project-option {
     border-block-start: 1px solid var(--theme-glass-border);
 }
 
-.agent-tunnel-project-use {
+.agent-tunnel-project-access {
     grid-column: 2;
-    grid-row: 1;
-    min-block-size: 30px;
-    padding: 3px 10px;
-    justify-self: end;
-}
-
-.agent-tunnel-project-use[aria-pressed="true"] {
-    color: var(--theme-success-strong);
-}
-
-.agent-tunnel-project-details {
-    display: grid;
-    grid-column: 1 / -1;
-    grid-row: 2;
-    gap: 2px;
-    min-inline-size: 0;
-    margin: 0 0 0 22px;
-    overflow-wrap: anywhere;
     color: var(--muted);
     font-size: var(--font-ui-sm);
-}
-
-.agent-tunnel-project-root {
-    color: var(--text);
-}
-
-.agent-tunnel-project-problem {
-    color: var(--theme-error-strong);
+    white-space: nowrap;
 }
 
 .agent-tunnel-project-status {
     margin: 0;
+    color: var(--muted);
+    font-size: var(--font-ui-sm);
+    line-height: 1.4;
+}
+
+/* Keep the loading spinner in the same square slot as the ready checkmark. */
+#agent_runtime_form [data-agent-tunnel-spinner] {
+    margin-block: 5px;
 }
 
 .agent-tunnel-status-actions {

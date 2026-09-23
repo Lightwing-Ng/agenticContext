@@ -1,4 +1,4 @@
-/* Code version: v3.64.2-codex.0 */
+/* Code version: v3.66.1-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -1240,7 +1240,6 @@
                 row.className = "selection-list-row agent-tunnel-project-option";
                 row.dataset.agentTunnelProjectRow = project.id;
 
-                const detailId = `agent_tunnel_project_details_${index + 1}`;
                 const inputId = `agent_tunnel_project_${index + 1}`;
                 const identity = document.createElement("label");
                 identity.className = "selection-list-identity agent-tunnel-project-identity";
@@ -1251,8 +1250,12 @@
                 checkbox.type = "checkbox";
                 checkbox.value = project.id;
                 checkbox.dataset.agentTunnelProjectCheckbox = project.id;
-                checkbox.setAttribute("aria-describedby", detailId);
                 checkbox.checked = selectedIds.has(project.id);
+                if (checkbox.checked && !project.writable) {
+                    checkbox.setAttribute(
+                        "aria-describedby", `agent_tunnel_project_access_${index + 1}`,
+                    );
+                }
                 checkbox.disabled = !checkbox.checked
                     && (!project.available || !project.registered);
                 const mark = document.createElement("span");
@@ -1263,31 +1266,15 @@
                 name.textContent = project.id;
                 identity.append(checkbox, mark, name);
 
-                const use = document.createElement("button");
-                use.type = "button";
-                use.className = "secondary-button agent-tunnel-project-use";
-                use.dataset.agentTunnelProjectUse = project.id;
-                const isCurrent = current?.id === project.id;
-                use.setAttribute("aria-pressed", String(isCurrent));
-                use.textContent = isCurrent ? "Current" : "Use";
-                use.disabled = isCurrent || !project.available || !project.registered;
-
-                const details = document.createElement("p");
-                details.className = "agent-tunnel-project-details";
-                details.id = detailId;
-                const root = document.createElement("span");
-                root.className = "agent-tunnel-project-root";
-                root.textContent = project.root;
-                const facts = document.createElement("span");
-                facts.textContent = `${project.access} · ${project.availability} · Identity ${project.identity}`;
-                details.append(root, facts);
-                if (project.problem) {
-                    const problem = document.createElement("span");
-                    problem.className = "agent-tunnel-project-problem";
-                    problem.textContent = project.problem;
-                    details.append(problem);
+                row.append(identity);
+                if (checkbox.checked && !project.writable) {
+                    const access = document.createElement("span");
+                    access.className = "agent-tunnel-project-access";
+                    access.id = `agent_tunnel_project_access_${index + 1}`;
+                    access.dataset.agentTunnelProjectAccess = "";
+                    access.textContent = "Read only";
+                    row.append(access);
                 }
-                row.append(identity, use, details);
                 return row;
             });
             if (listSignature !== tunnelProjectListSignature) {
@@ -1369,6 +1356,8 @@
 
     function syncTunnelKickoffUi() {
         if (!elements.tunnelKickoffTitle) return;
+        // A reconnect is transient; keep the prompt in place until it settles.
+        if (tunnelReconnectBusy) return;
         const gate = tunnelKickoffGate();
         const previousState = elements.tunnelKickoffTitle.dataset.agentTunnelKickoffState || "";
         elements.tunnelKickoffTitle.dataset.agentTunnelKickoffState = gate.state;
@@ -1579,10 +1568,10 @@
         if (elements.tunnelReconnect) {
             elements.tunnelReconnect.hidden = platform !== "chatgpt"
                 || !Boolean(tunnelCredentials.qualified);
+            // Keep the label fixed so the button width never shifts; the status
+            // row already reports "Reconnecting".
             elements.tunnelReconnect.disabled = tunnelReconnectBusy;
-            elements.tunnelReconnect.textContent = tunnelReconnectBusy
-                ? "Reconnecting…"
-                : "Reconnect";
+            elements.tunnelReconnect.toggleAttribute("aria-busy", tunnelReconnectBusy);
         }
         syncGeminiAuthorizationUi();
         syncTunnelProjectUi();
@@ -1868,16 +1857,6 @@
         }
     }
 
-    function selectTunnelProject(projectId) {
-        const selected = tunnelProjectContext.selectedProjectIds.includes(projectId)
-            ? tunnelProjectContext.selectedProjectIds
-            : [...tunnelProjectContext.selectedProjectIds, projectId];
-        const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
-        return saveTunnelProjectSelection(projectId, selected, {
-            path: project?.root || "",
-        });
-    }
-
     function toggleTunnelProject(projectId, shouldSelect) {
         const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
         if (!project || tunnelProjectBusy) return false;
@@ -1905,17 +1884,62 @@
         });
     }
 
+    async function registerTunnelProjectPath(path) {
+        const url = elements.tunnelProjectField?.dataset.agentTunnelProjectRegisterUrl;
+        if (!url || tunnelProjectBusy) return false;
+        const operationRevision = ++tunnelProjectSaveRevision;
+        const requestedPlatform = selectedPlatform();
+        invalidateTunnelStatusRequest();
+        tunnelProjectBusy = true;
+        tunnelProjectNotice = "Adding this folder as a read and write project…";
+        syncTunnelProjectUi();
+        try {
+            const requestUrl = new URL(url, window.location.href);
+            requestUrl.searchParams.set("platform", requestedPlatform);
+            const payload = await tunnelRequestJson(requestUrl.toString(), {
+                method: "POST",
+                body: JSON.stringify({
+                    path,
+                    expected_revision: tunnelProjectContext.revision,
+                }),
+            });
+            if (operationRevision !== tunnelProjectSaveRevision) return true;
+            if (!applyTunnelStatus(payload, requestedPlatform)) {
+                throw new Error("The server returned an invalid project registration response.");
+            }
+            if (elements.tunnelProjectPath instanceof HTMLInputElement) {
+                elements.tunnelProjectPath.value = path;
+                tunnelProjectPathTouched = true;
+            }
+            const current = tunnelProjectContext.current;
+            tunnelProjectNotice = current ? `Current project saved as ${current.id}.` : "";
+            syncTunnelProjectUi();
+            scheduleTunnelPoll();
+            return true;
+        } catch (error) {
+            if (operationRevision !== tunnelProjectSaveRevision) return false;
+            if (error?.payload?.project_context) {
+                adoptTunnelProjectContext(error.payload.project_context);
+            }
+            tunnelProjectPathTouched = false;
+            tunnelProjectNotice = String(
+                error?.message || "Unable to add this folder as a Tunnel project.",
+            );
+            syncTunnelProjectUi();
+            return false;
+        } finally {
+            if (operationRevision === tunnelProjectSaveRevision) {
+                tunnelProjectBusy = false;
+                syncTunnelProjectUi();
+            }
+        }
+    }
+
     function selectTunnelProjectPath(path) {
         const normalizedPath = String(path || "").trim();
         if (!normalizedPath || tunnelProjectBusy) return false;
         const project = tunnelProjectContext.projects.find((item) => item.root === normalizedPath);
-        if (!project) {
-            tunnelProjectNotice = (
-                "This folder is not a registered Tunnel project. Existing permissions were not changed."
-            );
-            syncTunnelProjectUi();
-            return false;
-        }
+        if (!project) return registerTunnelProjectPath(normalizedPath);
         if (!project.registered || !project.available) {
             tunnelProjectNotice = project.problem || "This registered project is unavailable.";
             syncTunnelProjectUi();
@@ -3498,12 +3522,6 @@
                 String(checkbox.dataset.agentTunnelProjectCheckbox || ""),
                 requested,
             );
-        });
-        list.addEventListener("click", (event) => {
-            if (!(event.target instanceof Element)) return;
-            const use = event.target.closest("[data-agent-tunnel-project-use]");
-            if (!(use instanceof HTMLButtonElement) || use.disabled) return;
-            void selectTunnelProject(String(use.dataset.agentTunnelProjectUse || ""));
         });
         elements.tunnelProjectPath?.addEventListener("change", () => {
             tunnelProjectPathTouched = true;

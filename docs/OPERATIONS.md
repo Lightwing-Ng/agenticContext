@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.35.1-codex.0`
+Documentation version: `v1.36.1-codex.0`
 
 ## Launch
 
@@ -52,7 +52,8 @@ installations. It skips an otherwise supported interpreter when required applica
 missing, so an already prepared platform installation can still start the app without a manual
 interpreter override.
 
-Directory controls use an in-page local folder browser on macOS and Windows. The browser starts
+Browser-mode Agent and Settings directory controls use an in-page local folder browser on macOS and Windows.
+The browser starts
 from the current valid value or the nearest readable existing parent, supports breadcrumbs, Up,
 absolute-path navigation, empty folders, and cancellation, and writes the canonical absolute path
 only after `Select current folder`. It does not invoke Terminal, Finder, AppleScript, an OS-native
@@ -61,6 +62,12 @@ continues to use the existing validation route. Browsing is loopback-only and re
 the application's Host, same-origin write, and LAN-session boundaries; it does not change Agent
 workspace authority or persisted settings until the existing field save flow runs. A running Agent
 task keeps its project control locked.
+
+The Tunnel project folder control instead opens one host-native folder panel: macOS Standard
+Additions `choose folder` or the Windows Shell folder dialog. A cancelled panel leaves the selection
+unchanged. Its chosen path passes through local validation. An existing registered root becomes
+current; a new nonoverlapping root is registered as writable and selected. The native endpoint is
+loopback-only and accepts only the Tunnel project field.
 
 The normal server address is `http://127.0.0.1:8666`, and the application binds only to loopback by
 default. To opt in to trusted-LAN access, set `AGENTIC_CONTEXT_HOST=0.0.0.0` and set
@@ -504,11 +511,13 @@ Runtime behavior:
 
 Daily two-page workflow:
 
-1. Open `http://localhost:8666/agent/tunnel/chatgpt`, check the registered projects wanted in the
-   preferred set, choose one available checked project as `Current`, and wait for the saved
-   selection revision. Confirm its path, permission, and a currently Ready transport; use
-   Retry/Reconnect if the transport is stale or failed. The folder action is an exact registry-root
-   matcher, not a registration or write-permission action.
+1. Open `http://localhost:8666/agent/tunnel/chatgpt` and check every registered project needed for
+   the task. More than one project can stay selected. The server keeps one current project for
+   tasks that do not name a project; selecting a folder makes that registered project current, and
+   deselecting the current project moves that role to another selected project. Wait for the saved
+   selection revision and a Ready transport; use Retry/Reconnect if the transport is stale or
+   failed. The folder action selects an existing registered root or registers a new writable
+   project. Existing registry permissions remain unchanged.
 2. Open ChatGPT, choose `@AgenticContext`, and describe the task normally. Copying the local prompt
    is optional; when used, it includes the exact project id and preserves the user's task text as
    the selection changes.

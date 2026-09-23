@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.4.1-codex.0
+Code version: v1.5.0-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -10,9 +10,10 @@ directory happens to live.
 
 The registry is the user-owned ``tunnel-projects.json`` file beside
 ``settings.json``. When that file is absent, the Agent's selected workspace is
-offered as one read-only project only if it is itself a Git work-tree root, so a
-parent folder such as the Desktop never becomes an implicit project and choosing a
-folder never grants write access; only a registry entry does.
+offered as one project only if it is itself a Git work-tree root, so a parent
+folder such as the Desktop never becomes an implicit project. Registered projects
+are writable unless their entry sets ``"writable": false``. Choosing a folder on
+the local Tunnel page registers it as a writable project.
 
 The local Tunnel page keeps a preferred subset of registered projects and selects
 exactly one available member as the *current* project. That preference is stored
@@ -257,7 +258,7 @@ def parse_project_registry(payload: Any) -> tuple[TunnelProject, ...]:
         if project_id.casefold() in seen_ids:
             raise ProjectRegistryError(f"Project id {project_id} is registered twice.")
         seen_ids.add(project_id.casefold())
-        writable = entry.get("writable", False)
+        writable = entry.get("writable", True)
         if not isinstance(writable, bool):
             raise ProjectRegistryError(f"Project {project_id} writable must be true or false.")
         description = entry.get("description", "")
@@ -281,11 +282,7 @@ def parse_project_registry(payload: Any) -> tuple[TunnelProject, ...]:
 
 
 def _fallback_project(workspace_path: str) -> tuple[TunnelProject, ...]:
-    """Offer the selected Agent workspace read-only when it is one Git repository root.
-
-    Choosing a folder never grants write access; a writable project must be listed
-    in the registry.
-    """
+    """Offer the selected Agent workspace when it is one Git repository root."""
     if not workspace_path:
         return ()
     try:
@@ -301,8 +298,8 @@ def _fallback_project(workspace_path: str) -> tuple[TunnelProject, ...]:
         TunnelProject(
             project_id,
             root,
-            False,
-            "The Agent's selected folder; read-only until it is registered.",
+            True,
+            "The Agent's selected folder.",
         ),
     )
 
@@ -315,6 +312,7 @@ class ProjectRegistry:
         self._lock = threading.Lock()
         self._cache_key: tuple[str, int, int, int, int, int] | None = None
         self._cache: tuple[TunnelProject, ...] = ()
+        self._register_lock = threading.Lock()
 
     @property
     def path(self) -> Path:
@@ -357,6 +355,52 @@ class ProjectRegistry:
             self._cache_key = cache_key
             self._cache = projects
         return projects
+
+    def register(self, raw_root: Any, fallback_workspace: str = "") -> TunnelProject:
+        """Add one folder as a writable project and return it.
+
+        An already-registered root returns its existing entry unchanged. When no
+        registry file exists yet, the fallback project is written first so it stays
+        visible. Overlapping roots are rejected by the normal registry validation.
+        """
+        root = _canonical_root(raw_root, "The chosen folder")
+        if not root.is_dir():
+            raise ProjectRegistryError("The chosen folder does not exist.")
+        with self._register_lock:
+            existing = self.projects(fallback_workspace)
+            for project in existing:
+                if project.root == root:
+                    return project
+            if self.uses_fallback():
+                entries: list[dict[str, Any]] = [
+                    {"id": project.id, "root": str(project.root), "writable": project.writable}
+                    for project in existing
+                ]
+            else:
+                entries = json.loads(self.path.read_text(encoding="utf-8"))["projects"]
+            taken = {str(entry.get("id", "")).casefold() for entry in entries}
+            base = re.sub(r"[^A-Za-z0-9._-]", "-", root.name).strip("-._")[:56]
+            if not base or not base[0].isalpha():
+                base = f"project-{base}".rstrip("-")[:56]
+            project_id = base
+            suffix = 2
+            while project_id.casefold() in taken:
+                project_id = f"{base}-{suffix}"
+                suffix += 1
+            entries.append({"id": project_id, "root": str(root), "writable": True})
+            payload = {"schema_version": TUNNEL_PROJECTS_SCHEMA_VERSION, "projects": entries}
+            parse_project_registry(payload)
+            path = self.path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            return self.resolve(project_id, fallback_workspace)
 
     def resolve(self, project_id: Any, fallback_workspace: str = "") -> TunnelProject:
         """Return the registered authority with exactly this identifier.

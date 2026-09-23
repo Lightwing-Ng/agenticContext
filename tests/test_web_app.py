@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.141.3-codex.0
+# Code version: v1.142.2-codex.0
 
 from __future__ import annotations
 
@@ -1043,7 +1043,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-terminal-authorization-button', settings_body)
         self.assertIn('class="settings-inline-button settings-inline-button-primary shadow-backup-sync-button"', settings_body)
         self.assertIn('shadow-backup-settings.js?v=shadow-backup-settings-v1.3.0-codex.2', settings_body)
-        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.1.0-codex.0', settings_body)
+        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.2.0-codex.0', settings_body)
         self.assertNotIn("Reset Grok state", settings_body)
         self.assertNotIn("Reset ChatGPT state", settings_body)
 
@@ -1289,7 +1289,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<span class="field-label">Workspace</span>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
-        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.1.0-codex.0', local_body)
+        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.2.0-codex.0', local_body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
@@ -1301,7 +1301,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
         self.assertIn('selection-list.css?v=selection-list-v1.0.0-codex.0', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.64.2-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.66.1-codex.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -2128,8 +2128,10 @@ class WebAppTests(unittest.TestCase):
                 page = client.get("/agent/tunnel/chatgpt")
                 self.assertEqual(page.status_code, 200)
                 rendered_page = page.get_data(as_text=True)
-                self.assertRegex(rendered_page, r"Identity [0-9a-f]{16}")
-                self.assertNotRegex(rendered_page, r"· ID [0-9a-f]{16}")
+                self.assertNotIn('class="agent-tunnel-project-details"', rendered_page)
+                self.assertNotIn('data-agent-tunnel-project-use=', rendered_page)
+                self.assertNotIn('id="agent_tunnel_project_path_status"', rendered_page)
+                self.assertIn("data-directory-picker-native", rendered_page)
 
                 initial = client.get("/api/agent/tunnel/project").get_json()["project_context"]
                 self.assertEqual(initial["revision"], 0)
@@ -2188,6 +2190,54 @@ class WebAppTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(injected.status_code, 400)
+
+                chosen = root / "chosen project"
+                chosen.mkdir()
+                registered = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(chosen), "expected_revision": 1},
+                )
+                self.assertEqual(registered.status_code, 200)
+                context = registered.get_json()["project_context"]
+                self.assertEqual(context["current"]["id"], "chosen-project")
+                self.assertEqual(context["current"]["access"], "Read and write")
+                self.assertEqual(
+                    context["selected_project_ids"], ["alpha", "reference", "chosen-project"]
+                )
+                saved = json.loads(registry_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    saved["projects"][-1],
+                    {"id": "chosen-project", "root": str(chosen.resolve()), "writable": True},
+                )
+                stale_root = root / "stale project"
+                stale_root.mkdir()
+                stale = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(stale_root), "expected_revision": 1},
+                )
+                self.assertEqual(stale.status_code, 409)
+                self.assertEqual(
+                    len(json.loads(registry_path.read_text(encoding="utf-8"))["projects"]), 3
+                )
+                again = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(chosen), "expected_revision": 2},
+                )
+                self.assertEqual(again.status_code, 200)
+                self.assertEqual(
+                    len(json.loads(registry_path.read_text(encoding="utf-8"))["projects"]), 3
+                )
+                nested = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(first / "."), "expected_revision": 3},
+                )
+                self.assertEqual(nested.status_code, 200)
+                (first / "inner").mkdir()
+                overlapping = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(first / "inner"), "expected_revision": 4},
+                )
+                self.assertEqual(overlapping.status_code, 400)
 
     def test_tunnel_same_credentials_trigger_recovery_and_writable_availability(self) -> None:
         """A deliberate re-save recovers the client and write access is truthful."""
@@ -3054,7 +3104,7 @@ class WebAppTests(unittest.TestCase):
         script = COMPUTER_USE_AGENT_SCRIPT_PATH.read_text(encoding="utf-8")
 
         self.assertTrue(
-            script.startswith("/* Code version: v3.64.2-codex.0 */")
+            script.startswith("/* Code version: v3.66.1-codex.0 */")
         )
         for fragment in (
             'geminiAuthorization: document.querySelector("[data-agent-gemini-authorization]")',
@@ -3122,7 +3172,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.64.2-codex.0',
+            'computer-use-agent-v3.66.1-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -4281,6 +4331,48 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 410)
         self.assertIn("in-page directory browser", response.get_json()["error"])
+
+    def test_native_tunnel_picker_is_local_and_only_returns_chosen_path(self) -> None:
+        app = create_app()
+        selected = Path.home() / "Desktop" / "registered-project"
+        with patch(
+            "app.web.settings_routes.choose_native_directory",
+            return_value=selected,
+        ) as chooser:
+            with app.test_client() as client:
+                denied = client.post(
+                    "/api/settings/directory/native",
+                    json={"field": "tunnel_project_root"},
+                    environ_base={"REMOTE_ADDR": "8.8.8.8"},
+                )
+                wrong_field = client.post(
+                    "/api/settings/directory/native",
+                    json={"field": "agent_allowed_root"},
+                )
+                chosen = client.post(
+                    "/api/settings/directory/native",
+                    json={"field": "tunnel_project_root", "path": str(Path.home())},
+                )
+
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(wrong_field.status_code, 400)
+        self.assertEqual(chosen.status_code, 200)
+        self.assertEqual(chosen.get_json(), {"cancelled": False, "path": str(selected)})
+        chooser.assert_called_once_with(
+            Path.home(), "Choose a registered Tunnel project folder"
+        )
+
+    def test_native_tunnel_picker_cancel_returns_no_path(self) -> None:
+        app = create_app()
+        with patch("app.web.settings_routes.choose_native_directory", return_value=None):
+            with app.test_client() as client:
+                response = client.post(
+                    "/api/settings/directory/native",
+                    json={"field": "tunnel_project_root"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"cancelled": True, "path": ""})
 
     def test_shadow_backup_sync_redirects_back_to_cloud_category(self) -> None:
         app = create_app()

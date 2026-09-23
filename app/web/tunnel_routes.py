@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.9.1-codex.0
+# Code version: v1.9.2-codex.0
 
 from __future__ import annotations
 
@@ -1035,6 +1035,73 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                     "error": (
                         "The project selection could not be saved. Check the local "
                         "Tunnel configuration folder and try again."
+                    )
+                }
+            ), 500
+
+        platform = str(request.args.get("platform") or "chatgpt").strip().lower()
+        if platform not in {"chatgpt", "gemini"}:
+            platform = "chatgpt"
+        return jsonify(status_payload(platform))
+
+    @blueprint.post("/api/agent/tunnel/project/register")
+    def api_project_register():
+        """Register one chosen folder as a writable project and make it current."""
+        context.require_local_agent_request()
+        payload = request.get_json(silent=True)
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"path", "expected_revision"}
+            or not isinstance(payload.get("path"), str)
+            or len(payload["path"]) > 4_096
+            or not isinstance(payload.get("expected_revision"), int)
+            or isinstance(payload.get("expected_revision"), bool)
+            or payload["expected_revision"] < 0
+        ):
+            return jsonify(
+                {"error": "Send one absolute path and a non-negative expected_revision."}
+            ), 400
+        registry = context.tunnel_mcp_service.registry
+        selection_store = context.tunnel_mcp_service.selection_store
+        workspace_path = str(context.settings_store.settings.workspace_path or "")
+        try:
+            if selection_store.load().revision != payload["expected_revision"]:
+                raise ProjectSelectionConflict(
+                    "The current project changed in another window. Review the selection "
+                    "and choose again."
+                )
+            project = registry.register(payload["path"], workspace_path)
+            problem = project_availability(project)
+            if problem:
+                return jsonify({"error": problem}), 409
+            projects = registry.projects(workspace_path)
+            selection = selection_store.load()
+            selected_ids = [item.id for item in selected_projects(projects, selection)]
+            if project.id not in selected_ids:
+                selected_ids.append(project.id)
+            selection_store.save(
+                project.id,
+                selected_project_ids=tuple(selected_ids),
+                expected_revision=payload["expected_revision"],
+            )
+        except ProjectSelectionConflict as exc:
+            return jsonify(
+                {
+                    "error": str(exc),
+                    "project_context": _local_project_context(
+                        context.settings_store,
+                        context.tunnel_mcp_service,
+                    ),
+                }
+            ), 409
+        except ProjectRegistryError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except (OSError, ValueError, KeyError, TypeError):
+            return jsonify(
+                {
+                    "error": (
+                        "The project could not be registered. Check the local Tunnel "
+                        "configuration folder and try again."
                     )
                 }
             ), 500

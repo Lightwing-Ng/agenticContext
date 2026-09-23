@@ -1,4 +1,4 @@
-/* Code version: v2.1.0-codex.0 */
+/* Code version: v2.2.0-codex.0 */
 
 (function initializeSettingsDirectoryPickers() {
     "use strict";
@@ -237,6 +237,36 @@
         void navigateToDirectory(session, context.input.value, true);
     }
 
+    async function openNativeDirectoryPicker(context) {
+        if (context.nativeRequestPending) return;
+        context.nativeRequestPending = true;
+        context.button.disabled = true;
+        context.button.setAttribute("aria-busy", "true");
+        try {
+            var result = await requestJson(
+                "/api/settings/directory/native",
+                {field: context.fieldName, path: context.input.value},
+            );
+            if (!result.cancelled && result.path) {
+                context.input.value = result.path;
+                context.input.dispatchEvent(new Event("change", {bubbles: true}));
+                context.input.focus();
+            }
+        } catch (error) {
+            context.input.dispatchEvent(new CustomEvent(
+                "settings-directory-picker-error",
+                {
+                    bubbles: true,
+                    detail: {message: error?.message || "The system folder picker failed."},
+                },
+            ));
+        } finally {
+            context.nativeRequestPending = false;
+            context.button.disabled = false;
+            context.button.removeAttribute("aria-busy");
+        }
+    }
+
     async function selectCurrentDirectory() {
         var session = activeSession;
         if (!session?.currentPath) return;
@@ -368,11 +398,17 @@
             if (!status.getAttribute("aria-live")) status.setAttribute("aria-live", "polite");
         }
 
-        button.setAttribute("aria-haspopup", "dialog");
-        button.setAttribute("aria-controls", browser.id);
-        button.addEventListener("click", function () {
-            openDirectoryBrowser(context);
-        });
+        if (button.hasAttribute("data-directory-picker-native")) {
+            button.addEventListener("click", function () {
+                void openNativeDirectoryPicker(context);
+            });
+        } else {
+            button.setAttribute("aria-haspopup", "dialog");
+            button.setAttribute("aria-controls", browser.id);
+            button.addEventListener("click", function () {
+                openDirectoryBrowser(context);
+            });
+        }
 
         input.addEventListener("change", async function () {
             var pathValue = (input.value || "").trim();
