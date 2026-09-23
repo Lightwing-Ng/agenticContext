@@ -6,7 +6,7 @@ in ``app.web.form_config``; this module owns validation of what a submitted form
 for Agent settings, shadow backup, and local directories.
 """
 
-# Code version: v1.1.1-codex.0
+# Code version: v1.2.0-codex.0
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from flask import (
 
 from app.core.agent import (
     ComputerUseSettingsStore,
+    default_tunnel_browse_root,
     is_loopback_address,
     validate_computer_use_settings,
 )
@@ -180,6 +181,7 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
             "chrome_user_data_dir": context.config_store.config.chrome_user_data_dir,
             "shadow_backup_destination": context.config_store.config.shadow_backup_destination,
             "agent_allowed_root": Path(context.computer_use_settings.settings.workspace_path),
+            "tunnel_project_root": default_tunnel_browse_root(),
         }
         payload = request.get_json(silent=True) or {}
         field_name = payload.get("field")

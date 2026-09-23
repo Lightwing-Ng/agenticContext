@@ -1,6 +1,6 @@
 """Isolated local-page to authenticated MCP workflow acceptance.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -119,19 +119,42 @@ def test_selected_project_completes_authenticated_crud_check_and_review(
 
         selected = client.post(
             "/api/agent/tunnel/project",
-            json={"project_id": "acceptance", "expected_revision": 0},
+            json={
+                "project_id": "acceptance",
+                "selected_project_ids": ["acceptance", "reference"],
+                "expected_revision": 0,
+            },
         )
         assert selected.status_code == 200
         selected_context = selected.get_json()["project_context"]
         assert selected_context["current"]["id"] == "acceptance"
         assert selected_context["revision"] == 1
+        assert selected_context["selected_project_ids"] == ["acceptance", "reference"]
+
+        narrowed = client.post(
+            "/api/agent/tunnel/project",
+            json={
+                "project_id": "acceptance",
+                "selected_project_ids": ["acceptance"],
+                "expected_revision": 1,
+            },
+        )
+        assert narrowed.status_code == 200
+        narrowed_context = narrowed.get_json()["project_context"]
+        assert narrowed_context["revision"] == 2
+        assert narrowed_context["selected_project_ids"] == ["acceptance"]
+        assert {item["id"]: item["selected"] for item in narrowed_context["projects"]} == {
+            "acceptance": True,
+            "reference": False,
+        }
 
         current = mcp_call(client, "current_project", {}, request_id=1)
         assert current["isError"] is False
         discovered = observation(current)
         identity = discovered["current_project"]["identity"]
         assert discovered["current_project"]["id"] == "acceptance"
-        assert discovered["selection"]["revision"] == 1
+        assert discovered["selection"]["revision"] == 2
+        assert discovered["selection"]["selected_project_ids"] == ["acceptance"]
         assert str(project) not in json.dumps(discovered)
 
         pinned = {"project": "acceptance", "project_identity": identity}

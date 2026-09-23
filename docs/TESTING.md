@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.24.1-codex.0`
+Documentation version: `v1.25.0-codex.0`
 
 ## Supported commands
 
@@ -152,31 +152,47 @@ Run the Secure MCP Tunnel contract independently with:
 
 The Tunnel tests pin the exact fourteen-tool public catalog, closed-schema enforcement,
 discovery/dispatcher agreement, rejection of removed compatibility names, direct invocation
-without runtime selectors, current-project discovery, durable selection revisions, and explicit
-project identities. They cover prevalidated and write-failure batch recovery, concurrent-edit
+without runtime selectors, current-project discovery, durable compare-and-swap selection
+revisions, preferred project sets that do not narrow registry authority, and explicit project
+identities. They cover prevalidated and write-failure batch recovery, concurrent-edit
 rollback conflicts, duplicate-safe mutation requests, three-state batch reads, stale-write and
 delete SHA protection, truncation continuation, workspace confinement, bounded status/patch
 inspection, `git status`, approved checks, durable check deduplication/cancellation/restart query,
 runner-loss `unknown` recovery, bounded output and retained-job counts, stale-verification
 rejection, destructive-command refusal, current-evidence bodycheck, and loopback bearer
-authentication. The isolated workflow test uses one application instance to save a registered
-page selection, discover it through authenticated `/mcp`, create/read/edit/re-read/delete a file,
-confirm absence, run a check, finish `review_changes`, and reject a write to the read-only
-reference project. A second local-page case keeps one missing registered root visible as
-unavailable, refuses its selection, and proves that another registered project remains usable.
+authentication. The isolated workflow test uses one application instance to save a current project
+and preferred set, discover both through authenticated `/mcp`, create/read/edit/re-read/delete a
+file, confirm absence, run a check, finish `review_changes`, and reject a write to the read-only
+reference project. It also proves that an explicit registered reference remains discoverable after
+it is unchecked locally. A second local-page case keeps one missing registered root visible as
+unavailable, permits removing that stale preference, and proves that another registered project
+remains usable and may become the deterministic current fallback.
 
 The project registry cases use temporary writable and read-only roots and cover unknown and
 path-like ids, cross-project and absolute-path escapes, same-name files, symlinks,
 project-scoped instruction discovery, per-project SHA guards across switching, re-registration,
 same-path root replacement, admission-time replacement races, invalid registries failing closed,
-per-project handling of temporarily missing roots, and no Desktop-wide fallback. Runtime cases cover transient
+per-project handling of temporarily missing roots, schema-1 selection migration, and a dynamic
+`Path.home() / "Desktop"` picker start that never becomes a Desktop-wide authority fallback.
+Runtime cases cover transient
 preflight recovery, ready-then-lost connectivity, a live but persistently unhealthy client,
 bounded retry, HTTP status failures, status-fetch timeout/cancellation, and superseded-generation
 results. Browser cases prove the first-use path has no historical-activity gate, a failed
 selection save cannot change the shown project, the generated prompt updates its exact id without
 discarding the user's task text, and stale or failed polling revokes a previous green state.
+Browser assertions exercise keyboard-operable project checkboxes, an explicit `Use`/`Current`
+action, revision-conflict rollback, exact registered-root matching from the circular folder action,
+and refusal of an unregistered path without changing permissions. They also require the Tunnel
+usage card to contain exactly one visible `Tokens:` row whose accessible description identifies it
+as an estimate; total-call, active-call, recent-call, and billing rows must be absent.
 These tests are offline and use temporary projects, registries, runtime roots, and disposable
 browser contexts; live ChatGPT and Gemini round trips remain separate provider-specific evidence.
+
+Catalog adoption is verified as three separate states rather than one green claim. Source tests
+prove the disk catalog. An isolated restarted service must return the expected `tools/list` and
+complete a read-only authenticated call. ChatGPT discovery is separate provider evidence and is
+complete only after Refresh/Scan Tools shows the new catalog in a new conversation; reconnecting
+the Tunnel alone proves neither service-code adoption nor ChatGPT catalog refresh.
 
 The Gemini transport tests independently cover strict public-origin validation, atomic private
 credential storage with POSIX owner-only mode checks, safe snapshots, protected-resource and

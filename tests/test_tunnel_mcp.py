@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.8.0-codex.0
+Code version: v2.9.0-codex.0
 """
 
 from __future__ import annotations
@@ -31,7 +31,10 @@ from app.core.tunnel_mcp import (
 )
 from app.core.tunnel_projects import (
     ProjectRegistry,
+    ProjectSelectionConflict,
+    ProjectSelectionStore,
     TunnelProject,
+    default_tunnel_browse_root,
     parse_project_registry,
 )
 from app.web.app import create_app
@@ -1728,9 +1731,11 @@ def test_current_project_reports_the_exact_saved_authority_without_host_paths(
         "identity": expected.identity,
         "registered": True,
         "available": True,
+        "selected": True,
     }
     assert observation["selection"]["revision"] == saved.revision
     assert observation["selection"]["source"] == "selection"
+    assert observation["selection"]["selected_project_ids"] == ["main", "ref"]
     rendered = json.dumps(observation)
     assert str(workspace) not in rendered
     assert str(reference) not in rendered
@@ -1762,6 +1767,110 @@ def test_switching_the_saved_project_does_not_redirect_a_pinned_task(
         b'print("hi")\n'
     ).hexdigest()
     assert registry.resolve("main").identity == resolved["identity"]
+
+
+def test_multi_project_preference_is_atomic_without_revoking_registry_access(
+    service: TunnelMcpService,
+    tmp_path: Path,
+) -> None:
+    store = ProjectSelectionStore(tmp_path / "selection.json")
+    legacy_payload = {
+        "schema_version": 1,
+        "project_id": "main",
+        "revision": 4,
+        "selected_at": 1.0,
+    }
+    store.path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+    assert store.load().selected_project_ids is None
+
+    saved = store.save(
+        "main",
+        selected_project_ids=["main", "ref"],
+        expected_revision=4,
+    )
+    assert saved.selected_project_ids == ("main", "ref")
+    persisted = json.loads(store.path.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == 2
+    assert persisted["selected_project_ids"] == ["main", "ref"]
+
+    # A legacy single-project switch remains usable after the preferred list
+    # exists; it adds the requested project instead of failing mysteriously.
+    narrowed = store.save(
+        "main",
+        selected_project_ids=["main"],
+        expected_revision=saved.revision,
+    )
+    switched = store.save("ref", expected_revision=narrowed.revision)
+    assert switched.project_id == "ref"
+    assert switched.selected_project_ids == ("main", "ref")
+
+    before_conflict = store.path.read_bytes()
+    with pytest.raises(ProjectSelectionConflict):
+        store.save(
+            "ref",
+            selected_project_ids=["ref"],
+            expected_revision=narrowed.revision,
+        )
+    assert store.path.read_bytes() == before_conflict
+
+    service.selection_store.save(
+        "main",
+        selected_project_ids=["ref", "main"],
+    )
+    discovered = content(call(service, "current_project", project=None))
+    records = {project["id"]: project for project in discovered["projects"]}
+    assert records["main"]["selected"] is True
+    assert records["ref"]["selected"] is True
+    assert discovered["selection"]["selected_project_ids"] == ["ref", "main"]
+
+    service.selection_store.save(
+        "main",
+        selected_project_ids=["main"],
+        expected_revision=discovered["selection"]["revision"],
+    )
+    narrowed_discovery = content(call(service, "current_project", project=None))
+    narrowed_records = {
+        project["id"]: project for project in narrowed_discovery["projects"]
+    }
+    assert narrowed_records["ref"]["selected"] is False
+    # The preference list is not an authority boundary. Explicit access to a
+    # registered read-only reference remains available.
+    assert call(service, "project_overview", project="ref")["isError"] is False
+
+
+def test_selected_fallback_recovers_when_the_previous_current_project_is_removed(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    reference: Path,
+) -> None:
+    service.selection_store.save(
+        "main",
+        selected_project_ids=["main", "ref"],
+    )
+    write_registry(
+        registry.path,
+        [{"id": "ref", "root": str(reference), "writable": False}],
+    )
+
+    discovered = content(call(service, "current_project", project=None))
+
+    assert discovered["current_project"]["id"] == "ref"
+    assert discovered["selection"]["source"] == "only_selected_project"
+    assert discovered["selection"]["selected_project_ids"] == ["ref"]
+
+
+def test_tunnel_browse_root_uses_the_current_home_without_a_username_literal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "different-user"
+    desktop = home / "Desktop"
+    desktop.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    assert default_tunnel_browse_root() == desktop
+    source = Path("app/core/tunnel_projects.py").read_text(encoding="utf-8")
+    assert "/Users/lightwing" not in source
 
 
 def test_current_project_reports_unselected_stale_and_invalid_registry_states(

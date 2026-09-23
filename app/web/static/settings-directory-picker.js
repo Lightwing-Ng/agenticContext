@@ -1,4 +1,4 @@
-/* Code version: v2.0.0-codex.0 */
+/* Code version: v2.1.0-codex.0 */
 
 (function initializeSettingsDirectoryPickers() {
     "use strict";
@@ -401,6 +401,16 @@
                 if (result.valid) {
                     input.removeAttribute("aria-invalid");
                     renderFieldStatus(context, "", false);
+                    input.dispatchEvent(new CustomEvent(
+                        "settings-directory-path-validated",
+                        {
+                            bubbles: true,
+                            detail: {
+                                field: context.fieldName,
+                                path: result.path || pathValue,
+                            },
+                        },
+                    ));
                 } else {
                     input.setAttribute("aria-invalid", "true");
                     renderFieldStatus(context, result.reason || "Invalid path.", true);

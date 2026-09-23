@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.16.0-codex.0
+# Code version: v1.17.0-codex.0
 
 from typing import TYPE_CHECKING
 
@@ -55,10 +55,12 @@ from ..tunnel_projects import (
     ProjectRegistryError,
     ProjectSelectionConflict,
     ProjectSelectionStore,
+    default_tunnel_browse_root,
     default_tunnel_projects_path,
     default_tunnel_selection_path,
     project_availability,
     resolve_current_project,
+    selected_projects,
 )
 from .action_protocol import parse_agent_action, render_final_action as render_final_agent_action
 from .platform_catalog import (
@@ -204,6 +206,7 @@ __all__ = [
     "configure_gemini_tunnel",
     "controller_action_prompt_schema",
     "default_model_for_platform",
+    "default_tunnel_browse_root",
     "default_tunnel_projects_path",
     "default_tunnel_selection_path",
     "default_tunnel_credentials_path",
@@ -234,6 +237,7 @@ __all__ = [
     "project_availability",
     "render_final_agent_action",
     "resolve_current_project",
+    "selected_projects",
     "save_tunnel_credentials",
     "validate_agent_access_password",
     "validate_computer_use_settings",

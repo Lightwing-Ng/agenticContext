@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.8.0-codex.0
+# Code version: v1.9.0-codex.0
 
 from __future__ import annotations
 
@@ -50,6 +50,7 @@ from app.core.agent import (
     authorization_server_metadata,
     clear_gemini_tunnel_config,
     configure_gemini_tunnel,
+    default_tunnel_browse_root,
     describe_tunnel_status,
     is_loopback_address,
     load_gemini_tunnel_config,
@@ -59,6 +60,7 @@ from app.core.agent import (
     project_availability,
     resolve_current_project,
     save_tunnel_credentials,
+    selected_projects,
     valid_tunnel_id,
     www_authenticate_challenge,
 )
@@ -421,7 +423,9 @@ def _local_project_context(
         "selected_at": 0.0,
         "source": "none",
         "current": None,
+        "selected_project_ids": [],
         "projects": [],
+        "browse_root": str(default_tunnel_browse_root()),
         "problem": "The Tunnel project registry service is unavailable.",
     }
     if tunnel_mcp_service is None:
@@ -444,6 +448,8 @@ def _local_project_context(
             "problem": str(exc),
         }
 
+    preferred_projects = selected_projects(projects, selection)
+    preferred_ids = {project.id for project in preferred_projects}
     records: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
     for project in projects:
@@ -455,6 +461,7 @@ def _local_project_context(
             "writable": project.writable,
             "access": "Read and write" if project.writable else "Read only",
             "registered": registry_configured,
+            "selected": project.id in preferred_ids,
             "available": not problem,
             "availability": "Available" if not problem else "Unavailable",
             "problem": problem,
@@ -478,7 +485,9 @@ def _local_project_context(
         "selected_at": selection.selected_at,
         "source": resolved.source,
         "current": current_record,
+        "selected_project_ids": [project.id for project in preferred_projects],
         "projects": records,
+        "browse_root": str(default_tunnel_browse_root()),
         "problem": current_problem,
     }
 
@@ -930,19 +939,35 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             )
 
         payload = request.get_json(silent=True)
+        legacy_fields = {"project_id", "expected_revision"}
+        multi_fields = {
+            "project_id",
+            "selected_project_ids",
+            "expected_revision",
+        }
+        payload_fields = frozenset(payload) if isinstance(payload, dict) else frozenset()
+        selected_ids = payload.get("selected_project_ids") if isinstance(payload, dict) else None
         if (
             not isinstance(payload, dict)
-            or set(payload) != {"project_id", "expected_revision"}
+            or payload_fields not in {frozenset(legacy_fields), frozenset(multi_fields)}
             or not isinstance(payload.get("project_id"), str)
             or not isinstance(payload.get("expected_revision"), int)
             or isinstance(payload.get("expected_revision"), bool)
             or payload["expected_revision"] < 0
+            or (
+                payload_fields == multi_fields
+                and (
+                    not isinstance(selected_ids, list)
+                    or not selected_ids
+                    or any(not isinstance(project_id, str) for project_id in selected_ids)
+                )
+            )
         ):
             return jsonify(
                 {
                     "error": (
-                        "Send exactly one project_id string and one non-negative "
-                        "expected_revision integer."
+                        "Send project_id, a non-negative expected_revision, and optionally "
+                        "a non-empty selected_project_ids string list."
                     )
                 }
             ), 400
@@ -963,8 +988,18 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             problem = project_availability(project)
             if problem:
                 return jsonify({"error": problem}), 409
+            normalized_selected_ids: tuple[str, ...] | None = None
+            if selected_ids is not None:
+                normalized_selected_ids = tuple(selected_ids)
+                for selected_id in normalized_selected_ids:
+                    registry.resolve(selected_id, workspace_path)
+                if project.id not in normalized_selected_ids:
+                    return jsonify(
+                        {"error": "The current Tunnel project must also be selected."}
+                    ), 400
             context.tunnel_mcp_service.selection_store.save(
                 project.id,
+                selected_project_ids=normalized_selected_ids,
                 expected_revision=payload["expected_revision"],
             )
         except ProjectSelectionConflict as exc:

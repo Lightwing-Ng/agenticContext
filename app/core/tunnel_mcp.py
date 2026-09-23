@@ -1,6 +1,6 @@
 """Shared MCP endpoint reached through authenticated provider transports.
 
-Code version: v2.9.0-codex.0
+Code version: v2.10.0-codex.0
 
 ChatGPT and Gemini call the same tool catalog through separate authenticated
 transports. Every project-scoped
@@ -67,6 +67,7 @@ from app.core.tunnel_projects import (
     TunnelProject,
     project_availability,
     resolve_current_project,
+    selected_projects,
 )
 from app.core.token_usage import openai_agentic_token_encoding
 from app.core.version import APP_VERSION
@@ -1483,6 +1484,8 @@ class TunnelMcpService:
         selection = self._selection_store.load()
         current = resolve_current_project(projects, selection, fallback)
         registry_configured = not self._registry.uses_fallback()
+        preferred_projects = selected_projects(projects, selection)
+        selected_ids = {project.id for project in preferred_projects}
 
         def record(project: TunnelProject) -> dict[str, Any]:
             problem = project_availability(project)
@@ -1490,6 +1493,7 @@ class TunnelMcpService:
                 **project.public_record(),
                 "registered": registry_configured,
                 "available": not problem,
+                "selected": project.id in selected_ids,
             }
             if problem:
                 item["problem"] = problem
@@ -1502,6 +1506,9 @@ class TunnelMcpService:
                 "revision": selection.revision,
                 "source": current.source,
                 "selected_at": _iso(selection.selected_at) if selection.selected_at else None,
+                "selected_project_ids": [
+                    project.id for project in preferred_projects
+                ],
             },
             "projects": [record(project) for project in projects],
             "limits": self._host_file_limits(),

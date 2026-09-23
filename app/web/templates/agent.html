@@ -1,4 +1,4 @@
-<!-- Code version: v3.74.0-codex.0 -->
+<!-- Code version: v3.75.2-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -11,7 +11,8 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.148.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.2.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.3.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -73,66 +74,79 @@
                 </label>
 
                 <div
-                    class="field agent-tunnel-project-field"
+                    class="agent-tunnel-project-field"
                     data-agent-tunnel-project-field
                     data-agent-tunnel-project-url="{{ url_for('tunnel.api_project') }}"
                     data-agent-tunnel-project-initial='{{ tunnel_project_context | tojson }}'
                     {% if connection_mode != 'tunnel' %}hidden{% endif %}
                 >
-                    <span class="field-label">Current Tunnel project</span>
-                    <div class="trade-strategy-combobox agent-combobox agent-tunnel-project-combobox" data-agent-tunnel-project-combobox>
-                        <input type="hidden" value="{{ tunnel_current_project.id if tunnel_current_project else '' }}" data-agent-tunnel-project-input>
-                        <button
-                            type="button"
-                            class="trade-strategy-select form-select trade-strategy-trigger agent-combobox-trigger"
-                            data-agent-tunnel-project-trigger
-                            aria-haspopup="listbox"
-                            aria-expanded="false"
-                            aria-label="Current Tunnel project: {{ tunnel_current_project.id if tunnel_current_project else 'not selected' }}"
-                        >
-                            <span class="trade-strategy-trigger-label" data-agent-tunnel-project-selected-label>{{ tunnel_current_project.id if tunnel_current_project else 'Choose a registered project' }}</span>
-                            <span class="browser-picker-trigger-chevron" aria-hidden="true"></span>
-                        </button>
-                        <div class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown agent-combobox-dropdown" data-agent-tunnel-project-menu role="listbox" aria-label="Choose a registered Tunnel project" hidden>
-                            {% for project in tunnel_project_context.projects | default([]) %}
+                    <label class="field">
+                        <span class="field-label">Project folder</span>
+                        <span class="shadow-backup-destination-control settings-directory-control">
+                            <input
+                                class="text-input-control agent-monospace-input path-display-input"
+                                type="text"
+                                id="agent_tunnel_project_path"
+                                value="{{ tunnel_current_project.root if tunnel_current_project else tunnel_project_context.browse_root | default('') }}"
+                                spellcheck="false"
+                                autocomplete="off"
+                                aria-describedby="agent_tunnel_project_path_status"
+                                data-agent-tunnel-project-path
+                            >
                             <button
                                 type="button"
-                                class="trade-strategy-dropdown-option agent-combobox-option{% if tunnel_current_project and tunnel_current_project.id == project.id %} is-selected is-active{% endif %}"
-                                data-agent-tunnel-project-option="{{ project.id }}"
-                                role="option"
-                                aria-selected="{{ 'true' if tunnel_current_project and tunnel_current_project.id == project.id else 'false' }}"
-                                aria-disabled="{{ 'false' if project.available and project.registered else 'true' }}"
-                                {% if not project.available or not project.registered %}disabled{% endif %}
-                                tabindex="-1"
+                                class="circular-icon-button settings-directory-choose-button agent-sidebar-trailing-control"
+                                id="agent_tunnel_project_path_choose"
+                                data-settings-directory-picker
+                                data-directory-field="tunnel_project_root"
+                                data-directory-input="agent_tunnel_project_path"
+                                data-directory-label="registered Tunnel project"
+                                aria-label="Choose a registered Tunnel project folder"
+                                title="Choose a registered Tunnel project folder"
                             >
-                                <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
-                                <span class="trade-strategy-dropdown-text">{{ project.id }} · {{ project.access }}{% if not project.registered %} · Not registered{% elif not project.available %} · Unavailable{% endif %}</span>
+                                <span class="icon settings-directory-choose-icon" aria-hidden="true"></span>
                             </button>
+                        </span>
+                        <span id="agent_tunnel_project_path_status" class="settings-directory-status" data-directory-picker-status role="status" aria-live="polite" hidden></span>
+                    </label>
+                    <fieldset class="agent-tunnel-project-fieldset">
+                        <legend class="field-label">Selected Tunnel projects</legend>
+                        <p class="agent-tunnel-project-help">Selection keeps projects ready for discovery. Registry permissions remain unchanged.</p>
+                        <div class="selection-list agent-tunnel-project-list" data-agent-tunnel-project-list aria-label="Select Tunnel projects">
+                            {% for project in tunnel_project_context.projects | default([]) %}
+                            {% set project_selected = project.selected | default(false) %}
+                            {% set project_current = tunnel_current_project and tunnel_current_project.id == project.id %}
+                            <div class="selection-list-row agent-tunnel-project-option" data-agent-tunnel-project-row="{{ project.id }}">
+                                <label class="selection-list-identity agent-tunnel-project-identity" for="agent_tunnel_project_{{ loop.index }}">
+                                    <input
+                                        id="agent_tunnel_project_{{ loop.index }}"
+                                        class="selection-list-input"
+                                        type="checkbox"
+                                        value="{{ project.id }}"
+                                        data-agent-tunnel-project-checkbox="{{ project.id }}"
+                                        aria-describedby="agent_tunnel_project_details_{{ loop.index }}"
+                                        {% if project_selected %}checked{% endif %}
+                                        {% if not project_selected and (not project.available or not project.registered) %}disabled{% endif %}
+                                    >
+                                    <span class="selection-list-mark" aria-hidden="true"></span>
+                                    <span class="selection-list-name">{{ project.id }}</span>
+                                </label>
+                                <button
+                                    type="button"
+                                    class="secondary-button agent-tunnel-project-use"
+                                    data-agent-tunnel-project-use="{{ project.id }}"
+                                    aria-pressed="{{ 'true' if project_current else 'false' }}"
+                                    {% if project_current or not project.available or not project.registered %}disabled{% endif %}
+                                >{{ 'Current' if project_current else 'Use' }}</button>
+                                <p class="agent-tunnel-project-details" id="agent_tunnel_project_details_{{ loop.index }}">
+                                    <span class="agent-tunnel-project-root">{{ project.root }}</span>
+                                    <span>{{ project.access }} · {{ project.availability }} · ID {{ project.identity }}</span>
+                                    {% if project.problem %}<span class="agent-tunnel-project-problem">{{ project.problem }}</span>{% endif %}
+                                </p>
+                            </div>
                             {% endfor %}
                         </div>
-                    </div>
-                    <dl class="agent-tunnel-project-facts" data-agent-tunnel-project-facts>
-                        <div class="agent-tunnel-project-fact">
-                            <dt>Project ID</dt>
-                            <dd data-agent-tunnel-project-id>{{ tunnel_current_project.id if tunnel_current_project else 'Not selected' }}</dd>
-                        </div>
-                        <div class="agent-tunnel-project-fact">
-                            <dt>Identity</dt>
-                            <dd data-agent-tunnel-project-identity>{{ tunnel_current_project.identity if tunnel_current_project else 'Unavailable' }}</dd>
-                        </div>
-                        <div class="agent-tunnel-project-fact agent-tunnel-project-root-fact">
-                            <dt>Path</dt>
-                            <dd data-agent-tunnel-project-root>{{ tunnel_current_project.root if tunnel_current_project else 'Unavailable' }}</dd>
-                        </div>
-                        <div class="agent-tunnel-project-fact">
-                            <dt>Access</dt>
-                            <dd data-agent-tunnel-project-access>{{ tunnel_current_project.access if tunnel_current_project else 'Unavailable' }}</dd>
-                        </div>
-                        <div class="agent-tunnel-project-fact">
-                            <dt>Availability</dt>
-                            <dd data-agent-tunnel-project-availability>{{ tunnel_current_project.availability if tunnel_current_project else 'Unavailable' }}{% if tunnel_current_project and not tunnel_current_project.registered %} · Not registered{% endif %}</dd>
-                        </div>
-                    </dl>
+                    </fieldset>
                     {% set tunnel_project_problem = tunnel_project_context.problem | default('') %}
                     <p class="settings-directory-status agent-tunnel-project-status" data-agent-tunnel-project-status role="status" aria-live="polite"{% if not tunnel_project_problem %} hidden{% endif %}>{{ tunnel_project_problem }}</p>
                 </div>
@@ -235,33 +249,15 @@
                                     {% set tunnel_problem = (tunnel_view.hint or tunnel_view.message) if tunnel_view.tone == 'error' else '' %}
                                     <p class="browser-session-status-message agent-tunnel-status-message" data-agent-tunnel-problem aria-live="polite"{% if not tunnel_problem %} hidden{% endif %}>{{ tunnel_problem }}</p>
                                     {% set recent_usage = tunnel_status.recent_usage | default({}) %}
-                                    {% set active_calls = tunnel_status.active_calls | default([]) %}
-                                    {% set recent_calls = tunnel_status.recent_calls | default([]) %}
                                     {% set recent_tokens_available = (recent_usage.complete | default(false)) and (recent_usage.estimated_tokens is integer) and recent_usage.estimated_tokens >= 0 %}
                                     <div class="agent-tunnel-usage" data-agent-tunnel-usage aria-label="Tunnel usage">
                                         <dl class="agent-tunnel-usage-list">
                                             <div class="agent-tunnel-usage-row">
-                                                <dt class="agent-tunnel-usage-label">Total calls:</dt>
-                                                <dd class="agent-tunnel-usage-value" data-tunnel-call-count>{{ '{:,}'.format(tunnel_status.call_count) if tunnel_status.call_count is integer and tunnel_status.call_count >= 0 else 'Unavailable' }}</dd>
-                                            </div>
-                                            <div class="agent-tunnel-usage-row">
-                                                <dt class="agent-tunnel-usage-label">Active calls:</dt>
-                                                <dd class="agent-tunnel-usage-value" data-tunnel-active-count>{{ '{:,}'.format(active_calls | length) }}</dd>
-                                            </div>
-                                            <div class="agent-tunnel-usage-row">
-                                                <dt class="agent-tunnel-usage-label">Recent completed calls:</dt>
-                                                <dd class="agent-tunnel-usage-value" data-tunnel-recent-count>{{ '{:,}'.format(recent_calls | length) }}</dd>
-                                            </div>
-                                            <div class="agent-tunnel-usage-row">
-                                                <dt class="agent-tunnel-usage-label">Recent tool text (est.):</dt>
-                                                <dd class="agent-tunnel-usage-value agent-tunnel-recent-tokens" tabindex="0">
+                                                <dt class="agent-tunnel-usage-label">Tokens:</dt>
+                                                <dd class="agent-tunnel-usage-value agent-tunnel-recent-tokens" tabindex="0" aria-label="Estimated recent tool-text tokens" title="Estimated recent tool-text tokens">
                                                     <span class="investment-holdings-allocation-badge" data-tunnel-recent-token-badge{% if not recent_tokens_available %} hidden{% endif %}><span class="investment-holdings-allocation-badge-value"><span class="workspace-metric-value-major" data-tunnel-recent-token-digits>{% if recent_tokens_available %}{% for glyph in '{:,}'.format(recent_usage.estimated_tokens) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}{% endif %}</span></span></span>
                                                     <span data-tunnel-recent-token-unavailable{% if recent_tokens_available %} hidden{% endif %}>Unavailable</span>
                                                 </dd>
-                                            </div>
-                                            <div class="agent-tunnel-usage-row">
-                                                <dt class="agent-tunnel-usage-label">Task/model billing:</dt>
-                                                <dd class="agent-tunnel-usage-value" data-tunnel-task-billing>Unavailable</dd>
                                             </div>
                                         </dl>
                                     </div>
@@ -772,13 +768,13 @@ Task:
 {% include "_waiting_modal.html" %}
 {% include "_settings_directory_browser.html" %}
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.24.1-codex.0') }}"></script>
-<script src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.0.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.1.0-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.13.3-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.63.0-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.64.2-codex.0') }}"></script>
 </body>
 </html>

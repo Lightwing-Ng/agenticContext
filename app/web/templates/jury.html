@@ -1,4 +1,4 @@
-<!-- Code version: v1.4.14-codex.0 -->
+<!-- Code version: v1.5.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.148.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='jury.css', v='jury-v1.2.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
@@ -30,18 +31,18 @@
                 <div class="agent-connect-fields">
                     <fieldset class="jury-provider-fieldset">
                         <legend class="field-label">Web services</legend>
-                        <div class="jury-provider-list">
+                        <div class="jury-provider-list selection-list">
                             {% for provider_key in ('chatgpt', 'grok', 'gemini', 'claude') %}
                             {% set provider = platform_options | selectattr('key', 'equalto', provider_key) | list | first %}
                             {% set model_options = jury_model_options_by_provider[provider_key] %}
                             {% set selected_model = model_options[0] %}
                             {% set safari_unsupported = settings.browser == 'safari' and provider_key == 'claude' %}
-                            <div class="jury-provider-option" data-jury-provider-row="{{ provider_key }}"{% if safari_unsupported %} aria-disabled="true" title="Claude Jury is available in Microsoft Edge or Google Chrome."{% endif %}>
-                                <label class="jury-provider-identity" for="jury_provider_{{ provider_key }}">
-                                    <input id="jury_provider_{{ provider_key }}" class="jury-provider-input" type="checkbox" name="providers" value="{{ provider_key }}" data-jury-provider aria-describedby="jury_model_trigger_{{ provider_key }}"{% if provider_key != 'claude' %} checked{% endif %}{% if safari_unsupported %} disabled{% endif %}>
-                                    <span class="jury-provider-selection-mark" aria-hidden="true"></span>
+                            <div class="jury-provider-option selection-list-row" data-jury-provider-row="{{ provider_key }}"{% if safari_unsupported %} aria-disabled="true" title="Claude Jury is available in Microsoft Edge or Google Chrome."{% endif %}>
+                                <label class="jury-provider-identity selection-list-identity" for="jury_provider_{{ provider_key }}">
+                                    <input id="jury_provider_{{ provider_key }}" class="jury-provider-input selection-list-input" type="checkbox" name="providers" value="{{ provider_key }}" data-jury-provider aria-describedby="jury_model_trigger_{{ provider_key }}"{% if provider_key != 'claude' %} checked{% endif %}{% if safari_unsupported %} disabled{% endif %}>
+                                    <span class="jury-provider-selection-mark selection-list-mark" aria-hidden="true"></span>
                                     <span class="browser-picker-selected-icon-shell"><img class="browser-picker-option-icon" src="{{ url_for('static', filename=provider.icon_filename) }}" alt="" aria-hidden="true"></span>
-                                    <span class="jury-provider-name">{{ provider.label }}</span>
+                                    <span class="jury-provider-name selection-list-name">{{ provider.label }}</span>
                                 </label>
                                 <div class="jury-model-select-shell trade-strategy-param-select-shell backtest-shared-select-field" data-jury-model-picker="{{ provider_key }}" data-shared-select-field data-shared-select-kind="jury-model">
                                     <select class="trade-strategy-native-select backtest-shared-select-native" name="model_{{ provider_key }}" data-jury-model-input="{{ provider_key }}" hidden aria-hidden="true" tabindex="-1">

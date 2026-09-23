@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.47.1-codex.0`
+Documentation version: `v1.48.0-codex.0`
 
 ## Runtime flow
 
@@ -278,26 +278,39 @@ removed compatibility names are neither advertised nor callable. Every call is v
 its published closed schema before dispatch (`validate_closed_schema` in the capability
 registry), so an undeclared or mistyped field fails instead of being ignored.
 
-Authority boundary. `app/core/tunnel_projects.py` owns the project registry. A project is an
+Authority boundary. `app/core/tunnel_projects.py` owns the project registry, which is the maximum
+set of local projects and permissions available to either Tunnel provider. A project is an
 identity (`[A-Za-z][A-Za-z0-9._-]{0,63}`, matched exactly) mapped to one canonical root and an
 explicit `writable` flag; its authority fingerprint also binds the root directory's native
 filesystem identity, so replacing a directory at the same path changes the project identity.
-Identifiers are never interpreted as paths, and write authority never follows from where a
-directory lives. The registry rejects overlapping roots, the filesystem
-root, and the home folder, and an invalid registry fails closed. A syntactically valid registration
-whose root is temporarily absent remains in discovery as unavailable, without hiding other usable
-projects; resolution still refuses every filesystem action until that root exists and its native
-identity is bound. When no registry file exists,
-the Agent's selected workspace becomes the only project, and only when it is itself a Git
-work-tree root; a parent folder such as the Desktop never becomes an implicit project. The local
-Tunnel page may choose only one currently registered project. That choice is persisted separately
-with a monotonically increasing revision and never changes authority. The project-less,
-read-only `current_project` tool returns the selected project's id, identity, permission,
-availability, and selection revision, plus bounded records for the other authorized projects; it
-does not disclose host paths. `project_overview` resolves one explicit configured id and returns
-its identity; every subsequent project-scoped tool requires both that id and the returned
-`project_identity`, failing closed if the registry mapping or authority changed. A page selection
-made later therefore cannot silently redirect an existing task. A read-only project
+Identifiers are never interpreted as paths, and neither a page selection nor a directory's
+location can grant write authority. The registry rejects overlapping roots, the filesystem root,
+and the home folder, and a structurally invalid registry fails closed. A syntactically valid
+registration whose root is temporarily absent remains in discovery as unavailable without hiding
+other usable projects; resolution still refuses every filesystem action for that project until its
+root exists and its native identity is bound. When no registry file exists, the Agent's selected
+workspace becomes the only project, and only when it is itself a Git work-tree root; a parent
+folder such as the Desktop never becomes an implicit project.
+
+The local Tunnel page maintains a preferred subset of registered projects and exactly one current
+project within that subset. Both are persisted separately from the registry with a monotonically
+increasing compare-and-swap revision. Checking or unchecking a project changes discovery
+preference only: it neither registers a path, revokes registry authority for an explicit call, nor
+changes the project's `writable` flag. A removed or unavailable current project falls back
+deterministically to an available preferred project when the explicit preferred-set format is in
+use. The folder browser starts at `Path.home() / "Desktop"` when that directory exists, or at the
+current user's home directory otherwise; this dynamic path is only a browsing start. A folder
+choice changes the current project only when its canonical path exactly matches an existing
+registry root. An unregistered directory therefore cannot become authorized through the picker.
+
+The project-less, read-only `current_project` tool returns the current project's id, identity,
+permission, availability, and selection revision, the preferred project ids, and bounded records
+for all other registry-authorized projects with their preferred status; it does not disclose host
+paths. `project_overview` resolves one explicit configured id and returns its identity; every
+subsequent project-scoped tool requires both that id and the returned `project_identity`, failing
+closed if the registry mapping or authority changed. A page selection made later therefore cannot
+silently redirect an existing task, while an explicit request may still consult another registered
+read-only reference project. A read-only project
 rejects every mutating tool before the filesystem is touched, and its workspace access is also
 created read-only. Model paths must be project-relative; absolute and `~` paths are refused before resolution, and the
 workspace confinement, symlink, ignored-directory, and credential-file rules then apply to

@@ -1,0 +1,77 @@
+/* Code version: v1.0.0-codex.0 */
+
+.selection-list {
+    display: grid;
+    gap: 4px;
+}
+
+.selection-list-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 8px;
+    min-width: 0;
+    min-height: 36px;
+}
+
+.selection-list-identity {
+    display: grid;
+    grid-column: 1;
+    grid-row: 1;
+    grid-template-columns: 18px minmax(0, 1fr);
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    min-height: 36px;
+    cursor: pointer;
+}
+
+.selection-list-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip-path: inset(50%);
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.selection-list-mark {
+    width: 18px;
+    height: 18px;
+    background-color: var(--muted);
+    mask: url("/static/images/circle.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/circle.svg") center/contain no-repeat;
+    pointer-events: none;
+    transition: background-color 160ms var(--motion-standard), transform 160ms var(--motion-press);
+}
+
+.selection-list-input:checked + .selection-list-mark {
+    background-color: var(--theme-success-strong);
+    mask-image: url("/static/images/checkmark.circle.fill.svg");
+    -webkit-mask-image: url("/static/images/checkmark.circle.fill.svg");
+}
+
+.selection-list-input:disabled + .selection-list-mark {
+    opacity: 0.56;
+}
+
+.selection-list-identity:has(.selection-list-input:focus-visible) {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+    border-radius: var(--radius-soft);
+}
+
+.selection-list-identity:has(.selection-list-input:active) .selection-list-mark {
+    transform: scale(0.9);
+}
+
+.selection-list-name {
+    min-width: 0;
+    overflow: hidden;
+    font-size: var(--font-ui-md);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

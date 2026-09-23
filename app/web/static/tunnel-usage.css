@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.0 */
+/* Code version: v1.3.0-codex.0 */
 /*
  * Worthward allocation badge adapter.
  * Source: foundation/tokens.css v0.46.0 and views/investment-tables.css v1.1.1.
@@ -124,55 +124,73 @@
     display: none;
 }
 
-.agent-tunnel-project-combobox.is-agent-combobox-open {
-    z-index: calc(var(--layer-global-popover) + 1);
-}
-
-.agent-tunnel-project-combobox .agent-combobox-dropdown {
-    max-block-size: min(320px, 42vh);
-    overflow-y: auto;
-    scrollbar-gutter: stable;
-}
-
-.agent-tunnel-project-combobox .agent-combobox-option {
-    min-block-size: 44px;
-    white-space: normal;
-}
-
-.agent-tunnel-project-facts {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px 12px;
+.agent-tunnel-project-fieldset {
     min-inline-size: 0;
     margin: 0;
-    padding: 10px 12px;
+    padding: 0;
+    border: 0;
+}
+
+.agent-tunnel-project-fieldset > legend {
+    margin-block-end: 4px;
+    padding: 0;
+}
+
+.agent-tunnel-project-help {
+    margin: 0 0 6px;
+    color: var(--muted);
+    font-size: var(--font-ui-sm);
+}
+
+.agent-tunnel-project-list {
+    max-block-size: min(360px, 44vh);
+    padding: 8px 10px;
+    overflow-y: auto;
     border: 1px solid var(--theme-glass-border);
     border-radius: var(--radius-panel);
     background: var(--theme-glass-surface-background-soft);
+    scrollbar-gutter: stable;
 }
 
-.agent-tunnel-project-fact {
+.agent-tunnel-project-option {
+    grid-template-rows: auto auto;
+    padding-block: 3px 7px;
+}
+
+.agent-tunnel-project-option + .agent-tunnel-project-option {
+    border-block-start: 1px solid var(--theme-glass-border);
+}
+
+.agent-tunnel-project-use {
+    grid-column: 2;
+    grid-row: 1;
+    min-block-size: 30px;
+    padding: 3px 10px;
+    justify-self: end;
+}
+
+.agent-tunnel-project-use[aria-pressed="true"] {
+    color: var(--theme-success-strong);
+}
+
+.agent-tunnel-project-details {
     display: grid;
+    grid-column: 1 / -1;
+    grid-row: 2;
     gap: 2px;
     min-inline-size: 0;
-}
-
-.agent-tunnel-project-fact dt {
+    margin: 0 0 0 22px;
+    overflow-wrap: anywhere;
     color: var(--muted);
     font-size: var(--font-ui-sm);
-    font-weight: var(--font-weight-medium);
 }
 
-.agent-tunnel-project-fact dd {
-    min-inline-size: 0;
-    margin: 0;
-    overflow-wrap: anywhere;
+.agent-tunnel-project-root {
     color: var(--text);
-    font-size: var(--font-ui-sm);
 }
 
-.agent-tunnel-project-root-fact {
-    grid-column: 1 / -1;
+.agent-tunnel-project-problem {
+    color: var(--theme-error-strong);
 }
 
 .agent-tunnel-project-status {
@@ -190,12 +208,8 @@
 }
 
 @media (max-width: 440px) {
-    .agent-tunnel-project-facts {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .agent-tunnel-project-root-fact {
-        grid-column: auto;
+    .agent-tunnel-project-list {
+        padding-inline: 8px;
     }
 
     .agent-tunnel-status-actions .secondary-button {

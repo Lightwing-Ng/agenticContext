@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.3.0-codex.0
+Code version: v1.4.0-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -14,10 +14,11 @@ offered as one read-only project only if it is itself a Git work-tree root, so a
 parent folder such as the Desktop never becomes an implicit project and choosing a
 folder never grants write access; only a registry entry does.
 
-The local Tunnel page selects one registered project as the *current* project. That
-selection is stored in ``tunnel-selection.json`` beside the registry, carries a
-revision that increases on every change, and never grants authority by itself: it
-only names which registered project a new ChatGPT task should start from.
+The local Tunnel page keeps a preferred subset of registered projects and selects
+exactly one available member as the *current* project. That preference is stored
+in ``tunnel-selection.json`` beside the registry and carries a revision that
+increases on every change. It never grants or revokes authority: the registry
+alone decides which explicit project ids may be used and whether they are writable.
 
 A registered root may be temporarily absent on one computer. The registry still
 loads that authority as unavailable so the local page can diagnose it without
@@ -44,7 +45,8 @@ LOGGER = logging.getLogger(__name__)
 
 TUNNEL_PROJECTS_FILENAME = "tunnel-projects.json"
 TUNNEL_SELECTION_FILENAME = "tunnel-selection.json"
-TUNNEL_SELECTION_SCHEMA_VERSION = 1
+TUNNEL_SELECTION_SCHEMA_VERSION = 2
+TUNNEL_SELECTION_LEGACY_SCHEMA_VERSION = 1
 TUNNEL_PROJECTS_SCHEMA_VERSION = 1
 MAX_TUNNEL_PROJECTS = 32
 MAX_REGISTRY_BYTES = 64 * 1024
@@ -187,6 +189,17 @@ def default_tunnel_projects_path() -> Path:
 def default_tunnel_selection_path() -> Path:
     """Return the current-project selection file beside the registry."""
     return default_settings_path().parent / TUNNEL_SELECTION_FILENAME
+
+
+def default_tunnel_browse_root() -> Path:
+    """Return the per-user Desktop used only as the local folder-browser start."""
+    desktop = Path.home() / "Desktop"
+    try:
+        if desktop.is_dir():
+            return desktop.resolve(strict=True)
+    except (OSError, RuntimeError):
+        pass
+    return Path.home().resolve(strict=False)
 
 
 def _canonical_root(raw_root: Any, label: str) -> Path:
@@ -362,9 +375,10 @@ class ProjectSelectionConflict(ProjectRegistryError):
 
 @dataclass(frozen=True, slots=True)
 class ProjectSelection:
-    """The current-project choice made on the local Tunnel page."""
+    """The preferred project set and unique current-project choice."""
 
     project_id: str = ""
+    selected_project_ids: tuple[str, ...] | None = None
     revision: int = 0
     selected_at: float = 0.0
 
@@ -392,12 +406,17 @@ class ProjectSelectionStore:
         except (OSError, UnicodeError, ValueError):
             LOGGER.warning("The Tunnel project selection file is unreadable; ignoring it.")
             return ProjectSelection()
-        if (
-            not isinstance(payload, dict)
-            or payload.get("schema_version") != TUNNEL_SELECTION_SCHEMA_VERSION
-        ):
+        if not isinstance(payload, dict) or payload.get("schema_version") not in {
+            TUNNEL_SELECTION_LEGACY_SCHEMA_VERSION,
+            TUNNEL_SELECTION_SCHEMA_VERSION,
+        }:
             return ProjectSelection()
         project_id = payload.get("project_id")
+        raw_selected = payload.get("selected_project_ids")
+        if raw_selected is None:
+            # Accept the brief development spelling without making it part of the
+            # persisted public contract.
+            raw_selected = payload.get("enabled_project_ids")
         revision = payload.get("revision")
         selected_at = payload.get("selected_at")
         if (
@@ -409,10 +428,44 @@ class ProjectSelectionStore:
             or not isinstance(selected_at, (int, float))
         ):
             return ProjectSelection()
-        return ProjectSelection(project_id, revision, float(selected_at))
+        selected_project_ids: tuple[str, ...] | None
+        if raw_selected is None and payload.get("schema_version") == TUNNEL_SELECTION_LEGACY_SCHEMA_VERSION:
+            selected_project_ids = None
+        elif not isinstance(raw_selected, list) or not raw_selected:
+            return ProjectSelection()
+        else:
+            normalized: list[str] = []
+            seen: set[str] = set()
+            for index, value in enumerate(raw_selected, start=1):
+                try:
+                    selected_id = _validate_project_id(value, f"Selected project {index}")
+                except ProjectRegistryError:
+                    return ProjectSelection()
+                folded = selected_id.casefold()
+                if folded in seen:
+                    return ProjectSelection()
+                seen.add(folded)
+                normalized.append(selected_id)
+            if len(normalized) > MAX_TUNNEL_PROJECTS or (
+                project_id and project_id not in normalized
+            ):
+                return ProjectSelection()
+            selected_project_ids = tuple(normalized)
+        return ProjectSelection(
+            project_id,
+            selected_project_ids,
+            revision,
+            float(selected_at),
+        )
 
-    def save(self, project_id: str, *, expected_revision: int | None = None) -> ProjectSelection:
-        """Save a new selection; refuse it if the page saw an older revision."""
+    def save(
+        self,
+        project_id: str,
+        *,
+        selected_project_ids: tuple[str, ...] | list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> ProjectSelection:
+        """Atomically save the preferred set and current id with revision CAS."""
         _validate_project_id(project_id, "Selected project")
         with self._lock:
             current = self.load()
@@ -421,25 +474,94 @@ class ProjectSelectionStore:
                     "The current project changed in another window. Review the selection "
                     "and choose again."
                 )
-            selection = ProjectSelection(project_id, current.revision + 1, time.time())
+            if selected_project_ids is None:
+                selected = current.selected_project_ids
+                if selected is not None and project_id not in selected:
+                    # Preserve the legacy single-project switch contract after a
+                    # multi-select page has narrowed its preferred set.
+                    selected = (*selected, project_id)
+            else:
+                normalized: list[str] = []
+                seen: set[str] = set()
+                for index, value in enumerate(selected_project_ids, start=1):
+                    selected_id = _validate_project_id(value, f"Selected project {index}")
+                    folded = selected_id.casefold()
+                    if folded in seen:
+                        raise ProjectRegistryError(
+                            f"Selected project {selected_id} is selected twice."
+                        )
+                    seen.add(folded)
+                    normalized.append(selected_id)
+                if not normalized:
+                    raise ProjectRegistryError("Select at least one Tunnel project.")
+                if len(normalized) > MAX_TUNNEL_PROJECTS:
+                    raise ProjectRegistryError(
+                        f"Select at most {MAX_TUNNEL_PROJECTS} Tunnel projects."
+                    )
+                selected = tuple(normalized)
+            if selected is not None and project_id not in selected:
+                raise ProjectRegistryError(
+                    "The current Tunnel project must also be selected."
+                )
+            selection = ProjectSelection(
+                project_id,
+                selected,
+                current.revision + 1,
+                time.time(),
+            )
             path = self.path
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
             descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {
-                        "schema_version": TUNNEL_SELECTION_SCHEMA_VERSION,
-                        "project_id": selection.project_id,
-                        "revision": selection.revision,
-                        "selected_at": selection.selected_at,
-                    },
-                    handle,
-                )
+                payload: dict[str, Any] = {
+                    "schema_version": (
+                        TUNNEL_SELECTION_SCHEMA_VERSION
+                        if selection.selected_project_ids is not None
+                        else TUNNEL_SELECTION_LEGACY_SCHEMA_VERSION
+                    ),
+                    "project_id": selection.project_id,
+                    "revision": selection.revision,
+                    "selected_at": selection.selected_at,
+                }
+                if selection.selected_project_ids is not None:
+                    payload["selected_project_ids"] = list(
+                        selection.selected_project_ids
+                    )
+                json.dump(payload, handle)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
             return selection
+
+
+def selected_projects(
+    projects: tuple[TunnelProject, ...],
+    selection: ProjectSelection,
+) -> tuple[TunnelProject, ...]:
+    """Return the registry subset preferred by the local page.
+
+    A legacy selection with no preferred list keeps the pre-checkbox behavior and
+    therefore treats the whole registry as selected until the first multi-select
+    save. This list never changes registry authority.
+    """
+    if selection.selected_project_ids is None:
+        return projects
+    by_id = {project.id: project for project in projects}
+    return tuple(
+        by_id[project_id]
+        for project_id in selection.selected_project_ids
+        if project_id in by_id
+    )
+
+
+def project_is_selected(
+    project_id: str,
+    projects: tuple[TunnelProject, ...],
+    selection: ProjectSelection,
+) -> bool:
+    """Return whether one registered project is in the preferred local subset."""
+    return any(project.id == project_id for project in selected_projects(projects, selection))
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,20 +585,23 @@ def resolve_current_project(
     or a saved Agent folder that lies inside exactly one registered root, is used.
     Otherwise nothing is current and the user must choose.
     """
-    by_id = {project.id: project for project in projects}
+    selected = selected_projects(projects, selection)
+    by_id = {project.id: project for project in selected}
     if selection.project_id:
         project = by_id.get(selection.project_id)
-        if project is None:
+        if project is not None and not project_availability(project):
+            return CurrentProject(project, selection, "selection")
+        if selection.selected_project_ids is None:
             return CurrentProject(
                 None,
                 selection,
                 "selection",
-                f"The selected project {selection.project_id} is no longer registered. "
-                "Choose a registered project.",
+                f"The selected project {selection.project_id} is unavailable or no "
+                "longer registered. Choose an available registered project.",
             )
-        return CurrentProject(project, selection, "selection")
-    if len(projects) == 1:
-        return CurrentProject(projects[0], selection, "only_project")
+    available = tuple(project for project in selected if not project_availability(project))
+    if len(available) == 1:
+        return CurrentProject(available[0], selection, "only_selected_project")
     if fallback_workspace:
         try:
             folder = Path(fallback_workspace).expanduser().resolve(strict=True)
@@ -485,14 +610,26 @@ def resolve_current_project(
         if folder is not None:
             matches = [
                 project
-                for project in projects
+                for project in available
                 if folder == project.root or project.root in folder.parents
             ]
             if len(matches) == 1:
                 return CurrentProject(matches[0], selection, "agent_folder")
+    if selection.selected_project_ids is not None and available:
+        # Recover deterministically when the previous current project was removed
+        # or became unavailable. This never changes registry authority.
+        return CurrentProject(available[0], selection, "selected_fallback")
+    if selection.project_id:
+        return CurrentProject(
+            None,
+            selection,
+            "selection",
+            f"The selected project {selection.project_id} is unavailable or no longer "
+            "selected. Choose an available selected project.",
+        )
     return CurrentProject(
         None,
         selection,
         "none",
-        "No current project is selected. Choose one of the registered projects.",
+        "No current project is selected. Choose one of the selected projects.",
     )

@@ -1,4 +1,4 @@
-/* Code version: v3.63.0-codex.0 */
+/* Code version: v3.64.2-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -104,16 +104,8 @@
         tunnelProblem: document.querySelector("[data-agent-tunnel-problem]"),
         tunnelReconnect: document.querySelector("[data-agent-tunnel-reconnect]"),
         tunnelProjectField: document.querySelector("[data-agent-tunnel-project-field]"),
-        tunnelProjectCombobox: document.querySelector("[data-agent-tunnel-project-combobox]"),
-        tunnelProjectInput: document.querySelector("[data-agent-tunnel-project-input]"),
-        tunnelProjectTrigger: document.querySelector("[data-agent-tunnel-project-trigger]"),
-        tunnelProjectMenu: document.querySelector("[data-agent-tunnel-project-menu]"),
-        tunnelProjectSelectedLabel: document.querySelector("[data-agent-tunnel-project-selected-label]"),
-        tunnelProjectId: document.querySelector("[data-agent-tunnel-project-id]"),
-        tunnelProjectIdentity: document.querySelector("[data-agent-tunnel-project-identity]"),
-        tunnelProjectRoot: document.querySelector("[data-agent-tunnel-project-root]"),
-        tunnelProjectAccess: document.querySelector("[data-agent-tunnel-project-access]"),
-        tunnelProjectAvailability: document.querySelector("[data-agent-tunnel-project-availability]"),
+        tunnelProjectPath: document.querySelector("[data-agent-tunnel-project-path]"),
+        tunnelProjectList: document.querySelector("[data-agent-tunnel-project-list]"),
         tunnelProjectStatus: document.querySelector("[data-agent-tunnel-project-status]"),
         tunnelOnboardings: Array.from(document.querySelectorAll("[data-agent-tunnel-onboarding]")),
         tunnelUnsupported: document.querySelector("[data-agent-tunnel-unsupported]"),
@@ -910,7 +902,9 @@
             selectedAt: 0,
             source: "none",
             current: null,
+            selectedProjectIds: [],
             projects: [],
+            browseRoot: "",
             problem: "No Tunnel project is available.",
         };
     }
@@ -929,6 +923,7 @@
                 ? value.access
                 : (value.writable ? "Read and write" : "Read only"),
             registered: Boolean(value.registered),
+            selected: Boolean(value.selected),
             available: Boolean(value.available),
             availability: typeof value.availability === "string"
                 ? value.availability
@@ -947,6 +942,19 @@
         const current = safeTunnelProjectRecord(value.current);
         const revision = Number.isSafeInteger(value.revision) && value.revision >= 0
             ? value.revision : 0;
+        const rawSelectedProjectIds = Array.isArray(value.selected_project_ids)
+            ? value.selected_project_ids
+            : (Array.isArray(value.selectedProjectIds) ? value.selectedProjectIds : null);
+        const selectedProjectIds = rawSelectedProjectIds
+            ? rawSelectedProjectIds.filter((projectId) => typeof projectId === "string")
+            : projects.filter((project) => project.selected).map((project) => project.id);
+        const projectsById = new Map(projects.map((project) => [project.id, project]));
+        const normalizedSelectedProjectIds = Array.from(new Set(selectedProjectIds))
+            .filter((projectId) => projectsById.has(projectId));
+        const selectedSet = new Set(normalizedSelectedProjectIds);
+        projects.forEach((project) => {
+            project.selected = selectedSet.has(project.id);
+        });
         return {
             registryConfigured: Boolean(value.registry_configured ?? value.registryConfigured),
             revision,
@@ -955,7 +963,11 @@
                 : (Number.isFinite(value.selectedAt) ? Number(value.selectedAt) : 0),
             source: typeof value.source === "string" ? value.source : "none",
             current,
+            selectedProjectIds: normalizedSelectedProjectIds,
             projects,
+            browseRoot: typeof value.browse_root === "string"
+                ? value.browse_root
+                : (typeof value.browseRoot === "string" ? value.browseRoot : ""),
             problem: typeof value.problem === "string" ? value.problem : "",
         };
     }
@@ -1074,6 +1086,8 @@
     let tunnelProjectSaveRevision = 0;
     let tunnelProjectBusy = false;
     let tunnelProjectNotice = "";
+    let tunnelProjectPathTouched = false;
+    let tunnelProjectListSignature = "";
     let tunnelReconnectRevision = 0;
     let tunnelReconnectBusy = false;
     let tunnelKickoffPrefixValue = "";
@@ -1203,75 +1217,88 @@
         resizeTunnelKickoffPrompt();
     }
 
-    function closeTunnelProjectMenu() {
-        elements.tunnelProjectCombobox?.classList.remove("is-agent-combobox-open");
-        elements.tunnelProjectTrigger?.setAttribute("aria-expanded", "false");
-        if (elements.tunnelProjectMenu) elements.tunnelProjectMenu.hidden = true;
-    }
-
     function syncTunnelProjectUi() {
         if (!elements.tunnelProjectField) return;
         const current = tunnelProjectContext.current;
-        const projectId = current?.id || "";
-        if (elements.tunnelProjectInput) elements.tunnelProjectInput.value = projectId;
-        if (elements.tunnelProjectSelectedLabel) {
-            elements.tunnelProjectSelectedLabel.textContent = projectId || "Choose a registered project";
+        const selectedIds = new Set(tunnelProjectContext.selectedProjectIds);
+        const focusedProjectId = document.activeElement instanceof HTMLInputElement
+            ? document.activeElement.dataset.agentTunnelProjectCheckbox || ""
+            : "";
+        if (elements.tunnelProjectPath instanceof HTMLInputElement
+            && !tunnelProjectPathTouched) {
+            elements.tunnelProjectPath.value = current?.root || tunnelProjectContext.browseRoot;
         }
-        if (elements.tunnelProjectTrigger) {
-            elements.tunnelProjectTrigger.disabled = tunnelProjectBusy
-                || !tunnelProjectContext.projects.some((project) => (
-                    project.available && project.registered
-                ));
-            elements.tunnelProjectTrigger.setAttribute(
-                "aria-label",
-                `Current Tunnel project: ${projectId || "not selected"}`,
-            );
-        }
-        if (elements.tunnelProjectMenu) {
-            const options = tunnelProjectContext.projects.map((project) => {
-                const option = document.createElement("button");
-                option.type = "button";
-                option.className = "trade-strategy-dropdown-option agent-combobox-option";
-                option.dataset.agentTunnelProjectOption = project.id;
-                option.setAttribute("role", "option");
-                const selected = project.id === projectId;
-                option.setAttribute("aria-selected", String(selected));
-                option.setAttribute("aria-disabled", String(!project.available || !project.registered));
-                option.tabIndex = -1;
-                option.disabled = tunnelProjectBusy || !project.available || !project.registered;
-                option.classList.toggle("is-selected", selected);
-                option.classList.toggle("is-active", selected);
-                const check = document.createElement("span");
-                check.className = "trade-strategy-dropdown-check";
-                check.setAttribute("aria-hidden", "true");
-                const text = document.createElement("span");
-                text.className = "trade-strategy-dropdown-text";
-                const qualification = !project.registered
-                    ? " · Not registered"
-                    : (!project.available ? " · Unavailable" : "");
-                text.textContent = `${project.id} · ${project.access}${qualification}`;
-                option.append(check, text);
-                return option;
+        if (elements.tunnelProjectList) {
+            elements.tunnelProjectList.setAttribute("aria-busy", String(tunnelProjectBusy));
+            const listSignature = JSON.stringify({
+                current: current?.id || "",
+                selected: tunnelProjectContext.selectedProjectIds,
+                projects: tunnelProjectContext.projects,
             });
-            elements.tunnelProjectMenu.replaceChildren(...options);
-        }
-        if (elements.tunnelProjectId) {
-            elements.tunnelProjectId.textContent = projectId || "Not selected";
-        }
-        if (elements.tunnelProjectIdentity) {
-            elements.tunnelProjectIdentity.textContent = current?.identity || "Unavailable";
-        }
-        if (elements.tunnelProjectRoot) {
-            elements.tunnelProjectRoot.textContent = current?.root || "Unavailable";
-        }
-        if (elements.tunnelProjectAccess) {
-            elements.tunnelProjectAccess.textContent = current?.access || "Unavailable";
-        }
-        if (elements.tunnelProjectAvailability) {
-            const registration = current && !current.registered ? " · Not registered" : "";
-            elements.tunnelProjectAvailability.textContent = current
-                ? `${current.availability}${registration}`
-                : "Unavailable";
+            const rows = tunnelProjectContext.projects.map((project, index) => {
+                const row = document.createElement("div");
+                row.className = "selection-list-row agent-tunnel-project-option";
+                row.dataset.agentTunnelProjectRow = project.id;
+
+                const detailId = `agent_tunnel_project_details_${index + 1}`;
+                const inputId = `agent_tunnel_project_${index + 1}`;
+                const identity = document.createElement("label");
+                identity.className = "selection-list-identity agent-tunnel-project-identity";
+                identity.htmlFor = inputId;
+                const checkbox = document.createElement("input");
+                checkbox.id = inputId;
+                checkbox.className = "selection-list-input";
+                checkbox.type = "checkbox";
+                checkbox.value = project.id;
+                checkbox.dataset.agentTunnelProjectCheckbox = project.id;
+                checkbox.setAttribute("aria-describedby", detailId);
+                checkbox.checked = selectedIds.has(project.id);
+                checkbox.disabled = !checkbox.checked
+                    && (!project.available || !project.registered);
+                const mark = document.createElement("span");
+                mark.className = "selection-list-mark";
+                mark.setAttribute("aria-hidden", "true");
+                const name = document.createElement("span");
+                name.className = "selection-list-name";
+                name.textContent = project.id;
+                identity.append(checkbox, mark, name);
+
+                const use = document.createElement("button");
+                use.type = "button";
+                use.className = "secondary-button agent-tunnel-project-use";
+                use.dataset.agentTunnelProjectUse = project.id;
+                const isCurrent = current?.id === project.id;
+                use.setAttribute("aria-pressed", String(isCurrent));
+                use.textContent = isCurrent ? "Current" : "Use";
+                use.disabled = isCurrent || !project.available || !project.registered;
+
+                const details = document.createElement("p");
+                details.className = "agent-tunnel-project-details";
+                details.id = detailId;
+                const root = document.createElement("span");
+                root.className = "agent-tunnel-project-root";
+                root.textContent = project.root;
+                const facts = document.createElement("span");
+                facts.textContent = `${project.access} · ${project.availability} · Identity ${project.identity}`;
+                details.append(root, facts);
+                if (project.problem) {
+                    const problem = document.createElement("span");
+                    problem.className = "agent-tunnel-project-problem";
+                    problem.textContent = project.problem;
+                    details.append(problem);
+                }
+                row.append(identity, use, details);
+                return row;
+            });
+            if (listSignature !== tunnelProjectListSignature) {
+                elements.tunnelProjectList.replaceChildren(...rows);
+                tunnelProjectListSignature = listSignature;
+                if (focusedProjectId) {
+                    elements.tunnelProjectList.querySelector(
+                        `[data-agent-tunnel-project-checkbox="${CSS.escape(focusedProjectId)}"]`,
+                    )?.focus({preventScroll: true});
+                }
+            }
         }
         if (elements.tunnelProjectStatus) {
             let notice = tunnelProjectNotice || tunnelProjectContext.problem || current?.problem || "";
@@ -1564,25 +1591,6 @@
     }
 
     function syncTunnelUsage(payload) {
-        const active = Array.isArray(payload.active_calls) ? payload.active_calls : [];
-        const recent = Array.isArray(payload.recent_calls) ? payload.recent_calls : [];
-        const totalCalls = payload.call_count;
-        const totalCallsAvailable = Number.isSafeInteger(totalCalls) && totalCalls >= 0;
-        const totalCallsOutput = elements.tunnelStatus?.querySelector("[data-tunnel-call-count]");
-        const activeCountOutput = elements.tunnelStatus?.querySelector("[data-tunnel-active-count]");
-        const recentCountOutput = elements.tunnelStatus?.querySelector("[data-tunnel-recent-count]");
-        if (totalCallsOutput) {
-            totalCallsOutput.textContent = totalCallsAvailable
-                ? totalCalls.toLocaleString("en-US")
-                : "Unavailable";
-        }
-        if (activeCountOutput) {
-            activeCountOutput.textContent = active.length.toLocaleString("en-US");
-        }
-        if (recentCountOutput) {
-            recentCountOutput.textContent = recent.length.toLocaleString("en-US");
-        }
-
         // Recent usage is bounded retained tool text, not a model or billing total.
         // Incomplete estimates stay unavailable instead of becoming a partial zero.
         const recentUsage = payload.recent_usage && typeof payload.recent_usage === "object"
@@ -1779,20 +1787,26 @@
         }
     }
 
-    async function selectTunnelProject(projectId) {
+    async function saveTunnelProjectSelection(
+        projectId,
+        selectedProjectIds,
+        {path = "", successMessage = ""} = {},
+    ) {
         const url = elements.tunnelProjectField?.dataset.agentTunnelProjectUrl;
         const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
+        const normalizedSelected = Array.from(new Set(selectedProjectIds));
         if (
             !url
             || tunnelProjectBusy
             || !project?.registered
             || !project.available
+            || !normalizedSelected.includes(projectId)
         ) return false;
-        if (projectId === tunnelProjectContext.current?.id) {
-            closeTunnelProjectMenu();
+        const currentSelected = tunnelProjectContext.selectedProjectIds;
+        if (projectId === tunnelProjectContext.current?.id
+            && JSON.stringify(normalizedSelected) === JSON.stringify(currentSelected)) {
             return true;
         }
-        closeTunnelProjectMenu();
         const operationRevision = ++tunnelProjectSaveRevision;
         const expectedRevision = tunnelProjectContext.revision;
         const requestedPlatform = selectedPlatform();
@@ -1806,20 +1820,30 @@
             requestUrl.searchParams.set("platform", requestedPlatform);
             const payload = await tunnelRequestJson(requestUrl.toString(), {
                 method: "POST",
-                body: JSON.stringify({project_id: projectId, expected_revision: expectedRevision}),
+                body: JSON.stringify({
+                    project_id: projectId,
+                    selected_project_ids: normalizedSelected,
+                    expected_revision: expectedRevision,
+                }),
             });
             if (operationRevision !== tunnelProjectSaveRevision) return true;
             const returnedContext = safeTunnelProjectContext(payload.project_context);
             if (
                 returnedContext.current?.id !== projectId
                 || returnedContext.revision <= expectedRevision
+                || JSON.stringify(returnedContext.selectedProjectIds)
+                    !== JSON.stringify(normalizedSelected)
             ) {
                 throw new Error("The server did not confirm the requested project selection.");
             }
             if (!applyTunnelStatus(payload, requestedPlatform)) {
                 throw new Error("The server returned an invalid project selection response.");
             }
-            tunnelProjectNotice = `Current project saved as ${projectId}.`;
+            if (path && elements.tunnelProjectPath instanceof HTMLInputElement) {
+                elements.tunnelProjectPath.value = path;
+                tunnelProjectPathTouched = true;
+            }
+            tunnelProjectNotice = successMessage || `Current project saved as ${projectId}.`;
             syncTunnelProjectUi();
             scheduleTunnelPoll();
             return true;
@@ -1829,6 +1853,7 @@
                 adoptTunnelProjectContext(error.payload.project_context);
             }
             resultUncertain = Boolean(error?.resultUncertain);
+            if (path) tunnelProjectPathTouched = false;
             tunnelProjectNotice = String(
                 error?.message || "Unable to save the current Tunnel project.",
             );
@@ -1841,6 +1866,68 @@
                 if (resultUncertain) void refreshTunnelStatus();
             }
         }
+    }
+
+    function selectTunnelProject(projectId) {
+        const selected = tunnelProjectContext.selectedProjectIds.includes(projectId)
+            ? tunnelProjectContext.selectedProjectIds
+            : [...tunnelProjectContext.selectedProjectIds, projectId];
+        const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
+        return saveTunnelProjectSelection(projectId, selected, {
+            path: project?.root || "",
+        });
+    }
+
+    function toggleTunnelProject(projectId, shouldSelect) {
+        const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
+        if (!project || tunnelProjectBusy) return false;
+        const selected = tunnelProjectContext.selectedProjectIds.filter((item) => item !== projectId);
+        if (shouldSelect) selected.push(projectId);
+        if (!selected.length) {
+            tunnelProjectNotice = "Keep at least one Tunnel project selected.";
+            syncTunnelProjectUi();
+            return false;
+        }
+        let currentId = tunnelProjectContext.current?.id || "";
+        if (!selected.includes(currentId)) {
+            currentId = selected.find((candidate) => {
+                const item = tunnelProjectContext.projects.find((entry) => entry.id === candidate);
+                return item?.registered && item.available;
+            }) || "";
+        }
+        if (!currentId) {
+            tunnelProjectNotice = "Select at least one available registered project.";
+            syncTunnelProjectUi();
+            return false;
+        }
+        return saveTunnelProjectSelection(currentId, selected, {
+            successMessage: `${projectId} ${shouldSelect ? "selected" : "deselected"}.`,
+        });
+    }
+
+    function selectTunnelProjectPath(path) {
+        const normalizedPath = String(path || "").trim();
+        if (!normalizedPath || tunnelProjectBusy) return false;
+        const project = tunnelProjectContext.projects.find((item) => item.root === normalizedPath);
+        if (!project) {
+            tunnelProjectNotice = (
+                "This folder is not a registered Tunnel project. Existing permissions were not changed."
+            );
+            syncTunnelProjectUi();
+            return false;
+        }
+        if (!project.registered || !project.available) {
+            tunnelProjectNotice = project.problem || "This registered project is unavailable.";
+            syncTunnelProjectUi();
+            return false;
+        }
+        const selected = tunnelProjectContext.selectedProjectIds.includes(project.id)
+            ? tunnelProjectContext.selectedProjectIds
+            : [...tunnelProjectContext.selectedProjectIds, project.id];
+        return saveTunnelProjectSelection(project.id, selected, {
+            path: normalizedPath,
+            successMessage: `Current project saved as ${project.id}.`,
+        });
     }
 
     async function reconnectTunnel() {
@@ -3399,30 +3486,36 @@
     }
 
     function initializeTunnelProjectSelector() {
-        const combobox = elements.tunnelProjectCombobox;
-        const trigger = elements.tunnelProjectTrigger;
-        const menu = elements.tunnelProjectMenu;
-        if (!combobox || !trigger || !menu) return;
-        trigger.addEventListener("click", () => {
-            const opening = !combobox.classList.contains("is-agent-combobox-open");
-            combobox.classList.toggle("is-agent-combobox-open", opening);
-            trigger.setAttribute("aria-expanded", String(opening));
-            menu.hidden = !opening;
-        });
-        menu.addEventListener("click", (event) => {
+        const list = elements.tunnelProjectList;
+        if (!list) return;
+        list.addEventListener("change", (event) => {
             if (!(event.target instanceof Element)) return;
-            const option = event.target.closest("[data-agent-tunnel-project-option]");
-            if (!(option instanceof HTMLButtonElement) || option.disabled) return;
-            void selectTunnelProject(String(option.dataset.agentTunnelProjectOption || ""));
+            const checkbox = event.target.closest("[data-agent-tunnel-project-checkbox]");
+            if (!(checkbox instanceof HTMLInputElement)) return;
+            const requested = checkbox.checked;
+            checkbox.checked = !requested;
+            void toggleTunnelProject(
+                String(checkbox.dataset.agentTunnelProjectCheckbox || ""),
+                requested,
+            );
         });
-        document.addEventListener("click", (event) => {
-            if (!(event.target instanceof Element) || !event.target.closest(
-                "[data-agent-tunnel-project-combobox]",
-            )) closeTunnelProjectMenu();
+        list.addEventListener("click", (event) => {
+            if (!(event.target instanceof Element)) return;
+            const use = event.target.closest("[data-agent-tunnel-project-use]");
+            if (!(use instanceof HTMLButtonElement) || use.disabled) return;
+            void selectTunnelProject(String(use.dataset.agentTunnelProjectUse || ""));
         });
-        document.addEventListener("keydown", (event) => {
-            if (event.key === "Escape") closeTunnelProjectMenu();
+        elements.tunnelProjectPath?.addEventListener("change", () => {
+            tunnelProjectPathTouched = true;
         });
+        elements.tunnelProjectPath?.addEventListener(
+            "settings-directory-path-validated",
+            (event) => {
+                if (event.detail?.field !== "tunnel_project_root") return;
+                tunnelProjectPathTouched = true;
+                void selectTunnelProjectPath(event.detail.path);
+            },
+        );
         syncTunnelProjectUi();
     }
 

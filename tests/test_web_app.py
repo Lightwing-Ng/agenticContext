@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.140.0-codex.0
+# Code version: v1.141.1-codex.0
 
 from __future__ import annotations
 
@@ -1043,7 +1043,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-terminal-authorization-button', settings_body)
         self.assertIn('class="settings-inline-button settings-inline-button-primary shadow-backup-sync-button"', settings_body)
         self.assertIn('shadow-backup-settings.js?v=shadow-backup-settings-v1.3.0-codex.2', settings_body)
-        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.0.0-codex.0', settings_body)
+        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.1.0-codex.0', settings_body)
         self.assertNotIn("Reset Grok state", settings_body)
         self.assertNotIn("Reset ChatGPT state", settings_body)
 
@@ -1289,7 +1289,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<span class="field-label">Workspace</span>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
-        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.0.0-codex.0', local_body)
+        self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.1.0-codex.0', local_body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
@@ -1300,7 +1300,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.63.0-codex.0', local_body)
+        self.assertIn('selection-list.css?v=selection-list-v1.0.0-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.64.2-codex.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -3047,7 +3048,7 @@ class WebAppTests(unittest.TestCase):
         script = COMPUTER_USE_AGENT_SCRIPT_PATH.read_text(encoding="utf-8")
 
         self.assertTrue(
-            script.startswith("/* Code version: v3.63.0-codex.0 */")
+            script.startswith("/* Code version: v3.64.2-codex.0 */")
         )
         for fragment in (
             'geminiAuthorization: document.querySelector("[data-agent-gemini-authorization]")',
@@ -3115,7 +3116,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.63.0-codex.0',
+            'computer-use-agent-v3.64.2-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -4311,6 +4312,27 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["current_path"], str(root.resolve()))
         self.assertEqual(payload["directories"][0]["path"], str(selected_path.resolve()))
         self.assertEqual(unknown_response.status_code, 400)
+
+    def test_tunnel_directory_picker_starts_from_the_current_users_desktop(self) -> None:
+        with TemporaryDirectory() as raw_home:
+            desktop = Path(raw_home) / "Desktop"
+            project = desktop / "project"
+            project.mkdir(parents=True)
+            app = create_app()
+            with patch(
+                "app.web.settings_routes.default_tunnel_browse_root",
+                return_value=desktop,
+            ):
+                with app.test_client() as client:
+                    response = client.post(
+                        "/api/settings/directory",
+                        json={"field": "tunnel_project_root"},
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["current_path"], str(desktop.resolve()))
+        self.assertEqual(payload["directories"][0]["path"], str(project.resolve()))
 
     def test_settings_page_groups_controls_into_accessible_categories(self) -> None:
         app = create_app()

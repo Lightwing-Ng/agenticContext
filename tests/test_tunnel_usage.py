@@ -1,4 +1,4 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.4.0-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.5.0-codex.0."""
 
 from __future__ import annotations
 
@@ -220,15 +220,17 @@ def test_status_endpoint_and_initial_html_share_the_call_record(tmp_path, monkey
         payload = client.get("/api/agent/tunnel/status").get_json()
         assert payload["active_calls"][0]["call_id"] == call_id
         html = client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
-        assert html.count('class="agent-tunnel-usage-label"') == 5
-        assert '<dt class="agent-tunnel-usage-label">Total calls:</dt>' in html
-        assert '<dd class="agent-tunnel-usage-value" data-tunnel-call-count>0</dd>' in html
-        assert '<dt class="agent-tunnel-usage-label">Active calls:</dt>' in html
-        assert '<dd class="agent-tunnel-usage-value" data-tunnel-active-count>1</dd>' in html
-        assert '<dt class="agent-tunnel-usage-label">Recent completed calls:</dt>' in html
-        assert '<dt class="agent-tunnel-usage-label">Recent tool text (est.):</dt>' in html
-        assert '<dt class="agent-tunnel-usage-label">Task/model billing:</dt>' in html
-        assert 'data-tunnel-task-billing>Unavailable</dd>' in html
+        assert html.count('class="agent-tunnel-usage-label"') == 1
+        assert '<dt class="agent-tunnel-usage-label">Tokens:</dt>' in html
+        assert 'aria-label="Estimated recent tool-text tokens"' in html
+        for removed_label in (
+            "Total calls:",
+            "Active calls:",
+            "Recent completed calls:",
+            "Recent tool text (est.):",
+            "Task/model billing:",
+        ):
+            assert removed_label not in html
         assert "data-agent-tunnel-hint" not in html
 
 
@@ -265,27 +267,17 @@ def test_summary_polling_states_and_long_integer_geometry(
         page.goto(f"{sidebar_server_url}/agent/tunnel/chatgpt")
         if width < 900:
             page.get_by_role("button", name="Toggle sidebar", exact=True).click()
-        total = page.locator("[data-tunnel-call-count]")
-        active_count = page.locator("[data-tunnel-active-count]")
-        recent_count = page.locator("[data-tunnel-recent-count]")
         recent_tokens = page.locator(".agent-tunnel-recent-tokens")
         panel = page.locator("[data-agent-tunnel-usage]")
         badge = recent_tokens.locator("[data-tunnel-recent-token-badge]")
-        expect(total).to_have_text("0")
-        expect(active_count).to_have_text("0")
-        expect(recent_count).to_have_text("0")
         expect(recent_tokens.locator("[data-tunnel-recent-token-digits]")).to_have_text("0")
         expect(page.locator("[data-tunnel-usage-row]")).to_have_count(0)
         expect(panel.locator(".agent-tunnel-usage-label")).to_have_text(
-            [
-                "Total calls:",
-                "Active calls:",
-                "Recent completed calls:",
-                "Recent tool text (est.):",
-                "Task/model billing:",
-            ]
+            ["Tokens:"]
         )
-        expect(page.locator("[data-tunnel-task-billing]")).to_have_text("Unavailable")
+        expect(recent_tokens).to_have_attribute(
+            "aria-label", "Estimated recent tool-text tokens"
+        )
         assert all(
             height <= 20
             for height in panel.locator(".agent-tunnel-usage-label").evaluate_all(
@@ -309,9 +301,6 @@ def test_summary_polling_states_and_long_integer_geometry(
         payload["call_count"] = 1
         payload["active_calls"] = [usage_record(1, 1)]
         refresh()
-        expect(total).to_have_text("1")
-        expect(active_count).to_have_text("1")
-        expect(recent_count).to_have_text("0")
         expect(recent_tokens.locator("[data-tunnel-recent-token-digits]")).to_have_text("0")
         payload["call_count"] = 1_293
         payload["active_calls"] = [
@@ -320,8 +309,6 @@ def test_summary_polling_states_and_long_integer_geometry(
             usage_record(3, 0),
         ]
         refresh()
-        expect(total).to_have_text("1,293")
-        expect(active_count).to_have_text("3")
         expect(recent_tokens.locator("[data-tunnel-recent-token-digits]")).to_have_text("0")
         expect(badge).to_have_css("border-radius", "2px")
         expect(badge).to_have_css("padding", "2px 6px")
@@ -334,8 +321,6 @@ def test_summary_polling_states_and_long_integer_geometry(
             "complete": True,
         }
         refresh()
-        expect(active_count).to_have_text("0")
-        expect(recent_count).to_have_text("1")
         expect(recent_tokens.locator("[data-tunnel-recent-token-digits]")).to_have_text("9,007,199,254,740,991")
         assert badge.evaluate("e => e.scrollWidth <= e.clientWidth + 1")
 
@@ -437,11 +422,9 @@ def test_agent_status_cards_reuse_cache_status_surface(
         assert reference_surface["borderWidth"] == "0px"
         assert browser_card.evaluate(surface_script) == reference_surface
         assert tunnel_card.evaluate(surface_script) == reference_surface
-        expect(tunnel_card.locator("[data-tunnel-call-count]")).to_have_text("1,293")
-        expect(tunnel_card.locator("[data-tunnel-active-count]")).to_have_text("3")
-        expect(tunnel_card.locator("[data-tunnel-recent-count]")).to_have_text("1")
         expect(tunnel_card.locator("[data-tunnel-recent-token-digits]")).to_have_text("82,820")
-        expect(tunnel_card.locator("[data-tunnel-task-billing]")).to_have_text("Unavailable")
+        expect(tunnel_card.locator(".agent-tunnel-usage-label")).to_have_text("Tokens:")
+        expect(tunnel_card.locator(".agent-tunnel-usage-row")).to_have_count(1)
         for page in (cache_page, browser_page, tunnel_page):
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         if height == 420:
