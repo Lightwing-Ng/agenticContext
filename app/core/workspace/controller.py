@@ -1,6 +1,6 @@
 """The workspace controller: one action protocol over one selected project root."""
 
-# Code version: v1.3.0-codex.0
+# Code version: v1.4.0-codex.0
 
 from __future__ import annotations
 
@@ -129,6 +129,26 @@ _ANCHORED_MUTATION_SUPPORTED = bool(
     _ANCHORED_DELETE_SUPPORTED
     and os.mkdir in getattr(os, "supports_dir_fd", set())
 )
+
+
+# Windows real-time scanners or indexers can hold a file open for a few
+# milliseconds, which makes a rename or unlink fail with a transient
+# access-denied error even though the file is otherwise ready. Retry that
+# operation briefly instead of failing a read-verified delete on that race.
+WINDOWS_DELETE_RETRY_ATTEMPTS = 10
+WINDOWS_DELETE_RETRY_SECONDS = 0.05
+
+
+def _retry_transient_permission_error(operation: Callable[[], object]) -> None:
+    """Run one Windows path operation, riding out bounded access-denied races."""
+    for attempt in range(1, WINDOWS_DELETE_RETRY_ATTEMPTS + 1):
+        try:
+            operation()
+            return
+        except PermissionError:
+            if attempt >= WINDOWS_DELETE_RETRY_ATTEMPTS:
+                raise
+            time.sleep(WINDOWS_DELETE_RETRY_SECONDS)
 
 
 def _text_sha256(text: str) -> str:
@@ -2398,6 +2418,8 @@ class WorkspaceController:
             raise ValueError(
                 "The supplied SHA-256 does not match this controller's current read receipt."
             )
+        if not _ANCHORED_DELETE_SUPPORTED and _uses_windows_directory_handles():
+            return self._delete_windows(relative, expected_sha256, receipt[1])
         directory_fd, leaf_name = self._open_anchored_delete_parent(relative)
         file_fd = -1
         tombstone_name = f".{leaf_name}.agent-delete-{secrets.token_hex(8)}.tmp"
@@ -2482,6 +2504,92 @@ class WorkspaceController:
             "path": relative_key,
             "deleted_bytes": deleted_bytes,
         }
+
+    def _delete_windows(
+        self,
+        relative: Path,
+        expected_sha256: str,
+        receipt_identity: tuple[int, int, int, int, int],
+    ) -> dict[str, Any]:
+        """Hold the Windows workspace path stable through a guarded delete."""
+        path = self._resolve_path(relative)
+        workspace_identity = self._windows_workspace_identity
+        if workspace_identity is None:
+            raise RuntimeError("The Windows workspace identity is unavailable.")
+        parent_identity = _windows_directory_identity(path.parent)
+        deleted_bytes = -1
+        try:
+            with _windows_workspace_mutation_guard(
+                self.workspace,
+                path.parent,
+                expected_workspace_identity=workspace_identity,
+                expected_parent_identity=parent_identity,
+            ):
+                deleted_bytes = self._delete_path_guarded(
+                    relative,
+                    expected_sha256,
+                    receipt_identity,
+                )
+        except Exception:
+            # The unlink is the commit point. A guard-release check that fails
+            # afterward must not report an already completed delete as failed.
+            if deleted_bytes < 0:
+                raise
+        return {
+            "ok": True,
+            "action": "delete",
+            "path": relative.as_posix(),
+            "deleted_bytes": deleted_bytes,
+        }
+
+    def _delete_path_guarded(
+        self,
+        relative: Path,
+        expected_sha256: str,
+        receipt_identity: tuple[int, int, int, int, int],
+    ) -> int:
+        """Delete one file after a platform guard has fenced every parent path."""
+        path = self._resolve_path(relative)
+        current_sha256, deleted_bytes, identity = self._current_file_sha256(path)
+        if current_sha256 != expected_sha256 or identity != receipt_identity:
+            raise ValueError(
+                "The file no longer matches the current read receipt; read it again "
+                "before deleting."
+            )
+        if self._stable_file_identity(path) != identity:
+            raise RuntimeError(
+                "The file identity changed before deletion; read it again before retrying."
+            )
+        tombstone_path = path.with_name(
+            f".{path.name}.agent-delete-{secrets.token_hex(8)}.tmp"
+        )
+        _retry_transient_permission_error(lambda: path.rename(tombstone_path))
+        try:
+            committed_digest, _committed_size, committed_identity = (
+                self._current_file_sha256(tombstone_path)
+            )
+            if committed_digest != expected_sha256 or committed_identity != identity:
+                raise RuntimeError(
+                    "The file identity changed before deletion; the concurrent version was "
+                    "preserved."
+                )
+            _retry_transient_permission_error(tombstone_path.unlink)
+        except BaseException as exc:
+            try:
+                restored = self._restore_path_quarantine(tombstone_path, path)
+            except OSError:
+                restored = False
+            if not restored:
+                self._mark_edit()
+                recovery_path = (relative.parent / tombstone_path.name).as_posix()
+                raise RuntimeError(
+                    "Deletion was cancelled after a concurrent change. The displaced "
+                    f"version was preserved as {recovery_path}."
+                ) from exc
+            raise
+        self._mark_edit()
+        self.state.read_receipts.pop(relative.as_posix(), None)
+        return deleted_bytes
 
     def _run(self, payload: dict[str, Any]) -> dict[str, Any]:
         command = str(payload.get("command") or "").strip()

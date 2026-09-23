@@ -1,6 +1,21 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.24.8-codex.0`
+Documentation version: `v1.25.0-claude.0`
+
+## Windows controller delete fallback on 23 Sep 2026
+
+- The controller `delete` action failed closed on Windows because anchored POSIX directory
+  descriptors are unavailable there. Windows delete now uses the guarded path-based fallback held by
+  `_windows_workspace_mutation_guard`, with the same read-receipt and quarantine-restoration
+  contract as `replace`: the supplied SHA-256, read receipt, and workspace generation are checked
+  before any mutation, and the file is renamed to a `.agent-delete-` tombstone and re-verified
+  before its unlink commits.
+- A transient Windows access-denied error on the quarantine rename or tombstone unlink is retried
+  briefly. A failure after quarantine restores the original name; when that name is occupied or
+  restoration fails, the tombstone is preserved and its path is reported.
+- The existing capability registry advertisement of `delete` on every host is now backed by a
+  working Windows implementation. Hosts that are neither anchored POSIX nor Windows still fail
+  closed.
 
 ## macOS ChatGPT Agent Cloudflare loop on 17 Sep 2026
 
