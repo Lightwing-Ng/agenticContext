@@ -1,4 +1,4 @@
-"""Host-native Tunnel folder picker checks. Code version: v1.0.0-codex.0."""
+"""Host-native Tunnel folder picker checks. Code version: v1.1.0-codex.0."""
 
 from pathlib import Path
 import subprocess
@@ -53,7 +53,9 @@ def test_windows_picker_uses_native_shell_dialog_and_cancels_silently(tmp_path: 
         assert choose_native_directory(tmp_path, "Choose a folder") is None
 
     assert "System.Windows.Forms.FolderBrowserDialog" in WINDOWS_FOLDER_SCRIPT
-    assert "$dialog.AutoUpgradeEnabled = $true" in WINDOWS_FOLDER_SCRIPT
+    # FolderBrowserDialog has no AutoUpgradeEnabled property; setting it with
+    # $ErrorActionPreference = 'Stop' would abort the script before ShowDialog.
+    assert "AutoUpgradeEnabled" not in WINDOWS_FOLDER_SCRIPT
     assert run.call_args.args[0][:3] == ["powershell.exe", "-NoProfile", "-STA"]
     assert run.call_args.kwargs["env"]["AGENTIC_CONTEXT_PICKER_INITIAL_PATH"] == str(tmp_path)
 

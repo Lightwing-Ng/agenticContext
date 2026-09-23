@@ -1,9 +1,8 @@
-/* Code version: v3.66.1-codex.0 */
+/* Code version: v3.66.4-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
     const TUNNEL_UI_PLATFORMS = new Set(["chatgpt", "gemini"]);
-    const TUNNEL_KICKOFF_MAX_HEIGHT = 96;
     const TUNNEL_STATUS_TIMEOUT_MS = 8_000;
     const TUNNEL_MUTATION_TIMEOUT_MS = 10_000;
     const AGENT_SESSION_SELECTION_CACHE_VERSION = 1;
@@ -1330,9 +1329,7 @@
         const borderHeight = Number.parseFloat(style.borderTopWidth)
             + Number.parseFloat(style.borderBottomWidth);
         const naturalHeight = Math.ceil(prompt.scrollHeight + borderHeight);
-        const maxHeight = Number.parseFloat(style.maxHeight) || TUNNEL_KICKOFF_MAX_HEIGHT;
-        prompt.style.height = `${Math.min(maxHeight, naturalHeight)}px`;
-        prompt.style.overflowY = naturalHeight > maxHeight ? "auto" : "hidden";
+        prompt.style.height = `${naturalHeight}px`;
     }
 
     function tunnelKickoffGate() {
@@ -1396,9 +1393,12 @@
             button.classList.toggle("is-visible", Boolean(value));
         });
         if (elements.tunnelKeyInput) {
-            elements.tunnelKeyInput.placeholder = tunnelCredentials.api_key_saved
-                ? ("••••••••" + String(tunnelCredentials.api_key_hint || "").slice(-4))
-                : "sk-proj-…";
+            const savedHint = String(tunnelCredentials.api_key_hint || "");
+            if (tunnelCredentials.api_key_saved && savedHint) {
+                elements.tunnelKeyInput.placeholder = `••••••••${savedHint.slice(-4)}`;
+            } else {
+                elements.tunnelKeyInput.removeAttribute("placeholder");
+            }
         }
         const tunnelIdInvalid = Boolean(state.tunnelId) && !state.tunnelIdValid;
         const typedKeyInvalid = Boolean(state.typedKey) && !state.typedKeyValid;

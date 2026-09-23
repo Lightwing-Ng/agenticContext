@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.7.2-codex.0
+Code version: v1.7.4-codex.0
 """
 
 from __future__ import annotations
@@ -97,11 +97,11 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         ) in onboarding_body
     assert onboarding_body.count('<h3 class="process-list-heading agent-tunnel-step-heading">') == 4
     assert onboarding_body.count("data-process-continues") == 3
-    guide_start = onboarding_body.index('<ol class="agent-tunnel-guide-list ')
-    guide_end = onboarding_body.index("</ol>", guide_start) + len("</ol>")
+    guide_start = onboarding_body.index('<ul class="agent-tunnel-guide-list agent-tunnel-bullet-list ')
+    guide_end = onboarding_body.index("</ul>", guide_start) + len("</ul>")
     guide_body = onboarding_body[guide_start:guide_end]
-    for marker in ("➊", "➋", "➌", "➍"):
-        assert marker in guide_body
+    assert guide_body.count('<li class="agent-tunnel-guide-item">') == 4
+    assert "agent-tunnel-guide-number" not in guide_body
     assert re.findall(
         r'<span class="agent-tunnel-guide-title"[^>]*>(.*?)</span>',
         guide_body,
@@ -159,9 +159,9 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
         in guide_body
     )
     chatgpt_guide_start = onboarding_body.index(
-        '<ol class="agent-tunnel-guide-list agent-tunnel-chatgpt-guide-list '
+        '<ul class="agent-tunnel-guide-list agent-tunnel-bullet-list agent-tunnel-chatgpt-guide-list '
     )
-    chatgpt_guide_end = onboarding_body.index("</ol>", chatgpt_guide_start) + len("</ol>")
+    chatgpt_guide_end = onboarding_body.index("</ul>", chatgpt_guide_start) + len("</ul>")
     chatgpt_guide_body = onboarding_body[chatgpt_guide_start:chatgpt_guide_end]
     assert re.findall(
         r'<span class="agent-tunnel-guide-title"[^>]*>(.*?)</span>',
@@ -185,29 +185,26 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
     assert all(re.search(r'\brx="10"', rect) for rect in chatgpt_guide_rects)
     assert re.search(r"sk-proj-[A-Za-z0-9_-]{12,}", chatgpt_guide_body) is None
     assert 'target="_blank" rel="noopener noreferrer"' in empty_body
-    assert re.findall(
-        r'<span class="agent-tunnel-substep-number" aria-hidden="true">(.*?)</span>',
-        onboarding_body,
-    ) == ["➊", "➋", "➊", "➋"]
+    assert "agent-tunnel-substep-number" not in onboarding_body
     credential_sequence_start = onboarding_body.index(
-        '<ol class="agent-tunnel-numbered-list agent-tunnel-credential-fields"'
+        '<ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-credential-fields"'
     )
-    credential_sequence_end = onboarding_body.index("</ol>", credential_sequence_start)
+    credential_sequence_end = onboarding_body.index("</ul>", credential_sequence_start)
     credential_sequence = onboarding_body[
         credential_sequence_start:credential_sequence_end
     ]
-    assert credential_sequence.index("➊") < credential_sequence.index("Tunnel ID")
-    assert credential_sequence.index("➋") < credential_sequence.index("Tunnel API key")
+    assert credential_sequence.count('<li class="agent-tunnel-numbered-item">') == 2
+    assert credential_sequence.index("Tunnel ID") < credential_sequence.index("Tunnel API key")
+    assert 'placeholder=' not in credential_sequence
     kickoff_sequence_start = onboarding_body.index(
-        '<ol class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence"'
+        '<ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-kickoff-sequence"'
     )
-    kickoff_sequence_end = onboarding_body.index("</ol>", kickoff_sequence_start)
+    kickoff_sequence_end = onboarding_body.index("</ul>", kickoff_sequence_start)
     kickoff_sequence = onboarding_body[kickoff_sequence_start:kickoff_sequence_end]
     assert (
-        kickoff_sequence.index("➊")
-        < kickoff_sequence.index("data-agent-tunnel-kickoff")
+        kickoff_sequence.index("data-agent-tunnel-kickoff")
         < kickoff_sequence.index("Copy this prompt")
-        < kickoff_sequence.index("➋")
+        < kickoff_sequence.index("Edit and copy the prompt")
         < kickoff_sequence.index("Ask in ChatGPT")
     )
     assert "Edit and copy the prompt" in kickoff_sequence
@@ -249,7 +246,9 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
 
     body = agent_client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
     assert f'value="{tunnel_id}"' in body
-    assert 'placeholder="••••••••HMAA"' in body
+    key_input = re.search(r'<input id="chatgpt_tunnel_api_key"[^>]*>', body).group(0)
+    assert 'value=""' in key_input
+    assert 'placeholder="••••••••HMAA"' in key_input
     assert "sk-proj-secret-HMAA" not in body
 
 

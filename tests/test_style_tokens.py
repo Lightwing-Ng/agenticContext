@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.2-codex.0
+Code version: v1.86.3-codex.0
 """
 
 import hashlib
@@ -2700,10 +2700,20 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     ]
     assert "border-radius: var(--radius-panel);" in kickoff_editor_rule
     assert "overflow-y: hidden;" in kickoff_editor_rule
-    assert "max-height: 96px;" in kickoff_editor_rule
+    assert "max-height:" not in kickoff_editor_rule
     assert "padding: 8px 12px;" in kickoff_editor_rule
     assert "resize: none;" in kickoff_editor_rule
-    assert "background: color-mix(" in kickoff_editor_rule
+    assert "background: var(--bg);" in kickoff_editor_rule
+    assert "border: 1px solid var(--theme-accent-primary);" in kickoff_editor_rule
+    bullet_list_start = stylesheet.index(
+        ".agent-tunnel-guide-list.agent-tunnel-bullet-list,"
+    )
+    bullet_list_rule = stylesheet[
+        bullet_list_start:stylesheet.index("\n}", bullet_list_start)
+    ]
+    assert ".agent-tunnel-numbered-list.agent-tunnel-bullet-list" in bullet_list_rule
+    assert "list-style: disc outside;" in bullet_list_rule
+    assert "padding-inline-start: calc(1.35em + 10px);" in bullet_list_rule
 
     agent_template = (
         STYLE_PATH.parents[1] / "templates/agent.html"
@@ -2766,7 +2776,10 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     chatgpt_guide_rects = re.findall(r"<rect\b[^>]*>", chatgpt_guide_template)
     assert chatgpt_guide_rects
     assert all(re.search(r'\brx="10"', rect) for rect in chatgpt_guide_rects)
-    assert agent_template.count('class="agent-tunnel-substep-number"') == 4
+    assert agent_template.count('class="agent-tunnel-substep-number"') == 0
+    assert agent_template.count('agent-tunnel-bullet-list') == 2
+    assert guide_template.count('agent-tunnel-bullet-list') == 1
+    assert chatgpt_guide_template.count('agent-tunnel-bullet-list') == 1
     assert agent_template.count('class="process-list agent-tunnel-onboarding-steps" role="list"') == 2
     assert agent_template.count('class="process-list-heading agent-tunnel-step-heading"') == 4
     assert gemini_guide_template.count('class="process-list-heading agent-tunnel-step-heading"') == 4
@@ -2781,8 +2794,8 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
         assert marker in gemini_guide_template
     assert agent_template.count('<h3 class="process-list-heading agent-tunnel-step-heading">') == 4
     assert gemini_guide_template.count('<h3 class="process-list-heading agent-tunnel-step-heading">') == 4
-    assert 'class="agent-tunnel-numbered-list agent-tunnel-credential-fields"' in agent_template
-    assert 'class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence"' in agent_template
+    assert 'class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-credential-fields"' in agent_template
+    assert 'class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-kickoff-sequence"' in agent_template
     assert 'class="agent-tunnel-kickoff-editor"' in agent_template
     assert 'data-agent-tunnel-kickoff-next-step aria-live="polite"' in agent_template
     assert 'data-agent-tunnel-kickoff-title' in agent_template

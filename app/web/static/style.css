@@ -1,4 +1,4 @@
-/* Code version: v2.150.0-codex.0 */
+/* Code version: v2.150.3-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -4743,6 +4743,16 @@ details.agent-tunnel-guide > summary {
     font-size: var(--font-ui-lg);
 }
 
+.agent-tunnel-guide-list.agent-tunnel-bullet-list,
+.agent-tunnel-numbered-list.agent-tunnel-bullet-list {
+    padding-inline-start: calc(1.35em + 10px);
+    list-style: disc outside;
+}
+
+.agent-tunnel-bullet-list > li {
+    display: list-item;
+}
+
 .agent-tunnel-substep-number {
     display: flex;
     align-items: center;
@@ -4771,14 +4781,13 @@ details.agent-tunnel-guide > summary {
     box-sizing: border-box;
     width: 100%;
     min-height: calc((var(--font-ui-lg) * 1.55) + 18px);
-    max-height: 96px;
     margin-block-start: 5px;
     padding: 8px 12px;
     overflow-y: hidden;
     resize: none;
-    border: 1px solid color-mix(in srgb, var(--muted) 22%, transparent);
+    border: 1px solid var(--theme-accent-primary);
     border-radius: var(--radius-panel);
-    background: color-mix(in srgb, var(--muted) 8%, var(--glass-surface-background-strong));
+    background: var(--bg);
     color: var(--text);
     font-family: var(--font-family-base);
     font-size: var(--font-ui-lg);
@@ -4843,7 +4852,6 @@ details.agent-tunnel-guide > summary {
     font-size: var(--text-input-control-font-size);
 }
 
-#chatgpt_tunnel_id.text-input-control::placeholder,
 #chatgpt_tunnel_api_key.text-input-control::placeholder {
     font-family: var(--font-mono);
     font-size: var(--text-input-control-font-size);

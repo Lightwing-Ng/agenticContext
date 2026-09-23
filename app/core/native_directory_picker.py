@@ -1,6 +1,6 @@
 """Host-native directory selection for the local Agent interface.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Windows.Forms
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.AutoUpgradeEnabled = $true
 $dialog.Description = $env:AGENTIC_CONTEXT_PICKER_PROMPT
 $dialog.SelectedPath = $env:AGENTIC_CONTEXT_PICKER_INITIAL_PATH
 try {

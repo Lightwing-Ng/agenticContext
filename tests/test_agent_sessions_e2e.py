@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.32.3-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.32.6-codex.0."""
 
 import re
 from copy import deepcopy
@@ -137,14 +137,8 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
             "3",
             "4",
         ]
-        assert onboarding.locator(".agent-tunnel-guide-number").all_inner_texts() == [
-            "➊",
-            "➋",
-            "➌",
-            "➍",
-            "➊",
-            "➋",
-        ]
+        expect(onboarding.locator(".agent-tunnel-guide-number, .agent-tunnel-substep-number")).to_have_count(0)
+        expect(onboarding.locator("ul.agent-tunnel-bullet-list")).to_have_count(4)
         guides = onboarding.locator("details.ui-collapse[data-agent-tunnel-guide]")
         expect(guides).to_have_count(6)
         assert guides.evaluate_all("nodes => nodes.map((node) => node.open)") == [False] * 6
@@ -325,6 +319,15 @@ def test_tunnel_kickoff_copy_and_approved_technical_typeface(
         assert kickoff.input_value().endswith(
             "Task:\n[describe your task]."
         )
+        initial_geometry = kickoff.evaluate(
+            """element => ({
+                height: element.clientHeight,
+                scrollHeight: element.scrollHeight,
+                overflowY: getComputedStyle(element).overflowY,
+            })"""
+        )
+        assert initial_geometry["height"] >= initial_geometry["scrollHeight"]
+        assert initial_geometry["overflowY"] == "hidden"
         expect(onboarding).to_contain_text("named AgenticContext")
         expect(onboarding).to_contain_text("starting with tunnel_")
         expect(onboarding).to_contain_text("sk-proj-")
@@ -342,8 +345,6 @@ def test_tunnel_kickoff_copy_and_approved_technical_typeface(
                 id: input.id,
                 fontFamily: getComputedStyle(input).fontFamily,
                 fontSize: getComputedStyle(input).fontSize,
-                placeholderFontFamily: getComputedStyle(input, '::placeholder').fontFamily,
-                placeholderFontSize: getComputedStyle(input, '::placeholder').fontSize,
             }))"""
         )
         assert all(
@@ -353,14 +354,10 @@ def test_tunnel_kickoff_copy_and_approved_technical_typeface(
         )
         credential_styles = technical_input_styles[1:]
         assert len({item["fontSize"] for item in credential_styles}) == 1
-        assert all(
-            "Univers Next for HSBC" in item["placeholderFontFamily"]
-            and "monospace" not in item["placeholderFontFamily"].lower()
-            for item in credential_styles
+        assert onboarding.locator("#chatgpt_tunnel_id").get_attribute("placeholder") is None
+        expect(onboarding.locator("#chatgpt_tunnel_api_key")).to_have_attribute(
+            "placeholder", "••••••••ABCD"
         )
-        assert {
-            item["placeholderFontSize"] for item in credential_styles
-        } == {credential_styles[0]["fontSize"]}
         button = onboarding.locator("[data-agent-tunnel-copy-kickoff]")
         next_step = onboarding.locator("[data-agent-tunnel-kickoff-next-step]")
         expect(button).to_have_text("Copy this prompt")
@@ -390,9 +387,26 @@ def test_tunnel_kickoff_copy_and_approved_technical_typeface(
                 clientHeight: element.clientHeight,
             })"""
         )
-        assert long_geometry["height"] == 96
-        assert long_geometry["overflowY"] == "auto"
-        assert long_geometry["scrollHeight"] > long_geometry["clientHeight"]
+        assert long_geometry["height"] > short_geometry["height"]
+        assert long_geometry["overflowY"] == "hidden"
+        assert long_geometry["clientHeight"] >= long_geometry["scrollHeight"]
+        for theme in ("light", "dark"):
+            page.evaluate(
+                "theme => document.documentElement.setAttribute('data-theme-override', theme)",
+                theme,
+            )
+            colors = kickoff.evaluate(
+                """element => ({
+                    background: getComputedStyle(element).backgroundColor,
+                    pageBackground: getComputedStyle(document.body).backgroundColor,
+                    border: getComputedStyle(element).borderTopColor,
+                    accent: getComputedStyle(document.documentElement)
+                        .getPropertyValue('--theme-accent-primary').trim(),
+                })"""
+            )
+            assert colors["background"] == colors["pageBackground"]
+            assert colors["border"] == "rgb(0, 85, 204)"
+            assert colors["accent"] == "#0055cc"
         edited_prompt = "Use @AgenticContext to verify the responsive Tunnel guide."
         kickoff.fill(edited_prompt)
         button.scroll_into_view_if_needed()
@@ -416,7 +430,9 @@ def test_tunnel_kickoff_copy_and_approved_technical_typeface(
         if width == 1280:
             page.set_viewport_size({"width": 390, "height": 844})
             page.wait_for_timeout(100)
-            assert kickoff.evaluate("element => element.clientHeight <= 96")
+            assert kickoff.evaluate(
+                "element => element.clientHeight >= element.scrollHeight"
+            )
         assert not errors
     finally:
         context.close()
@@ -453,6 +469,8 @@ def test_tunnel_kickoff_allows_the_first_task_without_prior_plugin_activity(
     page.route("**/api/agent/tunnel/status?platform=chatgpt", fulfill_status)
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        key = page.locator("#chatgpt_tunnel_api_key")
+        assert key.get_attribute("placeholder") is None
         title = page.locator("[data-agent-tunnel-kickoff-title]")
         kickoff = page.locator("[data-agent-tunnel-kickoff]")
         copy_form = page.locator("[data-agent-tunnel-kickoff-copy-form]")
@@ -466,6 +484,7 @@ def test_tunnel_kickoff_allows_the_first_task_without_prior_plugin_activity(
         status.update(_tunnel_onboarding_status(activity_observed=False))
         status["project_context"] = _tunnel_project_context(registered=False)
         refresh_tunnel_status()
+        expect(key).to_have_attribute("placeholder", "••••••••ABCD")
         expect(title).to_have_text("Choose an available Tunnel project")
         expect(kickoff).to_be_hidden()
         expect(action_step).to_be_hidden()
@@ -1376,14 +1395,22 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                         return Math.abs(connectorBottom - markerRects[index + 1].top);
                     }),
                     headingColors: headings.map((heading) => getComputedStyle(heading).color),
-                    guideMarkerTexts: guideItems.map((item) =>
-                        item.querySelector('.agent-tunnel-guide-number').textContent.trim()
+                    bulletListTags: [...card.querySelectorAll('.agent-tunnel-bullet-list')].map(
+                        (list) => list.tagName
                     ),
-                    guideMarkerFontSizes: guideItems.map((item) =>
-                        parseFloat(getComputedStyle(item.querySelector('.agent-tunnel-guide-number')).fontSize)
+                    bulletListStyles: [...card.querySelectorAll('.agent-tunnel-bullet-list')].map(
+                        (list) => ({
+                            type: getComputedStyle(list).listStyleType,
+                            position: getComputedStyle(list).listStylePosition,
+                            paddingInlineStart: parseFloat(getComputedStyle(list).paddingInlineStart),
+                        })
                     ),
-                    guideTitleFontSizes: guideTitles.map((title) =>
-                        parseFloat(getComputedStyle(title).fontSize)
+                    bulletItemDisplays: [...card.querySelectorAll('.agent-tunnel-bullet-list > li')].map(
+                        (item) => getComputedStyle(item).display
+                    ),
+                    bulletContentInsets: [...card.querySelectorAll('.agent-tunnel-bullet-list > li')].map(
+                        (item) => item.firstElementChild.getBoundingClientRect().left
+                            - item.closest('.agent-tunnel-bullet-list').getBoundingClientRect().left
                     ),
                     guideSummaryTexts: guideSummaries.map((summary) => summary.innerText.trim()),
                     guideDetailsOpen: guideDetails.map((detail) => detail.open),
@@ -1457,9 +1484,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     headingFontSizes: [...new Set(headings.map((heading) => parseFloat(getComputedStyle(heading).fontSize)))],
                     bodyFontSizes: [...new Set(paragraphs.map((paragraph) => parseFloat(getComputedStyle(paragraph).fontSize)))],
                     credentialInputFontSizes: credentialInputs.map((input) => getComputedStyle(input).fontSize),
-                    credentialPlaceholderFontSizes: credentialInputs.map((input) =>
-                        getComputedStyle(input, '::placeholder').fontSize
-                    ),
+                    credentialPlaceholders: credentialInputs.map((input) => input.getAttribute('placeholder')),
                     copyIconMask: getComputedStyle(action.querySelector('.agent-response-copy-icon')).maskImage,
                     headingToken: token('--font-ui-lg'),
                     markerToken: token('--font-ui-lg'),
@@ -1471,20 +1496,10 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     ),
                     credentialCopyChildren: [...credentialCopy.children].map((child) => child.tagName),
                     credentialFieldChildren: [...credentialFields.children].map((child) => child.tagName),
-                    credentialSubstepMarkers: [...steps[1].querySelectorAll('.agent-tunnel-substep-number')].map(
-                        (marker) => marker.textContent.trim()
-                    ),
-                    kickoffSubstepMarkers: [...steps[3].querySelectorAll('.agent-tunnel-substep-number')].map(
-                        (marker) => marker.textContent.trim()
-                    ),
                     kickoffActionGroups: [...steps[3].querySelectorAll('.agent-tunnel-numbered-item')].map(
                         (item) => [...item.querySelectorAll('.agent-tunnel-step-action')].map(
                             (element) => element.textContent.trim()
                         )
-                    ),
-                    substepMarkerFontSizes: [...steps[1].querySelectorAll('.agent-tunnel-substep-number'),
-                        ...steps[3].querySelectorAll('.agent-tunnel-substep-number')].map(
-                        (marker) => parseFloat(getComputedStyle(marker).fontSize)
                     ),
                     credentialToggleCount: steps[1].querySelectorAll('[data-agent-tunnel-toggle]').length,
                     stepFourActionHeights: [stepFourLink, stepFourButton].map((element) =>
@@ -1512,6 +1527,7 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                     guideTitleFontWeight: getComputedStyle(guideTitles[0]).fontWeight,
                     kickoffBorderRadius: getComputedStyle(kickoff).borderRadius,
                     kickoffBackgroundColor: getComputedStyle(kickoff).backgroundColor,
+                    pageBackgroundColor: getComputedStyle(document.body).backgroundColor,
                     emptyCredentialBlocks: [...steps[1].querySelectorAll('div, p, span')].filter(
                         (element) => !element.children.length && !element.textContent.trim()
                             && !element.matches('[aria-hidden="true"], .icon')
@@ -1571,8 +1587,14 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
             abs(delta - 4) <= 0.5
             for delta in geometry["connectorEndDeltas"]
         )
-        assert geometry["guideMarkerTexts"] == ["➊", "➋", "➌", "➍", "➊", "➋"]
-        assert geometry["guideMarkerFontSizes"] == geometry["guideTitleFontSizes"]
+        assert geometry["bulletListTags"] == ["UL"] * 4
+        assert all(
+            style["type"] == "disc" and style["position"] == "outside"
+            for style in geometry["bulletListStyles"]
+        )
+        assert all(style["paddingInlineStart"] >= 29 for style in geometry["bulletListStyles"])
+        assert geometry["bulletItemDisplays"] == ["list-item"] * 10
+        assert all(inset >= 29 for inset in geometry["bulletContentInsets"])
         assert geometry["guideSummaryTexts"] == [
             "Create a tunnel",
             "Copy the Tunnel ID",
@@ -1633,17 +1655,14 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["headingFontSizes"] == [geometry["headingToken"]]
         assert geometry["bodyFontSizes"] == []
         assert len(set(geometry["credentialInputFontSizes"])) == 1
-        assert geometry["credentialPlaceholderFontSizes"] == geometry["credentialInputFontSizes"]
+        assert geometry["credentialPlaceholders"] == [None, "••••••••ABCD"]
         assert "document.on.document.fill.svg" in geometry["copyIconMask"]
         assert geometry["bodyToken"] < geometry["headingToken"]
         assert geometry["paragraphCounts"] == [0, 0, 0, 0]
         assert geometry["actionPackageParagraphCounts"] == [0]
-        assert geometry["credentialCopyChildren"] == ["H3", "OL"]
+        assert geometry["credentialCopyChildren"] == ["H3", "UL"]
         assert geometry["credentialFieldChildren"] == ["LI", "LI"]
-        assert geometry["credentialSubstepMarkers"] == ["➊", "➋"]
-        assert geometry["kickoffSubstepMarkers"] == ["➊", "➋"]
         assert geometry["kickoffActionGroups"] == [["Copy this prompt"], ["Ask in ChatGPT"]]
-        assert geometry["substepMarkerFontSizes"] == [geometry["headingToken"]] * 4
         assert geometry["credentialToggleCount"] == 0
         assert max(geometry["stepFourActionHeights"]) - min(geometry["stepFourActionHeights"]) <= 1
         assert geometry["stepFourActionHeights"] == [32, 32]
@@ -1656,11 +1675,11 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["kickoffReadOnly"] is False
         assert geometry["kickoffDisabled"] is False
         assert geometry["kickoffPaddingBlock"] == ["8px", "8px"]
-        assert geometry["kickoffMaxHeight"] == "96px"
+        assert geometry["kickoffMaxHeight"] == "none"
         assert float(geometry["kickoffTitleFontSize"].removesuffix("px")) == geometry["headingToken"]
         assert geometry["kickoffTitleFontWeight"] == geometry["guideTitleFontWeight"]
         assert geometry["kickoffBorderRadius"] == "10px"
-        assert geometry["kickoffBackgroundColor"] != "rgba(0, 0, 0, 0)"
+        assert geometry["kickoffBackgroundColor"] == geometry["pageBackgroundColor"]
         assert geometry["emptyCredentialBlocks"] == 0
         assert geometry["dividers"] == ["0px", "0px", "0px", "0px"]
         assert geometry["focused"] is True
@@ -1675,6 +1694,15 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["focusedActionBottomClearance"] >= geometry["effectBleedToken"]
         assert geometry["titleOverlapsQuickActions"] is False
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        if width == 390:
+            wrapped_title_lines = onboarding.locator("#agent_tunnel_guide_title_2").evaluate(
+                """element => {
+                    element.textContent = 'Copy the Tunnel ID and keep this exact project connection ready for later steps';
+                    return [...element.getClientRects()].map((rect) => rect.left);
+                }"""
+            )
+            assert len(wrapped_title_lines) >= 2
+            assert max(wrapped_title_lines) - min(wrapped_title_lines) <= 1
         assert errors == []
     finally:
         context.close()
@@ -1706,7 +1734,7 @@ def test_tunnel_copy_failure_is_reported_without_false_success(
         context.close()
 
 
-def test_tunnel_saved_key_is_only_a_mask_and_not_resubmitted(
+def test_tunnel_saved_key_shows_mask_and_is_not_resubmitted(
     disposable_browser,
     sidebar_server_url,
 ):
@@ -1727,6 +1755,7 @@ def test_tunnel_saved_key_is_only_a_mask_and_not_resubmitted(
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
         key = page.locator("#chatgpt_tunnel_api_key")
         expect(key).to_have_attribute("placeholder", "••••••••ABCD")
+        assert page.locator("#chatgpt_tunnel_id").get_attribute("placeholder") is None
         expect(key).to_have_value("")
         expect(key).to_have_attribute("type", "password")
         with page.expect_response("**/api/agent/tunnel/credentials"):
@@ -1737,6 +1766,7 @@ def test_tunnel_saved_key_is_only_a_mask_and_not_resubmitted(
         assert submitted and all(item["api_key"] == "" for item in submitted)
         key.fill(TUNNEL_ONBOARDING_KEY)
         page.wait_for_function("() => document.querySelector('#chatgpt_tunnel_api_key').value === ''")
+        expect(key).to_have_attribute("placeholder", "••••••••ABCD")
         assert submitted[-1]["api_key"] == TUNNEL_ONBOARDING_KEY
         assert TUNNEL_ONBOARDING_KEY not in page.content()
         storage = page.evaluate("JSON.stringify({local: {...localStorage}, session: {...sessionStorage}})")

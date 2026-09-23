@@ -1,4 +1,4 @@
-<!-- Code version: v3.77.4-codex.0 -->
+<!-- Code version: v3.77.7-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.150.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.150.3-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.4.3-codex.0') }}">
@@ -413,34 +413,32 @@
                             <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">2</span>
                             <div class="process-list-content agent-tunnel-step-copy">
                                 <h3 class="process-list-heading agent-tunnel-step-heading">Enter the Tunnel credentials</h3>
-                                <ol class="agent-tunnel-numbered-list agent-tunnel-credential-fields" aria-label="Tunnel credential fields">
+                                <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-credential-fields" aria-label="Tunnel credential fields">
                                     <li class="agent-tunnel-numbered-item">
-                                        <span class="agent-tunnel-substep-number" aria-hidden="true">➊</span>
                                         <div class="settings-text-input-field">
                                             <span class="agent-tunnel-credential-label-row">
                                                 <label class="settings-text-input-label" for="chatgpt_tunnel_id">Tunnel ID</label>
                                                 <span class="browser-session-status-checkmark agent-tunnel-credential-check" data-agent-tunnel-id-check aria-hidden="true"{% if not tunnel_credentials.tunnel_id_valid %} hidden{% endif %}></span>
                                             </span>
                                             <div class="text-input-control-shell">
-                                                <input id="chatgpt_tunnel_id" class="text-input-control agent-tunnel-id-input" type="text" value="{{ tunnel_credentials.tunnel_id }}" placeholder="tunnel_…" spellcheck="false" autocomplete="off" data-agent-tunnel-id>
+                                                <input id="chatgpt_tunnel_id" class="text-input-control agent-tunnel-id-input" type="text" value="{{ tunnel_credentials.tunnel_id }}" spellcheck="false" autocomplete="off" data-agent-tunnel-id>
                                                 <button type="button" class="text-input-clear{% if tunnel_credentials.tunnel_id %} is-visible{% endif %}" data-agent-tunnel-clear="id" aria-label="Clear Tunnel ID"><span class="icon icon-remove-muted" aria-hidden="true"></span></button>
                                             </div>
                                         </div>
                                     </li>
                                     <li class="agent-tunnel-numbered-item">
-                                        <span class="agent-tunnel-substep-number" aria-hidden="true">➋</span>
                                         <div class="settings-text-input-field">
                                             <span class="agent-tunnel-credential-label-row">
                                                 <label class="settings-text-input-label" for="chatgpt_tunnel_api_key">Tunnel API key</label>
                                                 <span class="browser-session-status-checkmark agent-tunnel-credential-check" data-agent-tunnel-key-check aria-hidden="true"{% if not tunnel_credentials.api_key_saved %} hidden{% endif %}></span>
                                             </span>
                                             <div class="text-input-control-shell">
-                                                <input id="chatgpt_tunnel_api_key" class="text-input-control agent-tunnel-api-key-input" type="password" value="" placeholder="{{ ('••••••••' ~ tunnel_credentials.api_key_hint[-4:]) if tunnel_credentials.api_key_saved else 'sk-proj-…' }}" spellcheck="false" autocomplete="new-password" data-agent-tunnel-key>
+                                                <input id="chatgpt_tunnel_api_key" class="text-input-control agent-tunnel-api-key-input" type="password" value=""{% if tunnel_credentials.api_key_saved and tunnel_credentials.api_key_hint %} placeholder="{{ '••••••••' ~ tunnel_credentials.api_key_hint[-4:] }}"{% endif %} spellcheck="false" autocomplete="new-password" data-agent-tunnel-key>
                                                 <button type="button" class="text-input-clear" data-agent-tunnel-clear="key" aria-label="Clear typed API key"><span class="icon icon-remove-muted" aria-hidden="true"></span></button>
                                             </div>
                                         </div>
                                     </li>
-                                </ol>
+                                </ul>
                             </div>
                         </li>
                         <li class="process-list-step agent-tunnel-onboarding-step" data-process-continues>
@@ -470,9 +468,8 @@
                                     {% set tunnel_kickoff_state = 'ready' %}
                                 {% endif %}
                                 <div class="agent-tunnel-action-package agent-tunnel-kickoff-package">
-                                    <ol class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence" aria-label="Run a project task">
+                                    <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-kickoff-sequence" aria-label="Run a project task">
                                         <li class="agent-tunnel-numbered-item">
-                                            <span class="agent-tunnel-substep-number" aria-hidden="true">➊</span>
                                             <div class="agent-tunnel-numbered-copy">
                                                 <label id="agent_tunnel_kickoff_title" class="agent-tunnel-kickoff-title" for="agent_tunnel_kickoff" data-agent-tunnel-kickoff-title data-agent-tunnel-kickoff-state="{{ tunnel_kickoff_state }}" aria-live="polite">{{ tunnel_kickoff_title }}</label>
                                                 <textarea id="agent_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-tunnel-kickoff aria-labelledby="agent_tunnel_kickoff_title" rows="1"{% if not tunnel_kickoff_ready %} hidden disabled{% endif %}>Use @AgenticContext for project ID "{{ tunnel_current_project.id if tunnel_current_project else '' }}" (identity "{{ tunnel_current_project.identity if tunnel_current_project else '' }}", selection revision {{ tunnel_project_context.revision | default(0) }}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.
@@ -490,7 +487,6 @@ Task:
                                             </div>
                                         </li>
                                         <li class="agent-tunnel-numbered-item agent-tunnel-action-only" data-agent-tunnel-kickoff-action-step{% if not tunnel_kickoff_ready %} hidden{% endif %}>
-                                            <span class="agent-tunnel-substep-number" aria-hidden="true">➋</span>
                                             <div class="agent-tunnel-numbered-copy">
                                                 <h5 class="agent-tunnel-kickoff-title" data-agent-tunnel-kickoff-next-step aria-live="polite">Edit and copy the prompt</h5>
                                                 <div class="settings-action-package-form agent-tunnel-action-package-form">
@@ -503,7 +499,7 @@ Task:
                                                 </div>
                                             </div>
                                         </li>
-                                    </ol>
+                                    </ul>
                                 </div>
                             </div>
                         </li>
@@ -757,13 +753,13 @@ Task:
 {% include "_waiting_modal.html" %}
 {% include "_settings_directory_browser.html" %}
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.24.1-codex.0') }}"></script>
-<script src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.2.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.2.1-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.13.3-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.66.1-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.66.4-codex.0') }}"></script>
 </body>
 </html>

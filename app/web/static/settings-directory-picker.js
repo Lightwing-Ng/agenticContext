@@ -1,4 +1,4 @@
-/* Code version: v2.2.0-codex.0 */
+/* Code version: v2.2.1-codex.0 */
 
 (function initializeSettingsDirectoryPickers() {
     "use strict";
@@ -253,6 +253,11 @@
                 context.input.focus();
             }
         } catch (error) {
+            renderFieldStatus(
+                context,
+                error?.message || "The system folder picker failed.",
+                true,
+            );
             context.input.dispatchEvent(new CustomEvent(
                 "settings-directory-picker-error",
                 {
