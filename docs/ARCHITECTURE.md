@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.48.1-codex.1`
+Documentation version: `v1.48.2-codex.0`
 
 ## Runtime flow
 
@@ -325,11 +325,16 @@ not a model-supplied tool argument and never enters a public tool schema. The bo
 20-call history is independent of the cumulative call count. Gemini status computes a new
 credential generation from its call-id and completed-call baselines: older records and calls
 already active during rotation cannot supply current activity or token usage. An admission
-check under the Gemini gateway lock rejects a rotated credential before opening tool
-activity, without holding that lock during workspace execution. A revoked single call
-receives a bearer challenge; if rotation occurs partway through a JSON-RPC batch,
-completed responses are retained in a 200 batch response, remaining request IDs receive
-per-item unauthorized errors, notifications stay silent, and no later item executes.
+check under the Gemini gateway lock rejects a rotated credential before each JSON-RPC
+item, including notifications and malformed requests. POST body parse errors and size
+errors, empty or oversized JSON-RPC batches, and the GET method response recheck the
+same generation while producing their early responses. Metadata dispatch holds that
+lock while producing its result; tool activity rechecks atomically at admission without
+holding the lock during workspace execution. A revoked single item receives a bearer
+challenge. If rotation occurs partway through a JSON-RPC batch, completed responses are
+retained in a 200 batch response; valid remaining request IDs receive per-item unauthorized
+errors, malformed remaining items receive invalid-request errors, valid notifications stay
+silent, and no later item executes.
 After the tokenizer becomes
 available, `recent_usage` counts complete calls in a new recovery window; older unknown
 records remain in the history but are excluded and identified by window metadata. A

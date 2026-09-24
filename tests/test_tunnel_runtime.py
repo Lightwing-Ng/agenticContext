@@ -1,6 +1,6 @@
 """tunnel-client supervision tests with a local fake client.
 
-Code version: v1.5.0-claude.0
+Code version: v1.5.1-codex.0
 """
 
 from __future__ import annotations
@@ -240,6 +240,46 @@ def test_superseded_project_revision_skips_reconnect(
     ) is False
     assert runtime.snapshot()["generation"] == 0
     assert runtime.snapshot()["state"] == "disabled"
+
+
+def test_manual_disconnect_blocks_project_reconnect_until_explicit_connect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A project save may start an idle client but cannot undo a manual stop."""
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    restarts = []
+    monkeypatch.setattr(runtime, "restart", lambda: restarts.append(True))
+
+    assert runtime.connect_or_fail_closed(
+        expected_revision=1,
+        current_revision=lambda: 1,
+    ) is True
+    assert runtime.snapshot()["enabled"] is True
+    assert len(restarts) == 1
+
+    runtime.disconnect()
+    assert runtime.snapshot()["enabled"] is False
+    assert runtime.snapshot()["state"] == "disconnected"
+    assert runtime.connect_or_fail_closed(
+        expected_revision=2,
+        current_revision=lambda: 2,
+    ) is False
+    assert runtime.snapshot()["enabled"] is False
+    assert runtime.snapshot()["state"] == "disconnected"
+    assert len(restarts) == 1
+
+    runtime.connect()
+    assert runtime.snapshot()["enabled"] is True
+    assert len(restarts) == 2
+    assert runtime.connect_or_fail_closed(
+        expected_revision=3,
+        current_revision=lambda: 3,
+    ) is True
+    assert len(restarts) == 3
 
 
 def test_outbound_proxy_prefers_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:

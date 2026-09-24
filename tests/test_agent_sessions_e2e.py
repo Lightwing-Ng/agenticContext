@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.33.4-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.33.7-codex.0."""
 
 import re
 from copy import deepcopy
@@ -1172,6 +1172,279 @@ def test_tunnel_status_503_and_timeout_revoke_ready_then_recover(
         context.close()
 
 
+@pytest.mark.parametrize(("width", "button_size"), [(1280, 36), (390, 44)])
+def test_tunnel_connection_button_disconnects_and_connects(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+    button_size,
+):
+    """The circular Tunnel action follows runtime enablement across both requests."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": 900})
+    context.add_init_script(
+        """const nativeFetch = window.fetch.bind(window);
+        window.__heldTunnelConnectCount = 0;
+        window.__releaseTunnelConnect = null;
+        window.fetch = (input, options = {}) => {
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            if (url.pathname === '/api/agent/tunnel/connect') {
+                window.__heldTunnelConnectCount += 1;
+                return new Promise((resolve) => {
+                    window.__releaseTunnelConnect = () => resolve(nativeFetch(input, options));
+                });
+            }
+            return nativeFetch(input, options);
+        };"""
+    )
+    page = context.new_page()
+    ready = _tunnel_onboarding_status()
+    disconnected = _tunnel_onboarding_status(enabled=False)
+    disconnected["status_observed_at"] = 2
+    disconnected["generation"] = ready["generation"] + 1
+    disconnected["state_revision"] = ready["state_revision"] + 1
+    reconnected = deepcopy(ready)
+    reconnected["status_observed_at"] = 3
+    reconnected["generation"] = disconnected["generation"] + 1
+    reconnected["state_revision"] = disconnected["state_revision"] + 1
+    current = {"status": ready}
+    disconnect_requests = []
+    connect_requests = []
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=deepcopy(current["status"])),
+    )
+
+    def disconnect(route):
+        disconnect_requests.append(route.request.method)
+        current["status"] = disconnected
+        route.fulfill(json=deepcopy(disconnected))
+
+    def connect(route):
+        connect_requests.append(route.request.method)
+        current["status"] = reconnected
+        route.fulfill(json=deepcopy(reconnected))
+
+    page.route("**/api/agent/tunnel/disconnect", disconnect)
+    page.route("**/api/agent/tunnel/connect", connect)
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        button = page.locator("[data-agent-tunnel-reconnect]")
+        icon = button.locator(".agent-tunnel-connection-icon")
+        expect(button).to_be_visible()
+        expect(button).to_have_class(re.compile(r"\bcircular-icon-button\b"))
+        expect(button).to_have_attribute("data-agent-tunnel-action", "disconnect")
+        expect(button).to_have_attribute("aria-label", "Disconnect Tunnel")
+        expect(button).to_have_attribute("title", "Disconnect Tunnel")
+        geometry = button.evaluate(
+            """element => {
+                const button = element.getBoundingClientRect();
+                const icon = element.querySelector('.agent-tunnel-connection-icon');
+                const iconRect = icon.getBoundingClientRect();
+                return {
+                    width: button.width,
+                    height: button.height,
+                    radius: parseFloat(getComputedStyle(element).borderRadius),
+                    iconWidth: iconRect.width,
+                    iconHeight: iconRect.height,
+                    right: button.right,
+                    documentWidth: document.documentElement.scrollWidth,
+                };
+            }"""
+        )
+        assert abs(geometry["width"] - button_size) < 0.1
+        assert abs(geometry["height"] - button_size) < 0.1
+        assert geometry["radius"] >= button_size / 2
+        assert abs(geometry["iconWidth"] - 18) < 0.1
+        assert abs(geometry["iconHeight"] - 18) < 0.1
+        assert geometry["right"] <= width
+        assert geometry["documentWidth"] <= width
+        assert icon.evaluate("element => getComputedStyle(element).maskImage").endswith(
+            '/static/images/stop.fill.svg")'
+        )
+
+        button.click()
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Disconnected")
+        expect(button).to_have_attribute("data-agent-tunnel-action", "connect")
+        expect(button).to_have_attribute("aria-label", "Connect Tunnel")
+        expect(button).to_have_attribute("title", "Connect Tunnel")
+        assert icon.evaluate("element => getComputedStyle(element).maskImage").endswith(
+            '/static/images/link.circle.fill.svg")'
+        )
+        assert disconnect_requests == ["POST"]
+
+        button.click()
+        page.wait_for_function("window.__heldTunnelConnectCount === 1")
+        expect(button).to_be_disabled()
+        button.evaluate(
+            "element => element.dispatchEvent(new MouseEvent('click', {bubbles: true}))"
+        )
+        assert page.evaluate("window.__heldTunnelConnectCount") == 1
+        page.evaluate("window.__releaseTunnelConnect()")
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Tunnel ready")
+        expect(button).to_have_attribute("data-agent-tunnel-action", "disconnect")
+        expect(button).to_have_attribute("aria-label", "Disconnect Tunnel")
+        expect(button).to_have_attribute("title", "Disconnect Tunnel")
+        assert icon.evaluate("element => getComputedStyle(element).maskImage").endswith(
+            '/static/images/stop.fill.svg")'
+        )
+        assert connect_requests == ["POST"]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("state", "tone", "credentials_qualified"),
+    [
+        ("starting", "loading", True),
+        ("degraded", "error", True),
+        ("not_configured", "error", False),
+    ],
+)
+def test_enabled_tunnel_can_disconnect_before_ready_or_without_credentials(
+    disposable_browser,
+    sidebar_server_url,
+    state,
+    tone,
+    credentials_qualified,
+):
+    """Runtime enablement keeps Disconnect available when readiness or credentials fail."""
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    enabled = _tunnel_onboarding_status(activity_observed=False)
+    enabled["state"] = state
+    enabled["ready"] = False
+    enabled["presentation"] = {
+        **enabled["presentation"],
+        "tone": tone,
+        "label": state.replace("_", " ").title(),
+    }
+    enabled["credentials"]["api_key_saved"] = credentials_qualified
+    enabled["credentials"]["qualified"] = credentials_qualified
+    disconnected = deepcopy(enabled)
+    disconnected.update(enabled=False, state="disconnected", generation=10, state_revision=10)
+    disconnected["presentation"] = {
+        **enabled["presentation"],
+        "tone": "error",
+        "label": "Disconnected",
+    }
+    current = {"status": enabled}
+    disconnect_requests = []
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=deepcopy(current["status"])),
+    )
+
+    def disconnect(route):
+        disconnect_requests.append(route.request.method)
+        current["status"] = disconnected
+        route.fulfill(json=deepcopy(disconnected))
+
+    page.route("**/api/agent/tunnel/disconnect", disconnect)
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        button = page.locator("[data-agent-tunnel-reconnect]")
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text(
+            state.replace("_", " ").title()
+        )
+        expect(button).to_be_visible()
+        expect(button).to_be_enabled()
+        expect(button).to_have_attribute("data-agent-tunnel-action", "disconnect")
+        expect(button).to_have_attribute("aria-label", "Disconnect Tunnel")
+
+        button.click()
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Disconnected")
+        assert disconnect_requests == ["POST"]
+        if credentials_qualified:
+            expect(button).to_have_attribute("data-agent-tunnel-action", "connect")
+        else:
+            expect(button).to_be_hidden()
+    finally:
+        context.close()
+
+
+def test_tunnel_connection_ignores_due_poll_then_resumes_polling(
+    disposable_browser,
+    sidebar_server_url,
+):
+    """A due status poll cannot replace a pending connection response."""
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(
+        """const nativeFetch = window.fetch.bind(window);
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.__tunnelPollCallbacks = [];
+        window.__releaseTunnelConnect = null;
+        window.setTimeout = (callback, delay, ...args) => {
+            if (typeof callback === 'function'
+                && String(callback).includes('refreshTunnelStatus()')
+                && String(callback).includes('scheduleTunnelPoll()')) {
+                window.__tunnelPollCallbacks.push(callback);
+            }
+            return nativeSetTimeout(callback, delay, ...args);
+        };
+        window.fetch = (input, options = {}) => {
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            if (url.pathname === '/api/agent/tunnel/connect') {
+                return new Promise((resolve) => {
+                    window.__releaseTunnelConnect = () => resolve(nativeFetch(input, options));
+                });
+            }
+            return nativeFetch(input, options);
+        };"""
+    )
+    page = context.new_page()
+    disconnected = _tunnel_onboarding_status(enabled=False)
+    connected = _tunnel_onboarding_status()
+    connected.update(status_observed_at=2, generation=10, state_revision=10)
+    connected["presentation"]["label"] = "Connected"
+    polled = deepcopy(connected)
+    polled.update(status_observed_at=3, state_revision=11)
+    polled["presentation"]["label"] = "Polled ready"
+    current = {"status": disconnected}
+    status_requests = []
+
+    def status(route):
+        status_requests.append(route.request.url)
+        route.fulfill(json=deepcopy(current["status"]))
+
+    def connect(route):
+        current["status"] = connected
+        route.fulfill(json=deepcopy(connected))
+
+    page.route("**/api/agent/tunnel/status?platform=chatgpt", status)
+    page.route("**/api/agent/tunnel/connect", connect)
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        button = page.locator("[data-agent-tunnel-reconnect]")
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Disconnected")
+        expect(button).to_have_attribute("data-agent-tunnel-action", "connect")
+        page.wait_for_function("window.__tunnelPollCallbacks.length > 0")
+        due_poll_index = page.evaluate("window.__tunnelPollCallbacks.length - 1")
+
+        button.click()
+        page.wait_for_function("Boolean(window.__releaseTunnelConnect)")
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Connecting")
+        count_during_connection = len(status_requests)
+        page.evaluate("index => window.__tunnelPollCallbacks[index]()", due_poll_index)
+        assert len(status_requests) == count_during_connection
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Connecting")
+
+        page.evaluate("window.__releaseTunnelConnect()")
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Connected")
+        expect(button).to_have_attribute("data-agent-tunnel-action", "disconnect")
+        page.wait_for_function(
+            "count => window.__tunnelPollCallbacks.length > count",
+            arg=due_poll_index + 1,
+        )
+        current["status"] = polled
+        page.evaluate("window.__tunnelPollCallbacks.at(-1)()")
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Polled ready")
+        assert len(status_requests) == count_during_connection + 1
+    finally:
+        context.close()
+
+
 def test_tunnel_reconnect_accepts_a_new_runtime_and_ignores_its_late_old_status(
     disposable_browser,
     sidebar_server_url,
@@ -1193,6 +1466,10 @@ def test_tunnel_reconnect_accepts_a_new_runtime_and_ignores_its_late_old_status(
     )
     page = context.new_page()
     initial = _tunnel_onboarding_status(activity_observed=False)
+    disconnected = _tunnel_onboarding_status(enabled=False, activity_observed=False)
+    disconnected["status_observed_at"] = 2
+    disconnected["generation"] = initial["generation"] + 1
+    disconnected["state_revision"] = initial["state_revision"] + 1
     fresh = deepcopy(initial)
     fresh["status_observed_at"] = 3
     fresh["runtime_instance_id"] = "runtime-b"
@@ -1213,27 +1490,37 @@ def test_tunnel_reconnect_accepts_a_new_runtime_and_ignores_its_late_old_status(
         "label": "Stale response",
         "message": "This response must be ignored.",
     }
+    current = {"status": initial}
     reconnect_requests = []
-    shutdown_requests = []
+    disconnect_requests = []
+    restart_requests = []
     page.route(
         "**/api/agent/tunnel/status?platform=chatgpt",
-        lambda route: route.fulfill(json=deepcopy(initial)),
+        lambda route: route.fulfill(json=deepcopy(current["status"])),
     )
+
+    def disconnect(route):
+        disconnect_requests.append(route.request.method)
+        current["status"] = disconnected
+        route.fulfill(json=deepcopy(disconnected))
+
+    def reconnect(route):
+        reconnect_requests.append(route.request.method)
+        current["status"] = fresh
+        route.fulfill(json=deepcopy(fresh))
+
+    page.route("**/api/agent/tunnel/disconnect", disconnect)
     page.route(
         "**/api/agent/tunnel/connect",
+        reconnect,
+    )
+    page.route(
+        "**/api/agent/tunnel/restart",
         lambda route: (
-            reconnect_requests.append(route.request.method),
-            route.fulfill(json=deepcopy(fresh)),
+            restart_requests.append(route.request.url),
+            route.fulfill(json={"ok": True}),
         )[-1],
     )
-    for endpoint in ("disconnect", "restart"):
-        page.route(
-            f"**/api/agent/tunnel/{endpoint}",
-            lambda route: (
-                shutdown_requests.append(route.request.url),
-                route.fulfill(json={"ok": True}),
-            )[-1],
-        )
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
         page.evaluate("window.__holdNextTunnelStatus = true")
@@ -1245,8 +1532,14 @@ def test_tunnel_reconnect_accepts_a_new_runtime_and_ignores_its_late_old_status(
                 }"""
             )
         page.wait_for_function("() => Boolean(window.__heldTunnelStatus)")
-        page.locator("[data-agent-tunnel-reconnect]").click()
+        button = page.locator("[data-agent-tunnel-reconnect]")
+        expect(button).to_have_attribute("data-agent-tunnel-action", "disconnect")
+        button.click()
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Disconnected")
+        expect(button).to_have_attribute("data-agent-tunnel-action", "connect")
+        button.click()
         expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Reconnected")
+        expect(button).to_have_attribute("data-agent-tunnel-action", "disconnect")
         page.evaluate(
             """payload => window.__heldTunnelStatus(new Response(JSON.stringify(payload), {
                 status: 200,
@@ -1257,8 +1550,9 @@ def test_tunnel_reconnect_accepts_a_new_runtime_and_ignores_its_late_old_status(
         page.wait_for_timeout(100)
         expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Reconnected")
         assert reconnect_requests == ["POST"]
+        assert disconnect_requests == ["POST"]
         page.close()
-        assert shutdown_requests == []
+        assert restart_requests == []
     finally:
         context.close()
 

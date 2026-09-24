@@ -1,4 +1,4 @@
-/* Code version: v1.5.2-codex.0 */
+/* Code version: v1.6.0-codex.0 */
 /*
  * Worthward allocation badge adapter.
  * Source: foundation/tokens.css v0.46.0 and views/investment-tables.css v1.1.1.
@@ -235,13 +235,23 @@
     display: none;
 }
 
+.agent-tunnel-connection-icon {
+    mask-image: url("/static/images/link.circle.fill.svg");
+    -webkit-mask-image: url("/static/images/link.circle.fill.svg");
+}
+
+[data-agent-tunnel-action="disconnect"] .agent-tunnel-connection-icon {
+    mask-image: url("/static/images/stop.fill.svg");
+    -webkit-mask-image: url("/static/images/stop.fill.svg");
+}
+
+.agent-tunnel-status-actions .circular-icon-button:disabled {
+    cursor: wait;
+    opacity: 0.6;
+}
+
 @media (max-width: 440px) {
     .agent-tunnel-project-list {
         padding-inline: 8px;
-    }
-
-    .agent-tunnel-status-actions .secondary-button {
-        inline-size: 100%;
-        justify-content: center;
     }
 }

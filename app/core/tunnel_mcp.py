@@ -1,6 +1,6 @@
 """Shared MCP endpoint reached through authenticated provider transports.
 
-Code version: v2.11.2-codex.1
+Code version: v2.11.3-codex.0
 
 ChatGPT and Gemini call the same tool catalog through separate authenticated
 transports. Every project-scoped
@@ -39,7 +39,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1196,14 +1196,16 @@ class TunnelMcpService:
             raise ValueError("Unknown authenticated MCP provider.")
         header_version = str(headers.get(MCP_PROTOCOL_VERSION_HEADER) or "").strip()
         if isinstance(body, list):
-            if not body:
-                return 400, _rpc_error(None, -32600, "Empty JSON-RPC batch.")
-            if len(body) > MAX_MCP_BATCH_ITEMS:
-                return 400, _rpc_error(
-                    None,
-                    -32600,
-                    f"JSON-RPC batches are limited to {MAX_MCP_BATCH_ITEMS} items.",
-                )
+            if not body or len(body) > MAX_MCP_BATCH_ITEMS:
+                gate = admission() if admission is not None else nullcontext()
+                with gate:
+                    if not body:
+                        return 400, _rpc_error(None, -32600, "Empty JSON-RPC batch.")
+                    return 400, _rpc_error(
+                        None,
+                        -32600,
+                        f"JSON-RPC batches are limited to {MAX_MCP_BATCH_ITEMS} items.",
+                    )
             responses = []
             for index, item in enumerate(body):
                 try:
@@ -1214,10 +1216,17 @@ class TunnelMcpService:
                     if not responses:
                         # Preserve the HTTP bearer challenge when nothing has answered.
                         raise
-                    # Earlier calls already executed. Return their results and identify
-                    # every refused request without dispatching any later batch item.
+                    # Retain completed results. Invalid members still require errors;
+                    # valid notifications stay silent and no later item is dispatched.
                     for pending in body[index:]:
-                        if isinstance(pending, dict) and "id" in pending:
+                        if not isinstance(pending, dict) or not isinstance(
+                            pending.get("method"), str
+                        ):
+                            request_id = pending.get("id") if isinstance(pending, dict) else None
+                            responses.append(
+                                _rpc_error(request_id, -32600, "Invalid JSON-RPC request.")
+                            )
+                        elif "id" in pending:
                             responses.append(
                                 _rpc_error(pending["id"], -32001, "Unauthorized.")
                             )
@@ -1239,6 +1248,10 @@ class TunnelMcpService:
         provider: str,
         admission: Callable[[], AbstractContextManager[None]] | None,
     ) -> dict[str, Any] | None:
+        if admission is not None:
+            # Check even notifications and invalid requests before their early return.
+            with admission():
+                pass
         if not isinstance(request, dict) or not isinstance(request.get("method"), str):
             return _rpc_error(
                 request.get("id") if isinstance(request, dict) else None,
@@ -1257,7 +1270,13 @@ class TunnelMcpService:
             str(meta.get(MCP_PROTOCOL_VERSION_META) or ""),
         }
         try:
-            result = self._dispatch(method, params, stateless, provider, admission)
+            if admission is not None and method != "tools/call":
+                # Keep metadata dispatch atomic with credential rotation.
+                with admission():
+                    result = self._dispatch(method, params, stateless, provider, admission)
+            else:
+                # Tool calls recheck under the same lock when activity starts.
+                result = self._dispatch(method, params, stateless, provider, admission)
         except McpRequestError as exc:
             return _rpc_error(request_id, exc.code, exc.message)
         if stateless:

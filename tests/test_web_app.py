@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.143.8-claude.0
+# Code version: v1.143.9-codex.0
 
 from __future__ import annotations
 
@@ -2452,6 +2452,101 @@ class WebAppTests(unittest.TestCase):
                 self.assertTrue(registration_payload["project_context"]["current"]["writable"])
                 self.assertEqual(registration_payload["presentation"]["tone"], "error")
                 self.assertEqual(reconnect.call_count, 5)
+
+    def test_manual_tunnel_disconnect_survives_project_saves_until_connect(self) -> None:
+        """Selection and registration respect a manual stop until explicit Connect."""
+        from app.core.tunnel_credentials import TunnelCredentials, save_tunnel_credentials
+
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "first"
+            second = root / "second"
+            third = root / "third"
+            fourth = root / "fourth"
+            for project_root in (first, second, third, fourth):
+                project_root.mkdir()
+            settings = root / "settings"
+            settings.mkdir()
+            registry_path = settings / "tunnel-projects.json"
+            registry_path.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "projects": [
+                        {"id": "alpha", "root": str(first), "writable": True},
+                        {"id": "beta", "root": str(second), "writable": True},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            credentials_path = settings / "tunnel-credentials.json"
+            save_tunnel_credentials(
+                TunnelCredentials("tunnel_" + "a" * 32, "sk-valid-test-key"),
+                credentials_path,
+            )
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=settings / "computer-use-agent.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_credentials_path=credentials_path,
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            runtime = app.extensions["tunnel_runtime"]
+            with patch.object(runtime, "restart") as restart, app.test_client() as client:
+                started = client.post("/api/agent/tunnel/connect")
+                self.assertEqual(started.status_code, 200)
+                self.assertTrue(started.get_json()["enabled"])
+                self.assertEqual(restart.call_count, 1)
+
+                stopped = client.post("/api/agent/tunnel/disconnect")
+                self.assertEqual(stopped.status_code, 200)
+                self.assertEqual(stopped.get_json()["state"], "disconnected")
+                self.assertFalse(stopped.get_json()["enabled"])
+
+                selected = client.post(
+                    "/api/agent/tunnel/project?platform=chatgpt",
+                    json={"project_id": "alpha", "expected_revision": 0},
+                )
+                self.assertEqual(selected.status_code, 200)
+                self.assertEqual(selected.get_json()["project_context"]["current"]["id"], "alpha")
+                self.assertEqual(selected.get_json()["state"], "disconnected")
+                self.assertFalse(selected.get_json()["enabled"])
+
+                registered = client.post(
+                    "/api/agent/tunnel/project/register?platform=chatgpt",
+                    json={"path": str(third), "expected_revision": 1},
+                )
+                self.assertEqual(registered.status_code, 200)
+                self.assertEqual(registered.get_json()["project_context"]["current"]["id"], "third")
+                self.assertEqual(registered.get_json()["state"], "disconnected")
+                self.assertFalse(registered.get_json()["enabled"])
+                self.assertEqual(restart.call_count, 1)
+
+                resumed = client.post("/api/agent/tunnel/connect")
+                self.assertEqual(resumed.status_code, 200)
+                self.assertTrue(resumed.get_json()["enabled"])
+                self.assertEqual(restart.call_count, 2)
+
+                switched = client.post(
+                    "/api/agent/tunnel/project?platform=chatgpt",
+                    json={"project_id": "beta", "expected_revision": 2},
+                )
+                self.assertEqual(switched.status_code, 200)
+                self.assertEqual(switched.get_json()["project_context"]["current"]["id"], "beta")
+                self.assertTrue(switched.get_json()["enabled"])
+                self.assertEqual(restart.call_count, 3)
+
+                registered_again = client.post(
+                    "/api/agent/tunnel/project/register?platform=chatgpt",
+                    json={"path": str(fourth), "expected_revision": 3},
+                )
+                self.assertEqual(registered_again.status_code, 200)
+                self.assertEqual(
+                    registered_again.get_json()["project_context"]["current"]["id"],
+                    "fourth",
+                )
+                self.assertTrue(registered_again.get_json()["enabled"])
+                self.assertEqual(restart.call_count, 4)
 
     def test_superseded_tunnel_selection_and_registration_cannot_reconnect(self) -> None:
         """An older saved response cannot restart after a later save connects."""

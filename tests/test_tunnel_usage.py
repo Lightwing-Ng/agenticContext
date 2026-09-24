@@ -1,4 +1,4 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.5.3-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.5.3-codex.2."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ def test_running_call_keeps_identity_and_counts_visible_text_once(service, monke
     assert recent["response_tokens"] == len(observed_text[1])
 
 
-def test_ingress_admission_guards_call_identity_only(service, monkeypatch):
+def test_ingress_admission_guards_request_and_call_identity(service, monkeypatch):
     monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", lambda _text: 1)
     events = []
 
@@ -107,14 +107,14 @@ def test_ingress_admission_guards_call_identity_only(service, monkeypatch):
     )
     assert status == 200
     assert response["result"]["isError"] is False
-    assert events == ["admitted", "released", "tool"]
+    assert events == ["admitted", "released", "admitted", "released", "tool"]
     before = service.activity_snapshot("gemini")
     assert before["call_count"] == 1
     assert len(before["recent_calls"]) == 1
 
     with pytest.raises(PermissionError, match="stale authority"):
         service.handle(body, {}, provider="gemini", admission=denied)
-    assert events == ["admitted", "released", "tool", "denied"]
+    assert events == ["admitted", "released", "admitted", "released", "tool", "denied"]
     assert service.activity_snapshot("gemini") == before
 
     # The existing ChatGPT path remains callable without an ingress hook.
@@ -123,6 +123,29 @@ def test_ingress_admission_guards_call_identity_only(service, monkeypatch):
     assert response["result"]["isError"] is False
     assert events[-1] == "tool"
     assert service.activity_snapshot("chatgpt")["call_count"] == 1
+
+
+def test_metadata_dispatch_rechecks_authority_after_request_entry(service):
+    revoked = False
+
+    @contextmanager
+    def admission():
+        nonlocal revoked
+        if revoked:
+            raise tunnel_mcp.McpAdmissionRevoked("Credentials rotated.")
+        try:
+            yield
+        finally:
+            revoked = True
+
+    with pytest.raises(tunnel_mcp.McpAdmissionRevoked, match="rotated"):
+        service.handle(
+            {"jsonrpc": "2.0", "id": 8, "method": "tools/list"},
+            {},
+            provider="gemini",
+            admission=admission,
+        )
+    assert service.activity_snapshot("gemini")["call_count"] == 0
 
 
 @pytest.mark.parametrize("failure", [ValueError("failed"), KeyError("unexpected")])

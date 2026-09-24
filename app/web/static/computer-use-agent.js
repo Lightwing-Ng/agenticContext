@@ -1,4 +1,4 @@
-/* Code version: v3.68.2-claude.0 */
+/* Code version: v3.69.0-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -102,9 +102,10 @@
         tunnelSpinner: document.querySelector("[data-agent-tunnel-spinner]"),
         tunnelState: document.querySelector("[data-agent-tunnel-state]"),
         tunnelProblem: document.querySelector("[data-agent-tunnel-problem]"),
-        tunnelReconnect: document.querySelector("[data-agent-tunnel-reconnect]"),
+        tunnelConnectionButton: document.querySelector("[data-agent-tunnel-reconnect]"),
         tunnelProjectField: document.querySelector("[data-agent-tunnel-project-field]"),
         tunnelProjectPath: document.querySelector("[data-agent-tunnel-project-path]"),
+        tunnelProjectChoose: document.getElementById("agent_tunnel_project_path_choose"),
         tunnelProjectList: document.querySelector("[data-agent-tunnel-project-list]"),
         tunnelProjectStatus: document.querySelector("[data-agent-tunnel-project-status]"),
         tunnelOnboardings: Array.from(document.querySelectorAll("[data-agent-tunnel-onboarding]")),
@@ -1068,6 +1069,7 @@
     const initialTunnelSnapshot = {
         presentation: readTunnelPresentation(),
         credentials: readTunnelCredentials(),
+        enabled: elements.tunnelField?.dataset.agentTunnelInitialEnabled === "true",
         projectContext: readTunnelProjectContext(),
         activityObserved: elements.tunnelLiveMarkers.some((marker) => !marker.hidden),
         config: safeGeminiConfig(null),
@@ -1092,8 +1094,8 @@
     let tunnelProjectNotice = "";
     let tunnelProjectPathTouched = false;
     let tunnelProjectListSignature = "";
-    let tunnelReconnectRevision = 0;
-    let tunnelReconnectBusy = false;
+    let tunnelConnectionRevision = 0;
+    let tunnelConnectionBusy = false;
     let tunnelKickoffPrefixValue = "";
     const tunnelLastSuccessfulStatusAt = new Map([[initialTunnelPlatform, Date.now()]]);
     let geminiConfig = safeGeminiConfig(null);
@@ -1224,6 +1226,12 @@
 
     function syncTunnelProjectUi() {
         if (!elements.tunnelProjectField) return;
+        const controlsBusy = tunnelProjectBusy || tunnelConnectionBusy;
+        if (elements.tunnelConnectionButton) {
+            elements.tunnelConnectionButton.disabled = controlsBusy;
+        }
+        if (elements.tunnelProjectPath) elements.tunnelProjectPath.disabled = tunnelConnectionBusy;
+        if (elements.tunnelProjectChoose) elements.tunnelProjectChoose.disabled = controlsBusy;
         const current = tunnelProjectContext.current;
         const selectedIds = new Set(tunnelProjectContext.selectedProjectIds);
         const focusedProjectId = document.activeElement instanceof Element
@@ -1237,7 +1245,7 @@
             elements.tunnelProjectPath.value = current?.root || tunnelProjectContext.browseRoot;
         }
         if (elements.tunnelProjectList) {
-            elements.tunnelProjectList.setAttribute("aria-busy", String(tunnelProjectBusy));
+            elements.tunnelProjectList.setAttribute("aria-busy", String(controlsBusy));
             const listSignature = JSON.stringify({
                 current: current?.id || "",
                 selected: tunnelProjectContext.selectedProjectIds,
@@ -1264,8 +1272,8 @@
                         "aria-describedby", `agent_tunnel_project_access_${index + 1}`,
                     );
                 }
-                checkbox.disabled = !checkbox.checked
-                    && (!project.available || !project.registered);
+                checkbox.disabled = controlsBusy || (!checkbox.checked
+                    && (!project.available || !project.registered));
                 const mark = document.createElement("span");
                 mark.className = "selection-list-mark";
                 mark.setAttribute("aria-hidden", "true");
@@ -1311,8 +1319,17 @@
                 }
             }
             elements.tunnelProjectList.querySelectorAll(
+                "[data-agent-tunnel-project-checkbox]",
+            ).forEach((checkbox) => {
+                const project = tunnelProjectContext.projects.find(
+                    (item) => item.id === checkbox.dataset.agentTunnelProjectCheckbox,
+                );
+                checkbox.disabled = controlsBusy || (!checkbox.checked
+                    && (!project?.available || !project?.registered));
+            });
+            elements.tunnelProjectList.querySelectorAll(
                 "[data-agent-tunnel-project-remove]",
-            ).forEach((button) => { button.disabled = tunnelProjectBusy; });
+            ).forEach((button) => { button.disabled = controlsBusy; });
         }
         if (elements.tunnelProjectStatus) {
             let notice = tunnelProjectNotice || tunnelProjectContext.problem || current?.problem || "";
@@ -1403,8 +1420,8 @@
 
     function syncTunnelKickoffUi() {
         if (!elements.tunnelKickoffTitle) return;
-        // A reconnect is transient; keep the prompt in place until it settles.
-        if (tunnelReconnectBusy) return;
+        // Keep the prompt in place during a connect attempt; a disconnect closes its gate.
+        if (tunnelConnectionBusy && !tunnelSnapshots.get("chatgpt")?.enabled) return;
         const gate = tunnelKickoffGate();
         const previousState = elements.tunnelKickoffTitle.dataset.agentTunnelKickoffState || "";
         elements.tunnelKickoffTitle.dataset.agentTunnelKickoffState = gate.state;
@@ -1617,13 +1634,17 @@
             syncTunnelCredentialUi();
         }
         if (platform === "gemini") syncGeminiConfigUi();
-        if (elements.tunnelReconnect) {
-            elements.tunnelReconnect.hidden = platform !== "chatgpt"
-                || !Boolean(tunnelCredentials.qualified);
-            // Keep the label fixed so the button width never shifts; the status
-            // row already reports "Reconnecting".
-            elements.tunnelReconnect.disabled = tunnelReconnectBusy;
-            elements.tunnelReconnect.toggleAttribute("aria-busy", tunnelReconnectBusy);
+        if (elements.tunnelConnectionButton) {
+            const enabled = Boolean(tunnelSnapshots.get("chatgpt")?.enabled);
+            const action = enabled ? "disconnect" : "connect";
+            const label = enabled ? "Disconnect Tunnel" : "Connect Tunnel";
+            elements.tunnelConnectionButton.hidden = platform !== "chatgpt"
+                || (!enabled && !Boolean(tunnelCredentials.qualified));
+            elements.tunnelConnectionButton.dataset.agentTunnelAction = action;
+            elements.tunnelConnectionButton.setAttribute("aria-label", label);
+            elements.tunnelConnectionButton.title = label;
+            elements.tunnelConnectionButton.disabled = tunnelConnectionBusy || tunnelProjectBusy;
+            elements.tunnelConnectionButton.toggleAttribute("aria-busy", tunnelConnectionBusy);
         }
         syncGeminiAuthorizationUi();
         syncTunnelProjectUi();
@@ -1710,11 +1731,14 @@
                 tone: "error",
                 label: "Status unavailable",
                 message: "Tunnel returned an invalid status response.",
-                hint: "Tunnel returned an invalid status response. Use Reconnect and try again.",
+                hint: "Tunnel returned an invalid status response. Use the connection button and try again.",
                 action: null,
             };
         const snapshot = {
             presentation,
+            enabled: Object.hasOwn(payload, "enabled")
+                ? Boolean(payload.enabled)
+                : Boolean(previous?.enabled),
             credentials: requestedPlatform === "chatgpt"
                 ? (payload.credentials || previous?.credentials || emptyTunnelCredentials())
                 : emptyTunnelCredentials(),
@@ -1769,7 +1793,7 @@
                 tone: "error",
                 label: "Status unavailable",
                 message: problem,
-                hint: `${problem} Last successful status: ${lastSuccessfulText}. Use Reconnect or wait for the next check.`,
+                hint: `${problem} Last successful status: ${lastSuccessfulText}. Use the connection button or wait for the next check.`,
                 action: null,
             },
             activityObserved: false,
@@ -1783,6 +1807,7 @@
         const url = elements.tunnelField?.dataset.agentTunnelStatusUrl;
         const requestedPlatform = selectedPlatform();
         if (!url || !tunnelSupportsPlatform(requestedPlatform)) return;
+        if (requestedPlatform === "chatgpt" && tunnelConnectionBusy) return;
         if (tunnelPollController && tunnelPollPlatform === requestedPlatform) return;
         const revision = ++tunnelPollRevision;
         tunnelPollController?.abort();
@@ -1847,6 +1872,7 @@
         if (
             !url
             || tunnelProjectBusy
+            || tunnelConnectionBusy
             || !project?.registered
             || !project.available
             || !normalizedSelected.includes(projectId)
@@ -1919,7 +1945,7 @@
 
     function toggleTunnelProject(projectId, shouldSelect) {
         const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
-        if (!project || tunnelProjectBusy) return false;
+        if (!project || tunnelProjectBusy || tunnelConnectionBusy) return false;
         const selected = tunnelProjectContext.selectedProjectIds.filter((item) => item !== projectId);
         if (shouldSelect) selected.push(projectId);
         if (!selected.length) {
@@ -1945,7 +1971,7 @@
     async function removeTunnelProject(projectId) {
         const url = elements.tunnelProjectField?.dataset.agentTunnelProjectUnregisterUrl;
         const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
-        if (!url || !project?.registered || tunnelProjectBusy) return false;
+        if (!url || !project?.registered || tunnelProjectBusy || tunnelConnectionBusy) return false;
         const operationRevision = ++tunnelProjectSaveRevision;
         const expectedRevision = tunnelProjectContext.revision;
         const requestedPlatform = selectedPlatform();
@@ -2003,7 +2029,7 @@
 
     async function registerTunnelProjectPath(path) {
         const url = elements.tunnelProjectField?.dataset.agentTunnelProjectRegisterUrl;
-        if (!url || tunnelProjectBusy) return false;
+        if (!url || tunnelProjectBusy || tunnelConnectionBusy) return false;
         const operationRevision = ++tunnelProjectSaveRevision;
         const requestedPlatform = selectedPlatform();
         invalidateTunnelStatusRequest();
@@ -2053,7 +2079,7 @@
 
     function selectTunnelProjectPath(path) {
         const normalizedPath = String(path || "").trim();
-        if (!normalizedPath || tunnelProjectBusy) return false;
+        if (!normalizedPath || tunnelProjectBusy || tunnelConnectionBusy) return false;
         const project = tunnelProjectContext.projects.find((item) => item.root === normalizedPath);
         if (!project) return registerTunnelProjectPath(normalizedPath);
         if (!project.registered || !project.available) {
@@ -2067,25 +2093,33 @@
         return saveTunnelProjectSelection(project.id, selected, {path: normalizedPath});
     }
 
-    async function reconnectTunnel() {
-        const url = elements.tunnelField?.dataset.agentTunnelConnectUrl;
+    async function changeTunnelConnection() {
+        const enabled = Boolean(tunnelSnapshots.get("chatgpt")?.enabled);
+        const url = enabled
+            ? elements.tunnelField?.dataset.agentTunnelDisconnectUrl
+            : elements.tunnelField?.dataset.agentTunnelConnectUrl;
         if (
             !url
             || selectedPlatform() !== "chatgpt"
-            || !tunnelCredentials.qualified
-            || tunnelReconnectBusy
+            || (!enabled && !tunnelCredentials.qualified)
+            || tunnelConnectionBusy
+            || tunnelProjectBusy
         ) return false;
-        const operationRevision = ++tunnelReconnectRevision;
+        const operationRevision = ++tunnelConnectionRevision;
         invalidateTunnelStatusRequest();
-        tunnelReconnectBusy = true;
+        if (tunnelPollTimer !== null) window.clearTimeout(tunnelPollTimer);
+        tunnelPollTimer = null;
+        tunnelConnectionBusy = true;
         const previous = tunnelSnapshots.get("chatgpt") || {};
         tunnelSnapshots.set("chatgpt", {
             ...previous,
             presentation: {
                 tone: "loading",
-                label: "Reconnecting",
-                message: "Reconnecting with the saved Tunnel credentials…",
-                hint: "Reconnecting with the saved Tunnel credentials…",
+                label: enabled ? "Disconnecting" : "Connecting",
+                message: enabled
+                    ? "Stopping Tunnel forwarding…"
+                    : "Connecting with the saved Tunnel credentials…",
+                hint: "",
                 action: null,
             },
             activityObserved: false,
@@ -2095,25 +2129,25 @@
         let resultUncertain = false;
         try {
             const payload = await tunnelRequestJson(url, {method: "POST", body: "{}"});
-            if (operationRevision !== tunnelReconnectRevision) return true;
+            if (operationRevision !== tunnelConnectionRevision) return true;
             if (!applyTunnelStatus(payload, "chatgpt")) {
-                throw new Error("The server returned an invalid reconnect response.");
+                throw new Error("The server returned an invalid Tunnel connection response.");
             }
-            scheduleTunnelPoll();
             return true;
         } catch (error) {
-            if (operationRevision !== tunnelReconnectRevision) return false;
+            if (operationRevision !== tunnelConnectionRevision) return false;
             resultUncertain = Boolean(error?.resultUncertain);
             markTunnelStatusUnavailable(
                 "chatgpt",
-                String(error?.message || "Unable to reconnect the Tunnel."),
+                String(error?.message || `Unable to ${enabled ? "disconnect" : "connect"} the Tunnel.`),
             );
             return false;
         } finally {
-            if (operationRevision === tunnelReconnectRevision) {
-                tunnelReconnectBusy = false;
+            if (operationRevision === tunnelConnectionRevision) {
+                tunnelConnectionBusy = false;
                 syncTunnelStatus();
                 if (resultUncertain) void refreshTunnelStatus();
+                scheduleTunnelPoll();
             }
         }
     }
@@ -2122,6 +2156,7 @@
         if (tunnelPollTimer !== null) window.clearTimeout(tunnelPollTimer);
         tunnelPollTimer = null;
         if (selectedConnectionMode() !== "tunnel" || !tunnelSupportsPlatform(selectedPlatform())) return;
+        if (selectedPlatform() === "chatgpt" && tunnelConnectionBusy) return;
         const delay = tunnelPresentation?.tone === "ready" ? 10_000 : 3_000;
         tunnelPollTimer = window.setTimeout(async () => {
             tunnelPollTimer = null;
@@ -5682,8 +5717,8 @@
             );
         });
     });
-    elements.tunnelReconnect?.addEventListener("click", () => {
-        void reconnectTunnel();
+    elements.tunnelConnectionButton?.addEventListener("click", () => {
+        void changeTunnelConnection();
     });
     elements.tunnelIdInput?.addEventListener("input", scheduleTunnelCredentialSave);
     elements.tunnelKeyInput?.addEventListener("input", scheduleTunnelCredentialSave);

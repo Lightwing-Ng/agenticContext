@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.7.4-codex.0
+Code version: v1.7.5-codex.0
 """
 
 from __future__ import annotations
@@ -219,8 +219,12 @@ def test_tunnel_credentials_move_from_settings_to_agent_and_never_echo_key(agent
     assert onboarding_body.count('class="secondary-button agent-tunnel-step-action"') == 6
     assert 'data-agent-tunnel-toggle' not in empty_body
     assert 'data-agent-tunnel-connect-url="/api/agent/tunnel/connect"' in empty_body
+    assert 'data-agent-tunnel-disconnect-url="/api/agent/tunnel/disconnect"' in empty_body
+    assert 'data-agent-tunnel-initial-enabled="false"' in empty_body
     assert 'data-agent-tunnel-reconnect' in empty_body
-    assert 'data-agent-tunnel-disconnect-url' not in empty_body
+    assert 'data-agent-tunnel-action="connect"' in empty_body
+    assert 'aria-label="Connect Tunnel"' in empty_body
+    assert 'title="Connect Tunnel"' in empty_body
     assert 'data-agent-tunnel-message' not in empty_body
     assert 'data-agent-tunnel-activity' not in empty_body
 
@@ -300,6 +304,8 @@ def test_agent_tunnel_route_reflects_tunnel_status(agent_client) -> None:
     # Tests never start tunnel-client, so saved credentials alone are not "Connected".
     configured_body = agent_client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
     assert "data-agent-tunnel-state>Not running</span>" in configured_body
+    assert 'data-agent-tunnel-initial-enabled="false"' in configured_body
+    assert 'data-agent-tunnel-action="connect"' in configured_body
     assert "sk-proj-secret" not in configured_body
 
     status = agent_client.get("/api/agent/tunnel/status").get_json()

@@ -1,6 +1,6 @@
 """Supervise OpenAI's tunnel-client so ChatGPT can reach the local MCP endpoint.
 
-Code version: v1.7.0-claude.0
+Code version: v1.8.0-codex.0
 
 The Tunnel connection has three parts:
 
@@ -474,6 +474,7 @@ class TunnelRuntime:
         self._launch_lock = threading.Lock()
         self._mcp_url = ""
         self._enabled = False
+        self._manually_disconnected = False
         self._shutdown = False
         self._generation = 0
         self._process: subprocess.Popen[bytes] | None = None
@@ -530,6 +531,7 @@ class TunnelRuntime:
         with self._lock:
             if self._shutdown:
                 return
+            self._manually_disconnected = False
             self._enabled = True
         self.restart()
 
@@ -539,9 +541,9 @@ class TunnelRuntime:
         expected_revision: int,
         current_revision: Callable[[], int],
     ) -> bool:
-        """Start only for the latest project selection and retain startup failures."""
+        """Start for the latest project selection unless manually disconnected."""
         with self._lock:
-            if current_revision() != expected_revision:
+            if self._manually_disconnected or current_revision() != expected_revision:
                 return False
             try:
                 self.connect()
@@ -566,13 +568,13 @@ class TunnelRuntime:
             self._set_state(
                 "error",
                 "The project selection was saved, but the local Tunnel could not restart. "
-                "Use Reconnect to try again.",
+                "Use the sidebar Connect button to try again.",
                 retryable=True,
                 problem_code="reconnect_start_failed",
             )
 
     def disconnect(self) -> None:
-        """Stop forwarding while preserving the saved credentials."""
+        """Stop forwarding and project auto-connect without deleting credentials."""
         with self._lock:
             generation = self._generation
             has_process = self._process is not None
@@ -587,6 +589,7 @@ class TunnelRuntime:
         with self._lock:
             if self._shutdown:
                 return
+            self._manually_disconnected = True
             self._enabled = False
             self._generation += 1
             self._cancel_restart_timer()
@@ -1512,7 +1515,7 @@ def describe_tunnel_status(
     return {
         "tone": "error",
         "label": "Not running",
-        "message": "Reconnect in step ➋.",
+        "message": "Use the sidebar Connect button.",
         "hint": "",
         "action": None,
     }

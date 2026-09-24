@@ -1,6 +1,6 @@
 """Gemini HTTPS/OAuth MCP ingress and local UI API tests.
 
-Code version: v1.6.1-codex.2
+Code version: v1.6.2-codex.0
 """
 
 from __future__ import annotations
@@ -737,6 +737,144 @@ def test_rotation_after_authentication_rejects_tool_before_admission(
     assert status["activity_observed"] is False
 
 
+@pytest.mark.parametrize(
+    ("method", "with_id"),
+    [
+        ("tools/list", True),
+        ("initialize", True),
+        ("ping", True),
+        ("notifications/initialized", False),
+    ],
+)
+def test_rotation_after_authentication_rejects_non_tool_request(
+    gemini_client,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    with_id: bool,
+) -> None:
+    values = configure(gemini_client)
+    tokens = oauth_tokens(gemini_client, values)
+    gateway = gemini_client.application.extensions["gemini_tunnel_gateway"]
+    read_body = tunnel_routes._read_bounded_request_body
+
+    def rotate_after_authentication(max_bytes: int) -> bytes:
+        gateway.replace("")
+        gateway.replace(PUBLIC_ORIGIN)
+        return read_body(max_bytes)
+
+    monkeypatch.setattr(
+        tunnel_routes, "_read_bounded_request_body", rotate_after_authentication
+    )
+    body: dict[str, object] = {"jsonrpc": "2.0", "method": method}
+    if with_id:
+        body["id"] = 21
+    response = gemini_client.post(
+        "/mcp/gemini",
+        base_url=PUBLIC_ORIGIN,
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        json=body,
+    )
+    assert response.status_code == 401
+    assert response.get_json()["error"]["code"] == -32001
+    assert "Bearer" in response.headers["WWW-Authenticate"]
+    status = gemini_client.get(
+        "/api/agent/tunnel/status?platform=gemini"
+    ).get_json()
+    assert status["call_count"] == 0
+    assert status["recent_calls"] == []
+
+
+@pytest.mark.parametrize(
+    ("data", "expected_status"),
+    [
+        (b"{", 400),
+        (b"x" * (tunnel_routes.MAX_GEMINI_MCP_BODY_BYTES + 1), 413),
+        (b"[]", 400),
+        (
+            b"[" + b",".join([b"{}"] * (tunnel_mcp.MAX_MCP_BATCH_ITEMS + 1)) + b"]",
+            400,
+        ),
+    ],
+    ids=["malformed-json", "oversized-body", "empty-batch", "oversized-batch"],
+)
+def test_rotation_after_authentication_rejects_early_post_responses(
+    gemini_client,
+    monkeypatch: pytest.MonkeyPatch,
+    data: bytes,
+    expected_status: int,
+) -> None:
+    values = configure(gemini_client)
+    tokens = oauth_tokens(gemini_client, values)
+    gateway = gemini_client.application.extensions["gemini_tunnel_gateway"]
+    authorization = {"Authorization": f"Bearer {tokens['access_token']}"}
+    ordinary = gemini_client.post(
+        "/mcp/gemini",
+        base_url=PUBLIC_ORIGIN,
+        headers=authorization,
+        data=data,
+        content_type="application/json",
+    )
+    assert ordinary.status_code == expected_status
+
+    read_body = tunnel_routes._read_bounded_request_body
+
+    def rotate_after_authentication(max_bytes: int) -> bytes:
+        gateway.replace("")
+        gateway.replace(PUBLIC_ORIGIN)
+        return read_body(max_bytes)
+
+    monkeypatch.setattr(
+        tunnel_routes, "_read_bounded_request_body", rotate_after_authentication
+    )
+    response = gemini_client.post(
+        "/mcp/gemini",
+        base_url=PUBLIC_ORIGIN,
+        headers=authorization,
+        data=data,
+        content_type="application/json",
+    )
+    assert response.status_code == 401
+    assert response.get_json()["error"]["code"] == -32001
+    assert "Bearer" in response.headers["WWW-Authenticate"]
+    status = gemini_client.get(
+        "/api/agent/tunnel/status?platform=gemini"
+    ).get_json()
+    assert status["call_count"] == 0
+    assert status["recent_calls"] == []
+
+
+def test_rotation_after_authentication_rejects_get_405(
+    gemini_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = configure(gemini_client)
+    tokens = oauth_tokens(gemini_client, values)
+    gateway = gemini_client.application.extensions["gemini_tunnel_gateway"]
+    authorization = {"Authorization": f"Bearer {tokens['access_token']}"}
+    ordinary = gemini_client.get(
+        "/mcp/gemini", base_url=PUBLIC_ORIGIN, headers=authorization
+    )
+    assert ordinary.status_code == 405
+    assert ordinary.headers["Allow"] == "POST"
+
+    _config, authority = gateway.authority()
+    verify_access_token = authority.verify_access_token
+
+    def rotate_after_verification(token: str, *, resource: str):
+        claims = verify_access_token(token, resource=resource)
+        gateway.replace("")
+        gateway.replace(PUBLIC_ORIGIN)
+        return claims
+
+    monkeypatch.setattr(authority, "verify_access_token", rotate_after_verification)
+    response = gemini_client.get(
+        "/mcp/gemini", base_url=PUBLIC_ORIGIN, headers=authorization
+    )
+    assert response.status_code == 401
+    assert response.get_json()["error"]["code"] == -32001
+    assert "Bearer" in response.headers["WWW-Authenticate"]
+
+
 def test_batch_rotation_preserves_completed_result_and_refuses_remaining_items(
     gemini_client,
     monkeypatch: pytest.MonkeyPatch,
@@ -771,6 +909,9 @@ def test_batch_rotation_preserves_completed_result_and_refuses_remaining_items(
             call(1),
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             call(2),
+            42,
+            {"jsonrpc": "2.0", "method": 7},
+            {"jsonrpc": "2.0", "id": 4, "method": 7},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             call(3),
         ],
@@ -780,13 +921,16 @@ def test_batch_rotation_preserves_completed_result_and_refuses_remaining_items(
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
     payload = response.get_json()
-    assert [item["id"] for item in payload] == [1, 2, 3]
+    assert [item["id"] for item in payload] == [1, 2, None, None, 4, 3]
     assert payload[0]["result"]["structuredContent"] == {
         "ok": True,
         "marker": "completed-on-old-generation",
     }
     assert [item["error"] for item in payload[1:]] == [
         {"code": -32001, "message": "Unauthorized."},
+        {"code": -32600, "message": "Invalid JSON-RPC request."},
+        {"code": -32600, "message": "Invalid JSON-RPC request."},
+        {"code": -32600, "message": "Invalid JSON-RPC request."},
         {"code": -32001, "message": "Unauthorized."},
     ]
     assert executed == ["current_project"]

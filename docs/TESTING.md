@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.26.0-claude.0`
+Documentation version: `v1.26.2-codex.0`
 
 ## Supported commands
 
@@ -233,9 +233,14 @@ generation-scoped Active evidence, provider-attributed activity, and identical f
 discovery. Rotation tests also assert the generation-scoped `recent_usage` and cumulative
 call count after the bounded history evicts older calls, reject a previously authenticated
 request if its credential rotates before tool admission, and exclude older in-flight calls.
-Batch rotation preserves completed item responses, refuses every remaining request ID without
-running those items, skips notifications, and keeps the bearer challenge when no item answered.
-They must also prove that the client secret, signing key, and bearer values do not appear in HTML,
+Batch rotation preserves completed item responses, refuses every remaining valid request ID
+without running those items, answers malformed remaining items with `-32600`, skips valid
+notifications, and keeps the bearer challenge when no item answered. A post-authentication
+rotation must also reject `tools/list`, `initialize`, `ping`, and a notification before
+returning a response; metadata dispatch must remain atomic with the authority generation.
+Post-authentication rotation also turns malformed JSON, oversized bodies, empty or
+oversized batches, and the GET method's 405 response into 401 bearer challenges; valid
+credentials retain the original error or method response. They must also prove that the client secret, signing key, and bearer values do not appear in HTML,
 initial JSON, status payloads, URLs, or logs; copying a secret does not approve a callback; pending,
 approved, denied, stale-review-id, empty-state, changed-state, and changed-callback cases fail closed;
 exact first-use callback

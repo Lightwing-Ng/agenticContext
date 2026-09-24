@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.10.5-claude.0
+# Code version: v1.10.6-codex.0
 
 from __future__ import annotations
 
@@ -1545,37 +1545,39 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         authenticated = authenticate_gemini_mcp()
         if isinstance(authenticated, Response):
             return authenticated
-        try:
-            _read_bounded_request_body(MAX_GEMINI_MCP_BODY_BYTES)
-            body = request.get_json(silent=True)
-        except RequestEntityTooLarge:
-            return _no_store(
-                make_response(
-                    jsonify(
-                        {
-                            "jsonrpc": "2.0",
-                            "id": None,
-                            "error": {"code": -32600, "message": "Request is too large."},
-                        }
-                    ),
-                    413,
-                )
-            )
-        if body is None:
-            return _no_store(
-                make_response(
-                    jsonify(
-                        {
-                            "jsonrpc": "2.0",
-                            "id": None,
-                            "error": {"code": -32700, "message": "Parse error."},
-                        }
-                    ),
-                    400,
-                )
-            )
         config, authority = authenticated
         try:
+            try:
+                _read_bounded_request_body(MAX_GEMINI_MCP_BODY_BYTES)
+                body = request.get_json(silent=True)
+            except RequestEntityTooLarge:
+                with gemini_gateway.admit_authenticated_authority(authority):
+                    return _no_store(
+                        make_response(
+                            jsonify(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": None,
+                                    "error": {"code": -32600, "message": "Request is too large."},
+                                }
+                            ),
+                            413,
+                        )
+                    )
+            if body is None:
+                with gemini_gateway.admit_authenticated_authority(authority):
+                    return _no_store(
+                        make_response(
+                            jsonify(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": None,
+                                    "error": {"code": -32700, "message": "Parse error."},
+                                }
+                            ),
+                            400,
+                        )
+                    )
             status, payload = context.tunnel_mcp_service.handle(
                 body,
                 request.headers,
@@ -1595,7 +1597,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         authenticated = authenticate_gemini_mcp()
         if isinstance(authenticated, Response):
             return authenticated
-        return _no_store(Response(status=405, headers={"Allow": "POST"}))
+        config, authority = authenticated
+        try:
+            with gemini_gateway.admit_authenticated_authority(authority):
+                return _no_store(Response(status=405, headers={"Allow": "POST"}))
+        except McpAdmissionRevoked as exc:
+            return gemini_mcp_unauthorized(config, description=str(exc))
 
     @blueprint.post("/api/agent/tunnel/restart")
     def api_restart():

@@ -1,4 +1,4 @@
-<!-- Code version: v3.79.2-claude.0 -->
+<!-- Code version: v3.80.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.150.6-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.5.2-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.6.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -222,10 +222,12 @@
                         data-agent-tunnel-status-url="{{ url_for('tunnel.api_status') }}"
                         data-agent-tunnel-credentials-url="{{ url_for('tunnel.api_credentials') }}"
                         data-agent-tunnel-connect-url="{{ url_for('tunnel.api_connect') }}"
+                        data-agent-tunnel-disconnect-url="{{ url_for('tunnel.api_disconnect') }}"
                         data-agent-gemini-config-url="/api/agent/tunnel/gemini/config"
                         data-agent-gemini-copy-value-url="/api/agent/tunnel/gemini/copy-value"
                         data-agent-gemini-authorization-url="/api/agent/tunnel/gemini/authorization"
                         data-agent-tunnel-initial-platform="{{ tunnel_status.platform | default('chatgpt') }}"
+                        data-agent-tunnel-initial-enabled="{{ 'true' if tunnel_status.enabled else 'false' }}"
                         data-agent-tunnel-presentation='{{ tunnel_view | tojson }}'
                         data-agent-tunnel-credentials='{{ tunnel_credentials | tojson }}'
                         {% if connection_mode != 'tunnel' %}hidden{% endif %}
@@ -260,7 +262,8 @@
                                 </div>
                             </div>
                             <div class="agent-tunnel-status-actions">
-                                <button type="button" class="secondary-button" data-agent-tunnel-reconnect{% if tunnel_status.platform != 'chatgpt' or not tunnel_credentials.qualified %} hidden{% endif %}>Reconnect</button>
+                                {% set tunnel_connection_label = 'Disconnect Tunnel' if tunnel_status.enabled else 'Connect Tunnel' %}
+                                <button type="button" class="circular-icon-button" data-agent-tunnel-reconnect data-agent-tunnel-action="{{ 'disconnect' if tunnel_status.enabled else 'connect' }}" aria-label="{{ tunnel_connection_label }}" title="{{ tunnel_connection_label }}"{% if tunnel_status.platform != 'chatgpt' or (not tunnel_status.enabled and not tunnel_credentials.qualified) %} hidden{% endif %}><span class="icon agent-tunnel-connection-icon" aria-hidden="true"></span></button>
                             </div>
                         </div>
                     </div>
@@ -772,6 +775,6 @@ Task:
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.68.2-claude.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.69.0-codex.0') }}"></script>
 </body>
 </html>
