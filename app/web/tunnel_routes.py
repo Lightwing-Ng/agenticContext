@@ -6,11 +6,12 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.10.3-codex.0
+# Code version: v1.10.4-codex.2
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -46,6 +47,7 @@ from app.core.agent import (
     GeminiOAuthError,
     GeminiTunnelConfig,
     GeminiTunnelConfigError,
+    McpAdmissionRevoked,
     TunnelRuntime,
     authorization_server_metadata,
     clear_gemini_tunnel_config,
@@ -93,6 +95,8 @@ class GeminiTunnelGateway:
         self._config = GeminiTunnelConfig()
         self._authority: GeminiOAuthAuthority | None = None
         self._activity_cursor = 0
+        self._completed_call_cursor = 0
+        self._old_active_call_ids: set[int] = set()
         self._redirect_uri = ""
         self._pending_authorization_digest = ""
         self._pending_authorization_review_id = ""
@@ -103,8 +107,7 @@ class GeminiTunnelGateway:
         self._denied_authorization_digest = ""
         self._denied_authorization_expires_at = 0.0
 
-    def _latest_activity_call_id_locked(self) -> int:
-        snapshot = self.tunnel_mcp_service.activity_snapshot("gemini")
+    def _latest_activity_call_id_locked(self, snapshot: dict[str, Any]) -> int:
         records = [
             *list(snapshot.get("active_calls") or []),
             *list(snapshot.get("recent_calls") or []),
@@ -123,7 +126,14 @@ class GeminiTunnelGateway:
             self._authority.revoke_all()
         self._config = config
         self._authority = GeminiOAuthAuthority(config) if config.configured else None
-        self._activity_cursor = self._latest_activity_call_id_locked()
+        activity = self.tunnel_mcp_service.activity_snapshot("gemini")
+        self._activity_cursor = self._latest_activity_call_id_locked(activity)
+        self._completed_call_cursor = int(activity.get("call_count") or 0)
+        self._old_active_call_ids = {
+            int(record.get("call_id") or 0)
+            for record in activity.get("active_calls") or []
+            if isinstance(record, dict)
+        }
         self._redirect_uri = ""
         self._clear_authorization_review_locked()
 
@@ -185,7 +195,9 @@ class GeminiTunnelGateway:
         with self._lock:
             self.current()
             cursor = self._activity_cursor
-            snapshot = self.tunnel_mcp_service.activity_snapshot("gemini")
+            snapshot = self.tunnel_mcp_service.activity_snapshot(
+                "gemini", include_usage_provenance=True
+            )
             active_calls = [
                 record
                 for record in snapshot.get("active_calls") or []
@@ -196,11 +208,50 @@ class GeminiTunnelGateway:
                 for record in snapshot.get("recent_calls") or []
                 if int(record.get("call_id") or 0) > cursor
             ]
+            active_call_ids = {
+                int(record.get("call_id") or 0)
+                for record in snapshot.get("active_calls") or []
+            }
+            completed_old_calls = len(self._old_active_call_ids - active_call_ids)
+            encoding_ready = (
+                snapshot["recent_usage"]["window"] == "since_tokenizer_ready"
+            )
+            excluded = sum(
+                bool(record.get("_usage_pre_encoding")) for record in recent_calls
+            ) if encoding_ready else 0
+            usage_calls = [
+                record for record in recent_calls
+                if not (encoding_ready and record.get("_usage_pre_encoding"))
+            ]
+            estimates = [record.get("estimated_tokens") for record in usage_calls]
+            known = [value for value in estimates if type(value) is int and value >= 0]
+            complete = len(known) == len(estimates) and (bool(estimates) or not excluded)
+            for record in (*active_calls, *recent_calls):
+                record.pop("_usage_pre_encoding", None)
+            last_success_by_project = {
+                record["project"]: {"tool": record["tool"], "at": record["at"]}
+                for record in reversed(recent_calls)
+                if record.get("ok") and record.get("project")
+            }
             return {
                 **snapshot,
-                "call_count": len(recent_calls),
+                "call_count": max(
+                    0,
+                    int(snapshot.get("call_count") or 0)
+                    - self._completed_call_cursor
+                    - completed_old_calls,
+                ),
                 "active_calls": active_calls,
                 "recent_calls": recent_calls,
+                "recent_usage": {
+                    "calls": len(usage_calls),
+                    "estimated_tokens": sum(known) if complete else None,
+                    "complete": complete,
+                    "scope": "tool_text_estimate",
+                    "window": "since_tokenizer_ready" if excluded else "retained_calls",
+                    "excluded_pre_encoding_calls": excluded,
+                },
+                "last_success_by_project": last_success_by_project,
             }
 
     def authorization_snapshot(self) -> dict[str, object]:
@@ -380,6 +431,22 @@ class GeminiTunnelGateway:
         if authority is None:
             raise GeminiTunnelConfigError("Gemini Tunnel is not configured.")
         return config, authority
+
+    @contextmanager
+    def admit_authenticated_authority(
+        self, authenticated_authority: GeminiOAuthAuthority
+    ) -> Iterator[None]:
+        """Bind an authenticated call id to its still-current credential generation."""
+        with self._lock:
+            try:
+                _config, current_authority = self.current()
+            except GeminiTunnelConfigError:
+                current_authority = None
+            if current_authority is not authenticated_authority:
+                raise McpAdmissionRevoked(
+                    "Gemini credentials changed during this request."
+                )
+            yield
 
 
 @dataclass(frozen=True, slots=True)
@@ -1497,11 +1564,16 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                     400,
                 )
             )
-        status, payload = context.tunnel_mcp_service.handle(
-            body,
-            request.headers,
-            provider="gemini",
-        )
+        config, authority = authenticated
+        try:
+            status, payload = context.tunnel_mcp_service.handle(
+                body,
+                request.headers,
+                provider="gemini",
+                admission=lambda: gemini_gateway.admit_authenticated_authority(authority),
+            )
+        except McpAdmissionRevoked as exc:
+            return gemini_mcp_unauthorized(config, description=str(exc))
         if payload is None:
             return _no_store(Response(status=status))
         return _no_store(make_response(jsonify(payload), status))

@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.25.4-codex.0`
+Documentation version: `v1.25.5-codex.1`
 
 ## Supported commands
 
@@ -196,7 +196,12 @@ registered project's writable flag and MCP write guards. If local reconnect star
 saved selection remains committed and the Tunnel reports `Unavailable` on subsequent status polls
 without exposing the underlying exception. The Tunnel usage card must contain exactly one visible
 `Tokens:` row whose accessible description identifies it as an estimate; total-call, active-call,
-recent-call, and billing rows must be absent.
+recent-call, and billing rows must be absent. The recovery regression exercises an early
+uncounted call, tokenizer readiness, the first complete post-recovery call, the status API,
+and initial HTML. It verifies that history retains the early record while the token window
+identifies excluded calls, stays unavailable before a complete new call, and never sums an
+unknown estimate as zero. The Browser Agent tests separately verify asynchronous first
+load, per-task pinned counting method, and continuation provenance.
 These tests are offline and use temporary projects, registries, runtime roots, and disposable
 browser contexts; live ChatGPT and Gemini round trips remain separate provider-specific evidence.
 
@@ -213,7 +218,11 @@ client/resource/scope/redirect binding, mandatory PKCE S256, one-time authorizat
 short-lived access tokens, refresh tokens, signature and expiry failure, public-Host path
 confinement, exact pending-callback review and single-use local approval, bearer challenges, credential-
 generation-scoped Active evidence, provider-attributed activity, and identical fourteen-tool
-discovery.
+discovery. Rotation tests also assert the generation-scoped `recent_usage` and cumulative
+call count after the bounded history evicts older calls, reject a previously authenticated
+request if its credential rotates before tool admission, and exclude older in-flight calls.
+Batch rotation preserves completed item responses, refuses every remaining request ID without
+running those items, skips notifications, and keeps the bearer challenge when no item answered.
 They must also prove that the client secret, signing key, and bearer values do not appear in HTML,
 initial JSON, status payloads, URLs, or logs; copying a secret does not approve a callback; pending,
 approved, denied, stale-review-id, empty-state, changed-state, and changed-callback cases fail closed;

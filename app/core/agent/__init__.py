@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.17.0-codex.0
+# Code version: v1.17.0-codex.1
 
 from typing import TYPE_CHECKING
 
@@ -104,7 +104,7 @@ _BROWSER_TRANSPORT_EXPORTS = frozenset(
     {"open_agent_in_browser", "open_browser_for_login"}
 )
 _SESSION_POOL_EXPORTS = frozenset({"AgentSessionPool"})
-_TUNNEL_MCP_EXPORTS = frozenset({"TunnelMcpService"})
+_TUNNEL_MCP_EXPORTS = frozenset({"McpAdmissionRevoked", "TunnelMcpService"})
 
 if TYPE_CHECKING:
     from ..computer_use_agent import (
@@ -119,7 +119,7 @@ if TYPE_CHECKING:
     )
     from .browser_transport import open_agent_in_browser, open_browser_for_login
     from .session_pool import AgentSessionPool
-    from ..tunnel_mcp import TunnelMcpService
+    from ..tunnel_mcp import McpAdmissionRevoked, TunnelMcpService
     from ..jury import JuryService
     from ..jury_browser import JURY_MODEL_OPTIONS_BY_PROVIDER
 
@@ -148,10 +148,11 @@ def __getattr__(name: str):
         globals()[name] = AgentSessionPool
         return AgentSessionPool
     if name in _TUNNEL_MCP_EXPORTS:
-        from ..tunnel_mcp import TunnelMcpService
+        from .. import tunnel_mcp
 
-        globals()[name] = TunnelMcpService
-        return TunnelMcpService
+        value = getattr(tunnel_mcp, name)
+        globals()[name] = value
+        return value
     if name not in _COMPUTER_USE_EXPORTS and name not in _COMPUTER_USE_ALIASES:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     from .. import computer_use_agent
@@ -180,6 +181,7 @@ __all__ = [
     "JURY_MODEL_OPTIONS_BY_PROVIDER",
     "JuryService",
     "MCP_SCOPE",
+    "McpAdmissionRevoked",
     "OPERATING_SYSTEM_OPTIONS",
     "PAGE_OBSERVATIONS",
     "ProjectRegistry",

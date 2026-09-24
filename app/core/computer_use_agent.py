@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.83.1-codex.0
+Code version: v3.84.0-codex.0
 """
 
 from __future__ import annotations
@@ -106,6 +106,8 @@ from .safari_automation import SafariContext, SafariLocator, SafariNativeActivat
 from .state import utc_now
 from .token_usage import (
     OPENAI_AGENTIC_TOKEN_ENCODING as OPENAI_AGENTIC_TOKEN_ENCODING,
+    TOKEN_METHOD_MIXED_ESTIMATE,
+    TOKEN_METHOD_UTF8_QUARTER_ESTIMATE,
     OpenAIEquivalentTokenCounter,
     openai_agentic_token_count,
     openai_agentic_token_encoding as _openai_agentic_token_encoding,
@@ -727,6 +729,7 @@ class AgentRunSnapshot:
     turn_count: int = 0
     agentic_token_count: int = 0
     agentic_transcript_tokens: int = 0
+    agentic_token_method: str = ""
     bodycheck_passed: bool = False
     session_mode: str = "new"
     operating_system: str = DEFAULT_OPERATING_SYSTEM
@@ -2101,6 +2104,16 @@ class ComputerUseAgentService:
             ):
                 value = 0
             setattr(snapshot, field_name, value)
+        if snapshot.agentic_token_method not in {
+            OPENAI_AGENTIC_TOKEN_ENCODING,
+            TOKEN_METHOD_UTF8_QUARTER_ESTIMATE,
+            TOKEN_METHOD_MIXED_ESTIMATE,
+        }:
+            snapshot.agentic_token_method = (
+                TOKEN_METHOD_MIXED_ESTIMATE
+                if snapshot.agentic_token_count or snapshot.agentic_transcript_tokens
+                else ""
+            )
         if snapshot.running:
             snapshot.running = False
             snapshot.phase = "interrupted"
@@ -2149,6 +2162,7 @@ class ComputerUseAgentService:
             "turn_count",
             "agentic_token_count",
             "agentic_transcript_tokens",
+            "agentic_token_method",
             "bodycheck_passed",
             "session_mode",
             "operating_system",
@@ -2563,6 +2577,9 @@ class ComputerUseAgentService:
             continuation_agentic_transcript_tokens = (
                 self._snapshot.agentic_transcript_tokens if continuation else 0
             )
+            continuation_agentic_token_method = (
+                self._snapshot.agentic_token_method if continuation else ""
+            )
             workspace_metadata = workspace.stat()
             observed_workspace_identity = (
                 int(workspace_metadata.st_dev),
@@ -2624,6 +2641,7 @@ class ComputerUseAgentService:
                 run_revision=run_revision,
                 agentic_token_count=continuation_agentic_token_count,
                 agentic_transcript_tokens=continuation_agentic_transcript_tokens,
+                agentic_token_method=continuation_agentic_token_method,
                 bodycheck_passed=False,
                 verification_passed=False,
                 action_checkpoint=continuation_action_state.checkpoint(),
@@ -3568,6 +3586,9 @@ class ComputerUseAgentService:
                     runner_kwargs["initial_agentic_transcript_tokens"] = int(
                         self._snapshot.agentic_transcript_tokens or 0
                     )
+                    runner_kwargs["initial_agentic_token_method"] = str(
+                        self._snapshot.agentic_token_method or ""
+                    )
                 response, conversation_url, turn_count, bodycheck_passed = self._runner(
                     **runner_kwargs,
                 )
@@ -3777,6 +3798,7 @@ def run_web_computer_use(
     expected_workspace_identity: tuple[int, int] | None = None,
     initial_agentic_token_count: int = 0,
     initial_agentic_transcript_tokens: int = 0,
+    initial_agentic_token_method: str = "",
 ) -> tuple[str, str, int, bool]:
     """Run one selected Web AI session as a local controller action loop."""
     descriptor = browser_descriptors(config)[settings.browser]
@@ -3788,6 +3810,7 @@ def run_web_computer_use(
     stopped_result = ("", selected_target_url, 0, False)
     if should_stop():
         return stopped_result
+    _openai_agentic_token_encoding()
     controller = WorkspaceController(
         workspace,
         settings,
@@ -3891,6 +3914,7 @@ def run_web_computer_use(
                 monitor_screen_lock=(descriptor.engine == "safari" and sys.platform == "darwin"),
                 initial_agentic_token_count=initial_agentic_token_count,
                 initial_agentic_transcript_tokens=initial_agentic_transcript_tokens,
+                initial_agentic_token_method=initial_agentic_token_method,
             )
 
     task_stage_window = settings.browser in {"edge", "chrome"} and sys.platform in {"darwin", "win32"}
@@ -3992,6 +4016,7 @@ def run_web_computer_use(
             ),
             initial_agentic_token_count=initial_agentic_token_count,
             initial_agentic_transcript_tokens=initial_agentic_transcript_tokens,
+            initial_agentic_token_method=initial_agentic_token_method,
         )
 
 
@@ -5724,6 +5749,7 @@ def _run_web_action_loop(
     monitor_screen_lock: bool = False,
     initial_agentic_token_count: int = 0,
     initial_agentic_transcript_tokens: int = 0,
+    initial_agentic_token_method: str = "",
 ) -> tuple[str, str, int, bool]:
     """Exchange JSON actions and compact observations in one Web AI conversation."""
     session_binding = _ProviderSessionBinding(
@@ -5863,10 +5889,10 @@ def _run_web_action_loop(
 
     durable_checkpoint_update = checkpoint_update or update
     exchange_sequence = 0
-    _openai_agentic_token_encoding()
     token_counter = OpenAIEquivalentTokenCounter(
         total_tokens=max(0, int(initial_agentic_token_count or 0)),
         transcript_tokens=max(0, int(initial_agentic_transcript_tokens or 0)),
+        token_method=initial_agentic_token_method,
     )
 
     def submit_exchange(
@@ -5938,6 +5964,7 @@ def _run_web_action_loop(
                 ).hexdigest(),
                 agentic_token_count=agentic_token_count,
                 agentic_transcript_tokens=token_counter.transcript_tokens,
+                agentic_token_method=token_counter.token_method,
             )
 
         checkpoint("prepared", exchange_response_sha256="")
@@ -6165,6 +6192,7 @@ def _run_web_action_loop(
         durable_checkpoint_update(
             agentic_token_count=token_counter.total_tokens,
             agentic_transcript_tokens=token_counter.transcript_tokens,
+            agentic_token_method=token_counter.token_method,
         )
     if should_stop():
         return (

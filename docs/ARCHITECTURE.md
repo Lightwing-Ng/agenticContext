@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.48.0-codex.0`
+Documentation version: `v1.48.1-codex.1`
 
 ## Runtime flow
 
@@ -321,8 +321,20 @@ it is never replayed automatically against the replacement. ChatGPT and Gemini a
 authenticated transports for the same local
 operator authority: they intentionally share that project binding and serialize mutations under
 the same per-project lock. Provider attribution is recorded on active and recent calls, but it is
-not a model-supplied tool argument and never enters a public tool schema. Instruction discovery is
-project-scoped: `project_overview` lists
+not a model-supplied tool argument and never enters a public tool schema. The bounded
+20-call history is independent of the cumulative call count. Gemini status computes a new
+credential generation from its call-id and completed-call baselines: older records and calls
+already active during rotation cannot supply current activity or token usage. An admission
+check under the Gemini gateway lock rejects a rotated credential before opening tool
+activity, without holding that lock during workspace execution. A revoked single call
+receives a bearer challenge; if rotation occurs partway through a JSON-RPC batch,
+completed responses are retained in a 200 batch response, remaining request IDs receive
+per-item unauthorized errors, notifications stay silent, and no later item executes.
+After the tokenizer becomes
+available, `recent_usage` counts complete calls in a new recovery window; older unknown
+records remain in the history but are excluded and identified by window metadata. A
+recovered window with no completed calls stays unavailable rather than reporting zero.
+Instruction discovery is project-scoped: `project_overview` lists
 root instruction files and nested `AGENTS.md` files inside the project, excluding any nested
 directory that is its own Git repository.
 

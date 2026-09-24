@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.52.2-codex.0
+Code version: v1.52.3-codex.0
 """
 
 from __future__ import annotations
@@ -9853,6 +9853,15 @@ def test_running_agent_status_shows_elapsed_turn_count_and_activity_time(
         assert layout["copy"]["clientHeight"] <= layout["copy"]["lineHeight"] * 2 + 2
         assert layout["copy"]["scrollWidth"] <= layout["copy"]["clientWidth"] + 1
         assert layout["detail"]["scrollWidth"] <= layout["detail"]["clientWidth"] + 1
+
+        payload["agent"]["agentic_token_method"] = "mixed_estimate"
+        page.reload(wait_until="domcontentloaded")
+        expect(page.locator("#agent_response_status")).to_contain_text(
+            "Estimated tokens: 1,234,567"
+        )
+        expect(
+            page.locator("[data-agent-response-status-leading] .workspace-metric-value-major")
+        ).to_have_text("1,234,567")
     finally:
         context.close()
 

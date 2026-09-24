@@ -1,4 +1,4 @@
-/* Code version: v3.67.1-codex.0 */
+/* Code version: v3.67.2-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -1608,6 +1608,14 @@
         const recentUsage = payload.recent_usage && typeof payload.recent_usage === "object"
             ? payload.recent_usage : {};
         const recentTokens = recentUsage.estimated_tokens;
+        const usageDescription = recentUsage.window === "since_tokenizer_ready"
+            ? "Estimated tool-text tokens since tokenizer recovery; earlier calls excluded"
+            : "Estimated recent tool-text tokens";
+        const usageValue = elements.tunnelStatus?.querySelector(".agent-tunnel-recent-tokens");
+        if (usageValue) {
+            usageValue.setAttribute("aria-label", usageDescription);
+            usageValue.title = usageDescription;
+        }
         const recentTokensAvailable = recentUsage.complete === true
             && Number.isSafeInteger(recentTokens)
             && recentTokens >= 0;
@@ -4181,6 +4189,7 @@
             copy,
             lines: runningCopy?.lines || null,
             tokenValue: runningCopy?.tokenValue || "",
+            tokenLabel: runningCopy?.tokenLabel || "Tokens: ",
             loading: ["loading", "running", "reconnecting"].includes(status),
         };
     }
@@ -4209,6 +4218,12 @@
         return Number.isSafeInteger(rawCount) && rawCount >= 0 ? rawCount : null;
     }
 
+    function agenticTokenLabel(agent) {
+        const method = String(agent?.agentic_token_method || "");
+        return method === "utf8_quarter_estimate" || method === "mixed_estimate"
+            ? "Estimated tokens: " : "Tokens: ";
+    }
+
     function runningResponseStatusCopy(agent, message) {
         const metrics = [];
         const elapsed = formatElapsedDuration(agent?.started_at);
@@ -4217,18 +4232,20 @@
         if (turnCount !== null) metrics.push(`${turnCount.toLocaleString("en-US")} turns`);
         const tokenCount = agenticTokenCount(agent);
         const tokenValue = tokenCount === null ? "" : tokenCount.toLocaleString("en-US");
-        if (tokenValue) metrics.push(`Tokens: ${tokenValue}`);
+        const tokenLabel = agenticTokenLabel(agent);
+        if (tokenValue) metrics.push(`${tokenLabel}${tokenValue}`);
         const summary = ["Working", ...metrics].filter(Boolean).join(" · ");
         const detail = String(message || "").trim();
         return {
             text: [summary, detail].filter(Boolean).join(" · "),
             lines: [summary, detail].filter(Boolean),
             tokenValue,
+            tokenLabel,
         };
     }
 
-    function appendGroupedTokenMetric(target, tokenValue) {
-        target.append("Tokens: ");
+    function appendGroupedTokenMetric(target, tokenValue, tokenLabel) {
+        target.append(tokenLabel);
         const major = document.createElement("span");
         major.className = "workspace-metric-value-major";
         major.textContent = tokenValue;
@@ -4242,10 +4259,11 @@
             summary.dataset.agentResponseStatusLeading = "";
             const leading = String(presentation.lines[0] || "");
             const tokenValue = String(presentation.tokenValue || "");
-            const tokenSuffix = tokenValue ? `Tokens: ${tokenValue}` : "";
+            const tokenLabel = String(presentation.tokenLabel || "Tokens: ");
+            const tokenSuffix = tokenValue ? `${tokenLabel}${tokenValue}` : "";
             if (tokenSuffix && leading.endsWith(tokenSuffix)) {
                 summary.append(leading.slice(0, -tokenSuffix.length));
-                appendGroupedTokenMetric(summary, tokenValue);
+                appendGroupedTokenMetric(summary, tokenValue, tokenLabel);
             } else {
                 summary.textContent = leading;
             }

@@ -1,6 +1,6 @@
 """Gemini HTTPS/OAuth MCP ingress and local UI API tests.
 
-Code version: v1.6.0-codex.0
+Code version: v1.6.1-codex.2
 """
 
 from __future__ import annotations
@@ -10,11 +10,14 @@ import hashlib
 from io import BytesIO
 import logging
 from pathlib import Path
+import threading
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from werkzeug.test import EnvironBuilder
 
+from app.core import tunnel_mcp
+from app.web import tunnel_routes
 from app.web.app import create_app
 
 
@@ -453,7 +456,9 @@ def test_first_approved_callback_is_pinned_for_the_process(gemini_client) -> Non
 
 def test_credential_rotation_revokes_tokens_and_resets_active_evidence(
     gemini_client,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", lambda _text: None)
     values = configure(gemini_client)
     tokens = oauth_tokens(gemini_client, values)
     authorization = {"Authorization": f"Bearer {tokens['access_token']}"}
@@ -472,9 +477,12 @@ def test_credential_rotation_revokes_tokens_and_resets_active_evidence(
         },
     )
     assert called.status_code == 200
-    assert gemini_client.get(
+    before_rotation = gemini_client.get(
         "/api/agent/tunnel/status?platform=gemini"
-    ).get_json()["activity_observed"] is True
+    ).get_json()
+    assert before_rotation["activity_observed"] is True
+    assert before_rotation["recent_usage"]["complete"] is False
+    assert before_rotation["recent_usage"]["calls"] == 1
 
     _verifier, pending_query = oauth_authorization_request(
         values,
@@ -506,6 +514,16 @@ def test_credential_rotation_revokes_tokens_and_resets_active_evidence(
     assert replacement_status["presentation"]["label"] == "Configured"
     assert replacement_status["activity_observed"] is False
     assert replacement_status["authorization"]["pending"] is False
+    assert replacement_status["call_count"] == 0
+    assert replacement_status["recent_calls"] == []
+    assert replacement_status["recent_usage"] == {
+        "calls": 0,
+        "estimated_tokens": 0,
+        "complete": True,
+        "scope": "tool_text_estimate",
+        "window": "retained_calls",
+        "excluded_pre_encoding_calls": 0,
+    }
 
     rejected = gemini_client.post(
         "/mcp/gemini",
@@ -514,6 +532,313 @@ def test_credential_rotation_revokes_tokens_and_resets_active_evidence(
         json={"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}},
     )
     assert rejected.status_code == 401
+
+    monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", len)
+    replacement_values = {
+        kind: gemini_client.post(
+            "/api/agent/tunnel/gemini/copy-value", json={"value": kind}
+        ).get_json()["value"]
+        for kind in ("mcp_url", "client_id", "client_secret")
+    }
+    replacement_tokens = oauth_tokens(gemini_client, replacement_values)
+    fresh_call = gemini_client.post(
+        "/mcp/gemini",
+        base_url=PUBLIC_ORIGIN,
+        headers={"Authorization": f"Bearer {replacement_tokens['access_token']}"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {"name": "list_files", "arguments": {"project": "missing"}},
+        },
+    )
+    assert fresh_call.status_code == 200
+    current = gemini_client.get(
+        "/api/agent/tunnel/status?platform=gemini"
+    ).get_json()
+    assert current["call_count"] == 1
+    assert current["recent_usage"]["calls"] == 1
+    assert current["recent_usage"]["complete"] is True
+    assert current["recent_usage"]["estimated_tokens"] > 0
+    assert len(current["recent_calls"]) == 1
+
+
+def test_gemini_active_status_survives_other_provider_history_eviction(
+    gemini_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", len)
+    values = configure(gemini_client)
+    tokens = oauth_tokens(gemini_client, values)
+    call = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "list_files", "arguments": {"project": "missing"}},
+    }
+    assert gemini_client.post(
+        "/mcp/gemini",
+        base_url=PUBLIC_ORIGIN,
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        json=call,
+    ).status_code == 200
+
+    service = gemini_client.application.extensions["tunnel_mcp_service"]
+    for _ in range(tunnel_mcp.TUNNEL_ACTIVITY_LIMIT):
+        status_code, _response = service.handle(call, {}, provider="chatgpt")
+        assert status_code == 200
+
+    status = gemini_client.get(
+        "/api/agent/tunnel/status?platform=gemini"
+    ).get_json()
+    assert status["recent_calls"] == []
+    assert status["recent_usage"]["calls"] == 0
+    assert status["recent_usage"]["estimated_tokens"] == 0
+    assert status["call_count"] == 1
+    assert status["activity_observed"] is True
+    assert status["presentation"]["label"] == "Active"
+
+
+def test_rotation_does_not_count_a_prior_in_flight_call(
+    gemini_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", len)
+    configure(gemini_client)
+    service = gemini_client.application.extensions["tunnel_mcp_service"]
+    entered = threading.Event()
+    release = threading.Event()
+    result: list[tuple[int, object]] = []
+    run_tool = service._run_tool
+
+    def delayed_tool(_tool, _arguments):
+        entered.set()
+        assert release.wait(5)
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "_run_tool", delayed_tool)
+    call = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "current_project", "arguments": {}},
+    }
+    worker = threading.Thread(
+        target=lambda: result.append(service.handle(call, {}, provider="gemini"))
+    )
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert gemini_client.post(
+            "/api/agent/tunnel/gemini/config", json={"public_origin": ""}
+        ).status_code == 200
+        rotated = gemini_client.post(
+            "/api/agent/tunnel/gemini/config",
+            json={"public_origin": PUBLIC_ORIGIN},
+        ).get_json()
+        assert rotated["active_calls"] == []
+        assert rotated["call_count"] == 0
+        assert rotated["activity_observed"] is False
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert result[0][0] == 200
+
+    status = gemini_client.get(
+        "/api/agent/tunnel/status?platform=gemini"
+    ).get_json()
+    assert status["call_count"] == 0
+    assert status["active_calls"] == []
+    assert status["recent_calls"] == []
+    assert status["recent_usage"]["calls"] == 0
+    assert status["recent_usage"]["estimated_tokens"] == 0
+    assert status["activity_observed"] is False
+
+    monkeypatch.setattr(service, "_run_tool", run_tool)
+    status_code, _response = service.handle(call, {}, provider="gemini")
+    assert status_code == 200
+    refreshed = gemini_client.get(
+        "/api/agent/tunnel/status?platform=gemini"
+    ).get_json()
+    assert refreshed["call_count"] == 1
+    assert refreshed["recent_usage"]["calls"] == 1
+    assert refreshed["recent_usage"]["complete"] is True
+    assert refreshed["activity_observed"] is True
+
+
+def test_rotation_after_authentication_rejects_tool_before_admission(
+    gemini_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = configure(gemini_client)
+    tokens = oauth_tokens(gemini_client, values)
+    entered = threading.Event()
+    release = threading.Event()
+    outcome: dict[str, object] = {}
+    errors: list[Exception] = []
+    read_body = tunnel_routes._read_bounded_request_body
+
+    def paused_read_body(max_bytes: int) -> bytes:
+        entered.set()
+        assert release.wait(10)
+        return read_body(max_bytes)
+
+    monkeypatch.setattr(tunnel_routes, "_read_bounded_request_body", paused_read_body)
+
+    def old_request() -> None:
+        try:
+            with gemini_client.application.test_client() as client:
+                response = client.post(
+                    "/mcp/gemini",
+                    base_url=PUBLIC_ORIGIN,
+                    headers={"Authorization": f"Bearer {tokens['access_token']}"},
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 9,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "list_files",
+                            "arguments": {"project": "missing"},
+                        },
+                    },
+                )
+                outcome["status"] = response.status_code
+                outcome["body"] = response.get_json()
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=old_request)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert gemini_client.post(
+            "/api/agent/tunnel/gemini/config",
+            json={"public_origin": ""},
+        ).status_code == 200
+        assert gemini_client.post(
+            "/api/agent/tunnel/gemini/config",
+            json={"public_origin": PUBLIC_ORIGIN},
+        ).status_code == 200
+    finally:
+        release.set()
+        worker.join(10)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert outcome["status"] == 401
+    assert outcome["body"]["error"]["message"] == "Unauthorized."
+    status = gemini_client.get(
+        "/api/agent/tunnel/status?platform=gemini"
+    ).get_json()
+    assert status["call_count"] == 0
+    assert status["active_calls"] == []
+    assert status["recent_calls"] == []
+    assert status["activity_observed"] is False
+
+
+def test_batch_rotation_preserves_completed_result_and_refuses_remaining_items(
+    gemini_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = configure(gemini_client)
+    tokens = oauth_tokens(gemini_client, values)
+    gateway = gemini_client.application.extensions["gemini_tunnel_gateway"]
+    service = gemini_client.application.extensions["tunnel_mcp_service"]
+    executed: list[str] = []
+
+    def rotate_during_first(tool, _arguments):
+        executed.append(tool.name)
+        gateway.replace("")
+        gateway.replace(PUBLIC_ORIGIN)
+        return {"ok": True, "marker": "completed-on-old-generation"}
+
+    monkeypatch.setattr(service, "_run_tool", rotate_during_first)
+
+    def call(request_id: int) -> dict[str, object]:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": {"name": "current_project", "arguments": {}},
+        }
+
+    response = gemini_client.post(
+        "/mcp/gemini",
+        base_url=PUBLIC_ORIGIN,
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        json=[
+            call(1),
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            call(2),
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            call(3),
+        ],
+    )
+    # Once a result exists, HTTP 200 retains it while per-item RPC errors identify
+    # revoked calls. A notification has no response, and no later item executes.
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    payload = response.get_json()
+    assert [item["id"] for item in payload] == [1, 2, 3]
+    assert payload[0]["result"]["structuredContent"] == {
+        "ok": True,
+        "marker": "completed-on-old-generation",
+    }
+    assert [item["error"] for item in payload[1:]] == [
+        {"code": -32001, "message": "Unauthorized."},
+        {"code": -32001, "message": "Unauthorized."},
+    ]
+    assert executed == ["current_project"]
+    status = gemini_client.get(
+        "/api/agent/tunnel/status?platform=gemini"
+    ).get_json()
+    assert status["call_count"] == 0
+    assert status["recent_calls"] == []
+
+
+def test_batch_rotation_before_any_response_keeps_bearer_challenge(
+    gemini_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = configure(gemini_client)
+    tokens = oauth_tokens(gemini_client, values)
+    gateway = gemini_client.application.extensions["gemini_tunnel_gateway"]
+    service = gemini_client.application.extensions["tunnel_mcp_service"]
+    executed: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_run_tool",
+        lambda tool, _arguments: executed.append(tool.name),
+    )
+    read_body = tunnel_routes._read_bounded_request_body
+
+    def rotate_after_authentication(max_bytes: int) -> bytes:
+        gateway.replace("")
+        gateway.replace(PUBLIC_ORIGIN)
+        return read_body(max_bytes)
+
+    monkeypatch.setattr(
+        tunnel_routes, "_read_bounded_request_body", rotate_after_authentication
+    )
+    response = gemini_client.post(
+        "/mcp/gemini",
+        base_url=PUBLIC_ORIGIN,
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        json=[
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "tools/call",
+                "params": {"name": "current_project", "arguments": {}},
+            }
+            for request_id in (1, 2)
+        ],
+    )
+    assert response.status_code == 401
+    assert response.get_json()["error"]["message"] == "Unauthorized."
+    assert "Bearer" in response.headers["WWW-Authenticate"]
+    assert executed == []
 
 
 def _streaming_environ(

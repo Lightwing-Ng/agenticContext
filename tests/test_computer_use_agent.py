@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.83.2-codex.0
+Code version: v3.84.0-codex.0
 """
 
 from __future__ import annotations
@@ -8320,6 +8320,13 @@ def test_action_loop_does_not_spend_the_turn_budget_on_one_format_retry(
     assert len(token_updates) == 3
     assert token_updates == sorted(token_updates)
     assert len(set(token_updates)) == 3
+    token_methods = {
+        str(change["agentic_token_method"])
+        for change in updates
+        if "agentic_token_count" in change
+    }
+    assert len(token_methods) == 1
+    assert token_methods <= {"o200k_base", "utf8_quarter_estimate"}
     assert {
         "conversation_url": "https://chatgpt.com/c/example",
         "conversation_bound": True,
@@ -16056,6 +16063,7 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
         "actual_model",
         "agentic_token_count",
         "agentic_transcript_tokens",
+        "agentic_token_method",
         "action_checkpoint",
         "bodycheck_passed",
         "browser",
@@ -16260,6 +16268,7 @@ def test_snapshot_defaults_are_safe_and_idle() -> None:
     assert snapshot["run_revision"] == 0
     assert snapshot["agentic_token_count"] == 0
     assert snapshot["agentic_transcript_tokens"] == 0
+    assert snapshot["agentic_token_method"] == ""
 
 
 def test_openai_equivalent_token_counter_accumulates_input_and_output() -> None:
@@ -16271,28 +16280,69 @@ def test_openai_equivalent_token_counter_accumulates_input_and_output() -> None:
     counter = OpenAIEquivalentTokenCounter(
         total_tokens=1_000,
         transcript_tokens=200,
+        token_method="utf8_quarter_estimate",
     )
+    def estimate(value: str) -> int:
+        return (len(value.encode("utf-8")) + 3) // 4
 
     counter.include_context(context)
-    first_input_tokens = (
-        200
-        + _openai_agentic_token_count(context)
-        + _openai_agentic_token_count(first_outbound)
-    )
-    first_output_tokens = _openai_agentic_token_count(first_inbound)
+    first_input_tokens = 200 + estimate(context) + estimate(first_outbound)
+    first_output_tokens = estimate(first_inbound)
     assert counter.record_exchange(first_outbound, first_inbound) == (
         1_000 + first_input_tokens + first_output_tokens
     )
 
     first_total = counter.total_tokens
     first_transcript = counter.transcript_tokens
-    second_input_tokens = first_transcript + _openai_agentic_token_count(
-        second_outbound
-    )
-    second_output_tokens = _openai_agentic_token_count(second_inbound)
+    second_input_tokens = first_transcript + estimate(second_outbound)
+    second_output_tokens = estimate(second_inbound)
     assert counter.record_exchange(second_outbound, second_inbound) == (
         first_total + second_input_tokens + second_output_tokens
     )
+
+
+def test_agent_token_counter_pins_method_after_background_recovery(monkeypatch) -> None:
+    from app.core import token_usage
+
+    class Encoding:
+        def encode(self, _text: str, *, disallowed_special: tuple) -> list[int]:
+            assert disallowed_special == ()
+            return [1, 2, 3]
+
+    available = [None]
+    monkeypatch.setattr(
+        token_usage,
+        "openai_agentic_token_encoding",
+        lambda: available[0],
+    )
+    fallback = OpenAIEquivalentTokenCounter()
+    exact = OpenAIEquivalentTokenCounter()
+    assert fallback.token_method == ""
+    assert exact.token_method == ""
+    fallback.include_context("用")
+    assert fallback.token_method == "utf8_quarter_estimate"
+
+    # The other task warms the tokenizer before its first count and stays exact.
+    available[0] = Encoding()
+    assert fallback.record_exchange("汉字", "ok") == 4
+    assert fallback.token_method == "utf8_quarter_estimate"
+    assert exact.record_exchange("汉字", "ok") == 6
+    assert exact.token_method == "o200k_base"
+
+    available[0] = None
+    assert exact.record_exchange("more", "text") == 18
+    assert exact.token_method == "o200k_base"
+    lost_exact = OpenAIEquivalentTokenCounter(
+        total_tokens=100,
+        transcript_tokens=20,
+        token_method="o200k_base",
+    )
+    assert lost_exact.token_method == "o200k_base"
+    assert lost_exact.record_exchange("again", "ok") == 100 + 20 + 2 + 1
+    assert lost_exact.token_method == "mixed_estimate"
+    legacy = OpenAIEquivalentTokenCounter(total_tokens=50, transcript_tokens=10)
+    assert legacy.token_method == "mixed_estimate"
+    assert legacy.record_exchange("again", "ok") == 50 + 10 + 2 + 1
 
 
 def test_openai_token_metric_degrades_when_encoding_cache_is_unavailable(monkeypatch) -> None:
@@ -16331,6 +16381,7 @@ def test_openai_token_metric_degrades_when_encoding_cache_is_unavailable(monkeyp
         return encoding
 
     token_usage._cached_openai_agentic_token_encoding.cache_clear()
+    monkeypatch.setattr(token_usage, "_READY_ENCODING", None)
     monkeypatch.setattr(token_usage, "_ENCODING_RETRY_AFTER", 0.0)
     monkeypatch.setattr(token_usage, "_ENCODING_RETRY_STARTED", False)
     monkeypatch.setattr(token_usage, "time", SimpleNamespace(monotonic=lambda: clock[0]))
@@ -16339,7 +16390,12 @@ def test_openai_token_metric_degrades_when_encoding_cache_is_unavailable(monkeyp
     try:
         assert _openai_agentic_token_count("Continue the Agent task.") > 0
         assert _openai_agentic_token_count("Do not retry the failed download.") > 0
+        assert calls == 0
+        assert len(pending) == 1
+        assert token_usage.cached_openai_agentic_token_encoding() is None
+        pending.pop(0)()
         assert calls == 1
+        assert _openai_agentic_token_count("Hi") == 1
         assert pending == []
         clock[0] += token_usage.TOKEN_ENCODING_RETRY_SECONDS
         monkeypatch.setattr(token_usage.tiktoken, "get_encoding", recovering_encoding)
@@ -16358,11 +16414,86 @@ def test_openai_token_metric_degrades_when_encoding_cache_is_unavailable(monkeyp
         assert len(pending) == 1
         pending.pop(0)()
         assert _openai_agentic_token_count("Hi") == 3
+        assert token_usage.cached_openai_agentic_token_encoding() is encoding
         assert _openai_agentic_token_encoding() is encoding
         assert calls == 3
         assert pending == []
     finally:
         token_usage._cached_openai_agentic_token_encoding.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("saved_method", "expected_method"),
+    [
+        ("utf8_quarter_estimate", "utf8_quarter_estimate"),
+        (None, "mixed_estimate"),
+    ],
+)
+def test_agent_token_method_survives_restart_and_continuation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    saved_method: str | None,
+    expected_method: str,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    payload: dict[str, object] = {
+        "running": True,
+        "phase": "running",
+        "workspace_path": str(workspace),
+        "workspace_device": workspace.stat().st_dev,
+        "workspace_inode": workspace.stat().st_ino,
+        "agentic_token_count": 100,
+        "agentic_transcript_tokens": 20,
+    }
+    if saved_method is not None:
+        payload["agentic_token_method"] = saved_method
+    snapshot_path = runtime_root / "last-run.json"
+    snapshot_path.write_text(json.dumps(payload), encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    def runner(**kwargs: object) -> tuple[str, str, int, bool]:
+        observed["count"] = kwargs["initial_agentic_token_count"]
+        observed["transcript"] = kwargs["initial_agentic_transcript_tokens"]
+        observed["method"] = kwargs["initial_agentic_token_method"]
+        update = kwargs["update"]
+        assert callable(update)
+        update(
+            agentic_token_count=125,
+            agentic_transcript_tokens=25,
+            agentic_token_method=expected_method,
+        )
+        return "Completed", "https://chatgpt.com/c/test", 1, True
+
+    monkeypatch.setattr(computer_use_agent, "run_chatgpt_web_computer_use", runner)
+    service = ComputerUseAgentService(
+        ComputerUseSettingsStore(tmp_path / "settings.json"),
+        runner=runner,
+        runtime_root=runtime_root,
+    )
+    assert service.snapshot()["phase"] == "interrupted"
+    assert service.snapshot()["agentic_token_method"] == expected_method
+    service.start(
+        "Continue the task",
+        str(workspace),
+        CrawlConfig(),
+        session_mode="recent",
+        conversation_url="https://chatgpt.com/c/test",
+        continuation=True,
+    )
+    deadline = time.monotonic() + 2
+    while service.snapshot()["running"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert observed == {"count": 100, "transcript": 20, "method": expected_method}
+    assert service.snapshot()["phase"] == "finished"
+    assert service.snapshot()["agentic_token_method"] == expected_method
+    assert json.loads(snapshot_path.read_text(encoding="utf-8"))[
+        "agentic_token_method"
+    ] == expected_method
 
 
 def test_read_only_controller_rejects_mutating_actions(tmp_path: Path) -> None:

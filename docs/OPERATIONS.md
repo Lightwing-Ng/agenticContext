@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.36.3-codex.0`
+Documentation version: `v1.36.5-codex.0`
 
 ## Launch
 
@@ -503,12 +503,18 @@ Runtime behavior:
   request/response tool text, not ChatGPT billing, account balance, remaining quota, or a model
   task total. The accessible label and tooltip identify that estimate explicitly, and incomplete
   data is shown as unavailable instead of becoming a fabricated zero. The `o200k_base` tokenizer
-  caches only successful loads. After a failure, the next tool-text estimate following a 30-second
-  cooldown starts a background retry; Agent token metrics follow the same retry behavior.
-  Corporate TLS interception can still prevent the initial tiktoken cache download. In that case,
-  provision the verified encoding file through the host's trusted network path and restart the
-  Python service. A reconnect alone does not reload code or clear the 20
-  retained calls whose earlier token counts are unknown.
+  caches only successful loads. First loads and retries run in the background, with a 30-second
+  cooldown after failure. Browser Agent tasks pin the available `o200k_base` tokenizer or the
+  UTF-8 byte-count estimate at their first counting boundary. The chosen method survives
+  interrupted-task continuation; older counts with unknown provenance are marked estimates.
+  Corporate TLS interception can still prevent the initial tiktoken cache download. Provision
+  the verified encoding file through the host's trusted network path if the retry cannot reach
+  it. Once a background load succeeds, earlier unknown calls remain visible in the 20-call
+  history, but `recent_usage` moves to a clearly labeled tokenizer-recovery window. That
+  window remains unavailable until a complete new call finishes; it never treats earlier
+  unknown counts as zero. The shared tokenizer cache can be adopted without waiting for a
+  second Tunnel cooldown. Restart the Python service to load changed application code;
+  reconnecting the Tunnel alone cannot do that.
 - Arbitrary shell commands, arbitrary executables, and general background processes are
   intentionally not exposed; only the approved verification commands run through `run_check` or
   the bounded durable-check lifecycle.

@@ -1,4 +1,4 @@
-<!-- Code version: v3.78.3-codex.0 -->
+<!-- Code version: v3.78.4-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -245,11 +245,12 @@
                                     <p class="browser-session-status-message agent-tunnel-status-message" data-agent-tunnel-problem aria-live="polite"{% if not tunnel_problem %} hidden{% endif %}>{{ tunnel_problem }}</p>
                                     {% set recent_usage = tunnel_status.recent_usage | default({}) %}
                                     {% set recent_tokens_available = (recent_usage.complete | default(false)) and (recent_usage.estimated_tokens is integer) and recent_usage.estimated_tokens >= 0 %}
+                                    {% set recent_usage_description = 'Estimated tool-text tokens since tokenizer recovery; earlier calls excluded' if recent_usage.window | default('') == 'since_tokenizer_ready' else 'Estimated recent tool-text tokens' %}
                                     <div class="agent-tunnel-usage" data-agent-tunnel-usage aria-label="Tunnel usage">
                                         <dl class="agent-tunnel-usage-list">
                                             <div class="agent-tunnel-usage-row">
                                                 <dt class="agent-tunnel-usage-label">Tokens:</dt>
-                                                <dd class="agent-tunnel-usage-value agent-tunnel-recent-tokens" tabindex="0" aria-label="Estimated recent tool-text tokens" title="Estimated recent tool-text tokens">
+                                                <dd class="agent-tunnel-usage-value agent-tunnel-recent-tokens" tabindex="0" aria-label="{{ recent_usage_description }}" title="{{ recent_usage_description }}">
                                                     <span class="investment-holdings-allocation-badge" data-tunnel-recent-token-badge{% if not recent_tokens_available %} hidden{% endif %}><span class="investment-holdings-allocation-badge-value"><span class="workspace-metric-value-major" data-tunnel-recent-token-digits>{% if recent_tokens_available %}{% for glyph in '{:,}'.format(recent_usage.estimated_tokens) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}{% endif %}</span></span></span>
                                                     <span data-tunnel-recent-token-unavailable{% if recent_tokens_available %} hidden{% endif %}>Unavailable</span>
                                                 </dd>
@@ -766,6 +767,6 @@ Task:
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.67.1-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.67.2-codex.0') }}"></script>
 </body>
 </html>

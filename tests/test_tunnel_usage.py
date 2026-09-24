@@ -1,9 +1,10 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.5.2-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.5.3-codex.0."""
 
 from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -71,6 +72,57 @@ def test_running_call_keeps_identity_and_counts_visible_text_once(service, monke
     assert observed_text[1] == result["content"][0]["text"]
     assert recent["estimated_tokens"] == sum(map(len, observed_text))
     assert recent["response_tokens"] == len(observed_text[1])
+
+
+def test_ingress_admission_guards_call_identity_only(service, monkeypatch):
+    monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", lambda _text: 1)
+    events = []
+
+    @contextmanager
+    def admitted():
+        events.append("admitted")
+        yield
+        events.append("released")
+
+    @contextmanager
+    def denied():
+        events.append("denied")
+        raise PermissionError("stale authority")
+        yield
+
+    def run(*_args):
+        events.append("tool")
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "_run_tool", run)
+    body = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": "current_project", "arguments": {}},
+    }
+
+    status, response = service.handle(
+        body, {}, provider="gemini", admission=admitted
+    )
+    assert status == 200
+    assert response["result"]["isError"] is False
+    assert events == ["admitted", "released", "tool"]
+    before = service.activity_snapshot("gemini")
+    assert before["call_count"] == 1
+    assert len(before["recent_calls"]) == 1
+
+    with pytest.raises(PermissionError, match="stale authority"):
+        service.handle(body, {}, provider="gemini", admission=denied)
+    assert events == ["admitted", "released", "tool", "denied"]
+    assert service.activity_snapshot("gemini") == before
+
+    # The existing ChatGPT path remains callable without an ingress hook.
+    status, response = service.handle(body, {}, provider="chatgpt")
+    assert status == 200
+    assert response["result"]["isError"] is False
+    assert events[-1] == "tool"
+    assert service.activity_snapshot("chatgpt")["call_count"] == 1
 
 
 @pytest.mark.parametrize("failure", [ValueError("failed"), KeyError("unexpected")])
@@ -190,6 +242,7 @@ def test_active_status_requires_current_project_success_after_current_ready(
 def test_estimator_unavailable_errors_and_special_text(monkeypatch):
     monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING_STARTED", True)
     monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING", None)
+    monkeypatch.setattr(tunnel_mcp, "cached_openai_agentic_token_encoding", lambda: None)
     assert tunnel_mcp._estimated_tool_tokens("hello") is None
 
     class Encoding:
@@ -232,6 +285,7 @@ def test_tool_encoding_recovers_after_background_load_fails(monkeypatch):
     monkeypatch.setattr(tunnel_mcp, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     monkeypatch.setattr(tunnel_mcp, "threading", SimpleNamespace(Thread=Worker))
     monkeypatch.setattr(tunnel_mcp, "openai_agentic_token_encoding", load)
+    monkeypatch.setattr(tunnel_mcp, "cached_openai_agentic_token_encoding", lambda: None)
 
     assert tunnel_mcp._estimated_tool_tokens("hello") is None
     assert tunnel_mcp._estimated_tool_tokens("hello") is None
@@ -246,6 +300,127 @@ def test_tool_encoding_recovers_after_background_load_fails(monkeypatch):
     assert tunnel_mcp._estimated_tool_tokens("hello") == 3
     assert len(attempts) == 2
     assert pending == []
+
+
+def test_shared_cached_encoding_skips_tunnel_retry_cooldown(monkeypatch):
+    class Encoding:
+        def encode(self, _text, *, disallowed_special):
+            assert disallowed_special == ()
+            return [1, 2, 3]
+
+    monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING", None)
+    monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING_STARTED", False)
+    monkeypatch.setattr(
+        tunnel_mcp, "_TOOL_ENCODING_RETRY_AFTER", time.monotonic() + 1_000
+    )
+    monkeypatch.setattr(tunnel_mcp, "cached_openai_agentic_token_encoding", Encoding)
+    assert tunnel_mcp._estimated_tool_tokens("hello") == 3
+    assert tunnel_mcp._TOOL_ENCODING_RETRY_AFTER == 0.0
+    assert tunnel_mcp._TOOL_ENCODING_STARTED is False
+
+    # An older loader may finish after the shared cache became ready.
+    monkeypatch.setattr(tunnel_mcp, "openai_agentic_token_encoding", lambda: None)
+    tunnel_mcp._load_tool_encoding()
+    assert tunnel_mcp._estimated_tool_tokens("hello") == 3
+
+
+def test_early_unknown_call_does_not_poison_badge_after_background_recovery(
+    tmp_path, monkeypatch,
+):
+    from app.web.app import create_app
+
+    pending = []
+
+    class Worker:
+        def __init__(self, *, target, daemon):
+            assert daemon is True
+            self.target = target
+
+        def start(self):
+            pending.append(self.target)
+
+    class Encoding:
+        def encode(self, text, *, disallowed_special):
+            assert disallowed_special == ()
+            return [1] * len(text)
+
+    monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING", None)
+    monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING_STARTED", False)
+    monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING_RETRY_AFTER", 0.0)
+    monkeypatch.setattr(
+        tunnel_mcp,
+        "threading",
+        SimpleNamespace(Lock=threading.Lock, RLock=threading.RLock, Thread=Worker),
+    )
+    monkeypatch.setattr(tunnel_mcp, "openai_agentic_token_encoding", Encoding)
+    monkeypatch.setattr(tunnel_mcp, "cached_openai_agentic_token_encoding", lambda: None)
+    app = create_app(
+        tmp_path / "store",
+        computer_use_settings_path=tmp_path / "settings.json",
+        computer_use_runtime_root=tmp_path / "runtime",
+        agent_external_operations_enabled=False,
+    )
+    mcp = app.extensions["tunnel_mcp_service"]
+    monkeypatch.setattr(mcp, "_run_tool", lambda *_args: {"ok": True, "text": "answer"})
+    assert len(pending) == 1
+
+    mcp._call_tool(
+        {"name": "list_files", "arguments": {"project": "main"}},
+        "chatgpt",
+    )
+    with app.test_client() as client:
+        before = client.get("/api/agent/tunnel/status?platform=chatgpt").get_json()
+        assert before["recent_usage"]["complete"] is False
+        assert before["recent_usage"]["estimated_tokens"] is None
+        assert len(before["recent_calls"]) == 1
+        assert "data-tunnel-recent-token-badge hidden" in client.get(
+            "/agent/tunnel/chatgpt"
+        ).get_data(as_text=True)
+
+        pending.pop()()
+        assert not pending
+        waiting = client.get("/api/agent/tunnel/status?platform=chatgpt").get_json()
+        assert waiting["recent_usage"]["complete"] is False
+        assert waiting["recent_usage"]["estimated_tokens"] is None
+        assert waiting["recent_usage"]["calls"] == 0
+        assert waiting["recent_usage"]["window"] == "since_tokenizer_ready"
+        assert waiting["recent_usage"]["excluded_pre_encoding_calls"] == 1
+        assert waiting["recent_calls"][0]["estimated_tokens"] is None
+        assert "_usage_pre_encoding" not in waiting["recent_calls"][0]
+        provenance = mcp.activity_snapshot("chatgpt", include_usage_provenance=True)
+        assert provenance["recent_calls"][0]["_usage_pre_encoding"] is True
+
+        mcp._call_tool(
+            {"name": "list_files", "arguments": {"project": "main"}},
+            "chatgpt",
+        )
+        status = client.get("/api/agent/tunnel/status?platform=chatgpt").get_json()
+        recent = status["recent_calls"]
+        usage = status["recent_usage"]
+        assert len(recent) == 2
+        assert recent[1]["estimated_tokens"] is None
+        assert recent[0]["estimated_tokens"] > 0
+        assert usage["calls"] == 1
+        assert usage["excluded_pre_encoding_calls"] == 1
+        assert usage["window"] == "since_tokenizer_ready"
+        assert usage["complete"] is True
+        assert usage["estimated_tokens"] == recent[0]["estimated_tokens"]
+        html = client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
+        assert "data-tunnel-recent-token-badge hidden" not in html
+        assert "data-tunnel-recent-token-unavailable hidden" in html
+        assert "Estimated tool-text tokens since tokenizer recovery" in html
+
+        # An unknown count after recovery invalidates the whole new window.
+        monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", lambda _text: None)
+        mcp._call_tool(
+            {"name": "list_files", "arguments": {"project": "main"}},
+            "chatgpt",
+        )
+        incomplete = client.get("/api/agent/tunnel/status?platform=chatgpt").get_json()
+        assert incomplete["recent_usage"]["calls"] == 2
+        assert incomplete["recent_usage"]["excluded_pre_encoding_calls"] == 1
+        assert incomplete["recent_usage"]["complete"] is False
+        assert incomplete["recent_usage"]["estimated_tokens"] is None
 
 
 def test_status_endpoint_and_initial_html_share_the_call_record(tmp_path, monkeypatch):
@@ -373,6 +548,36 @@ def test_summary_polling_states_and_long_integer_geometry(
         payload["recent_usage"] = {"estimated_tokens": 12_345_678, "complete": True}
         refresh()
         expect(recent_tokens.locator("[data-tunnel-recent-token-digits]")).to_have_text("12,345,678")
+        payload["recent_calls"] = [
+            usage_record(1, 12_345_678, "completed"),
+            usage_record(2, None, "completed"),
+        ]
+        payload["recent_usage"] = {
+            "calls": 1,
+            "estimated_tokens": 12_345_678,
+            "complete": True,
+            "window": "since_tokenizer_ready",
+            "excluded_pre_encoding_calls": 1,
+        }
+        refresh()
+        description = "Estimated tool-text tokens since tokenizer recovery; earlier calls excluded"
+        expect(recent_tokens).to_have_attribute("aria-label", description)
+        expect(recent_tokens).to_have_attribute("title", description)
+        payload["recent_calls"] = [usage_record(1, 12_345_678, "completed")]
+        payload["recent_usage"] = {
+            "calls": 1,
+            "estimated_tokens": 12_345_678,
+            "complete": True,
+            "window": "retained_calls",
+            "excluded_pre_encoding_calls": 0,
+        }
+        refresh()
+        expect(recent_tokens).to_have_attribute(
+            "aria-label", "Estimated recent tool-text tokens"
+        )
+        expect(recent_tokens).to_have_attribute(
+            "title", "Estimated recent tool-text tokens"
+        )
         for unknown in [None, -1, 9_007_199_254_740_992, "12", True]:
             payload["recent_usage"] = {"estimated_tokens": unknown, "complete": False}
             refresh()
@@ -496,6 +701,7 @@ def test_live_reference_badge_contract(disposable_browser, sidebar_server_url, w
     context = disposable_browser.new_context(viewport={"width": width, "height": 900})
     reference_page = context.new_page()
     local_page = context.new_page()
+    live_page = context.new_page()
     styles = """e => {
         const s = getComputedStyle(e);
         const value = getComputedStyle(e.querySelector('.workspace-metric-value-major'));
@@ -516,20 +722,42 @@ def test_live_reference_badge_contract(disposable_browser, sidebar_server_url, w
         reference_style = reference_badge.evaluate(styles)
         local_page.route("**/api/agent/tunnel/status?platform=chatgpt", lambda route: route.fulfill(json={
             "presentation": {"tone": "ready", "label": "Ready", "hint": ""},
-            "active_calls": [usage_record(1, 12_345_678)], "recent_calls": [],
+            "active_calls": [usage_record(1, 12_345_678)],
+            "recent_calls": [usage_record(2, 12_345_678, "completed")],
+            "recent_usage": {
+                "calls": 1,
+                "estimated_tokens": 12_345_678,
+                "complete": True,
+                "scope": "tool_text_estimate",
+                "window": "retained_calls",
+                "excluded_pre_encoding_calls": 0,
+            },
         }))
         local_page.goto(f"{sidebar_server_url}/agent/tunnel/chatgpt")
         local_badge = local_page.locator(
-            '[data-agent-tunnel-usage] [data-tunnel-token-badge]'
+            '[data-agent-tunnel-usage] [data-tunnel-recent-token-badge]'
         )
         expect(local_badge).to_have_js_property("hidden", False)
         local_style = local_badge.evaluate(styles)
         assert local_style == reference_style
-        live_status = context.request.get("http://127.0.0.1:8666/api/agent/tunnel/status")
+        status_url = "http://127.0.0.1:8666/api/agent/tunnel/status?platform=chatgpt"
+        live_status = context.request.get(status_url)
         assert live_status.ok
-        print({
-            "width": width, "reference_style": reference_style,
-            "live_runtime_has_call_usage": "active_calls" in live_status.json(),
-        })
+        live_page.goto("http://127.0.0.1:8666/agent/tunnel/chatgpt")
+        usage = live_status.json()["recent_usage"]
+        value = usage.get("estimated_tokens")
+        live_digits = live_page.locator("[data-tunnel-recent-token-digits]")
+        if (
+            usage.get("complete") is True
+            and type(value) is int
+            and 0 <= value <= 9_007_199_254_740_991
+        ):
+            expect(live_page.locator("[data-tunnel-recent-token-badge]")).to_be_visible()
+            expect(live_digits).to_have_text(f"{value:,}")
+        else:
+            expect(
+                live_page.locator("[data-tunnel-recent-token-unavailable]")
+            ).to_be_visible()
+        print({"width": width, "reference_style": reference_style, "live_usage": usage})
     finally:
         context.close()

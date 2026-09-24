@@ -10,7 +10,7 @@ Jury, and Cache route modules borrow those few Agent capabilities without import
 this module's internals or duplicating the gate.
 """
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.1.1-codex.0
 
 from __future__ import annotations
 
@@ -639,6 +639,7 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 "turn_count": 0,
                 "agentic_token_count": 0,
                 "agentic_transcript_tokens": 0,
+                "agentic_token_method": "",
                 "workspace_path": "",
                 "running": foreign_run_active,
             }

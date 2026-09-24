@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.76.15-codex.0`
+Documentation version: `v3.77.0-codex.0`
 
 ## Purpose
 
@@ -167,14 +167,21 @@ users bypass closing animation.
 While a task is running, the lifecycle summary also shows elapsed time,
 completed controller turns, and cumulative `Tokens: 12,345`. The integer uses
 `en-US` grouping and the holdings metric major span, without an `equiv.` label.
-The count uses OpenAI's `o200k_base` encoding and sums the locally observable
-text input and output for every provider exchange. Each later input includes the
-known task transcript accumulated before that request. A successfully attached
-Markdown context is included in that known transcript. Provider-owned hidden
-instructions, hidden reasoning, media processing, and internal truncation are
-unavailable through the Web UI and therefore excluded from the integer.
-Interrupted-task continuation persists only the aggregate and transcript token
-integers, never provider or project text.
+The count sums the locally observable text input and output for every provider
+exchange. Each later input includes the known task transcript accumulated before
+that request. A successfully attached Markdown context is included in that known
+transcript. Provider-owned hidden instructions, hidden reasoning, media processing,
+and internal truncation are unavailable through the Web UI and excluded from the
+integer. Tokenizer loading, including the first cache miss, runs in the background.
+The browser-run setup starts that load before the provider conversation opens. At the
+first text count, a ready `o200k_base` encoding pins the exact method. Otherwise the
+task pins an estimate of one token per four UTF-8 bytes for its entire lifetime,
+even if the tokenizer loads after the first exchange. The UI labels fallback counts
+`Estimated tokens`. A restarted continuation retains its method. Legacy records with
+no method and nonzero counts are labeled `mixed_estimate`, as is an exact continuation
+when its tokenizer becomes unavailable; those continuations use the local estimate
+for subsequent text and also display `Estimated tokens`. The checkpoint persists the
+aggregate, transcript count, and method only, never provider or project text.
 
 Validation on 5 Sep 2026: focused Style/Web checks passed 225 tests and 539
 subtests; `tests/test_agent_activity_e2e.py` passed four desktop/narrow motion

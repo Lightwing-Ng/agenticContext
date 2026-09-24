@@ -1,6 +1,6 @@
 """Shared MCP endpoint reached through authenticated provider transports.
 
-Code version: v2.11.1-codex.0
+Code version: v2.11.2-codex.1
 
 ChatGPT and Gemini call the same tool catalog through separate authenticated
 transports. Every project-scoped
@@ -39,6 +39,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,7 +70,10 @@ from app.core.tunnel_projects import (
     resolve_current_project,
     selected_projects,
 )
-from app.core.token_usage import openai_agentic_token_encoding
+from app.core.token_usage import (
+    cached_openai_agentic_token_encoding,
+    openai_agentic_token_encoding,
+)
 from app.core.version import APP_VERSION
 from app.core.workspace import (
     MAX_FILE_READ_CHARS,
@@ -141,19 +145,30 @@ def _load_tool_encoding() -> None:
     except Exception:
         encoding = None
     with _TOOL_ENCODING_LOCK:
-        _TOOL_ENCODING = encoding
+        # A shared background load may succeed after this probe returned None.
+        if encoding is not None or _TOOL_ENCODING is None:
+            _TOOL_ENCODING = encoding
         _TOOL_ENCODING_STARTED = False
         _TOOL_ENCODING_RETRY_AFTER = (
-            time.monotonic() + _TOOL_ENCODING_RETRY_SECONDS if encoding is None else 0.0
+            time.monotonic() + _TOOL_ENCODING_RETRY_SECONDS
+            if _TOOL_ENCODING is None else 0.0
         )
 
 
 def _estimated_tool_tokens(text: str) -> int | None:
     """Estimate observable tool text only; unavailable is never a byte heuristic."""
-    global _TOOL_ENCODING_STARTED
+    global _TOOL_ENCODING, _TOOL_ENCODING_STARTED, _TOOL_ENCODING_RETRY_AFTER
     if len(text) > MAX_WRITE_CHARACTERS:
         return None
     with _TOOL_ENCODING_LOCK:
+        if _TOOL_ENCODING is None:
+            try:
+                cached = cached_openai_agentic_token_encoding()
+            except Exception:
+                cached = None
+            if cached is not None:
+                _TOOL_ENCODING = cached
+                _TOOL_ENCODING_RETRY_AFTER = 0.0
         if (
             _TOOL_ENCODING is None
             and not _TOOL_ENCODING_STARTED
@@ -508,6 +523,10 @@ SERVER_INSTRUCTIONS = (
     "review with show_changes, and finish with review_changes. Report the actual tool "
     "results. Leave unrelated user changes intact."
 )
+
+
+class McpAdmissionRevoked(Exception):
+    """An authenticated provider grant was revoked before tool admission."""
 
 
 class McpRequestError(Exception):
@@ -1087,14 +1106,22 @@ class TunnelMcpService:
         """Make any in-flight controller command stop at its next check."""
         self._stopping = True
 
-    def activity_snapshot(self, provider: str | None = None) -> dict[str, Any]:
+    def activity_snapshot(
+        self,
+        provider: str | None = None,
+        *,
+        include_usage_provenance: bool = False,
+    ) -> dict[str, Any]:
         """Return recent tool calls, optionally scoped to one trusted ingress.
 
-        ``recent_usage`` sums the estimated tool text of the retained recent calls. It
-        is a tool-text estimate, not model billing: MCP exposes neither conversation
-        boundaries nor the model's own token usage.
+        ``recent_usage`` sums the retained calls whose tokenizer was ready when
+        their request was counted. Earlier unknown calls remain in ``recent_calls``,
+        but are excluded after recovery; a window with no new calls stays
+        unavailable. MCP exposes neither conversation boundaries nor model billing.
         """
         normalized_provider = str(provider or "").strip().lower()
+        with _TOOL_ENCODING_LOCK:
+            encoding_ready = _TOOL_ENCODING is not None
         with self._activity_lock:
             active_calls = list(self._active_calls.values())
             recent_calls = list(self._activity)
@@ -1109,8 +1136,22 @@ class TunnelMcpService:
                     for record in recent_calls
                     if record.get("provider") == normalized_provider
                 ]
-            estimates = [record.get("estimated_tokens") for record in recent_calls]
-            known = [value for value in estimates if isinstance(value, int)]
+            excluded = sum(
+                bool(record.get("_usage_pre_encoding"))
+                for record in recent_calls
+            ) if encoding_ready else 0
+            usage_calls = [
+                record for record in recent_calls
+                if not (encoding_ready and record.get("_usage_pre_encoding"))
+            ]
+            estimates = [record.get("estimated_tokens") for record in usage_calls]
+            known = [value for value in estimates if type(value) is int and value >= 0]
+            complete = len(known) == len(estimates) and (bool(estimates) or not excluded)
+            public_active = deepcopy(active_calls)
+            public_recent = deepcopy(recent_calls)
+            if not include_usage_provenance:
+                for record in (*public_active, *public_recent):
+                    record.pop("_usage_pre_encoding", None)
             last_success = {
                 project: dict(record)
                 for (record_provider, project), record in self._last_success.items()
@@ -1122,13 +1163,15 @@ class TunnelMcpService:
                     if normalized_provider
                     else self._call_count
                 ),
-                "active_calls": deepcopy(active_calls),
-                "recent_calls": deepcopy(recent_calls),
+                "active_calls": public_active,
+                "recent_calls": public_recent,
                 "recent_usage": {
-                    "calls": len(recent_calls),
-                    "estimated_tokens": sum(known) if known else (0 if not estimates else None),
-                    "complete": len(known) == len(estimates),
+                    "calls": len(usage_calls),
+                    "estimated_tokens": sum(known) if complete else None,
+                    "complete": complete,
                     "scope": "tool_text_estimate",
+                    "window": "since_tokenizer_ready" if excluded else "retained_calls",
+                    "excluded_pre_encoding_calls": excluded,
                 },
                 "last_success_by_project": last_success,
                 # MCP exposes neither conversation task boundaries nor model billing.
@@ -1145,6 +1188,7 @@ class TunnelMcpService:
         headers: Mapping[str, str],
         *,
         provider: str = "chatgpt",
+        admission: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> tuple[int, Any | None]:
         """Return an HTTP status and JSON body (``None`` means no body)."""
         normalized_provider = str(provider or "").strip().lower()
@@ -1160,19 +1204,30 @@ class TunnelMcpService:
                     -32600,
                     f"JSON-RPC batches are limited to {MAX_MCP_BATCH_ITEMS} items.",
                 )
-            responses = [
-                response
-                for item in body
-                if (
-                    response := self._handle_one(
-                        item,
-                        header_version,
-                        normalized_provider,
+            responses = []
+            for index, item in enumerate(body):
+                try:
+                    response = self._handle_one(
+                        item, header_version, normalized_provider, admission
                     )
-                ) is not None
-            ]
+                except McpAdmissionRevoked:
+                    if not responses:
+                        # Preserve the HTTP bearer challenge when nothing has answered.
+                        raise
+                    # Earlier calls already executed. Return their results and identify
+                    # every refused request without dispatching any later batch item.
+                    for pending in body[index:]:
+                        if isinstance(pending, dict) and "id" in pending:
+                            responses.append(
+                                _rpc_error(pending["id"], -32001, "Unauthorized.")
+                            )
+                    break
+                if response is not None:
+                    responses.append(response)
             return (200, responses) if responses else (202, None)
-        response = self._handle_one(body, header_version, normalized_provider)
+        response = self._handle_one(
+            body, header_version, normalized_provider, admission
+        )
         if response is None:
             return 202, None
         return 200, response
@@ -1182,6 +1237,7 @@ class TunnelMcpService:
         request: Any,
         header_version: str,
         provider: str,
+        admission: Callable[[], AbstractContextManager[None]] | None,
     ) -> dict[str, Any] | None:
         if not isinstance(request, dict) or not isinstance(request.get("method"), str):
             return _rpc_error(
@@ -1201,7 +1257,7 @@ class TunnelMcpService:
             str(meta.get(MCP_PROTOCOL_VERSION_META) or ""),
         }
         try:
-            result = self._dispatch(method, params, stateless, provider)
+            result = self._dispatch(method, params, stateless, provider, admission)
         except McpRequestError as exc:
             return _rpc_error(request_id, exc.code, exc.message)
         if stateless:
@@ -1215,6 +1271,7 @@ class TunnelMcpService:
         params: dict[str, Any],
         stateless: bool,
         provider: str,
+        admission: Callable[[], AbstractContextManager[None]] | None,
     ) -> dict[str, Any]:
         if method == "initialize":
             requested = str(params.get("protocolVersion") or "")
@@ -1247,7 +1304,7 @@ class TunnelMcpService:
                 result.update({"ttlMs": 0, "cacheScope": "private"})
             return result
         if method == "tools/call":
-            return self._call_tool(params, provider)
+            return self._call_tool(params, provider, admission=admission)
         if method == "resources/list":
             return {"resources": []}
         if method == "resources/templates/list":
@@ -1258,7 +1315,13 @@ class TunnelMcpService:
 
     # Tools --------------------------------------------------------------
 
-    def _call_tool(self, params: dict[str, Any], provider: str) -> dict[str, Any]:
+    def _call_tool(
+        self,
+        params: dict[str, Any],
+        provider: str,
+        *,
+        admission: Callable[[], AbstractContextManager[None]] | None = None,
+    ) -> dict[str, Any]:
         name = str(params.get("name") or "").strip()
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
@@ -1280,7 +1343,13 @@ class TunnelMcpService:
             raise McpRequestError(-32602, f"Unknown tool: {name or '[missing]'}")
 
         started = time.monotonic()
-        call_id = self._start_activity(tool, arguments, provider=provider)
+        if admission is None:
+            call_id = self._start_activity(tool, arguments, provider=provider)
+        else:
+            # Recheck ingress authority atomically with assigning a call id.
+            # The provider lock is released before any workspace operation.
+            with admission():
+                call_id = self._start_activity(tool, arguments, provider=provider)
         response_text = None
         ok = False
         observation: dict[str, Any] = {}
@@ -2295,6 +2364,8 @@ class TunnelMcpService:
         project = str(arguments.get("project") or "")
         if project and isinstance(arguments.get("project"), str):
             target = f"{project[:64]}: {target}" if target else project[:64]
+        with _TOOL_ENCODING_LOCK:
+            encoding_was_ready = _TOOL_ENCODING is not None
         request_tokens = _estimated_tool_tokens(
             json.dumps({"name": tool.name, "arguments": arguments}, ensure_ascii=False)
         )
@@ -2314,6 +2385,7 @@ class TunnelMcpService:
                 "response_tokens": None,
                 "estimated_tokens": request_tokens,
                 "usage_partial": True,
+                "_usage_pre_encoding": request_tokens is None and not encoding_was_ready,
             }
             return call_id
 
