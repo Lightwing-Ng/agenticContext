@@ -1,4 +1,4 @@
-/* Code version: v3.67.3-claude.0 */
+/* Code version: v3.68.2-claude.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -125,6 +125,9 @@
         tunnelKickoffCopyLabel: document.querySelector("[data-agent-tunnel-copy-label]"),
         tunnelKickoffActionStep: document.querySelector("[data-agent-tunnel-kickoff-action-step]"),
         tunnelKickoffNextStep: document.querySelector("[data-agent-tunnel-kickoff-next-step]"),
+        geminiKickoffPrompt: document.querySelector("[data-agent-gemini-kickoff]"),
+        claudePublicOrigin: document.querySelector("[data-agent-claude-public-origin]"),
+        claudeCommandTemplates: Array.from(document.querySelectorAll("[data-agent-claude-command-template]")),
         geminiPublicOrigin: document.querySelector("[data-agent-gemini-public-origin]"),
         geminiConfigStatus: document.querySelector("[data-agent-gemini-config-status]"),
         geminiSaveOrigin: document.querySelector("[data-agent-gemini-save-origin]"),
@@ -1345,9 +1348,8 @@
         }
     }
 
-    function resizeTunnelKickoffPrompt() {
-        const prompt = elements.tunnelKickoffPrompt;
-        if (!(prompt instanceof HTMLTextAreaElement) || prompt.hidden) return;
+    function resizeTunnelKickoffPrompt(prompt = elements.tunnelKickoffPrompt) {
+        if (!(prompt instanceof HTMLTextAreaElement) || !prompt.getClientRects().length) return;
         prompt.style.height = "auto";
         prompt.style.overflowY = "hidden";
         const style = getComputedStyle(prompt);
@@ -1355,6 +1357,29 @@
             + Number.parseFloat(style.borderBottomWidth);
         const naturalHeight = Math.ceil(prompt.scrollHeight + borderHeight);
         prompt.style.height = `${naturalHeight}px`;
+    }
+
+    function claudeCommandHost() {
+        const raw = String(elements.claudePublicOrigin?.value || "").trim();
+        try {
+            const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
+            if (url.protocol === "https:" && url.hostname.includes(".")) return url.hostname.toLowerCase();
+        } catch {
+            // Keep the example host until the typed address parses.
+        }
+        return "claude.example.com";
+    }
+
+    function syncClaudeCommandHost() {
+        const host = claudeCommandHost();
+        elements.claudeCommandTemplates.forEach((command) => {
+            const value = String(command.dataset.agentClaudeCommandTemplate || "")
+                .replaceAll("__CLAUDE_HOST__", host);
+            if (command.value === value) return;
+            command.value = value;
+            // The copy action listens for input to reset its label and height.
+            command.dispatchEvent(new Event("input"));
+        });
     }
 
     function tunnelKickoffGate() {
@@ -2313,12 +2338,19 @@
         });
         if (elements.tunnelProjectField) elements.tunnelProjectField.hidden = browserMode;
         if (elements.browserTask) elements.browserTask.hidden = !browserMode;
+        const providerPanel = elements.tunnelOnboardings.find(
+            (panel) => panel.dataset.agentTunnelProviderPanel === platform,
+        );
         elements.tunnelOnboardings.forEach((panel) => {
-            panel.hidden = browserMode
-                || panel.dataset.agentTunnelProviderPanel !== platform;
+            panel.hidden = browserMode || panel !== providerPanel;
         });
+        if (!browserMode && platform !== "chatgpt") {
+            providerPanel?.querySelectorAll("textarea.agent-tunnel-kickoff-editor").forEach((prompt) => {
+                resizeTunnelKickoffPrompt(prompt);
+            });
+        }
         if (elements.tunnelUnsupported) {
-            elements.tunnelUnsupported.hidden = browserMode || tunnelSupported;
+            elements.tunnelUnsupported.hidden = browserMode || tunnelSupported || Boolean(providerPanel);
         }
         if (elements.tunnelUnsupportedHeading) {
             elements.tunnelUnsupportedHeading.textContent = `${selectedPlatformLabel()} Tunnel is not available`;
@@ -5582,13 +5614,24 @@
         const promptId = copyButton.getAttribute("aria-controls");
         const promptControl = document.getElementById(promptId || "");
         const label = copyButton.querySelector("[data-agent-tunnel-copy-label]");
-        const nextStep = document.querySelector("[data-agent-tunnel-kickoff-next-step]");
+        const idleLabel = label?.textContent.trim() || "Copy this prompt";
+        const idleAriaLabel = copyButton.getAttribute("aria-label") || idleLabel;
+        const copySubject = copyButton.dataset.agentTunnelCopySubject || "prompt";
+        const nextStep = copyButton.closest("[data-agent-tunnel-provider-panel]")
+            ?.querySelector("[data-agent-tunnel-kickoff-next-step]");
         promptControl?.addEventListener("input", () => {
-            resetTunnelKickoffCopyState();
-            resizeTunnelKickoffPrompt();
+            if (promptControl === elements.tunnelKickoffPrompt) {
+                resetTunnelKickoffCopyState();
+            } else {
+                if (label) label.textContent = idleLabel;
+                copyButton.setAttribute("aria-label", idleAriaLabel);
+            }
+            resizeTunnelKickoffPrompt(promptControl);
         });
-        window.addEventListener("resize", resizeTunnelKickoffPrompt, {passive: true});
-        resizeTunnelKickoffPrompt();
+        window.addEventListener("resize", () => {
+            resizeTunnelKickoffPrompt(promptControl);
+        }, {passive: true});
+        resizeTunnelKickoffPrompt(promptControl);
         copyButton.addEventListener("click", async () => {
             if (copyButton.disabled) return;
             const prompt = promptControl instanceof HTMLTextAreaElement
@@ -5600,15 +5643,22 @@
             try {
                 const copied = await copyResponseText(prompt);
                 if (label) label.textContent = copied ? "Copied" : "Copy failed";
-                copyButton.setAttribute("aria-label", copied ? "Prompt copied" : "Unable to copy this prompt; select the text to copy it manually");
+                copyButton.setAttribute(
+                    "aria-label",
+                    copied
+                        ? copySubject.charAt(0).toUpperCase() + copySubject.slice(1) + " copied"
+                        : "Unable to copy this " + copySubject + "; select the text to copy it manually",
+                );
                 if (copied && nextStep) nextStep.textContent = "Open ChatGPT and ask your question.";
             } finally {
                 copyButton.dataset.agentTunnelCopying = "false";
+                copyButton.disabled = false;
                 syncTunnelKickoffUi();
                 if (!copyButton.disabled) copyButton.focus({preventScroll: true});
             }
         });
     });
+    elements.claudePublicOrigin?.addEventListener("input", syncClaudeCommandHost);
     elements.geminiPublicOrigin?.addEventListener("input", () => {
         geminiConfigDirty = true;
         geminiConfigNotice = "";

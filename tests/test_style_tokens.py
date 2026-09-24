@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.6-codex.0
+Code version: v1.86.7-codex.0
 """
 
 import hashlib
@@ -2383,7 +2383,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.150.5-codex.0 */",
+        "/* Code version: v2.150.6-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2785,10 +2785,21 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert chatgpt_guide_rects
     assert all(re.search(r'\brx="10"', rect) for rect in chatgpt_guide_rects)
     assert agent_template.count('class="agent-tunnel-substep-number"') == 0
+    assert gemini_guide_template.count('agent-tunnel-guide-number') == 0
+    assert gemini_guide_template.count('agent-tunnel-substep-number') == 0
     assert agent_template.count('agent-tunnel-bullet-list') == 2
     assert guide_template.count('agent-tunnel-bullet-list') == 1
     assert chatgpt_guide_template.count('agent-tunnel-bullet-list') == 1
-    assert agent_template.count('class="process-list agent-tunnel-onboarding-steps" role="list"') == 2
+    assert gemini_guide_template.count('agent-tunnel-bullet-list') == 6
+    assert gemini_guide_template.count('<li class="agent-tunnel-guide-item">') == 4
+    assert len(re.findall(r'<li class="agent-tunnel-numbered-item(?: [^"]+)?">', gemini_guide_template)) == 6
+    assert '<textarea id="agent_gemini_tunnel_kickoff" class="agent-tunnel-kickoff-editor"' in gemini_guide_template
+    assert all(
+        'agent-tunnel-guide-description' not in summary
+        for summary in re.findall(r'<summary>.*?</summary>', gemini_guide_template, re.DOTALL)
+    )
+    assert gemini_guide_template.count('<p class="agent-tunnel-guide-description">') == 4
+    assert agent_template.count('class="process-list agent-tunnel-onboarding-steps" role="list"') == 3
     assert agent_template.count('class="process-list-heading agent-tunnel-step-heading"') == 4
     assert gemini_guide_template.count('class="process-list-heading agent-tunnel-step-heading"') == 4
     assert agent_template.count("data-process-continues") == 3
@@ -2821,6 +2832,33 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
         agent_template + guide_template + chatgpt_guide_template
     )
     assert "data-agent-tunnel-toggle" not in agent_template
+
+    claude_guide_template = (
+        STYLE_PATH.parents[1] / "templates/_agent_tunnel_claude_guides.html"
+    ).read_text(encoding="utf-8")
+    assert '{% include "_agent_tunnel_claude_guides.html" %}' in agent_template
+    assert claude_guide_template.count('class="process-list-heading agent-tunnel-step-heading"') == 4
+    assert claude_guide_template.count("data-process-continues") == 3
+    assert claude_guide_template.count('<details class="ui-collapse agent-tunnel-guide"') == 6
+    assert claude_guide_template.count('<svg class="agent-tunnel-guide-svg"') == 6
+    assert claude_guide_template.count('<g transform="scale(0.8888889)">') == 6
+    assert claude_guide_template.count('viewBox="0 0 640 ') == 6
+    assert claude_guide_template.count("data-agent-tunnel-guide-scroll") == 0
+    assert all(
+        "agent-tunnel-responsive-guide-list" in guide_list
+        for guide_list in re.findall(r'<ul class="agent-tunnel-guide-list[^"]*"', claude_guide_template)
+    )
+    lowered_claude_guide_template = claude_guide_template.lower()
+    for forbidden_markup in ("<img", "<image", "<foreignobject", "data:image", "<circle"):
+        assert forbidden_markup not in lowered_claude_guide_template
+    claude_guide_rects = re.findall(r"<rect\b[^>]*>", claude_guide_template)
+    assert claude_guide_rects
+    assert all(re.search(r'\brx="10"', rect) for rect in claude_guide_rects)
+    # Command boxes reuse the kickoff editor material and the shared copy action.
+    assert claude_guide_template.count('data-agent-tunnel-copy-subject="command"') == 1
+    assert claude_guide_template.count("data-agent-tunnel-copy-action") == 2
+    assert 'href="https://claude.ai/customize/connectors"' in claude_guide_template
+    assert "https://claude.ai/api/mcp/auth_callback" in claude_guide_template
 
 
 def test_shared_collapse_consumers_keep_native_keyboard_semantics() -> None:

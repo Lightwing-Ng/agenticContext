@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.52.3-codex.0
+Code version: v1.52.4-codex.0
 """
 
 from __future__ import annotations
@@ -3315,14 +3315,16 @@ def test_cache_shared_settings_link_opens_the_expected_category(
     settings_category: str,
 ) -> None:
     """Verify each Cache settings link leaves the source form and opens its category."""
-    page, context = _open_page(
-        disposable_browser,
-        f"{sidebar_server_url}/cache/{source_key}",
-        1_280,
-        900,
-        touch=False,
+    context = disposable_browser.new_context(
+        viewport={"width": 1_280, "height": 900},
+        has_touch=False,
+        is_mobile=False,
+        reduced_motion="reduce",
     )
+    page = context.new_page()
+    page.route("**/api/browser-session**", lambda route: route.fulfill(json={"can_download": False}))
     try:
+        page.goto(f"{sidebar_server_url}/cache/{source_key}", wait_until="domcontentloaded")
         settings_link = page.locator(".cache-settings-link")
         expect(settings_link).to_have_count(1)
         expect(settings_link).to_have_class(re.compile(r"\bsecondary-button\b"))
@@ -3332,7 +3334,20 @@ def test_cache_shared_settings_link_opens_the_expected_category(
         )
         expect(page.locator("#start_form section")).to_have_count(0)
         assert settings_link.evaluate("element => !element.closest('form')")
-        for width, height in ((1_018, 1_294), (390, 844)):
+        if source_key == "x":
+            expect(settings_link).to_have_text("Open media settings")
+            for field_name in (
+                "max_media_items",
+                "max_scroll_rounds",
+                "scroll_pause_seconds",
+                "stale_round_limit",
+            ):
+                expect(page.locator(f'#start_form [name="{field_name}"]')).to_have_count(0)
+        viewports = ((1_018, 1_294), (867, 1_297), (390, 844)) if source_key == "x" else (
+            (1_018, 1_294),
+            (390, 844),
+        )
+        for width, height in viewports:
             page.set_viewport_size({"width": width, "height": height})
             alignment = settings_link.evaluate("""element => {
                 const parent = element.parentElement;
@@ -3345,6 +3360,8 @@ def test_cache_shared_settings_link_opens_the_expected_category(
                 };
             }""")
             assert abs(alignment["right"] - alignment["contentRight"]) <= 1
+            if source_key == "x":
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
         if source_key == "gemini":
             for field_name in (
                 "gemini_max_conversations",
@@ -3364,6 +3381,14 @@ def test_cache_shared_settings_link_opens_the_expected_category(
         expect(page.locator(f'[data-settings-category="{settings_category}"]')).to_have_class(
             re.compile(r"\bis-active\b")
         )
+        if source_key == "x":
+            for field_name in (
+                "max_media_items",
+                "max_scroll_rounds",
+                "scroll_pause_seconds",
+                "stale_round_limit",
+            ):
+                expect(page.locator(f'#settings-downloads [name="{field_name}"]')).to_be_visible()
         if source_key == "gemini":
             for field_name in (
                 "gemini_max_conversations",

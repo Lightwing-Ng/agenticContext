@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.27.11-codex.0
+# Code version: v1.27.12-codex.0
 
 from __future__ import annotations
 
@@ -443,7 +443,8 @@ def probe_browser_session(
                 )
             )
     except Exception as exc:  # pragma: no cover - depends on local browser state
-        result["message"] = f"{type(exc).__name__}: {exc}"
+        result["logged_in"] = None
+        result["message"] = f"Could not verify the account: {type(exc).__name__}: {exc}"
         return result
 
     if not result["message"]:

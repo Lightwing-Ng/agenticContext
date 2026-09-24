@@ -316,6 +316,65 @@ def test_agent_tunnel_route_reflects_tunnel_status(agent_client) -> None:
     assert "data-agent-tunnel-mode-field" in browser_body
 
 @pytest.mark.parametrize(
+    ("operating_system", "expected_commands", "absent_commands"),
+    [
+        (
+            "macos",
+            ("brew install cloudflared", "cat &gt; ~/.cloudflared/agenticcontext-claude.yml"),
+            ("winget install", "Set-Content"),
+        ),
+        (
+            "windows",
+            (
+                "winget install --id Cloudflare.cloudflared",
+                "Set-Content -Encoding ascii -Path &#34;$HOME\\.cloudflared\\agenticcontext-claude.yml&#34;",
+            ),
+            ("brew install", "&lt;&lt;&#39;YAML&#39;", "&amp;#34;"),
+        ),
+    ],
+)
+def test_agent_tunnel_claude_route_renders_host_specific_onboarding(
+    credentials_path: Path,
+    operating_system: str,
+    expected_commands: tuple[str, ...],
+    absent_commands: tuple[str, ...],
+) -> None:
+    with patch(
+        "app.core.computer_use_agent.load_computer_use_settings",
+        return_value=ComputerUseSettings(
+            browser="edge",
+            platform="claude",
+            operating_system=operating_system,
+        ),
+    ):
+        application = create_app()
+    application.config.update(TESTING=True)
+    with application.test_client() as client:
+        body = client.get("/agent/tunnel/claude").get_data(as_text=True)
+
+    panel_start = body.index('data-agent-tunnel-provider-panel="claude"')
+    panel_tag = body[body.rindex("<article", 0, panel_start):body.index(">", panel_start)]
+    assert " hidden" not in panel_tag
+    unsupported_start = body.index("data-agent-tunnel-unsupported")
+    assert body[unsupported_start:body.index(">", unsupported_start)].endswith(" hidden")
+    panel = body[panel_start:body.index("</article>", panel_start)]
+    assert "Connect Claude to this local project" in body
+    assert "https://claude.example.com/mcp/claude" in panel
+    assert panel.count("data-agent-claude-command-template=") == 4
+    # Each template keeps the placeholder that the page swaps for the typed hostname.
+    assert all(
+        "__CLAUDE_HOST__" in template or "cloudflared" in template
+        for template in re.findall(r'data-agent-claude-command-template="([^"]*)"', panel)
+    )
+    assert "route dns agenticcontext-claude claude.example.com" in panel
+    assert "httpHostHeader: claude.example.com" in panel
+    for command in expected_commands:
+        assert command in panel
+    for command in absent_commands:
+        assert command not in panel
+
+
+@pytest.mark.parametrize(
     "payload",
     [{}, [], False, None, {"tunnel_id": None}, {"tunnel_id": "tunnel_" + "b" * 32, "api_key": []}],
 )

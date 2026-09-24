@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.33.3-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.33.4-codex.0."""
 
 import re
 from copy import deepcopy
@@ -1951,6 +1951,275 @@ def test_tunnel_onboarding_keeps_title_above_content_scroll_and_step_hierarchy(
             )
             assert len(wrapped_title_lines) >= 2
             assert max(wrapped_title_lines) - min(wrapped_title_lines) <= 1
+        assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(867, 1297), (390, 844), (1280, 420)],
+)
+def test_gemini_onboarding_matches_chatgpt_hierarchy_and_scroll_ownership(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+    height,
+):
+    """Keep Gemini's bullet hierarchy and bounded page flow at varied viewports."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": height})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route(
+        "**/api/agent/tunnel/status?platform=gemini",
+        lambda route: route.fulfill(json=_gemini_tunnel_status()),
+    )
+    try:
+        page.emulate_media(reduced_motion="reduce")
+        page.goto(sidebar_server_url + "/agent/tunnel/gemini")
+        if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
+            page.locator("#sidebar_toggle").click()
+
+        onboarding = page.locator('[data-agent-tunnel-provider-panel="gemini"]')
+        expect(onboarding).to_be_visible()
+        expect(onboarding.locator(".agent-tunnel-onboarding-step")).to_have_count(4)
+        guides = onboarding.locator("details[data-agent-tunnel-guide]")
+        expect(guides).to_have_count(4)
+        guides.evaluate_all("nodes => nodes.forEach((node) => { node.open = true; })")
+        page.wait_for_timeout(250)
+
+        last_action = onboarding.locator(".agent-tunnel-onboarding-step:last-child a.agent-tunnel-step-action")
+        expect(last_action).to_have_text("Ask in Gemini")
+        last_action.focus()
+        geometry = page.evaluate(
+            """() => {
+                const workspace = document.querySelector('#agent_workspace');
+                const grid = document.querySelector('#agent_workspace_content');
+                const card = document.querySelector('[data-agent-tunnel-provider-panel="gemini"]');
+                const title = workspace.querySelector('.agent-summary-card');
+                const steps = [...card.querySelectorAll('.agent-tunnel-onboarding-step')];
+                const lists = [...card.querySelectorAll(
+                    '.agent-tunnel-guide-list, .agent-tunnel-numbered-list'
+                )];
+                const reference = document.querySelector(
+                    '[data-agent-tunnel-provider-panel="chatgpt"] .agent-tunnel-bullet-list'
+                );
+                const referenceStyle = getComputedStyle(reference);
+                const guideBody = card.querySelector('.agent-tunnel-guide-body');
+                const action = steps.at(-1).querySelector('a.agent-tunnel-step-action');
+                const scrollable = (element) => {
+                    const style = getComputedStyle(element);
+                    return ['auto', 'scroll'].includes(style.overflowY)
+                        && element.scrollHeight > element.clientHeight + 1;
+                };
+                const scrollOwners = [workspace, ...workspace.querySelectorAll('*')]
+                    .filter((element) => element.checkVisibility() && scrollable(element))
+                    .map((element) => element.id || element.tagName);
+                grid.scrollTop = 0;
+                const titleTopBefore = title.getBoundingClientRect().top;
+                grid.scrollTo({top: grid.scrollHeight, behavior: 'instant'});
+                const titleTopAfter = title.getBoundingClientRect().top;
+                const gridRect = grid.getBoundingClientRect();
+                const cardRect = card.getBoundingClientRect();
+                const actionRect = action.getBoundingClientRect();
+                const guideRect = guideBody.getBoundingClientRect();
+                return {
+                    processRole: card.querySelector('.agent-tunnel-onboarding-steps').getAttribute('role'),
+                    markerTexts: steps.map((step) =>
+                        step.querySelector('.agent-tunnel-step-number').textContent.trim()
+                    ),
+                    processContinues: steps.map((step) => step.hasAttribute('data-process-continues')),
+                    headingTags: steps.map((step) => step.querySelector('.agent-tunnel-step-heading').tagName),
+                    listCount: lists.length,
+                    listsPerStep: steps.map((step) =>
+                        step.querySelectorAll('.agent-tunnel-bullet-list').length
+                    ),
+                    bulletStyles: lists.map((list) => {
+                        const style = getComputedStyle(list);
+                        return {
+                            tag: list.tagName,
+                            sharedClass: list.classList.contains('agent-tunnel-bullet-list'),
+                            type: style.listStyleType,
+                            position: style.listStylePosition,
+                            padding: style.paddingInlineStart,
+                            matchesChatGPT: style.listStyleType === referenceStyle.listStyleType
+                                && style.listStylePosition === referenceStyle.listStylePosition
+                                && style.paddingInlineStart === referenceStyle.paddingInlineStart,
+                            itemDisplays: [...list.children].map((item) => getComputedStyle(item).display),
+                        };
+                    }),
+                    numberedCount: card.querySelectorAll(
+                        '.agent-tunnel-guide-number, .agent-tunnel-substep-number'
+                    ).length,
+                    workspaceOverflow: getComputedStyle(workspace).overflowY,
+                    gridOverflow: getComputedStyle(grid).overflowY,
+                    cardOverflow: getComputedStyle(card).overflowY,
+                    scrollOwners,
+                    gridScrollRange: grid.scrollHeight - grid.clientHeight,
+                    gridWithinWorkspace: gridRect.bottom <= workspace.getBoundingClientRect().bottom + 1,
+                    titleAboveGrid: title.getBoundingClientRect().bottom <= gridRect.top,
+                    titleTopDelta: Math.abs(titleTopAfter - titleTopBefore),
+                    actionInsideGrid: actionRect.top >= gridRect.top - 1
+                        && actionRect.bottom <= gridRect.bottom + 1
+                        && actionRect.left >= gridRect.left - 1
+                        && actionRect.right <= gridRect.right + 1,
+                    actionBounds: [actionRect.top, actionRect.bottom, actionRect.left, actionRect.right],
+                    gridBounds: [gridRect.top, gridRect.bottom, gridRect.left, gridRect.right],
+                    guideWithinCard: guideRect.left >= cardRect.left
+                        && guideRect.right <= cardRect.right,
+                    guideOverflowX: getComputedStyle(guideBody).overflowX,
+                    guideHorizontallyScrollable: guideBody.scrollWidth > guideBody.clientWidth + 1,
+                    documentOverflowX: document.documentElement.scrollWidth - innerWidth,
+                };
+            }"""
+        )
+
+        assert geometry["processRole"] == "list"
+        assert geometry["markerTexts"] == ["1", "2", "3", "4"]
+        assert geometry["processContinues"] == [True, True, True, False]
+        assert geometry["headingTags"] == ["H3"] * 4
+        assert geometry["listCount"] >= 4
+        assert all(count >= 1 for count in geometry["listsPerStep"])
+        assert geometry["numberedCount"] == 0
+        assert all(
+            style["tag"] == "UL"
+            and style["sharedClass"]
+            and style["type"] == "disc"
+            and style["position"] == "outside"
+            and style["matchesChatGPT"]
+            and all(display == "list-item" for display in style["itemDisplays"])
+            for style in geometry["bulletStyles"]
+        )
+        assert geometry["workspaceOverflow"] == "visible"
+        assert geometry["gridOverflow"] == "auto"
+        assert geometry["cardOverflow"] == "visible"
+        assert geometry["scrollOwners"] == ["agent_workspace_content"]
+        assert geometry["gridScrollRange"] > 0
+        assert geometry["gridWithinWorkspace"] is True
+        assert geometry["titleAboveGrid"] is True
+        assert geometry["titleTopDelta"] <= 1
+        assert geometry["actionInsideGrid"] is True, {
+            key: geometry[key]
+            for key in ("actionBounds", "gridBounds", "gridScrollRange")
+        }
+        assert geometry["guideWithinCard"] is True
+        assert geometry["guideOverflowX"] == "auto"
+        if width == 390:
+            assert geometry["guideHorizontallyScrollable"] is True
+        assert geometry["documentOverflowX"] <= 0
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_gemini_kickoff_copies_the_edited_prompt(
+    disposable_browser,
+    sidebar_server_url,
+):
+    """Copy the current Gemini editor value without navigating to Gemini."""
+    edited_prompt = (
+        "Use @AgenticContext to inspect the selected project's current changes.\n"
+        "Task: verify the requested UI behavior."
+    )
+    context = disposable_browser.new_context(viewport={"width": 390, "height": 844})
+    context.add_init_script(
+        """Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: {writeText: async (value) => { window.__copiedGeminiPrompt = value; }}
+        });"""
+    )
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route(
+        "**/api/agent/tunnel/status?platform=gemini",
+        lambda route: route.fulfill(json=_gemini_tunnel_status()),
+    )
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/gemini")
+        onboarding = page.locator('[data-agent-tunnel-provider-panel="gemini"]')
+        editor = onboarding.locator("textarea[data-agent-gemini-kickoff]")
+        copy = onboarding.locator("[data-agent-gemini-copy-kickoff]")
+        expect(editor).to_be_visible()
+        editor.fill(edited_prompt)
+        copy.click()
+        expect(copy).to_contain_text("Copied")
+        expect(copy).to_be_enabled()
+        assert page.evaluate("window.__copiedGeminiPrompt") == edited_prompt
+        editor.fill(edited_prompt + " Verify narrow layout.")
+        expect(copy).to_contain_text("Copy this prompt")
+        assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_claude_onboarding_replaces_unsupported_card_and_templates_commands(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+):
+    """Switching to Claude shows its guide, and typed hostnames reach every copied command."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": 844})
+    context.add_init_script(
+        """Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: {writeText: async (value) => { window.__copiedClaudeText = value; }}
+        });"""
+    )
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route(
+        "**/api/agent/tunnel/status?platform=gemini",
+        lambda route: route.fulfill(json=_gemini_tunnel_status()),
+    )
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/gemini")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        page.get_by_role("button", name="Web service: Gemini", exact=True).click()
+        page.get_by_role("option", name="Claude", exact=True).click()
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+
+        panel = page.locator('[data-agent-tunnel-provider-panel="claude"]')
+        expect(page.locator("[data-agent-heading]")).to_have_text(
+            "Connect Claude to this local project"
+        )
+        expect(panel).to_be_visible()
+        expect(page.locator("[data-agent-tunnel-unsupported]")).to_be_hidden()
+        expect(page.locator('[data-agent-tunnel-provider-panel="gemini"]')).to_be_hidden()
+        expect(panel.locator(".process-list-heading")).to_have_count(4)
+
+        create = panel.locator("#agent_claude_command_create")
+        config = panel.locator("#agent_claude_command_config")
+        expect(create).to_have_value(re.compile(r"route dns agenticcontext-claude claude\.example\.com$"))
+        # Hidden-at-load editors are measured once the panel becomes visible.
+        assert config.evaluate("node => node.scrollHeight <= node.clientHeight + 2")
+
+        panel.locator("[data-agent-claude-public-origin]").fill("https://Agent.MyDomain.dev/")
+        expect(create).to_have_value(re.compile(r"route dns agenticcontext-claude agent\.mydomain\.dev$"))
+        expect(config).to_have_value(re.compile(r"httpHostHeader: agent\.mydomain\.dev"))
+        assert "example.com" not in config.input_value()
+
+        copy = panel.locator('button[aria-controls="agent_claude_command_create"]')
+        copy.click()
+        expect(copy).to_contain_text("Copied")
+        expect(copy).to_have_attribute("aria-label", "Command copied")
+        assert page.evaluate("window.__copiedClaudeText") == create.input_value()
+        panel.locator("[data-agent-claude-public-origin]").fill("claude.other.dev")
+        expect(copy).to_contain_text("Copy command")
+        expect(copy).to_have_attribute("aria-label", "Copy command")
+
+        kickoff_copy = panel.locator("[data-agent-claude-copy-kickoff]")
+        kickoff_copy.click()
+        expect(kickoff_copy).to_have_attribute("aria-label", "Prompt copied")
+        assert page.evaluate("window.__copiedClaudeText").startswith(
+            "Use the AgenticContext connector"
+        )
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []
     finally:
         context.close()

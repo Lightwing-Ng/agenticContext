@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.13.5-codex.0
+Code version: v1.13.6-codex.0
 """
 
 from __future__ import annotations
@@ -242,8 +242,27 @@ def test_browser_probe_preserves_playwright_exception_class_in_status_message(ma
     ):
         result = probe_browser_session("x", "edge", CrawlConfig())
 
+    assert result["logged_in"] is None
+    assert result["can_download"] is False
     assert result["message"] == (
-        "TargetClosedError: Target page, context or browser has been closed"
+        "Could not verify the account: TargetClosedError: "
+        "Target page, context or browser has been closed"
+    )
+
+
+def test_safari_housekeeping_failure_does_not_report_x_as_signed_out(macos_host) -> None:
+    with patch(
+        "app.core.browser_sessions._probe_safari_x_session",
+        side_effect=RuntimeError("Safari housekeeping failed for 1 window(s)."),
+    ):
+        result = probe_browser_session("x", "safari", CrawlConfig())
+
+    assert result["logged_in"] is None
+    assert result["can_download"] is False
+    assert result["account_name"] == ""
+    assert result["message"] == (
+        "Could not verify the account: RuntimeError: "
+        "Safari housekeeping failed for 1 window(s)."
     )
 
 
@@ -412,11 +431,12 @@ def test_gemini_browser_probe_fails_closed_when_the_current_region_is_unsupporte
     ) as probe:
         result = probe_browser_session("gemini", "edge", CrawlConfig())
 
-    assert result["logged_in"] is False
+    assert result["logged_in"] is None
     assert result["can_download"] is False
     assert result["account_name"] == ""
     assert result["message"] == (
-        "RuntimeError: Gemini Web is not available in the selected browser's current region."
+        "Could not verify the account: RuntimeError: "
+        "Gemini Web is not available in the selected browser's current region."
     )
     probe.assert_called_once()
 

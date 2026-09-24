@@ -1,20 +1,19 @@
-<!-- Code version: v1.3.0-codex.0 -->
+<!-- Code version: v1.4.0-codex.0 -->
 <li class="process-list-step agent-tunnel-onboarding-step" data-process-continues>
     <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">1</span>
     <div class="process-list-content agent-tunnel-step-copy agent-tunnel-setup-copy">
         <h3 class="process-list-heading agent-tunnel-step-heading">Configure the public HTTPS origin</h3>
-        <ol class="agent-tunnel-guide-list" aria-label="Gemini public origin setup">
+        <ul class="agent-tunnel-guide-list agent-tunnel-bullet-list" aria-label="Gemini public origin setup">
             <li class="agent-tunnel-guide-item">
-                <span class="agent-tunnel-guide-number" aria-hidden="true">➊</span>
                 <div class="agent-tunnel-guide-content">
                     <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-gemini-origin">
                         <summary>
                             <span class="agent-tunnel-guide-summary-copy">
                                 <span class="agent-tunnel-guide-title" id="agent_tunnel_gemini_guide_title_1">Expose one secure public origin.</span>
-                                <span class="agent-tunnel-guide-description">Route a public <strong>HTTPS</strong> origin to this AgenticContext instance.</span>
                             </span>
                         </summary>
                         <div class="ui-collapse-body agent-tunnel-guide-body" data-agent-tunnel-guide-scroll role="region" tabindex="0" aria-labelledby="agent_tunnel_gemini_guide_title_1">
+                            <p class="agent-tunnel-guide-description">Route a public <strong>HTTPS</strong> origin to this AgenticContext instance.</p>
                             <svg class="agent-tunnel-guide-svg" viewBox="0 0 720 360" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_gemini_guide_svg_title_1 agent_tunnel_gemini_guide_svg_desc_1">
                                 <title id="agent_tunnel_gemini_guide_svg_title_1">Public HTTPS route to AgenticContext</title>
                                 <desc id="agent_tunnel_gemini_guide_svg_desc_1">A public HTTPS origin routes Gemini requests to the local AgenticContext MCP service.</desc>
@@ -38,10 +37,9 @@
                     </details>
                 </div>
             </li>
-        </ol>
-        <ol class="agent-tunnel-numbered-list agent-tunnel-credential-fields" aria-label="Gemini public origin configuration">
+        </ul>
+        <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-credential-fields" aria-label="Gemini public origin configuration">
             <li class="agent-tunnel-numbered-item">
-                <span class="agent-tunnel-substep-number" aria-hidden="true">➋</span>
                 <div class="agent-tunnel-numbered-copy">
                     <div class="settings-text-input-field">
                         <label class="settings-text-input-label" for="gemini_tunnel_public_origin">Public HTTPS origin</label>
@@ -57,7 +55,7 @@
                     <p class="agent-tunnel-step-note" data-agent-gemini-config-status role="status" aria-live="polite" hidden></p>
                 </div>
             </li>
-        </ol>
+        </ul>
     </div>
 </li>
 
@@ -65,18 +63,17 @@
     <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">2</span>
     <div class="process-list-content agent-tunnel-step-copy">
         <h3 class="process-list-heading agent-tunnel-step-heading">Copy the Gemini connection values</h3>
-        <ol class="agent-tunnel-guide-list" aria-label="Gemini connection values">
+        <ul class="agent-tunnel-guide-list agent-tunnel-bullet-list" aria-label="Gemini connection values">
             <li class="agent-tunnel-guide-item">
-                <span class="agent-tunnel-guide-number" aria-hidden="true">➊</span>
                 <div class="agent-tunnel-guide-content">
                     <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-gemini-values">
                         <summary>
                             <span class="agent-tunnel-guide-summary-copy">
                                 <span class="agent-tunnel-guide-title" id="agent_tunnel_gemini_guide_title_2">Copy each value only when needed.</span>
-                                <span class="agent-tunnel-guide-description">The client secret is delivered directly to your clipboard and never rendered on this page.</span>
                             </span>
                         </summary>
                         <div class="ui-collapse-body agent-tunnel-guide-body" data-agent-tunnel-guide-scroll role="region" tabindex="0" aria-labelledby="agent_tunnel_gemini_guide_title_2">
+                            <p class="agent-tunnel-guide-description">The client secret is delivered directly to your clipboard and never rendered on this page.</p>
                             <svg class="agent-tunnel-guide-svg" viewBox="0 0 720 420" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_gemini_guide_svg_title_2 agent_tunnel_gemini_guide_svg_desc_2">
                                 <title id="agent_tunnel_gemini_guide_svg_title_2">Gemini connection values</title>
                                 <desc id="agent_tunnel_gemini_guide_svg_desc_2">A connection card with separate copy actions for the MCP URL, client ID, and hidden client secret.</desc>
@@ -100,10 +97,9 @@
                     </details>
                 </div>
             </li>
-        </ol>
-        <ol class="agent-tunnel-numbered-list" aria-label="Copy Gemini connection values">
+        </ul>
+        <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list" aria-label="Copy Gemini connection values">
             <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
-                <span class="agent-tunnel-substep-number" aria-hidden="true">➋</span>
                 <div class="agent-tunnel-numbered-copy">
                     <p>Copy the full MCP server URL.</p>
                     <div class="settings-action-package-form agent-tunnel-action-package-form">
@@ -114,7 +110,6 @@
                 </div>
             </li>
             <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
-                <span class="agent-tunnel-substep-number" aria-hidden="true">➌</span>
                 <div class="agent-tunnel-numbered-copy">
                     <p>Copy the OAuth client ID.</p>
                     <div class="settings-action-package-form agent-tunnel-action-package-form">
@@ -125,7 +120,6 @@
                 </div>
             </li>
             <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
-                <span class="agent-tunnel-substep-number" aria-hidden="true">➍</span>
                 <div class="agent-tunnel-numbered-copy">
                     <p>Copy the OAuth client secret directly to the clipboard. Copying does not approve an OAuth callback.</p>
                     <div class="settings-action-package-form agent-tunnel-action-package-form">
@@ -135,7 +129,7 @@
                     </div>
                 </div>
             </li>
-        </ol>
+        </ul>
         <p class="agent-tunnel-step-note">Keep the client secret private. AgenticContext never places it in the page, initial JSON, or browser storage.</p>
     </div>
 </li>
@@ -144,18 +138,17 @@
     <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">3</span>
     <div class="process-list-content agent-tunnel-step-copy">
         <h3 class="process-list-heading agent-tunnel-step-heading">Connect AgenticContext in Gemini</h3>
-        <ol class="agent-tunnel-guide-list" aria-label="Gemini Connected Apps setup">
+        <ul class="agent-tunnel-guide-list agent-tunnel-bullet-list" aria-label="Gemini Connected Apps setup">
             <li class="agent-tunnel-guide-item">
-                <span class="agent-tunnel-guide-number" aria-hidden="true">➊</span>
                 <div class="agent-tunnel-guide-content">
                     <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-gemini-connected-apps">
                         <summary>
                             <span class="agent-tunnel-guide-summary-copy">
                                 <span class="agent-tunnel-guide-title" id="agent_tunnel_gemini_guide_title_3">Open Connected Apps.</span>
-                                <span class="agent-tunnel-guide-description">In Gemini, open <strong>Settings &amp; help</strong>, then <strong>Connected Apps</strong>.</span>
                             </span>
                         </summary>
                         <div class="ui-collapse-body agent-tunnel-guide-body" data-agent-tunnel-guide-scroll role="region" tabindex="0" aria-labelledby="agent_tunnel_gemini_guide_title_3">
+                            <p class="agent-tunnel-guide-description">In Gemini, open <strong>Settings &amp; help</strong>, then <strong>Connected Apps</strong>.</p>
                             <svg class="agent-tunnel-guide-svg" viewBox="0 0 720 420" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_gemini_guide_svg_title_3 agent_tunnel_gemini_guide_svg_desc_3">
                                 <title id="agent_tunnel_gemini_guide_svg_title_3">Gemini Connected Apps settings</title>
                                 <desc id="agent_tunnel_gemini_guide_svg_desc_3">A simplified Gemini settings menu with Connected Apps selected.</desc>
@@ -184,16 +177,15 @@
                 </div>
             </li>
             <li class="agent-tunnel-guide-item">
-                <span class="agent-tunnel-guide-number" aria-hidden="true">➋</span>
                 <div class="agent-tunnel-guide-content">
                     <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-gemini-add-app">
                         <summary>
                             <span class="agent-tunnel-guide-summary-copy">
                                 <span class="agent-tunnel-guide-title" id="agent_tunnel_gemini_guide_title_4">Add AgenticContext.</span>
-                                <span class="agent-tunnel-guide-description">Use the copied MCP URL, client ID, and client secret, then approve the exact callback here.</span>
                             </span>
                         </summary>
                         <div class="ui-collapse-body agent-tunnel-guide-body" data-agent-tunnel-guide-scroll role="region" tabindex="0" aria-labelledby="agent_tunnel_gemini_guide_title_4">
+                            <p class="agent-tunnel-guide-description">Use the copied MCP URL, client ID, and client secret, then approve the exact callback here.</p>
                             <svg class="agent-tunnel-guide-svg" viewBox="0 0 720 520" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_gemini_guide_svg_title_4 agent_tunnel_gemini_guide_svg_desc_4">
                                 <title id="agent_tunnel_gemini_guide_svg_title_4">Add AgenticContext custom app</title>
                                 <desc id="agent_tunnel_gemini_guide_svg_desc_4">A simplified Gemini form for an AgenticContext custom app with MCP URL and OAuth credentials.</desc>
@@ -221,7 +213,7 @@
                     </details>
                 </div>
             </li>
-        </ol>
+        </ul>
         <div class="agent-tunnel-action-package" data-agent-gemini-authorization role="region" aria-labelledby="gemini_tunnel_authorization_heading" hidden>
             <p class="agent-tunnel-step-note" id="gemini_tunnel_authorization_heading">Review this one OAuth callback locally. Gemini is requesting the exact URI below; verify it before approving.</p>
             <label class="field" for="gemini_tunnel_redirect_uri">
@@ -254,11 +246,12 @@
     <div class="process-list-content agent-tunnel-step-copy">
         <h3 class="process-list-heading agent-tunnel-step-heading">Run one real project task</h3>
         <div class="agent-tunnel-action-package agent-tunnel-kickoff-package">
-            <ol class="agent-tunnel-numbered-list agent-tunnel-kickoff-sequence" aria-label="Run a project task in Gemini">
+            <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-kickoff-sequence" aria-label="Run a project task in Gemini">
                 <li class="agent-tunnel-numbered-item">
-                    <span class="agent-tunnel-substep-number" aria-hidden="true">➊</span>
                     <div class="agent-tunnel-numbered-copy">
-                        <p id="agent_gemini_tunnel_kickoff" data-agent-gemini-kickoff>Use @AgenticContext to read the selected project's instructions and current changes, then implement and verify the following task without altering unrelated work:<br><span class="agent-tunnel-kickoff-task">[describe your task].</span></p>
+                        <label id="agent_gemini_tunnel_kickoff_title" class="agent-tunnel-kickoff-title" for="agent_gemini_tunnel_kickoff">Describe your project task</label>
+                        <textarea id="agent_gemini_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-gemini-kickoff aria-labelledby="agent_gemini_tunnel_kickoff_title" rows="1">Use @AgenticContext to read the selected project's instructions and current changes, then implement and verify the following task without altering unrelated work:
+[describe your task].</textarea>
                         <div class="settings-action-package-form agent-tunnel-action-package-form">
                             <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-tunnel-copy-action data-agent-gemini-copy-kickoff aria-label="Copy this prompt" aria-controls="agent_gemini_tunnel_kickoff">
                                 <span class="browser-session-trigger-leading">
@@ -270,7 +263,6 @@
                     </div>
                 </li>
                 <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
-                    <span class="agent-tunnel-substep-number" aria-hidden="true">➋</span>
                     <div class="agent-tunnel-numbered-copy">
                         <p>After copying the prompt, open Gemini, type <strong>@AgenticContext</strong>, and ask your question.</p>
                         <div class="settings-action-package-form agent-tunnel-action-package-form">
@@ -283,7 +275,7 @@
                         </div>
                     </div>
                 </li>
-            </ol>
+            </ul>
         </div>
     </div>
 </li>

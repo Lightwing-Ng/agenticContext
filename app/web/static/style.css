@@ -1,4 +1,4 @@
-/* Code version: v2.150.5-codex.0 */
+/* Code version: v2.150.6-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -4501,6 +4501,10 @@ details.agent-tunnel-guide > summary {
     color: var(--muted);
     font-size: inherit;
     line-height: inherit;
+}
+
+.agent-tunnel-guide-body > .agent-tunnel-guide-description {
+    margin: 0 0 10px;
 }
 
 .agent-tunnel-guide-description :is(code, strong) {

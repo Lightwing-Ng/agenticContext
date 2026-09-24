@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.6.0-codex.1
+# Code version: v1.6.1-codex.0
 
 from __future__ import annotations
 
@@ -156,6 +156,7 @@ _CACHE_SOURCE_VIEWS = (
         stop_wait_copy="Requesting a safe stop for the active X cache task.",
         progress_strategy="discovery",
         progress_aria_label="Download progress",
+        settings_link_label="Open media settings",
     ),
     CacheSourceView(
         key="grok",

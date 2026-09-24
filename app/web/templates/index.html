@@ -1,16 +1,6 @@
-{# Code version: v1.14.0-codex.1 #}
+{# Code version: v1.14.1-codex.0 #}
 {% extends "_cache_page.html" %}
 {% from "_cache_page_components.html" import render_metric, render_progress_metric %}
-{% from "_number_field.html" import render_number_field %}
-
-{% block source_fields %}
-<div class="field-grid compact-config-grid">
-    {{ render_number_field("Max media files", "max_media_items", saved_config.max_media_items, minimum="1") }}
-    {{ render_number_field("Max scroll rounds", "max_scroll_rounds", saved_config.max_scroll_rounds, minimum="1") }}
-    {{ render_number_field("Scroll pause seconds", "scroll_pause_seconds", saved_config.scroll_pause_seconds, "decimal", "0.1", "0") }}
-</div>
-{{ render_number_field("Stale round limit", "stale_round_limit", saved_config.stale_round_limit, minimum="1") }}
-{% endblock %}
 
 {% block primary_metrics %}
 {{ render_metric("Sessions discovered", "discovered_tweets", snapshot.discovered_tweets, "discovered_tweets") }}

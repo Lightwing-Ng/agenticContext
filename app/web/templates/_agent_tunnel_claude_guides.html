@@ -1,0 +1,483 @@
+<!-- Code version: v1.0.0-claude.0 -->
+{% set claude_windows = settings.operating_system == 'windows' %}
+{% set claude_example_host = 'claude.example.com' %}
+{% set claude_config_path = '"$HOME\\.cloudflared\\agenticcontext-claude.yml"' if claude_windows else '~/.cloudflared/agenticcontext-claude.yml' %}
+{% set claude_install_command = 'winget install --id Cloudflare.cloudflared' if claude_windows else 'brew install cloudflared' %}
+{% set claude_create_command -%}
+cloudflared tunnel login
+cloudflared tunnel create agenticcontext-claude
+cloudflared tunnel route dns agenticcontext-claude __CLAUDE_HOST__
+{%- endset %}
+{% set claude_ingress -%}
+tunnel: agenticcontext-claude
+
+ingress:
+  - hostname: __CLAUDE_HOST__
+    path: '^/(\.well-known/oauth-authorization-server|\.well-known/oauth-protected-resource(/mcp/claude)?|oauth/(authorize|token)|mcp/claude)$'
+    service: http://127.0.0.1:8666
+    originRequest:
+      httpHostHeader: __CLAUDE_HOST__
+  - hostname: __CLAUDE_HOST__
+    service: http_status:404
+  - service: http_status:404
+{%- endset %}
+{% if claude_windows %}
+{% set claude_config_command -%}
+New-Item -ItemType Directory -Force -Path "$HOME\.cloudflared" | Out-Null
+@'
+{{ claude_ingress }}
+'@ | Set-Content -Encoding ascii -Path {{ claude_config_path | safe }}
+{%- endset %}
+{% else %}
+{% set claude_config_command -%}
+mkdir -p ~/.cloudflared
+cat > {{ claude_config_path | safe }} <<'YAML'
+{{ claude_ingress }}
+YAML
+{%- endset %}
+{% endif %}
+{% set claude_run_command -%}
+cloudflared tunnel --config {{ claude_config_path | safe }} ingress validate
+cloudflared tunnel --config {{ claude_config_path | safe }} run
+{%- endset %}
+{% set claude_terminal = 'PowerShell' if claude_windows else 'Terminal' %}
+{% set claude_commands = [
+    {
+        'id': 'install',
+        'title': 'Install cloudflared',
+        'hint': 'Open ' ~ claude_terminal ~ ', paste this command, and press Return.' if not claude_windows else 'Open PowerShell, paste this command, and press Enter. Then close and reopen PowerShell.',
+        'template': claude_install_command,
+    },
+    {
+        'id': 'create',
+        'title': 'Sign in and create the tunnel',
+        'hint': 'Run these three lines. The first opens Cloudflare in your browser: choose your domain and click Authorize, then return to ' ~ claude_terminal ~ '.',
+        'template': claude_create_command,
+    },
+    {
+        'id': 'config',
+        'title': 'Save the route file',
+        'hint': 'Run this block once. It writes a file that forwards only the Claude connection paths and blocks everything else.',
+        'template': claude_config_command,
+    },
+    {
+        'id': 'run',
+        'title': 'Start the tunnel',
+        'hint': 'The first line should end with OK. Keep this ' ~ claude_terminal ~ ' window open while you use Claude.',
+        'template': claude_run_command,
+    },
+] %}
+<li class="process-list-step agent-tunnel-onboarding-step" data-process-continues>
+    <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">1</span>
+    <div class="process-list-content agent-tunnel-step-copy agent-tunnel-setup-copy">
+        <h3 class="process-list-heading agent-tunnel-step-heading">Create a public HTTPS address</h3>
+        <ul class="agent-tunnel-guide-list agent-tunnel-bullet-list agent-tunnel-responsive-guide-list" aria-label="Claude public address setup">
+            <li class="agent-tunnel-guide-item">
+                <div class="agent-tunnel-guide-content">
+                    <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-claude-domain">
+                        <summary>
+                            <span class="agent-tunnel-guide-summary-copy">
+                                <span class="agent-tunnel-guide-title" id="agent_tunnel_claude_guide_title_1">Add a domain to Cloudflare</span>
+                            </span>
+                        </summary>
+                        <div class="ui-collapse-body agent-tunnel-guide-body" role="region" aria-labelledby="agent_tunnel_claude_guide_title_1">
+                            <p class="agent-tunnel-guide-description">Claude connects from the internet, so this computer needs a public <strong>HTTPS</strong> address. Sign up for Cloudflare (the Free plan works), add a domain you own, and wait until it shows <strong>Active</strong>. Then pick a new subdomain for Claude, such as <code>{{ claude_example_host }}</code>.</p>
+                            <svg class="agent-tunnel-guide-svg" viewBox="0 0 640 320" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_claude_guide_svg_title_1 agent_tunnel_claude_guide_svg_desc_1">
+                                <title id="agent_tunnel_claude_guide_svg_title_1">Cloudflare domain list</title>
+                                <desc id="agent_tunnel_claude_guide_svg_desc_1">A simplified Cloudflare dashboard with one active domain on the Free plan and a note to choose a dedicated Claude subdomain.</desc>
+                                <g transform="scale(0.8888889)">
+                                <rect class="guide-card" x="1" y="1" width="718" height="358" rx="10"></rect>
+                                <rect class="guide-sidebar" x="1" y="1" width="168" height="358" rx="10"></rect>
+                                <text class="guide-sidebar-text" x="22" y="42">Account home</text>
+                                <rect class="guide-sidebar-active" x="12" y="58" width="144" height="34" rx="10"></rect>
+                                <text class="guide-sidebar-text" x="22" y="80">Domains</text>
+                                <text class="guide-sidebar-text" x="22" y="118">Zero Trust</text>
+
+                                <text class="guide-title" x="196" y="46">Domains</text>
+                                <rect class="guide-button-primary" x="570" y="22" width="130" height="34" rx="10"></rect>
+                                <text class="guide-button-text" x="635" y="44" text-anchor="middle">Add a domain</text>
+                                <line class="guide-divider" x1="188" y1="74" x2="704" y2="74"></line>
+
+                                <text class="guide-label" x="204" y="104">Domain</text>
+                                <text class="guide-label" x="440" y="104">Status</text>
+                                <text class="guide-label" x="590" y="104">Plan</text>
+                                <rect class="guide-table-row guide-accent-stroke" x="188" y="118" width="516" height="54" rx="10"></rect>
+                                <text class="guide-value" x="204" y="150">example.com</text>
+                                <text class="guide-accent-text" x="440" y="150">Active</text>
+                                <text class="guide-value" x="590" y="150">Free</text>
+
+                                <rect class="guide-note" x="188" y="196" width="516" height="134" rx="10"></rect>
+                                <text class="guide-label" x="208" y="228">Use a dedicated subdomain for Claude</text>
+                                <text class="guide-mono" x="208" y="262">{{ claude_example_host }}</text>
+                                <text class="guide-caption" x="208" y="292">Do not create a DNS record yourself.</text>
+                                <text class="guide-caption" x="208" y="314">The tunnel command in this step creates it.</text>
+                                </g>
+                            </svg>
+                        </div>
+                    </details>
+                    <div class="agent-tunnel-guide-actions">
+                        <a class="secondary-button agent-tunnel-step-action" href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer"><span>Open Cloudflare</span></a>
+                    </div>
+                </div>
+            </li>
+        </ul>
+        <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-credential-fields" aria-label="Claude public address">
+            <li class="agent-tunnel-numbered-item">
+                <div class="agent-tunnel-numbered-copy">
+                    <div class="settings-text-input-field">
+                        <label class="settings-text-input-label" for="claude_tunnel_public_origin">Claude public HTTPS address</label>
+                        <div class="text-input-control-shell">
+                            <input id="claude_tunnel_public_origin" class="text-input-control agent-monospace-input" type="url" inputmode="url" value="" placeholder="https://{{ claude_example_host }}" spellcheck="false" autocapitalize="none" autocomplete="off" aria-describedby="claude_tunnel_public_origin_help" data-agent-claude-public-origin>
+                        </div>
+                        <p id="claude_tunnel_public_origin_help">Enter the subdomain you picked, for example <code>https://{{ claude_example_host }}</code>. The commands below update to match.</p>
+                    </div>
+                    <div class="settings-action-package-form agent-tunnel-action-package-form">
+                        <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-claude-save-origin disabled><span>Save address</span></button>
+                        <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-claude-clear-origin disabled><span>Clear address</span></button>
+                    </div>
+                    <p class="agent-tunnel-step-note" data-agent-claude-config-status role="status" aria-live="polite" hidden></p>
+                </div>
+            </li>
+        </ul>
+        <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list" aria-label="Claude public address commands">
+            {% for command in claude_commands %}
+            <li class="agent-tunnel-numbered-item">
+                <div class="agent-tunnel-numbered-copy">
+                    <p id="agent_claude_command_{{ command.id }}_title"><strong>{{ command.title }}.</strong> {{ command.hint }}</p>
+                    <textarea id="agent_claude_command_{{ command.id }}" class="agent-tunnel-kickoff-editor" rows="1" readonly spellcheck="false" autocapitalize="none" autocomplete="off" aria-labelledby="agent_claude_command_{{ command.id }}_title" data-agent-claude-command-template="{{ command.template | forceescape }}">{{ command.template | replace('__CLAUDE_HOST__', claude_example_host) | forceescape }}</textarea>
+                    <div class="settings-action-package-form agent-tunnel-action-package-form">
+                        <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-tunnel-copy-action data-agent-tunnel-copy-subject="command" aria-label="Copy command" aria-controls="agent_claude_command_{{ command.id }}">
+                            <span class="browser-session-trigger-leading">
+                                <span class="icon agent-response-copy-icon" aria-hidden="true"></span>
+                                <span data-agent-tunnel-copy-label aria-live="polite">Copy command</span>
+                            </span>
+                        </button>
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        <p class="agent-tunnel-step-note">{% if claude_windows %}If winget is missing, install <strong>App Installer</strong> from the Microsoft Store first.{% else %}If Terminal says <code>brew: command not found</code>, install Homebrew from <a href="https://brew.sh/" target="_blank" rel="noopener noreferrer">brew.sh</a> first.{% endif %} Never forward port 8666 directly or add a DNS record that points to this computer.</p>
+    </div>
+</li>
+
+<li class="process-list-step agent-tunnel-onboarding-step" data-process-continues>
+    <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">2</span>
+    <div class="process-list-content agent-tunnel-step-copy">
+        <h3 class="process-list-heading agent-tunnel-step-heading">Copy the Claude connection values</h3>
+        <ul class="agent-tunnel-guide-list agent-tunnel-bullet-list agent-tunnel-responsive-guide-list" aria-label="Claude connection values">
+            <li class="agent-tunnel-guide-item">
+                <div class="agent-tunnel-guide-content">
+                    <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-claude-values">
+                        <summary>
+                            <span class="agent-tunnel-guide-summary-copy">
+                                <span class="agent-tunnel-guide-title" id="agent_tunnel_claude_guide_title_2">Where each value goes</span>
+                            </span>
+                        </summary>
+                        <div class="ui-collapse-body agent-tunnel-guide-body" role="region" aria-labelledby="agent_tunnel_claude_guide_title_2">
+                            <p class="agent-tunnel-guide-description">Copy one value at a time and paste it into the matching Claude field in Step 3. The client secret goes straight to your clipboard and is never shown on this page.</p>
+                            <svg class="agent-tunnel-guide-svg" viewBox="0 0 640 374" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_claude_guide_svg_title_2 agent_tunnel_claude_guide_svg_desc_2">
+                                <title id="agent_tunnel_claude_guide_svg_title_2">Claude connection values</title>
+                                <desc id="agent_tunnel_claude_guide_svg_desc_2">A connection card with separate copy actions for the MCP server URL, OAuth client ID, and hidden OAuth client secret.</desc>
+                                <g transform="scale(0.8888889)">
+                                <rect class="guide-card" x="1" y="1" width="718" height="418" rx="10"></rect>
+                                <rect class="guide-modal" x="76" y="30" width="568" height="360" rx="10"></rect>
+                                <text class="guide-title" x="106" y="72">Claude connection</text>
+                                <text class="guide-label" x="106" y="112">Remote MCP server URL</text>
+                                <rect class="guide-control guide-accent-stroke" x="106" y="124" width="508" height="52" rx="10"></rect>
+                                <text class="guide-mono" x="124" y="156">https://{{ claude_example_host }}/mcp/claude</text>
+                                <path class="guide-copy-icon" d="M568 140h17a7 7 0 0 1 7 7v17a7 7 0 0 1-7 7h-17a7 7 0 0 1-7-7v-17a7 7 0 0 1 7-7Zm-9 23h-4a7 7 0 0 1-7-7v-17a7 7 0 0 1 7-7h17a7 7 0 0 1 7 7"></path>
+                                <text class="guide-label" x="106" y="214">OAuth Client ID</text>
+                                <rect class="guide-control" x="106" y="226" width="508" height="52" rx="10"></rect>
+                                <text class="guide-mono" x="124" y="258">Generated after the address is saved</text>
+                                <path class="guide-copy-icon" d="M568 242h17a7 7 0 0 1 7 7v17a7 7 0 0 1-7 7h-17a7 7 0 0 1-7-7v-17a7 7 0 0 1 7-7Zm-9 23h-4a7 7 0 0 1-7-7v-17a7 7 0 0 1 7-7h17a7 7 0 0 1 7 7"></path>
+                                <text class="guide-label" x="106" y="316">OAuth Client Secret</text>
+                                <rect class="guide-warning" x="106" y="328" width="508" height="42" rx="10"></rect>
+                                <text class="guide-warning-text" x="124" y="354">Hidden · copied only after an explicit click</text>
+                                <path class="guide-copy-icon" d="M568 334h17a7 7 0 0 1 7 7v17a7 7 0 0 1-7 7h-17a7 7 0 0 1-7-7v-17a7 7 0 0 1 7-7Zm-9 23h-4a7 7 0 0 1-7-7v-17a7 7 0 0 1 7-7h17a7 7 0 0 1 7 7"></path>
+                                </g>
+                            </svg>
+                        </div>
+                    </details>
+                </div>
+            </li>
+        </ul>
+        <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list" aria-label="Copy Claude connection values">
+            <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
+                <div class="agent-tunnel-numbered-copy">
+                    <p>Copy the full <strong>Remote MCP server URL</strong>.</p>
+                    <div class="settings-action-package-form agent-tunnel-action-package-form">
+                        <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-claude-copy-value="mcp_url" disabled>
+                            <span class="browser-session-trigger-leading"><span class="icon agent-response-copy-icon" aria-hidden="true"></span><span data-agent-claude-copy-label>Copy MCP URL</span></span>
+                        </button>
+                    </div>
+                </div>
+            </li>
+            <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
+                <div class="agent-tunnel-numbered-copy">
+                    <p>Copy the <strong>OAuth Client ID</strong>.</p>
+                    <div class="settings-action-package-form agent-tunnel-action-package-form">
+                        <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-claude-copy-value="client_id" disabled>
+                            <span class="browser-session-trigger-leading"><span class="icon agent-response-copy-icon" aria-hidden="true"></span><span data-agent-claude-copy-label>Copy client ID</span></span>
+                        </button>
+                    </div>
+                </div>
+            </li>
+            <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
+                <div class="agent-tunnel-numbered-copy">
+                    <p>Copy the <strong>OAuth Client Secret</strong> directly to the clipboard. Copying does not approve an OAuth callback.</p>
+                    <div class="settings-action-package-form agent-tunnel-action-package-form">
+                        <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-claude-copy-value="client_secret" disabled>
+                            <span class="browser-session-trigger-leading"><span class="icon agent-response-copy-icon" aria-hidden="true"></span><span data-agent-claude-copy-label>Copy client secret</span></span>
+                        </button>
+                    </div>
+                </div>
+            </li>
+        </ul>
+        <p class="agent-tunnel-step-note">Keep the client secret private. AgenticContext never places it in the page, initial JSON, or browser storage.</p>
+    </div>
+</li>
+
+<li class="process-list-step agent-tunnel-onboarding-step" data-process-continues>
+    <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">3</span>
+    <div class="process-list-content agent-tunnel-step-copy">
+        <h3 class="process-list-heading agent-tunnel-step-heading">Add the AgenticContext connector in Claude</h3>
+        <ul class="agent-tunnel-guide-list agent-tunnel-bullet-list agent-tunnel-responsive-guide-list" aria-label="Claude custom connector setup">
+            <li class="agent-tunnel-guide-item">
+                <div class="agent-tunnel-guide-content">
+                    <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-claude-connectors">
+                        <summary>
+                            <span class="agent-tunnel-guide-summary-copy">
+                                <span class="agent-tunnel-guide-title" id="agent_tunnel_claude_guide_title_3">Open Connectors</span>
+                            </span>
+                        </summary>
+                        <div class="ui-collapse-body agent-tunnel-guide-body" role="region" aria-labelledby="agent_tunnel_claude_guide_title_3">
+                            <p class="agent-tunnel-guide-description">In Claude, open <strong>Customize</strong> › <strong>Connectors</strong>, click <strong>+</strong>, then choose <strong>Add custom connector</strong>.</p>
+                            <svg class="agent-tunnel-guide-svg" viewBox="0 0 640 320" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_claude_guide_svg_title_3 agent_tunnel_claude_guide_svg_desc_3">
+                                <title id="agent_tunnel_claude_guide_svg_title_3">Claude Connectors page</title>
+                                <desc id="agent_tunnel_claude_guide_svg_desc_3">A simplified Claude Customize page with Connectors selected and the plus menu open on Add custom connector.</desc>
+                                <g transform="scale(0.8888889)">
+                                <rect class="guide-card" x="1" y="1" width="718" height="358" rx="10"></rect>
+                                <rect class="guide-sidebar" x="1" y="1" width="168" height="358" rx="10"></rect>
+                                <text class="guide-title" x="22" y="46">Customize</text>
+                                <rect class="guide-sidebar-active" x="12" y="72" width="144" height="34" rx="10"></rect>
+                                <text class="guide-sidebar-text" x="22" y="94">Connectors</text>
+
+                                <text class="guide-title" x="196" y="46">Connectors</text>
+                                <rect class="guide-button-secondary guide-accent-stroke" x="656" y="22" width="44" height="34" rx="10"></rect>
+                                <text class="guide-button-secondary-text" x="678" y="45" text-anchor="middle">+</text>
+                                <line class="guide-divider" x1="188" y1="74" x2="704" y2="74"></line>
+                                <rect class="guide-table-row" x="188" y="92" width="300" height="54" rx="10"></rect>
+                                <text class="guide-value" x="204" y="124">Connected services</text>
+                                <rect class="guide-table-row" x="188" y="160" width="300" height="54" rx="10"></rect>
+                                <text class="guide-muted" x="204" y="192">Custom connectors appear here</text>
+
+                                <rect class="guide-modal" x="480" y="66" width="220" height="112" rx="10"></rect>
+                                <text class="guide-sidebar-text" x="500" y="102">Browse connectors</text>
+                                <rect class="guide-sidebar-active" x="490" y="118" width="200" height="40" rx="10"></rect>
+                                <text class="guide-sidebar-text" x="500" y="143">Add custom connector</text>
+
+                                <rect class="guide-note" x="188" y="240" width="512" height="90" rx="10"></rect>
+                                <text class="guide-label" x="208" y="272">Free plans can add one custom connector.</text>
+                                <text class="guide-caption" x="208" y="300">Team or Enterprise: an Owner adds it under Organization settings.</text>
+                                </g>
+                            </svg>
+                        </div>
+                    </details>
+                    <div class="agent-tunnel-guide-actions">
+                        <a class="secondary-button agent-tunnel-step-action" href="https://claude.ai/customize/connectors" target="_blank" rel="noopener noreferrer"><span>Open Connectors</span></a>
+                    </div>
+                </div>
+            </li>
+            <li class="agent-tunnel-guide-item">
+                <div class="agent-tunnel-guide-content">
+                    <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-claude-add-connector">
+                        <summary>
+                            <span class="agent-tunnel-guide-summary-copy">
+                                <span class="agent-tunnel-guide-title" id="agent_tunnel_claude_guide_title_4">Fill in the custom connector</span>
+                            </span>
+                        </summary>
+                        <div class="ui-collapse-body agent-tunnel-guide-body" role="region" aria-labelledby="agent_tunnel_claude_guide_title_4">
+                            <p class="agent-tunnel-guide-description">Name it <strong>AgenticContext</strong> and paste the MCP URL. Open <strong>Advanced settings</strong>, paste the client ID and client secret from Step 2, then click <strong>Add</strong>.</p>
+                            <svg class="agent-tunnel-guide-svg" viewBox="0 0 640 489" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_claude_guide_svg_title_4 agent_tunnel_claude_guide_svg_desc_4">
+                                <title id="agent_tunnel_claude_guide_svg_title_4">Add custom connector dialog</title>
+                                <desc id="agent_tunnel_claude_guide_svg_desc_4">A simplified Claude dialog named AgenticContext with the remote MCP server URL, Advanced settings expanded, and OAuth client credentials filled in.</desc>
+                                <g transform="scale(0.8888889)">
+                                <rect class="guide-card" x="1" y="1" width="718" height="548" rx="10"></rect>
+                                <rect class="guide-backdrop" x="1" y="1" width="718" height="548" rx="10"></rect>
+                                <rect class="guide-modal" x="112" y="18" width="496" height="514" rx="10"></rect>
+                                <text class="guide-title" x="142" y="58">Add custom connector</text>
+                                <line class="guide-divider" x1="132" y1="78" x2="588" y2="78"></line>
+
+                                <text class="guide-label" x="142" y="110">Name</text>
+                                <rect class="guide-control" x="142" y="122" width="436" height="40" rx="10"></rect>
+                                <text class="guide-value" x="158" y="147">AgenticContext</text>
+
+                                <text class="guide-label" x="142" y="194">Remote MCP server URL</text>
+                                <rect class="guide-control guide-accent-stroke" x="142" y="206" width="436" height="40" rx="10"></rect>
+                                <text class="guide-mono" x="158" y="231">https://{{ claude_example_host }}/mcp/claude</text>
+
+                                <text class="guide-label" x="142" y="282">Advanced settings</text>
+                                <path class="guide-select-chevron" d="M284 274l5 5 5-5"></path>
+                                <text class="guide-caption" x="142" y="312">OAuth Client ID</text>
+                                <rect class="guide-control guide-accent-stroke" x="142" y="322" width="436" height="40" rx="10"></rect>
+                                <text class="guide-mono" x="158" y="347">Paste client ID</text>
+                                <text class="guide-caption" x="142" y="390">OAuth Client Secret</text>
+                                <rect class="guide-control guide-accent-stroke" x="142" y="400" width="436" height="40" rx="10"></rect>
+                                <text class="guide-mono" x="158" y="425">••••••••••••••••</text>
+
+                                <rect class="guide-button-secondary" x="400" y="474" width="82" height="36" rx="10"></rect>
+                                <text class="guide-button-secondary-text" x="441" y="498" text-anchor="middle">Cancel</text>
+                                <rect class="guide-button-primary" x="494" y="474" width="84" height="36" rx="10"></rect>
+                                <text class="guide-button-text" x="536" y="498" text-anchor="middle">Add</text>
+                                </g>
+                            </svg>
+                        </div>
+                    </details>
+                </div>
+            </li>
+            <li class="agent-tunnel-guide-item">
+                <div class="agent-tunnel-guide-content">
+                    <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-claude-connect">
+                        <summary>
+                            <span class="agent-tunnel-guide-summary-copy">
+                                <span class="agent-tunnel-guide-title" id="agent_tunnel_claude_guide_title_5">Connect and approve the callback here</span>
+                            </span>
+                        </summary>
+                        <div class="ui-collapse-body agent-tunnel-guide-body" role="region" aria-labelledby="agent_tunnel_claude_guide_title_5">
+                            <p class="agent-tunnel-guide-description">Click <strong>Connect</strong> next to AgenticContext. Come back to this page, check that the callback is exactly <code>https://claude.ai/api/mcp/auth_callback</code>, and click <strong>Approve callback</strong>. Claude then shows the connector as connected.</p>
+                            <svg class="agent-tunnel-guide-svg" viewBox="0 0 640 338" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_claude_guide_svg_title_5 agent_tunnel_claude_guide_svg_desc_5">
+                                <title id="agent_tunnel_claude_guide_svg_title_5">Connect and approve</title>
+                                <desc id="agent_tunnel_claude_guide_svg_desc_5">Claude lists the AgenticContext connector with a Connect button, then this page shows the Claude callback address with an Approve callback button.</desc>
+                                <g transform="scale(0.8888889)">
+                                <rect class="guide-card" x="1" y="1" width="718" height="378" rx="10"></rect>
+                                <text class="guide-label" x="46" y="44">In Claude</text>
+                                <rect class="guide-table-row" x="46" y="58" width="628" height="64" rx="10"></rect>
+                                <text class="guide-value" x="66" y="87">AgenticContext</text>
+                                <text class="guide-caption" x="66" y="108">Custom</text>
+                                <rect class="guide-button-primary" x="560" y="72" width="98" height="36" rx="10"></rect>
+                                <text class="guide-button-text" x="609" y="96" text-anchor="middle">Connect</text>
+                                <path class="guide-select-chevron" d="M360 138v34m-8-8 8 8 8-8"></path>
+
+                                <text class="guide-label" x="46" y="200">On this page</text>
+                                <rect class="guide-modal" x="46" y="214" width="628" height="142" rx="10"></rect>
+                                <text class="guide-caption" x="66" y="244">Pending callback URI</text>
+                                <rect class="guide-control guide-accent-stroke" x="66" y="256" width="588" height="40" rx="10"></rect>
+                                <text class="guide-mono" x="82" y="281">https://claude.ai/api/mcp/auth_callback</text>
+                                <rect class="guide-button-secondary" x="442" y="310" width="74" height="32" rx="10"></rect>
+                                <text class="guide-button-secondary-text" x="479" y="331" text-anchor="middle">Deny</text>
+                                <rect class="guide-button-primary" x="526" y="310" width="128" height="32" rx="10"></rect>
+                                <text class="guide-button-text" x="590" y="331" text-anchor="middle">Approve callback</text>
+                                </g>
+                            </svg>
+                        </div>
+                    </details>
+                </div>
+            </li>
+            <li class="agent-tunnel-guide-item">
+                <div class="agent-tunnel-guide-content">
+                    <details class="ui-collapse agent-tunnel-guide" data-agent-tunnel-guide data-collapse="agent-tunnel-claude-enable">
+                        <summary>
+                            <span class="agent-tunnel-guide-summary-copy">
+                                <span class="agent-tunnel-guide-title" id="agent_tunnel_claude_guide_title_6">Turn it on in a chat</span>
+                            </span>
+                        </summary>
+                        <div class="ui-collapse-body agent-tunnel-guide-body" role="region" aria-labelledby="agent_tunnel_claude_guide_title_6">
+                            <p class="agent-tunnel-guide-description">In a new chat, click <strong>+</strong> at the lower left, point to <strong>Connectors</strong>, and switch <strong>AgenticContext</strong> on. Claude asks before each project action unless you allow it.</p>
+                            <svg class="agent-tunnel-guide-svg" viewBox="0 0 640 320" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="agent_tunnel_claude_guide_svg_title_6 agent_tunnel_claude_guide_svg_desc_6">
+                                <title id="agent_tunnel_claude_guide_svg_title_6">Claude chat connector menu</title>
+                                <desc id="agent_tunnel_claude_guide_svg_desc_6">A simplified Claude chat box with the plus menu open, Connectors selected, and AgenticContext switched on.</desc>
+                                <g transform="scale(0.8888889)">
+                                <rect class="guide-card" x="1" y="1" width="718" height="358" rx="10"></rect>
+                                <rect class="guide-modal" x="46" y="44" width="220" height="150" rx="10"></rect>
+                                <text class="guide-sidebar-text" x="66" y="82">Add files or photos</text>
+                                <rect class="guide-sidebar-active" x="56" y="100" width="200" height="40" rx="10"></rect>
+                                <text class="guide-sidebar-text" x="66" y="125">Connectors</text>
+                                <path class="guide-select-chevron" d="M236 115l5 5-5 5"></path>
+                                <text class="guide-sidebar-text" x="66" y="170">Research</text>
+
+                                <rect class="guide-modal" x="280" y="84" width="290" height="110" rx="10"></rect>
+                                <text class="guide-value" x="300" y="124">AgenticContext</text>
+                                <rect class="guide-segment guide-switch guide-accent-stroke" x="500" y="104" width="54" height="30" rx="10"></rect>
+                                <rect class="guide-segment-active guide-switch-thumb" x="528" y="108" width="22" height="22" rx="10"></rect>
+                                <text class="guide-caption" x="300" y="168">Manage connectors</text>
+
+                                <rect class="guide-control" x="46" y="228" width="628" height="96" rx="10"></rect>
+                                <text class="guide-muted" x="104" y="266">Reply to Claude…</text>
+                                <rect class="guide-button-secondary guide-accent-stroke" x="60" y="274" width="36" height="36" rx="10"></rect>
+                                <text class="guide-button-secondary-text" x="78" y="298" text-anchor="middle">+</text>
+                                </g>
+                            </svg>
+                        </div>
+                    </details>
+                    <div class="agent-tunnel-guide-actions">
+                        <a class="secondary-button agent-tunnel-step-action" href="https://claude.ai/new" target="_blank" rel="noopener noreferrer"><span>Open Claude</span></a>
+                    </div>
+                </div>
+            </li>
+        </ul>
+        <div class="agent-tunnel-action-package" data-agent-claude-authorization role="region" aria-labelledby="claude_tunnel_authorization_heading" hidden>
+            <p class="agent-tunnel-step-note" id="claude_tunnel_authorization_heading">Review this one OAuth callback locally. Claude is requesting the exact URI below; verify it before approving.</p>
+            <label class="field" for="claude_tunnel_redirect_uri">
+                <span class="field-label">Pending callback URI</span>
+                <input
+                    class="text-input-control agent-monospace-input"
+                    id="claude_tunnel_redirect_uri"
+                    type="text"
+                    value=""
+                    readonly
+                    spellcheck="false"
+                    autocomplete="off"
+                    aria-describedby="claude_tunnel_redirect_uri_help"
+                    data-agent-claude-redirect-uri
+                >
+            </label>
+            <p class="agent-tunnel-step-note" id="claude_tunnel_redirect_uri_help">Requested host: <code data-agent-claude-redirect-host></code> · expires in <span data-agent-claude-authorization-expiry></span>.</p>
+            <div class="settings-action-package-form agent-tunnel-action-package-form">
+                <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-claude-authorization-action="approve"><span>Approve callback</span></button>
+                <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-claude-authorization-action="deny"><span>Deny</span></button>
+            </div>
+            <p class="agent-tunnel-step-note" data-agent-claude-authorization-status role="status" aria-live="polite" hidden></p>
+        </div>
+        <p class="agent-tunnel-step-note">Works on the Claude website, desktop app, and mobile app once connected. On Team or Enterprise plans, an Owner adds it under <strong>Organization settings</strong> › <strong>Connectors</strong> › <strong>Add</strong> › <strong>Custom</strong> › <strong>Web</strong>, then each member clicks <strong>Connect</strong>.</p>
+    </div>
+</li>
+
+<li class="process-list-step agent-tunnel-onboarding-step">
+    <span class="process-list-marker agent-tunnel-step-number" aria-hidden="true">4</span>
+    <div class="process-list-content agent-tunnel-step-copy">
+        <h3 class="process-list-heading agent-tunnel-step-heading">Run one real project task</h3>
+        <div class="agent-tunnel-action-package agent-tunnel-kickoff-package">
+            <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-kickoff-sequence" aria-label="Run a project task in Claude">
+                <li class="agent-tunnel-numbered-item">
+                    <div class="agent-tunnel-numbered-copy">
+                        <label id="agent_claude_tunnel_kickoff_title" class="agent-tunnel-kickoff-title" for="agent_claude_tunnel_kickoff">Describe your project task</label>
+                        <textarea id="agent_claude_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-claude-kickoff aria-labelledby="agent_claude_tunnel_kickoff_title" rows="1">Use the AgenticContext connector to read the selected project's instructions and current changes, then implement and verify the following task without altering unrelated work:
+[describe your task].</textarea>
+                        <div class="settings-action-package-form agent-tunnel-action-package-form">
+                            <button type="button" class="secondary-button agent-tunnel-step-action" data-agent-tunnel-copy-action data-agent-claude-copy-kickoff aria-label="Copy this prompt" aria-controls="agent_claude_tunnel_kickoff">
+                                <span class="browser-session-trigger-leading">
+                                    <span class="icon agent-response-copy-icon" aria-hidden="true"></span>
+                                    <span data-agent-tunnel-copy-label aria-live="polite">Copy this prompt</span>
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                </li>
+                <li class="agent-tunnel-numbered-item agent-tunnel-action-only">
+                    <div class="agent-tunnel-numbered-copy">
+                        <p>Open a new Claude chat, make sure <strong>AgenticContext</strong> is on under <strong>+</strong> › <strong>Connectors</strong>, paste the prompt, and send it.</p>
+                        <div class="settings-action-package-form agent-tunnel-action-package-form">
+                            <a class="secondary-button agent-tunnel-step-action" href="https://claude.ai/new" target="_blank" rel="noopener noreferrer">
+                                <span class="browser-session-trigger-leading">
+                                    <span class="cache-phase-live-marker" data-agent-tunnel-live-marker="claude" aria-hidden="true" hidden></span>
+                                    <span>Ask in Claude</span>
+                                </span>
+                            </a>
+                        </div>
+                    </div>
+                </li>
+            </ul>
+        </div>
+    </div>
+</li>

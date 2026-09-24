@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.143.6-claude.0
+# Code version: v1.143.8-claude.0
 
 from __future__ import annotations
 
@@ -534,6 +534,32 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(config.chatgpt_text_startup_timeout_seconds, 35)
                 self.assertEqual(save.call_count, 2)
 
+    def test_x_start_preserves_media_limits_configured_in_settings(self) -> None:
+        saved_config = CrawlConfig(
+            max_media_items=1234,
+            max_scroll_rounds=5678,
+            scroll_pause_seconds=2.5,
+            stale_round_limit=12,
+        )
+        with TemporaryDirectory() as folder, patch(
+            "app.web.config_store.load_saved_config",
+            return_value=saved_config,
+        ), patch("app.web.config_store.save_config"):
+            app = create_app(Path(folder) / "store")
+            with patch("app.core.service.CacheLikesService.start") as start:
+                response = app.test_client().post(
+                    "/cache/x/start",
+                    data={"x_browser": "chrome", "cache_content_mode": "text"},
+                )
+
+        self.assertEqual(response.status_code, 302)
+        start.assert_called_once()
+        started_config = start.call_args.args[0]
+        self.assertEqual(started_config.max_media_items, 1234)
+        self.assertEqual(started_config.max_scroll_rounds, 5678)
+        self.assertEqual(started_config.scroll_pause_seconds, 2.5)
+        self.assertEqual(started_config.stale_round_limit, 12)
+
     def test_chatgpt_removes_obsolete_notice_with_selected_safari(self) -> None:
         with patch(
             "app.web.config_store.load_saved_config",
@@ -630,7 +656,17 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('action="/cache/gemini/start"', gemini_body)
         self.assertNotIn('class="cache-common-config"', gemini_body)
         self.assertIn('href="/settings#settings-downloads"', index_body)
-        self.assertIn(">Open shared cache settings</a>", index_body)
+        self.assertIn('class="secondary-button cache-settings-link"', index_body)
+        self.assertIn(">Open media settings</a>", index_body)
+        for field_name in (
+            "max_media_items",
+            "max_scroll_rounds",
+            "scroll_pause_seconds",
+            "stale_round_limit",
+        ):
+            with self.subTest(media_setting=field_name):
+                self.assertNotIn(f'name="{field_name}"', index_body)
+                self.assertIn(f'name="{field_name}"', settings_body)
         for body, provider_label in ((grok_body, "Grok"), (chatgpt_body, "ChatGPT")):
             self.assertIn('href="/settings#settings-llm"', body)
             self.assertIn(f">Open {provider_label} settings</a>", body)
@@ -868,7 +904,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
-                    "style-v2.150.5-codex.0"
+                    "style-v2.150.6-codex.0"
                     if page_source == "agent"
                     else "style-v2.150.0-codex.0"
                 )
@@ -1297,7 +1333,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.150.5-codex.0', local_body)
+        self.assertIn('style-v2.150.6-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -1305,7 +1341,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
         self.assertIn('selection-list.css?v=selection-list-v1.0.0-codex.0', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.67.3-claude.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.68.2-claude.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -3502,7 +3538,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Recent sessions timed out after 4 minutes.", script)
         self.assertIn("clearCatalogLoadingState", script)
         self.assertIn(
-            'window.addEventListener("resize", resizeTunnelKickoffPrompt, {passive: true});',
+            'resizeTunnelKickoffPrompt(promptControl);',
             script,
         )
         self.assertIn('requestJson("/api/agent/open-conversation"', script)
@@ -3580,7 +3616,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.67.3-claude.0',
+            'computer-use-agent-v3.68.2-claude.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
