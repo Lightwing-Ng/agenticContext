@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.32.6-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.33.0-codex.0."""
 
 import re
 from copy import deepcopy
@@ -598,16 +598,7 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
         expect(page.locator('[data-agent-tunnel-project-row="alpha"] [data-agent-tunnel-project-access]')).to_have_count(0)
         expect(page.locator('[data-agent-tunnel-project-row="beta"] [data-agent-tunnel-project-access]')).to_have_text("Read only")
         status_notice = page.locator("[data-agent-tunnel-project-status]")
-        expect(status_notice).to_have_text("alpha selected.")
-        muted_color = page.evaluate("""() => {
-            const sample = document.createElement('span');
-            sample.style.color = 'var(--muted)';
-            document.body.append(sample);
-            const color = getComputedStyle(sample).color;
-            sample.remove();
-            return color;
-        }""")
-        assert status_notice.evaluate("element => getComputedStyle(element).color") == muted_color
+        expect(status_notice).to_be_hidden()
         expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/beta")
 
         beta_checkbox.focus()
@@ -647,6 +638,107 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
         context.close()
 
 
+@pytest.mark.parametrize("width,theme", [(830, "light"), (390, "dark")])
+def test_tunnel_project_remove_button_hover_and_failed_save_rollback(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+    theme,
+):
+    """Hover reveals an accessible removal action; failed writes keep the row."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": 1_291})
+    page = context.new_page()
+    status = _tunnel_onboarding_status(activity_observed=False)
+    alpha = deepcopy(status["project_context"]["current"])
+    alpha.update({"id": "alpha", "root": "/tmp/alpha", "selected": True})
+    beta = deepcopy(alpha)
+    beta.update({"id": "beta", "root": "/tmp/beta", "selected": True})
+    status["project_context"] = {
+        **status["project_context"],
+        "revision": 1,
+        "current": alpha,
+        "selected_project_ids": ["alpha", "beta"],
+        "projects": [alpha, beta],
+    }
+    requests = []
+
+    def fulfill_status(route):
+        route.fulfill(json=deepcopy(status))
+
+    def fulfill_remove(route):
+        requests.append(route.request.post_data_json)
+        if len(requests) == 1:
+            route.fulfill(
+                status=409,
+                json={
+                    "error": "The selection was rejected for this test.",
+                    "project_context": deepcopy(status["project_context"]),
+                },
+            )
+            return
+        status["project_context"] = {
+            **status["project_context"],
+            "revision": 2,
+            "current": beta,
+            "selected_project_ids": ["beta"],
+            "projects": [beta],
+        }
+        status["status_observed_at"] = 2
+        route.fulfill(json=deepcopy(status))
+
+    page.route("**/api/agent/tunnel/status?platform=chatgpt", fulfill_status)
+    page.route(
+        "**/api/agent/tunnel/project/unregister?platform=chatgpt", fulfill_remove
+    )
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        page.evaluate(
+            "theme => document.documentElement.setAttribute('data-theme-override', theme)",
+            theme,
+        )
+        page.locator("#sidebar_toggle").click()
+        row = page.locator('[data-agent-tunnel-project-row="alpha"]')
+        button = row.get_by_role("button", name="Remove alpha from Tunnel projects")
+        expect(button).to_have_count(1)
+        assert button.evaluate("element => getComputedStyle(element).opacity") == "0"
+        metrics = page.locator(".agent-tunnel-project-option").evaluate_all("""elements => elements.map(element => {
+            const label = element.querySelector('.agent-tunnel-project-identity');
+            const rowRect = element.getBoundingClientRect();
+            const labelRect = label.getBoundingClientRect();
+            return {
+                top: getComputedStyle(element).paddingTop,
+                bottom: getComputedStyle(element).paddingBottom,
+                centerOffset: Math.abs(
+                    (rowRect.top + rowRect.bottom - labelRect.top - labelRect.bottom) / 2
+                ),
+            };
+        })""")
+        assert metrics == [
+            {"top": "2px", "bottom": "2px", "centerOffset": 0},
+            {"top": "2px", "bottom": "2px", "centerOffset": 0},
+        ]
+        row.hover()
+        expect(button).to_have_css("opacity", "1")
+        button.click()
+        expect(page.locator("[data-agent-tunnel-project-status]")).to_contain_text(
+            "selection was rejected"
+        )
+        expect(row).to_have_count(1)
+        button.focus()
+        expect(button).to_have_css("opacity", "1")
+        button.press("Enter")
+        expect(row).to_have_count(0)
+        expect(page.locator('[data-agent-tunnel-project-row="beta"]')).to_have_count(1)
+        expect(page.locator("[data-agent-tunnel-project-status]")).to_be_hidden()
+        expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/beta")
+        assert requests == [
+            {"project_id": "alpha", "expected_revision": 1},
+            {"project_id": "alpha", "expected_revision": 1},
+        ]
+    finally:
+        context.close()
+
+
 def test_tunnel_project_path_uses_the_server_supplied_desktop_when_none_is_current(
     disposable_browser,
     sidebar_server_url,
@@ -675,6 +767,43 @@ def test_tunnel_project_path_uses_the_server_supplied_desktop_when_none_is_curre
         page.locator("#sidebar_toggle").click()
         expect(page.locator("#agent_tunnel_project_path")).to_have_value(str(desktop))
         expect(page.locator("#agent_tunnel_project_path_choose")).to_be_enabled()
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [830, 390], ids=("comment-viewport", "narrow"))
+def test_tunnel_project_labels_match_web_service_typography(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+):
+    """Use the Web service label as the sidebar typography reference."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": 1_100})
+    page = context.new_page()
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        page.locator("#sidebar_toggle").click()
+        selectors = (
+            ".agent-tunnel-project-field > label.field > .field-label",
+            ".agent-tunnel-project-fieldset > legend.field-label",
+            ".agent-connect-fields > label.field:has(.agent-platform-combobox) > .field-label",
+        )
+        for selector in selectors:
+            expect(page.locator(selector)).to_be_visible()
+        styles = page.evaluate(
+            """selectors => selectors.map((selector) => {
+                const style = getComputedStyle(document.querySelector(selector));
+                return {
+                    font: style.font,
+                    color: style.color,
+                    lineHeight: style.lineHeight,
+                    letterSpacing: style.letterSpacing,
+                };
+            })""",
+            selectors,
+        )
+        assert styles[0] == styles[1] == styles[2]
+        assert styles[2]["font"].startswith('15px "Univers Next for HSBC"')
     finally:
         context.close()
 

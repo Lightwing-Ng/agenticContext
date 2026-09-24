@@ -1,4 +1,4 @@
-/* Code version: v3.66.4-codex.0 */
+/* Code version: v3.67.0-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -1220,9 +1220,12 @@
         if (!elements.tunnelProjectField) return;
         const current = tunnelProjectContext.current;
         const selectedIds = new Set(tunnelProjectContext.selectedProjectIds);
-        const focusedProjectId = document.activeElement instanceof HTMLInputElement
-            ? document.activeElement.dataset.agentTunnelProjectCheckbox || ""
+        const focusedProjectId = document.activeElement instanceof Element
+            ? document.activeElement.dataset.agentTunnelProjectCheckbox
+                || document.activeElement.dataset.agentTunnelProjectRemove || ""
             : "";
+        const focusedControl = document.activeElement instanceof HTMLButtonElement
+            ? "remove" : "checkbox";
         if (elements.tunnelProjectPath instanceof HTMLInputElement
             && !tunnelProjectPathTouched) {
             elements.tunnelProjectPath.value = current?.root || tunnelProjectContext.browseRoot;
@@ -1266,14 +1269,30 @@
                 identity.append(checkbox, mark, name);
 
                 row.append(identity);
+                const trailing = document.createElement("span");
+                trailing.className = "agent-tunnel-project-trailing";
                 if (checkbox.checked && !project.writable) {
                     const access = document.createElement("span");
                     access.className = "agent-tunnel-project-access";
                     access.id = `agent_tunnel_project_access_${index + 1}`;
                     access.dataset.agentTunnelProjectAccess = "";
                     access.textContent = "Read only";
-                    row.append(access);
+                    trailing.append(access);
                 }
+                if (project.registered) {
+                    const remove = document.createElement("button");
+                    remove.type = "button";
+                    remove.className = "circular-icon-button agent-tunnel-project-remove";
+                    remove.dataset.agentTunnelProjectRemove = project.id;
+                    remove.setAttribute("aria-label", `Remove ${project.id} from Tunnel projects`);
+                    remove.title = `Remove ${project.id} from Tunnel projects`;
+                    const icon = document.createElement("span");
+                    icon.className = "agent-tunnel-project-remove-icon";
+                    icon.setAttribute("aria-hidden", "true");
+                    remove.append(icon);
+                    trailing.append(remove);
+                }
+                row.append(trailing);
                 return row;
             });
             if (listSignature !== tunnelProjectListSignature) {
@@ -1281,10 +1300,13 @@
                 tunnelProjectListSignature = listSignature;
                 if (focusedProjectId) {
                     elements.tunnelProjectList.querySelector(
-                        `[data-agent-tunnel-project-checkbox="${CSS.escape(focusedProjectId)}"]`,
+                        `[data-agent-tunnel-project-${focusedControl}="${CSS.escape(focusedProjectId)}"]`,
                     )?.focus({preventScroll: true});
                 }
             }
+            elements.tunnelProjectList.querySelectorAll(
+                "[data-agent-tunnel-project-remove]",
+            ).forEach((button) => { button.disabled = tunnelProjectBusy; });
         }
         if (elements.tunnelProjectStatus) {
             let notice = tunnelProjectNotice || tunnelProjectContext.problem || current?.problem || "";
@@ -1779,7 +1801,7 @@
     async function saveTunnelProjectSelection(
         projectId,
         selectedProjectIds,
-        {path = "", successMessage = ""} = {},
+        {path = ""} = {},
     ) {
         const url = elements.tunnelProjectField?.dataset.agentTunnelProjectUrl;
         const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
@@ -1832,7 +1854,7 @@
                 elements.tunnelProjectPath.value = path;
                 tunnelProjectPathTouched = true;
             }
-            tunnelProjectNotice = successMessage || `Current project saved as ${projectId}.`;
+            tunnelProjectNotice = "";
             syncTunnelProjectUi();
             scheduleTunnelPoll();
             return true;
@@ -1879,9 +1901,66 @@
             syncTunnelProjectUi();
             return false;
         }
-        return saveTunnelProjectSelection(currentId, selected, {
-            successMessage: `${projectId} ${shouldSelect ? "selected" : "deselected"}.`,
-        });
+        return saveTunnelProjectSelection(currentId, selected);
+    }
+
+    async function removeTunnelProject(projectId) {
+        const url = elements.tunnelProjectField?.dataset.agentTunnelProjectUnregisterUrl;
+        const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
+        if (!url || !project?.registered || tunnelProjectBusy) return false;
+        const operationRevision = ++tunnelProjectSaveRevision;
+        const expectedRevision = tunnelProjectContext.revision;
+        const requestedPlatform = selectedPlatform();
+        const rowIndex = tunnelProjectContext.projects.findIndex((item) => item.id === projectId);
+        invalidateTunnelStatusRequest();
+        tunnelProjectBusy = true;
+        tunnelProjectNotice = `Removing ${projectId} from Tunnel projects…`;
+        syncTunnelProjectUi();
+        try {
+            const requestUrl = new URL(url, window.location.href);
+            requestUrl.searchParams.set("platform", requestedPlatform);
+            const payload = await tunnelRequestJson(requestUrl.toString(), {
+                method: "POST",
+                body: JSON.stringify({project_id: projectId, expected_revision: expectedRevision}),
+            });
+            if (operationRevision !== tunnelProjectSaveRevision) return true;
+            const returnedContext = safeTunnelProjectContext(payload.project_context);
+            if (
+                returnedContext.revision <= expectedRevision
+                || returnedContext.projects.some((item) => item.id === projectId)
+            ) {
+                throw new Error("The server did not confirm the removed Tunnel project.");
+            }
+            tunnelProjectPathTouched = false;
+            if (!applyTunnelStatus(payload, requestedPlatform)) {
+                throw new Error("The server returned an invalid project removal response.");
+            }
+            tunnelProjectNotice = "";
+            syncTunnelProjectUi();
+            const nextRows = elements.tunnelProjectList?.querySelectorAll(
+                "[data-agent-tunnel-project-row]",
+            );
+            const nextRow = nextRows?.[Math.min(rowIndex, nextRows.length - 1)];
+            (nextRow?.querySelector("[data-agent-tunnel-project-remove]")
+                || elements.tunnelProjectPath)?.focus({preventScroll: true});
+            scheduleTunnelPoll();
+            return true;
+        } catch (error) {
+            if (operationRevision !== tunnelProjectSaveRevision) return false;
+            if (error?.payload?.project_context) {
+                adoptTunnelProjectContext(error.payload.project_context);
+            }
+            tunnelProjectNotice = String(
+                error?.message || "Unable to remove this Tunnel project mapping.",
+            );
+            syncTunnelProjectUi();
+            return false;
+        } finally {
+            if (operationRevision === tunnelProjectSaveRevision) {
+                tunnelProjectBusy = false;
+                syncTunnelProjectUi();
+            }
+        }
     }
 
     async function registerTunnelProjectPath(path) {
@@ -1911,8 +1990,7 @@
                 elements.tunnelProjectPath.value = path;
                 tunnelProjectPathTouched = true;
             }
-            const current = tunnelProjectContext.current;
-            tunnelProjectNotice = current ? `Current project saved as ${current.id}.` : "";
+            tunnelProjectNotice = "";
             syncTunnelProjectUi();
             scheduleTunnelPoll();
             return true;
@@ -1948,10 +2026,7 @@
         const selected = tunnelProjectContext.selectedProjectIds.includes(project.id)
             ? tunnelProjectContext.selectedProjectIds
             : [...tunnelProjectContext.selectedProjectIds, project.id];
-        return saveTunnelProjectSelection(project.id, selected, {
-            path: normalizedPath,
-            successMessage: `Current project saved as ${project.id}.`,
-        });
+        return saveTunnelProjectSelection(project.id, selected, {path: normalizedPath});
     }
 
     async function reconnectTunnel() {
@@ -3512,6 +3587,12 @@
     function initializeTunnelProjectSelector() {
         const list = elements.tunnelProjectList;
         if (!list) return;
+        list.addEventListener("click", (event) => {
+            if (!(event.target instanceof Element)) return;
+            const button = event.target.closest("[data-agent-tunnel-project-remove]");
+            if (!(button instanceof HTMLButtonElement)) return;
+            void removeTunnelProject(String(button.dataset.agentTunnelProjectRemove || ""));
+        });
         list.addEventListener("change", (event) => {
             if (!(event.target instanceof Element)) return;
             const checkbox = event.target.closest("[data-agent-tunnel-project-checkbox]");

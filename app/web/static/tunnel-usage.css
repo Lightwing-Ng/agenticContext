@@ -1,4 +1,4 @@
-/* Code version: v1.4.3-codex.0 */
+/* Code version: v1.5.1-codex.0 */
 /*
  * Worthward allocation badge adapter.
  * Source: foundation/tokens.css v0.46.0 and views/investment-tables.css v1.1.1.
@@ -134,6 +134,7 @@
 .agent-tunnel-project-fieldset > legend {
     margin-block-end: 4px;
     padding: 0;
+    font-size: var(--font-ui-lg);
 }
 
 .agent-tunnel-project-list {
@@ -147,18 +148,59 @@
 }
 
 .agent-tunnel-project-option {
-    padding-block: 3px;
+    padding-block: 2px;
+}
+
+.agent-tunnel-project-identity {
+    align-self: center;
+}
+
+.agent-tunnel-project-trailing {
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 
 .agent-tunnel-project-option + .agent-tunnel-project-option {
-    border-block-start: 1px solid var(--theme-glass-border);
+    box-shadow: inset 0 1px var(--theme-glass-border);
 }
 
 .agent-tunnel-project-access {
-    grid-column: 2;
     color: var(--muted);
     font-size: var(--font-ui-sm);
     white-space: nowrap;
+}
+
+.agent-tunnel-project-remove {
+    --circular-icon-button-size: 24px;
+    opacity: 0;
+    transition: opacity 160ms var(--motion-standard), background 160ms var(--motion-standard), color 160ms var(--motion-standard);
+}
+
+.agent-tunnel-project-option:hover .agent-tunnel-project-remove,
+.agent-tunnel-project-remove:focus-visible {
+    opacity: 1;
+}
+
+.agent-tunnel-project-remove:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+}
+
+.agent-tunnel-project-remove-icon {
+    width: 12px;
+    height: 12px;
+    background: currentColor;
+    mask: url("/static/images/xmark.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/xmark.svg") center/contain no-repeat;
+}
+
+@media (hover: none) {
+    .agent-tunnel-project-remove {
+        opacity: 1;
+    }
 }
 
 .agent-tunnel-project-status {

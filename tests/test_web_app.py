@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.142.4-codex.0
+# Code version: v1.143.0-codex.0
 
 from __future__ import annotations
 
@@ -2243,6 +2243,111 @@ class WebAppTests(unittest.TestCase):
                 )
                 self.assertEqual(overlapping.status_code, 400)
 
+    def test_tunnel_project_removal_revokes_mapping_and_preserves_folder(self) -> None:
+        """Removing even the final mapping must not revive an implicit fallback."""
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "first"
+            second = root / "second"
+            first.mkdir()
+            second.mkdir()
+            (first / "keep.txt").write_text("keep", encoding="utf-8")
+            registry_path = root / "settings" / "tunnel-projects.json"
+            registry_path.parent.mkdir()
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "projects": [
+                            {"id": "alpha", "root": str(first), "writable": True},
+                            {"id": "beta", "root": str(second), "writable": True},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            with app.test_client() as client:
+                selected = client.post(
+                    "/api/agent/tunnel/project",
+                    json={
+                        "project_id": "alpha",
+                        "selected_project_ids": ["alpha", "beta"],
+                        "expected_revision": 0,
+                    },
+                )
+                self.assertEqual(selected.status_code, 200)
+
+                stale = client.post(
+                    "/api/agent/tunnel/project/unregister",
+                    json={
+                        "project_id": "alpha",
+                        "expected_revision": 0,
+                    },
+                )
+                self.assertEqual(stale.status_code, 409)
+                self.assertEqual(
+                    len(json.loads(registry_path.read_text())["projects"]), 2
+                )
+
+                removed = client.post(
+                    "/api/agent/tunnel/project/unregister",
+                    json={
+                        "project_id": "alpha",
+                        "expected_revision": 1,
+                    },
+                )
+                self.assertEqual(removed.status_code, 200)
+                context = removed.get_json()["project_context"]
+                self.assertEqual(context["revision"], 2)
+                self.assertEqual(context["current"]["id"], "beta")
+                self.assertEqual(context["selected_project_ids"], ["beta"])
+                self.assertEqual([item["id"] for item in context["projects"]], ["beta"])
+                self.assertTrue((first / "keep.txt").is_file())
+                self.assertEqual(
+                    len(json.loads(registry_path.read_text())["projects"]), 1
+                )
+
+                last = client.post(
+                    "/api/agent/tunnel/project/unregister",
+                    json={
+                        "project_id": "beta",
+                        "expected_revision": 2,
+                    },
+                )
+                self.assertEqual(last.status_code, 200)
+                context = last.get_json()["project_context"]
+                self.assertEqual(context["revision"], 3)
+                self.assertIsNone(context["current"])
+                self.assertEqual(context["projects"], [])
+                self.assertEqual(context["selected_project_ids"], [])
+                self.assertEqual(context["problem"], "")
+                self.assertEqual(json.loads(registry_path.read_text())["projects"], [])
+                self.assertTrue(second.is_dir())
+                self.assertEqual(
+                    app.extensions["tunnel_mcp_service"].registry.projects(str(first)),
+                    (),
+                )
+
+                restored = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={
+                        "path": str(first),
+                        "expected_revision": 3,
+                    },
+                )
+                self.assertEqual(restored.status_code, 200)
+                self.assertEqual(
+                    restored.get_json()["project_context"]["current"]["id"],
+                    "first",
+                )
+
     def test_tunnel_same_credentials_trigger_recovery_and_writable_availability(self) -> None:
         """A deliberate re-save recovers the client and write access is truthful."""
         from app.core.tunnel_projects import TunnelProject, project_availability
@@ -3107,9 +3212,6 @@ class WebAppTests(unittest.TestCase):
     def test_gemini_tunnel_authorization_client_requires_an_explicit_decision(self) -> None:
         script = COMPUTER_USE_AGENT_SCRIPT_PATH.read_text(encoding="utf-8")
 
-        self.assertTrue(
-            script.startswith("/* Code version: v3.66.3-codex.0 */")
-        )
         for fragment in (
             'geminiAuthorization: document.querySelector("[data-agent-gemini-authorization]")',
             'geminiRedirectUri: document.querySelector("[data-agent-gemini-redirect-uri]")',

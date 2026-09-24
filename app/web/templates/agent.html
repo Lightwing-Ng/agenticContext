@@ -1,4 +1,4 @@
-<!-- Code version: v3.77.7-codex.0 -->
+<!-- Code version: v3.78.1-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.150.3-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.4.3-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.5.1-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -78,6 +78,7 @@
                     data-agent-tunnel-project-field
                     data-agent-tunnel-project-url="{{ url_for('tunnel.api_project') }}"
                     data-agent-tunnel-project-register-url="{{ url_for('tunnel.api_project_register') }}"
+                    data-agent-tunnel-project-unregister-url="{{ url_for('tunnel.api_project_unregister') }}"
                     data-agent-tunnel-project-initial='{{ tunnel_project_context | tojson }}'
                     {% if connection_mode != 'tunnel' %}hidden{% endif %}
                 >
@@ -129,9 +130,14 @@
                                     <span class="selection-list-mark" aria-hidden="true"></span>
                                     <span class="selection-list-name">{{ project.id }}</span>
                                 </label>
-                                {% if project_selected and not project.writable %}
-                                <span class="agent-tunnel-project-access" id="agent_tunnel_project_access_{{ loop.index }}" data-agent-tunnel-project-access>Read only</span>
-                                {% endif %}
+                                <span class="agent-tunnel-project-trailing">
+                                    {% if project_selected and not project.writable %}
+                                    <span class="agent-tunnel-project-access" id="agent_tunnel_project_access_{{ loop.index }}" data-agent-tunnel-project-access>Read only</span>
+                                    {% endif %}
+                                    {% if project.registered %}
+                                    <button class="circular-icon-button agent-tunnel-project-remove" type="button" data-agent-tunnel-project-remove="{{ project.id }}" aria-label="Remove {{ project.id }} from Tunnel projects" title="Remove {{ project.id }} from Tunnel projects"><span class="agent-tunnel-project-remove-icon" aria-hidden="true"></span></button>
+                                    {% endif %}
+                                </span>
                             </div>
                             {% endfor %}
                         </div>
@@ -760,6 +766,6 @@ Task:
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.66.4-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.67.0-codex.0') }}"></script>
 </body>
 </html>

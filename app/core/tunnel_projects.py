@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.5.0-codex.0
+Code version: v1.6.0-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -241,9 +241,9 @@ def parse_project_registry(payload: Any) -> tuple[TunnelProject, ...]:
     if payload.get("schema_version") != TUNNEL_PROJECTS_SCHEMA_VERSION:
         raise ProjectRegistryError("The project registry must use schema_version 1.")
     entries = payload.get("projects")
-    if not isinstance(entries, list) or not 1 <= len(entries) <= MAX_TUNNEL_PROJECTS:
+    if not isinstance(entries, list) or len(entries) > MAX_TUNNEL_PROJECTS:
         raise ProjectRegistryError(
-            f"The project registry must list 1 to {MAX_TUNNEL_PROJECTS} projects."
+            f"The project registry must list at most {MAX_TUNNEL_PROJECTS} projects."
         )
     projects: list[TunnelProject] = []
     seen_ids: set[str] = set()
@@ -388,19 +388,41 @@ class ProjectRegistry:
                 project_id = f"{base}-{suffix}"
                 suffix += 1
             entries.append({"id": project_id, "root": str(root), "writable": True})
-            payload = {"schema_version": TUNNEL_PROJECTS_SCHEMA_VERSION, "projects": entries}
-            parse_project_registry(payload)
-            path = self.path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
+            self._write_projects(entries)
             return self.resolve(project_id, fallback_workspace)
+
+    def unregister(self, project_id: str) -> tuple[TunnelProject, ...]:
+        """Revoke one exact registry mapping without touching its project folder."""
+        _validate_project_id(project_id, "Project")
+        with self._register_lock:
+            if self.uses_fallback():
+                raise ProjectRegistryError(
+                    "Register a Tunnel project before removing it."
+                )
+            projects = self.projects()
+            if not any(project.id == project_id for project in projects):
+                raise ProjectRegistryError(f"Unknown project: {project_id[:64]}.")
+            entries = json.loads(self.path.read_text(encoding="utf-8"))["projects"]
+            remaining = [entry for entry in entries if entry["id"] != project_id]
+            self._write_projects(remaining)
+            return self.projects()
+
+    def _write_projects(self, entries: list[dict[str, Any]]) -> None:
+        payload = {
+            "schema_version": TUNNEL_PROJECTS_SCHEMA_VERSION,
+            "projects": entries,
+        }
+        parse_project_registry(payload)
+        path = self.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
 
     def resolve(self, project_id: Any, fallback_workspace: str = "") -> TunnelProject:
         """Return the registered authority with exactly this identifier.
@@ -483,7 +505,7 @@ class ProjectSelectionStore:
         selected_project_ids: tuple[str, ...] | None
         if raw_selected is None and payload.get("schema_version") == TUNNEL_SELECTION_LEGACY_SCHEMA_VERSION:
             selected_project_ids = None
-        elif not isinstance(raw_selected, list) or not raw_selected:
+        elif not isinstance(raw_selected, list) or (not raw_selected and project_id):
             return ProjectSelection()
         else:
             normalized: list[str] = []
@@ -518,7 +540,12 @@ class ProjectSelectionStore:
         expected_revision: int | None = None,
     ) -> ProjectSelection:
         """Atomically save the preferred set and current id with revision CAS."""
-        _validate_project_id(project_id, "Selected project")
+        if project_id:
+            _validate_project_id(project_id, "Selected project")
+        elif selected_project_ids is None or len(selected_project_ids) != 0:
+            raise ProjectRegistryError(
+                "An empty current project requires an empty selection."
+            )
         with self._lock:
             current = self.load()
             if expected_revision is not None and expected_revision != current.revision:
@@ -544,14 +571,14 @@ class ProjectSelectionStore:
                         )
                     seen.add(folded)
                     normalized.append(selected_id)
-                if not normalized:
+                if not normalized and project_id:
                     raise ProjectRegistryError("Select at least one Tunnel project.")
                 if len(normalized) > MAX_TUNNEL_PROJECTS:
                     raise ProjectRegistryError(
                         f"Select at most {MAX_TUNNEL_PROJECTS} Tunnel projects."
                     )
                 selected = tuple(normalized)
-            if selected is not None and project_id not in selected:
+            if project_id and selected is not None and project_id not in selected:
                 raise ProjectRegistryError(
                     "The current Tunnel project must also be selected."
                 )

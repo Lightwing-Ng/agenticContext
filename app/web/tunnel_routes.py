@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.9.2-codex.0
+# Code version: v1.10.0-codex.0
 
 from __future__ import annotations
 
@@ -472,7 +472,7 @@ def _local_project_context(
         by_id[project.id] = record
 
     current_record = None
-    current_problem = resolved.problem
+    current_problem = resolved.problem if projects else ""
     if resolved.project is not None:
         current_record = {
             **by_id[resolved.project.id],
@@ -1104,6 +1104,70 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                         "configuration folder and try again."
                     )
                 }
+            ), 500
+
+        platform = str(request.args.get("platform") or "chatgpt").strip().lower()
+        if platform not in {"chatgpt", "gemini"}:
+            platform = "chatgpt"
+        return jsonify(status_payload(platform))
+
+    @blueprint.post("/api/agent/tunnel/project/unregister")
+    def api_project_unregister():
+        """Revoke one local Tunnel mapping while retaining its folder on disk."""
+        context.require_local_agent_request()
+        payload = request.get_json(silent=True)
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"project_id", "expected_revision"}
+            or not isinstance(payload.get("project_id"), str)
+            or not isinstance(payload.get("expected_revision"), int)
+            or isinstance(payload.get("expected_revision"), bool)
+            or payload["expected_revision"] < 0
+        ):
+            return jsonify(
+                {"error": "Send a project_id and a non-negative expected_revision."}
+            ), 400
+
+        registry = context.tunnel_mcp_service.registry
+        selection_store = context.tunnel_mcp_service.selection_store
+        try:
+            selection = selection_store.load()
+            if selection.revision != payload["expected_revision"]:
+                raise ProjectSelectionConflict(
+                    "The current project changed in another window. Review the selection "
+                    "and choose again."
+                )
+            projects = registry.projects()
+            preferred_ids = [item.id for item in selected_projects(projects, selection)]
+            remaining = registry.unregister(payload["project_id"])
+            remaining_ids = {item.id for item in remaining}
+            selected_ids = [item for item in preferred_ids if item in remaining_ids]
+            if remaining and not selected_ids:
+                selected_ids = [remaining[0].id]
+            if selection.project_id in selected_ids:
+                current_id = selection.project_id
+            else:
+                current_id = selected_ids[0] if selected_ids else ""
+            selection_store.save(
+                current_id,
+                selected_project_ids=selected_ids,
+                expected_revision=payload["expected_revision"],
+            )
+        except ProjectSelectionConflict as exc:
+            return jsonify(
+                {
+                    "error": str(exc),
+                    "project_context": _local_project_context(
+                        context.settings_store,
+                        context.tunnel_mcp_service,
+                    ),
+                }
+            ), 409
+        except ProjectRegistryError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except (OSError, ValueError, KeyError, TypeError):
+            return jsonify(
+                {"error": "The Tunnel project mapping could not be removed. Try again."}
             ), 500
 
         platform = str(request.args.get("platform") or "chatgpt").strip().lower()
