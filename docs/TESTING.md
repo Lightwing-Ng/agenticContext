@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.25.5-codex.1`
+Documentation version: `v1.26.0-claude.0`
 
 ## Supported commands
 
@@ -146,9 +146,21 @@ Run the Secure MCP Tunnel contract independently with:
   tests/test_tunnel_checks.py \
   tests/test_tunnel_runtime.py \
   tests/test_tunnel_credentials.py \
+  tests/test_owner_only_files.py \
+  tests/test_tunnel_credential_errors_e2e.py \
   tests/test_gemini_tunnel.py \
   tests/test_tunnel_workflow_e2e.py
 ```
+
+Host-parity tests cover both operating systems from either host. Simulated Windows tests model the
+protected DACL, the WinINet proxy setting, and handle-held orphan confirmation, including ACL
+refusal, inherited or shared DACLs, a PID reused before either signal, and a failed process scan.
+The macOS run also stops a real orphaned process while sparing a lookalike. Tests marked for native
+Windows read the real DACL, compare the proxy with `urllib.request.getproxies_registry()`, and
+terminate a real owned process through WMI and a process handle; they run only on the Windows
+quality gate. The credential-error browser test proves at desktop, narrow, and short viewports that
+a refused save is announced in the Tunnel status line without horizontal overflow, and that the
+next edit retracts it while rejected field values remain field markers only.
 
 The Tunnel tests pin the exact fourteen-tool public catalog, closed-schema enforcement,
 discovery/dispatcher agreement, rejection of removed compatibility names, direct invocation

@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.36.5-codex.0`
+Documentation version: `v1.37.0-claude.0`
 
 ## Launch
 
@@ -375,13 +375,28 @@ Runtime behavior:
   the saved pair. Test and isolated app instances never start `tunnel-client`.
 - State lives in `tunnel/` beside `settings.json`: the pinned client under `tools/`, the client log
   (`tunnel-client.log`, previous run in `.log.1`), its pid file, health URL, a per-start bearer
-  token file (`0600`), durable check jobs, and mutation request records. A client left behind by a
-  killed service is found by its state path and stopped before a new one starts.
+  token file, durable check jobs, and mutation request records. The bearer file and
+  `tunnel-credentials.json` are owner-only on both hosts: mode `0600` on macOS and a protected DACL
+  granting only the current Windows user on Windows. Both are verified before any secret byte is
+  written, and a save that cannot establish the boundary is refused rather than stored more
+  widely. The Tunnel status line reports that refusal, and any other storage or transport save
+  failure, until the next credential edit; narrow layouts show it in the sidebar with the rest of
+  the Tunnel status. A file saved before this boundary existed is narrowed when it is next read.
+- A client left behind by a killed service is stopped before a new one starts, on macOS and Windows
+  alike. Ownership requires a `tunnel-client run` command whose `--pid.file` and
+  `--health.url-file` arguments are this state folder's files. Each candidate's process start time
+  is re-read immediately before it is signaled; Windows additionally holds a process handle while
+  confirming ownership, so a reused PID or an unrelated process is never stopped. A failed process
+  scan is logged and does not block the new client. On Windows the scan uses one short PowerShell
+  WMI query, plus a confirmation query only when a candidate exists.
 - The API key reaches the child only as `CONTROL_PLANE_API_KEY`. The child receives a strict
   cross-platform allowlist of process, locale, temporary-directory, and CA-certificate variables;
   unrelated host credentials are not inherited. The control-plane proxy comes from
-  `HTTPS_PROXY`/`HTTP_PROXY` or, on macOS, the system proxy; loopback is always exempt so MCP
-  traffic stays local.
+  `HTTPS_PROXY`/`HTTP_PROXY`, or otherwise from the manual system proxy: macOS System Settings or
+  the Windows user Internet Options, each preferring the HTTPS entry over HTTP. Automatic proxy
+  configuration (PAC or WPAD), SOCKS-only entries, and the machine-wide WinHTTP proxy are not
+  evaluated; set `HTTPS_PROXY` for those networks. Loopback is always exempt so MCP traffic stays
+  local.
 - `/mcp` accepts only loopback callers that present the current bearer token. `GET /mcp` returns
   405 (no SSE stream). An `OAuth discovery failed` warning in the client log is expected: the app
   uses No auth, so no OAuth metadata is published and readiness does not depend on it.

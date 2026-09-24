@@ -1,6 +1,20 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.25.0-claude.0`
+Documentation version: `v1.26.0-claude.0`
+
+## Tunnel host parity for Windows and macOS on 24 Sep 2026
+
+- Orphaned `tunnel-client` recovery previously ran only on POSIX. It now runs on Windows too, and
+  on both hosts it stops only a `run` process whose pid-file and health-file arguments belong to
+  this state folder, after re-verifying the process start time. Windows confirms ownership while
+  holding a process handle, which prevents PID reuse from redirecting the termination.
+- Without proxy environment variables, Windows now passes the manual Internet Options proxy to the
+  child, matching the macOS System Settings behavior. PAC, WPAD, SOCKS-only, and WinHTTP proxies
+  remain unsupported on both hosts.
+- `tunnel-credentials.json` and the per-start bearer file now carry a verified protected
+  owner-only DACL on Windows, equivalent to mode `0600` on macOS. Legacy files are narrowed on the
+  next read. Other local stores, including the Gemini Tunnel record, still rely on the inherited
+  Windows ACL described under Windows host operating constraints.
 
 ## Windows controller delete fallback on 23 Sep 2026
 
@@ -96,7 +110,8 @@ Documentation version: `v1.25.0-claude.0`
 - Safari is macOS-only and is normalized away on Windows (`normalize_host_browser` in
   `app/core/config.py`); Agent sessions on Windows require Edge or Chrome.
 - Windows file permissions use inherited ACLs rather than the explicit POSIX `0700`/`0600` mode
-  bits applied on macOS. Local stores inherit the containing directory's ACL.
+  bits applied on macOS. Local stores inherit the containing directory's ACL, except the OpenAI
+  Tunnel credential and bearer files, which carry a verified owner-only DACL.
 - Prefer the `py -3` launcher on Windows; the resolver also accepts a `python` command that
   resolves to Python 3.13 or newer. Do not assume `python3` exists. `AGENTIC_CONTEXT_PYTHON`
   overrides the resolver on both platforms.

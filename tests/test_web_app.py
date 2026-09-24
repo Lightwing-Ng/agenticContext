@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.143.5-codex.0
+# Code version: v1.143.6-claude.0
 
 from __future__ import annotations
 
@@ -1305,7 +1305,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
         self.assertIn('selection-list.css?v=selection-list-v1.0.0-codex.0', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.67.2-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.67.3-claude.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -3580,7 +3580,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.67.2-codex.0',
+            'computer-use-agent-v3.67.3-claude.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',

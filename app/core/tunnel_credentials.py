@@ -1,22 +1,31 @@
 """Local storage for the OpenAI Secure MCP Tunnel credential pair.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-claude.0
 
 The Tunnel connection lets ChatGPT reach this computer through an OpenAI
 platform Tunnel. It needs a Tunnel ID (``tunnel_...``) and an API key that is
 authorized for that Tunnel. The pair lives in its own owner-only file next to
 the regular settings so the unencrypted API key never enters ``settings.json``
-and is never rendered back into the UI.
+and is never rendered back into the UI. The file uses the same owner-only
+boundary on every host: mode ``0600`` on POSIX and a protected current-user DACL
+on Windows (see ``owner_only_files``).
 """
 
 from __future__ import annotations
 
 import json
-import os
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import default_settings_path
+from app.core.owner_only_files import (
+    ensure_owner_only,
+    owner_only_problem,
+    write_owner_only_text,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 TUNNEL_CREDENTIALS_FILENAME = "tunnel-credentials.json"
 TUNNEL_SUPPORTED_PLATFORMS = frozenset({"chatgpt", "gemini"})
@@ -58,25 +67,31 @@ def load_tunnel_credentials(path: Path | None = None) -> TunnelCredentials:
         return TunnelCredentials()
     if not isinstance(payload, dict):
         return TunnelCredentials()
+    _narrow_legacy_file(resolved_path)
     return TunnelCredentials(
         tunnel_id=str(payload.get("tunnel_id") or "").strip(),
         api_key=str(payload.get("api_key") or "").strip(),
     )
 
 
+def _narrow_legacy_file(path: Path) -> None:
+    """Bring a file saved before the shared boundary under it, without failing a read."""
+    if not owner_only_problem(path):
+        return
+    try:
+        ensure_owner_only(path)
+    except OSError as exc:
+        LOGGER.warning("Tunnel credentials are not owner-only: %s", exc)
+
+
 def save_tunnel_credentials(
     credentials: TunnelCredentials,
     path: Path | None = None,
 ) -> None:
-    """Atomically persist the pair with owner-only permissions."""
+    """Atomically persist the pair; raise ``OSError`` rather than widen access."""
     resolved_path = path if path is not None else default_tunnel_credentials_path()
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = resolved_path.with_name(f".{resolved_path.name}.tmp")
     payload = {"tunnel_id": credentials.tunnel_id, "api_key": credentials.api_key}
-    file_descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(file_descriptor, "w") as handle:
-        json.dump(payload, handle, indent=2)
-    os.replace(temporary_path, resolved_path)
+    write_owner_only_text(resolved_path, json.dumps(payload, indent=2))
 
 
 def merge_tunnel_credentials(

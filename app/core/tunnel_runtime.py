@@ -1,6 +1,6 @@
 """Supervise OpenAI's tunnel-client so ChatGPT can reach the local MCP endpoint.
 
-Code version: v1.6.2-codex.0
+Code version: v1.7.0-claude.0
 
 The Tunnel connection has three parts:
 
@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.core.owner_only_files import write_owner_only_text
 from app.core.tunnel_credentials import TunnelCredentials
 
 LOGGER = logging.getLogger(__name__)
@@ -61,6 +62,9 @@ TUNNEL_MAX_BACKOFF_SECONDS = 60.0
 TUNNEL_BACKOFF_RESET_SECONDS = 30.0
 TUNNEL_MAX_UNCERTAIN_CALLS = 20
 TUNNEL_ID_PREFIX = "tunnel_"
+TUNNEL_ORPHAN_STOP_SECONDS = 5.0
+TUNNEL_PROCESS_QUERY_TIMEOUT_SECONDS = 15.0
+WINDOWS_INTERNET_SETTINGS_KEY = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 LOOPBACK_NO_PROXY = "127.0.0.1,localhost,::1"
 TUNNEL_ENVIRONMENT_PASSTHROUGH = frozenset(
     {
@@ -354,12 +358,67 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _proxy_url(value: str) -> str:
+    value = value.strip()
+    if not value or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", value):
+        return value
+    return f"http://{value}"
+
+
+def proxy_from_windows_settings(enabled: object, server: object) -> str:
+    """Return the manual WinINet HTTPS-then-HTTP proxy, matching the macOS order.
+
+    ``ProxyServer`` is either one ``host:port`` for every scheme or a
+    ``scheme=host:port`` list separated by semicolons. Automatic configuration
+    (PAC or WPAD) is not evaluated on either host.
+    """
+    try:
+        if not int(str(enabled or 0).strip() or 0):
+            return ""
+    except ValueError:
+        return ""
+    text = str(server or "").strip()
+    if not text:
+        return ""
+    if "=" not in text:
+        return _proxy_url(text.split(";", 1)[0])
+    entries: dict[str, str] = {}
+    for entry in text.split(";"):
+        scheme, separator, address = entry.partition("=")
+        if separator and address.strip():
+            entries.setdefault(scheme.strip().lower(), address.strip())
+    for scheme in ("https", "http"):
+        if entries.get(scheme):
+            return _proxy_url(entries[scheme])
+    return ""
+
+
+def _windows_system_proxy() -> str:
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WINDOWS_INTERNET_SETTINGS_KEY) as key:
+            enabled = winreg.QueryValueEx(key, "ProxyEnable")[0]
+            server = winreg.QueryValueEx(key, "ProxyServer")[0]
+    except (ImportError, OSError):
+        return ""
+    return proxy_from_windows_settings(enabled, server)
+
+
 def detect_outbound_proxy() -> str:
-    """Return the HTTPS proxy the control plane should use, or an empty string."""
+    """Return the HTTPS proxy the control plane should use, or an empty string.
+
+    Environment variables win on every host. Without them, the manual system
+    proxy is read from macOS System Settings or the Windows user Internet
+    Options, so both hosts reach the control plane through the same proxy the
+    browser uses.
+    """
     for name in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
         value = os.environ.get(name, "").strip()
         if value:
             return value
+    if os.name == "nt":
+        return _windows_system_proxy()
     if sys.platform != "darwin":
         return ""
     try:
@@ -1136,7 +1195,7 @@ class TunnelRuntime:
                 if not self._current(generation):
                     return None
                 self._authorization = f"Bearer {secrets.token_urlsafe(32)}"
-                _write_owner_only(self._authorization_path, self._authorization)
+                write_owner_only_text(self._authorization_path, self._authorization)
                 self._health_url = ""
                 self._health_url_path.unlink(missing_ok=True)
                 if self.log_path.exists():
@@ -1279,48 +1338,33 @@ class TunnelRuntime:
             self._restart_timer.cancel()
             self._restart_timer = None
 
+    def _is_owned_client_command(self, command: str) -> bool:
+        """Match only a ``tunnel-client run`` launched for this exact state folder."""
+        return _owned_client_command(
+            command,
+            pid_path=self._pid_path,
+            health_url_path=self._health_url_path,
+        )
+
     def _stop_orphan(self) -> None:
         """Stop clients left behind by a previous service that was killed.
 
         A client deletes its own pid file on a clean exit, so the process table is
-        scanned too; only commands that reference this service's state folder match.
+        scanned too. Ownership requires this state folder's pid-file and health-file
+        arguments; each process identity is re-verified before it is signaled, so a
+        reused PID or an unrelated process is never stopped.
         """
-        if os.name == "nt":
-            return
         try:
-            listing = subprocess.run(
-                ["ps", "-ww", "-ax", "-o", "pid=,command="],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            ).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            return
-        marker = str(self._state_root)
-        orphans = []
-        for line in listing.splitlines():
-            pid_text, _, command = line.strip().partition(" ")
-            if (
-                pid_text.isdigit()
-                and int(pid_text) != os.getpid()
-                and "tunnel-client" in command
-                and " run " in command
-                and marker in command
-            ):
-                orphans.append(int(pid_text))
-        for pid in orphans:
-            LOGGER.info("Stopping orphaned tunnel-client %s", pid)
-            try:
-                os.kill(pid, signal.SIGTERM)
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline:
-                    os.kill(pid, 0)
-                    time.sleep(0.1)
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-        self._pid_path.unlink(missing_ok=True)
+            if os.name == "nt":
+                _stop_owned_windows_clients(self._is_owned_client_command)
+            else:
+                _stop_owned_posix_clients(self._is_owned_client_command)
+        except Exception:
+            LOGGER.warning("Orphaned tunnel-client recovery failed.", exc_info=True)
+        try:
+            self._pid_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _last_log_problem(self) -> str:
         """Return the newest warning or error from the client's JSON log."""
@@ -1549,17 +1593,218 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=5)
 
 
-def _write_owner_only(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w") as handle:
-        handle.write(content)
-    os.replace(temporary, path)
+@dataclass(frozen=True, slots=True)
+class ClientProcess:
+    """One process-table entry; ``identity`` is its start time, fixed for its life."""
+
+    pid: int
+    identity: str
+    command: str
+
+
+def _command_has_option(command: str, option: str, value: Path) -> bool:
+    expected = str(value)
+    candidates = (f"{option} {expected}", f'{option} "{expected}"')
+    if os.name == "nt":
+        folded = command.casefold()
+        return any(candidate.casefold() in folded for candidate in candidates)
+    return any(candidate in command for candidate in candidates)
+
+
+def _owned_client_command(command: str, *, pid_path: Path, health_url_path: Path) -> bool:
+    return (
+        "tunnel-client" in command.casefold()
+        and " run " in f" {command} "
+        and _command_has_option(command, "--pid.file", pid_path)
+        and _command_has_option(command, "--health.url-file", health_url_path)
+    )
+
+
+def _posix_process_table(pids: tuple[int, ...] = ()) -> list[ClientProcess]:
+    """Read PID, start time, and command; ``lstart`` is stable for a process's life."""
+    command = ["ps", "-ww", "-o", "pid=,lstart=,command="]
+    command[2:2] = ["-p", ",".join(str(pid) for pid in pids)] if pids else ["-ax"]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=TUNNEL_PROCESS_QUERY_TIMEOUT_SECONDS,
+        check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    records = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 6)
+        if len(parts) == 7 and parts[0].isdigit():
+            records.append(ClientProcess(int(parts[0]), " ".join(parts[1:6]), parts[6]))
+    return records
+
+
+def _stop_owned_posix_clients(
+    owned: Callable[[str], bool],
+    *,
+    process_table: Callable[..., list[ClientProcess]] = _posix_process_table,
+    send_signal: Callable[[int, int], None] = os.kill,
+    sleep: Callable[[float], None] = time.sleep,
+    stop_seconds: float = TUNNEL_ORPHAN_STOP_SECONDS,
+) -> list[int]:
+    """Signal each owned client only while its PID still has the same start time."""
+
+    def same_process(record: ClientProcess) -> bool:
+        return any(
+            current == record for current in process_table((record.pid,))
+        )
+
+    stopped = []
+    for record in process_table():
+        if record.pid == os.getpid() or not owned(record.command):
+            continue
+        if not same_process(record):
+            continue
+        LOGGER.info("Stopping orphaned tunnel-client %s", record.pid)
+        try:
+            send_signal(record.pid, signal.SIGTERM)
+        except OSError:
+            continue
+        deadline = time.monotonic() + stop_seconds
+        while time.monotonic() < deadline and same_process(record):
+            sleep(0.1)
+        if same_process(record):
+            try:
+                send_signal(record.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        stopped.append(record.pid)
+    return stopped
+
+
+_WINDOWS_PROCESS_QUERY = (
+    "$ErrorActionPreference='Stop';"
+    "$filter=$env:AGENTIC_CONTEXT_PROCESS_FILTER;"
+    "@(Get-CimInstance Win32_Process -Filter $filter | ForEach-Object {"
+    "[pscustomobject]@{pid=[int]$_.ProcessId;"
+    "created=[string]$_.CreationDate.ToFileTimeUtc();"
+    "command=[string]$_.CommandLine}}) | ConvertTo-Json -Compress"
+)
+
+
+def _windows_process_table(pids: tuple[int, ...] = ()) -> list[ClientProcess]:
+    """Query WMI for owned-client candidates, or for the exact PIDs being confirmed."""
+    process_filter = (
+        " OR ".join(f"ProcessId={int(pid)}" for pid in pids)
+        if pids
+        else "Name LIKE '%tunnel-client%'"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _WINDOWS_PROCESS_QUERY],
+        capture_output=True,
+        text=True,
+        timeout=TUNNEL_PROCESS_QUERY_TIMEOUT_SECONDS,
+        check=False,
+        env={**os.environ, "AGENTIC_CONTEXT_PROCESS_FILTER": process_filter},
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0:
+        raise OSError("The Windows process table could not be read.")
+    payload = json.loads(result.stdout or "[]")
+    if isinstance(payload, dict):
+        payload = [payload]
+    return [
+        ClientProcess(int(item["pid"]), str(item.get("created") or ""), str(item.get("command") or ""))
+        for item in payload
+        if isinstance(item, dict) and str(item.get("pid", "")).isdigit()
+    ]
+
+
+class _WindowsProcessApi:
+    """Hold a process handle so its PID cannot be reused until the handle closes."""
+
+    PROCESS_TERMINATE = 0x0001
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    SYNCHRONIZE = 0x00100000
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._open = kernel32.OpenProcess
+        self._open.restype = wintypes.HANDLE
+        self._open.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        self._terminate = kernel32.TerminateProcess
+        self._terminate.restype = wintypes.BOOL
+        self._terminate.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        self._wait = kernel32.WaitForSingleObject
+        self._wait.restype = wintypes.DWORD
+        self._wait.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self._close = kernel32.CloseHandle
+        self._close.restype = wintypes.BOOL
+        self._close.argtypes = [wintypes.HANDLE]
+
+    def open(self, pid: int) -> Any:
+        return self._open(
+            self.PROCESS_TERMINATE | self.PROCESS_QUERY_LIMITED_INFORMATION | self.SYNCHRONIZE,
+            False,
+            pid,
+        ) or None
+
+    def terminate(self, handle: Any, timeout_seconds: float) -> None:
+        if self._terminate(handle, 1):
+            self._wait(handle, int(timeout_seconds * 1000))
+
+    def close(self, handle: Any) -> None:
+        self._close(handle)
+
+
+def _stop_owned_windows_clients(
+    owned: Callable[[str], bool],
+    *,
+    process_table: Callable[..., list[ClientProcess]] = _windows_process_table,
+    process_api: Any = None,
+    stop_seconds: float = TUNNEL_ORPHAN_STOP_SECONDS,
+) -> list[int]:
+    """Terminate owned clients through handles opened before ownership is confirmed.
+
+    Windows does not reuse a PID while any handle to its process is open. The
+    process table is therefore read again after the handles are open; only a
+    handle whose PID still reports the same start time and owned command line
+    is terminated.
+    """
+    candidates = [
+        record
+        for record in process_table()
+        if record.pid != os.getpid() and owned(record.command)
+    ]
+    if not candidates:
+        return []
+    api = process_api if process_api is not None else _WindowsProcessApi()
+    handles: dict[int, tuple[ClientProcess, Any]] = {}
+    stopped = []
+    try:
+        for record in candidates:
+            handle = api.open(record.pid)
+            if handle:
+                handles[record.pid] = (record, handle)
+        if not handles:
+            return []
+        confirmed = {
+            current.pid: current for current in process_table(tuple(handles))
+        }
+        for pid, (record, handle) in handles.items():
+            if confirmed.get(pid) != record:
+                continue
+            LOGGER.info("Stopping orphaned tunnel-client %s", pid)
+            api.terminate(handle, stop_seconds)
+            stopped.append(pid)
+    finally:
+        for _record, handle in handles.values():
+            api.close(handle)
+    return stopped
 
 
 __all__ = [
     "CHATGPT_HOME_URL",
+    "ClientProcess",
     "TUNNEL_CLIENT_ASSETS",
     "TUNNEL_CLIENT_VERSION",
     "TunnelRuntime",
@@ -1568,5 +1813,6 @@ __all__ = [
     "detect_outbound_proxy",
     "host_tunnel_client_asset",
     "install_tunnel_client",
+    "proxy_from_windows_settings",
     "valid_tunnel_id",
 ]

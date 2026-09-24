@@ -1,6 +1,6 @@
 """tunnel-client supervision tests with a local fake client.
 
-Code version: v1.4.2-codex.0
+Code version: v1.5.0-claude.0
 """
 
 from __future__ import annotations
@@ -1021,3 +1021,389 @@ def test_install_verifies_archive_and_binary_hashes(
     wrong_archive = TunnelClientAsset("darwin-arm64", "0" * 64, asset.binary_sha256, "tunnel-client")
     with pytest.raises(TunnelRuntimeError, match="download failed SHA-256"):
         install_tunnel_client(wrong_archive, tmp_path / "third" / "tunnel-client")
+
+
+# Windows proxy parity -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("enabled", "server", "expected"),
+    [
+        (1, "127.0.0.1:8080", "http://127.0.0.1:8080"),
+        ("1", "http=proxy.local:3128;https=secure.local:8443", "http://secure.local:8443"),
+        (1, "http=proxy.local:3128;socks=socks.local:1080", "http://proxy.local:3128"),
+        (1, "https=http://secure.local:8443", "http://secure.local:8443"),
+        (1, "socks=socks.local:1080", ""),
+        (0, "127.0.0.1:8080", ""),
+        (1, "", ""),
+        ("not-a-number", "127.0.0.1:8080", ""),
+    ],
+)
+def test_windows_manual_proxy_uses_the_macos_scheme_order(
+    enabled: object, server: str, expected: str
+) -> None:
+    assert tunnel_runtime.proxy_from_windows_settings(enabled, server) == expected
+
+
+def test_windows_child_receives_the_system_proxy_unless_the_environment_sets_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    environment = {"PATH": "C:\\Windows", "OPENAI_API_KEY": "must-not-leak"}
+    monkeypatch.setattr(tunnel_runtime, "os", SimpleNamespace(name="nt", environ=environment))
+    monkeypatch.setattr(tunnel_runtime, "_windows_system_proxy", lambda: "http://corp.local:8080")
+    credentials = TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test")
+
+    child = tunnel_runtime.tunnel_client_environment(credentials)
+    assert child["HTTPS_PROXY"] == child["HTTP_PROXY"] == "http://corp.local:8080"
+    assert child["NO_PROXY"] == tunnel_runtime.LOOPBACK_NO_PROXY
+    assert "OPENAI_API_KEY" not in child
+
+    environment["HTTPS_PROXY"] = "http://explicit.local:1082"
+    assert detect_outbound_proxy() == "http://explicit.local:1082"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reads the native Windows Internet Options")
+def test_native_windows_proxy_matches_the_standard_library_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.request
+
+    for name in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    registry = urllib.request.getproxies_registry()
+    expected = registry.get("https") or registry.get("http") or ""
+    assert detect_outbound_proxy() == expected
+
+
+# Orphaned client recovery ---------------------------------------------------
+
+
+def _owned_command(state_root: Path, subcommand: str = "run") -> str:
+    return (
+        f"/opt/tools/tunnel-client {subcommand} --control-plane.tunnel-id {VALID_TUNNEL_ID} "
+        f"--health.url-file {state_root / 'tunnel-client-health.url'} "
+        f"--pid.file {state_root / 'tunnel-client.pid'} --log.format json"
+    )
+
+
+def test_client_ownership_requires_this_state_folder_and_the_run_command(tmp_path: Path) -> None:
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(),
+        state_root=tmp_path / "state",
+    )
+    state_root = tmp_path / "state"
+
+    assert runtime._is_owned_client_command(_owned_command(state_root))
+    assert not runtime._is_owned_client_command(_owned_command(tmp_path / "other"))
+    assert not runtime._is_owned_client_command(_owned_command(state_root, "doctor"))
+    assert not runtime._is_owned_client_command(
+        f"/usr/bin/tail -f {state_root / 'tunnel-client.log'} run"
+    )
+    # Only the pid-file argument matches, so a different runtime's health file is rejected.
+    mixed = _owned_command(state_root).replace(
+        str(state_root / "tunnel-client-health.url"),
+        str(tmp_path / "other" / "tunnel-client-health.url"),
+    )
+    assert not runtime._is_owned_client_command(mixed)
+
+
+class FakePosixProcesses:
+    """A process table whose entries can exit or be replaced by a reused PID."""
+
+    def __init__(self, records: list[tunnel_runtime.ClientProcess]) -> None:
+        self.records = {record.pid: record for record in records}
+        self.signals: list[tuple[int, int]] = []
+        self.on_signal: dict[int, object] = {}
+
+    def table(self, pids: tuple[int, ...] = ()) -> list[tunnel_runtime.ClientProcess]:
+        if pids:
+            return [self.records[pid] for pid in pids if pid in self.records]
+        return list(self.records.values())
+
+    def send(self, pid: int, signal_number: int) -> None:
+        self.signals.append((pid, signal_number))
+        action = self.on_signal.get(pid)
+        if action == "exit":
+            self.records.pop(pid, None)
+        elif isinstance(action, tunnel_runtime.ClientProcess):
+            self.records[pid] = action
+
+
+def test_posix_recovery_stops_only_owned_clients_and_escalates_when_needed(
+    tmp_path: Path,
+) -> None:
+    import signal
+
+    state_root = tmp_path / "state"
+    owned_exits = tunnel_runtime.ClientProcess(101, "Thu Sep 24 10:00:00 2026", _owned_command(state_root))
+    owned_hangs = tunnel_runtime.ClientProcess(102, "Thu Sep 24 10:00:01 2026", _owned_command(state_root))
+    unrelated = tunnel_runtime.ClientProcess(103, "Thu Sep 24 10:00:02 2026", _owned_command(tmp_path / "other"))
+    processes = FakePosixProcesses([owned_exits, owned_hangs, unrelated])
+    processes.on_signal[101] = "exit"
+    runtime = TunnelRuntime(credentials_loader=lambda: TunnelCredentials(), state_root=state_root)
+
+    stopped = tunnel_runtime._stop_owned_posix_clients(
+        runtime._is_owned_client_command,
+        process_table=processes.table,
+        send_signal=processes.send,
+        sleep=lambda _seconds: None,
+        stop_seconds=0.01,
+    )
+
+    assert stopped == [101, 102]
+    assert processes.signals == [
+        (101, signal.SIGTERM),
+        (102, signal.SIGTERM),
+        (102, signal.SIGKILL),
+    ]
+
+
+def test_posix_recovery_never_signals_a_reused_pid(tmp_path: Path) -> None:
+    import signal
+
+    state_root = tmp_path / "state"
+    listed = tunnel_runtime.ClientProcess(201, "Thu Sep 24 10:00:00 2026", _owned_command(state_root))
+    reused = tunnel_runtime.ClientProcess(201, "Thu Sep 24 11:00:00 2026", "/usr/bin/unrelated")
+    runtime = TunnelRuntime(credentials_loader=lambda: TunnelCredentials(), state_root=state_root)
+
+    # The PID is reused between the listing and the pre-signal identity check.
+    before_check = FakePosixProcesses([listed])
+    calls = {"count": 0}
+
+    def table(pids: tuple[int, ...] = ()) -> list[tunnel_runtime.ClientProcess]:
+        calls["count"] += 1
+        return before_check.table(pids) if calls["count"] == 1 else [reused]
+
+    assert tunnel_runtime._stop_owned_posix_clients(
+        runtime._is_owned_client_command,
+        process_table=table,
+        send_signal=before_check.send,
+        sleep=lambda _seconds: None,
+    ) == []
+    assert before_check.signals == []
+
+    # The client exits after SIGTERM and its PID is reused before the SIGKILL deadline.
+    after_term = FakePosixProcesses([listed])
+    after_term.on_signal[201] = reused
+    assert tunnel_runtime._stop_owned_posix_clients(
+        runtime._is_owned_client_command,
+        process_table=after_term.table,
+        send_signal=after_term.send,
+        sleep=lambda _seconds: None,
+        stop_seconds=0.01,
+    ) == [201]
+    assert after_term.signals == [(201, signal.SIGTERM)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses the POSIX process table")
+def test_posix_recovery_stops_a_real_orphan_and_spares_a_lookalike(tmp_path: Path) -> None:
+    import subprocess
+
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    (state_root / "tunnel-client.pid").write_text("stale")
+
+    def sleeper(root: Path) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import time; time.sleep(60)",
+                "tunnel-client",
+                "run",
+                "--health.url-file",
+                str(root / "tunnel-client-health.url"),
+                "--pid.file",
+                str(root / "tunnel-client.pid"),
+            ]
+        )
+
+    owned = sleeper(state_root)
+    lookalike = sleeper(tmp_path / "other")
+    try:
+        runtime = TunnelRuntime(credentials_loader=lambda: TunnelCredentials(), state_root=state_root)
+        assert wait_for(
+            lambda: any(record.pid == owned.pid for record in tunnel_runtime._posix_process_table((owned.pid,)))
+        )
+        runtime._stop_orphan()
+
+        assert owned.wait(timeout=10) != 0
+        assert lookalike.poll() is None
+        assert not (state_root / "tunnel-client.pid").exists()
+    finally:
+        for process in (owned, lookalike):
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+
+
+def test_orphan_recovery_failure_does_not_block_a_new_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    (state_root / "tunnel-client.pid").write_text("stale")
+
+    def unreadable(_owned) -> list[int]:
+        raise OSError("process table unavailable")
+
+    monkeypatch.setattr(tunnel_runtime, "_stop_owned_posix_clients", unreadable)
+    monkeypatch.setattr(tunnel_runtime, "_stop_owned_windows_clients", unreadable)
+    runtime = TunnelRuntime(credentials_loader=lambda: TunnelCredentials(), state_root=state_root)
+
+    runtime._stop_orphan()
+
+    assert not (state_root / "tunnel-client.pid").exists()
+
+
+class FakeWindowsProcessApi:
+    def __init__(self, events: list[str], *, closed_pids: frozenset[int] = frozenset()) -> None:
+        self.events = events
+        self.closed_pids = closed_pids
+
+    def open(self, pid: int):
+        self.events.append(f"open {pid}")
+        return None if pid in self.closed_pids else f"handle-{pid}"
+
+    def terminate(self, handle: str, timeout_seconds: float) -> None:
+        self.events.append(f"terminate {handle}")
+
+    def close(self, handle: str) -> None:
+        self.events.append(f"close {handle}")
+
+
+def test_windows_recovery_confirms_ownership_while_holding_handles(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    runtime = TunnelRuntime(credentials_loader=lambda: TunnelCredentials(), state_root=state_root)
+    owned = tunnel_runtime.ClientProcess(301, "133400000000000000", _owned_command(state_root))
+    reused = tunnel_runtime.ClientProcess(302, "133400000000000001", _owned_command(state_root))
+    exited = tunnel_runtime.ClientProcess(303, "133400000000000002", _owned_command(state_root))
+    unrelated = tunnel_runtime.ClientProcess(304, "133400000000000003", _owned_command(tmp_path / "other"))
+    events: list[str] = []
+
+    def table(pids: tuple[int, ...] = ()) -> list[tunnel_runtime.ClientProcess]:
+        events.append(f"query {list(pids)}")
+        if not pids:
+            return [owned, reused, exited, unrelated]
+        # PID 302 now belongs to a different process instance.
+        return [
+            owned,
+            tunnel_runtime.ClientProcess(302, "133499999999999999", "C:\\Windows\\notepad.exe"),
+        ]
+
+    stopped = tunnel_runtime._stop_owned_windows_clients(
+        runtime._is_owned_client_command,
+        process_table=table,
+        process_api=FakeWindowsProcessApi(events, closed_pids=frozenset({303})),
+    )
+
+    assert stopped == [301]
+    assert events == [
+        "query []",
+        "open 301",
+        "open 302",
+        "open 303",
+        "query [301, 302]",
+        "terminate handle-301",
+        "close handle-301",
+        "close handle-302",
+    ]
+
+
+def test_windows_recovery_skips_the_second_query_without_candidates(tmp_path: Path) -> None:
+    runtime = TunnelRuntime(credentials_loader=lambda: TunnelCredentials(), state_root=tmp_path / "state")
+    events: list[str] = []
+
+    def table(pids: tuple[int, ...] = ()) -> list[tunnel_runtime.ClientProcess]:
+        events.append(f"query {list(pids)}")
+        return [tunnel_runtime.ClientProcess(401, "1", _owned_command(tmp_path / "other"))]
+
+    assert tunnel_runtime._stop_owned_windows_clients(
+        runtime._is_owned_client_command,
+        process_table=table,
+        process_api=FakeWindowsProcessApi(events),
+    ) == []
+    assert events == ["query []"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="uses native Windows process handles and WMI")
+def test_native_windows_recovery_terminates_only_a_confirmed_owned_process(tmp_path: Path) -> None:
+    import subprocess
+
+    state_root = tmp_path / "state"
+    runtime = TunnelRuntime(credentials_loader=lambda: TunnelCredentials(), state_root=state_root)
+
+    def sleeper(root: Path) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import time; time.sleep(60)",
+                "tunnel-client",
+                "run",
+                "--health.url-file",
+                str(root / "tunnel-client-health.url"),
+                "--pid.file",
+                str(root / "tunnel-client.pid"),
+            ],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    owned = sleeper(state_root)
+    lookalike = sleeper(tmp_path / "other")
+    try:
+        pids = (owned.pid, lookalike.pid)
+        assert wait_for(lambda: len(tunnel_runtime._windows_process_table(pids)) == 2)
+        first = {record.pid: record for record in tunnel_runtime._windows_process_table(pids)}
+        second = {record.pid: record for record in tunnel_runtime._windows_process_table(pids)}
+        assert first == second
+        assert runtime._is_owned_client_command(first[owned.pid].command)
+        assert not runtime._is_owned_client_command(first[lookalike.pid].command)
+        # The candidate listing uses the executable name; a Python stand-in is listed by PID.
+        assert isinstance(tunnel_runtime._windows_process_table(), list)
+
+        stopped = tunnel_runtime._stop_owned_windows_clients(
+            runtime._is_owned_client_command,
+            process_table=lambda requested=(): tunnel_runtime._windows_process_table(
+                requested or pids
+            ),
+        )
+
+        assert stopped == [owned.pid]
+        assert owned.wait(timeout=10) is not None
+        assert lookalike.poll() is None
+    finally:
+        for process in (owned, lookalike):
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+
+
+def test_bearer_file_uses_the_shared_owner_only_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written: list[tuple[Path, str]] = []
+
+    def record(path: Path, content: str) -> None:
+        written.append((path, content))
+        raise OSError("simulated ACL refusal")
+
+    monkeypatch.setattr(tunnel_runtime, "write_owner_only_text", record)
+    monkeypatch.setattr(TunnelRuntime, "_stop_orphan", lambda self: None)
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    runtime._enabled = True
+    runtime._mcp_url = "http://127.0.0.1:8666/mcp"
+    runtime._generation = 1
+
+    with pytest.raises(TunnelRuntimeError) as failure:
+        runtime._spawn(tmp_path / "tunnel-client", TunnelCredentials(VALID_TUNNEL_ID, "sk"), 1)
+
+    assert failure.value.code == "runtime_state_unwritable"
+    assert written and written[0][0] == tmp_path / "state" / "mcp-authorization"
+    assert written[0][1].startswith("Bearer ")
+    assert runtime._authorization == ""

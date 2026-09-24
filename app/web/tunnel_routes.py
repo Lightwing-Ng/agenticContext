@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.10.4-codex.2
+# Code version: v1.10.5-claude.0
 
 from __future__ import annotations
 
@@ -1009,7 +1009,17 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                 return jsonify({"error": "OpenAI API key must start with sk-."}), 400
         credentials_changed = next_credentials != current
         if credentials_changed:
-            save_tunnel_credentials(next_credentials, context.credentials_path)
+            try:
+                save_tunnel_credentials(next_credentials, context.credentials_path)
+            except OSError:
+                return jsonify(
+                    {
+                        "error": (
+                            "Tunnel credentials could not be saved with owner-only "
+                            "access."
+                        )
+                    }
+                ), 500
         if next_credentials.configured:
             # A successful re-save is also an explicit recovery request. This keeps
             # the existing credential pair while replacing an unhealthy client.

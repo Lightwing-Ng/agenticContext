@@ -1,4 +1,4 @@
-/* Code version: v3.67.2-codex.0 */
+/* Code version: v3.67.3-claude.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -1083,6 +1083,7 @@
     let tunnelCredentialSaveTimer = null;
     let tunnelCredentialSaveRevision = 0;
     let tunnelCredentialNotice = "";
+    let tunnelCredentialError = "";
     let tunnelProjectSaveRevision = 0;
     let tunnelProjectBusy = false;
     let tunnelProjectNotice = "";
@@ -1171,6 +1172,7 @@
                     String(payload.error || payload.message || `Tunnel request failed with HTTP ${response.status}.`),
                 );
                 requestError.payload = payload;
+                requestError.status = response.status;
                 throw requestError;
             }
             return payload;
@@ -1577,9 +1579,11 @@
         if (elements.tunnelSpinner) elements.tunnelSpinner.hidden = !loading;
         if (elements.tunnelState) elements.tunnelState.textContent = view.label || "";
         if (elements.tunnelProblem) {
-            const problem = tone === "error"
+            const credentialError = supported && selectedPlatform() === "chatgpt"
+                ? tunnelCredentialError : "";
+            const problem = credentialError || (tone === "error"
                 ? String(view.hint || view.message || "Tunnel status is unavailable.")
-                : "";
+                : "");
             elements.tunnelProblem.textContent = problem;
             elements.tunnelProblem.hidden = !problem;
         }
@@ -2245,6 +2249,7 @@
         invalidateTunnelStatusRequest();
         const submittedKey = state.typedKey;
         tunnelCredentialNotice = state.tunnelId ? "Checking and saving credentials…" : "Clearing saved credentials…";
+        tunnelCredentialError = "";
         syncTunnelCredentialUi();
         let resultUncertain = false;
         try {
@@ -2267,7 +2272,11 @@
             if (revision === tunnelCredentialSaveRevision) {
                 resultUncertain = Boolean(error?.resultUncertain);
                 tunnelCredentialNotice = error.message;
-                syncTunnelCredentialUi();
+                // Field markers explain rejected input. A storage or transport failure,
+                // such as an owner-only boundary refusal, has no field to mark.
+                const status = Number(error?.status);
+                tunnelCredentialError = status >= 400 && status < 500 ? "" : String(error?.message || "");
+                syncTunnelStatus();
             }
             return false;
         } finally {
@@ -2281,6 +2290,10 @@
         if (tunnelCredentialSaveTimer !== null) window.clearTimeout(tunnelCredentialSaveTimer);
         tunnelCredentialSaveTimer = null;
         tunnelCredentialNotice = "";
+        if (tunnelCredentialError) {
+            tunnelCredentialError = "";
+            syncTunnelStatus();
+        }
         syncTunnelCredentialUi();
         if (!tunnelCredentialState().qualified) return;
         tunnelCredentialSaveTimer = window.setTimeout(() => {
