@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.33.0-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.33.1-codex.0."""
 
 import re
 from copy import deepcopy
@@ -76,6 +76,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         browser_fields = page.locator("[data-agent-browser-mode-field]")
         recent_sessions = page.locator("[data-agent-execution-sessions]")
         workspace = page.locator("#agent_workspace")
+        workspace_grid = page.locator(".agent-workspace-grid")
 
         expect(mode_control).to_be_visible()
         material = page.evaluate(
@@ -117,6 +118,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         expect(browser_task).to_be_visible()
         expect(onboarding).to_be_hidden()
         assert workspace.get_attribute("data-layout-role") is None
+        assert workspace_grid.get_attribute("data-layout-role") is None
 
         page.locator('label[for="agent_connection_tunnel"]').click()
         expect(tunnel).to_be_checked()
@@ -129,7 +131,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         expect(browser_task).to_be_hidden()
         expect(page.locator("#agent_prompt_form")).to_be_hidden()
         expect(onboarding).to_be_visible()
-        expect(workspace).to_have_attribute("data-layout-role", "content-scrollport")
+        expect(workspace_grid).to_have_attribute("data-layout-role", "content-scrollport")
         expect(page.locator("[data-agent-heading]")).to_have_text("Connect ChatGPT to this local project")
         assert onboarding.locator(".agent-tunnel-step-number").all_inner_texts() == [
             "1",
@@ -169,6 +171,7 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
         expect(browser_task).to_be_visible()
         expect(onboarding).to_be_hidden()
         assert workspace.get_attribute("data-layout-role") is None
+        assert workspace_grid.get_attribute("data-layout-role") is None
         expect(page.locator("[data-agent-heading]")).to_have_text("ChatGPT Web Agent")
         assert errors == []
     finally:
@@ -1359,15 +1362,15 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
 
 @pytest.mark.parametrize(
     ("width", "height"),
-    [(1280, 420), (390, 420), (830, 1171), (1280, 900), (876, 1190)],
+    [(1280, 420), (390, 420), (390, 844), (830, 1032), (830, 1171), (1280, 900), (876, 1190)],
 )
-def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
+def test_tunnel_onboarding_keeps_title_above_content_scroll_and_step_hierarchy(
     disposable_browser,
     sidebar_server_url,
     width,
     height,
 ):
-    """Keep Tunnel onboarding on one page-level scroll owner with compact hierarchy."""
+    """Keep the title visible above one bounded content scroll owner."""
     context = disposable_browser.new_context(viewport={"width": width, "height": height})
     page = context.new_page()
     errors = []
@@ -1420,13 +1423,16 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                 const rootStyle = getComputedStyle(document.documentElement);
                 const token = (name) => parseFloat(rootStyle.getPropertyValue(name));
                 const workspaceStyle = getComputedStyle(workspace);
+                const gridStyle = getComputedStyle(grid);
                 const actionStyle = getComputedStyle(action);
                 const workspaceRect = workspace.getBoundingClientRect();
+                const gridRect = grid.getBoundingClientRect();
+                const titleRect = workspace.querySelector('.agent-summary-card').getBoundingClientRect();
                 const clip = {
-                    top: workspaceRect.top + workspace.clientTop,
-                    left: workspaceRect.left + workspace.clientLeft,
-                    bottom: workspaceRect.top + workspace.clientTop + workspace.clientHeight,
-                    right: workspaceRect.left + workspace.clientLeft + workspace.clientWidth,
+                    top: gridRect.top + grid.clientTop,
+                    left: gridRect.left + grid.clientLeft,
+                    bottom: gridRect.top + grid.clientTop + grid.clientHeight,
+                    right: gridRect.left + grid.clientLeft + grid.clientWidth,
                 };
                 const actionRect = action.getBoundingClientRect();
                 const headings = steps.map((step) => step.querySelector('.agent-tunnel-step-heading'));
@@ -1457,12 +1463,14 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
                         && line.top < quickActions.bottom && line.bottom > quickActions.top
                     ),
                     workspaceOverflowY: workspaceStyle.overflowY,
-                    workspaceScrollPaddingBlockEnd: parseFloat(workspaceStyle.scrollPaddingBlockEnd),
-                    gridOverflowY: getComputedStyle(grid).overflowY,
+                    gridScrollPaddingBlockEnd: parseFloat(gridStyle.scrollPaddingBlockEnd),
+                    gridOverflowY: gridStyle.overflowY,
                     cardOverflowY: getComputedStyle(card).overflowY,
                     workspaceScrollable: scrollable(workspace),
                     gridScrollable: scrollable(grid),
                     cardScrollable: scrollable(card),
+                    gridWithinWorkspace: gridRect.bottom <= workspaceRect.bottom + 1,
+                    titleAboveGrid: titleRect.bottom <= gridRect.top,
                     // The content column, its descendants, and its ancestors up to the
                     // document; the navigation sidebar is a separate scroll region.
                     scrollOwners: [
@@ -1681,20 +1689,22 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
             }"""
         )
 
-        assert geometry["workspaceOverflowY"] == "auto"
-        assert geometry["gridOverflowY"] == "visible"
+        assert geometry["workspaceOverflowY"] == "visible"
+        assert geometry["gridOverflowY"] == "auto"
         assert geometry["cardOverflowY"] == "visible"
-        assert geometry["workspaceScrollPaddingBlockEnd"] == geometry["effectBleedToken"]
-        assert geometry["gridScrollable"] is False
+        assert geometry["gridScrollPaddingBlockEnd"] == geometry["effectBleedToken"]
+        assert geometry["workspaceScrollable"] is False
         assert geometry["cardScrollable"] is False
+        assert geometry["gridWithinWorkspace"] is True
+        assert geometry["titleAboveGrid"] is True
         assert set(geometry["scrollOwners"]) <= {
-            "agent_workspace",
+            "agent_workspace_content",
             "agent_tunnel_kickoff",
         }
         if height <= 420:
-            assert geometry["workspaceScrollable"] is True
-        if geometry["workspaceScrollable"]:
-            assert geometry["scrollOwners"][0] == "agent_workspace"
+            assert geometry["gridScrollable"] is True
+        if geometry["gridScrollable"]:
+            assert geometry["scrollOwners"][0] == "agent_workspace_content"
         assert max(geometry["markerHeadingCenterDeltas"]) <= 1, geometry["markerHeadingCenterDeltas"]
         assert geometry["markerFontSizes"] == [geometry["markerToken"]]
         assert geometry["markerColors"] == geometry["markerBorderColors"]
@@ -1822,6 +1832,25 @@ def test_tunnel_onboarding_uses_page_content_scroll_and_step_hierarchy(
         assert geometry["effectBleedToken"] >= 48
         assert geometry["focusedActionBottomClearance"] >= geometry["effectBleedToken"]
         assert geometry["titleOverlapsQuickActions"] is False
+        scroll_geometry = page.evaluate(
+            """() => {
+                const grid = document.querySelector('#agent_workspace_content');
+                const title = document.querySelector('.agent-summary-card');
+                const card = document.querySelector('[data-agent-tunnel-provider-panel="chatgpt"]');
+                grid.scrollTop = 0;
+                const titleBefore = title.getBoundingClientRect().top;
+                const scrollRange = grid.scrollHeight - grid.clientHeight;
+                grid.scrollTop = scrollRange;
+                const titleAfter = title.getBoundingClientRect().top;
+                const cardBottom = card.getBoundingClientRect().bottom;
+                const gridBottom = grid.getBoundingClientRect().bottom;
+                grid.scrollTop = 0;
+                return {titleBefore, titleAfter, scrollRange, cardBottom, gridBottom};
+            }"""
+        )
+        assert scroll_geometry["scrollRange"] > 0
+        assert abs(scroll_geometry["titleAfter"] - scroll_geometry["titleBefore"]) <= 1
+        assert scroll_geometry["cardBottom"] <= scroll_geometry["gridBottom"] - 4
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         if width == 390:
             wrapped_title_lines = onboarding.locator("#agent_tunnel_guide_title_2").evaluate(

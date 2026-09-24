@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.143.0-codex.0
+# Code version: v1.143.1-codex.0
 
 from __future__ import annotations
 
@@ -868,7 +868,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
-                    "style-v2.150.2-codex.0"
+                    "style-v2.150.4-codex.0"
                     if page_source == "agent"
                     else "style-v2.150.0-codex.0"
                 )
@@ -1297,7 +1297,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.150.2-codex.0', local_body)
+        self.assertIn('style-v2.150.4-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -1305,7 +1305,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
         self.assertIn('selection-list.css?v=selection-list-v1.0.0-codex.0', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.66.3-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.67.1-codex.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -3278,7 +3278,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.66.3-codex.0',
+            'computer-use-agent-v3.67.1-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',

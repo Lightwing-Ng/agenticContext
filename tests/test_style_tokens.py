@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.3-codex.0
+Code version: v1.86.4-codex.0
 """
 
 import hashlib
@@ -2383,7 +2383,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.150.0-codex.0 */",
+        "/* Code version: v2.150.4-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2482,13 +2482,13 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     workspace_selector = 'main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace {'
     workspace_start = stylesheet.index(workspace_selector)
     workspace_rule = stylesheet[workspace_start:stylesheet.index("\n}", workspace_start)]
-    assert "overflow-y: auto;" in workspace_rule
-    assert "scroll-padding-block-end: var(--layout-physical-effect-bleed);" in workspace_rule
+    assert "overflow: visible;" in workspace_rule
 
     grid_selector = 'main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {'
     grid_start = stylesheet.index(grid_selector)
     grid_rule = stylesheet[grid_start:stylesheet.index("\n}", grid_start)]
-    assert "overflow: visible;" in grid_rule
+    assert "overflow-y: auto;" in grid_rule
+    assert "scroll-padding-block-end: var(--layout-physical-effect-bleed);" in grid_rule
     assert "padding-block-end: var(--layout-physical-effect-bleed);" in grid_rule
 
     step_start = stylesheet.index(".process-list > .process-list-step {")

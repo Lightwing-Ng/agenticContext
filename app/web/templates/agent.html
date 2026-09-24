@@ -1,4 +1,4 @@
-<!-- Code version: v3.78.1-codex.0 -->
+<!-- Code version: v3.78.2-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.150.3-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.150.4-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.5.1-codex.0') }}">
@@ -394,7 +394,7 @@
             </details>
         </aside>
 
-        <section class="panel chart-panel workspace agent-workspace" id="agent_workspace"{% if connection_mode == 'tunnel' %} data-layout-role="content-scrollport"{% endif %}>
+        <section class="panel chart-panel workspace agent-workspace" id="agent_workspace">
             <div class="workspace-header">
                 <article class="report-card workspace-summary-card workspace-article-card agent-summary-card" data-layout-role="title-rail">
                     <div class="report-heading-row" data-layout-role="title-heading">
@@ -405,7 +405,7 @@
                 </article>
             </div>
 
-            <div class="workspace-grid workspace-content-card agent-workspace-grid">
+            <div class="workspace-grid workspace-content-card agent-workspace-grid" id="agent_workspace_content"{% if connection_mode == 'tunnel' %} data-layout-role="content-scrollport"{% endif %}>
                 <article class="report-card workspace-article-card agent-tunnel-onboarding-card" data-agent-tunnel-onboarding data-agent-tunnel-provider-panel="chatgpt"{% if connection_mode != 'tunnel' or settings.platform != 'chatgpt' %} hidden{% endif %}>
                     <ol class="process-list agent-tunnel-onboarding-steps" role="list">
                         <li class="process-list-step agent-tunnel-onboarding-step" data-process-continues>
@@ -766,6 +766,6 @@ Task:
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.67.0-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.67.1-codex.0') }}"></script>
 </body>
 </html>

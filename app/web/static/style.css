@@ -1,4 +1,4 @@
-/* Code version: v2.150.3-codex.0 */
+/* Code version: v2.150.4-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -5046,24 +5046,22 @@ details.agent-tunnel-guide > summary {
     overflow: visible;
 }
 
-/* Tunnel onboarding is document-like content. The app shell is viewport-fixed,
-   so the main Agent workspace is the page-level content scrollport in Tunnel mode.
-   The onboarding grid and card keep natural height and visible overflow, avoiding
-   a nested article scrollbar while preserving room for focus rings. */
+/* Keep the Tunnel title rail outside the content scrollport. The grid owns the
+   available height and scrolls its naturally sized card below the fixed heading. */
 main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace {
-    overflow-y: auto;
-    overflow-x: hidden;
-    scrollbar-gutter: stable;
-    scroll-padding-block-end: var(--layout-physical-effect-bleed);
+    overflow: visible;
 }
 
 main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     grid-template-rows: auto;
-    flex: 0 0 auto;
+    flex: 1 1 0;
     height: auto;
     min-height: 0;
     align-content: start;
-    overflow: visible;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+    scroll-padding-block-end: var(--layout-physical-effect-bleed);
     padding: 4px;
     padding-block-end: var(--layout-physical-effect-bleed);
 }

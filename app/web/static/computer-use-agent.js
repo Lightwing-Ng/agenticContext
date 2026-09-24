@@ -1,4 +1,4 @@
-/* Code version: v3.67.0-codex.0 */
+/* Code version: v3.67.1-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -65,6 +65,7 @@
     const elements = {
         agentPage: document.querySelector("[data-agent-route-prefix]"),
         agentWorkspace: document.getElementById("agent_workspace"),
+        agentWorkspaceGrid: document.querySelector(".agent-workspace-grid"),
         statusMessage: document.getElementById("agent_response_status"),
         statusMessageCopy: document.querySelector("[data-agent-response-status-copy]"),
         statusDot: document.querySelector("[data-agent-response-status-dot]"),
@@ -2311,8 +2312,11 @@
         }
         if (elements.agentPage) elements.agentPage.dataset.agentConnectionMode = mode;
         if (elements.agentWorkspace) {
-            if (browserMode) elements.agentWorkspace.removeAttribute("data-layout-role");
-            else elements.agentWorkspace.dataset.layoutRole = "content-scrollport";
+            elements.agentWorkspace.removeAttribute("data-layout-role");
+        }
+        if (elements.agentWorkspaceGrid) {
+            if (browserMode) elements.agentWorkspaceGrid.removeAttribute("data-layout-role");
+            else elements.agentWorkspaceGrid.dataset.layoutRole = "content-scrollport";
         }
         const heading = document.querySelector("[data-agent-heading]");
         if (heading) {
