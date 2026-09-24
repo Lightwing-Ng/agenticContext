@@ -5062,8 +5062,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     overflow-x: hidden;
     scrollbar-gutter: stable;
     scroll-padding-block-end: var(--layout-physical-effect-bleed);
-    padding: 4px;
-    padding-block-end: var(--layout-physical-effect-bleed);
+    padding: var(--layout-physical-effect-bleed);
 }
 
 .agent-task-card {
