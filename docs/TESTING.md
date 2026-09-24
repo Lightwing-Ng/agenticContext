@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.25.1-codex.0`
+Documentation version: `v1.25.4-codex.0`
 
 ## Supported commands
 
@@ -183,11 +183,20 @@ bounded retry, HTTP status failures, status-fetch timeout/cancellation, and supe
 results. Browser cases prove the first-use path has no historical-activity gate, a failed
 selection save cannot change the shown project, the generated prompt updates its exact id without
 discarding the user's task text, and stale or failed polling revokes a previous green state.
-Browser assertions exercise keyboard-operable project checkboxes, an explicit `Use`/`Current`
-action, revision-conflict rollback, exact registered-root matching from the circular folder action,
-and refusal of an unregistered path without changing permissions. They also require the Tunnel
-usage card to contain exactly one visible `Tokens:` row whose accessible description identifies it
-as an estimate; total-call, active-call, recent-call, and billing rows must be absent.
+Browser assertions exercise keyboard-operable project checkboxes, revision-conflict rollback,
+exact registered-root matching from the circular folder action, and refusal of an unregistered path
+without changing permissions. A successful ChatGPT selection that adds a selected project or changes
+the current project, and a new folder registration, start a new qualified local Tunnel client
+generation only while their saved revision remains current. The revision check and reconnect startup
+are atomic under the runtime lock; readiness is checked asynchronously. Repeated saves, removal of
+a noncurrent selected project, unregistration, rejected or superseded saves, Gemini selection, and
+missing credentials do not restart it. The local `Ready` state reports client health; it does not
+establish ChatGPT app authorization or catalog refresh. Read and write access still depends on the
+registered project's writable flag and MCP write guards. If local reconnect startup fails, the
+saved selection remains committed and the Tunnel reports `Unavailable` on subsequent status polls
+without exposing the underlying exception. The Tunnel usage card must contain exactly one visible
+`Tokens:` row whose accessible description identifies it as an estimate; total-call, active-call,
+recent-call, and billing rows must be absent.
 These tests are offline and use temporary projects, registries, runtime roots, and disposable
 browser contexts; live ChatGPT and Gemini round trips remain separate provider-specific evidence.
 

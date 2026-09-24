@@ -1,6 +1,6 @@
 """Supervise OpenAI's tunnel-client so ChatGPT can reach the local MCP endpoint.
 
-Code version: v1.6.0-codex.0
+Code version: v1.6.2-codex.0
 
 The Tunnel connection has three parts:
 
@@ -473,6 +473,44 @@ class TunnelRuntime:
                 return
             self._enabled = True
         self.restart()
+
+    def connect_or_fail_closed(
+        self,
+        *,
+        expected_revision: int,
+        current_revision: Callable[[], int],
+    ) -> bool:
+        """Start only for the latest project selection and retain startup failures."""
+        with self._lock:
+            if current_revision() != expected_revision:
+                return False
+            try:
+                self.connect()
+            except Exception:
+                self._record_reconnect_start_failure()
+                raise
+            return True
+
+    def _record_reconnect_start_failure(self) -> None:
+        """Revoke a partial client start and retain an actionable error status."""
+        with self._lock:
+            if self._shutdown:
+                return
+            self._enabled = False
+            self._generation += 1
+            self._cancel_restart_timer()
+            try:
+                self._terminate_process()
+            except Exception:
+                LOGGER.error("Could not stop the Tunnel client after reconnect startup failed.")
+            self._discard_authorization()
+            self._set_state(
+                "error",
+                "The project selection was saved, but the local Tunnel could not restart. "
+                "Use Reconnect to try again.",
+                retryable=True,
+                problem_code="reconnect_start_failed",
+            )
 
     def disconnect(self) -> None:
         """Stop forwarding while preserving the saved credentials."""

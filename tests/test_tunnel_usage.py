@@ -1,4 +1,4 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.5.0-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.5.2-codex.0."""
 
 from __future__ import annotations
 
@@ -202,6 +202,50 @@ def test_estimator_unavailable_errors_and_special_text(monkeypatch):
     assert tunnel_mcp._estimated_tool_tokens("a" * (tunnel_mcp.MAX_WRITE_CHARACTERS + 1)) is None
     with patch.object(Encoding, "encode", side_effect=RuntimeError("unavailable")):
         assert tunnel_mcp._estimated_tool_tokens("hello") is None
+
+
+def test_tool_encoding_recovers_after_background_load_fails(monkeypatch):
+    clock = [100.0]
+    pending = []
+    attempts = []
+
+    class Encoding:
+        def encode(self, _text, *, disallowed_special):
+            assert disallowed_special == ()
+            return [1, 2, 3]
+
+    class Worker:
+        def __init__(self, *, target, daemon):
+            assert daemon is True
+            self.target = target
+
+        def start(self):
+            pending.append(self.target)
+
+    def load():
+        attempts.append(True)
+        return None if len(attempts) == 1 else Encoding()
+
+    monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING", None)
+    monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING_STARTED", False)
+    monkeypatch.setattr(tunnel_mcp, "_TOOL_ENCODING_RETRY_AFTER", 0.0)
+    monkeypatch.setattr(tunnel_mcp, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(tunnel_mcp, "threading", SimpleNamespace(Thread=Worker))
+    monkeypatch.setattr(tunnel_mcp, "openai_agentic_token_encoding", load)
+
+    assert tunnel_mcp._estimated_tool_tokens("hello") is None
+    assert tunnel_mcp._estimated_tool_tokens("hello") is None
+    assert len(pending) == 1
+    pending.pop(0)()
+    assert tunnel_mcp._estimated_tool_tokens("hello") is None
+    assert pending == []
+    clock[0] += tunnel_mcp._TOOL_ENCODING_RETRY_SECONDS
+    assert tunnel_mcp._estimated_tool_tokens("hello") is None
+    assert len(pending) == 1
+    pending.pop(0)()
+    assert tunnel_mcp._estimated_tool_tokens("hello") == 3
+    assert len(attempts) == 2
+    assert pending == []
 
 
 def test_status_endpoint_and_initial_html_share_the_call_record(tmp_path, monkeypatch):

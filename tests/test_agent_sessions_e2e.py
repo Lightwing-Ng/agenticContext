@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.33.1-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.33.3-codex.0."""
 
 import re
 from copy import deepcopy
@@ -398,18 +398,26 @@ def test_tunnel_kickoff_copy_and_approved_technical_typeface(
                 "theme => document.documentElement.setAttribute('data-theme-override', theme)",
                 theme,
             )
-            colors = kickoff.evaluate(
-                """element => ({
-                    background: getComputedStyle(element).backgroundColor,
-                    pageBackground: getComputedStyle(document.body).backgroundColor,
-                    border: getComputedStyle(element).borderTopColor,
-                    accent: getComputedStyle(document.documentElement)
-                        .getPropertyValue('--theme-accent-primary').trim(),
-                })"""
+            material = kickoff.evaluate(
+                """element => {
+                    const style = getComputedStyle(element);
+                    const composer = getComputedStyle(document.querySelector('.agent-composer-shell'));
+                    return {
+                        backgroundImage: style.backgroundImage,
+                        border: style.borderTopColor,
+                        composerBorder: composer.borderTopColor,
+                        shadow: style.boxShadow,
+                        blur: style.backdropFilter,
+                        composerBlur: composer.backdropFilter,
+                        outline: style.outlineStyle,
+                    };
+                }"""
             )
-            assert colors["background"] == colors["pageBackground"]
-            assert colors["border"] == "rgb(0, 85, 204)"
-            assert colors["accent"] == "#0055cc"
+            assert material["backgroundImage"] != "none"
+            assert material["border"] == material["composerBorder"]
+            assert material["shadow"] != "none"
+            assert material["blur"] == material["composerBlur"]
+            assert material["outline"] == "solid"
         edited_prompt = "Use @AgenticContext to verify the responsive Tunnel guide."
         kickoff.fill(edited_prompt)
         button.scroll_into_view_if_needed()
@@ -637,6 +645,66 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
                 "expected_revision": 3,
             },
         ]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width,theme", [(867, "light"), (390, "dark")])
+def test_tunnel_selected_project_is_centered_between_separators(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+    theme,
+):
+    """Center the selected project's mark and name between adjacent rules."""
+    status = _tunnel_onboarding_status(activity_observed=False)
+    selected = deepcopy(status["project_context"]["current"])
+    selected.update({"id": "neoMe", "selected": True})
+    projects = []
+    for project_id in ("agenticContext", "worthward", "neoMe", "shared-docs"):
+        project = deepcopy(selected)
+        project.update({"id": project_id, "selected": project_id == "neoMe"})
+        projects.append(project)
+    status["project_context"] = {
+        **status["project_context"],
+        "current": selected,
+        "selected_project_ids": ["neoMe"],
+        "projects": projects,
+    }
+    context = disposable_browser.new_context(viewport={"width": width, "height": 1_297})
+    page = context.new_page()
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=deepcopy(status)),
+    )
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        page.evaluate(
+            "theme => document.documentElement.setAttribute('data-theme-override', theme)",
+            theme,
+        )
+        page.locator("#sidebar_toggle").click()
+        expect(page.locator(".agent-tunnel-project-option")).to_have_count(4)
+        distances = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('.agent-tunnel-project-option')];
+            const center = (element) => {
+                const rect = element.getBoundingClientRect();
+                return rect.top + rect.height / 2;
+            };
+            const separator = (row) => {
+                const rect = row.getBoundingClientRect();
+                const style = getComputedStyle(row, '::before');
+                return rect.top + parseFloat(style.top) + parseFloat(style.height) / 2;
+            };
+            const selected = rows[2];
+            const upper = separator(selected);
+            const lower = separator(rows[3]);
+            return [
+                selected.querySelector('.selection-list-mark'),
+                selected.querySelector('.selection-list-name'),
+            ].map((element) => Math.abs(center(element) * 2 - upper - lower));
+        }""")
+        assert max(distances) <= 1, distances
     finally:
         context.close()
 
@@ -1454,6 +1522,17 @@ def test_tunnel_onboarding_keeps_title_above_content_scroll_and_step_hierarchy(
                 const stepFourLink = steps[3].querySelector('a.agent-tunnel-step-action');
                 const stepFourButton = steps[3].querySelector('[data-agent-tunnel-copy-kickoff]');
                 const kickoff = steps[3].querySelector('[data-agent-tunnel-kickoff]');
+                const composerStyle = getComputedStyle(document.querySelector('.agent-composer-shell'));
+                const kickoffStyle = getComputedStyle(kickoff);
+                const glassMaterial = (style) => ({
+                    backgroundColor: style.backgroundColor,
+                    backgroundImage: style.backgroundImage,
+                    borderTopColor: style.borderTopColor,
+                    borderTopWidth: style.borderTopWidth,
+                    boxShadow: style.boxShadow,
+                    backdropFilter: style.backdropFilter,
+                    webkitBackdropFilter: style.webkitBackdropFilter,
+                });
                 const titleText = document.createRange();
                 titleText.selectNodeContents(document.querySelector('[data-agent-heading]'));
                 const quickActions = document.querySelector('.global-quick-actions').getBoundingClientRect();
@@ -1485,6 +1564,10 @@ def test_tunnel_onboarding_keeps_title_above_content_scroll_and_step_hierarchy(
                     markerHeadingCenterDeltas: steps.map((step, index) => Math.abs(
                         center(step.querySelector('.agent-tunnel-step-number')) - center(headings[index])
                     )),
+                    markerHeadingTopDeltas: steps.map((step, index) => Math.abs(
+                        markerRects[index].top - headings[index].getBoundingClientRect().top
+                    )),
+                    headingHeights: headings.map((heading) => heading.getBoundingClientRect().height),
                     markerFontSizes: [...new Set(steps.map((step) =>
                         parseFloat(getComputedStyle(step.querySelector('.agent-tunnel-step-number')).fontSize)
                     ))],
@@ -1663,8 +1746,8 @@ def test_tunnel_onboarding_keeps_title_above_content_scroll_and_step_hierarchy(
                     ).fontWeight,
                     guideTitleFontWeight: getComputedStyle(guideTitles[0]).fontWeight,
                     kickoffBorderRadius: getComputedStyle(kickoff).borderRadius,
-                    kickoffBackgroundColor: getComputedStyle(kickoff).backgroundColor,
-                    pageBackgroundColor: getComputedStyle(document.body).backgroundColor,
+                    kickoffGlassMaterial: glassMaterial(kickoffStyle),
+                    composerGlassMaterial: glassMaterial(composerStyle),
                     emptyCredentialBlocks: [...steps[1].querySelectorAll('div, p, span')].filter(
                         (element) => !element.children.length && !element.textContent.trim()
                             && !element.matches('[aria-hidden="true"], .icon')
@@ -1705,7 +1788,14 @@ def test_tunnel_onboarding_keeps_title_above_content_scroll_and_step_hierarchy(
             assert geometry["gridScrollable"] is True
         if geometry["gridScrollable"]:
             assert geometry["scrollOwners"][0] == "agent_workspace_content"
-        assert max(geometry["markerHeadingCenterDeltas"]) <= 1, geometry["markerHeadingCenterDeltas"]
+        assert max(geometry["markerHeadingTopDeltas"]) <= 1, geometry["markerHeadingTopDeltas"]
+        assert all(
+            delta <= 1
+            for delta, height in zip(
+                geometry["markerHeadingCenterDeltas"], geometry["headingHeights"]
+            )
+            if height <= 32
+        ), geometry["markerHeadingCenterDeltas"]
         assert geometry["markerFontSizes"] == [geometry["markerToken"]]
         assert geometry["markerColors"] == geometry["markerBorderColors"]
         assert geometry["markerTexts"] == ["1", "2", "3", "4"]
@@ -1818,7 +1908,7 @@ def test_tunnel_onboarding_keeps_title_above_content_scroll_and_step_hierarchy(
         assert float(geometry["kickoffTitleFontSize"].removesuffix("px")) == geometry["headingToken"]
         assert geometry["kickoffTitleFontWeight"] == geometry["guideTitleFontWeight"]
         assert geometry["kickoffBorderRadius"] == "10px"
-        assert geometry["kickoffBackgroundColor"] == geometry["pageBackgroundColor"]
+        assert geometry["kickoffGlassMaterial"] == geometry["composerGlassMaterial"]
         assert geometry["emptyCredentialBlocks"] == 0
         assert geometry["dividers"] == ["0px", "0px", "0px", "0px"]
         assert geometry["focused"] is True
@@ -5091,3 +5181,112 @@ def test_completed_session_accepts_followup_in_composer(disposable_browser, side
         assert payload['session_mode'] == ('new' if start_new else 'project_session' if project else 'recent')
     finally:
         context.close()
+
+
+def test_tunnel_project_checkbox_reconnects_without_manual_action(disposable_browser, tmp_path):
+    """Choosing another writable project refreshes the Tunnel before the prompt updates."""
+    import json
+    from unittest.mock import patch
+
+    from app.core.tunnel_credentials import TunnelCredentials, save_tunnel_credentials
+    from app.web.app import create_app
+
+    first = tmp_path / "alpha"
+    second = tmp_path / "beta"
+    first.mkdir()
+    second.mkdir()
+    settings = tmp_path / "settings"
+    settings.mkdir()
+    registry_path = settings / "tunnel-projects.json"
+    registry_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "projects": [
+                {"id": "alpha", "root": str(first), "writable": True},
+                {"id": "beta", "root": str(second), "writable": True},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    credentials_path = settings / "tunnel-credentials.json"
+    save_tunnel_credentials(
+        TunnelCredentials(TUNNEL_ONBOARDING_ID, TUNNEL_ONBOARDING_KEY),
+        credentials_path,
+    )
+    application = create_app(
+        tmp_path / "local-store",
+        computer_use_settings_path=settings / "computer-use-agent.json",
+        computer_use_runtime_root=tmp_path / "runtime",
+        tunnel_credentials_path=credentials_path,
+        tunnel_projects_path=registry_path,
+        agent_external_operations_enabled=False,
+    )
+    application.config.update(TESTING=True)
+    service = application.extensions["tunnel_mcp_service"]
+    service.selection_store.save("alpha", selected_project_ids=["alpha"])
+    runtime = application.extensions["tunnel_runtime"]
+    runtime._enabled = True
+    runtime._set_state("ready", "Ready for a project tool call.")
+    reconnects = []
+    fail_next_reconnect = {"value": False}
+
+    def reconnect():
+        reconnects.append(True)
+        if fail_next_reconnect["value"]:
+            raise RuntimeError("sk-private-error-must-not-leak")
+        runtime._generation += 1
+        runtime._set_state("starting", "Reconnecting the Tunnel…")
+        runtime._set_state("ready", "Ready for a project tool call.")
+
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    context = disposable_browser.new_context(viewport={"width": 867, "height": 1_030})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    with patch.object(runtime, "connect", side_effect=reconnect):
+        server_thread.start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            page.goto(base_url + "/agent/tunnel/chatgpt")
+            page.locator("#sidebar_toggle").click()
+            alpha = page.locator('[data-agent-tunnel-project-checkbox="alpha"]')
+            beta = page.locator('[data-agent-tunnel-project-checkbox="beta"]')
+            expect(alpha).to_be_checked()
+            expect(beta).not_to_be_checked()
+            expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Ready")
+
+            beta.focus()
+            beta.press("Space")
+            expect(beta).to_be_checked()
+            expect(page.locator("[data-agent-tunnel-kickoff]")).to_have_value(
+                re.compile(r"selection revision 2")
+            )
+            expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Ready")
+            assert len(reconnects) == 1
+
+            fail_next_reconnect["value"] = True
+            alpha.focus()
+            alpha.press("Space")
+            expect(alpha).not_to_be_checked()
+            expect(page.locator("[data-agent-tunnel-kickoff]")).to_have_value(
+                re.compile(r'project ID "beta".*selection revision 3')
+            )
+            expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Unavailable")
+            expect(page.locator("[data-agent-tunnel-problem]")).to_contain_text(
+                "selection was saved"
+            )
+            assert len(reconnects) == 2
+            assert page.locator('[data-agent-tunnel-project-row="beta"] [data-agent-tunnel-project-access]').count() == 0
+            status = page.request.get(base_url + "/api/agent/tunnel/status?platform=chatgpt")
+            assert status.ok
+            assert status.json()["project_context"]["current"]["access"] == "Read and write"
+            assert status.json()["state"] == "error"
+            page.wait_for_timeout(3_200)
+            expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Unavailable")
+            assert not errors
+        finally:
+            context.close()
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=5)

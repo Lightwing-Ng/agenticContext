@@ -1,6 +1,6 @@
 """Shared MCP endpoint reached through authenticated provider transports.
 
-Code version: v2.11.0-codex.0
+Code version: v2.11.1-codex.0
 
 ChatGPT and Gemini call the same tool catalog through separate authenticated
 transports. Every project-scoped
@@ -129,23 +129,40 @@ LOGGER = logging.getLogger(__name__)
 _TOOL_ENCODING_LOCK = threading.Lock()
 _TOOL_ENCODING: Any | None = None
 _TOOL_ENCODING_STARTED = False
+_TOOL_ENCODING_RETRY_AFTER = 0.0
+_TOOL_ENCODING_RETRY_SECONDS = 30.0
 
 
 def _load_tool_encoding() -> None:
-    # Reuse the existing tokenizer cache, but never block a tool on its download.
-    global _TOOL_ENCODING
-    _TOOL_ENCODING = openai_agentic_token_encoding()
+    # Reuse the successful tokenizer cache without blocking a workspace operation.
+    global _TOOL_ENCODING, _TOOL_ENCODING_STARTED, _TOOL_ENCODING_RETRY_AFTER
+    try:
+        encoding = openai_agentic_token_encoding()
+    except Exception:
+        encoding = None
+    with _TOOL_ENCODING_LOCK:
+        _TOOL_ENCODING = encoding
+        _TOOL_ENCODING_STARTED = False
+        _TOOL_ENCODING_RETRY_AFTER = (
+            time.monotonic() + _TOOL_ENCODING_RETRY_SECONDS if encoding is None else 0.0
+        )
 
 
 def _estimated_tool_tokens(text: str) -> int | None:
     """Estimate observable tool text only; unavailable is never a byte heuristic."""
     global _TOOL_ENCODING_STARTED
+    if len(text) > MAX_WRITE_CHARACTERS:
+        return None
     with _TOOL_ENCODING_LOCK:
-        if not _TOOL_ENCODING_STARTED:
+        if (
+            _TOOL_ENCODING is None
+            and not _TOOL_ENCODING_STARTED
+            and time.monotonic() >= _TOOL_ENCODING_RETRY_AFTER
+        ):
             _TOOL_ENCODING_STARTED = True
             threading.Thread(target=_load_tool_encoding, daemon=True).start()
         encoding = _TOOL_ENCODING
-    if encoding is None or len(text) > MAX_WRITE_CHARACTERS:
+    if encoding is None:
         return None
     try:
         return len(encoding.encode(text, disallowed_special=()))

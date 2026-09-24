@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.83.0-claude.0
+Code version: v3.83.2-codex.0
 """
 
 from __future__ import annotations
@@ -16296,25 +16296,73 @@ def test_openai_equivalent_token_counter_accumulates_input_and_output() -> None:
 
 
 def test_openai_token_metric_degrades_when_encoding_cache_is_unavailable(monkeypatch) -> None:
-    """A missing remote tokenizer cache must not prevent a provider exchange."""
+    """Failed background retries keep metrics responsive until recovery."""
+    from app.core import token_usage
+
     calls = 0
+    clock = [100.0]
+    pending = []
+
+    class Worker:
+        def __init__(self, *, target, daemon):
+            assert daemon is True
+            self.target = target
+
+        def start(self):
+            pending.append(self.target)
 
     def unavailable_encoding(_name: str):
         nonlocal calls
         calls += 1
         raise OSError("certificate verify failed")
 
-    _openai_agentic_token_encoding.cache_clear()
-    monkeypatch.setattr(
-        "app.core.computer_use_agent.tiktoken.get_encoding",
-        unavailable_encoding,
-    )
+    class Encoding:
+        def encode(self, _text: str, *, disallowed_special: tuple) -> list[int]:
+            assert disallowed_special == ()
+            return [1, 2, 3]
+
+    encoding = Encoding()
+
+    def recovering_encoding(_name: str) -> Encoding:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("certificate verify failed again")
+        return encoding
+
+    token_usage._cached_openai_agentic_token_encoding.cache_clear()
+    monkeypatch.setattr(token_usage, "_ENCODING_RETRY_AFTER", 0.0)
+    monkeypatch.setattr(token_usage, "_ENCODING_RETRY_STARTED", False)
+    monkeypatch.setattr(token_usage, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(token_usage, "threading", SimpleNamespace(Thread=Worker))
+    monkeypatch.setattr(token_usage.tiktoken, "get_encoding", unavailable_encoding)
     try:
         assert _openai_agentic_token_count("Continue the Agent task.") > 0
         assert _openai_agentic_token_count("Do not retry the failed download.") > 0
         assert calls == 1
+        assert pending == []
+        clock[0] += token_usage.TOKEN_ENCODING_RETRY_SECONDS
+        monkeypatch.setattr(token_usage.tiktoken, "get_encoding", recovering_encoding)
+        assert _openai_agentic_token_count("Hi") == 1
+        assert _openai_agentic_token_count("Hi") == 1
+        assert calls == 1
+        assert len(pending) == 1
+        pending.pop(0)()
+        assert calls == 2
+        assert _openai_agentic_token_count("Hi") == 1
+        assert pending == []
+        clock[0] += token_usage.TOKEN_ENCODING_RETRY_SECONDS
+        assert _openai_agentic_token_count("Hi") == 1
+        assert _openai_agentic_token_count("Hi") == 1
+        assert calls == 2
+        assert len(pending) == 1
+        pending.pop(0)()
+        assert _openai_agentic_token_count("Hi") == 3
+        assert _openai_agentic_token_encoding() is encoding
+        assert calls == 3
+        assert pending == []
     finally:
-        _openai_agentic_token_encoding.cache_clear()
+        token_usage._cached_openai_agentic_token_encoding.cache_clear()
 
 
 def test_read_only_controller_rejects_mutating_actions(tmp_path: Path) -> None:

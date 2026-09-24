@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.10.0-codex.0
+# Code version: v1.10.3-codex.0
 
 from __future__ import annotations
 
@@ -834,6 +834,27 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             credentials_path=context.credentials_path,
         )
 
+    def reconnect_after_project_change(platform: str, saved_revision: int) -> None:
+        """Refresh a qualified ChatGPT Tunnel after the project save commits."""
+        if platform != "chatgpt":
+            return
+        credentials = load_tunnel_credentials(context.credentials_path)
+        if (
+            credentials.configured
+            and valid_tunnel_id(credentials.tunnel_id)
+            and credentials.api_key.startswith("sk-")
+            and len(credentials.api_key) >= 12
+        ):
+            try:
+                context.tunnel_runtime.connect_or_fail_closed(
+                    expected_revision=saved_revision,
+                    current_revision=lambda: (
+                        context.tunnel_mcp_service.selection_store.load().revision
+                    ),
+                )
+            except Exception:
+                app.logger.error("Tunnel reconnect startup failed after a project change.")
+
     def route_browser() -> str:
         """Keep the saved Browser choice so switching back from Tunnel restores it."""
         browser = context.settings_store.settings.browser
@@ -999,6 +1020,11 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             ), 409
         workspace_path = str(context.settings_store.settings.workspace_path or "")
         try:
+            projects = registry.projects(workspace_path)
+            previous_selection = context.tunnel_mcp_service.selection_store.load()
+            previous_ids = {
+                item.id for item in selected_projects(projects, previous_selection)
+            }
             project = registry.resolve(payload["project_id"], workspace_path)
             problem = project_availability(project)
             if problem:
@@ -1012,10 +1038,18 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                     return jsonify(
                         {"error": "The current Tunnel project must also be selected."}
                     ), 400
-            context.tunnel_mcp_service.selection_store.save(
+            saved_selection = context.tunnel_mcp_service.selection_store.save(
                 project.id,
                 selected_project_ids=normalized_selected_ids,
                 expected_revision=payload["expected_revision"],
+            )
+            should_reconnect = (
+                saved_selection.project_id != previous_selection.project_id
+                or bool(
+                    {
+                        item.id for item in selected_projects(projects, saved_selection)
+                    } - previous_ids
+                )
             )
         except ProjectSelectionConflict as exc:
             return jsonify(
@@ -1042,6 +1076,8 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         platform = str(request.args.get("platform") or "chatgpt").strip().lower()
         if platform not in {"chatgpt", "gemini"}:
             platform = "chatgpt"
+        if should_reconnect:
+            reconnect_after_project_change(platform, saved_selection.revision)
         return jsonify(status_payload(platform))
 
     @blueprint.post("/api/agent/tunnel/project/register")
@@ -1065,11 +1101,17 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         selection_store = context.tunnel_mcp_service.selection_store
         workspace_path = str(context.settings_store.settings.workspace_path or "")
         try:
-            if selection_store.load().revision != payload["expected_revision"]:
+            previous_selection = selection_store.load()
+            if previous_selection.revision != payload["expected_revision"]:
                 raise ProjectSelectionConflict(
                     "The current project changed in another window. Review the selection "
                     "and choose again."
                 )
+            previous_ids = {
+                item.id for item in selected_projects(
+                    registry.projects(workspace_path), previous_selection
+                )
+            }
             project = registry.register(payload["path"], workspace_path)
             problem = project_availability(project)
             if problem:
@@ -1079,10 +1121,14 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             selected_ids = [item.id for item in selected_projects(projects, selection)]
             if project.id not in selected_ids:
                 selected_ids.append(project.id)
-            selection_store.save(
+            saved_selection = selection_store.save(
                 project.id,
                 selected_project_ids=tuple(selected_ids),
                 expected_revision=payload["expected_revision"],
+            )
+            should_reconnect = (
+                saved_selection.project_id != previous_selection.project_id
+                or project.id not in previous_ids
             )
         except ProjectSelectionConflict as exc:
             return jsonify(
@@ -1109,6 +1155,8 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         platform = str(request.args.get("platform") or "chatgpt").strip().lower()
         if platform not in {"chatgpt", "gemini"}:
             platform = "chatgpt"
+        if should_reconnect:
+            reconnect_after_project_change(platform, saved_selection.revision)
         return jsonify(status_payload(platform))
 
     @blueprint.post("/api/agent/tunnel/project/unregister")

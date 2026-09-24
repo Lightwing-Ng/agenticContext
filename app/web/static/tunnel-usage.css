@@ -1,4 +1,4 @@
-/* Code version: v1.5.1-codex.0 */
+/* Code version: v1.5.2-codex.0 */
 /*
  * Worthward allocation badge adapter.
  * Source: foundation/tokens.css v0.46.0 and views/investment-tables.css v1.1.1.
@@ -138,6 +138,8 @@
 }
 
 .agent-tunnel-project-list {
+    --agent-tunnel-project-row-gap: 4px;
+    gap: var(--agent-tunnel-project-row-gap);
     max-block-size: min(360px, 44vh);
     padding: 8px 10px;
     overflow-y: auto;
@@ -148,6 +150,7 @@
 }
 
 .agent-tunnel-project-option {
+    position: relative;
     padding-block: 2px;
 }
 
@@ -163,8 +166,15 @@
     gap: 4px;
 }
 
-.agent-tunnel-project-option + .agent-tunnel-project-option {
-    box-shadow: inset 0 1px var(--theme-glass-border);
+/* Center the separator within the gap shared by adjacent rows. */
+.agent-tunnel-project-option + .agent-tunnel-project-option::before {
+    position: absolute;
+    inset-block-start: calc(var(--agent-tunnel-project-row-gap) / -2);
+    inset-inline: 0;
+    block-size: 1px;
+    background: var(--theme-glass-border);
+    content: "";
+    pointer-events: none;
 }
 
 .agent-tunnel-project-access {

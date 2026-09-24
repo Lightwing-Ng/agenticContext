@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.4-codex.0
+Code version: v1.86.6-codex.0
 """
 
 import hashlib
@@ -2383,7 +2383,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.150.4-codex.0 */",
+        "/* Code version: v2.150.5-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2703,8 +2703,16 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert "max-height:" not in kickoff_editor_rule
     assert "padding: 8px 12px;" in kickoff_editor_rule
     assert "resize: none;" in kickoff_editor_rule
-    assert "background: var(--bg);" in kickoff_editor_rule
-    assert "border: 1px solid var(--theme-accent-primary);" in kickoff_editor_rule
+    assert "background: var(--frosted-glass-background);" in kickoff_editor_rule
+    assert "border: var(--frosted-glass-border);" in kickoff_editor_rule
+    assert "box-shadow: var(--frosted-glass-shadow);" in kickoff_editor_rule
+    assert "backdrop-filter: var(--frosted-glass-blur);" in kickoff_editor_rule
+    assert "-webkit-backdrop-filter: var(--frosted-glass-blur);" in kickoff_editor_rule
+    kickoff_focus_start = stylesheet.index(".agent-tunnel-kickoff-editor:focus-visible {")
+    kickoff_focus_rule = stylesheet[
+        kickoff_focus_start:stylesheet.index("\n}", kickoff_focus_start)
+    ]
+    assert "border-color: var(--theme-accent-primary);" not in kickoff_focus_rule
     bullet_list_start = stylesheet.index(
         ".agent-tunnel-guide-list.agent-tunnel-bullet-list,"
     )

@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.143.1-codex.0
+# Code version: v1.143.4-codex.0
 
 from __future__ import annotations
 
@@ -868,7 +868,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
-                    "style-v2.150.4-codex.0"
+                    "style-v2.150.5-codex.0"
                     if page_source == "agent"
                     else "style-v2.150.0-codex.0"
                 )
@@ -1297,7 +1297,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.150.4-codex.0', local_body)
+        self.assertIn('style-v2.150.5-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -2242,6 +2242,306 @@ class WebAppTests(unittest.TestCase):
                     json={"path": str(first / "inner"), "expected_revision": 4},
                 )
                 self.assertEqual(overlapping.status_code, 400)
+
+    def test_tunnel_project_change_reconnects_only_after_a_qualified_chatgpt_save(self) -> None:
+        """A confirmed writable selection refreshes ChatGPT before the response."""
+        from app.core.tunnel_credentials import TunnelCredentials, save_tunnel_credentials
+
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "first"
+            second = root / "second"
+            for project_root in (first, second):
+                project_root.mkdir()
+            registry_path = root / "settings" / "tunnel-projects.json"
+            registry_path.parent.mkdir()
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "projects": [
+                            {"id": "alpha", "root": str(first), "writable": True},
+                            {"id": "beta", "root": str(second), "writable": True},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            credentials_path = root / "settings" / "tunnel-credentials.json"
+            save_tunnel_credentials(
+                TunnelCredentials("tunnel_" + "a" * 32, "sk-valid-test-key"),
+                credentials_path,
+            )
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_credentials_path=credentials_path,
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            runtime = app.extensions["tunnel_runtime"]
+            service = app.extensions["tunnel_mcp_service"]
+            with patch.object(runtime, "connect") as reconnect, app.test_client() as client:
+                selected = client.post(
+                    "/api/agent/tunnel/project?platform=chatgpt",
+                    json={"project_id": "alpha", "expected_revision": 0},
+                )
+                self.assertEqual(selected.status_code, 200)
+                reconnect.assert_called_once_with()
+
+                switched = client.post(
+                    "/api/agent/tunnel/project?platform=chatgpt",
+                    json={"project_id": "beta", "expected_revision": 1},
+                )
+                self.assertEqual(switched.status_code, 200)
+                current = switched.get_json()["project_context"]["current"]
+                self.assertEqual(current["id"], "beta")
+                self.assertTrue(current["writable"])
+                self.assertEqual(reconnect.call_count, 2)
+
+                rpc_status, rpc_body = service.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "write_file",
+                            "arguments": {
+                                "project": "beta",
+                                "project_identity": current["identity"],
+                                "request_id": "auto-reconnect-write-0001",
+                                "path": "created.txt",
+                                "content": "ready\n",
+                            },
+                        },
+                    },
+                    {},
+                )
+                self.assertEqual(rpc_status, 200)
+                self.assertFalse(rpc_body["result"]["isError"])
+                self.assertEqual((second / "created.txt").read_text(), "ready\n")
+                self.assertFalse((first / "created.txt").exists())
+
+                repeated = client.post(
+                    "/api/agent/tunnel/project?platform=chatgpt",
+                    json={"project_id": "beta", "expected_revision": 2},
+                )
+                self.assertEqual(repeated.status_code, 200)
+                self.assertEqual(reconnect.call_count, 2)
+
+                narrowed = client.post(
+                    "/api/agent/tunnel/project?platform=chatgpt",
+                    json={
+                        "project_id": "beta",
+                        "selected_project_ids": ["beta"],
+                        "expected_revision": 3,
+                    },
+                )
+                self.assertEqual(narrowed.status_code, 200)
+                self.assertEqual(reconnect.call_count, 2)
+
+                stale = client.post(
+                    "/api/agent/tunnel/project?platform=chatgpt",
+                    json={"project_id": "alpha", "expected_revision": 1},
+                )
+                self.assertEqual(stale.status_code, 409)
+                self.assertEqual(reconnect.call_count, 2)
+
+                gemini = client.post(
+                    "/api/agent/tunnel/project?platform=gemini",
+                    json={"project_id": "alpha", "expected_revision": 4},
+                )
+                self.assertEqual(gemini.status_code, 200)
+                self.assertEqual(reconnect.call_count, 2)
+
+                third = root / "third"
+                third.mkdir()
+                registered = client.post(
+                    "/api/agent/tunnel/project/register?platform=chatgpt",
+                    json={"path": str(third), "expected_revision": 5},
+                )
+                self.assertEqual(registered.status_code, 200)
+                self.assertEqual(registered.get_json()["project_context"]["current"]["id"], "third")
+                self.assertEqual(reconnect.call_count, 3)
+
+                removed = client.post(
+                    "/api/agent/tunnel/project/unregister?platform=chatgpt",
+                    json={"project_id": "third", "expected_revision": 6},
+                )
+                self.assertEqual(removed.status_code, 200)
+                self.assertEqual(removed.get_json()["project_context"]["current"]["id"], "beta")
+                self.assertEqual(reconnect.call_count, 3)
+
+                save_tunnel_credentials(TunnelCredentials(), credentials_path)
+                unqualified = client.post(
+                    "/api/agent/tunnel/project?platform=chatgpt",
+                    json={"project_id": "beta", "expected_revision": 7},
+                )
+                self.assertEqual(unqualified.status_code, 200)
+                self.assertEqual(reconnect.call_count, 3)
+
+                save_tunnel_credentials(
+                    TunnelCredentials("tunnel_" + "a" * 32, "sk-valid-test-key"),
+                    credentials_path,
+                )
+                reconnect.side_effect = RuntimeError("sk-private-error-must-not-leak")
+                failed_reconnect = client.post(
+                    "/api/agent/tunnel/project?platform=chatgpt",
+                    json={"project_id": "alpha", "expected_revision": 8},
+                )
+                self.assertEqual(failed_reconnect.status_code, 200)
+                failed_payload = failed_reconnect.get_json()
+                self.assertEqual(failed_payload["project_context"]["current"]["id"], "alpha")
+                self.assertEqual(failed_payload["project_context"]["revision"], 9)
+                self.assertEqual(failed_payload["presentation"]["tone"], "error")
+                self.assertIn("selection was saved", failed_payload["presentation"]["message"])
+                self.assertNotIn("sk-private-error-must-not-leak", json.dumps(failed_payload))
+                self.assertEqual(reconnect.call_count, 4)
+
+                polled = client.get("/api/agent/tunnel/status?platform=chatgpt").get_json()
+                self.assertEqual(polled["state"], "error")
+                self.assertEqual(polled["project_context"]["current"]["id"], "alpha")
+                self.assertEqual(polled["presentation"]["tone"], "error")
+
+                fourth = root / "fourth"
+                fourth.mkdir()
+                failed_registration_reconnect = client.post(
+                    "/api/agent/tunnel/project/register?platform=chatgpt",
+                    json={"path": str(fourth), "expected_revision": 9},
+                )
+                self.assertEqual(failed_registration_reconnect.status_code, 200)
+                registration_payload = failed_registration_reconnect.get_json()
+                self.assertEqual(registration_payload["project_context"]["current"]["id"], "fourth")
+                self.assertTrue(registration_payload["project_context"]["current"]["writable"])
+                self.assertEqual(registration_payload["presentation"]["tone"], "error")
+                self.assertEqual(reconnect.call_count, 5)
+
+    def test_superseded_tunnel_selection_and_registration_cannot_reconnect(self) -> None:
+        """An older saved response cannot restart after a later save connects."""
+        from threading import Event, Thread
+
+        from app.core.tunnel_credentials import TunnelCredentials, save_tunnel_credentials
+
+        for first_operation in ("select", "register"):
+            with self.subTest(first_operation=first_operation), TemporaryDirectory() as raw_root:
+                root = Path(raw_root)
+                first = root / "alpha"
+                second = root / "beta"
+                first.mkdir()
+                second.mkdir()
+                settings = root / "settings"
+                settings.mkdir()
+                registry_path = settings / "tunnel-projects.json"
+                registry_path.write_text(
+                    json.dumps({
+                        "schema_version": 1,
+                        "projects": [
+                            {"id": "alpha", "root": str(first), "writable": True},
+                            {"id": "beta", "root": str(second), "writable": True},
+                        ],
+                    }),
+                    encoding="utf-8",
+                )
+                credentials_path = settings / "tunnel-credentials.json"
+                save_tunnel_credentials(
+                    TunnelCredentials("tunnel_" + "a" * 32, "sk-valid-test-key"),
+                    credentials_path,
+                )
+                app = create_app(
+                    root / "store",
+                    computer_use_settings_path=settings / "computer-use-agent.json",
+                    computer_use_runtime_root=root / "runtime",
+                    tunnel_credentials_path=credentials_path,
+                    tunnel_projects_path=registry_path,
+                    agent_external_operations_enabled=False,
+                )
+                service = app.extensions["tunnel_mcp_service"]
+                service.selection_store.save("alpha", selected_project_ids=["alpha"])
+                runtime = app.extensions["tunnel_runtime"]
+                runtime._enabled = True
+                runtime._set_state("ready", "Initial client is ready.")
+                third = root / "third"
+                third.mkdir()
+                first_saved = Event()
+                release_first = Event()
+                first_responses = []
+                reconnect_revisions = []
+                original_reconnect = runtime.connect_or_fail_closed
+
+                def gated_reconnect(*, expected_revision, current_revision):
+                    if expected_revision == 2:
+                        first_saved.set()
+                        if not release_first.wait(5):
+                            raise AssertionError("The older request was not released.")
+                    return original_reconnect(
+                        expected_revision=expected_revision,
+                        current_revision=current_revision,
+                    )
+
+                def fake_connect():
+                    reconnect_revisions.append(service.selection_store.load().revision)
+                    if len(reconnect_revisions) != 1:
+                        raise RuntimeError("A stale request tried to reconnect.")
+                    runtime._enabled = True
+                    runtime._generation += 1
+                    runtime._set_state("ready", "Fresh client is ready.")
+
+                def first_request():
+                    with app.test_client() as client:
+                        if first_operation == "select":
+                            response = client.post(
+                                "/api/agent/tunnel/project?platform=chatgpt",
+                                json={
+                                    "project_id": "beta",
+                                    "selected_project_ids": ["alpha", "beta"],
+                                    "expected_revision": 1,
+                                },
+                            )
+                        else:
+                            response = client.post(
+                                "/api/agent/tunnel/project/register?platform=chatgpt",
+                                json={"path": str(third), "expected_revision": 1},
+                            )
+                        first_responses.append(response)
+
+                with (
+                    patch.object(runtime, "connect", side_effect=fake_connect),
+                    patch.object(runtime, "connect_or_fail_closed", side_effect=gated_reconnect),
+                ):
+                    first_thread = Thread(target=first_request)
+                    first_thread.start()
+                    try:
+                        self.assertTrue(first_saved.wait(5))
+                        later_project = "alpha" if first_operation == "select" else "beta"
+                        with app.test_client() as client:
+                            later = client.post(
+                                "/api/agent/tunnel/project?platform=chatgpt",
+                                json={
+                                    "project_id": later_project,
+                                    "selected_project_ids": [later_project],
+                                    "expected_revision": 2,
+                                },
+                            )
+                            self.assertEqual(later.status_code, 200)
+                            self.assertEqual(
+                                later.get_json()["project_context"]["current"]["id"],
+                                later_project,
+                            )
+                    finally:
+                        release_first.set()
+                        first_thread.join(timeout=5)
+
+                self.assertFalse(first_thread.is_alive())
+                self.assertEqual(len(first_responses), 1)
+                self.assertEqual(first_responses[0].status_code, 200)
+                self.assertEqual(reconnect_revisions, [3])
+                self.assertEqual(runtime.snapshot()["state"], "ready")
+                self.assertEqual(service.selection_store.load().revision, 3)
+                self.assertEqual(
+                    first_responses[0].get_json()["project_context"]["current"]["id"],
+                    later_project,
+                )
 
     def test_tunnel_project_removal_revokes_mapping_and_preserves_folder(self) -> None:
         """Removing even the final mapping must not revive an implicit fallback."""

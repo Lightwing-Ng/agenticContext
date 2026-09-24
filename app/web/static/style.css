@@ -1,4 +1,4 @@
-/* Code version: v2.150.4-codex.0 */
+/* Code version: v2.150.5-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -4785,9 +4785,12 @@ details.agent-tunnel-guide > summary {
     padding: 8px 12px;
     overflow-y: hidden;
     resize: none;
-    border: 1px solid var(--theme-accent-primary);
+    border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
-    background: var(--bg);
+    background: var(--frosted-glass-background);
+    box-shadow: var(--frosted-glass-shadow);
+    backdrop-filter: var(--frosted-glass-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-blur);
     color: var(--text);
     font-family: var(--font-family-base);
     font-size: var(--font-ui-lg);
@@ -4795,7 +4798,8 @@ details.agent-tunnel-guide > summary {
 }
 
 .agent-tunnel-kickoff-editor:focus-visible {
-    border-color: var(--theme-accent-primary);
+    background: var(--frosted-glass-background-hover);
+    box-shadow: var(--frosted-glass-shadow-hover);
     outline: 2px solid var(--theme-accent-primary);
     outline-offset: 2px;
 }

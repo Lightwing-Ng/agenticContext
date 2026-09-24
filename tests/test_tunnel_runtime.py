@@ -1,6 +1,6 @@
 """tunnel-client supervision tests with a local fake client.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.2-codex.0
 """
 
 from __future__ import annotations
@@ -123,6 +123,123 @@ def test_snapshot_identifies_one_service_runtime_instance(tmp_path: Path) -> Non
     assert all(character in "0123456789abcdef" for character in first_id)
     assert first.snapshot()["runtime_instance_id"] == first_id
     assert second.snapshot()["runtime_instance_id"] != first_id
+
+
+def test_failed_reconnect_start_revokes_old_generation_and_retains_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A synchronous startup failure cannot leave an old client marked ready."""
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    runtime._enabled = True
+    runtime._generation = 3
+    runtime._authorization = "Bearer old-test-token"
+    runtime._set_state("ready", "Ready for a project tool call.")
+
+    def fail_connect() -> None:
+        raise RuntimeError("sk-private-error-must-not-leak")
+
+    monkeypatch.setattr(runtime, "connect", fail_connect)
+    with pytest.raises(RuntimeError):
+        runtime.connect_or_fail_closed(
+            expected_revision=1,
+            current_revision=lambda: 1,
+        )
+
+    snapshot = runtime.snapshot()
+    assert snapshot["generation"] == 4
+    assert snapshot["enabled"] is False
+    assert snapshot["ready"] is False
+    assert snapshot["state"] == "error"
+    assert snapshot["problem_code"] == "reconnect_start_failed"
+    assert "selection was saved" in snapshot["message"]
+    assert runtime.authorization_matches("Bearer old-test-token") is False
+    assert runtime._set_state_for_generation(3, "ready", "Stale ready") is False
+    assert runtime.snapshot()["state"] == "error"
+
+
+def test_failed_reconnect_cannot_revoke_a_newer_successful_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure transition completes before a later connect can start."""
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_called = threading.Event()
+    calls = []
+    errors = []
+
+    def controlled_connect() -> None:
+        calls.append(True)
+        if len(calls) == 1:
+            first_started.set()
+            assert release_first.wait(5)
+            raise RuntimeError("first start failed")
+        second_called.set()
+        runtime._enabled = True
+        runtime._generation += 1
+        runtime._set_state("ready", "Newer client is ready.")
+
+    def first_attempt() -> None:
+        try:
+            runtime.connect_or_fail_closed(
+                expected_revision=1,
+                current_revision=lambda: 1,
+            )
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    monkeypatch.setattr(runtime, "connect", controlled_connect)
+    first = threading.Thread(target=first_attempt)
+    second = threading.Thread(
+        target=runtime.connect_or_fail_closed,
+        kwargs={"expected_revision": 2, "current_revision": lambda: 2},
+    )
+    first.start()
+    assert first_started.wait(5)
+    second.start()
+    try:
+        assert not second_called.wait(0.1)
+    finally:
+        release_first.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == ["first start failed"]
+    assert len(calls) == 2
+    assert runtime.snapshot()["state"] == "ready"
+    assert runtime.snapshot()["generation"] == 2
+
+
+def test_superseded_project_revision_skips_reconnect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later saved selection prevents an older request from touching the client."""
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+
+    def unexpected_connect() -> None:
+        raise AssertionError("A superseded selection must not reconnect.")
+
+    monkeypatch.setattr(runtime, "connect", unexpected_connect)
+    assert runtime.connect_or_fail_closed(
+        expected_revision=2,
+        current_revision=lambda: 3,
+    ) is False
+    assert runtime.snapshot()["generation"] == 0
+    assert runtime.snapshot()["state"] == "disabled"
 
 
 def test_outbound_proxy_prefers_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:

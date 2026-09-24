@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.36.1-codex.0`
+Documentation version: `v1.36.3-codex.0`
 
 ## Launch
 
@@ -502,7 +502,13 @@ Runtime behavior:
 - The status card exposes one `Tokens:` row. Its value is a bounded estimate for retained MCP
   request/response tool text, not ChatGPT billing, account balance, remaining quota, or a model
   task total. The accessible label and tooltip identify that estimate explicitly, and incomplete
-  data is shown as unavailable instead of becoming a fabricated zero.
+  data is shown as unavailable instead of becoming a fabricated zero. The `o200k_base` tokenizer
+  caches only successful loads. After a failure, the next tool-text estimate following a 30-second
+  cooldown starts a background retry; Agent token metrics follow the same retry behavior.
+  Corporate TLS interception can still prevent the initial tiktoken cache download. In that case,
+  provision the verified encoding file through the host's trusted network path and restart the
+  Python service. A reconnect alone does not reload code or clear the 20
+  retained calls whose earlier token counts are unknown.
 - Arbitrary shell commands, arbitrary executables, and general background processes are
   intentionally not exposed; only the approved verification commands run through `run_check` or
   the bounded durable-check lifecycle.
