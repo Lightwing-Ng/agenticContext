@@ -1,6 +1,6 @@
 """Platform browser launch and login handoff transport for Computer Use Agent.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -269,8 +269,9 @@ def open_browser_for_login(
 ) -> dict[str, Any]:
     """Open a visible supported browser at its platform home for sign-in.
 
-    Cache pages pass ``use_debug_profile=False`` because their workers clone the
-    daily profile; signing in to the Agent debug profile would never reach them.
+    Cache pages and macOS ChatGPT Edge Agent pass ``use_debug_profile=False``
+    because their workers clone the daily profile. Signing in to the project
+    debug profile would not reach those workers.
     """
     selected_platform = str(platform or "").strip().lower()
     selected_browser = str(browser or "").strip().lower()
@@ -280,9 +281,7 @@ def open_browser_for_login(
         raise ValueError("The Agent browser must be Safari, Edge, or Chrome.")
     if sys.platform != "darwin" and not (_windows_host_check or is_windows_host)():
         raise RuntimeError("Browser login handoff is only supported on macOS and Windows.")
-    # Windows Edge/Chrome and macOS Edge reuse a project-owned debug browser
-    # over CDP. The login handoff must write into that same debug profile so
-    # later Agent tasks reattach instead of launching another authorized window.
+    # Debug-profile callers must sign in to that profile before CDP task reuse.
     from ..agent_debug_browser import debug_browser_supported
 
     if use_debug_profile and debug_browser_supported(selected_browser):

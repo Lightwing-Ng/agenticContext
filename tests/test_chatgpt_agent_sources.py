@@ -1,6 +1,6 @@
 """Focused tests for the Agent's ChatGPT Web source catalog.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ from contextlib import nullcontext
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
+
+import pytest
 
 from app.core.chatgpt_agent_sources import (
     CHATGPT_PROJECT_API_ENDPOINTS,
@@ -181,6 +183,56 @@ def test_chatgpt_status_and_sources_share_one_chromium_context() -> None:
     assert launch_context.call_args.kwargs["background_window"] is True
     collect_sources.assert_called_once_with(context, page, "Edge")
     discover_efforts.assert_called_once_with(page)
+
+
+def test_chromium_source_entrypoints_share_the_selected_edge_profile_policy() -> None:
+    config = CrawlConfig()
+    entrypoints = (
+        ("bootstrap", lambda: probe_and_collect_chatgpt_sources("edge", config)),
+        ("sources", lambda: list_chatgpt_agent_sources("edge", config)),
+        (
+            "project sessions",
+            lambda: list_chatgpt_project_sessions(
+                "edge", "https://chatgpt.com/g/g-p-fixture/project", config
+            ),
+        ),
+        (
+            "history",
+            lambda: fetch_chatgpt_conversation_history(
+                "edge", "https://chatgpt.com/c/fixture-session", config
+            ),
+        ),
+    )
+
+    for daily_edge_profile in (True, False):
+        for name, invoke in entrypoints:
+            with (
+                patch(
+                    "app.core.chatgpt_agent_sources.agent_uses_daily_edge_profile",
+                    return_value=daily_edge_profile,
+                ),
+                patch(
+                    "app.core.chatgpt_agent_sources.sync_playwright_or_error",
+                    return_value=nullcontext(object()),
+                ),
+                patch(
+                    "app.core.chatgpt_agent_sources.launch_chromium_context",
+                    side_effect=RuntimeError("fixture stopped after browser selection"),
+                ) as launch_context,
+            ):
+                if name == "bootstrap":
+                    status, sources = invoke()
+                    assert status["probe_error"] is True
+                    assert sources is None
+                else:
+                    with pytest.raises(RuntimeError, match="fixture stopped"):
+                        invoke()
+
+            launch_context.assert_called_once()
+            options = launch_context.call_args.kwargs
+            assert options["clone_profile_first"] is True
+            assert options["prefer_initialized_debug_profile"] is not daily_edge_profile
+            assert options.get("allow_cdp_attach", True) is not daily_edge_profile
 
 
 def test_chatgpt_bootstrap_leaves_an_openai_authorize_popup_untouched() -> None:

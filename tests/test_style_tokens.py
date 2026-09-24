@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.8-codex.0
+Code version: v1.86.9-codex.0
 """
 
 import hashlib
@@ -2387,7 +2387,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.150.7-codex.0 */",
+        "/* Code version: v2.150.8-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -3654,11 +3654,12 @@ def test_agent_answer_markdown_uses_provider_aligned_rich_text_geometry() -> Non
     assert ".agent-response-answer-content .agent-inline-citation--unresolved {" in stylesheet
 
     table_shell_start = stylesheet.index(
-        ".agent-response-answer-content .agent-markdown-table-shell {"
+        ".agent-response-answer-content .agent-markdown-table-shell,"
     )
     table_shell_rule = stylesheet[
         table_shell_start:stylesheet.index("\n}", table_shell_start)
     ]
+    assert ".browser-chat-message-content .agent-markdown-table-shell {" in table_shell_rule
     for declaration in (
         "box-sizing: border-box;",
         "width: 100%;",
@@ -3673,11 +3674,14 @@ def test_agent_answer_markdown_uses_provider_aligned_rich_text_geometry() -> Non
         assert declaration in table_shell_rule
 
     table_start = stylesheet.index(
-        ".agent-response-answer-content .agent-markdown-table-shell table {"
+        ".agent-response-answer-content .agent-markdown-table-shell table,"
     )
     table_rule = stylesheet[table_start:stylesheet.index("\n}", table_start)]
+    assert ".browser-chat-message-content .agent-markdown-table-shell table {" in table_rule
     assert "width: max-content;" in table_rule
     assert "min-width: 100%;" in table_rule
+    assert "max-width: none;" in table_rule
+    assert "table-layout: auto;" in table_rule
     assert "font-size: var(--font-size-3);" in table_rule
 
     cells_start = stylesheet.index(
@@ -3687,7 +3691,10 @@ def test_agent_answer_markdown_uses_provider_aligned_rich_text_geometry() -> Non
     assert "min-width: 140px;" in cells_rule
     assert "padding: 8px 10px;" in cells_rule
     assert "overflow-wrap: anywhere;" in cells_rule
-    assert ".agent-response-answer-content .agent-markdown-table-shell tbody tr:not(:last-child) td {" in stylesheet
+    assert (
+        ".browser-chat-message-content .agent-markdown-table-shell "
+        "tbody tr:not(:last-child) td {"
+    ) in stylesheet
 
 
 def test_agent_response_code_blocks_wrap_long_lines() -> None:

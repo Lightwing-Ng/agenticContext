@@ -7,7 +7,7 @@ touches a Flask request, a service, or an application instance, so route modules
 import it directly instead of receiving it through the application factory.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
@@ -277,6 +277,17 @@ def render_prompt_markdown(value: str) -> Markup:
     return Markup(PROMPT_MARKDOWN_RENDERER.render(prompt)) if prompt else Markup("")
 
 
+def _wrap_rendered_tables(rendered: str, *, aria_label: str) -> str:
+    """Give sanitized or generated tables the shared scrollable table surface."""
+    return rendered.replace(
+        "<table>",
+        (
+            '<div class="agent-markdown-table-shell" role="region" tabindex="0" '
+            f'aria-label="{escape_html(aria_label, quote=True)}"><table>'
+        ),
+    ).replace("</table>", "</table></div>")
+
+
 def _safe_agent_citation_url(value: Any) -> str:
     """Keep only bounded absolute HTTP(S) URLs for rendered provider citations."""
     candidate = str(value or "").strip()
@@ -388,14 +399,7 @@ def _render_agent_markdown(
         rendered = rendered.replace(replacement, delimiter)
     for replacement, citation_html in inline_replacements.items():
         rendered = rendered.replace(replacement, citation_html)
-    rendered = rendered.replace(
-        "<table>",
-        (
-            '<div class="agent-markdown-table-shell" role="region" tabindex="0" '
-            'aria-label="Scrollable answer table"><table>'
-        ),
-    ).replace("</table>", "</table></div>")
-    return Markup(rendered)
+    return Markup(_wrap_rendered_tables(rendered, aria_label="Scrollable answer table"))
 
 
 def render_agent_response(
@@ -480,7 +484,8 @@ def render_cached_message(
         else content_html
     )
     rich_text = sanitize_stored_html(source_html, replace_images=replace_images)
-    return Markup(rich_text) if rich_text else render_prompt_markdown(content_text)
+    rendered = rich_text if rich_text else str(render_prompt_markdown(content_text))
+    return Markup(_wrap_rendered_tables(rendered, aria_label="Scrollable message table"))
 
 
 def build_browser_search_suggestions(

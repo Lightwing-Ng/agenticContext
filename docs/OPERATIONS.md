@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.37.0-claude.0`
+Documentation version: `v1.37.2-codex.0`
 
 ## Launch
 
@@ -128,10 +128,12 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
   HTTP 403. Windows probes retain offscreen/minimized launch arguments. Existing macOS silent
   probes retain their task-stage window policy and foreground-app restoration.
 - Executing Chrome tasks on macOS use an isolated profile clone without offscreen or
-  start-minimized launch arguments. macOS Edge Agent probes, Recheck, login, and tasks use
-  the persistent project debug Edge over CDP, like Windows, even before it is initialized.
-  A daily Edge clone is challenged by Cloudflare on page load, and Playwright-launched clones
-  fail Project `Send`. The failure lesson is recorded in [`CHATGPT_AGENT_CLOUDFLARE.md`](CHATGPT_AGENT_CLOUDFLARE.md).
+  start-minimized launch arguments. macOS ChatGPT Edge Agent reuses Cache's daily Edge sign-in:
+  probes, Recheck, source/history reads, and tasks clone the daily profile without CDP fallback.
+  The configured ChatGPT Project currently opens a persistent verification page in the clone;
+  task submission fails closed before the composer. This is recorded in
+  [`CHATGPT_AGENT_CLOUDFLARE.md`](CHATGPT_AGENT_CLOUDFLARE.md). Other macOS Edge Agent providers
+  retain their project debug profile.
   On Windows, a clone may be used before the project debug profile is initialized. After a
   successful debug-browser launch creates its marker, every later Windows Agent readiness,
   source, Project, and history probe or Agent task restarts or reuses that same persistent
@@ -160,10 +162,10 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
   ownership but leaves the project Edge process and Profile available for reuse. A profile launch
   is serialized across threads and local service processes with an owner-only lock. The code does
   not use mock Keychain, basic password storage, disabled encryption, or Keychain mutation.
-- Explicit login handoff opens the selected browser visibly. macOS Chrome and Safari login,
-  and Windows conversation handoff, use the normal resolved browser. Windows Edge or Chrome login
-  and macOS Edge login use the project-owned persistent debug profile so Recheck and later tasks
-  read the same authentication state.
+- Explicit login handoff opens the selected browser visibly. macOS ChatGPT Edge, Chrome, and
+  Safari login, and Windows conversation handoff, use the normal resolved browser. Windows Edge
+  or Chrome login and other macOS Edge Agent providers use the project-owned persistent debug
+  profile so Recheck and later tasks read the same authentication state.
   Opening the page does not establish sign-in; the user must choose Recheck. Native Windows 11
   browser execution remains unverified on this macOS host.
 - Windows Edge or Chrome login targets the project-owned debug browser instead of the user's
@@ -178,8 +180,8 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
   verification in the already-open window, then Recheck. The first sign-in on a fresh Windows
   debug profile is the only manual login the user performs there. One process-local lock owns each
   browser for the full CDP caller lifetime. Waiting is bounded to five seconds, and a busy
-  operation fails clearly instead of blocking indefinitely. Windows Edge or Chrome and macOS Edge
-  therefore admit one active task. macOS Chrome keeps isolated-clone concurrency.
+  operation fails clearly instead of blocking indefinitely. CDP-backed tasks admit one active
+  caller per browser. Clone-backed macOS ChatGPT Edge and Chrome keep isolated-context behavior.
   Multiple application processes are not coordinated by this lock.
 - A Cloudflare or CAPTCHA page on ChatGPT, Gemini, Grok, or Claude is not clicked, filled, or
   reloaded. ChatGPT's `auth.openai.com` authorize popup is the same fail-closed case: leave that

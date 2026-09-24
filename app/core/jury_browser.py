@@ -1,6 +1,6 @@
 """Keep each juror in one authenticated browser conversation for an entire question.
 
-Code version: v1.8.0-codex.2
+Code version: v1.8.1-codex.0
 """
 
 from __future__ import annotations
@@ -335,7 +335,10 @@ def _open_macos_edge_profile_setup_tabs(
     with debug_browser_lock("edge"):
         handle = ensure_debug_browser("edge", profile_root=project_profile_root)
         with sync_playwright_or_error() as playwright:
-            browser = playwright.chromium.connect_over_cdp(handle.cdp_endpoint)
+            browser = playwright.chromium.connect_over_cdp(
+                handle.cdp_endpoint,
+                no_defaults=True,
+            )
             try:
                 if not browser.contexts:
                     raise RuntimeError(

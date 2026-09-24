@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.84.0-codex.0
+Code version: v3.84.2-codex.0
 """
 
 from __future__ import annotations
@@ -84,6 +84,7 @@ from .browser_sessions import (
     CHROMIUM_WINDOW_MODE_OFFSCREEN,
     CHROMIUM_WINDOW_MODE_TASK_STAGE,
     GROK_COMPOSER_SELECTOR,
+    agent_uses_daily_edge_profile,
     browser_descriptors,
     grok_composer_snapshot,
     goto_with_retry,
@@ -3748,10 +3749,15 @@ def _capture_macos_frontmost_application() -> str:
     return _browser_host._capture_macos_frontmost_application()
 
 
-def _should_restore_macos_frontmost_after_task_browser(browser_id: str) -> bool:
-    """Keep a reused debug Edge/Chrome visible, matching the Windows CDP path."""
+def _should_restore_macos_frontmost_after_task_browser(
+    browser_id: str,
+    platform: str = "",
+) -> bool:
+    """Restore focus after clone launches while keeping reused debug Edge visible."""
     if sys.platform != "darwin":
         return False
+    if agent_uses_daily_edge_profile(platform, browser_id):
+        return True
     from .agent_debug_browser import (
         debug_browser_profile_initialized,
         debug_browser_supported,
@@ -3920,7 +3926,10 @@ def run_web_computer_use(
     task_stage_window = settings.browser in {"edge", "chrome"} and sys.platform in {"darwin", "win32"}
     restore_macos_focus = (
         task_stage_window
-        and _should_restore_macos_frontmost_after_task_browser(settings.browser)
+        and _should_restore_macos_frontmost_after_task_browser(
+            settings.browser,
+            settings.platform,
+        )
     )
     previous_frontmost_application = (
         _capture_macos_frontmost_application() if restore_macos_focus else ""
@@ -3931,6 +3940,10 @@ def run_web_computer_use(
     with ExitStack() as browser_resources:
         def acquire_chromium_context() -> Any:
             playwright = browser_resources.enter_context(sync_playwright_or_error())
+            use_daily_edge_profile = agent_uses_daily_edge_profile(
+                settings.platform,
+                settings.browser,
+            )
             context = browser_resources.enter_context(
                 launch_chromium_context(
                     playwright,
@@ -3944,7 +3957,8 @@ def run_web_computer_use(
                         if task_stage_window
                         else CHROMIUM_WINDOW_MODE_OFFSCREEN
                     ),
-                    prefer_initialized_debug_profile=True,
+                    prefer_initialized_debug_profile=not use_daily_edge_profile,
+                    allow_cdp_attach=not use_daily_edge_profile,
                 )
             )
             if should_stop():

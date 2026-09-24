@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.13.6-codex.0
+Code version: v1.13.7-codex.0
 """
 
 from __future__ import annotations
@@ -1100,6 +1100,11 @@ def test_launch_chromium_context_falls_back_to_cdp_attach_when_cookies_locked(
     import app.core.browser_sessions as browser_sessions
     from app.core.agent_debug_browser import DebugBrowserHandle
 
+    monkeypatch.setattr(
+        browser_sessions,
+        "debug_browser_http_verification_status",
+        lambda *_args: None,
+    )
     source_user_data_dir = tmp_path / "Edge"
     source_profile_dir = source_user_data_dir / "Default"
     source_profile_dir.mkdir(parents=True)
@@ -1143,11 +1148,11 @@ def test_launch_chromium_context_falls_back_to_cdp_attach_when_cookies_locked(
         close=browser_close,
     )
 
-    connect_calls: list[str] = []
+    connect_calls: list[tuple[str, bool]] = []
 
     class Chromium:
-        def connect_over_cdp(self, endpoint: str) -> object:
-            connect_calls.append(endpoint)
+        def connect_over_cdp(self, endpoint: str, *, no_defaults: bool) -> object:
+            connect_calls.append((endpoint, no_defaults))
             return attached_browser
 
     playwright = SimpleNamespace(chromium=Chromium())
@@ -1175,7 +1180,7 @@ def test_launch_chromium_context_falls_back_to_cdp_attach_when_cookies_locked(
         allow_cdp_attach=True,
     ) as context:
         assert ensure_calls == ["edge"]
-        assert connect_calls == ["http://127.0.0.1:9999"]
+        assert connect_calls == [("http://127.0.0.1:9999", True)]
         assert context.pages == [attached_page]
 
     browser_close.assert_called_once()
@@ -1189,6 +1194,11 @@ def test_cdp_attach_lock_covers_the_complete_caller_context(
     import app.core.browser_sessions as browser_sessions
     from app.core.agent_debug_browser import DebugBrowserHandle
 
+    monkeypatch.setattr(
+        browser_sessions,
+        "debug_browser_http_verification_status",
+        lambda *_args: None,
+    )
     descriptor = BrowserDescriptor(
         browser_id="edge",
         label="Edge",
@@ -1214,7 +1224,8 @@ def test_cdp_attach_lock_covers_the_complete_caller_context(
     monkeypatch.setattr(browser_sessions, "clone_browser_profile", MagicMock())
 
     class Chromium:
-        def connect_over_cdp(self, _endpoint: str) -> object:
+        def connect_over_cdp(self, _endpoint: str, *, no_defaults: bool) -> object:
+            assert no_defaults is True
             context = SimpleNamespace(pages=[], new_page=MagicMock())
             return SimpleNamespace(
                 contexts=[context],
@@ -1265,8 +1276,14 @@ def test_cdp_attach_failure_releases_the_debug_browser_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failed CDP connection does not leave the browser permanently busy."""
+    import app.core.browser_sessions as browser_sessions
     from app.core.agent_debug_browser import DebugBrowserHandle
 
+    monkeypatch.setattr(
+        browser_sessions,
+        "debug_browser_http_verification_status",
+        lambda *_args: None,
+    )
     descriptor = BrowserDescriptor(
         browser_id="edge",
         label="Edge",
@@ -1382,6 +1399,11 @@ def test_macos_jury_project_profile_reuses_process_with_isolated_page_leases(
     import app.core.browser_sessions as browser_sessions
     from app.core.agent_debug_browser import DebugBrowserHandle
 
+    monkeypatch.setattr(
+        browser_sessions,
+        "debug_browser_http_verification_status",
+        lambda *_args: None,
+    )
     descriptor = BrowserDescriptor(
         browser_id="edge",
         label="Edge",
@@ -1435,8 +1457,9 @@ def test_macos_jury_project_profile_reuses_process_with_isolated_page_leases(
     shared_context = Context()
     browsers = []
 
-    def connect(endpoint: str) -> object:
+    def connect(endpoint: str, *, no_defaults: bool) -> object:
         assert endpoint == "http://127.0.0.1:42421"
+        assert no_defaults is True
         browser = SimpleNamespace(
             contexts=[shared_context],
             close=MagicMock(),
@@ -1591,6 +1614,11 @@ def test_launch_chromium_context_restarts_initialized_debug_browser_before_clone
     import app.core.browser_sessions as browser_sessions
     from app.core.agent_debug_browser import DebugBrowserHandle
 
+    monkeypatch.setattr(
+        browser_sessions,
+        "debug_browser_http_verification_status",
+        lambda *_args: None,
+    )
     descriptor = BrowserDescriptor(
         browser_id="edge",
         label="Edge",
@@ -1638,7 +1666,7 @@ def test_launch_chromium_context_restarts_initialized_debug_browser_before_clone
 
     clone.assert_not_called()
     ensure.assert_called_once_with("edge")
-    connect.assert_called_once_with("http://127.0.0.1:42421")
+    connect.assert_called_once_with("http://127.0.0.1:42421", no_defaults=True)
     browser_close.assert_called_once_with()
 
 
@@ -2001,7 +2029,7 @@ def test_launch_chromium_context_skips_cdp_attach_when_disabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Disabling the CDP fallback surfaces the running-browser lock directly."""
+    """A locked daily profile fails clearly without switching to project CDP."""
     import shutil
 
     import app.core.browser_sessions as browser_sessions
@@ -2045,7 +2073,7 @@ def test_launch_chromium_context_skips_cdp_attach_when_disabled(
     )
 
     playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=MagicMock()))
-    with pytest.raises(RuntimeError, match="sign-in cookies locked"):
+    with pytest.raises(RuntimeError, match="Could not reuse the signed-in Edge profile"):
         launch_chromium_context(
             playwright,
             descriptor,

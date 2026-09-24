@@ -1,6 +1,6 @@
 """Verify isolated browser ownership and single-session jury exchanges.
 
-Code version: v1.7.0-codex.2
+Code version: v1.7.1-codex.0
 """
 
 from contextlib import contextmanager
@@ -679,9 +679,9 @@ def test_macos_edge_profile_setup_opens_one_process_with_one_tab_per_provider(
     def playwright():
         yield SimpleNamespace(
             chromium=SimpleNamespace(
-                connect_over_cdp=lambda endpoint: (
+                connect_over_cdp=lambda endpoint, *, no_defaults: (
                     browser
-                    if endpoint == "http://127.0.0.1:42421"
+                    if endpoint == "http://127.0.0.1:42421" and no_defaults is True
                     else pytest.fail("Unexpected CDP endpoint")
                 )
             )

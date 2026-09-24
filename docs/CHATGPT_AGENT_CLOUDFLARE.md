@@ -1,8 +1,9 @@
 # ChatGPT Agent Cloudflare lessons
 
-Documentation version: `v1.1.0-codex.0`
+Documentation version: `v1.2.1-codex.0`
 Observed: `17 Sep 2026` on this macOS host
 Windows evidence: debug Chrome over CDP, same day
+Rechecked: `24 Sep 2026` on this macOS host
 
 This is the durable lesson record. [Operations](OPERATIONS.md) and
 [Computer Use Agent](COMPUTER_USE_AGENT.md) own the current contract. Do not treat an empty
@@ -25,7 +26,7 @@ profile is signed in. A live debug Chrome was verified by attaching over CDP and
 [`scripts/tmp_probe_chrome_tab.py`](../scripts/tmp_probe_chrome_tab.py). Pass the current
 endpoint; do not reuse an old port.
 
-## Failure chain that must not be repeated
+## Historical failure chain
 
 1. **Wrong profile.** Cloning daily Edge is the Cache ChatGPT path. The project debug profile is
    a separate, initially unsigned browser. Copying or launching it does not prove ChatGPT
@@ -41,27 +42,30 @@ endpoint; do not reuse an old port.
 5. **Clicking, reloading, or Rechecking through the challenge.** Those are punishment-path
    attempts. Detect the challenge from Chromium HTTP `/json/list` URL and title only. Leave the
    window for the operator.
-6. **Treating Cache success as proof that a daily-profile clone can browse ChatGPT.** Cache reads
-   `/backend-api` with cookies; it never has to pass Turnstile on a page load. On 18 Sep 2026 a
-   daily clone launched as native Edge showed `Just a moment...` 3 seconds after `/json/new`,
-   with nothing attached over CDP. Under the same flags, a fresh empty profile and the project
-   debug profile both loaded `chatgpt.com` without a challenge. Playwright-launched clones also
-   fail Project Send. Do not route macOS Edge Agent through any daily-profile clone.
+6. **Assuming a Cache API check proves Project Send.** On 18 Sep 2026 a daily clone launched as
+   native Edge showed `Just a moment...` after `/json/new`, without a CDP attachment. Playwright
+   clones also failed Project Send. On 24 Sep 2026 a fresh daily-profile clone passed the
+   ChatGPT account check and Agent model/source discovery. A further read-only test on the same
+   day reached the configured Project URL, but its challenge persisted for 20 seconds and the
+   composer never appeared. Project Send is currently blocked on this host.
 
 ## Current contract
 
-- macOS Edge Agent matches Windows: probes, Recheck, login, and tasks all use the persistent
-  project debug Edge under `local_store/agent_browser_profile/edge` over CDP, even before its
-  profile is initialized. Login opens `chatgpt.com` in that window through HTTP endpoints only;
-  sign in there once, then Recheck. Later tasks reattach to the same signed-in profile.
+- macOS ChatGPT Edge Agent uses the same daily Edge sign-in as Cache. Probes, Recheck, source
+  discovery, Project and history reads, and tasks clone that profile and disable CDP fallback.
+  The login action opens the daily Edge. It does not require a second project-profile sign-in.
+  A Project challenge fails closed before a task submits a prompt.
+- Other macOS Edge Agent providers and Edge Jury retain their existing project debug browser
+  paths. Jury never reads the daily Edge profile.
 - Attach is refused while `/json/list` shows a challenge, so Playwright never enables Runtime on
   a Turnstile page.
 - Windows Edge and Chrome Agent keep the project debug browser over CDP.
-- Cache ChatGPT keeps cloning the daily profile; it only calls APIs.
+- Cache ChatGPT keeps cloning the daily profile.
 - Do not auto-solve Cloudflare. Do not click the checkbox from this application.
 
 ## Operator recovery
 
-Choose `Open Edge to sign in` on the Agent page, sign in to ChatGPT in the project debug Edge
-window, then Recheck. If a challenge appears there, complete it by hand in that window; nothing
-is attached to it at that point. Do not restart the user-owned service on port `8666` merely to inspect this note.
+For ChatGPT, choose `Open Edge to sign in` only if the daily Edge session is signed out, then
+Recheck. If a challenge appears, complete it by hand in the browser; the application does not
+solve it automatically. Do not restart the user-owned service on port `8666` merely to inspect
+this note.

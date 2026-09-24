@@ -1,4 +1,4 @@
-/* Code version: v2.150.7-codex.0 */
+/* Code version: v2.150.8-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -7698,7 +7698,15 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-text-summary-card .browser-chat-list {
     flex: 1 1 0;
     min-height: 0;
+    margin-block-start: calc(-1 * var(--layout-physical-effect-bleed));
+    margin-inline-start: calc(-1 * var(--layout-physical-effect-bleed));
+    padding-block: var(--layout-physical-effect-bleed);
+    padding-inline-start: var(--layout-physical-effect-bleed);
+    padding-inline-end: var(--layout-physical-effect-bleed);
+    overflow-x: hidden;
     overflow-y: auto;
+    scroll-padding-block-end: var(--layout-physical-effect-bleed);
+    overscroll-behavior: contain;
 }
 
 .browser-text-summary-card .browser-session-table-shell {
@@ -9007,7 +9015,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     border-radius: var(--radius-panel);
     background: var(--workspace-article-background);
     box-shadow: var(--frosted-glass-shadow);
-    overflow: hidden;
+    overflow: visible;
 }
 
 .browser-chat-message-header {
@@ -9072,6 +9080,10 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     font-size: var(--font-card-subtitle);
     line-height: 1.6;
     overflow-wrap: anywhere;
+}
+
+.browser-session-table-message.browser-chat-message-content {
+    overflow: visible;
 }
 
 .browser-chat-message-content > :first-child {
@@ -9697,7 +9709,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     outline-offset: 2px;
 }
 
-.agent-response-answer-content .agent-markdown-table-shell:focus-visible {
+.agent-response-answer-content .agent-markdown-table-shell:focus-visible,
+.browser-chat-message-content .agent-markdown-table-shell:focus-visible {
     outline: 2px solid var(--accent-text);
     outline-offset: -2px;
 }
@@ -9707,7 +9720,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     opacity: 0.72;
 }
 
-.agent-response-answer-content .agent-markdown-table-shell {
+.agent-response-answer-content .agent-markdown-table-shell,
+.browser-chat-message-content .agent-markdown-table-shell {
     box-sizing: border-box;
     width: 100%;
     min-width: 0;
@@ -9722,9 +9736,12 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     -webkit-overflow-scrolling: touch;
 }
 
-.agent-response-answer-content .agent-markdown-table-shell table {
+.agent-response-answer-content .agent-markdown-table-shell table,
+.browser-chat-message-content .agent-markdown-table-shell table {
     width: max-content;
     min-width: 100%;
+    max-width: none;
+    table-layout: auto;
     border-spacing: 0;
     border-collapse: separate;
     font-size: var(--font-size-3);
@@ -9732,7 +9749,9 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .agent-response-answer-content .agent-markdown-table-shell th,
-.agent-response-answer-content .agent-markdown-table-shell td {
+.agent-response-answer-content .agent-markdown-table-shell td,
+.browser-chat-message-content .agent-markdown-table-shell th,
+.browser-chat-message-content .agent-markdown-table-shell td {
     min-width: 140px;
     padding: 8px 10px;
     text-align: left;
@@ -9740,14 +9759,16 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     overflow-wrap: anywhere;
 }
 
-.agent-response-answer-content .agent-markdown-table-shell th {
+.agent-response-answer-content .agent-markdown-table-shell th,
+.browser-chat-message-content .agent-markdown-table-shell th {
     border-bottom: 1px solid var(--theme-glass-border);
     background: var(--glass-surface-background-dense);
     color: var(--text);
     font-weight: var(--font-weight-semibold);
 }
 
-.agent-response-answer-content .agent-markdown-table-shell tbody tr:not(:last-child) td {
+.agent-response-answer-content .agent-markdown-table-shell tbody tr:not(:last-child) td,
+.browser-chat-message-content .agent-markdown-table-shell tbody tr:not(:last-child) td {
     border-bottom: 1px solid var(--theme-glass-border);
 }
 

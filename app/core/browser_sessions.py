@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.27.12-codex.0
+# Code version: v1.27.14-codex.0
 
 from __future__ import annotations
 
@@ -104,6 +104,11 @@ GROK_COMPOSER_SELECTOR = (
     'textarea, div[contenteditable="true"][role="textbox"]'
     '[aria-label="Ask Grok anything"]'
 )
+
+
+def agent_uses_daily_edge_profile(platform: str, browser: str) -> bool:
+    """Match macOS ChatGPT Agent to Cache's signed-in daily Edge profile."""
+    return is_macos_host() and platform == "chatgpt" and browser == "edge"
 
 
 def visible_claude_composer_selector() -> str:
@@ -1388,11 +1393,9 @@ def launch_chromium_context(
 ):
     """Launch an isolated Chromium-family browser with an explicit window mode.
 
-    Agent callers prefer the project debug profile over CDP: on Windows once it
-    is initialized, and always for macOS Edge. A daily-profile clone launched on
-    macOS is challenged by Cloudflare even before CDP attaches, while the signed-in
-    project profile clears it. A locked daily profile can still trigger the
-    existing debug-browser fallback.
+    Agent callers can request the project debug profile over CDP. macOS ChatGPT
+    Edge callers use the Cache clone path and disable CDP fallback to keep every
+    readiness and task operation on the same signed-in daily profile.
     Neither CDP path reads locked cookie files or opens the daily profile for
     writing. macOS Edge Jury callers may explicitly require the project profile;
     that branch never inspects or clones the daily profile.
@@ -1477,7 +1480,10 @@ def launch_chromium_context(
             )
             if challenge is not None:
                 raise DebugBrowserHumanVerificationError(challenge)
-            browser = playwright.chromium.connect_over_cdp(endpoint)
+            browser = playwright.chromium.connect_over_cdp(
+                endpoint,
+                no_defaults=True,
+            )
             if shared_pages and not browser.contexts:
                 raise RuntimeError(
                     "The project Edge profile has no persistent browser context."
@@ -1534,8 +1540,7 @@ def launch_chromium_context(
             debug_browser_supported,
         )
 
-        # macOS Edge always uses the signed-in project debug profile, like
-        # Windows. A daily-profile clone is challenged by Cloudflare on load.
+        # Explicit debug-profile callers retain the project browser path.
         if debug_browser_supported(descriptor.browser_id) and (
             debug_browser_profile_initialized(descriptor.browser_id)
             or (is_macos_host() and descriptor.browser_id == "edge")
@@ -1559,6 +1564,11 @@ def launch_chromium_context(
                     descriptor.label,
                 )
                 return attach_debug_browser()
+            if not allow_cdp_attach and _is_browser_running_copy_error(exc.__cause__ or exc):
+                raise RuntimeError(
+                    f"Could not reuse the signed-in {descriptor.label} profile because its "
+                    "sign-in cookies are locked."
+                ) from exc
             raise
         try:
             context = do_launch(temp_user_data_dir)
@@ -1581,6 +1591,11 @@ def launch_chromium_context(
                         descriptor.label,
                     )
                     return attach_debug_browser()
+                if not allow_cdp_attach and _is_browser_running_copy_error(clone_exc.__cause__ or clone_exc):
+                    raise RuntimeError(
+                        f"Could not reuse the signed-in {descriptor.label} profile because its "
+                        "sign-in cookies are locked."
+                    ) from clone_exc
                 raise
             try:
                 context = do_launch(temp_user_data_dir)

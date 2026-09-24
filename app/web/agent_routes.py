@@ -10,7 +10,7 @@ Jury, and Cache route modules borrow those few Agent capabilities without import
 this module's internals or duplicating the gate.
 """
 
-# Code version: v1.1.1-codex.0
+# Code version: v1.1.2-codex.0
 
 from __future__ import annotations
 
@@ -72,6 +72,7 @@ from app.core.agent import (
     validate_agent_access_password,
 )
 from app.core.browser import open_zhihu_browser_for_login, probe_browser_session
+from app.core.browser_sessions import agent_uses_daily_edge_profile
 from app.core.foundation import APP_VERSION, is_macos_host, is_windows_host
 from app.core.providers import (
     fetch_chatgpt_conversation_history,
@@ -1448,10 +1449,9 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 browser_name,
                 context.config_store.config,
                 silent=scope == "agent",
-                # macOS Edge Agent tasks run in the project debug profile, so
-                # Recheck must read that profile rather than a daily clone.
                 prefer_initialized_debug_profile=(
                     scope == "agent"
+                    and not agent_uses_daily_edge_profile(platform_name, browser_name)
                     and (
                         platform_name == "gemini"
                         or (browser_name == "edge" and is_macos_host())
@@ -1494,9 +1494,13 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                     platform_name,
                     browser_name,
                     config=context.config_store.config,
-                    # macOS cache workers clone the daily Edge profile, so the
-                    # cache sign-in must happen there, not in the Agent profile.
-                    use_debug_profile=scope == "agent" or not is_macos_host(),
+                    use_debug_profile=(
+                        not is_macos_host()
+                        or (
+                            scope == "agent"
+                            and not agent_uses_daily_edge_profile(platform_name, browser_name)
+                        )
+                    ),
                 )
             )
         except ValueError as exc:

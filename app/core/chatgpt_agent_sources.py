@@ -1,6 +1,6 @@
 """Read ChatGPT Web sessions, projects, and conversation history for the local Agent.
 
-Code version: v1.6.11-codex.0
+Code version: v1.6.12-codex.0
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from .browser_sessions import (
     _parse_chatgpt_auth_response,
     _read_chatgpt_auth_payload,
     _security_verification_status_if_present,
+    agent_uses_daily_edge_profile,
     browser_descriptors,
     context_security_verification_status,
     DebugBrowserHumanVerificationError,
@@ -79,6 +80,21 @@ _AGENT_USER_REQUEST_PATTERN = re.compile(
 _AGENT_CONTINUATION_PROMPT = (
     "Continue the unfinished Agent task in this existing conversation."
 )
+
+
+def _launch_chatgpt_agent_context(playwright: Any, descriptor: Any, *, silent: bool) -> Any:
+    """Use the Cache profile path for macOS Edge across all Agent reads."""
+    use_daily_profile = agent_uses_daily_edge_profile("chatgpt", descriptor.browser_id)
+    return launch_chromium_context(
+        playwright,
+        descriptor,
+        headless=False,
+        clone_profile_first=True,
+        background_window=True,
+        silent=silent,
+        prefer_initialized_debug_profile=not use_daily_profile,
+        allow_cdp_attach=not use_daily_profile,
+    )
 
 
 def _discover_chatgpt_agent_efforts(page: Any) -> dict[str, Any]:
@@ -209,17 +225,10 @@ def probe_and_collect_chatgpt_sources(
             raise ValueError(f"ChatGPT Agent sources do not support {descriptor.label}.")
 
         with sync_playwright_or_error() as playwright:
-            with launch_chromium_context(
+            with _launch_chatgpt_agent_context(
                 playwright,
                 descriptor,
-                # ChatGPT's Cloudflare challenge rejects the headless clone
-                # with HTTP 403. Keep this probe non-headless and let the
-                # shared launcher apply the host's background-window policy.
-                headless=False,
-                clone_profile_first=True,
-                background_window=True,
                 silent=silent,
-                prefer_initialized_debug_profile=True,
             ) as context:
                 challenge = context_security_verification_status(
                     context, descriptor.label, "ChatGPT"
@@ -310,14 +319,10 @@ def list_chatgpt_agent_sources(
         raise ValueError(f"ChatGPT Agent sources do not support {descriptor.label}.")
 
     with sync_playwright_or_error() as playwright:
-        with launch_chromium_context(
+        with _launch_chatgpt_agent_context(
             playwright,
             descriptor,
-            headless=False,
-            clone_profile_first=True,
-            background_window=True,
             silent=silent,
-            prefer_initialized_debug_profile=True,
         ) as context:
             challenge = context_security_verification_status(
                 context, descriptor.label, "ChatGPT"
@@ -372,14 +377,10 @@ def list_chatgpt_project_sessions(
             )
     elif descriptor.engine == "chromium":
         with sync_playwright_or_error() as playwright:
-            with launch_chromium_context(
+            with _launch_chatgpt_agent_context(
                 playwright,
                 descriptor,
-                headless=False,
-                clone_profile_first=True,
-                background_window=True,
                 silent=silent,
-                prefer_initialized_debug_profile=True,
             ) as context:
                 challenge = context_security_verification_status(
                     context, descriptor.label, "ChatGPT"
@@ -452,14 +453,10 @@ def fetch_chatgpt_conversation_history(
         raise ValueError(f"ChatGPT Agent history does not support {descriptor.label}.")
 
     with sync_playwright_or_error() as playwright:
-        with launch_chromium_context(
+        with _launch_chatgpt_agent_context(
             playwright,
             descriptor,
-            headless=False,
-            clone_profile_first=True,
-            background_window=True,
             silent=silent,
-            prefer_initialized_debug_profile=True,
         ) as context:
             challenge = context_security_verification_status(
                 context, descriptor.label, "ChatGPT"

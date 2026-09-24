@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.143.10-codex.0
+# Code version: v1.143.12-codex.0
 
 from __future__ import annotations
 
@@ -906,7 +906,11 @@ class WebAppTests(unittest.TestCase):
                 expected_style_version = (
                     "style-v2.150.7-codex.0"
                     if page_source == "agent"
-                    else "style-v2.150.0-codex.0"
+                    else (
+                        "style-v2.150.8-codex.0"
+                        if page_source == "local-resources"
+                        else "style-v2.150.0-codex.0"
+                    )
                 )
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
@@ -3450,12 +3454,13 @@ class WebAppTests(unittest.TestCase):
             use_debug_profile=not is_macos_host(),
         )
 
-    def test_browser_session_login_route_keeps_macos_cache_in_the_daily_profile(self) -> None:
+    def test_browser_session_login_route_shares_macos_edge_chatgpt_profile_with_cache(self) -> None:
         app = create_app()
         opened = {"opened": True}
 
         with (
             patch("app.web.agent_routes.is_macos_host", return_value=True),
+            patch("app.core.browser_sessions.is_macos_host", return_value=True),
             patch("app.web.agent_routes.open_browser_for_login", return_value=opened) as open_login,
         ):
             with app.test_client() as client:
@@ -3467,12 +3472,44 @@ class WebAppTests(unittest.TestCase):
                     "/api/browser-session/open-login",
                     json={"platform": "chatgpt", "browser": "edge", "scope": "agent"},
                 )
+                other_provider_response = client.post(
+                    "/api/browser-session/open-login",
+                    json={"platform": "gemini", "browser": "edge", "scope": "agent"},
+                )
+                other_browser_response = client.post(
+                    "/api/browser-session/open-login",
+                    json={"platform": "chatgpt", "browser": "chrome", "scope": "agent"},
+                )
 
         self.assertEqual(cache_response.status_code, 200)
         self.assertEqual(agent_response.status_code, 200)
+        self.assertEqual(other_provider_response.status_code, 200)
+        self.assertEqual(other_browser_response.status_code, 200)
         self.assertEqual(
             [call.kwargs["use_debug_profile"] for call in open_login.call_args_list],
-            [False, True],
+            [False, False, True, True],
+        )
+
+    def test_browser_session_login_route_keeps_windows_agent_debug_profile(self) -> None:
+        app = create_app()
+
+        with (
+            patch("app.web.agent_routes.is_macos_host", return_value=False),
+            patch("app.core.browser_sessions.is_macos_host", return_value=False),
+            patch(
+                "app.web.agent_routes.open_browser_for_login",
+                return_value={"opened": True},
+            ) as open_login,
+        ):
+            with app.test_client() as client:
+                response = client.post(
+                    "/api/browser-session/open-login",
+                    json={"platform": "chatgpt", "browser": "edge", "scope": "agent"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        open_login.assert_called_once_with(
+            "chatgpt", "edge", config=ANY, use_debug_profile=True
         )
 
     def test_browser_session_login_route_rejects_invalid_selection(self) -> None:
@@ -5562,7 +5599,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.150.0-codex.0", body)
+            self.assertIn("style-v2.150.8-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.34.0-codex.0', body)
@@ -6093,6 +6130,24 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("<th>Check</th>", rendered)
         self.assertIn("<strong>Pass</strong>", rendered)
         self.assertIn("<s>old</s>", rendered)
+
+    def test_cached_message_tables_share_the_agent_scroll_surface(self) -> None:
+        markdown = "| Field | Value |\n| --- | --- |\n| Title | **Song** |"
+        rich_html = (
+            '<table><thead><tr><th>Field</th><th>Value</th></tr></thead>'
+            '<tbody><tr><td>Title</td><td><script>unsafe()</script>Song</td></tr></tbody></table>'
+        )
+
+        for rendered in (
+            str(render_cached_message(markdown)),
+            str(render_cached_message("fallback", rich_html)),
+        ):
+            self.assertEqual(rendered.count('class="agent-markdown-table-shell"'), 1)
+            self.assertIn('aria-label="Scrollable message table"', rendered)
+            self.assertIn("<th>Field</th>", rendered)
+            self.assertIn("<td>Title</td>", rendered)
+            self.assertNotIn("<script>", rendered)
+            self.assertNotIn("unsafe()", rendered)
 
     def test_cached_message_renderer_preserves_sanitized_rich_text(self) -> None:
         rendered = str(

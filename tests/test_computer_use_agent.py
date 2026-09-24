@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.84.0-codex.0
+Code version: v3.84.1-codex.0
 """
 
 from __future__ import annotations
@@ -20436,6 +20436,9 @@ def test_macos_reused_debug_edge_keeps_the_authorized_window_visible(
         lambda browser_id: browser_id == "edge",
     )
     assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("edge") is False
+    assert computer_use_agent._should_restore_macos_frontmost_after_task_browser(
+        "edge", "chatgpt"
+    ) is True
     assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("chrome") is True
     monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
     assert computer_use_agent._should_restore_macos_frontmost_after_task_browser("edge") is False
@@ -25275,6 +25278,7 @@ def test_initial_chromium_setup_linearizes_stop_before_tab_or_navigation_mutatio
     selected = 0
     navigated = 0
     focus_restores = 0
+    launch_options: list[dict[str, object]] = []
 
     def stop_at_selected_gate(action: object) -> tuple[bool, object]:
         nonlocal gate_calls
@@ -25297,15 +25301,16 @@ def test_initial_chromium_setup_linearizes_stop_before_tab_or_navigation_mutatio
         nonlocal focus_restores
         focus_restores += 1
 
+    def launch(*_args: object, **kwargs: object) -> _BrowserContext:
+        launch_options.append(kwargs)
+        return _BrowserContext()
+
     stop_requested.run_unless_set = stop_at_selected_gate  # type: ignore[method-assign]
     monkeypatch.setattr(agent.sys, "platform", "darwin")
     monkeypatch.setattr(agent, "browser_descriptors", lambda _config: {"edge": _Descriptor()})
     monkeypatch.setattr(agent, "sync_playwright_or_error", lambda: _PlaywrightContext())
-    monkeypatch.setattr(
-        agent,
-        "launch_chromium_context",
-        lambda *_args, **_kwargs: _BrowserContext(),
-    )
+    monkeypatch.setattr(agent, "agent_uses_daily_edge_profile", lambda *_args: True)
+    monkeypatch.setattr(agent, "launch_chromium_context", launch)
     monkeypatch.setattr(agent, "select_provider_tab", select_page)
     monkeypatch.setattr(agent, "goto_with_retry", navigate)
     monkeypatch.setattr(agent, "_capture_macos_frontmost_application", lambda: "Finder")
@@ -25343,6 +25348,11 @@ def test_initial_chromium_setup_linearizes_stop_before_tab_or_navigation_mutatio
     assert navigated == 0
     assert focus_restores == (1 if stop_gate == 3 else 0)
     assert gate_calls == stop_gate
+    if stop_gate > 1:
+        assert len(launch_options) == 1
+        assert launch_options[0]["clone_profile_first"] is True
+        assert launch_options[0]["prefer_initialized_debug_profile"] is False
+        assert launch_options[0]["allow_cdp_attach"] is False
 
 
 def test_linearized_stop_is_visible_inside_an_inflight_cooperative_gate() -> None:

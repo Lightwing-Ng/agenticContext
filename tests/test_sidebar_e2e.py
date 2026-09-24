@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.52.4-codex.0
+Code version: v1.52.5-codex.0
 """
 
 from __future__ import annotations
@@ -140,6 +140,61 @@ def seeded_chatgpt_browser_server_url(tmp_path: Path) -> Iterator[str]:
         ],
         CHATGPT_HISTORY_SCHEMA,
     )
+    application = create_app(
+        root,
+        computer_use_settings_path=tmp_path / "settings" / "computer-use-agent.json",
+        computer_use_runtime_root=tmp_path / "computer-use-runtime",
+        agent_external_operations_enabled=False,
+    )
+    application.config.update(TESTING=True)
+    server: BaseWSGIServer = make_server("127.0.0.1", 0, application, threaded=True)
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+
+
+@pytest.fixture()
+def seeded_chatgpt_table_browser_server_url(tmp_path: Path) -> Iterator[str]:
+    """Serve synthetic session cards with a long Markdown table from an isolated cache."""
+    from app.web.app import create_app
+
+    root = tmp_path / "local-store"
+    table = "| Metadata field | Suggested value | Source note |\n| --- | --- | --- |\n"
+    table += "".join(
+        f"| Field {index} | Value {index} | A verified source note {index} |\n"
+        for index in range(24)
+    )
+    rows = []
+    for index, (role, content) in enumerate(
+        (("user", "Please review the metadata table."), ("assistant", table))
+    ):
+        rows.append(
+            {
+                "schema_version": 1,
+                "platform": "chatgpt",
+                "conversation_id": "chatgpt-table-demo",
+                "conversation_url": "https://chatgpt.com/c/chatgpt-table-demo",
+                "conversation_title": "ChatGPT metadata table",
+                "message_key": f"chatgpt-table-demo:0:{role}",
+                "turn_index": 0,
+                "message_index": index,
+                "role": role,
+                "author_label": "You" if role == "user" else "ChatGPT",
+                "content_text": content,
+                "content_html": "",
+                "content_sha256": f"chatgpt-table-demo-hash-{index}",
+                "source_links": [],
+                "model_label": "",
+                "first_seen_at": "2026-08-12T04:59:00Z",
+                "last_seen_at": "2026-08-12T05:00:00Z",
+            }
+        )
+    write_parquet_rows_atomic(root / "llm" / "chatgpt" / "history.parquet", rows, CHATGPT_HISTORY_SCHEMA)
     application = create_app(
         root,
         computer_use_settings_path=tmp_path / "settings" / "computer-use-agent.json",
@@ -1296,6 +1351,108 @@ def test_browser_message_timestamps_share_the_card_header_across_viewports(
                 geometry,
             )
             assert geometry["overflow"] <= 1, (width, geometry)
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
+    disposable_browser: Browser,
+    seeded_chatgpt_table_browser_server_url: str,
+) -> None:
+    """Keep card effects visible while long message tables scroll within their own surface."""
+    page, context = _open_page(
+        disposable_browser,
+        f"{seeded_chatgpt_table_browser_server_url}/browser?view=text&source=chatgpt&sort=newest&session_view=1",
+        996,
+        801,
+        touch=False,
+    )
+    try:
+        session = page.locator(".browser-session-index-table .browser-session-table-title").first
+        expect(session).to_be_visible()
+        detail_url = session.get_attribute("href")
+        assert detail_url
+
+        for width, height in ((996, 801), (1_280, 959), (390, 844), (996, 600)):
+            page.set_viewport_size({"width": width, "height": height})
+            page.goto(
+                f"{seeded_chatgpt_table_browser_server_url}{detail_url}",
+                wait_until="domcontentloaded",
+            )
+            cards = page.locator(".browser-chat-list .browser-chat-message")
+            expect(cards).to_have_count(2)
+            table_shell = cards.nth(1).get_by_role("region", name="Scrollable message table")
+            expect(table_shell).to_be_visible()
+            geometry = page.locator(".browser-chat-list").evaluate("""list => {
+                const cards = [...list.querySelectorAll('.browser-chat-message')];
+                const tableShell = cards[1].querySelector('.agent-markdown-table-shell');
+                const table = tableShell.querySelector('table');
+                const heading = table.querySelector('th');
+                const listRect = list.getBoundingClientRect();
+                const firstRect = cards[0].getBoundingClientRect();
+                const listStyle = getComputedStyle(list);
+                return {
+                    topBleed: firstRect.top - listRect.top,
+                    leftBleed: firstRect.left - listRect.left,
+                    rightBleed: listRect.right - firstRect.right,
+                    listOverflowX: listStyle.overflowX,
+                    listOverflowY: listStyle.overflowY,
+                    listScrollHeight: list.scrollHeight,
+                    listClientHeight: list.clientHeight,
+                    cardOverflow: getComputedStyle(cards[0]).overflow,
+                    contentOverflow: getComputedStyle(
+                        cards[1].querySelector('.browser-chat-message-content')
+                    ).overflow,
+                    cardShadow: getComputedStyle(cards[0]).boxShadow,
+                    shellOverflowX: getComputedStyle(tableShell).overflowX,
+                    shellClientWidth: tableShell.clientWidth,
+                    shellScrollWidth: tableShell.scrollWidth,
+                    tableLayout: getComputedStyle(table).tableLayout,
+                    headerBackground: getComputedStyle(heading).backgroundColor,
+                    documentOverflow: document.documentElement.scrollWidth - innerWidth,
+                };
+            }""")
+            assert geometry["topBleed"] >= 47, (width, height, geometry)
+            assert geometry["leftBleed"] >= 47, (width, height, geometry)
+            assert geometry["rightBleed"] >= 47, (width, height, geometry)
+            assert geometry["listOverflowX"] == "hidden", (width, height, geometry)
+            assert geometry["listOverflowY"] == "auto", (width, height, geometry)
+            assert geometry["listScrollHeight"] > geometry["listClientHeight"], (width, height, geometry)
+            assert geometry["cardOverflow"] == "visible", (width, height, geometry)
+            assert geometry["contentOverflow"] == "visible", (width, height, geometry)
+            assert geometry["cardShadow"] != "none", (width, height, geometry)
+            assert geometry["shellOverflowX"] == "auto", (width, height, geometry)
+            assert geometry["tableLayout"] == "auto", (width, height, geometry)
+            assert geometry["headerBackground"] != "rgba(0, 0, 0, 0)", (width, height, geometry)
+            assert geometry["documentOverflow"] <= 1, (width, height, geometry)
+            if width == 390:
+                assert geometry["shellScrollWidth"] > geometry["shellClientWidth"]
+
+            table_shell.focus()
+            assert table_shell.evaluate("element => document.activeElement === element")
+
+            bottom = page.locator(".browser-chat-list").evaluate("""list => {
+                list.scrollTop = list.scrollHeight;
+                const lastCard = list.lastElementChild;
+                return {
+                    clearance: list.getBoundingClientRect().bottom
+                        - lastCard.getBoundingClientRect().bottom,
+                    scrollTop: list.scrollTop,
+                };
+            }""")
+            assert bottom["scrollTop"] > 0, (width, height, bottom)
+            assert bottom["clearance"] >= 47, (width, height, bottom)
+            if (width, height) in {(996, 801), (390, 844)}:
+                theme_toggle = page.locator("#global_theme_toggle")
+                theme_toggle.click()
+                expect(page.locator("html")).to_have_attribute("data-theme-override", "dark")
+                dark_surface = table_shell.evaluate(
+                    "element => getComputedStyle(element).backgroundColor"
+                )
+                assert dark_surface != "rgba(0, 0, 0, 0)"
+                theme_toggle.click()
     finally:
         context.close()
 
