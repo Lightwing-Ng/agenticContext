@@ -1,4 +1,4 @@
-<!-- Code version: v1.0.0-claude.0 -->
+<!-- Code version: v1.0.1-codex.0 -->
 {% set claude_windows = settings.operating_system == 'windows' %}
 {% set claude_example_host = 'claude.example.com' %}
 {% set claude_config_path = '"$HOME\\.cloudflared\\agenticcontext-claude.yml"' if claude_windows else '~/.cloudflared/agenticcontext-claude.yml' %}
@@ -114,10 +114,10 @@ cloudflared tunnel --config {{ claude_config_path | safe }} run
                                 </g>
                             </svg>
                         </div>
+                        <div class="agent-tunnel-guide-actions">
+                            <a class="secondary-button agent-tunnel-step-action" href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer"><span>Open Cloudflare</span></a>
+                        </div>
                     </details>
-                    <div class="agent-tunnel-guide-actions">
-                        <a class="secondary-button agent-tunnel-step-action" href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer"><span>Open Cloudflare</span></a>
-                    </div>
                 </div>
             </li>
         </ul>
@@ -283,10 +283,10 @@ cloudflared tunnel --config {{ claude_config_path | safe }} run
                                 </g>
                             </svg>
                         </div>
+                        <div class="agent-tunnel-guide-actions">
+                            <a class="secondary-button agent-tunnel-step-action" href="https://claude.ai/customize/connectors" target="_blank" rel="noopener noreferrer"><span>Open Connectors</span></a>
+                        </div>
                     </details>
-                    <div class="agent-tunnel-guide-actions">
-                        <a class="secondary-button agent-tunnel-step-action" href="https://claude.ai/customize/connectors" target="_blank" rel="noopener noreferrer"><span>Open Connectors</span></a>
-                    </div>
                 </div>
             </li>
             <li class="agent-tunnel-guide-item">
@@ -409,10 +409,10 @@ cloudflared tunnel --config {{ claude_config_path | safe }} run
                                 </g>
                             </svg>
                         </div>
+                        <div class="agent-tunnel-guide-actions">
+                            <a class="secondary-button agent-tunnel-step-action" href="https://claude.ai/new" target="_blank" rel="noopener noreferrer"><span>Open Claude</span></a>
+                        </div>
                     </details>
-                    <div class="agent-tunnel-guide-actions">
-                        <a class="secondary-button agent-tunnel-step-action" href="https://claude.ai/new" target="_blank" rel="noopener noreferrer"><span>Open Claude</span></a>
-                    </div>
                 </div>
             </li>
         </ul>

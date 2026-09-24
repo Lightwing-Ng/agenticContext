@@ -1,4 +1,4 @@
-"""Shared component annotation regressions. Code version: v1.7.0-codex.0."""
+"""Shared component annotation regressions. Code version: v1.7.0-codex.1."""
 
 import pytest
 from playwright.sync_api import expect
@@ -18,8 +18,11 @@ def assert_field_title_contract(locator):
 
 
 @pytest.mark.parametrize("width", [830, 390])
-def test_process_list_catalog_specimen(disposable_browser, sidebar_server_url, width):
-    context = disposable_browser.new_context(viewport={"width": width, "height": 863})
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_process_list_catalog_specimen(disposable_browser, sidebar_server_url, width, scheme):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 863}, color_scheme=scheme,
+    )
     page = context.new_page()
     try:
         page.goto(f"{sidebar_server_url}/settings/style-tokens")
@@ -28,13 +31,17 @@ def test_process_list_catalog_specimen(disposable_browser, sidebar_server_url, w
         geometry = process_list.evaluate(
             """list => {
                 const steps = Array.from(list.children);
-                const marker = steps[0].querySelector('.process-list-marker').getBoundingClientRect();
+                const markerNode = steps[0].querySelector('.process-list-marker');
+                const marker = markerNode.getBoundingClientRect();
+                const markerStyle = getComputedStyle(markerNode);
                 const heading = steps[0].querySelector('.process-list-heading').getBoundingClientRect();
                 return {
                     size: [marker.width, marker.height],
                     aligned: Math.abs((marker.top + marker.height / 2) - (heading.top + heading.height / 2)),
                     continues: steps.map(step => step.hasAttribute('data-process-continues')),
                     contained: list.getBoundingClientRect().right <= document.documentElement.clientWidth + 1,
+                    markerBackground: markerStyle.backgroundColor,
+                    markerShadow: markerStyle.boxShadow,
                 };
             }"""
         )
@@ -42,6 +49,8 @@ def test_process_list_catalog_specimen(disposable_browser, sidebar_server_url, w
         assert geometry["aligned"] <= 1
         assert geometry["continues"] == [True, True, True, False]
         assert geometry["contained"]
+        assert geometry["markerBackground"] == "rgba(0, 0, 0, 0)"
+        assert geometry["markerShadow"] == "none"
     finally:
         context.close()
 

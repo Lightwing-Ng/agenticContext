@@ -1,4 +1,4 @@
-/* Code version: v2.150.6-codex.0 */
+/* Code version: v2.150.7-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -236,7 +236,7 @@
     --process-list-column-gap: 16px;
     --process-list-connector-width: 2px;
     --process-list-connector-color: var(--accent-text);
-    --process-list-marker-background: var(--theme-background);
+    --process-list-marker-background: transparent;
     --process-list-marker-color: var(--accent-text);
     --process-list-heading-font-size: var(--font-ui-lg);
     --process-list-heading-font-weight: var(--font-weight-medium);
@@ -4296,7 +4296,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     border: var(--process-list-marker-border-width) solid var(--process-list-connector-color);
     border-radius: 50%;
     background: var(--process-list-marker-background);
-    box-shadow: 0 0 0 var(--process-list-marker-halo-width) var(--theme-background);
     color: var(--process-list-marker-color);
     font-size: var(--process-list-heading-font-size);
     font-weight: var(--process-list-heading-font-weight);
@@ -4531,6 +4530,11 @@ details.agent-tunnel-guide > summary {
     justify-content: flex-end;
     min-width: 0;
     margin-block-start: 2px;
+}
+
+.agent-tunnel-guide:not([open]) > .agent-tunnel-guide-actions {
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .agent-tunnel-guide-svg {

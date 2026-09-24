@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.33.7-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.33.9-codex.0."""
 
 import re
 from copy import deepcopy
@@ -151,8 +151,10 @@ def test_agent_connection_mode_switch_keeps_recent_sessions(
             expect(action).to_have_attribute("target", "_blank")
             expect(action).to_have_attribute("rel", "noopener noreferrer")
         visible_external_actions = onboarding.locator("a.agent-tunnel-step-action:visible")
-        expect(visible_external_actions).to_have_count(4)
+        expect(visible_external_actions).to_have_count(0)
         expect(onboarding.get_by_role("link", name="Ask in ChatGPT")).to_be_hidden()
+        guides.evaluate_all("nodes => nodes.forEach((node) => { node.open = true; })")
+        expect(visible_external_actions).to_have_count(4)
         right_edges = visible_external_actions.evaluate_all(
             "(nodes) => nodes.map((node) => node.getBoundingClientRect().right)"
         )
@@ -1559,7 +1561,7 @@ def test_tunnel_reconnect_accepts_a_new_runtime_and_ignores_its_late_old_status(
 
 @pytest.mark.parametrize(
     ("width", "color_scheme"),
-    [(1280, "light"), (390, "dark")],
+    [(1280, "light"), (867, "dark"), (390, "dark")],
 )
 def test_tunnel_guides_use_native_disclosure_and_vector_cards(
     disposable_browser,
@@ -1597,10 +1599,10 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
                 const connectorStyle = getComputedStyle(step, '::before');
                 return {
                     accent: resolveColor('--theme-accent-primary'),
-                    background: resolveColor('--theme-background'),
                     markerBorder: markerStyle.borderTopColor,
                     markerColor: markerStyle.color,
                     markerBackground: markerStyle.backgroundColor,
+                    markerShadow: markerStyle.boxShadow,
                     connectorColor: connectorStyle.backgroundColor,
                     connectorRadius: connectorStyle.borderRadius,
                 };
@@ -1608,7 +1610,8 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         )
         assert process_theme["markerBorder"] == process_theme["accent"]
         assert process_theme["markerColor"] == process_theme["accent"]
-        assert process_theme["markerBackground"] == process_theme["background"]
+        assert process_theme["markerBackground"] == "rgba(0, 0, 0, 0)"
+        assert process_theme["markerShadow"] == "none"
         assert process_theme["connectorColor"] == process_theme["accent"]
         assert process_theme["connectorRadius"] == "999px"
         expect(guides).to_have_count(6)
@@ -1718,6 +1721,137 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         expect(guides.nth(0)).to_have_attribute("open", "")
         expect(guides.nth(0).locator("svg")).to_be_visible()
         assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("provider", "width", "height", "expected_actions"),
+    [
+        ("chatgpt", 1280, 900, 4),
+        ("chatgpt", 390, 844, 4),
+        ("chatgpt", 1280, 420, 4),
+        ("gemini", 1280, 900, 1),
+        ("gemini", 390, 844, 1),
+        ("claude", 1280, 900, 3),
+        ("claude", 390, 844, 3),
+    ],
+)
+def test_tunnel_guide_actions_follow_their_disclosure(
+    disposable_browser,
+    sidebar_server_url,
+    provider,
+    width,
+    height,
+    expected_actions,
+):
+    """Show each guide action only with its content and retain its edge and gap."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": height})
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.emulate_media(reduced_motion="reduce")
+        page.goto(f"{sidebar_server_url}/agent/tunnel/{provider}")
+        if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
+            page.locator("#sidebar_toggle").click()
+
+        panel = page.locator(f'[data-agent-tunnel-provider-panel="{provider}"]')
+        expect(panel).to_be_visible()
+        action_groups = panel.locator(".agent-tunnel-guide-actions")
+        expect(action_groups).to_have_count(expected_actions)
+        assert action_groups.evaluate_all(
+            "groups => groups.every(group => group.parentElement.matches('details.agent-tunnel-guide'))"
+        )
+
+        for group in action_groups.all():
+            detail = group.locator("xpath=..")
+            summary = detail.locator(":scope > summary")
+            action = group.locator("a.agent-tunnel-step-action")
+            expect(detail).not_to_have_attribute("open", "")
+            expect(group).to_be_hidden()
+            expect(action).to_be_hidden()
+
+            summary.click()
+            expect(detail).to_have_attribute("open", "")
+            expect(action).to_be_visible()
+            geometry = detail.evaluate(
+                """detail => {
+                    const body = detail.querySelector(':scope > .agent-tunnel-guide-body');
+                    const group = detail.querySelector(':scope > .agent-tunnel-guide-actions');
+                    const action = group.querySelector('a.agent-tunnel-step-action');
+                    const detailRect = detail.getBoundingClientRect();
+                    const bodyRect = body.getBoundingClientRect();
+                    const groupRect = group.getBoundingClientRect();
+                    const actionRect = action.getBoundingClientRect();
+                    return {
+                        leftGap: groupRect.left - detailRect.left,
+                        rightGap: detailRect.right - groupRect.right,
+                        verticalGap: groupRect.top - bodyRect.bottom,
+                        actionRightGap: groupRect.right - actionRect.right,
+                        actionHeight: actionRect.height,
+                    };
+                }"""
+            )
+            assert abs(geometry["leftGap"]) <= 1
+            assert abs(geometry["rightGap"]) <= 1
+            assert abs(geometry["verticalGap"] - 2) <= 1
+            assert abs(geometry["actionRightGap"]) <= 1
+            assert abs(geometry["actionHeight"] - 32) <= 1
+
+            summary.click()
+            expect(detail).not_to_have_attribute("open", "")
+            expect(group).to_be_hidden()
+            expect(action).to_be_hidden()
+
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert not errors
+    finally:
+        context.close()
+
+
+def test_tunnel_guide_action_cannot_be_hit_during_close_motion(
+    disposable_browser,
+    sidebar_server_url,
+):
+    """Remove guide links from view and hit testing as soon as closing begins."""
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    try:
+        page.emulate_media(reduced_motion="no-preference")
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        detail = page.locator('[data-collapse="agent-tunnel-create"]')
+        action = detail.locator(".agent-tunnel-guide-actions a")
+        detail.locator("summary").click()
+        expect(action).to_be_visible()
+        action.scroll_into_view_if_needed()
+
+        closing = detail.evaluate(
+            """detail => {
+                const action = detail.querySelector('.agent-tunnel-guide-actions a');
+                const rect = action.getBoundingClientRect();
+                const center = {
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                };
+                detail.querySelector('summary').click();
+                const hit = document.elementFromPoint(center.x, center.y);
+                const style = getComputedStyle(action);
+                return {
+                    closed: !detail.open,
+                    visibility: style.visibility,
+                    pointerEvents: style.pointerEvents,
+                    hitAction: action.contains(hit),
+                };
+            }"""
+        )
+        assert closing == {
+            "closed": True,
+            "visibility": "hidden",
+            "pointerEvents": "none",
+            "hitAction": False,
+        }
+        expect(action).to_be_hidden()
     finally:
         context.close()
 

@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.7-codex.0
+Code version: v1.86.8-codex.0
 """
 
 import hashlib
@@ -44,6 +44,10 @@ def test_process_list_catalog_publishes_the_production_component() -> None:
     assert len(process["sample_steps"]) == 4
     assert len(process["tokens"]) == 15
     assert all(token["value"] for token in process["tokens"])
+    catalog_template = (
+        PROJECT_ROOT / "app/web/templates/settings_style_tokens.html"
+    ).read_text(encoding="utf-8")
+    assert "style-v2.150.7-codex.0" in catalog_template
 
 
 def test_agent_session_scrollport_preserves_physical_effect_bleed() -> None:
@@ -2383,7 +2387,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.150.6-codex.0 */",
+        "/* Code version: v2.150.7-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -2629,6 +2633,7 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     assert "border-radius: 50%;" in step_number_rule
     assert "var(--process-list-connector-color);" in step_number_rule
     assert "background: var(--process-list-marker-background);" in step_number_rule
+    assert "box-shadow:" not in step_number_rule
     assert "color: var(--process-list-marker-color);" in step_number_rule
     assert "font-size: var(--process-list-heading-font-size);" in step_number_rule
     assert "font-weight: var(--process-list-heading-font-weight);" in step_number_rule
@@ -2647,7 +2652,7 @@ def test_tunnel_scrollport_and_step_flow_follow_shared_layout_contract() -> None
     for token in (
         "--process-list-marker-size: 32px;",
         "--process-list-marker-border-width: 2px;",
-        "--process-list-marker-background: var(--theme-background);",
+        "--process-list-marker-background: transparent;",
         "--process-list-marker-color: var(--accent-text);",
         "--process-list-connector-color: var(--accent-text);",
         "--process-list-connector-width: 2px;",
