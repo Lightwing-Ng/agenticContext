@@ -1,6 +1,6 @@
 # Historical test evidence
 
-Documentation version: `v1.0.0-codex.1`
+Documentation version: `v1.1.0-claude.0`
 
 These dated snapshots preserve the commands, versions, and outcomes observed at the time.
 They are not current runtime requirements or proof that the current checkout passes.
@@ -142,3 +142,39 @@ Windows-only `tzdata` dependency, as recommended by the
 This supplies the missing IANA database without changing application timezones or formatting.
 An isolated Python 3.13 probe with the system timezone search disabled reproduced the exception
 without the package and resolved `Asia/Hong_Kong` to UTC+08:00 with the package installed.
+
+## Windows-to-macOS Tunnel merge and host parity, 24 Sep 2026
+
+The Windows-validated Tunnel change set was applied unchanged as commit `8968ef1`; it has no
+platform branches. Its source diff had been transcoded on Windows, so one context line and three
+Chinese test strings were repaired before applying. Commit `4b7bf02` closed three audited parity
+gaps: Windows orphaned-client recovery with ownership and PID-reuse checks, the Windows manual
+Internet Options proxy, and a verified owner-only DACL for the OpenAI Tunnel credential and bearer
+files. It also restored the visible status-line report for credential save failures.
+
+Verification:
+
+- The complete local `./scripts/check.sh` ran on an isolated export of `4b7bf02`: environment,
+  Ruff, documentation, JavaScript syntax, and JavaScript unit checks passed. Pytest completed with
+  3,080 passed, 24 skipped, 3 failed, and 596 subtests passed; branch coverage was 73.59%.
+  The three failures (two core-architecture facade tests and the pre-blueprint endpoint alias
+  test) fail identically at the base commit `07ba314` and are unrelated to this change.
+- [Run 35973642765](https://github.com/Lightwing-Ng/agenticContext/actions/runs/35973642765):
+  the Windows job stopped at its first browser-boundary smoke test, which also fails on `main`,
+  so no native Windows test from this change executed. The Linux job passed stages one to five
+  and reached the 15-minute job limit during pytest; the partial run had passed
+  `tests/test_owner_only_files.py` (12 passed, one Windows-only skip) and recorded seven
+  failures, all in files neither commit touches.
+- An isolated service on port 8767 rendered `/agent/tunnel/chatgpt` from the `4b7bf02` export with
+  a simulated ACL refusal. The refusal appeared in the Tunnel status line at 1280x900, 390x844
+  (sidebar open), and 1280x560 without horizontal overflow, and no credential file was written.
+
+Still unverified: native Windows DACL, WinINet proxy, and WMI/handle orphan recovery tests, which
+run only on a Windows host; and adoption by the user-owned 8666 service, which was not restarted.
+
+Housekeeping, with user authorization, moved 155 regenerable or superseded files to the macOS
+Trash by explicit path: 120 `.agent-backup-*.tmp` recovery copies (39 byte-identical to Git
+objects, 81 older than a later commit of their primary), 18 orphaned `.pyc` files, four
+`test-results/.coverage N` files, an empty `coverage-start` temporary, and 12 `.DS_Store` files.
+None was tracked or open. The final scan found no numbered copies, patch leftovers, recovery
+temporaries, or orphaned caches, and unrelated dirty work was preserved.
