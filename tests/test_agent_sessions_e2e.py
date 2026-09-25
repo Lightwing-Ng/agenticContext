@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.33.9-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.33.10-codex.0."""
 
 import re
 from copy import deepcopy
@@ -647,6 +647,135 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
                 "expected_revision": 3,
             },
         ]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width,height", [(996, 801), (390, 844)])
+def test_tunnel_project_selection_keeps_rows_and_sidebar_stable(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+    height,
+):
+    """Deselecting neoMe keeps its mark, focus, rows, and sidebar stable."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": height})
+    context.add_init_script(
+        """const nativeFetch = window.fetch.bind(window);
+        window.__heldTunnelProjectCount = 0;
+        window.__releaseTunnelProject = null;
+        window.fetch = (input, options = {}) => {
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            if (url.pathname === '/api/agent/tunnel/project' && options.method === 'POST') {
+                window.__heldTunnelProjectCount += 1;
+                return new Promise((resolve) => {
+                    window.__releaseTunnelProject = () => resolve(nativeFetch(input, options));
+                });
+            }
+            return nativeFetch(input, options);
+        };"""
+    )
+    page = context.new_page()
+    status = _tunnel_onboarding_status(activity_observed=False)
+    project_ids = ("agenticContext", "worthward", "neoMe", "shared-docs")
+    projects = []
+    for project_id in project_ids:
+        project = deepcopy(status["project_context"]["current"])
+        project.update({
+            "id": project_id,
+            "identity": f"{project_id:0<16}"[:16],
+            "root": f"/tmp/{project_id}",
+            "selected": True,
+        })
+        projects.append(project)
+    worthward = projects[1]
+    neome = projects[2]
+    status["project_context"] = {
+        **status["project_context"],
+        "current": worthward,
+        "selected_project_ids": list(project_ids),
+        "projects": projects,
+    }
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=deepcopy(status)),
+    )
+
+    def fulfill_project(route):
+        assert route.request.post_data_json == {
+            "project_id": "worthward",
+            "selected_project_ids": ["agenticContext", "worthward", "shared-docs"],
+            "expected_revision": 1,
+        }
+        neome["selected"] = False
+        status["project_context"] = {
+            **status["project_context"],
+            "revision": 2,
+            "selected_project_ids": ["agenticContext", "worthward", "shared-docs"],
+        }
+        status["status_observed_at"] = 2
+        status["state_revision"] += 1
+        route.fulfill(json=deepcopy(status))
+
+    page.route("**/api/agent/tunnel/project?platform=chatgpt", fulfill_project)
+    geometry_script = """() => {
+        const saved = window.__tunnelSelectionNodes;
+        const rows = [...document.querySelectorAll('[data-agent-tunnel-project-row]')];
+        const checkbox = document.querySelector('[data-agent-tunnel-project-checkbox="neoMe"]');
+        const webService = document.querySelector('.agent-connect-fields > .field > .field-label');
+        const sidebar = document.querySelector('.agent-sidebar');
+        return {
+            rowsSame: rows.length === saved.rows.length
+                && rows.every((row, index) => row === saved.rows[index]),
+            checkboxSame: checkbox === saved.checkbox,
+            focused: document.activeElement === saved.checkbox,
+            checked: checkbox.checked,
+            rowsTop: rows.map(row => row.getBoundingClientRect().top),
+            webServiceTop: webService.getBoundingClientRect().top,
+            sidebarScrollTop: sidebar.scrollTop,
+        };
+    }"""
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        neome_checkbox = page.locator('[data-agent-tunnel-project-checkbox="neoMe"]')
+        expect(page.locator("[data-agent-tunnel-project-row]")).to_have_count(4)
+        expect(neome_checkbox).to_be_checked()
+        neome_checkbox.focus()
+        page.evaluate("""() => {
+            window.__tunnelSelectionNodes = {
+                rows: [...document.querySelectorAll('[data-agent-tunnel-project-row]')],
+                checkbox: document.querySelector('[data-agent-tunnel-project-checkbox="neoMe"]'),
+            };
+        }""")
+        initial = page.evaluate(geometry_script)
+        assert initial["focused"]
+
+        page.locator('[data-agent-tunnel-project-row="neoMe"] label').click()
+        page.wait_for_function("window.__heldTunnelProjectCount === 1")
+        page.evaluate(
+            "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+        )
+        pending = page.evaluate(geometry_script)
+        assert not pending["checked"]
+        assert pending["focused"]
+        assert pending["rowsSame"] and pending["checkboxSame"]
+        for before, after in zip(initial["rowsTop"], pending["rowsTop"], strict=True):
+            assert abs(after - before) <= 1, (initial, pending)
+        for key in ("webServiceTop", "sidebarScrollTop"):
+            assert abs(pending[key] - initial[key]) <= 1, (key, initial, pending)
+
+        page.evaluate("window.__releaseTunnelProject()")
+        expect(neome_checkbox).not_to_be_checked()
+        expect(neome_checkbox).to_be_enabled()
+        settled = page.evaluate(geometry_script)
+        assert settled["focused"]
+        assert settled["rowsSame"] and settled["checkboxSame"]
+        for before, after in zip(initial["rowsTop"], settled["rowsTop"], strict=True):
+            assert abs(after - before) <= 1, (initial, settled)
+        for key in ("webServiceTop", "sidebarScrollTop"):
+            assert abs(settled[key] - initial[key]) <= 1, (key, initial, settled)
     finally:
         context.close()
 

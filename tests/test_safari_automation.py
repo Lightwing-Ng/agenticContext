@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.12.0-codex.0
+# Code version: v2.14.1-codex.0
 
 from __future__ import annotations
 
@@ -60,6 +60,51 @@ def test_safari_page_downloads_one_authenticated_range(tmp_path: Path) -> None:
     assert content_type == "image/jpeg"
     assert resumed is False
     assert destination.read_bytes() == content
+
+
+def test_safari_page_rejects_oversized_media_before_writing(tmp_path: Path) -> None:
+    context = SafariContext("https://claude.ai/chats")
+    page = SafariPage(context, window_id=123)
+    destination = tmp_path / "asset.part"
+    metadata = {
+        "state": "ready",
+        "status": 206,
+        "contentType": "image/png",
+        "contentRange": "bytes 0-3/9",
+        "bytes": 4,
+        "encoded": base64.b64encode(b"abcd").decode(),
+        "nextOffset": 4,
+    }
+
+    with patch.object(page, "evaluate", side_effect=[True, metadata]) as evaluate:
+        with pytest.raises(RuntimeError, match="8-byte cache limit"):
+            page.download_to_path(
+                "https://claude.ai/api/asset/image",
+                destination,
+                lambda: False,
+                max_bytes=8,
+            )
+
+    assert not destination.exists()
+    assert evaluate.call_args_list[0].args[1]["maxBytes"] == 8
+
+
+def test_safari_page_rejects_oversized_partial_without_fetch(tmp_path: Path) -> None:
+    page = SafariPage(SafariContext("https://claude.ai/chats"), window_id=123)
+    destination = tmp_path / "asset.part"
+    destination.write_bytes(b"too-large")
+
+    with patch.object(page, "evaluate") as evaluate:
+        with pytest.raises(RuntimeError, match="4-byte cache limit"):
+            page.download_to_path(
+                "https://claude.ai/api/asset/image",
+                destination,
+                lambda: False,
+                max_bytes=4,
+            )
+
+    assert destination.read_bytes() == b"too-large"
+    evaluate.assert_not_called()
 
 
 def test_safari_page_restarts_when_a_stale_partial_gets_http_416(tmp_path: Path) -> None:
@@ -1165,6 +1210,314 @@ def test_safari_context_retains_its_lease_until_failed_cleanup_retries(
     assert page._closed is True
 
 
+def test_safari_reuses_an_owned_zero_tab_shell_after_page_cleanup(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    first = SafariContext("https://x.com/home", lock_blocking=False)
+    first._creation_baseline_inventory = {123: 4}
+    page = SafariPage(first, window_id=456)
+    first.pages.append(page)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={123: 4, 456: 0},
+    ), patch(
+        "app.core.safari_automation._safari_process_identity",
+        return_value="test-safari-session",
+    ), patch.object(page, "_run_in_window", return_value="empty") as close_window:
+        first._acquire_context_lock()
+        first._mark_context_window_owned(456)
+        first.close()
+
+        state_path = lock_path.with_name("safari-context.lock.state")
+        lease = json.loads(state_path.read_text(encoding="utf-8"))
+        assert lease["state"] == "idle"
+        assert lease["window_id"] == 456
+        assert lease["baseline_windows"] == [{"window_id": 123, "tab_count": 4}]
+        assert first.pages == []
+        assert first._context_lock_handle is None
+        assert (
+            "count of tabs of (first window whose id is 456)"
+            in close_window.call_args.args[0]
+        )
+        assert "(count of tabs of targetWindow) > 1" in close_window.call_args.args[0]
+        first.close()
+
+        second = SafariContext("https://x.com/home", lock_blocking=False)
+        with patch.object(
+            second, "_create_window", side_effect=AssertionError("new window")
+        ), patch.object(second, "_create_tab", return_value=1) as create_tab, patch.object(
+            SafariPage, "goto"
+        ):
+            second._acquire_context_lock()
+            next_page = second._create_page("https://x.com/home")
+
+        assert next_page.window_id == 456
+        assert next_page.tab_index == 1
+        create_tab.assert_called_once_with(
+            456,
+            "https://x.com/home",
+            expect_empty_window=True,
+        )
+        assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "owned"
+        with patch.object(next_page, "_run_in_window", return_value="empty"):
+            second.close()
+
+        with patch(
+            "app.core.safari_automation._safari_window_inventory",
+            return_value={123: 4},
+        ):
+            third = SafariContext("https://x.com/home", lock_blocking=False)
+            third._acquire_context_lock()
+            assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+            third._release_context_lock()
+
+
+def test_safari_idle_shell_waits_for_one_tab_after_navigation() -> None:
+    context = SafariContext("https://x.com/home", lock_blocking=False)
+    with patch(
+        "app.core.safari_automation.run_applescript", return_value="1"
+    ) as run:
+        assert context._create_tab(456, "https://x.com/home", expect_empty_window=True) == 1
+
+    script = run.call_args.args[0]
+    assert script.index("set URL of newTab") < script.index("repeat with settleIndex")
+    assert script.index("set current tab of targetWindow to newTab") < script.index(
+        "repeat with settleIndex"
+    )
+    assert 'error "Safari idle task window gained an extra tab."' in script
+    assert "close newTab" in script
+    assert "close targetWindow" not in script
+
+
+def test_safari_idle_shell_reads_settled_current_tab_index() -> None:
+    context = SafariContext("https://x.com/home", lock_blocking=False)
+    with patch(
+        "app.core.safari_automation.run_applescript", return_value="1"
+    ) as run:
+        assert context._create_tab(456, "https://x.com/home", expect_empty_window=True) == 1
+
+    script = run.call_args.args[0]
+    assert script.index("if (count of tabs of targetWindow) is not 1 then") < script.index(
+        "set settledTabIndex to index of current tab of targetWindow"
+    )
+    assert "if settledTabIndex is not 1 then" in script
+    assert "return settledTabIndex" in script
+    assert "return index of newTab" not in script
+
+    with patch("app.core.safari_automation.run_applescript", return_value="2"):
+        with pytest.raises(RuntimeError, match="unexpected tab index"):
+            context._create_tab(456, "https://x.com/home", expect_empty_window=True)
+
+
+def test_safari_idle_shell_with_new_tab_is_not_closed_or_adopted(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "idle",
+                "ownership_token": "a" * 32,
+                "owner_pid": 123,
+                "baseline_windows": [{"window_id": 123, "tab_count": 4}],
+                "window_id": 456,
+                "safari_process_identity": "test-safari-session",
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://x.com/home", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={123: 4, 456: 1},
+    ), patch(
+        "app.core.safari_automation._safari_process_identity",
+        return_value="test-safari-session",
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=AssertionError("The occupied shell must not be closed"),
+    ), pytest.raises(RuntimeError, match="former task window now contains a tab"):
+        context._acquire_context_lock()
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "idle"
+    assert context._context_lock_handle is None
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={123: 4, 456: 1},
+    ), patch(
+        "app.core.safari_automation._safari_process_identity",
+        return_value="new-safari-session",
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=AssertionError("A window from another Safari process must not be closed"),
+    ):
+        next_context = SafariContext("https://x.com/home", lock_blocking=False)
+        next_context._acquire_context_lock()
+        assert next_context._adopted_window_id is None
+        assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "clear"
+        next_context._release_context_lock()
+
+
+def test_safari_adopts_a_legacy_owned_zero_tab_shell(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "owned",
+                "ownership_token": "a" * 32,
+                "owner_pid": 123,
+                "baseline_windows": [{"window_id": 123, "tab_count": 4}],
+                "window_id": 456,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://x.com/home", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_pid_is_alive",
+        return_value=False,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={123: 4, 456: 0},
+    ), patch(
+        "app.core.safari_automation._safari_process_identity",
+        return_value="test-safari-session",
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=AssertionError("The empty shell must be reused"),
+    ), patch.object(context, "_create_tab", return_value=1), patch.object(
+        SafariPage, "goto"
+    ):
+        context._acquire_context_lock()
+        assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "idle"
+        page = context._create_page("https://x.com/home")
+
+        assert page.window_id == 456
+        assert json.loads(state_path.read_text(encoding="utf-8"))["owner_pid"] != 123
+        with patch.object(page, "_run_in_window", return_value="empty"):
+            context.close()
+
+
+def test_safari_legacy_empty_shell_does_not_close_a_new_user_tab(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "owned",
+                "ownership_token": "a" * 32,
+                "owner_pid": 123,
+                "baseline_windows": [{"window_id": 123, "tab_count": 4}],
+                "window_id": 456,
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = SafariContext("https://x.com/home", lock_blocking=False)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_pid_is_alive",
+        return_value=False,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        side_effect=({123: 4, 456: 0}, {123: 4, 456: 1}),
+    ), patch(
+        "app.core.safari_automation._safari_process_identity",
+        return_value="test-safari-session",
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+        side_effect=AssertionError("The new tab must not be closed"),
+    ), patch.object(
+        context, "_create_tab", side_effect=AssertionError("No task tab may be added")
+    ), pytest.raises(RuntimeError, match="former task window now contains a tab"):
+        context._acquire_context_lock()
+        assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "idle"
+        context._create_page("https://x.com/home")
+
+    context._release_context_lock()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "idle"
+
+
+def test_safari_empty_shell_tab_creation_checks_for_user_tabs() -> None:
+    context = SafariContext("https://x.com/home")
+    with patch(
+        "app.core.safari_automation.run_applescript",
+        return_value="1",
+    ) as run:
+        assert context._create_tab(
+            456,
+            "https://x.com/home",
+            expect_empty_window=True,
+        ) == 1
+
+    script = run.call_args.args[0]
+    assert "if (count of tabs of targetWindow) is not 0 then" in script
+    assert "if (count of tabs of targetWindow) is not 1 then" in script
+    assert script.index("is not 0 then") < script.index("make new tab")
+    assert script.index("make new tab") < script.index("is not 1 then")
+
+
+def test_safari_idle_transition_can_finish_page_bookkeeping_on_retry(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    context = SafariContext("https://x.com/home", lock_blocking=False)
+    page = SafariPage(context, window_id=456)
+    context.pages.append(page)
+
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
+        lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        return_value={456: 0},
+    ), patch(
+        "app.core.safari_automation._safari_process_identity",
+        return_value="test-safari-session",
+    ), patch.object(
+        page, "_run_in_window", side_effect=AssertionError("The empty shell must not be closed")
+    ):
+        context._acquire_context_lock()
+        context._mark_context_window_owned(456)
+        context._mark_context_window_idle(456)
+        context._retained_empty_window_id = None
+        context.close()
+
+    assert page._closed is True
+    assert context.pages == []
+    assert context._context_lock_handle is None
+    assert json.loads(lock_path.with_name("safari-context.lock.state").read_text())["state"] == "idle"
+
+
 def test_safari_context_creates_a_standard_visible_background_window() -> None:
     context = SafariContext("https://grok.com/files")
 
@@ -2009,6 +2362,9 @@ def test_safari_context_tracks_a_window_left_open_during_initial_creation_failur
     ), patch(
         "app.core.safari_automation.run_applescript",
         side_effect=("windows:10:1", creation_error),
+    ), patch(
+        "app.core.safari_automation._safari_process_identity",
+        return_value="test-safari-session",
     ), patch.object(
         SafariPage,
         "_close_owned_window",

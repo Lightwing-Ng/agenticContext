@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.49.3-codex.1
+# Code version: v1.49.6-codex.0
 
 from __future__ import annotations
 
@@ -3588,6 +3588,26 @@ def _safari_chatgpt_image_headers(
     }
 
 
+def _require_safe_chatgpt_media_path(target_dir: Path, path: Path) -> None:
+    """Refuse symlinked or escaping paths before Safari writes private media."""
+
+    root = target_dir.expanduser().absolute()
+    destination = path.expanduser().absolute()
+    if ".." in root.parts or ".." in destination.parts:
+        raise RuntimeError("ChatGPT media path escapes its cache directory.")
+    try:
+        destination.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("ChatGPT media path escapes its cache directory.") from exc
+    for component in (destination, *destination.parents):
+        if component.is_symlink():
+            if component == Path("/var") and component.resolve() == Path("/private/var"):
+                continue  # macOS maps its system temporary directory through this fixed alias.
+            raise RuntimeError("ChatGPT media path contains a symbolic link.")
+    if not destination.resolve(strict=False).is_relative_to(root.resolve(strict=False)):
+        raise RuntimeError("ChatGPT media path escapes its cache directory.")
+
+
 def _download_chatgpt_image_via_safari(
     context: SafariContext,
     catalog: ChatGPTImageCatalog,
@@ -3603,8 +3623,10 @@ def _download_chatgpt_image_via_safari(
         else replace(candidate, source_url=source_url, request_headers={})
     )
     partial_dir = target_dir / CHATGPT_PARTIAL_DIRNAME
+    _require_safe_chatgpt_media_path(target_dir, partial_dir)
     partial_dir.mkdir(parents=True, exist_ok=True)
     partial_path = partial_dir / f"{sanitize_filename_part(candidate.file_id)}.part"
+    _require_safe_chatgpt_media_path(target_dir, partial_path)
 
     try:
         content_type, _resumed = context.primary_page.download_to_path(
@@ -3612,6 +3634,7 @@ def _download_chatgpt_image_via_safari(
             partial_path,
             lambda: False,
             headers=_safari_chatgpt_image_headers(candidate, source_url),
+            max_bytes=max_file_size_bytes,
         )
     except RuntimeError as original_error:
         download_error = original_error
@@ -3627,11 +3650,13 @@ def _download_chatgpt_image_via_safari(
             )
             try:
                 refreshed_source_url = _resolve_chatgpt_image_source_url(context, refresh_candidate)
+                _require_safe_chatgpt_media_path(target_dir, partial_path)
                 content_type, _resumed = context.primary_page.download_to_path(
                     refreshed_source_url,
                     partial_path,
                     lambda: False,
                     headers=_safari_chatgpt_image_headers(refresh_candidate, refreshed_source_url),
+                    max_bytes=max_file_size_bytes,
                 )
             except RuntimeError as refresh_error:
                 download_error = refresh_error
@@ -3643,6 +3668,7 @@ def _download_chatgpt_image_via_safari(
         if download_error is not None:
             raise download_error
 
+    _require_safe_chatgpt_media_path(target_dir, partial_path)
     content = partial_path.read_bytes()
     if max_file_size_bytes > 0 and len(content) > max_file_size_bytes:
         partial_path.unlink(missing_ok=True)
@@ -3662,6 +3688,7 @@ def _download_chatgpt_image_via_safari(
 
     extension = infer_image_extension(source_url, content_type, content)
     target_path = target_dir / f"img_{sanitize_filename_part(candidate.file_id)}{extension}"
+    _require_safe_chatgpt_media_path(target_dir, target_path)
     os.replace(partial_path, target_path)
     return catalog.register_download(
         candidate=resolved_candidate,

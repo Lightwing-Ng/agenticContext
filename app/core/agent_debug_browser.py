@@ -9,13 +9,14 @@ touching the locked profile files.
 
 On macOS, Edge Jury uses the same verified-CDP primitives with a caller-supplied
 project profile root. That path is deliberately separate from the daily Edge
-profile and never copies browser or Microsoft account identity data. macOS Edge
-Agent login and tasks reuse this same persistent debug browser over CDP, matching
-Windows, so an already authorized window stays running even in Stage Manager.
-macOS launches a new Edge instance against the project profile instead of
-activating the daily browser, and leaves that window open for later reattach.
+profile and never copies browser or Microsoft account identity data. Other macOS
+Edge Agent providers also use a persistent project debug browser over CDP.
+macOS ChatGPT Edge Agent instead clones the signed-in daily Edge profile, as
+Cache does, without attaching to the project browser. The project-profile
+launcher opens a separate Edge instance without activating the daily browser
+and leaves that window open for later reattach.
 
-Code version: v1.24.8-codex.0
+Code version: v1.24.9-codex.0
 """
 
 from __future__ import annotations

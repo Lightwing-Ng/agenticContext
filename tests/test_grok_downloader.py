@@ -1,6 +1,6 @@
 """Focused regression tests for Grok media sync dedupe."""
 
-# Code version: v1.7.0-codex.0
+# Code version: v1.7.4-codex.0
 
 from __future__ import annotations
 
@@ -20,10 +20,13 @@ from app.core.grok_downloader import (
     GrokDownloadAuth,
     GrokAuthenticationRequiredError,
     GrokDownloadManifest,
+    GrokManifestEntry,
     GrokMediaCandidate,
     DownloadSizeLimitError,
+    _stream_grok_candidate_via_safari,
     build_grok_initial_snapshot,
     build_candidate_from_versions_payload,
+    candidate_from_url,
     compare_seen_at,
     compute_sha256,
     download_candidate,
@@ -105,6 +108,212 @@ class _FakeContext:
 
 class GrokDownloaderTests(unittest.TestCase):
     """Validate Grok flat-file compatibility and content-level dedupe."""
+
+    def test_grok_catalog_refuses_symlinked_media_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            outside = root / "outside"
+            outside.mkdir()
+            media_dir = root / "media"
+            media_dir.mkdir()
+            (media_dir / "grok").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(RuntimeError, "symbolic link"):
+                GrokMediaCatalog.build(media_dir / "grok")
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_grok_catalog_refuses_symlinked_ancestor_of_media_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            outside = root / "outside"
+            outside.mkdir()
+            (root / "cache-link").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(RuntimeError, "symbolic link"):
+                GrokMediaCatalog.build(root / "cache-link" / "media" / "grok")
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_grok_catalog_refuses_persisted_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target_dir = root / "media" / "grok"
+            target_dir.mkdir(parents=True)
+            outside = root / "outside.jpg"
+            outside.write_bytes(_JPEG_BYTES)
+            legacy_catalog = target_dir / LEGACY_GROK_CATALOG_FILENAME
+            legacy_catalog.write_text(json.dumps({"entries": [{
+                "identity": "asset/image",
+                "relative_path": "../../outside.jpg",
+                "content_sha256": compute_sha256(_JPEG_BYTES),
+                "media_kind": "image",
+                "content_bytes": len(_JPEG_BYTES),
+            }]}), encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "escapes its cache directory"):
+                GrokMediaCatalog.build(target_dir)
+            self.assertEqual(outside.read_bytes(), _JPEG_BYTES)
+
+    def test_grok_download_refuses_symlinked_existing_catalog_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target_dir = root / "media" / "grok"
+            target_dir.mkdir(parents=True)
+            cached_path = target_dir / "image.jpg"
+            cached_path.write_bytes(_JPEG_BYTES)
+            candidate = GrokMediaCandidate(
+                source_url="https://assets.grok.com/users/demo/generated/cebf0764-8ee5-44f5-9653-753701bfdb96/image.jpg",
+                asset_id="cebf0764-8ee5-44f5-9653-753701bfdb96",
+                asset_name="image",
+                media_kind="image",
+                identity="cebf0764-8ee5-44f5-9653-753701bfdb96/image",
+            )
+            catalog = GrokMediaCatalog.build(target_dir)
+            catalog.register_download(candidate, cached_path.name, compute_sha256(_JPEG_BYTES), len(_JPEG_BYTES))
+            manifest = GrokDownloadManifest.build(target_dir, catalog)
+            outside = root / "outside.jpg"
+            outside.write_bytes(_JPEG_BYTES)
+            cached_path.unlink()
+            cached_path.symlink_to(outside)
+
+            with patch("app.core.grok_downloader.apply_preserved_file_timestamp", side_effect=AssertionError("timestamp write")):
+                with self.assertRaisesRegex(RuntimeError, "symbolic link"):
+                    download_candidate(catalog, manifest, target_dir, candidate, GrokDownloadAuth(), lambda: False)
+            self.assertEqual(outside.read_bytes(), _JPEG_BYTES)
+
+    def test_grok_manifest_refuses_traversal_and_symlinked_partial_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir) / "media" / "grok"
+            target_dir.mkdir(parents=True)
+            catalog = GrokMediaCatalog.build(target_dir)
+            manifest = GrokDownloadManifest.build(target_dir, catalog)
+            candidate = GrokMediaCandidate(
+                source_url="https://assets.grok.com/users/demo/generated/cebf0764-8ee5-44f5-9653-753701bfdb96/image.jpg",
+                asset_id="cebf0764-8ee5-44f5-9653-753701bfdb96",
+                asset_name="generated-image",
+                media_kind="image",
+                identity="cebf0764-8ee5-44f5-9653-753701bfdb96/generated-image",
+            )
+            manifest.entries_by_identity[candidate.identity] = GrokManifestEntry(
+                identity=candidate.identity,
+                asset_id=candidate.asset_id,
+                asset_name=candidate.asset_name,
+                media_kind=candidate.media_kind,
+                source_url=candidate.source_url,
+                temp_relative_path="../../outside.part",
+            )
+            manifest.dirty = True
+            manifest.flush()
+            with self.assertRaisesRegex(RuntimeError, "escapes its cache directory"):
+                GrokDownloadManifest.build(target_dir, catalog)
+            self.assertFalse((target_dir.parent.parent / "outside.part").exists())
+
+            manifest.entries_by_identity[candidate.identity].temp_relative_path = ""
+            outside = Path(temp_dir) / "outside"
+            outside.mkdir()
+            (target_dir / ".grok-partial").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, "symbolic link"):
+                manifest.temp_path_for(candidate)
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_grok_candidate_rejects_lookalike_and_insecure_asset_origins(self) -> None:
+        path = "/users/demo/generated/cebf0764-8ee5-44f5-9653-753701bfdb96/image.jpg"
+        self.assertIsNotNone(candidate_from_url(f"https://assets.grok.com{path}", "img"))
+        for source_url in (
+            f"https://assets.grok.com.evil.example{path}",
+            f"https://evil.example/assets.grok.com{path}",
+            f"https://assets.grok.com@evil.example{path}",
+            f"https://user:pass@assets.grok.com{path}",
+            f"http://assets.grok.com{path}",
+            f"https://assets.grok.com:8443{path}",
+        ):
+            with self.subTest(source_url=source_url):
+                self.assertIsNone(candidate_from_url(source_url, "img"))
+
+    def test_grok_download_rechecks_a_persisted_candidate_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir) / "media" / "grok"
+            target_dir.mkdir(parents=True)
+            catalog = GrokMediaCatalog.build(target_dir)
+            manifest = GrokDownloadManifest.build(target_dir, catalog)
+            candidate = GrokMediaCandidate(
+                source_url=(
+                    "https://assets.grok.com.evil.example/users/demo/generated/"
+                    "cebf0764-8ee5-44f5-9653-753701bfdb96/image.jpg"
+                ),
+                asset_id="cebf0764-8ee5-44f5-9653-753701bfdb96",
+                asset_name="generated-image",
+                media_kind="image",
+                identity="cebf0764-8ee5-44f5-9653-753701bfdb96/generated-image",
+            )
+            with self.assertRaisesRegex(RuntimeError, "unsafe download URL"):
+                download_candidate(
+                    catalog, manifest, target_dir, candidate, GrokDownloadAuth(), lambda: False
+                )
+            self.assertEqual(catalog.summarize(), (0, 0, 0))
+
+    def test_safari_stream_passes_the_media_byte_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir)
+            candidate = GrokMediaCandidate(
+                source_url="https://assets.grok.com/users/demo/generated/cebf0764-8ee5-44f5-9653-753701bfdb96/image.jpg",
+                asset_id="cebf0764-8ee5-44f5-9653-753701bfdb96",
+                asset_name="generated-image",
+                media_kind="image",
+                identity="cebf0764-8ee5-44f5-9653-753701bfdb96/generated-image",
+            )
+
+            class _Page:
+                def download_to_path(self, url, path, _should_stop, **kwargs):
+                    self.assertions.append((url, kwargs))
+                    path.write_bytes(_JPEG_BYTES)
+                    return "image/jpeg", False
+
+                def __init__(self):
+                    self.assertions = []
+
+            page = _Page()
+            result = _stream_grok_candidate_via_safari(
+                page, candidate, target_dir / "image.part", lambda: False, 5
+            )
+            self.assertEqual(result, ("image/jpeg", False))
+            self.assertEqual(page.assertions[0][1]["max_bytes"], 5)
+            self.assertEqual(page.assertions[0][1]["expected_bytes"], 0)
+
+    def test_safari_stream_over_limit_is_classified_as_size_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir) / "media" / "grok"
+            target_dir.mkdir(parents=True)
+            candidate = GrokMediaCandidate(
+                source_url="https://assets.grok.com/users/demo/generated/cebf0764-8ee5-44f5-9653-753701bfdb96/image.jpg",
+                asset_id="cebf0764-8ee5-44f5-9653-753701bfdb96",
+                asset_name="generated-image",
+                media_kind="image",
+                identity="cebf0764-8ee5-44f5-9653-753701bfdb96/generated-image",
+            )
+            catalog = GrokMediaCatalog.build(target_dir)
+            manifest = GrokDownloadManifest.build(target_dir, catalog)
+
+            class _Page:
+                def download_to_path(self, _url, _path, _should_stop, **kwargs):
+                    assert kwargs["max_bytes"] == 5
+                    raise RuntimeError("Safari media exceeds the 5-byte cache limit.")
+
+            outcome = run_download_worker(
+                catalog,
+                manifest,
+                target_dir,
+                candidate,
+                GrokDownloadAuth(),
+                lambda: False,
+                browser_streamer=lambda item, path, stop: _stream_grok_candidate_via_safari(
+                    _Page(), item, path, stop, 5
+                ),
+                max_file_size_bytes=5,
+            )
+            self.assertTrue(outcome.skipped_size)
+            self.assertFalse(outcome.failed)
+            self.assertEqual(catalog.summarize(), (0, 0, 0))
+            self.assertFalse(list(target_dir.rglob("*.part")))
 
     def test_grok_download_workers_reuse_the_shared_cache_setting(self) -> None:
         self.assertEqual(

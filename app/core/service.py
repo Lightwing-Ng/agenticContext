@@ -1,6 +1,6 @@
 """Orchestration service for the cache job."""
 
-# Code version: v1.6.1-codex.1
+# Code version: v1.8.0-codex.0
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from .job_lock import CacheTaskLock
 from .scraper import collect_liked_tweet_urls
 from .shadow_backup import ShadowBackupService
 from .state import TaskState
+from .x_text_history import XTextHistoryStore, XTextPost, x_text_history_path
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +75,36 @@ class CacheLikesService(CooperativeCacheWorker):
                 self._state.finish_stopped("Job stopped before collection started.")
                 return
 
-            account_handle, tweet_urls = collect_liked_tweet_urls(config, self._state)
+            text_store = (
+                XTextHistoryStore(x_text_history_path(LOCAL_STORE_ROOT))
+                if config.x_browser == "safari"
+                else None
+            )
+            if text_store is not None:
+                self._state.update(cached_text_posts=text_store.cached_posts)
+
+            def cache_text_posts(posts: list[XTextPost]) -> None:
+                if text_store is None:
+                    return
+                text_store.upsert(posts)
+                self._state.update(cached_text_posts=text_store.cached_posts)
+
+            account_handle, tweet_urls = collect_liked_tweet_urls(
+                config,
+                self._state,
+                on_text_posts=cache_text_posts if text_store is not None else None,
+                should_stop=self._is_stop_requested,
+            )
             tweet_urls = list(dict.fromkeys(tweet_urls))
+            if self._is_stop_requested():
+                message = f"X cache stopped after collecting {len(tweet_urls):,} liked post URLs."
+                if text_store is not None:
+                    message = (
+                        f"X cache stopped after collecting {len(tweet_urls):,} liked post URLs; "
+                        f"{text_store.cached_posts:,} text posts remain cached."
+                    )
+                self._state.finish_stopped(message)
+                return
             account_name = config.sanitized_account_name(account_handle)
             output_dir = LOCAL_STORE_ROOT / X_LOCAL_STORE_DIRNAME
             cache_index = LocalTweetCacheIndex.build(output_dir)
@@ -96,6 +125,10 @@ class CacheLikesService(CooperativeCacheWorker):
                 f"Starting media download with {config.download_workers} worker(s) for up to {config.max_media_items} files from "
                 f"{len(tweet_urls)} liked tweets into {output_dir}."
             )
+            if text_store is not None:
+                self._state.append_event(
+                    f"Cached {text_store.cached_posts:,} unique liked post texts independently of media."
+                )
             if config.download_workers > 1:
                 self._state.append_event(
                     "Parallel mode is enabled. The media cap is treated as a soft ceiling so one tweet is never partially cached."
@@ -130,7 +163,7 @@ class CacheLikesService(CooperativeCacheWorker):
                         stop_requested = True
                         if not stop_wait_announced:
                             self._state.append_event(
-                                "Stop requested. No new tweets will be queued. Waiting for active download workers to finish."
+                                "Stop requested. No new tweets will be queued. Stopping active download workers."
                             )
                             stop_wait_announced = True
 
@@ -174,6 +207,7 @@ class CacheLikesService(CooperativeCacheWorker):
                                     self._state,
                                     remaining_media_items=worker_media_budget,
                                     cache_index=cache_index,
+                                    should_stop=self._is_stop_requested,
                                 )
                             ] = (tweet_index, tweet_url)
 
@@ -208,6 +242,10 @@ class CacheLikesService(CooperativeCacheWorker):
                                 downloaded_images += result.downloaded_image_count
                                 downloaded_videos += result.downloaded_video_count
                                 oversized_media += result.skipped_oversized_media_count
+                                if result.stopped:
+                                    stop_requested = True
+                                if result.timed_out:
+                                    failed += 1
                                 logger.info(
                                     "Tweet download completed.",
                                     extra={

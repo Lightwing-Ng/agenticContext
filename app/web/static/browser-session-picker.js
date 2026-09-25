@@ -1,4 +1,4 @@
-/* Code version: v1.8.2-codex.0 */
+/* Code version: v1.9.1-codex.0 */
 
 (() => {
     function closeOtherMenus(activePanel) {
@@ -27,7 +27,12 @@
         const startButton = startButtonSelector ? document.querySelector(startButtonSelector) : null;
         const startButtonInitiallyDisabled = startButton ? startButton.disabled : false;
         const optionButtons = Array.from(panel.querySelectorAll("[data-browser-option]"));
+        const cachePage = document.querySelector("[data-cache-page]");
+        const isClaudeCache = platform === "claude" && cachePage?.dataset.cacheSource === "claude";
+        const contentModeControl = cachePage?.querySelector("[data-cache-content-mode]");
         let activeBrowser = "";
+        let rememberedTextBrowser = "";
+        let wasClaudeMedia = false;
         const statusController = window.CACHELIKES_BROWSER_SESSION_STATUS?.init(panel, {
             platform,
             getBrowser: () => activeBrowser,
@@ -58,11 +63,52 @@
             return match ? match[1] : "";
         }
 
+        function isClaudeMedia() {
+            if (!isClaudeCache) return false;
+            const match = window.location.pathname.match(/^\/cache\/claude\/(text|media)\//);
+            return (match ? match[1] : cachePage.dataset.cachePageContentMode) === "media";
+        }
+
+        function syncClaudeBrowserOptions() {
+            if (!isClaudeCache) return;
+            const media = isClaudeMedia();
+            optionButtons.forEach((button) => {
+                const unavailable = media && button.dataset.browserOption !== "safari";
+                button.hidden = unavailable;
+                button.disabled = unavailable;
+            });
+            if (media) {
+                if (!wasClaudeMedia && activeBrowser && activeBrowser !== "safari") {
+                    rememberedTextBrowser = activeBrowser;
+                }
+                const safariAvailable = optionButtons.some((button) => button.dataset.browserOption === "safari");
+                trigger.disabled = !safariAvailable;
+                const selected = safariAvailable ? "safari" : "";
+                if (activeBrowser !== selected) {
+                    setSelectedBrowser(selected);
+                    syncCacheBrowserUrl(selected);
+                    statusController?.setBrowser(selected);
+                }
+            } else {
+                trigger.disabled = false;
+                if (wasClaudeMedia && rememberedTextBrowser && activeBrowser !== rememberedTextBrowser) {
+                    setSelectedBrowser(rememberedTextBrowser);
+                    syncCacheBrowserUrl(rememberedTextBrowser);
+                    statusController?.setBrowser(rememberedTextBrowser);
+                }
+            }
+            wasClaudeMedia = media;
+            setMenuOpen(false);
+        }
+
         function syncCacheBrowserUrl(browserId) {
             const page = document.querySelector("[data-cache-page]");
             if (!page || !page.querySelector("[data-cache-content-mode]") || !browserId) return;
             const source = page.dataset.cacheSource || "";
-            const mode = page.dataset.cachePageContentMode === "media" ? "media" : "text";
+            const modeFromUrl = window.location.pathname.match(/^\/cache\/[^/]+\/(text|media)\//);
+            const mode = modeFromUrl ? modeFromUrl[1] : (
+                page.dataset.cachePageContentMode === "media" ? "media" : "text"
+            );
             if (!source) return;
             page.querySelectorAll("[data-cache-content-mode-option]").forEach((option) => {
                 const optionMode = option.dataset.cacheContentModeOption === "media" ? "media" : "text";
@@ -89,13 +135,15 @@
 
             const selectedButton = optionButtons.find((button) => button.dataset.browserOption === activeBrowser);
             if (!selectedButton) {
-                selectedLabel.textContent = "Select browser";
+                selectedLabel.textContent = isClaudeMedia()
+                    ? "Safari required on macOS"
+                    : "Select browser";
                 selectedIcon.removeAttribute("src");
                 selectedIcon.alt = "";
                 selectedIconShell.hidden = true;
                 setStartButtonReady(false);
                 try {
-                    window.sessionStorage.setItem(selectionStorageKey, "");
+                    if (!isClaudeMedia()) window.sessionStorage.setItem(selectionStorageKey, "");
                 } catch (_error) {
                 }
                 return;
@@ -113,12 +161,16 @@
 
         optionButtons.forEach((button) => {
             button.addEventListener("click", () => {
+                if (button.hidden || button.disabled) return;
                 const browserId = button.dataset.browserOption || "";
                 setSelectedBrowser(browserId);
                 setMenuOpen(false);
-                try {
-                    window.sessionStorage.setItem(selectionStorageKey, browserId);
-                } catch (_error) {
+                if (!isClaudeMedia()) {
+                    rememberedTextBrowser = browserId;
+                    try {
+                        window.sessionStorage.setItem(selectionStorageKey, browserId);
+                    } catch (_error) {
+                    }
                 }
                 syncCacheBrowserUrl(browserId);
                 statusController?.setBrowser(browserId);
@@ -154,15 +206,32 @@
             : optionButtons.some((button) => button.dataset.browserOption === hiddenInputSelection)
                 ? hiddenInputSelection
             : defaultBrowserId;
+        rememberedTextBrowser = storedSelection || initialBrowserId;
+        wasClaudeMedia = isClaudeMedia();
+        const initialBrowser = wasClaudeMedia
+            ? (optionButtons.some((button) => button.dataset.browserOption === "safari") ? "safari" : "")
+            : initialBrowserId;
+        if (isClaudeCache) {
+            optionButtons.forEach((button) => {
+                const unavailable = wasClaudeMedia && button.dataset.browserOption !== "safari";
+                button.hidden = unavailable;
+                button.disabled = unavailable;
+            });
+            trigger.disabled = wasClaudeMedia && !initialBrowser;
+            contentModeControl?.addEventListener("click", syncClaudeBrowserOptions);
+            window.addEventListener("popstate", syncClaudeBrowserOptions);
+        }
 
-        if (initialBrowserId) {
-            setSelectedBrowser(initialBrowserId);
-            try {
-                window.sessionStorage.setItem(selectionStorageKey, initialBrowserId);
-            } catch (_error) {
+        if (initialBrowser) {
+            setSelectedBrowser(initialBrowser);
+            if (!wasClaudeMedia) {
+                try {
+                    window.sessionStorage.setItem(selectionStorageKey, initialBrowser);
+                } catch (_error) {
+                }
             }
-            syncCacheBrowserUrl(initialBrowserId);
-            statusController?.setBrowser(initialBrowserId);
+            syncCacheBrowserUrl(initialBrowser);
+            statusController?.setBrowser(initialBrowser);
             return;
         }
 

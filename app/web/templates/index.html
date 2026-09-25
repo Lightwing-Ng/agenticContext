@@ -1,10 +1,11 @@
-{# Code version: v1.14.1-codex.0 #}
+{# Code version: v1.15.0-codex.0 #}
 {% extends "_cache_page.html" %}
 {% from "_cache_page_components.html" import render_metric, render_progress_metric %}
 
 {% block primary_metrics %}
 {{ render_metric("Sessions discovered", "discovered_tweets", snapshot.discovered_tweets, "discovered_tweets") }}
-{{ render_metric("Posts", "downloaded_posts", snapshot.downloaded_posts, "downloaded_posts") }}
+{{ render_metric("Media posts", "downloaded_posts", snapshot.downloaded_posts, "downloaded_posts") }}
+{{ render_metric("Text posts", "cached_text_posts", snapshot.cached_text_posts, "cached_text_posts") }}
 {{ render_metric("Images", "downloaded_images", snapshot.downloaded_images, "downloaded_images") }}
 {{ render_metric("Videos", "downloaded_videos", snapshot.downloaded_videos, "downloaded_videos") }}
 {{ render_metric("Skipped", "skipped_tweets", snapshot.skipped_tweets, "skipped_tweets") }}

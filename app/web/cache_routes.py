@@ -9,7 +9,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from flask import (
 
 from app.core.agent import is_loopback_address
 from app.core.browser import build_browser_options, browser_descriptors
+from app.core.claude_media import build_claude_media_initial_snapshot
 from app.core.foundation import (
     APP_VERSION,
     DEFAULT_HOST,
@@ -114,6 +115,24 @@ def build_reconciled_cache_snapshot(
         snapshot["cached_sessions"] = hydrated["downloaded_posts"]
         snapshot["cached_messages"] = hydrated["downloaded_tweets"]
         return snapshot
+    if source_key == "claude":
+        selected_mode = "media" if mode == "media" else "text"
+        hydrated = asdict(
+            build_claude_media_initial_snapshot(APP_VERSION, context.media_catalog.local_store_root)
+            if selected_mode == "media" else runtime.hydrate_snapshot()
+        )
+        live = runtime.state.snapshot()
+        live_mode = str((live.get("performance_metrics") or {}).get("content_mode") or "text")
+        if live_mode != selected_mode:
+            if live.get("running"):
+                hydrated.update(
+                    running=True,
+                    phase=live["phase"],
+                    started_at=live["started_at"],
+                    message=f"Claude {live_mode} cache is running.",
+                )
+            return hydrated
+        return reconcile_cached_snapshot(live, hydrated)
     snapshot = reconcile_cached_snapshot(runtime.state.snapshot(), asdict(runtime.hydrate_snapshot()))
     if source_key == "chatgpt":
         snapshot.update(chatgpt_history_counts(context.media_catalog.local_store_root))
@@ -387,6 +406,9 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
                     if request.form.get("cache_content_mode", request.form.get("chatgpt_content_mode")) == "media"
                     else "text"
                 )
+                runtime.service.start(runtime_config, content_mode=content_mode)
+            elif source_key == "claude":
+                content_mode = "media" if request.form.get("cache_content_mode") == "media" else "text"
                 runtime.service.start(runtime_config, content_mode=content_mode)
             elif source_key == "zhihu":
                 runtime.service.start(

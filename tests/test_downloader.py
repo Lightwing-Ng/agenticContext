@@ -1,16 +1,21 @@
 """Tests for yt-dlp output classification and retry boundaries.
 
-Code version: v1.3.1-codex.1
+Code version: v1.4.0-codex.0
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
+import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from app.core.cache_catalog import LocalTweetCacheIndex
 from app.core.config import CrawlConfig
 from app.core.downloader import (
     MEDIA_MARKER_PREFIX,
@@ -136,26 +141,106 @@ def test_safari_cookie_source_is_independent_of_host_browser_registry(monkeypatc
     assert build_cookies_from_browser_arg(CrawlConfig(x_browser="safari")) == "safari"
 
 
-def test_transient_yt_dlp_failure_retries_then_returns_success() -> None:
-    transient = subprocess.CompletedProcess(["yt-dlp"], 1, stdout="", stderr="timed out")
-    success = subprocess.CompletedProcess(["yt-dlp"], 0, stdout="done", stderr="")
+def test_transient_yt_dlp_failure_retries_then_returns_success(tmp_path: Path, monkeypatch) -> None:
+    attempts_path = tmp_path / "attempts.txt"
+    script_path = tmp_path / "fake_yt_dlp.py"
+    script_path.write_text(
+        "import pathlib, sys\n"
+        "path = pathlib.Path(sys.argv[1])\n"
+        "count = int(path.read_text()) + 1 if path.exists() else 1\n"
+        "path.write_text(str(count))\n"
+        "if count == 1:\n"
+        "    print('timed out', file=sys.stderr)\n"
+        "    sys.exit(1)\n"
+        "print('done')\n"
+    )
+    monkeypatch.setattr("app.core.downloader.DOWNLOAD_RETRY_DELAY_SECONDS", 0.01)
 
-    with patch("app.core.downloader.subprocess.run", side_effect=[transient, success]) as runner, patch(
-        "app.core.downloader.time.sleep"
-    ) as sleep:
-        result = run_yt_dlp_with_retries(["yt-dlp"], "https://x.com/demo/status/1")
+    result = run_yt_dlp_with_retries(
+        [sys.executable, str(script_path), str(attempts_path)],
+        "https://x.com/demo/status/1",
+        timeout_seconds=10,
+    )
 
-    assert result is success
-    assert runner.call_count == 2
-    sleep.assert_called_once()
+    assert result.returncode == 0
+    assert result.stdout.strip() == "done"
+    assert attempts_path.read_text() == "2"
 
 
-def test_non_transient_yt_dlp_failure_does_not_retry() -> None:
-    failure = subprocess.CompletedProcess(["yt-dlp"], 1, stdout="", stderr="HTTP Error 404")
+def test_non_transient_yt_dlp_failure_does_not_retry(tmp_path: Path) -> None:
+    attempts_path = tmp_path / "attempts.txt"
+    script_path = tmp_path / "fake_yt_dlp.py"
+    script_path.write_text(
+        "import pathlib, sys\n"
+        "path = pathlib.Path(sys.argv[1])\n"
+        "count = int(path.read_text()) + 1 if path.exists() else 1\n"
+        "path.write_text(str(count))\n"
+        "print('HTTP Error 404', file=sys.stderr)\n"
+        "sys.exit(1)\n"
+    )
 
-    with patch("app.core.downloader.subprocess.run", return_value=failure) as runner:
-        result = run_yt_dlp_with_retries(["yt-dlp"], "https://x.com/demo/status/1")
+    result = run_yt_dlp_with_retries(
+        [sys.executable, str(script_path), str(attempts_path)],
+        "https://x.com/demo/status/1",
+        timeout_seconds=10,
+    )
 
-    assert result is failure
-    assert runner.call_count == 1
-    assert not is_transient_retryable_output(failure.stderr)
+    assert result.returncode == 1
+    assert attempts_path.read_text() == "1"
+    assert not is_transient_retryable_output(result.stderr)
+
+
+@pytest.mark.parametrize("reason", ["stopped", "timed_out"])
+def test_interrupted_yt_dlp_keeps_completed_media_and_existing_files(
+    tmp_path: Path,
+    reason: str,
+) -> None:
+    output_dir = tmp_path / "x"
+    prior_path = output_dir / "prior" / "999" / "999.jpg"
+    prior_path.parent.mkdir(parents=True)
+    prior_path.write_bytes(b"existing cached image")
+    ready_path = tmp_path / "ready.pid"
+    script_path = tmp_path / "fake_yt_dlp.py"
+    script_path.write_text(
+        "import os, pathlib, sys, time\n"
+        "root = pathlib.Path(sys.argv[1])\n"
+        "ready = pathlib.Path(sys.argv[2])\n"
+        "media = root / 'poster' / '123' / '123.jpg'\n"
+        "media.parent.mkdir(parents=True, exist_ok=True)\n"
+        "media.write_bytes(b'completed image')\n"
+        "(media.parent / 'next.part').write_bytes(b'partial')\n"
+        "print('__CACHELIKES_MEDIA__:' + str(media), flush=True)\n"
+        "ready.write_text(str(os.getpid()))\n"
+        "time.sleep(30)\n"
+    )
+    state = TaskState("test")
+    config = CrawlConfig(x_browser="safari", max_media_file_size_mib=1)
+    with patch(
+        "app.core.downloader.ensure_yt_dlp_available",
+        return_value=[sys.executable, str(script_path), str(output_dir), str(ready_path)],
+    ):
+        started = time.monotonic()
+        result = download_tweet_media(
+            "https://x.com/poster/status/123",
+            output_dir,
+            config,
+            state,
+            should_stop=(lambda: ready_path.exists()) if reason == "stopped" else None,
+            timeout_seconds=10 if reason == "stopped" else 0.5,
+        )
+        elapsed = time.monotonic() - started
+
+    assert elapsed < 5
+    assert result.stopped is (reason == "stopped")
+    assert result.timed_out is (reason == "timed_out")
+    assert result.downloaded_media_count == 1
+    assert result.downloaded_image_count == 1
+    assert prior_path.read_bytes() == b"existing cached image"
+    assert (output_dir / "poster" / "123" / "123.jpg").read_bytes() == b"completed image"
+    assert (output_dir / "poster" / "123" / "next.part").read_bytes() == b"partial"
+    assert LocalTweetCacheIndex.build(output_dir).contains_complete_cache(
+        "https://x.com/poster/status/123"
+    )
+    if os.name == "posix":
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(ready_path.read_text()), 0)

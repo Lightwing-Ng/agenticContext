@@ -1,6 +1,6 @@
 """Shared Parquet schemas and atomic persistence for cached resource state."""
 
-# Code version: v1.10.1-codex.1
+# Code version: v1.11.0-codex.0
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ LEGACY_GROK_WORK_QUEUE_FILENAME = ".grok_work_queue.json"
 DELETED_MEDIA_FILENAME = ".browser_deleted.parquet"
 LEGACY_DELETED_MEDIA_FILENAME = ".browser_deleted.json"
 X_CACHE_CATALOG_FILENAME = ".cache_catalog.parquet"
+X_HISTORY_FILENAME = "history.parquet"
 GEMINI_HISTORY_FILENAME = "history.parquet"
 CHATGPT_HISTORY_FILENAME = "history.parquet"
 GROK_HISTORY_FILENAME = "history.parquet"
@@ -39,6 +40,7 @@ GROK_DOWNLOAD_MANIFEST_SCHEMA_VERSION = 2
 GROK_WORK_QUEUE_SCHEMA_VERSION = 2
 DELETED_MEDIA_SCHEMA_VERSION = 2
 X_CACHE_CATALOG_SCHEMA_VERSION = 3
+X_HISTORY_SCHEMA_VERSION = 1
 GEMINI_HISTORY_SCHEMA_VERSION = 1
 CHATGPT_HISTORY_SCHEMA_VERSION = 3
 GROK_HISTORY_SCHEMA_VERSION = 1
@@ -237,6 +239,7 @@ def _history_schema(*provider_fields: pa.Field) -> pa.Schema:
     )
 
 
+X_HISTORY_SCHEMA = _history_schema()
 GEMINI_HISTORY_SCHEMA = _history_schema()
 CHATGPT_HISTORY_SCHEMA = _history_schema(
     pa.field("provider_revision", pa.string(), nullable=True)

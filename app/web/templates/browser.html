@@ -1,4 +1,4 @@
-<!-- Code version: v1.75.8-codex.0 -->
+<!-- Code version: v1.76.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -17,7 +17,7 @@
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.34.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.35.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
@@ -131,8 +131,8 @@
                     <input type="hidden" name="session_view" value="{{ '1' if filters.session_view else '0' }}">
                     {% if filters.session %}<input type="hidden" name="session" value="{{ filters.session }}">{% endif %}
                     <label class="field browser-filter-field">
-                        <span>{{ "Source" if filters.view == "media" else "Chat source" }}</span>
-                        {% set source_options = cache_sources if filters.view == "media" else chat_history_sources %}
+                        <span>{{ "Source" if filters.view == "media" else "Text source" }}</span>
+                        {% set source_options = local_resource_media_sources if filters.view == "media" else local_resource_text_sources %}
                         {% set all_source_label = "All sources" %}
                         {% set all_source_icon = "images/photo.stack.svg" %}
                         {% set selected_source = namespace(label="ChatGPT", icon="images/ChatGPT-Logo.svg") %}
@@ -750,7 +750,7 @@
                                         </td>
                                         <td class="browser-session-table-source">
                                             {% set prompt_source = namespace(icon="images/arrow.down.message.fill.svg", label=prompt.source|capitalize) %}
-                                            {% for source in chat_history_sources %}
+                                            {% for source in local_resource_text_sources %}
                                                 {% if source.key == prompt.source %}
                                                     {% set prompt_source.icon = source.icon_filename %}
                                                     {% set prompt_source.label = source.label %}
@@ -812,7 +812,7 @@
                         {% set show_media_previews = is_media_response and ('"size"' in message.content_text or '"n"' in message.content_text) %}
                         {% set role_icon = namespace(filename="") %}
                         {% if message.role == "assistant" %}
-                            {% for source in chat_history_sources %}
+                            {% for source in local_resource_text_sources %}
                                 {% if message.source == source.key %}{% set role_icon.filename = source.icon_filename %}{% endif %}
                             {% endfor %}
                         {% endif %}
@@ -900,7 +900,7 @@
                                     {% set show_media_previews = is_media_response and ('"size"' in message.content_text or '"n"' in message.content_text) %}
                                     {% set role_icon = namespace(filename="") %}
                                     {% if message.role == "assistant" or message.source == "zhihu" %}
-                                        {% for source in chat_history_sources %}
+                                        {% for source in local_resource_text_sources %}
                                             {% if message.source == source.key %}{% set role_icon.filename = source.icon_filename %}{% endif %}
                                         {% endfor %}
                                     {% endif %}
@@ -1072,7 +1072,7 @@
                                         {% if not is_zhihu_text %}
                                         <td class="browser-session-table-source">
                                             {% set session_source = namespace(icon="images/arrow.down.message.fill.svg", label=session.source|capitalize) %}
-                                            {% for source in chat_history_sources %}
+                                            {% for source in local_resource_text_sources %}
                                                 {% if source.key == session.source %}
                                                     {% set session_source.icon = source.icon_filename %}
                                                     {% set session_source.label = source.label %}

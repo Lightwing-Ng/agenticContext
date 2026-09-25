@@ -1,12 +1,13 @@
 """Browser-rendered Claude history collection and local persistence.
 
-Code version: v1.1.1-codex.1
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,10 +19,10 @@ from .agent_session_sources import normalize_claude_conversation_url
 from .browser_sessions import (
     CLAUDE_HOME_URL,
     browser_descriptors,
+    claude_composer_snapshot,
     goto_with_retry,
     launch_chromium_context,
     sync_playwright_or_error,
-    visible_claude_composer_selector,
 )
 from .config import LOCAL_STORE_ROOT, CrawlConfig
 from .history_rows import (
@@ -36,6 +37,7 @@ from .resource_persistence import (
     read_parquet_rows,
     write_parquet_rows_atomic,
 )
+from .safari_automation import SafariContext
 from .state import TaskSnapshot, TaskState
 
 
@@ -235,8 +237,7 @@ def _wait_for_claude_ready(page, timeout_seconds: float = CLAUDE_READY_TIMEOUT_S
             raise RuntimeError("The selected Claude account is restricted or unavailable.")
         if re.search(r"\b(?:sign in|log in|sign up|create account)\b", body_text):
             raise RuntimeError("The selected browser is not signed in to Claude.")
-        composer = page.locator(visible_claude_composer_selector())
-        if composer.count() == 1 and composer.first.is_visible():
+        if claude_composer_snapshot(page)["count"] == 1:
             return
         page.wait_for_timeout(500)
     raise RuntimeError(
@@ -469,6 +470,26 @@ def build_claude_initial_snapshot(
     return snapshot
 
 
+@contextmanager
+def _open_claude_history_page(descriptor):
+    """Keep one task-owned browser page for the complete Claude history sync."""
+
+    if descriptor.engine == "safari":
+        with SafariContext(CLAUDE_HOME_URL, lock_blocking=False) as context:
+            yield context.primary_page
+        return
+
+    with sync_playwright_or_error() as playwright:
+        with launch_chromium_context(
+            playwright,
+            descriptor,
+            headless=False,
+            clone_profile_first=True,
+            background_window=True,
+        ) as context:
+            yield context.pages[0] if context.pages else context.new_page()
+
+
 def sync_claude_history(
     state: TaskState,
     config: CrawlConfig,
@@ -480,8 +501,8 @@ def sync_claude_history(
     descriptor = browser_descriptors(config).get(config.claude_browser)
     if descriptor is None:
         raise RuntimeError(f"Unsupported Claude browser: {config.claude_browser}")
-    if descriptor.engine != "chromium":
-        raise RuntimeError("Claude text history currently requires a Chromium browser such as Edge")
+    if descriptor.engine not in {"chromium", "safari"}:
+        raise RuntimeError(f"Claude text history does not support {descriptor.label}.")
 
     history_path = claude_history_path(local_store_root)
     store = ClaudeHistoryStore(history_path)
@@ -505,93 +526,85 @@ def sync_claude_history(
     unchanged_sessions = 0
     failed_sessions = 0
     stopped = False
-    with sync_playwright_or_error() as playwright:
-        with launch_chromium_context(
-            playwright,
-            descriptor,
-            headless=False,
-            clone_profile_first=True,
-            background_window=True,
-        ) as context:
-            page = context.pages[0] if context.pages else context.new_page()
-            goto_with_retry(page, CLAUDE_HOME_URL, attempts=3, timeout_ms=90_000)
-            _wait_for_claude_ready(page)
-            conversations = discover_claude_conversations(page)
-            if not conversations:
-                raise RuntimeError(
-                    "Claude history discovery returned no rendered sessions. "
-                    "The authenticated Chats page may not have loaded."
-                )
-            state.update(
-                phase="downloading",
-                discovered_tweets=len(conversations),
-                queued_tweets=len(conversations),
-                discovery_complete=True,
-                message=f"Found {len(conversations):,} Claude sessions; loading rendered messages...",
+    with _open_claude_history_page(descriptor) as page:
+        goto_with_retry(page, CLAUDE_HOME_URL, attempts=3, timeout_ms=90_000)
+        _wait_for_claude_ready(page)
+        conversations = discover_claude_conversations(page)
+        if not conversations:
+            raise RuntimeError(
+                "Claude history discovery returned no rendered sessions. "
+                "The authenticated Chats page may not have loaded."
             )
-            state.append_event(f"Found {len(conversations):,} Claude sessions in {descriptor.label}.")
+        state.update(
+            phase="downloading",
+            discovered_tweets=len(conversations),
+            queued_tweets=len(conversations),
+            discovery_complete=True,
+            message=f"Found {len(conversations):,} Claude sessions; loading rendered messages...",
+        )
+        state.append_event(f"Found {len(conversations):,} Claude sessions in {descriptor.label}.")
 
-            for index, conversation in enumerate(conversations, start=1):
-                if should_stop():
+        for index, conversation in enumerate(conversations, start=1):
+            if should_stop():
+                stopped = True
+                break
+            scan_wait = config.cache_scan_wait("claude", "text")
+            if index > 1 and scan_wait > 0:
+                if wait_for_cache_scan(scan_wait, should_stop):
                     stopped = True
                     break
-                scan_wait = config.cache_scan_wait("claude", "text")
-                if index > 1 and scan_wait > 0:
-                    if wait_for_cache_scan(scan_wait, should_stop):
-                        stopped = True
-                        break
-                last_error: Exception | None = None
-                for attempt_index in range(CLAUDE_CONVERSATION_RETRY_LIMIT):
-                    try:
-                        goto_with_retry(page, conversation.url, attempts=2, timeout_ms=90_000)
-                        page.wait_for_timeout(CLAUDE_RENDER_SETTLE_MILLISECONDS)
-                        _prepare_claude_conversation_for_rendering(page)
-                        messages = extract_claude_conversation_messages(page, conversation)
-                        captured_at = utc_now_iso()
-                        result = store.replace_conversation(conversation, messages, captured_at)
-                        store.save()
-                        discovered_messages += result.message_count
-                        added_or_changed += result.added_or_changed
-                        unchanged_messages += result.unchanged_messages
-                        unchanged_sessions += result.unchanged_sessions
-                        state.append_event(
-                            f"Cached Claude session {index:,}/{len(conversations):,}: "
-                            f"{conversation.title} ({result.message_count:,} messages)."
-                        )
-                        last_error = None
-                        break
-                    except ClaudeNoCacheableMessagesError:
-                        state.append_event(
-                            f"Skipped Claude session {index:,}/{len(conversations):,}: "
-                            "no cacheable text messages."
-                        )
-                        last_error = None
-                        break
-                    except Exception as exc:
-                        last_error = exc
-                        if attempt_index + 1 < CLAUDE_CONVERSATION_RETRY_LIMIT:
-                            state.append_event(
-                                f"Retrying Claude session {index:,}/{len(conversations):,} "
-                                f"after attempt {attempt_index + 1:,}: {str(exc).splitlines()[0][:300]}"
-                            )
-                            page.wait_for_timeout(CLAUDE_RENDER_SETTLE_MILLISECONDS)
-                if last_error is not None:
-                    failed_sessions += 1
+            last_error: Exception | None = None
+            for attempt_index in range(CLAUDE_CONVERSATION_RETRY_LIMIT):
+                try:
+                    goto_with_retry(page, conversation.url, attempts=2, timeout_ms=90_000)
+                    page.wait_for_timeout(CLAUDE_RENDER_SETTLE_MILLISECONDS)
+                    _prepare_claude_conversation_for_rendering(page)
+                    messages = extract_claude_conversation_messages(page, conversation)
+                    captured_at = utc_now_iso()
+                    result = store.replace_conversation(conversation, messages, captured_at)
+                    store.save()
+                    discovered_messages += result.message_count
+                    added_or_changed += result.added_or_changed
+                    unchanged_messages += result.unchanged_messages
+                    unchanged_sessions += result.unchanged_sessions
                     state.append_event(
-                        f"Failed Claude session {index:,}/{len(conversations):,}: "
-                        f"{str(last_error).splitlines()[0][:300]}"
+                        f"Cached Claude session {index:,}/{len(conversations):,}: "
+                        f"{conversation.title} ({result.message_count:,} messages)."
                     )
-                processed_sessions = index
-                state.update(
-                    processed_tweets=processed_sessions,
-                    downloaded_posts=store.cached_conversations,
-                    downloaded_tweets=store.cached_messages,
-                    skipped_tweets=unchanged_sessions,
-                    discovered_images=discovered_messages,
-                    failed_tweets=failed_sessions,
+                    last_error = None
+                    break
+                except ClaudeNoCacheableMessagesError:
+                    state.append_event(
+                        f"Skipped Claude session {index:,}/{len(conversations):,}: "
+                        "no cacheable text messages."
+                    )
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt_index + 1 < CLAUDE_CONVERSATION_RETRY_LIMIT:
+                        state.append_event(
+                            f"Retrying Claude session {index:,}/{len(conversations):,} "
+                            f"after attempt {attempt_index + 1:,}: {str(exc).splitlines()[0][:300]}"
+                        )
+                        page.wait_for_timeout(CLAUDE_RENDER_SETTLE_MILLISECONDS)
+            if last_error is not None:
+                failed_sessions += 1
+                state.append_event(
+                    f"Failed Claude session {index:,}/{len(conversations):,}: "
+                    f"{str(last_error).splitlines()[0][:300]}"
                 )
+            processed_sessions = index
+            state.update(
+                processed_tweets=processed_sessions,
+                downloaded_posts=store.cached_conversations,
+                downloaded_tweets=store.cached_messages,
+                skipped_tweets=unchanged_sessions,
+                discovered_images=discovered_messages,
+                failed_tweets=failed_sessions,
+            )
 
-            stopped = stopped or should_stop()
+        stopped = stopped or should_stop()
 
     phase = "stopped" if stopped else "completed"
     message = (

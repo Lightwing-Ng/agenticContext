@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.12.0-codex.0
+# Code version: v2.14.1-codex.0
 
 from __future__ import annotations
 
@@ -370,6 +370,30 @@ return "windows:" & serializedWindowRows
             raise RuntimeError("Safari returned an invalid window inventory row.")
         inventory[int(window_id)] = int(tab_count)
     return inventory
+
+
+def _safari_process_identity() -> str:
+    """Identify the current Safari process across PID reuse and relaunches."""
+    raw_pid = run_applescript(
+        'tell application "System Events" to get unix id of application process "Safari"',
+        retry_transient=False,
+    ).strip()
+    if not raw_pid.isdigit() or int(raw_pid) <= 0:
+        raise RuntimeError("Safari process identity is unavailable.")
+    try:
+        process = subprocess.run(
+            ["ps", "-p", raw_pid, "-o", "lstart="],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Safari process identity is unavailable.") from exc
+    started_at = " ".join((process.stdout or "").split())
+    if process.returncode != 0 or not started_at:
+        raise RuntimeError("Safari process identity is unavailable.")
+    return f"{raw_pid}:{started_at}"
 
 
 def _safari_pid_is_alive(pid: int) -> bool:
@@ -1813,12 +1837,36 @@ return "closed"
 
     def _close_owned_window(self) -> RuntimeError | None:
         """Close the owned window without touching the user's front window."""
+        if self._context._context_lock_handle is not None:
+            lease = self._context._read_context_lease_state()
+            if isinstance(lease, dict) and lease.get("state") in {"owned", "idle"}:
+                if (
+                    lease.get("window_id") != self.window_id
+                    or lease.get("ownership_token") != self._context._ownership_token
+                    or lease.get("owner_pid") != os.getpid()
+                ):
+                    return RuntimeError("Safari task-window ownership changed during cleanup.")
+                recorded_process = lease.get("safari_process_identity")
+                if recorded_process is not None and recorded_process != _safari_process_identity():
+                    return RuntimeError("Safari task-window process identity changed.")
+            if isinstance(lease, dict) and lease.get("state") == "idle":
+                inventory = _safari_window_inventory()
+                if inventory.get(self.window_id, 0) != 0:
+                    return RuntimeError(
+                        "Safari's former task window now contains a tab. "
+                        "No window was closed."
+                    )
+                self._context._mark_context_window_idle(self.window_id)
+                return None
         last_error: RuntimeError | None = None
         for attempt_index in range(SAFARI_CLOSE_RETRY_LIMIT):
             try:
                 close_state = self._run_in_window(
                     f"""
 try
+    if (count of tabs of targetWindow) > 1 then
+        error "Safari task window contains an unexpected tab." number -1719
+    end if
     close targetWindow
 on error errorMessage number errorNumber
     error errorMessage number errorNumber
@@ -1828,6 +1876,9 @@ repeat with closePollIndex from 1 to 20
     delay 0.1
 end repeat
 if exists (first window whose id is {self.window_id}) then
+    if (count of tabs of (first window whose id is {self.window_id})) is 0 then
+        return "empty"
+    end if
     return "still-open"
 end if
 return "closed"
@@ -1837,6 +1888,10 @@ return "closed"
                     bind_tab=False,
                 ).strip()
                 if close_state == "closed":
+                    last_error = None
+                    break
+                if close_state == "empty":
+                    self._context._mark_context_window_idle(self.window_id)
                     last_error = None
                     break
                 last_error = RuntimeError(
@@ -1867,11 +1922,14 @@ return "closed"
         should_stop,
         headers: dict[str, str] | None = None,
         expected_bytes: int = 0,
+        max_bytes: int = 0,
     ) -> tuple[str, bool]:
         """Stream an authenticated media URL from Safari into a local file."""
         with self._context.download_lock, self._background_only_transfer():
             destination_path.parent.mkdir(parents=True, exist_ok=True)
             initial_bytes = destination_path.stat().st_size if destination_path.exists() else 0
+            if max_bytes > 0 and initial_bytes > max_bytes:
+                raise RuntimeError(f"Safari media exceeds the {max_bytes:,}-byte cache limit.")
             range_start = initial_bytes
             content_type = ""
             expected_total = 0
@@ -1891,6 +1949,7 @@ return "closed"
                     "rangeHeader": f"bytes={range_start}-{range_end}",
                     "headers": request_headers,
                     "referrer": referrer,
+                    "maxBytes": max(1, max_bytes - range_start) if max_bytes > 0 else 0,
                 }
                 self.evaluate(
                     """(request) => {
@@ -1902,7 +1961,38 @@ return "closed"
                         };
                         if (request.referrer) options.referrer = request.referrer;
                         fetch(request.sourceUrl, options).then(async (response) => {
-                            const bytes = new Uint8Array(await response.arrayBuffer());
+                            const maxResponseBytes = request.maxBytes;
+                            const declaredLength = Number(response.headers.get("content-length") || 0);
+                            if (maxResponseBytes && declaredLength > maxResponseBytes) {
+                                throw new Error("Safari media exceeds the configured cache limit.");
+                            }
+                            let bytes;
+                            if (response.body) {
+                                const reader = response.body.getReader();
+                                const chunks = [];
+                                let totalBytes = 0;
+                                while (true) {
+                                    const {done, value} = await reader.read();
+                                    if (done) break;
+                                    totalBytes += value.byteLength;
+                                    if (maxResponseBytes && totalBytes > maxResponseBytes) {
+                                        await reader.cancel();
+                                        throw new Error("Safari media exceeds the configured cache limit.");
+                                    }
+                                    chunks.push(value);
+                                }
+                                bytes = new Uint8Array(totalBytes);
+                                let offset = 0;
+                                for (const chunk of chunks) {
+                                    bytes.set(chunk, offset);
+                                    offset += chunk.byteLength;
+                                }
+                            } else {
+                                bytes = new Uint8Array(await response.arrayBuffer());
+                                if (maxResponseBytes && bytes.byteLength > maxResponseBytes) {
+                                    throw new Error("Safari media exceeds the configured cache limit.");
+                                }
+                            }
                             window.__cachelikesSafariDownload = {
                                 state: "ready",
                                 status: response.status,
@@ -1981,6 +2071,12 @@ return "closed"
                 elif chunk_bytes < SAFARI_DOWNLOAD_RANGE_BYTES:
                     # A short 206 without a readable Content-Range is the tail.
                     expected_total = range_start + chunk_bytes
+
+                if max_bytes > 0 and (
+                    range_start + chunk_bytes > max_bytes
+                    or (expected_total > 0 and expected_total > max_bytes)
+                ):
+                    raise RuntimeError(f"Safari media exceeds the {max_bytes:,}-byte cache limit.")
 
                 content_type = str(metadata.get("contentType") or content_type)
                 mode = "ab" if range_start > 0 else "wb"
@@ -2146,6 +2242,8 @@ class SafariContext:
         self._creation_baseline_inventory: dict[int, int] = {}
         self._durable_lease_started = False
         self._adopted_window_id: int | None = None
+        self._adopted_window_was_empty = False
+        self._retained_empty_window_id: int | None = None
 
     def _read_context_lease_state(self) -> dict[str, Any] | None:
         """Read the atomically replaced ownership record while its lock is held."""
@@ -2221,6 +2319,7 @@ class SafariContext:
         )
         self._durable_lease_started = False
         self._creation_baseline_inventory = {}
+        self._retained_empty_window_id = None
 
     @staticmethod
     def _validated_baseline_inventory(payload: object) -> dict[int, int]:
@@ -2295,7 +2394,7 @@ class SafariContext:
                 payload.get("version") != SAFARI_CONTEXT_LEASE_VERSION
                 and not legacy_owned_state
             )
-            or payload.get("state") not in {"creating", "owned"}
+            or payload.get("state") not in {"creating", "owned", "idle"}
             or not isinstance(payload.get("ownership_token"), str)
             or not re.fullmatch(r"[0-9a-f]{32}", payload["ownership_token"])
             or type(payload.get("owner_pid")) is not int
@@ -2335,7 +2434,7 @@ class SafariContext:
                     "No new task window was opened."
                 )
         current_inventory = _safari_window_inventory()
-        if payload["state"] == "owned":
+        if payload["state"] in {"owned", "idle"}:
             window_id = payload.get("window_id")
             if type(window_id) is not int or window_id <= 0:
                 if not current_inventory:
@@ -2350,6 +2449,24 @@ class SafariContext:
                     )
                     self._clear_context_lease_state()
                     return
+                recorded_process = payload.get("safari_process_identity")
+                if recorded_process is not None and recorded_process != _safari_process_identity():
+                    self._clear_context_lease_state()
+                    return
+                if payload["state"] == "idle":
+                    if recorded_process is None:
+                        self._clear_context_lease_state()
+                        return
+                    if current_inventory[window_id] != 0:
+                        raise RuntimeError(
+                            "Safari's former task window now contains a tab. "
+                            "Review that window before starting another Safari task."
+                        )
+                    self._creation_baseline_inventory = baseline
+                    self._durable_lease_started = True
+                    self._adopted_window_id = window_id
+                    self._adopted_window_was_empty = True
+                    return
                 foreign_owner = (
                     _safari_pid_is_alive(payload["owner_pid"])
                     and payload["owner_pid"] != os.getpid()
@@ -2359,6 +2476,12 @@ class SafariContext:
                         "Safari still has a task-owned window from a previous process. "
                         "Close that window before starting another Safari task."
                     )
+                if current_inventory[window_id] == 0:
+                    self._creation_baseline_inventory = baseline
+                    self._write_idle_context_lease_state(window_id)
+                    self._adopted_window_id = window_id
+                    self._adopted_window_was_empty = True
+                    return
                 logger.info(
                     "Closing leftover Safari task window %s after owner pid %s exited.",
                     window_id,
@@ -2373,7 +2496,10 @@ class SafariContext:
                     "Adopting leftover Safari task window %s because it could not be closed.",
                     window_id,
                 )
+                self._creation_baseline_inventory = baseline
+                self._durable_lease_started = True
                 self._adopted_window_id = window_id
+                self._adopted_window_was_empty = current_inventory[window_id] == 0
                 return
         else:
             if self._uncertain_creation_candidates(current_inventory, baseline):
@@ -2435,6 +2561,46 @@ class SafariContext:
                     self._creation_baseline_inventory
                 ),
                 "window_id": int(window_id),
+                "safari_process_identity": _safari_process_identity(),
+            }
+        )
+        self._durable_lease_started = True
+
+    def _mark_context_window_idle(self, window_id: int) -> None:
+        """Retain an owned shell after Safari has closed its last tab."""
+        if self._context_lock_handle is None:
+            raise RuntimeError("Safari task-window ownership is unavailable.")
+        payload = self._read_context_lease_state()
+        if (
+            not isinstance(payload, dict)
+            or payload.get("state") not in {"owned", "idle"}
+            or payload.get("window_id") != window_id
+            or payload.get("ownership_token") != self._ownership_token
+            or payload.get("owner_pid") != os.getpid()
+        ):
+            raise RuntimeError("Safari task-window ownership could not be verified.")
+        recorded_process = payload.get("safari_process_identity")
+        if recorded_process is not None and recorded_process != _safari_process_identity():
+            raise RuntimeError("Safari task-window process identity changed.")
+        if payload["state"] == "idle" and recorded_process is None:
+            raise RuntimeError("Safari task-window process identity is unavailable.")
+        if payload["state"] == "owned":
+            self._write_idle_context_lease_state(window_id)
+        self._retained_empty_window_id = window_id
+
+    def _write_idle_context_lease_state(self, window_id: int) -> None:
+        """Persist an owned, empty Safari window for the next context."""
+        self._write_context_lease_state(
+            {
+                "version": SAFARI_CONTEXT_LEASE_VERSION,
+                "state": "idle",
+                "ownership_token": self._ownership_token,
+                "owner_pid": os.getpid(),
+                "baseline_windows": self._serialized_window_inventory(
+                    self._creation_baseline_inventory
+                ),
+                "window_id": int(window_id),
+                "safari_process_identity": _safari_process_identity(),
             }
         )
         self._durable_lease_started = True
@@ -2502,12 +2668,14 @@ class SafariContext:
     def close(self) -> None:
         """Close every owned page, retaining the lease until cleanup succeeds."""
         with self._close_lock:
+            if self._context_lock_handle is None and not self.pages:
+                return
             had_tracked_pages = bool(self.pages)
             try:
                 self.housekeep()
-                if had_tracked_pages:
+                if had_tracked_pages and self._retained_empty_window_id is None:
                     self._clear_context_lease_state()
-                elif self._durable_lease_started:
+                elif not had_tracked_pages and self._durable_lease_started:
                     self._reconcile_context_lease_state()
             except Exception:
                 with SAFARI_PENDING_CONTEXT_LOCK:
@@ -2585,15 +2753,28 @@ class SafariContext:
         else:
             adopted_window_id = self._adopted_window_id
             self._adopted_window_id = None
+            adopted_window_was_empty = self._adopted_window_was_empty
+            self._adopted_window_was_empty = False
             if adopted_window_id is not None:
-                try:
-                    current_inventory = _safari_window_inventory()
-                except RuntimeError:
-                    current_inventory = {}
+                current_inventory = _safari_window_inventory()
                 if adopted_window_id not in current_inventory:
+                    self._clear_context_lease_state()
                     adopted_window_id = None
             if adopted_window_id is not None:
-                page = SafariPage(self, adopted_window_id, tab_index=1)
+                if adopted_window_was_empty and current_inventory[adopted_window_id] != 0:
+                    raise RuntimeError(
+                        "Safari's former task window now contains a tab. "
+                        "No task page was opened."
+                    )
+                if current_inventory[adopted_window_id] == 0:
+                    tab_index = self._create_tab(
+                        adopted_window_id,
+                        url,
+                        expect_empty_window=True,
+                    )
+                    page = SafariPage(self, adopted_window_id, tab_index=tab_index)
+                else:
+                    page = SafariPage(self, adopted_window_id, tab_index=1)
             else:
                 with safari_window_creation_guard():
                     self._begin_context_window_creation()
@@ -2712,8 +2893,36 @@ end tell
                     SAFARI_PENDING_CONTEXTS[id(self)] = self
             raise
 
-    def _create_tab(self, window_id: int, url: str) -> int:
+    def _create_tab(
+        self,
+        window_id: int,
+        url: str,
+        *,
+        expect_empty_window: bool = False,
+    ) -> int:
         """Add one tab to the already owned Safari window without activating it."""
+        empty_window_guard = ""
+        single_tab_guard = ""
+        tab_index_result = "index of newTab"
+        if expect_empty_window:
+            empty_window_guard = (
+                'if (count of tabs of targetWindow) is not 0 then '
+                'error "Safari idle task window now contains a tab." number -1719'
+            )
+            single_tab_guard = """
+        repeat with settleIndex from 1 to 10
+            if (count of tabs of targetWindow) is 1 then exit repeat
+            delay 0.1
+        end repeat
+        if (count of tabs of targetWindow) is not 1 then
+            error "Safari idle task window gained an extra tab." number -1719
+        end if
+        set settledTabIndex to index of current tab of targetWindow
+        if settledTabIndex is not 1 then
+            error "Safari idle task window returned an unexpected tab index." number -1719
+        end if
+""".strip()
+            tab_index_result = "settledTabIndex"
         source = f"""
 tell application "Safari"
     set targetWindow to first window whose id is {int(window_id)}
@@ -2724,11 +2933,13 @@ tell application "Safari"
     set previousWindowWasMiniaturized to false
     {SAFARI_CAPTURE_FRONT_WINDOW_APPLESCRIPT}
     try
+        {empty_window_guard}
         set newTab to make new tab at end of tabs of targetWindow
         set URL of newTab to "{escape_applescript_text(url)}"
         set current tab of targetWindow to newTab
+        {single_tab_guard}
         {SAFARI_BACKGROUND_WINDOW_APPLESCRIPT}
-        return index of newTab
+        return {tab_index_result}
     on error errorMessage number errorNumber
         if newTab is not missing value then
             try
@@ -2747,7 +2958,10 @@ end tell
             ).strip()
         if not raw_tab_index.isdigit():
             raise RuntimeError("Safari did not return a usable tab identifier.")
-        return int(raw_tab_index)
+        tab_index = int(raw_tab_index)
+        if expect_empty_window and tab_index != 1:
+            raise RuntimeError("Safari idle task window returned an unexpected tab index.")
+        return tab_index
 
     def _forget_page(self, page: SafariPage) -> None:
         with contextlib.suppress(ValueError):

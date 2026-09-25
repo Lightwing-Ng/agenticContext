@@ -1,17 +1,21 @@
 """Download media from tweet URLs with yt-dlp."""
 
-# Code version: v1.9.0-codex.1
+# Code version: v1.10.0-codex.0
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .browser_sessions import browser_descriptors
 from .cache_catalog import LocalTweetCacheIndex
@@ -66,6 +70,10 @@ MAX_FILE_SIZE_SKIP_MARKERS = (
 )
 DOWNLOAD_RETRY_ATTEMPTS = 3
 DOWNLOAD_RETRY_DELAY_SECONDS = 1.5
+YT_DLP_TWEET_TIMEOUT_SECONDS = 1_800.0
+YT_DLP_STOP_POLL_SECONDS = 0.25
+YT_DLP_TERMINATE_GRACE_SECONDS = 5.0
+YT_DLP_VERSION_TIMEOUT_SECONDS = 10.0
 logger = logging.getLogger(__name__)
 
 
@@ -79,6 +87,18 @@ class DownloadResult:
     downloaded_video_count: int = 0
     skipped: bool = False
     skipped_oversized_media_count: int = 0
+    stopped: bool = False
+    timed_out: bool = False
+
+
+class YtDlpInterrupted(RuntimeError):
+    """Carry completed yt-dlp output when this task stops or times out."""
+
+    def __init__(self, reason: str, stdout: str = "", stderr: str = "") -> None:
+        super().__init__("X media download stopped." if reason == "stopped" else "X media download timed out.")
+        self.reason = reason
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 IMAGE_SUFFIXES = {
@@ -234,7 +254,13 @@ def is_transient_retryable_output(command_output: str) -> bool:
 def resolve_yt_dlp_command() -> list[str]:
     """Return the preferred yt-dlp invocation for the current environment."""
     module_command = [sys.executable, "-m", "yt_dlp"]
-    probe = subprocess.run(module_command + ["--version"], capture_output=True, text=True, check=False)
+    probe = subprocess.run(
+        module_command + ["--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=YT_DLP_VERSION_TIMEOUT_SECONDS,
+    )
     if probe.returncode == 0:
         return module_command
 
@@ -256,6 +282,8 @@ def ensure_yt_dlp_available() -> list[str]:
     """Raise a clear error when yt-dlp is unavailable."""
     try:
         return resolve_yt_dlp_command()
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("yt-dlp version check timed out after 10 seconds.") from exc
     except RuntimeError as exc:
         if is_windows_host():
             raise RuntimeError(
@@ -288,21 +316,112 @@ def build_cookies_from_browser_arg(config: CrawlConfig) -> str:
     return f"{descriptor.browser_id}:{profile_path}"
 
 
-def run_yt_dlp_with_retries(command: list[str], tweet_url: str) -> subprocess.CompletedProcess[str]:
-    """Run yt-dlp with a small retry budget for transient network failures."""
+def _terminate_yt_dlp_process(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Stop only this task's subprocess group and collect any completed output."""
+
+    if os.name == "posix":
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+    elif process.poll() is None:
+        try:
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        except (AttributeError, OSError):
+            process.terminate()
+    try:
+        return process.communicate(timeout=YT_DLP_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        if os.name == "posix":
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+        else:
+            with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                    capture_output=True,
+                    check=False,
+                    timeout=YT_DLP_TERMINATE_GRACE_SECONDS,
+                )
+            with contextlib.suppress(OSError):
+                process.kill()
+        return process.communicate(timeout=YT_DLP_TERMINATE_GRACE_SECONDS)
+
+
+def _run_yt_dlp_attempt(
+    command: list[str],
+    deadline: float,
+    should_stop: Callable[[], bool],
+) -> subprocess.CompletedProcess[str]:
+    """Poll a task-owned yt-dlp process so Stop and the deadline can interrupt it."""
+
+    if should_stop():
+        raise YtDlpInterrupted("stopped")
+    if time.monotonic() >= deadline:
+        raise YtDlpInterrupted("timed_out")
+    kwargs: dict[str, object] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "posix":
+        kwargs["start_new_session"] = True
+    elif os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    process = subprocess.Popen(command, **kwargs)
+    while True:
+        reason = "stopped" if should_stop() else "timed_out" if time.monotonic() >= deadline else ""
+        if reason:
+            stdout, stderr = _terminate_yt_dlp_process(process)
+            raise YtDlpInterrupted(reason, stdout, stderr)
+        try:
+            stdout, stderr = process.communicate(
+                timeout=min(YT_DLP_STOP_POLL_SECONDS, max(0.001, deadline - time.monotonic()))
+            )
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def run_yt_dlp_with_retries(
+    command: list[str],
+    tweet_url: str,
+    *,
+    should_stop: Callable[[], bool] | None = None,
+    timeout_seconds: float = YT_DLP_TWEET_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    """Run yt-dlp with a bounded total deadline and cooperative Stop."""
+
     attempt = 0
     last_result: subprocess.CompletedProcess[str] | None = None
+    previous_stdout: list[str] = []
+    previous_stderr: list[str] = []
+    stop_requested = should_stop or (lambda: False)
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
 
     while attempt < DOWNLOAD_RETRY_ATTEMPTS:
         attempt += 1
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        try:
+            result = _run_yt_dlp_attempt(command, deadline, stop_requested)
+        except YtDlpInterrupted as exc:
+            raise YtDlpInterrupted(
+                exc.reason,
+                "\n".join([*previous_stdout, exc.stdout]),
+                "\n".join([*previous_stderr, exc.stderr]),
+            ) from exc
         last_result = result
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         combined = "\n".join(part for part in (stdout.strip(), stderr.strip()) if part).strip()
 
         if result.returncode == 0 or not is_transient_retryable_output(combined) or attempt >= DOWNLOAD_RETRY_ATTEMPTS:
-            return result
+            return subprocess.CompletedProcess(
+                command,
+                result.returncode,
+                "\n".join([*previous_stdout, stdout]),
+                stderr,
+            )
+
+        previous_stdout.append(stdout)
+        previous_stderr.append(stderr)
 
         logger.warning(
             "Retrying yt-dlp after transient failure.",
@@ -313,7 +432,14 @@ def run_yt_dlp_with_retries(command: list[str], tweet_url: str) -> subprocess.Co
                 "command_output_excerpt": combined[:2_000],
             },
         )
-        time.sleep(DOWNLOAD_RETRY_DELAY_SECONDS)
+        retry_deadline = min(deadline, time.monotonic() + DOWNLOAD_RETRY_DELAY_SECONDS)
+        while True:
+            if stop_requested():
+                raise YtDlpInterrupted("stopped", "\n".join(previous_stdout), "\n".join(previous_stderr))
+            remaining_delay = retry_deadline - time.monotonic()
+            if remaining_delay <= 0:
+                break
+            time.sleep(min(YT_DLP_STOP_POLL_SECONDS, remaining_delay))
 
     if last_result is None:
         raise RuntimeError(f"yt-dlp did not execute for {tweet_url}")
@@ -327,6 +453,8 @@ def download_tweet_media(
     state: TaskState,
     remaining_media_items: int | None = None,
     cache_index: LocalTweetCacheIndex | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    timeout_seconds: float = YT_DLP_TWEET_TIMEOUT_SECONDS,
 ) -> DownloadResult:
     """Download media for one tweet URL."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -352,6 +480,8 @@ def download_tweet_media(
         return DownloadResult(skipped=True)
 
     try:
+        if should_stop is not None and should_stop():
+            return DownloadResult(stopped=True)
         yt_dlp_command = ensure_yt_dlp_available()
 
         command = yt_dlp_command + [
@@ -383,7 +513,46 @@ def download_tweet_media(
                 "yt_dlp_command": yt_dlp_command,
             },
         )
-        result = run_yt_dlp_with_retries(command, tweet_url)
+        try:
+            result = run_yt_dlp_with_retries(
+                command,
+                tweet_url,
+                should_stop=should_stop,
+                timeout_seconds=timeout_seconds,
+            )
+        except YtDlpInterrupted as exc:
+            output_root = output_dir.resolve(strict=False)
+            completed_paths = [
+                path
+                for path in parse_downloaded_paths(exc.stdout)
+                if path.is_file() and path.resolve(strict=False).is_relative_to(output_root)
+            ]
+            oversized_paths = [
+                path for path in completed_paths
+                if path.stat().st_size > config.max_media_file_size_bytes
+            ]
+            completed_paths = [path for path in completed_paths if path not in oversized_paths]
+            metadata_rows = parse_download_metadata(exc.stdout)
+            for completed_path in completed_paths:
+                local_cache.register(
+                    tweet_url,
+                    completed_path.parent,
+                    metadata_for_downloaded_path(completed_path, metadata_rows),
+                )
+            image_count, video_count = count_downloaded_media_types(completed_paths)
+            state.append_event(
+                f"X media download {exc.reason} for {tweet_url}; "
+                f"retained {len(completed_paths):,} completed file(s)."
+            )
+            return DownloadResult(
+                downloaded_media_count=len(completed_paths),
+                downloaded_post_count=int(bool(completed_paths)),
+                downloaded_image_count=image_count,
+                downloaded_video_count=video_count,
+                skipped_oversized_media_count=len(oversized_paths),
+                stopped=exc.reason == "stopped",
+                timed_out=exc.reason == "timed_out",
+            )
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         combined = "\n".join(part for part in (stdout.strip(), stderr.strip()) if part).strip()

@@ -1,6 +1,6 @@
 """Collect liked tweet URLs from the logged-in X account."""
 
-# Code version: v1.4.2-codex.1
+# Code version: v1.5.1-codex.0
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from .browser.x_session import X_READY_SELECTORS, detect_account_handle, extract_account_handle_from_urlish
@@ -26,6 +27,7 @@ from .browser_sessions import (
 from .config import CrawlConfig
 from .safari_automation import SafariContext
 from .state import TaskState
+from .x_text_history import XTextPost
 
 try:
     from playwright.sync_api import Error as PlaywrightError
@@ -589,18 +591,48 @@ def collect_liked_tweet_urls_via_safari(
     likes_url: str,
     config: CrawlConfig,
     state: TaskState,
+    *,
+    on_text_posts: Callable[[list[XTextPost]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[str]:
-    """Collect liked tweet URLs inside the signed-in Safari session."""
+    """Collect liked URLs and visible post text inside signed-in Safari."""
     rounds = max(1, int(config.max_scroll_rounds))
     pause_seconds = max(0.2, float(config.scroll_pause_seconds))
+    stale_limit = max(1, int(config.stale_round_limit))
+    stop_requested = should_stop or (lambda: False)
     collect_links_js = """
 () => {
-    const hrefs = Array.from(document.querySelectorAll('a[href*="/status/"], a[href*="/i/status/"]'))
-        .map((element) => element.href)
+    const primaryColumn = document.querySelector('main [data-testid="primaryColumn"]');
+    if (!primaryColumn) return JSON.stringify([]);
+    const hrefs = Array.from(primaryColumn.querySelectorAll('article[data-testid="tweet"]'))
+        .filter((article) => !article.parentElement?.closest('article[data-testid="tweet"]'))
+        .map((article) => article.querySelector('time')?.closest('a[href*="/status/"]')?.href)
         .filter(Boolean);
-    const merged = Array.from(new Set([...(window.__cachelikesSeenLinks || []), ...hrefs]));
-    window.__cachelikesSeenLinks = merged;
-    return JSON.stringify(merged);
+    return JSON.stringify(hrefs);
+}
+""".strip()
+    collect_posts_js = """
+() => {
+    const primaryColumn = document.querySelector('main [data-testid="primaryColumn"]');
+    if (!primaryColumn) return JSON.stringify([]);
+    return JSON.stringify(Array.from(primaryColumn.querySelectorAll('article[data-testid="tweet"]'))
+    .filter((article) => !article.parentElement?.closest('article[data-testid="tweet"]'))
+    .map((article) => {
+        const time = article.querySelector('time');
+        const statusLink = time?.closest('a[href*="/status/"]');
+        const textNode = article.querySelector('[data-testid="tweetText"]');
+        if (!statusLink || !textNode) return null;
+        const profileHref = article.querySelector('[data-testid="User-Name"] a[href]')
+            ?.getAttribute('href') || '';
+        const author = profileHref.match(/^\\/([A-Za-z0-9_]{1,15})(?:\\/|$)/);
+        return {
+            url: statusLink.href,
+            content_text: String(textNode.innerText || textNode.textContent || '').trim(),
+            author_handle: author ? author[1] : '',
+            created_at: time.getAttribute('datetime') || '',
+        };
+    })
+    .filter((post) => post && post.content_text));
 }
 """.strip()
     scroll_js = """
@@ -612,41 +644,100 @@ def collect_liked_tweet_urls_via_safari(
     scrollables.forEach((element) => {
         element.scrollBy(0, Math.max(element.clientHeight, 4000));
     });
-    return String(window.__cachelikesSeenLinks ? window.__cachelikesSeenLinks.length : 0);
+    return 'scrolled';
 }
 """.strip()
     state.append_event(f"Launching a background Safari window for X likes collection at {likes_url}.")
+    seen_urls: set[str] = set()
+    seen_posts: dict[str, XTextPost] = {}
+    pending_posts: dict[str, XTextPost] = {}
+    stale_rounds = 0
+
+    def flush_text_posts() -> None:
+        if on_text_posts is None or not pending_posts:
+            return
+        on_text_posts(list(pending_posts.values()))
+        pending_posts.clear()
+
+    if stop_requested():
+        return []
     with SafariContext(likes_url, lock_blocking=False) as context:
         page = context.primary_page
         page.wait_for_timeout(8_000)
-        raw_links_json = "[]"
-        for _round_index in range(rounds):
+        current_url = urlparse(str(page.url or ""))
+        expected_url = urlparse(likes_url)
+        if (
+            current_url.hostname not in {"x.com", "www.x.com"}
+            or current_url.path.rstrip("/").lower() != expected_url.path.rstrip("/").lower()
+        ):
+            raise RuntimeError("Safari did not open the authenticated X likes timeline.")
+        for round_index in range(rounds):
+            if stop_requested():
+                break
+            before_count = len(seen_urls)
             links_json = page.evaluate(collect_links_js)
             if isinstance(links_json, str):
-                raw_links_json = links_json
+                with contextlib.suppress(json.JSONDecodeError):
+                    payload = json.loads(links_json)
+                    if isinstance(payload, list):
+                        seen_urls.update(
+                            normalized
+                            for normalized in (normalize_status_url(str(link)) for link in payload)
+                            if normalized
+                        )
+            changed_text = False
+            if on_text_posts is not None:
+                posts_json = page.evaluate(collect_posts_js)
+                if isinstance(posts_json, str):
+                    with contextlib.suppress(json.JSONDecodeError):
+                        posts = json.loads(posts_json)
+                        if isinstance(posts, list):
+                            for item in posts:
+                                if not isinstance(item, dict):
+                                    continue
+                                url = normalize_status_url(str(item.get("url") or ""))
+                                content_text = str(item.get("content_text") or "").strip()
+                                if not url or not content_text:
+                                    continue
+                                post = XTextPost(
+                                    url=url,
+                                    content_text=content_text,
+                                    author_handle=str(item.get("author_handle") or ""),
+                                    created_at=str(item.get("created_at") or ""),
+                                )
+                                if seen_posts.get(url) != post:
+                                    seen_posts[url] = post
+                                    pending_posts[url] = post
+                                    changed_text = True
+                if len(pending_posts) >= 50:
+                    flush_text_posts()
+            state.update(discovered_tweets=len(seen_urls), phase="collecting")
+            state.append_event(
+                f"Safari likes round {round_index + 1}: found {len(seen_urls):,} unique post URLs."
+            )
+            stale_rounds = 0 if len(seen_urls) > before_count or changed_text else stale_rounds + 1
+            if stale_rounds >= stale_limit or stop_requested() or round_index + 1 >= rounds:
+                break
             page.evaluate(scroll_js)
             page.wait_for_timeout(int(pause_seconds * 1_000))
+        flush_text_posts()
         final_url = page.url
 
-    discovered_links = []
-    with contextlib.suppress(json.JSONDecodeError):
-        payload = json.loads(raw_links_json.strip() or "[]")
-        if isinstance(payload, list):
-            discovered_links = [str(item) for item in payload]
-
-    seen_urls = sorted(
-        normalized_url
-        for normalized_url in (normalize_status_url(link) for link in discovered_links)
-        if normalized_url
-    )
+    ordered_urls = sorted(seen_urls)
     state.update(account_name=account_handle, discovered_tweets=len(seen_urls), phase="collecting")
     state.append_event(
         f"Safari collected {len(seen_urls)} unique liked tweet URLs from {final_url.strip() or likes_url}."
     )
-    return seen_urls
+    return ordered_urls
 
 
-def collect_liked_tweet_urls(config: CrawlConfig, state: TaskState) -> tuple[str, list[str]]:
+def collect_liked_tweet_urls(
+    config: CrawlConfig,
+    state: TaskState,
+    *,
+    on_text_posts: Callable[[list[XTextPost]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> tuple[str, list[str]]:
     """Open X likes and return the account handle plus all discovered tweet URLs."""
     descriptor = selected_x_browser_descriptor(config)
     logger.info(
@@ -674,8 +765,15 @@ def collect_liked_tweet_urls(config: CrawlConfig, state: TaskState) -> tuple[str
                 "Could not detect the current X account handle from Safari. Open the signed-in X home page in Safari and try again."
             )
         likes_url = build_x_likes_url(account_handle)
-        ordered_urls = collect_liked_tweet_urls_via_safari(account_handle, likes_url, config, state)
-        if not ordered_urls:
+        ordered_urls = collect_liked_tweet_urls_via_safari(
+            account_handle,
+            likes_url,
+            config,
+            state,
+            on_text_posts=on_text_posts,
+            should_stop=should_stop,
+        )
+        if not ordered_urls and not (should_stop and should_stop()):
             raise RuntimeError("No liked tweet URLs were found in Safari. The likes timeline may be empty or blocked.")
         return account_handle, ordered_urls
 

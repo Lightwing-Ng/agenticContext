@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.6-codex.0
+Code version: v1.8.7-codex.0
 """
 
 from __future__ import annotations
@@ -189,7 +189,7 @@ def test_web_pages_and_status_apis_are_available(client) -> None:
             ("/cache/grok", b"Grok library overview"),
             ("/cache/chatgpt", b"ChatGPT cache overview"),
             ("/cache/gemini", b"Gemini history cache overview"),
-            ("/cache/claude", b"Claude history cache overview"),
+            ("/cache/claude", b"Claude cache overview"),
         ("/settings", b"Configuration center"),
     ):
         response = client.get(path)

@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.6.1-codex.0
+# Code version: v1.7.0-codex.0
 
 from __future__ import annotations
 
@@ -90,19 +90,19 @@ _CACHE_SOURCE_VIEWS = (
         template_name="claude.html",
         icon_filename="images/claude.svg",
         document_title=f"{PRODUCT_NAME} Claude",
-        overview_title="Claude history cache overview",
+        overview_title="Claude cache overview",
         browser_panel_label="Authorized browser",
         browser_empty_message="No signed-in Claude account detected",
         browser_config_field="claude_browser",
         require_browser_ready=True,
         start_form_id="start_form_claude",
         start_button_label="Start",
-        start_wait_title="Starting Claude history sync",
-        start_wait_copy="Preparing the selected browser session and caching Claude sessions to Parquet.",
-        stop_wait_title="Stopping Claude history sync",
-        stop_wait_copy="Requesting a safe stop after the current Claude session.",
+        start_wait_title="Starting Claude cache",
+        start_wait_copy="Preparing the selected browser session and caching Claude content.",
+        stop_wait_title="Stopping Claude cache",
+        stop_wait_copy="Requesting a safe stop after the current Claude work item.",
         progress_strategy="queue",
-        progress_aria_label="Claude history sync progress",
+        progress_aria_label="Claude cache progress",
         group_key="llm",
         group_label="Chats",
         show_content_mode=True,

@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.13.7-codex.0
+Code version: v1.14.1-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ import contextlib
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -2946,7 +2948,6 @@ def test_safari_likes_collection_uses_window_id_targeting() -> None:
         '["https://twitter.com/demo_user/status/123?ref=copy"]',
         "1",
         '["https://twitter.com/demo_user/status/123?ref=copy","https://x.com/demo_user/status/456"]',
-        "2",
     ]
     page.url = "https://x.com/demo_user/likes"
     context = MagicMock()
@@ -2968,13 +2969,163 @@ def test_safari_likes_collection_uses_window_id_targeting() -> None:
         lock_blocking=False,
     )
     assert page.wait_for_timeout.call_args_list[0].args == (8_000,)
-    assert page.evaluate.call_count == 4
+    assert page.evaluate.call_count == 3
     context.__exit__.assert_called_once()
     assert urls == [
         "https://x.com/demo_user/status/123",
         "https://x.com/demo_user/status/456",
     ]
     assert state.snapshot()["discovered_tweets"] == 2
+
+
+def test_safari_likes_collects_text_only_posts_and_stops_after_stale_round() -> None:
+    page = MagicMock()
+    page.evaluate.side_effect = [
+        json.dumps(["https://x.com/poster/status/123"]),
+        json.dumps([{
+            "url": "https://x.com/poster/status/123",
+            "content_text": "Text only",
+            "author_handle": "poster",
+            "created_at": "2026-09-25T10:00:00Z",
+        }]),
+        "scrolled",
+        json.dumps(["https://x.com/poster/status/123"]),
+        json.dumps([{
+            "url": "https://x.com/poster/status/123",
+            "content_text": "Text only",
+            "author_handle": "poster",
+            "created_at": "2026-09-25T10:00:00Z",
+        }]),
+    ]
+    page.url = "https://x.com/liker/likes"
+    context = MagicMock()
+    context.primary_page = page
+    context.__enter__.return_value = context
+    captured = []
+    state = TaskState("test")
+    config = CrawlConfig(x_browser="safari", max_scroll_rounds=2_000, stale_round_limit=1)
+
+    with patch("app.core.scraper.SafariContext", return_value=context):
+        urls = collect_liked_tweet_urls_via_safari(
+            "liker",
+            "https://x.com/liker/likes",
+            config,
+            state,
+            on_text_posts=captured.extend,
+        )
+
+    assert urls == ["https://x.com/poster/status/123"]
+    assert len(captured) == 1
+    assert captured[0].content_text == "Text only"
+    assert captured[0].author_handle == "poster"
+    assert page.evaluate.call_count == 5
+    assert state.snapshot()["discovered_tweets"] == 1
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is needed to execute the Safari selectors")
+def test_safari_likes_selectors_only_capture_primary_timeline_and_full_text() -> None:
+    page = MagicMock()
+    page.evaluate.side_effect = ["[]", "[]"]
+    page.url = "https://x.com/liker/likes"
+    context = MagicMock()
+    context.primary_page = page
+    context.__enter__.return_value = context
+
+    with patch("app.core.scraper.SafariContext", return_value=context):
+        collect_liked_tweet_urls_via_safari(
+            "liker",
+            "https://x.com/liker/likes",
+            CrawlConfig(x_browser="safari", max_scroll_rounds=1),
+            TaskState("test"),
+            on_text_posts=lambda _posts: None,
+        )
+
+    selectors = [call.args[0] for call in page.evaluate.call_args_list]
+    assert len(selectors) == 2
+    script = """
+const fs = require('node:fs');
+const [linksSource, postsSource] = JSON.parse(fs.readFileSync(0, 'utf8'));
+const text = 'x'.repeat(20001);
+const time = {
+    closest: () => ({href: 'https://x.com/poster/status/123'}),
+    getAttribute: () => '2026-09-25T10:00:00Z',
+};
+const article = {
+    querySelector: (selector) => {
+        if (selector === 'time') return time;
+        if (selector === '[data-testid="tweetText"]') return {innerText: text};
+        if (selector === '[data-testid="User-Name"] a[href]') {
+            return {getAttribute: () => '/poster'};
+        }
+        return null;
+    },
+};
+const nestedArticle = {
+    parentElement: {closest: () => article},
+    querySelector: () => { throw Error('quoted post was incorrectly collected'); },
+};
+const primaryColumn = {
+    querySelectorAll: (selector) => {
+        if (selector !== 'article[data-testid="tweet"]') throw Error('wrong article selector');
+        return [article, nestedArticle];
+    },
+};
+const document = {
+    querySelector: (selector) => selector === 'main [data-testid="primaryColumn"]'
+        ? primaryColumn : null,
+    querySelectorAll: () => { throw Error('document-wide article scan'); },
+};
+const run = (source) => JSON.parse(new Function('document', `return (${source})();`)(document));
+console.log(JSON.stringify({links: run(linksSource), posts: run(postsSource)}));
+"""
+    result = subprocess.run(
+        [shutil.which("node"), "-e", script],
+        input=json.dumps(selectors),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    extracted = json.loads(result.stdout)
+    assert extracted["links"] == ["https://x.com/poster/status/123"]
+    assert len(extracted["posts"]) == 1
+    assert extracted["posts"][0]["content_text"] == "x" * 20_001
+
+
+def test_safari_likes_stop_flushes_text_without_more_scrolling() -> None:
+    page = MagicMock()
+    page.evaluate.side_effect = [
+        json.dumps(["https://x.com/poster/status/123"]),
+        json.dumps([{
+            "url": "https://x.com/poster/status/123",
+            "content_text": "Keep this partial run",
+        }]),
+    ]
+    page.url = "https://x.com/liker/likes"
+    context = MagicMock()
+    context.primary_page = page
+    context.__enter__.return_value = context
+    captured = []
+    calls = 0
+
+    def stop_after_first_round() -> bool:
+        nonlocal calls
+        calls += 1
+        return calls >= 3
+
+    with patch("app.core.scraper.SafariContext", return_value=context):
+        urls = collect_liked_tweet_urls_via_safari(
+            "liker",
+            "https://x.com/liker/likes",
+            CrawlConfig(x_browser="safari", max_scroll_rounds=2_000),
+            TaskState("test"),
+            on_text_posts=captured.extend,
+            should_stop=stop_after_first_round,
+        )
+
+    assert urls == ["https://x.com/poster/status/123"]
+    assert len(captured) == 1
+    assert captured[0].content_text == "Keep this partial run"
+    assert page.evaluate.call_count == 2
 
 
 def test_safari_collection_prefers_navigation_handle_before_page_source(macos_host) -> None:

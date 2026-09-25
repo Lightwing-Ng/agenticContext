@@ -1,6 +1,6 @@
 """Grok media sync helpers."""
 
-# Code version: v1.19.0-codex.0
+# Code version: v1.19.4-codex.0
 
 from __future__ import annotations
 
@@ -420,6 +420,26 @@ def build_partial_relative_path(candidate: GrokMediaCandidate) -> str:
     asset_name = sanitize_filename_part(candidate.asset_name)
     filename = f"{candidate.asset_id}_{asset_name}_{identity_digest}.part"
     return f"{TEMP_DOWNLOAD_DIRNAME}/{filename}"
+
+
+def _require_safe_grok_media_path(target_dir: Path, path: Path) -> None:
+    """Refuse symlinked or escaping paths before reading or writing Grok media."""
+
+    root = target_dir.expanduser().absolute()
+    destination = path.expanduser().absolute()
+    if ".." in root.parts or ".." in destination.parts:
+        raise RuntimeError("Grok media path escapes its cache directory.")
+    try:
+        destination.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("Grok media path escapes its cache directory.") from exc
+    for component in (destination, *destination.parents):
+        if component.is_symlink():
+            if component == Path("/var") and component.resolve() == Path("/private/var"):
+                continue  # macOS maps its system temporary directory through this fixed alias.
+            raise RuntimeError("Grok media path contains a symbolic link.")
+    if not destination.resolve(strict=False).is_relative_to(root.resolve(strict=False)):
+        raise RuntimeError("Grok media path escapes its cache directory.")
 
 
 def parse_catalog_timestamp(value: str) -> datetime | None:
@@ -847,15 +867,36 @@ def extract_file_id_from_href(href: str) -> str:
     return ""
 
 
+def _safe_grok_asset_url(value: str) -> str:
+    """Accept media only from Grok's exact HTTPS asset origin."""
+
+    candidate = str(value or "").split("#", 1)[0].strip()
+    if not candidate or any(ord(char) < 32 for char in candidate):
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+        port = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or (parsed.hostname or "").lower() != "assets.grok.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+        or not parsed.path.startswith("/")
+    ):
+        return ""
+    return candidate
+
+
 def candidate_from_url(url: str, media_tag: str) -> GrokMediaCandidate | None:
     """Convert a page asset URL into a stable candidate record."""
-    cleaned_url = (url or "").split("#", 1)[0].strip()
+    cleaned_url = _safe_grok_asset_url(url)
     if not cleaned_url:
         return None
 
     parsed = urlsplit(cleaned_url)
-    if "assets.grok.com" not in parsed.netloc.lower():
-        return None
 
     path_parts = [part for part in parsed.path.split("/") if part]
     if len(path_parts) < 2:
@@ -917,6 +958,7 @@ class GrokMediaCatalog:
     def build(cls, target_dir: Path) -> GrokMediaCatalog:
         """Load the persisted Grok catalog or rebuild it from local files."""
         catalog = cls(target_dir)
+        _require_safe_grok_media_path(target_dir, catalog.catalog_path)
         target_dir.mkdir(parents=True, exist_ok=True)
         if catalog._load():
             catalog.flush()
@@ -991,6 +1033,7 @@ class GrokMediaCatalog:
                 return None
 
             absolute_path = self.target_dir / relative_path
+            _require_safe_grok_media_path(self.target_dir, absolute_path)
             media_kind = self.media_kind_by_relative_path.get(relative_path, "image")
             if validate_media_file(absolute_path, media_kind):
                 return relative_path
@@ -1067,6 +1110,7 @@ class GrokMediaCatalog:
         with self._lock:
             rows = read_parquet_rows(self.catalog_path)
             legacy_path = self.target_dir / LEGACY_GROK_CATALOG_FILENAME
+            _require_safe_grok_media_path(self.target_dir, legacy_path)
             migrated_legacy = False
             if rows is None and legacy_path.exists():
                 try:
@@ -1086,6 +1130,8 @@ class GrokMediaCatalog:
             loaded_any = False
             for row in rows:
                 relative_path = str(row.get("relative_path") or "").strip()
+                if relative_path:
+                    _require_safe_grok_media_path(self.target_dir, self.target_dir / relative_path)
                 identity = str(row.get("identity") or "").strip()
                 content_sha256 = str(row.get("content_sha256") or "").strip()
                 media_kind = str(row.get("media_kind") or "").strip() or "image"
@@ -1150,6 +1196,7 @@ class GrokMediaCatalog:
         """Recreate the Grok catalog from existing local files."""
         with self._lock:
             for file_path in sorted(self.target_dir.iterdir(), key=lambda item: item.name):
+                _require_safe_grok_media_path(self.target_dir, file_path)
                 if not file_path.is_file() or file_path.name.startswith("."):
                     continue
 
@@ -1214,6 +1261,7 @@ class GrokMediaCatalog:
     def _entry_points_to_valid_file_unlocked(self, entry: GrokCatalogEntry) -> bool:
         """Return whether one catalog entry still points at healthy local media."""
         absolute_path = self.target_dir / entry.relative_path
+        _require_safe_grok_media_path(self.target_dir, absolute_path)
         return validate_media_file(
             absolute_path,
             media_kind=entry.media_kind,
@@ -1288,6 +1336,8 @@ class GrokMediaCatalog:
         """Persist the catalog when it changed while the lock is held."""
         if not self.dirty:
             return
+        _require_safe_grok_media_path(self.target_dir, self.catalog_path)
+        _require_safe_grok_media_path(self.target_dir, self.target_dir / LEGACY_GROK_CATALOG_FILENAME)
 
         rows = [
             {
@@ -1315,6 +1365,7 @@ class GrokMediaCatalog:
             return
 
         absolute_path = self.target_dir / relative_path
+        _require_safe_grok_media_path(self.target_dir, absolute_path)
         with contextlib.suppress(FileNotFoundError):
             absolute_path.unlink()
 
@@ -1510,6 +1561,7 @@ class GrokDownloadManifest:
     def build(cls, target_dir: Path, catalog: GrokMediaCatalog) -> GrokDownloadManifest:
         """Load and reconcile the persisted download manifest."""
         manifest = cls(target_dir)
+        _require_safe_grok_media_path(target_dir, manifest.manifest_path)
         target_dir.mkdir(parents=True, exist_ok=True)
         manifest._load()
         manifest.reconcile_with_catalog(catalog)
@@ -1535,6 +1587,7 @@ class GrokDownloadManifest:
 
                 if entry.status == "completed" and entry.relative_path:
                     completed_path = self.target_dir / entry.relative_path
+                    _require_safe_grok_media_path(self.target_dir, completed_path)
                     if validate_media_file(completed_path, entry.media_kind, expected_bytes=entry.content_bytes):
                         content_sha256 = entry.content_sha256 or compute_file_sha256(completed_path)
                         content_bytes = entry.content_bytes or completed_path.stat().st_size
@@ -1621,6 +1674,7 @@ class GrokDownloadManifest:
 
                 if entry.status == "completed" and entry.relative_path:
                     completed_path = self.target_dir / entry.relative_path
+                    _require_safe_grok_media_path(self.target_dir, completed_path)
                     if validate_media_file(completed_path, entry.media_kind, expected_bytes=entry.content_bytes):
                         continue
                     entry.status = "pending"
@@ -1651,11 +1705,14 @@ class GrokDownloadManifest:
                     created_at=preferred_seen_at(candidate),
                     updated_at=utc_now(),
                 )
-            entry.temp_relative_path = entry.temp_relative_path or relative_path
+            selected_relative_path = entry.temp_relative_path or relative_path
+            destination = self.target_dir / selected_relative_path
+            _require_safe_grok_media_path(self.target_dir, destination)
+            entry.temp_relative_path = selected_relative_path
             entry.updated_at = utc_now()
             self.entries_by_identity[candidate.identity] = entry
             self.dirty = True
-            relative_path = entry.temp_relative_path
+            relative_path = selected_relative_path
         self.flush()
         return self.target_dir / relative_path
 
@@ -1764,6 +1821,8 @@ class GrokDownloadManifest:
         with self._lock:
             if not self.dirty:
                 return
+            _require_safe_grok_media_path(self.target_dir, self.manifest_path)
+            _require_safe_grok_media_path(self.target_dir, self.target_dir / LEGACY_GROK_DOWNLOAD_MANIFEST_FILENAME)
             rows = [
                 {
                     "schema_version": GROK_DOWNLOAD_MANIFEST_SCHEMA_VERSION,
@@ -1797,6 +1856,7 @@ class GrokDownloadManifest:
         """Load Parquet state and import a valid legacy JSON manifest when present."""
         rows = read_parquet_rows(self.manifest_path)
         legacy_path = self.target_dir / LEGACY_GROK_DOWNLOAD_MANIFEST_FILENAME
+        _require_safe_grok_media_path(self.target_dir, legacy_path)
         migrated_legacy = False
         if rows is None and legacy_path.exists():
             try:
@@ -1811,6 +1871,13 @@ class GrokDownloadManifest:
                 migrated_legacy = True
 
         for row in rows or []:
+            for field in ("relative_path", "temp_relative_path"):
+                relative_path = str(row.get(field) or "").strip()
+                if relative_path:
+                    _require_safe_grok_media_path(
+                        self.target_dir,
+                        self.target_dir / relative_path,
+                    )
             identity = str(row.get("identity") or "").strip()
             if not identity:
                 continue
@@ -1849,6 +1916,7 @@ class GrokWorkQueue:
     def build(cls, target_dir: Path, catalog: GrokMediaCatalog) -> GrokWorkQueue:
         """Load and reconcile the persisted Grok work queue."""
         queue = cls(target_dir)
+        _require_safe_grok_media_path(target_dir, queue.queue_path)
         target_dir.mkdir(parents=True, exist_ok=True)
         queue._load()
         queue.reconcile(catalog)
@@ -2133,6 +2201,8 @@ class GrokWorkQueue:
         with self._lock:
             if not self.dirty:
                 return
+            _require_safe_grok_media_path(self.target_dir, self.queue_path)
+            _require_safe_grok_media_path(self.target_dir, self.target_dir / LEGACY_GROK_WORK_QUEUE_FILENAME)
 
             rows = [
                 {
@@ -2162,6 +2232,7 @@ class GrokWorkQueue:
         """Load Parquet state and import a valid legacy JSON work queue when present."""
         rows = read_parquet_rows(self.queue_path)
         legacy_path = self.target_dir / LEGACY_GROK_WORK_QUEUE_FILENAME
+        _require_safe_grok_media_path(self.target_dir, legacy_path)
         migrated_legacy = False
         if rows is None and legacy_path.exists():
             try:
@@ -2301,6 +2372,7 @@ def backfill_grok_file_timestamps(
 
     for relative_path, timestamp_value in sorted(timestamp_by_relative_path.items()):
         file_path = target_dir / relative_path
+        _require_safe_grok_media_path(target_dir, file_path)
         if not file_path.exists():
             continue
         if not timestamp_value:
@@ -2641,6 +2713,7 @@ def commit_downloaded_candidate(
         else:
             destination_filename = build_destination_filename(candidate, content_type)
             destination_path = resolve_destination_path(target_dir, destination_filename)
+            _require_safe_grok_media_path(target_dir, destination_path)
             destination_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(temp_path, destination_path)
             relative_path = destination_path.relative_to(target_dir).as_posix()
@@ -2657,7 +2730,9 @@ def commit_downloaded_candidate(
             catalog._flush_unlocked()
             downloaded = True
 
-    apply_preserved_file_timestamp(target_dir / relative_path, seen_at)
+    committed_path = target_dir / relative_path
+    _require_safe_grok_media_path(target_dir, committed_path)
+    apply_preserved_file_timestamp(committed_path, seen_at)
     manifest.mark_completed(candidate, relative_path, content_sha256, content_bytes)
     if deduped:
         with contextlib.suppress(FileNotFoundError):
@@ -2852,6 +2927,8 @@ def download_candidate(
         return False, False, False
     if not candidate.source_url:
         raise RuntimeError(f"No canonical download URL is available for {candidate.asset_id}.")
+    if not _safe_grok_asset_url(candidate.source_url):
+        raise RuntimeError(f"Grok asset {candidate.asset_id} has an unsafe download URL.")
     if candidate.media_kind == "image" and is_preview_asset_url(candidate.source_url):
         raise RuntimeError(
             f"Refusing to cache preview-quality image for {candidate.asset_id}; "
@@ -2859,8 +2936,10 @@ def download_candidate(
         )
     existing_entry = catalog.get_entry(candidate.identity)
     if existing_entry is not None:
+        existing_path = target_dir / existing_entry.relative_path
+        _require_safe_grok_media_path(target_dir, existing_path)
         apply_preserved_file_timestamp(
-            target_dir / existing_entry.relative_path,
+            existing_path,
             preferred_seen_at(candidate, fallback=existing_entry.first_seen_at),
         )
         manifest.mark_completed(
@@ -3100,6 +3179,45 @@ def run_download_worker(
         return GrokDownloadOutcome(candidate=candidate, failed=True, error=str(exc))
 
 
+def _stream_grok_candidate_via_safari(
+    page,
+    candidate: GrokMediaCandidate,
+    temp_path: Path,
+    should_stop,
+    max_file_size_bytes: int,
+) -> tuple[str, bool]:
+    """Bound one authenticated Safari transfer before cataloging its bytes."""
+
+    if (
+        temp_path.exists()
+        and candidate.expected_bytes > 0
+        and temp_path.stat().st_size >= candidate.expected_bytes
+    ):
+        if validate_media_file(
+            temp_path,
+            candidate.media_kind,
+            expected_bytes=candidate.expected_bytes,
+        ):
+            return "", True
+        temp_path.unlink()
+    try:
+        return page.download_to_path(
+            candidate.source_url,
+            temp_path,
+            should_stop,
+            expected_bytes=candidate.expected_bytes,
+            max_bytes=max_file_size_bytes,
+        )
+    except SafariAuthenticationRequiredError as exc:
+        raise GrokAuthenticationRequiredError(exc.status) from exc
+    except RuntimeError as exc:
+        if should_stop():
+            raise DownloadStoppedError(str(exc)) from exc
+        if "Safari media exceeds" in str(exc) and "cache limit" in str(exc):
+            raise DownloadSizeLimitError(str(exc)) from exc
+        raise
+
+
 def sync_grok_media(
     state: TaskState,
     config: CrawlConfig | None = None,
@@ -3191,31 +3309,13 @@ def sync_grok_media(
                     temp_path: Path,
                     stop_requested,
                 ) -> tuple[str, bool]:
-                    if (
-                        temp_path.exists()
-                        and candidate.expected_bytes > 0
-                        and temp_path.stat().st_size >= candidate.expected_bytes
-                    ):
-                        if validate_media_file(
-                            temp_path,
-                            candidate.media_kind,
-                            expected_bytes=candidate.expected_bytes,
-                        ):
-                            return "", True
-                        temp_path.unlink()
-                    try:
-                        return page.download_to_path(
-                            candidate.source_url,
-                            temp_path,
-                            stop_requested,
-                            expected_bytes=candidate.expected_bytes,
-                        )
-                    except SafariAuthenticationRequiredError as exc:
-                        raise GrokAuthenticationRequiredError(exc.status) from exc
-                    except RuntimeError as exc:
-                        if stop_requested():
-                            raise DownloadStoppedError(str(exc)) from exc
-                        raise
+                    return _stream_grok_candidate_via_safari(
+                        page,
+                        candidate,
+                        temp_path,
+                        stop_requested,
+                        runtime_config.max_media_file_size_bytes,
+                    )
 
                 browser_streamer = stream_from_safari
             details_pages = [context.new_page() for _ in range(GROK_RESOLUTION_PAGE_POOL_SIZE)]

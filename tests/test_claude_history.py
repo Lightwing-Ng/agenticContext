@@ -1,9 +1,10 @@
 """Focused tests for browser-rendered Claude history caching.
 
-Code version: v1.0.0-codex.1
+Code version: v1.1.0-codex.0
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -14,7 +15,10 @@ from app.core.claude_history import (
     build_claude_initial_snapshot,
     claude_conversation_id,
     extract_claude_conversation_messages,
+    sync_claude_history,
 )
+from app.core.config import CrawlConfig
+from app.core.state import TaskState
 
 
 class _RenderedClaudePage:
@@ -110,3 +114,73 @@ def test_claude_store_rejects_sessions_without_rendered_messages(tmp_path: Path)
 
     with pytest.raises(ClaudeNoCacheableMessagesError):
         store.replace_conversation(conversation, [], "2026-09-03T01:01:00Z")
+
+
+def test_claude_safari_sync_caches_rendered_text_in_owned_context(
+    tmp_path: Path, macos_host
+) -> None:
+    class _Page:
+        def __init__(self) -> None:
+            self.visited: list[str] = []
+
+        def goto(self, url: str, **_kwargs) -> None:
+            self.visited.append(url)
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            pass
+
+        def title(self) -> str:
+            return "Claude"
+
+        def evaluate(self, script: str, *_args):
+            if "document.body" in script:
+                return "New chat"
+            if "composerSelector" in script:
+                return {"count": 1}
+            if "a[href], [role=\"link\"]" in script:
+                return [{"href": "https://claude.ai/chat/chat-1", "title": "Rendered chat"}]
+            if "scrollHeight" in script:
+                return {"moved": False, "scrollTop": 0, "scrollHeight": 0}
+            if "user-message" in script:
+                return _RenderedClaudePage().evaluate(script)
+            return None
+
+    page = _Page()
+
+    class _Context:
+        primary_page = page
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            self.closed = True
+
+    context = _Context()
+    state = TaskState("test")
+
+    with patch("app.core.claude_history.SafariContext", return_value=context) as safari, patch(
+        "app.core.claude_history.sync_playwright_or_error",
+        side_effect=AssertionError("Safari sync must not launch Playwright"),
+    ):
+        result = sync_claude_history(
+            state,
+            CrawlConfig(claude_browser="safari"),
+            lambda: False,
+            tmp_path,
+        )
+
+    safari.assert_called_once_with("https://claude.ai/new", lock_blocking=False)
+    assert context.closed is True
+    assert page.visited == [
+        "https://claude.ai/new",
+        "https://claude.ai/chats",
+        "https://claude.ai/chat/chat-1",
+    ]
+    assert result["sessions"] == 1
+    assert result["messages"] == 2
+    assert result["failed"] == 0
+    assert ClaudeHistoryStore(tmp_path / "llm" / "claude" / "history.parquet").cached_messages == 2

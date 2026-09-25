@@ -1,6 +1,6 @@
 """Read-only local media browser tests.
 
-Code version: v1.11.1-codex.1
+Code version: v1.12.0-codex.0
 """
 
 from __future__ import annotations
@@ -96,6 +96,50 @@ def test_scans_x_image_and_reads_info_json(tmp_path: Path) -> None:
     assert item.creator == "Uploader Name"
     assert item.source_url == "https://x.com/uploader/status/123"
     assert item.content_bytes == len(b"jpeg-bytes")
+
+
+def test_scans_only_catalogued_claude_images(tmp_path: Path) -> None:
+    root = tmp_path / "local_store"
+    media_root = root / "media" / "claude"
+    valid = media_root / "img_abc.png"
+    _write_media(valid, b"claude-image")
+    _write_media(media_root / "uncatalogued.png")
+    (media_root / "catalog.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "assets": [
+                    {
+                        "asset_id": "abc",
+                        "relative_path": valid.name,
+                        "media_kind": "image",
+                        "conversation_url": "https://claude.ai/chat/session-1",
+                        "conversation_title": "Example session",
+                        "alt_text": "Example image",
+                        "cached_at": "2026-09-25T00:00:00Z",
+                        "content_bytes": len(b"claude-image"),
+                    },
+                    {
+                        "asset_id": "unsafe",
+                        "relative_path": "../outside.png",
+                        "media_kind": "image",
+                        "conversation_url": "https://claude.ai/chat/session-1",
+                        "content_bytes": 1,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    catalog = LocalMediaCatalog(root)
+    items = catalog.snapshot(force_refresh=True)
+
+    assert len(items) == 1
+    assert items[0].source == "claude"
+    assert items[0].title == "Example image"
+    assert items[0].source_url == "https://claude.ai/chat/session-1"
+    assert catalog.query(source="claude", force_refresh=True).total_count == 1
 
 
 def test_scans_x_metadata_once_per_media_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

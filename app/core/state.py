@@ -1,6 +1,6 @@
 """Shared task state for the web UI and worker."""
 
-# Code version: v1.4.0-codex.1
+# Code version: v1.5.0-codex.0
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from .cache_catalog import summarize_local_store_root
 from .config import LOCAL_STORE_ROOT, X_LOCAL_STORE_DIRNAME
+from .x_text_history import XTextHistoryStore, x_text_history_path
 
 
 DEFAULT_OUTPUT_DIR_TEMPLATE = str(LOCAL_STORE_ROOT / X_LOCAL_STORE_DIRNAME)
@@ -24,27 +25,36 @@ def utc_now() -> str:
 def build_initial_snapshot(version: str) -> TaskSnapshot:
     """Hydrate the initial X idle snapshot from the fixed local cache directory."""
     snapshot = TaskSnapshot(version=version)
+    try:
+        snapshot.cached_text_posts = XTextHistoryStore(
+            x_text_history_path(LOCAL_STORE_ROOT)
+        ).cached_posts
+    except RuntimeError as exc:
+        snapshot.last_error = str(exc)
     summaries = summarize_local_store_root(LOCAL_STORE_ROOT)
     x_summary = next((summary for summary in summaries if summary.account_name == X_LOCAL_STORE_DIRNAME), None)
-    if x_summary is None:
+    downloaded_posts = x_summary.downloaded_posts if x_summary is not None else 0
+    downloaded_images = x_summary.downloaded_images if x_summary is not None else 0
+    downloaded_videos = x_summary.downloaded_videos if x_summary is not None else 0
+
+    if (
+        downloaded_posts == 0
+        and downloaded_images == 0
+        and downloaded_videos == 0
+        and snapshot.cached_text_posts == 0
+    ):
         return snapshot
 
-    downloaded_posts = x_summary.downloaded_posts
-    downloaded_images = x_summary.downloaded_images
-    downloaded_videos = x_summary.downloaded_videos
-
-    if downloaded_posts == 0 and downloaded_images == 0 and downloaded_videos == 0:
-        return snapshot
-
-    snapshot.account_name = x_summary.account_name
-    snapshot.output_dir = str(x_summary.output_dir)
+    snapshot.account_name = X_LOCAL_STORE_DIRNAME
+    snapshot.output_dir = str(LOCAL_STORE_ROOT / X_LOCAL_STORE_DIRNAME)
     snapshot.downloaded_posts = downloaded_posts
     snapshot.downloaded_images = downloaded_images
     snapshot.downloaded_videos = downloaded_videos
     snapshot.downloaded_tweets = downloaded_images + downloaded_videos
     snapshot.message = (
-        f"Ready. Found existing cache: {downloaded_posts} posts, "
-        f"{downloaded_images} images, {downloaded_videos} videos."
+        f"Ready. Found existing cache: {downloaded_posts:,} media posts, "
+        f"{snapshot.cached_text_posts:,} text posts, "
+        f"{downloaded_images:,} images, {downloaded_videos:,} videos."
     )
     return snapshot
 
@@ -70,6 +80,7 @@ class TaskSnapshot:
     downloaded_posts: int = 0
     downloaded_images: int = 0
     downloaded_videos: int = 0
+    cached_text_posts: int = 0
     skipped_tweets: int = 0
     failed_tweets: int = 0
     task_failures: int = 0

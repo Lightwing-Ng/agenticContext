@@ -1,9 +1,9 @@
 # ChatGPT Agent Cloudflare lessons
 
-Documentation version: `v1.2.1-codex.0`
+Documentation version: `v1.2.3-codex.0`
 Observed: `17 Sep 2026` on this macOS host
 Windows evidence: debug Chrome over CDP, same day
-Rechecked: `24 Sep 2026` on this macOS host
+Rechecked: `25 Sep 2026` on this macOS host
 
 This is the durable lesson record. [Operations](OPERATIONS.md) and
 [Computer Use Agent](COMPUTER_USE_AGENT.md) own the current contract. Do not treat an empty
@@ -47,14 +47,17 @@ endpoint; do not reuse an old port.
    clones also failed Project Send. On 24 Sep 2026 a fresh daily-profile clone passed the
    ChatGPT account check and Agent model/source discovery. A further read-only test on the same
    day reached the configured Project URL, but its challenge persisted for 20 seconds and the
-   composer never appeared. Project Send is currently blocked on this host.
+   composer never appeared. On 25 Sep 2026, another isolated daily-profile clone reached the
+   configured Project but still had no usable composer after 30 seconds. Its URL and title did
+   not identify a verification challenge; the cause of that result is unconfirmed. Project
+   Send is currently blocked on this host.
 
 ## Current contract
 
 - macOS ChatGPT Edge Agent uses the same daily Edge sign-in as Cache. Probes, Recheck, source
   discovery, Project and history reads, and tasks clone that profile and disable CDP fallback.
   The login action opens the daily Edge. It does not require a second project-profile sign-in.
-  A Project challenge fails closed before a task submits a prompt.
+  A Project challenge or missing composer fails closed before a task submits a prompt.
 - Other macOS Edge Agent providers and Edge Jury retain their existing project debug browser
   paths. Jury never reads the daily Edge profile.
 - Attach is refused while `/json/list` shows a challenge, so Playwright never enables Runtime on
@@ -66,6 +69,8 @@ endpoint; do not reuse an old port.
 ## Operator recovery
 
 For ChatGPT, choose `Open Edge to sign in` only if the daily Edge session is signed out, then
-Recheck. If a challenge appears, complete it by hand in the browser; the application does not
-solve it automatically. Do not restart the user-owned service on port `8666` merely to inspect
-this note.
+Recheck. If daily Edge itself shows a challenge, complete it there by hand. A challenge found
+inside a temporary Agent clone cannot be completed after the probe closes that clone; opening
+daily Edge does not prove that the next clone or Project will pass. Recheck is manual so the app
+does not repeatedly reopen a challenge. The application does not solve challenges automatically.
+Do not restart the user-owned service on port `8666` merely to inspect this note.

@@ -1,4 +1,4 @@
-/* Code version: v2.150.8-codex.0 */
+/* Code version: v2.150.9-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -1510,6 +1510,10 @@ h2 {
     scrollbar-gutter: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--theme-muted-translucent, var(--muted)) transparent;
+}
+
+.cache-source-switcher-dropdown {
+    background: var(--frosted-glass-opaque-background);
 }
 
 /* Native thin scrollbars override WebKit track paint in Chromium. */

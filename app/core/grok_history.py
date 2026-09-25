@@ -1,6 +1,6 @@
 """Grok text history collection and local persistence.
 
-Code version: v1.4.0-codex.1
+Code version: v1.5.1-codex.0
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +36,7 @@ from .resource_persistence import (
     read_parquet_rows,
     write_parquet_rows_atomic,
 )
-from .safari_automation import SafariPage
+from .safari_automation import SafariContext, SafariPage
 from .state import TaskSnapshot, TaskState
 
 
@@ -299,7 +300,11 @@ def _grok_api_json(
     for attempt in range(1, GROK_API_RETRY_LIMIT + 1):
         request_client = getattr(getattr(page, "context", None), "request", None)
         request_from_page = getattr(request_client, "request_from_page", None)
-        if isinstance(page, SafariPage) and callable(request_from_page):
+        if isinstance(page, SafariPage):
+            if not callable(request_from_page):
+                raise RuntimeError(
+                    "Safari Grok API request bridge is unavailable; cached history was preserved."
+                )
             request_headers = {"Accept": "application/json"}
             if serialized_body is not None:
                 request_headers["Content-Type"] = "application/json"
@@ -626,13 +631,13 @@ def sync_grok_history(
     *,
     local_store_root: str,
 ) -> dict[str, Any]:
-    """Cache all text conversations available to the authenticated Edge profile."""
+    """Cache text conversations from the selected authenticated browser."""
 
     descriptor = browser_descriptors(config).get(config.grok_browser)
     if descriptor is None:
         raise RuntimeError(f"Unsupported Grok browser: {config.grok_browser}")
-    if descriptor.engine != "chromium":
-        raise RuntimeError("Grok text history currently requires a Chromium browser such as Edge")
+    if descriptor.engine not in {"chromium", "safari"}:
+        raise RuntimeError(f"Grok text history does not support {descriptor.label}.")
 
     captured_at = utc_now_iso()
     store = GrokHistoryStore(grok_history_path(local_store_root))
@@ -645,9 +650,9 @@ def sync_grok_history(
         downloaded_tweets=store.cached_messages,
         discovered_images=store.cached_messages,
         downloaded_images=0,
-        message="Opening authenticated Grok history in Edge...",
+        message=f"Opening authenticated Grok history in {descriptor.label}...",
     )
-    state.append_event("Opening authenticated Grok history in the selected Edge profile.")
+    state.append_event(f"Opening authenticated Grok history in {descriptor.label}.")
 
     processed_sessions = 0
     discovered_messages = 0
@@ -656,65 +661,74 @@ def sync_grok_history(
     failed_sessions = 0
     stopped = False
 
-    with sync_playwright_or_error() as playwright:
-        with launch_chromium_context(
-            playwright,
-            descriptor,
-            headless=True,
-            clone_profile_first=True,
-            background_window=True,
-        ) as context:
+    with ExitStack() as browser_stack:
+        if descriptor.engine == "safari":
+            context = browser_stack.enter_context(
+                SafariContext(GROK_HOME_URL, lock_blocking=False)
+            )
+            page = context.primary_page
+        else:
+            playwright = browser_stack.enter_context(sync_playwright_or_error())
+            context = browser_stack.enter_context(
+                launch_chromium_context(
+                    playwright,
+                    descriptor,
+                    headless=True,
+                    clone_profile_first=True,
+                    background_window=True,
+                )
+            )
             page = context.pages[0] if context.pages else context.new_page()
             goto_with_retry(page, GROK_HOME_URL, attempts=3)
-            page.wait_for_timeout(500)
-            conversations = list_grok_conversations(page)
-            state.update(
-                phase="downloading",
-                discovered_tweets=len(conversations),
-                queued_tweets=len(conversations),
-                discovery_complete=True,
-                message=f"Found {len(conversations):,} Grok sessions; loading text messages...",
-            )
-            state.append_event(f"Found {len(conversations):,} Grok sessions across all API pages.")
+        page.wait_for_timeout(500)
+        conversations = list_grok_conversations(page)
+        state.update(
+            phase="downloading",
+            discovered_tweets=len(conversations),
+            queued_tweets=len(conversations),
+            discovery_complete=True,
+            message=f"Found {len(conversations):,} Grok sessions; loading text messages...",
+        )
+        state.append_event(f"Found {len(conversations):,} Grok sessions across all API pages.")
 
-            for index, conversation in enumerate(conversations):
-                if should_stop():
+        for index, conversation in enumerate(conversations):
+            if should_stop():
+                stopped = True
+                break
+            scan_wait = config.cache_scan_wait("grok", "text")
+            if index and scan_wait > 0:
+                if wait_for_cache_scan(scan_wait, should_stop):
                     stopped = True
                     break
-                scan_wait = config.cache_scan_wait("grok", "text")
-                if index and scan_wait > 0:
-                    if wait_for_cache_scan(scan_wait, should_stop):
-                        stopped = True
-                        break
-                try:
-                    nodes = _response_nodes(page, conversation.conversation_id)
-                    response_ids = [
-                        str(node.get("responseId") or node.get("id") or "").strip()
-                        for node in nodes
-                    ]
-                    responses = _load_responses(page, conversation.conversation_id, response_ids)
-                    messages = _normalized_messages(conversation, nodes, responses, captured_at)
-                    result = store.replace_conversation(conversation, messages, captured_at)
-                    discovered_messages += result.message_count
-                    added_or_changed += result.added_or_changed
-                    unchanged_messages += result.unchanged
-                except Exception as exc:
-                    failed_sessions += 1
-                    state.append_event(
-                        f"Failed Grok session {conversation.conversation_id}: {str(exc)[:240]}"
-                    )
-                processed_sessions += 1
-                state.update(
-                    processed_tweets=processed_sessions,
-                    downloaded_posts=store.cached_conversations,
-                    downloaded_tweets=store.cached_messages,
-                    discovered_images=discovered_messages,
-                    failed_tweets=failed_sessions,
-                    message=(
-                        f"Loaded {processed_sessions:,}/{len(conversations):,} sessions; "
-                        f"{store.cached_messages:,} messages cached."
-                    ),
+            try:
+                nodes = _response_nodes(page, conversation.conversation_id)
+                response_ids = [
+                    str(node.get("responseId") or node.get("id") or "").strip()
+                    for node in nodes
+                ]
+                responses = _load_responses(page, conversation.conversation_id, response_ids)
+                messages = _normalized_messages(conversation, nodes, responses, captured_at)
+                result = store.replace_conversation(conversation, messages, captured_at)
+                discovered_messages += result.message_count
+                added_or_changed += result.added_or_changed
+                unchanged_messages += result.unchanged
+            except Exception as exc:
+                failed_sessions += 1
+                state.append_event(
+                    f"Failed Grok session {conversation.conversation_id}: {str(exc)[:240]}"
                 )
+            processed_sessions += 1
+            state.update(
+                processed_tweets=processed_sessions,
+                downloaded_posts=store.cached_conversations,
+                downloaded_tweets=store.cached_messages,
+                discovered_images=discovered_messages,
+                failed_tweets=failed_sessions,
+                message=(
+                    f"Loaded {processed_sessions:,}/{len(conversations):,} sessions; "
+                    f"{store.cached_messages:,} messages cached."
+                ),
+            )
 
     if stopped:
         phase = "stopped"

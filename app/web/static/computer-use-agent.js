@@ -1,4 +1,4 @@
-/* Code version: v3.69.0-codex.0 */
+/* Code version: v3.69.1-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -1094,6 +1094,7 @@
     let tunnelProjectNotice = "";
     let tunnelProjectPathTouched = false;
     let tunnelProjectListSignature = "";
+    let tunnelProjectPendingSelectedIds = null;
     let tunnelConnectionRevision = 0;
     let tunnelConnectionBusy = false;
     let tunnelKickoffPrefixValue = "";
@@ -1233,7 +1234,9 @@
         if (elements.tunnelProjectPath) elements.tunnelProjectPath.disabled = tunnelConnectionBusy;
         if (elements.tunnelProjectChoose) elements.tunnelProjectChoose.disabled = controlsBusy;
         const current = tunnelProjectContext.current;
-        const selectedIds = new Set(tunnelProjectContext.selectedProjectIds);
+        const selectedIds = new Set(
+            tunnelProjectPendingSelectedIds || tunnelProjectContext.selectedProjectIds,
+        );
         const focusedProjectId = document.activeElement instanceof Element
             ? document.activeElement.dataset.agentTunnelProjectCheckbox
                 || document.activeElement.dataset.agentTunnelProjectRemove || ""
@@ -1246,70 +1249,68 @@
         }
         if (elements.tunnelProjectList) {
             elements.tunnelProjectList.setAttribute("aria-busy", String(controlsBusy));
-            const listSignature = JSON.stringify({
-                current: current?.id || "",
-                selected: tunnelProjectContext.selectedProjectIds,
-                projects: tunnelProjectContext.projects,
-            });
-            const rows = tunnelProjectContext.projects.map((project, index) => {
-                const row = document.createElement("div");
-                row.className = "selection-list-row agent-tunnel-project-option";
-                row.dataset.agentTunnelProjectRow = project.id;
-
-                const inputId = `agent_tunnel_project_${index + 1}`;
-                const identity = document.createElement("label");
-                identity.className = "selection-list-identity agent-tunnel-project-identity";
-                identity.htmlFor = inputId;
-                const checkbox = document.createElement("input");
-                checkbox.id = inputId;
-                checkbox.className = "selection-list-input";
-                checkbox.type = "checkbox";
-                checkbox.value = project.id;
-                checkbox.dataset.agentTunnelProjectCheckbox = project.id;
-                checkbox.checked = selectedIds.has(project.id);
-                if (checkbox.checked && !project.writable) {
-                    checkbox.setAttribute(
-                        "aria-describedby", `agent_tunnel_project_access_${index + 1}`,
-                    );
-                }
-                checkbox.disabled = controlsBusy || (!checkbox.checked
-                    && (!project.available || !project.registered));
-                const mark = document.createElement("span");
-                mark.className = "selection-list-mark";
-                mark.setAttribute("aria-hidden", "true");
-                const name = document.createElement("span");
-                name.className = "selection-list-name";
-                name.textContent = project.id;
-                identity.append(checkbox, mark, name);
-
-                row.append(identity);
-                const trailing = document.createElement("span");
-                trailing.className = "agent-tunnel-project-trailing";
-                if (checkbox.checked && !project.writable) {
-                    const access = document.createElement("span");
-                    access.className = "agent-tunnel-project-access";
-                    access.id = `agent_tunnel_project_access_${index + 1}`;
-                    access.dataset.agentTunnelProjectAccess = "";
-                    access.textContent = "Read only";
-                    trailing.append(access);
-                }
-                if (project.registered) {
-                    const remove = document.createElement("button");
-                    remove.type = "button";
-                    remove.className = "circular-icon-button agent-tunnel-project-remove";
-                    remove.dataset.agentTunnelProjectRemove = project.id;
-                    remove.setAttribute("aria-label", `Remove ${project.id} from Tunnel projects`);
-                    remove.title = `Remove ${project.id} from Tunnel projects`;
-                    const icon = document.createElement("span");
-                    icon.className = "agent-tunnel-project-remove-icon";
-                    icon.setAttribute("aria-hidden", "true");
-                    remove.append(icon);
-                    trailing.append(remove);
-                }
-                row.append(trailing);
-                return row;
-            });
+            const listSignature = JSON.stringify(
+                tunnelProjectContext.projects.map((project) => [project.id, project.registered]),
+            );
             if (listSignature !== tunnelProjectListSignature) {
+                const rows = tunnelProjectContext.projects.map((project, index) => {
+                    const row = document.createElement("div");
+                    row.className = "selection-list-row agent-tunnel-project-option";
+                    row.dataset.agentTunnelProjectRow = project.id;
+
+                    const inputId = `agent_tunnel_project_${index + 1}`;
+                    const identity = document.createElement("label");
+                    identity.className = "selection-list-identity agent-tunnel-project-identity";
+                    identity.htmlFor = inputId;
+                    const checkbox = document.createElement("input");
+                    checkbox.id = inputId;
+                    checkbox.className = "selection-list-input";
+                    checkbox.type = "checkbox";
+                    checkbox.value = project.id;
+                    checkbox.dataset.agentTunnelProjectCheckbox = project.id;
+                    checkbox.checked = selectedIds.has(project.id);
+                    if (checkbox.checked && !project.writable) {
+                        checkbox.setAttribute(
+                            "aria-describedby", `agent_tunnel_project_access_${index + 1}`,
+                        );
+                    }
+                    checkbox.disabled = tunnelConnectionBusy || (!checkbox.checked
+                        && (!project.available || !project.registered));
+                    const mark = document.createElement("span");
+                    mark.className = "selection-list-mark";
+                    mark.setAttribute("aria-hidden", "true");
+                    const name = document.createElement("span");
+                    name.className = "selection-list-name";
+                    name.textContent = project.id;
+                    identity.append(checkbox, mark, name);
+
+                    row.append(identity);
+                    const trailing = document.createElement("span");
+                    trailing.className = "agent-tunnel-project-trailing";
+                    if (checkbox.checked && !project.writable) {
+                        const access = document.createElement("span");
+                        access.className = "agent-tunnel-project-access";
+                        access.id = `agent_tunnel_project_access_${index + 1}`;
+                        access.dataset.agentTunnelProjectAccess = "";
+                        access.textContent = "Read only";
+                        trailing.append(access);
+                    }
+                    if (project.registered) {
+                        const remove = document.createElement("button");
+                        remove.type = "button";
+                        remove.className = "circular-icon-button agent-tunnel-project-remove";
+                        remove.dataset.agentTunnelProjectRemove = project.id;
+                        remove.setAttribute("aria-label", `Remove ${project.id} from Tunnel projects`);
+                        remove.title = `Remove ${project.id} from Tunnel projects`;
+                        const icon = document.createElement("span");
+                        icon.className = "agent-tunnel-project-remove-icon";
+                        icon.setAttribute("aria-hidden", "true");
+                        remove.append(icon);
+                        trailing.append(remove);
+                    }
+                    row.append(trailing);
+                    return row;
+                });
                 elements.tunnelProjectList.replaceChildren(...rows);
                 tunnelProjectListSignature = listSignature;
                 if (focusedProjectId) {
@@ -1319,13 +1320,31 @@
                 }
             }
             elements.tunnelProjectList.querySelectorAll(
-                "[data-agent-tunnel-project-checkbox]",
-            ).forEach((checkbox) => {
-                const project = tunnelProjectContext.projects.find(
-                    (item) => item.id === checkbox.dataset.agentTunnelProjectCheckbox,
-                );
-                checkbox.disabled = controlsBusy || (!checkbox.checked
-                    && (!project?.available || !project?.registered));
+                "[data-agent-tunnel-project-row]",
+            ).forEach((row, index) => {
+                const project = tunnelProjectContext.projects[index];
+                const checkbox = row.querySelector("[data-agent-tunnel-project-checkbox]");
+                const trailing = row.querySelector(".agent-tunnel-project-trailing");
+                if (!project || !(checkbox instanceof HTMLInputElement) || !trailing) return;
+                checkbox.checked = selectedIds.has(project.id);
+                checkbox.disabled = tunnelConnectionBusy || (!checkbox.checked
+                    && (!project.available || !project.registered));
+                const accessId = `agent_tunnel_project_access_${index + 1}`;
+                let access = trailing.querySelector("[data-agent-tunnel-project-access]");
+                if (checkbox.checked && !project.writable) {
+                    if (!access) {
+                        access = document.createElement("span");
+                        access.className = "agent-tunnel-project-access";
+                        access.dataset.agentTunnelProjectAccess = "";
+                        access.textContent = "Read only";
+                        trailing.prepend(access);
+                    }
+                    access.id = accessId;
+                    checkbox.setAttribute("aria-describedby", accessId);
+                } else {
+                    access?.remove();
+                    checkbox.removeAttribute("aria-describedby");
+                }
             });
             elements.tunnelProjectList.querySelectorAll(
                 "[data-agent-tunnel-project-remove]",
@@ -1887,7 +1906,8 @@
         const requestedPlatform = selectedPlatform();
         invalidateTunnelStatusRequest();
         tunnelProjectBusy = true;
-        tunnelProjectNotice = `Saving ${projectId} as the current project…`;
+        tunnelProjectPendingSelectedIds = normalizedSelected;
+        tunnelProjectNotice = "";
         syncTunnelProjectUi();
         let resultUncertain = false;
         try {
@@ -1924,6 +1944,7 @@
             return true;
         } catch (error) {
             if (operationRevision !== tunnelProjectSaveRevision) return false;
+            tunnelProjectPendingSelectedIds = null;
             if (error?.payload?.project_context) {
                 adoptTunnelProjectContext(error.payload.project_context);
             }
@@ -1937,6 +1958,7 @@
         } finally {
             if (operationRevision === tunnelProjectSaveRevision) {
                 tunnelProjectBusy = false;
+                tunnelProjectPendingSelectedIds = null;
                 syncTunnelProjectUi();
                 if (resultUncertain) void refreshTunnelStatus();
             }
@@ -3689,12 +3711,16 @@
             if (!(event.target instanceof Element)) return;
             const checkbox = event.target.closest("[data-agent-tunnel-project-checkbox]");
             if (!(checkbox instanceof HTMLInputElement)) return;
+            if (tunnelProjectBusy || tunnelConnectionBusy) {
+                syncTunnelProjectUi();
+                return;
+            }
             const requested = checkbox.checked;
-            checkbox.checked = !requested;
-            void toggleTunnelProject(
+            const started = toggleTunnelProject(
                 String(checkbox.dataset.agentTunnelProjectCheckbox || ""),
                 requested,
             );
+            if (started === false) syncTunnelProjectUi();
         });
         elements.tunnelProjectPath?.addEventListener("change", () => {
             tunnelProjectPathTouched = true;

@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.41.0-codex.1
+# Code version: v1.41.2-codex.0
 
 from __future__ import annotations
 
@@ -1818,17 +1818,22 @@ def test_chatgpt_streams_first_party_original_through_safari(tmp_path: Path) -> 
     context.pages.append(page)
     catalog = ChatGPTImageCatalog.build(target_dir)
     streamed_headers: list[dict[str, str]] = []
+    streamed_limits: list[int] = []
 
-    def stream_to_path(_url, destination_path, _should_stop, headers=None):
+    def stream_to_path(_url, destination_path, _should_stop, headers=None, max_bytes=0):
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         destination_path.write_bytes(PNG_PAYLOAD)
         streamed_headers.append(dict(headers or {}))
+        streamed_limits.append(max_bytes)
         return "image/png", False
 
     with patch.object(page, "download_to_path", side_effect=stream_to_path):
-        assert download_chatgpt_image(context, catalog, target_dir, candidate)
+        assert download_chatgpt_image(
+            context, catalog, target_dir, candidate, max_file_size_bytes=len(PNG_PAYLOAD) + 4
+        )
 
     assert streamed_headers[0]["authorization"] == "Bearer test-token"
+    assert streamed_limits == [len(PNG_PAYLOAD) + 4]
     assert (target_dir / "img_file_safari.png").read_bytes() == PNG_PAYLOAD
     assert catalog.summarize() == 1
 
@@ -1853,7 +1858,7 @@ def test_chatgpt_does_not_cache_index_thumbnail_when_safari_original_is_gone(tmp
         ok = False
         status = 404
 
-    def stream_to_path(url, destination_path, _should_stop, headers=None):
+    def stream_to_path(url, destination_path, _should_stop, headers=None, max_bytes=0):
         streamed_urls.append(url)
         raise RuntimeError("Safari media request returned HTTP 404 with 0 bytes.")
 
@@ -1867,6 +1872,92 @@ def test_chatgpt_does_not_cache_index_thumbnail_when_safari_original_is_gone(tmp
 
     assert streamed_urls == [direct_url]
     assert fallback_url not in streamed_urls
+    assert catalog.summarize() == 0
+
+
+def test_chatgpt_safari_refresh_keeps_the_media_byte_limit(tmp_path: Path) -> None:
+    target_dir = tmp_path / "media" / "chatgpt" / "demo-project"
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_refresh",
+        file_id="file_refresh",
+        conversation_url="https://chatgpt.com/c/refresh",
+        request_headers={"authorization": "Bearer test-token"},
+    )
+    context = SafariContext(candidate.conversation_url)
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    catalog = ChatGPTImageCatalog.build(target_dir)
+    observed_limits: list[int] = []
+    signed_url = "https://storage.example/file_refresh.png"
+
+    def stream_to_path(url, destination_path, _should_stop, headers=None, max_bytes=0):
+        observed_limits.append(max_bytes)
+        if url == candidate.source_url:
+            raise RuntimeError("Safari media request returned HTTP 403 with 0 bytes.")
+        assert url == signed_url
+        assert "authorization" not in (headers or {})
+        destination_path.write_bytes(PNG_PAYLOAD)
+        return "image/png", False
+
+    with patch.object(page, "download_to_path", side_effect=stream_to_path), patch(
+        "app.core.chatgpt_downloader._resolve_chatgpt_image_source_url",
+        side_effect=[candidate.source_url, signed_url],
+    ):
+        assert download_chatgpt_image(
+            context, catalog, target_dir, candidate, max_file_size_bytes=len(PNG_PAYLOAD) + 4
+        )
+
+    assert observed_limits == [len(PNG_PAYLOAD) + 4] * 2
+    assert catalog.summarize() == 1
+
+
+def test_chatgpt_safari_rejects_oversize_before_writing_a_catalog_entry(tmp_path: Path) -> None:
+    target_dir = tmp_path / "media" / "chatgpt" / "demo-project"
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_large",
+        file_id="file_large",
+        conversation_url="https://chatgpt.com/c/large",
+    )
+    context = SafariContext(candidate.conversation_url)
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    catalog = ChatGPTImageCatalog.build(target_dir)
+    limit = len(PNG_PAYLOAD) - 1
+
+    def reject_oversize(_url, _destination_path, _should_stop, headers=None, max_bytes=0):
+        assert max_bytes == limit
+        raise RuntimeError("Safari media exceeds the configured cache limit.")
+
+    with patch.object(page, "download_to_path", side_effect=reject_oversize):
+        with pytest.raises(RuntimeError, match="cache limit"):
+            download_chatgpt_image(
+                context, catalog, target_dir, candidate, max_file_size_bytes=limit
+            )
+
+    assert catalog.summarize() == 0
+    assert not list(target_dir.glob("img_*"))
+
+
+def test_chatgpt_safari_refuses_symlinked_partial_directory(tmp_path: Path) -> None:
+    target_dir = tmp_path / "media" / "chatgpt" / "demo-project"
+    target_dir.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (target_dir / ".chatgpt-partial").symlink_to(outside, target_is_directory=True)
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_symlink",
+        file_id="file_symlink",
+        conversation_url="https://chatgpt.com/c/symlink",
+    )
+    context = SafariContext(candidate.conversation_url)
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    catalog = ChatGPTImageCatalog.build(target_dir)
+    with patch.object(page, "download_to_path", side_effect=AssertionError("Unsafe download started")):
+        with pytest.raises(RuntimeError, match="symbolic link"):
+            download_chatgpt_image(context, catalog, target_dir, candidate)
+
+    assert list(outside.iterdir()) == []
     assert catalog.summarize() == 0
 
 

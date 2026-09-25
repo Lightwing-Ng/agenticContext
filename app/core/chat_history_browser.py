@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.18.0-codex.1
+# Code version: v1.19.0-codex.0
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from .resource_persistence import (
     CLAUDE_HISTORY_FILENAME,
     GEMINI_HISTORY_FILENAME,
     GROK_HISTORY_FILENAME,
+    X_HISTORY_FILENAME,
     ZHIHU_HISTORY_FILENAME,
     read_parquet_rows,
 )
@@ -33,7 +34,7 @@ from .zhihu_answers import normalize_zhihu_rich_text
 CHAT_HISTORY_PAGE_SIZE = 100
 CHAT_HISTORY_SESSION_PAGE_SIZE = 100
 CHAT_HISTORY_SOURCE_VALUES = frozenset(
-    {"all", "chatgpt", "claude", "gemini", "grok", "zhihu"}
+    {"all", "x", "chatgpt", "claude", "gemini", "grok", "zhihu"}
 )
 CHAT_HISTORY_SORT_VALUES = frozenset({"newest", "oldest", "name"})
 
@@ -144,6 +145,7 @@ def chat_history_path(local_store_root: Path | str, source: str = "gemini") -> P
     """Return the typed history file for one supported chat source."""
     normalized_source = normalize_chat_history_source(source)
     filename = {
+        "x": X_HISTORY_FILENAME,
         "chatgpt": CHATGPT_HISTORY_FILENAME,
         "claude": CLAUDE_HISTORY_FILENAME,
         "gemini": GEMINI_HISTORY_FILENAME,
@@ -256,6 +258,7 @@ def load_chat_history_messages(
         ((normalized_source, chat_history_path(local_store_root, normalized_source)),)
         if normalized_source != "all"
         else (
+            ("x", chat_history_path(local_store_root, "x")),
             ("chatgpt", chat_history_path(local_store_root, "chatgpt")),
             ("claude", chat_history_path(local_store_root, "claude")),
             ("gemini", chat_history_path(local_store_root, "gemini")),

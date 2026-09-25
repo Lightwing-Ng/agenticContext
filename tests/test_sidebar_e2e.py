@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.52.5-codex.0
+Code version: v1.53.0-codex.0
 """
 
 from __future__ import annotations
@@ -531,6 +531,87 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
             assert options.evaluate_all(
                 "elements => elements.map(element => element.dataset.cacheSourceSwitcherPath)"
             ) == expected_paths
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("width", "height", "touch"),
+    ((996, 801, False), (390, 844, True)),
+)
+@pytest.mark.parametrize("color_scheme", ("light", "dark"))
+def test_cache_source_switcher_menu_has_an_opaque_base(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    width: int,
+    height: int,
+    touch: bool,
+    color_scheme: str,
+) -> None:
+    """Keep Cache source options readable over the sidebar in both themes."""
+    route = f"{sidebar_server_url}/cache/chatgpt/media/edge"
+    page, context = _open_page(
+        disposable_browser,
+        route,
+        width,
+        height,
+        touch=touch,
+    )
+    try:
+        page.emulate_media(color_scheme=color_scheme)
+        expect(page.locator("#global_theme_toggle")).to_have_attribute(
+            "data-effective-theme", color_scheme
+        )
+        sidebar_toggle = page.locator("#sidebar_toggle")
+        if width < 768 and sidebar_toggle.get_attribute("aria-expanded") != "true":
+            sidebar_toggle.click()
+            expect(sidebar_toggle).to_have_attribute("aria-expanded", "true")
+
+        trigger = page.locator("[data-cache-source-switcher-trigger]")
+        menu = page.locator("[data-cache-source-switcher-menu]")
+        trigger.click()
+        expect(menu).to_be_visible()
+        rendering = menu.evaluate(
+            """element => {
+                const probe = document.createElement('span');
+                probe.style.backgroundColor = 'var(--theme-background)';
+                document.body.append(probe);
+                const themeBackground = getComputedStyle(probe).backgroundColor;
+                probe.remove();
+
+                const options = Array.from(
+                    element.querySelectorAll('[data-cache-source-switcher-option]'),
+                ).filter(option => !option.hidden);
+                const hitTests = [options[0], options.at(-1)].map(option => {
+                    option.scrollIntoView({block: 'nearest'});
+                    const rect = option.getBoundingClientRect();
+                    const hit = document.elementFromPoint(
+                        rect.left + rect.width / 2,
+                        rect.top + rect.height / 2,
+                    );
+                    return hit === option || option.contains(hit);
+                });
+                return {
+                    backgroundColor: getComputedStyle(element).backgroundColor,
+                    themeBackground,
+                    optionCount: options.length,
+                    hitTests,
+                };
+            }"""
+        )
+        assert rendering["backgroundColor"] == rendering["themeBackground"], rendering
+        assert rendering["backgroundColor"].startswith("rgb("), rendering
+        assert rendering["optionCount"] == 6, rendering
+        assert all(rendering["hitTests"]), rendering
+
+        menu.locator('[data-cache-source-switcher-option="chatgpt"]').focus()
+        menu.locator('[data-cache-source-switcher-option="chatgpt"]').press("Escape")
+        expect(menu).to_be_hidden()
+        expect(trigger).to_have_attribute("aria-expanded", "false")
+        expect(trigger).to_be_focused()
+        expect(page).to_have_url(route)
     finally:
         context.close()
 
@@ -11598,6 +11679,71 @@ def test_cache_overview_groups_unique_metrics_and_keeps_run_progress_current(
         expect(page.locator("#phase_value")).to_have_attribute("data-phase", "failed", timeout=6_000)
         expect(page.locator("#message")).to_have_text("Cache run failed.")
         expect(page.locator("#recent_events_body")).to_have_count(0)
+        assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [996, 390])
+def test_claude_media_browser_picker_uses_safari_and_restores_text_browser(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    width: int,
+) -> None:
+    """Keep the Safari-only image pipeline out of Edge and Chrome choices."""
+
+    context = disposable_browser.new_context(viewport={"width": width, "height": 801})
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route(
+        "**/api/browser-session?*",
+        lambda route: route.fulfill(json={
+            "platform": "claude",
+            "browser": "safari",
+            "logged_in": True,
+            "can_download": True,
+            "account_name": "Claude account",
+            "message": "Ready",
+        }),
+    )
+    try:
+        page.goto(f"{sidebar_server_url}/cache/claude/text/edge", wait_until="networkidle")
+        if page.locator('[data-browser-option="safari"]').count() == 0:
+            pytest.skip("Safari is available only on macOS")
+        if width < 768 and page.locator("#sidebar_toggle").get_attribute("aria-expanded") != "true":
+            page.locator("#sidebar_toggle").click()
+            expect(page.locator("#sidebar_toggle")).to_have_attribute("aria-expanded", "true")
+        expect(page.locator("#claude_browser_input")).to_have_value("edge")
+        page.locator('[data-role="browser-picker-trigger"]').click()
+        expect(page.locator('[data-browser-option="edge"]')).to_be_visible()
+        page.locator('[data-role="browser-picker-trigger"]').click()
+
+        page.locator('[data-cache-content-mode-option="media"]').click()
+        expect(page).to_have_url(re.compile(r"/cache/claude/media/safari$"))
+        expect(page.locator("#claude_browser_input")).to_have_value("safari")
+        assert page.locator('[data-browser-option="edge"]').evaluate("element => element.hidden")
+        assert page.locator('[data-browser-option="chrome"]').evaluate("element => element.hidden")
+        page.locator('[data-role="browser-picker-trigger"]').click()
+        expect(page.locator('[data-browser-option="safari"]')).to_be_visible()
+        expect(page.locator('[data-browser-option="edge"]')).to_be_hidden()
+        expect(page.locator('[data-browser-option="chrome"]')).to_be_hidden()
+        page.locator('[data-role="browser-picker-trigger"]').click()
+        expect(page.locator(".sidebar-form-start #start_button")).to_be_enabled()
+
+        page.locator('[data-cache-content-mode-option="text"]').click()
+        expect(page).to_have_url(re.compile(r"/cache/claude/text/edge$"))
+        expect(page.locator("#claude_browser_input")).to_have_value("edge")
+        page.locator('[data-role="browser-picker-trigger"]').click()
+        expect(page.locator('[data-browser-option="edge"]')).to_be_visible()
+        expect(page.locator('[data-browser-option="chrome"]')).to_be_visible()
+        page.goto(f"{sidebar_server_url}/cache/claude/media/edge", wait_until="networkidle")
+        if width < 768 and page.locator("#sidebar_toggle").get_attribute("aria-expanded") != "true":
+            page.locator("#sidebar_toggle").click()
+            expect(page.locator("#sidebar_toggle")).to_have_attribute("aria-expanded", "true")
+        expect(page).to_have_url(re.compile(r"/cache/claude/media/safari$"))
+        expect(page.locator("#claude_browser_input")).to_have_value("safari")
+        assert page.evaluate("document.documentElement.scrollWidth - innerWidth") <= 1
         assert errors == []
     finally:
         context.close()

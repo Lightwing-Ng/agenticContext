@@ -7,7 +7,7 @@ touches a Flask request, a service, or an application instance, so route modules
 import it directly instead of receiving it through the application factory.
 """
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.2.0-codex.0
 
 from __future__ import annotations
 
@@ -574,6 +574,8 @@ def reconcile_cached_snapshot(snapshot: dict[str, Any], hydrated_payload: dict[s
         snapshot["discovered_images"] = hydrated_payload["discovered_images"]
     snapshot["downloaded_images"] = hydrated_payload["downloaded_images"]
     snapshot["downloaded_videos"] = hydrated_payload["downloaded_videos"]
+    if "cached_text_posts" in hydrated_payload:
+        snapshot["cached_text_posts"] = hydrated_payload["cached_text_posts"]
     if is_idle:
         snapshot["message"] = hydrated_payload["message"]
     return snapshot

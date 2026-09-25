@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.26.0-claude.0`
+Documentation version: `v1.26.3-codex.0`
 
 ## Tunnel host parity for Windows and macOS on 24 Sep 2026
 
@@ -45,11 +45,24 @@ Documentation version: `v1.26.0-claude.0`
 - 18 Sep 2026, Safari ChatGPT Agent: model selection failed with `model-state-transition-unverified`
   and `view: closed`. ChatGPT's Radix model menu closes when Safari loses focus, and each trusted
   Return restored the previous app. ChatGPT model selection now holds one focus transaction.
-- The project debug Edge profile still fails Cloudflare on `auth.openai.com` with nothing attached,
-  while fresh profiles pass. That profile's stored Cloudflare state is suspect; it is not reset.
+- The project debug Edge profile also failed Cloudflare on `auth.openai.com` with nothing attached,
+  while fresh profiles passed. That profile's stored Cloudflare state was suspect; it was not reset.
 - Windows Agent ChatGPT remains on the project debug Chrome or Edge. A live debug Chrome session
   was verified by reading `/api/auth/session` from the ChatGPT tab with
   [`scripts/tmp_probe_chrome_tab.py`](../scripts/tmp_probe_chrome_tab.py).
+- 25 Sep 2026: macOS ChatGPT Edge Agent now reuses Cache's daily signed-in Edge profile for
+  account checks, source and history reads, and tasks, without falling back to the project debug
+  browser or requiring a second login. A read-only Project navigation on 24 Sep 2026
+  remained on a verification page without a composer. A second isolated check on 25 Sep 2026
+  also found no usable composer after 30 seconds, although its URL and title did not identify
+  a verification challenge; that check did not establish the cause. Project Send remains
+  blocked on this host. Other macOS Edge Agent providers and Edge Jury retain their project
+  debug profiles; Windows Agent continues to use its project debug browser.
+- The current recovery copy still assumes a persistent verification window. A macOS ChatGPT
+  Edge Agent check closes its temporary clone when it returns, so opening daily Edge cannot
+  complete that clone's challenge. A cached `human_verification` status also remains until a
+  manual Recheck, even after its normal 30-minute cache limit. These UI cases need a scoped
+  recovery-state change without automatically reopening a challenge.
 
 ## Jury structured-vote normalization and round presentation on 16 Sep 2026
 

@@ -1,6 +1,6 @@
 """Focused tests for the local text-history browser."""
 
-# Code version: v1.8.0-codex.1
+# Code version: v1.9.0-codex.0
 
 from datetime import datetime
 import hashlib
@@ -19,6 +19,7 @@ from app.core.resource_persistence import (
     ZHIHU_HISTORY_SCHEMA,
     write_parquet_rows_atomic,
 )
+from app.core.x_text_history import XTextHistoryStore, XTextPost, x_text_history_path
 
 
 def _history_row(
@@ -51,6 +52,25 @@ def _history_row(
         "first_seen_at": first_seen_at,
         "last_seen_at": last_seen_at,
     }
+
+
+def test_query_x_text_posts_without_media(tmp_path: Path) -> None:
+    store = XTextHistoryStore(x_text_history_path(tmp_path))
+    store.upsert([
+        XTextPost(
+            url="https://x.com/example/status/123",
+            content_text="A text-only liked post",
+            author_handle="example",
+            created_at="2026-09-25T00:00:00Z",
+        )
+    ])
+
+    page = query_chat_history(tmp_path, source="x", session_view=True)
+
+    assert page.total_count == 1
+    assert page.conversation_count == 1
+    assert page.sessions[0].conversation_url == "https://x.com/example/status/123"
+    assert page.sessions[0].latest_message == "A text-only liked post"
 
 
 def _zhihu_history_row(

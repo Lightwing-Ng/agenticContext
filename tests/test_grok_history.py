@@ -1,9 +1,13 @@
 """Focused tests for Grok text-history persistence and API pagination."""
 
-# Code version: v1.4.0-codex.1
+# Code version: v1.5.1-codex.0
 
+import json
+import re
+import shutil
+import subprocess
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -17,8 +21,11 @@ from app.core.grok_history import (
     extract_grok_inline_citations,
     list_grok_conversations,
     normalize_grok_display_markdown,
+    sync_grok_history,
 )
+from app.core.config import CrawlConfig
 from app.core.safari_automation import SafariContext, SafariPage, SafariResponse
+from app.core.state import TaskSnapshot, TaskState
 
 
 def _message(key: str, role: str, index: int, content: str) -> GrokTextMessage:
@@ -253,6 +260,102 @@ def test_grok_api_uses_safari_same_origin_request_for_get_and_post() -> None:
         "method": "POST",
         "body": '{"responseIds": ["response-1"]}',
     }
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is needed to execute Safari's wrapper")
+def test_safari_page_wrapper_cannot_await_a_promise_result() -> None:
+    """Execute SafariPage's real synchronous wrapper around an async callback."""
+
+    page = SafariPage(SafariContext("https://grok.com/"), window_id=123)
+
+    def run_window(statement: str, **_kwargs: object) -> str:
+        match = re.search(r'do JavaScript "((?:\\.|[^"\\])*)" in targetTab', statement)
+        assert match is not None
+        wrapper = json.loads('"' + match.group(1) + '"')
+        result = subprocess.run(
+            ["node", "-e", "process.stdout.write(String(eval(process.argv[1])))", wrapper],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+
+    with patch.object(page, "_run_in_window", side_effect=run_window):
+        assert page.evaluate("async () => ({status: 200, body: {ok: true}})") == {}
+
+
+def test_grok_safari_request_fails_closed_when_bridge_is_missing() -> None:
+    context = SafariContext("https://grok.com/")
+    page = SafariPage(context, window_id=123)
+    context.request = None
+
+    with patch.object(page, "evaluate") as evaluate, pytest.raises(
+        RuntimeError, match="request bridge is unavailable"
+    ):
+        _grok_api_json(page, "/rest/app-chat/conversations")
+
+    evaluate.assert_not_called()
+
+
+def test_grok_text_sync_uses_owned_safari_page_and_caches_messages(
+    tmp_path: Path, macos_host
+) -> None:
+    context = MagicMock()
+    context.initial_url = "https://grok.com/"
+    context.pages = []
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    context.primary_page = page
+    context.__enter__.return_value = context
+    context.request.request_from_page.side_effect = [
+        SafariResponse(
+            status=200,
+            body_text=json.dumps({
+                "conversations": [{"conversationId": "conversation-1", "title": "Safari session"}],
+            }),
+        ),
+        SafariResponse(
+            status=200,
+            body_text=json.dumps({"responseNodes": [{"responseId": "response-1"}]}),
+        ),
+        SafariResponse(
+            status=200,
+            body_text=json.dumps({
+                "responses": [{
+                    "responseId": "response-1",
+                    "sender": "assistant",
+                    "message": "Cached through Safari",
+                }],
+            }),
+        ),
+    ]
+    state = TaskState("test", snapshot_factory=lambda version: TaskSnapshot(version=version))
+
+    with patch("app.core.grok_history.SafariContext", return_value=context) as open_safari, patch(
+        "app.core.grok_history.sync_playwright_or_error",
+        side_effect=AssertionError("Safari must not start Playwright"),
+    ), patch.object(page, "wait_for_timeout"):
+        result = sync_grok_history(
+            state,
+            CrawlConfig(grok_browser="safari"),
+            lambda: False,
+            local_store_root=str(tmp_path),
+        )
+
+    open_safari.assert_called_once_with("https://grok.com/", lock_blocking=False)
+    context.__exit__.assert_called_once()
+    assert result == {
+        "sessions": 1,
+        "messages": 1,
+        "added_or_changed": 1,
+        "unchanged": 0,
+        "failed": 0,
+        "stopped": False,
+    }
+    assert context.request.request_from_page.call_count == 3
+    cached = query_chat_history(tmp_path, source="grok", session_view=True)
+    assert cached.total_count == 1
+    assert cached.items[0].content_text == "Cached through Safari"
 
 
 def test_grok_api_timeout_uses_existing_retry_backoff() -> None:

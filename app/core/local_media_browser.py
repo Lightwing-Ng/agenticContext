@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.25.1-codex.1
+# Code version: v1.26.0-codex.0
 
 from __future__ import annotations
 
@@ -40,13 +40,13 @@ from .resource_persistence import (
 IMAGE_SUFFIXES = frozenset({".avif", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp"})
 VIDEO_SUFFIXES = frozenset({".m4v", ".mkv", ".mov", ".mp4", ".webm"})
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
-SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt"})
+SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt", "claude"})
 TEXT_SOURCE_VALUES = frozenset(
-    {"all", "chatgpt", "claude", "gemini", "grok", "zhihu"}
+    {"all", "x", "chatgpt", "claude", "gemini", "grok", "zhihu"}
 )
 # Gemini has no media cache source. Treat a legacy URL that names Gemini in
 # Media mode as the ChatGPT media view instead of silently showing all media.
-TEXT_ONLY_SOURCE_VALUES = frozenset({"claude", "gemini", "zhihu"})
+TEXT_ONLY_SOURCE_VALUES = frozenset({"gemini", "zhihu"})
 MEDIA_KIND_VALUES = frozenset({"all", "image", "video"})
 SORT_VALUES = frozenset({"newest", "oldest", "name"})
 VIEW_VALUES = frozenset({"media", "text", "prompts"})
@@ -996,7 +996,7 @@ class LocalMediaCatalog:
     def _build_snapshot(self) -> tuple[LocalMediaItem, ...]:
         """Scan the cache outside the snapshot-state lock."""
         items: list[LocalMediaItem] = []
-        for scanner in (self._scan_x, self._scan_grok, self._scan_chatgpt):
+        for scanner in (self._scan_x, self._scan_grok, self._scan_chatgpt, self._scan_claude):
             try:
                 items.extend(scanner())
             except Exception:
@@ -1295,6 +1295,50 @@ class LocalMediaCatalog:
                         stat_result=file_info,
                     )
                 )
+        return items
+
+    def _scan_claude(self) -> list[LocalMediaItem]:
+        """Show only verified Claude image files recorded by the media worker."""
+        root = self.local_store_root / config.MEDIA_STORE_DIRNAME / "claude"
+        catalog = _read_json_object(root / "catalog.json", self.local_store_root)
+        assets = catalog.get("assets") if catalog.get("schema_version") == 1 else None
+        if not isinstance(assets, list):
+            return []
+
+        items: list[LocalMediaItem] = []
+        seen_paths: set[str] = set()
+        for entry in assets:
+            if not isinstance(entry, Mapping) or entry.get("media_kind") != "image":
+                continue
+            relative_path = _safe_catalog_relative_path(entry.get("relative_path"))
+            if not relative_path or relative_path in seen_paths:
+                continue
+            media_path = root / relative_path
+            if media_path.suffix.lower() not in IMAGE_SUFFIXES or self._resolve_inside(media_path) is None:
+                continue
+            file_info = _stat_media_file(media_path)
+            if file_info is None or file_info.st_size != entry.get("content_bytes"):
+                continue
+            source_url = _safe_source_url(entry.get("conversation_url"))
+            if urlsplit(source_url).hostname not in {"claude.ai", "www.claude.ai"}:
+                continue
+            seen_paths.add(relative_path)
+            title = _display_text(entry.get("conversation_title"))
+            alt_text = _display_text(entry.get("alt_text"))
+            items.append(
+                self._build_item(
+                    media_path,
+                    source="claude",
+                    title=alt_text or title or media_path.name,
+                    description=title,
+                    creator="Claude",
+                    source_url=source_url,
+                    resource_key=_display_text(entry.get("asset_id")),
+                    captured_value=entry.get("cached_at"),
+                    alt_text=alt_text,
+                    stat_result=file_info,
+                )
+            )
         return items
 
     def _build_item(
