@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.53.0-codex.0
+Code version: v1.53.1-codex.0
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from app.core.computer_use_agent import (
     load_computer_use_settings,
 )
 from app.core.agent.action_protocol import parse_agent_action
+from app.core.agent.platform_catalog import detect_host_operating_system
 from app.core.gemini_downloader import inspect_gemini_session
 from app.core.resource_persistence import (
     CHATGPT_HISTORY_SCHEMA,
@@ -4450,8 +4451,8 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
             "can_start": True,
             "runtime": {
                 "ready": True,
-                "host_operating_system": "macos",
-                "message": "Computer Use is ready on this Mac.",
+                "host_operating_system": detect_host_operating_system(),
+                "message": "Computer Use is ready on this host.",
                 "terminal_execution": {
                     "ready": True,
                     "status_label": "Granted",
@@ -4692,8 +4693,8 @@ def test_agent_provider_projects_submit_agentic_task_target(
             "can_start": True,
             "runtime": {
                 "ready": True,
-                "host_operating_system": "macos",
-                "message": "Computer Use is ready on this Mac.",
+                "host_operating_system": detect_host_operating_system(),
+                "message": "Computer Use is ready on this host.",
                 "terminal_execution": {
                     "ready": True,
                     "status_label": "Granted",
@@ -4893,8 +4894,8 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
             "can_start": True,
             "runtime": {
                 "ready": True,
-                "host_operating_system": "macos",
-                "message": "Computer Use is ready on this Mac.",
+                "host_operating_system": detect_host_operating_system(),
+                "message": "Computer Use is ready on this host.",
                 "terminal_execution": {
                     "ready": True,
                     "status_label": "Granted",
@@ -5366,8 +5367,8 @@ def _finished_chatgpt_agent_payload() -> dict[str, object]:
         "can_start": True,
         "runtime": {
             "ready": True,
-            "host_operating_system": "macos",
-            "message": "Computer Use is ready on this Mac.",
+            "host_operating_system": detect_host_operating_system(),
+            "message": "Computer Use is ready on this host.",
             "terminal_execution": {
                 "ready": True,
                 "status_label": "Granted",
