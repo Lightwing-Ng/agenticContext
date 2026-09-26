@@ -1,13 +1,14 @@
 """Verify cached ChatGPT project filtering and session-navigation boundaries."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.1.0-codex.0
 
 from datetime import UTC, datetime, timedelta
 import os
 from pathlib import Path
+import re
 
 from app.core.agent_source_cache import AgentSourceCache
-from app.core.chat_history_browser import query_chat_history
+from app.core.chat_history_browser import CHATGPT_NO_PROJECT_FILTER, query_chat_history
 from app.core.resource_persistence import CHATGPT_HISTORY_SCHEMA, write_parquet_rows_atomic
 
 
@@ -219,3 +220,167 @@ def test_project_moves_use_observations_instead_of_history_file_mtime(tmp_path: 
     )
     assert query_chat_history(tmp_path, source="chatgpt", project=PROJECT_A).total_count == 1
     assert query_chat_history(tmp_path, source="chatgpt", project=PROJECT_B).total_count == 0
+
+
+def test_no_project_requires_root_catalog_evidence_and_scopes_navigation(tmp_path: Path) -> None:
+    session_ids = ("root-1", "root-2", "project", "unknown")
+    _write_history(tmp_path, [(key, f"https://chatgpt.com/c/{key}") for key in session_ids])
+    cache = AgentSourceCache(tmp_path)
+    now = datetime.now(UTC) - timedelta(days=1)
+    _store_projects(cache, now=now)
+    _store_sessions(cache, PROJECT_A, ["project"], now=now)
+    cache.store(
+        platform="chatgpt", browser="chrome", source_kind="browser-session", now=now,
+        payload={"agent_sources": {"recent_sessions": [
+            {"id": key, "url": f"https://chatgpt.com/c/{key}"}
+            for key in ("root-1", "root-2")
+        ]}},
+    )
+    history_path = tmp_path / "llm/chatgpt/history.parquet"
+    original_history = history_path.read_bytes()
+    page = query_chat_history(
+        tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER,
+        session_view=True, page_size=1, page=2, sort="name",
+    )
+    assert page.selected_project == CHATGPT_NO_PROJECT_FILTER
+    assert page.total_count == page.conversation_count == 2
+    assert page.total_pages == page.current_page == 2
+    assert [item.conversation_id for item in page.sessions] == ["root-2"]
+    assert page.project_count == 2
+    assert {item.key for item in page.project_options} == {PROJECT_A, PROJECT_B}
+    detail = query_chat_history(
+        tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER,
+        session="chatgpt:root-1", sort="name",
+    )
+    assert detail.session_detail
+    assert detail.previous_session is None
+    assert detail.next_session is not None and detail.next_session.conversation_id == "root-2"
+    outside = query_chat_history(
+        tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER,
+        session="chatgpt:project", session_view=True,
+    )
+    assert not outside.session_detail
+    assert {item.conversation_id for item in outside.items} == {"root-1", "root-2"}
+    assert query_chat_history(
+        tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER, query="Session unknown",
+    ).total_count == 0
+    assert query_chat_history(tmp_path, source="chatgpt").total_count == 4
+    unscoped = query_chat_history(tmp_path, source="all", project=CHATGPT_NO_PROJECT_FILTER)
+    assert unscoped.selected_project == ""
+    assert unscoped.total_count == 4
+    assert history_path.read_bytes() == original_history
+
+
+def test_no_project_tracks_explicit_moves_in_both_directions(tmp_path: Path) -> None:
+    _write_history(tmp_path, [("moved", f"https://chatgpt.com/g/{PROJECT_A}/c/moved")])
+    cache = AgentSourceCache(tmp_path)
+    now = datetime.now(UTC) - timedelta(days=1)
+    _store_projects(cache, now=now)
+    _store_sessions(cache, PROJECT_A, ["moved"], now=now)
+    assert query_chat_history(tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER).total_count == 0
+    cache.store(
+        platform="chatgpt", browser="chrome", source_kind="sources",
+        now=now + timedelta(seconds=1),
+        payload={"recent_sessions": [{"id": "moved", "url": "https://chatgpt.com/c/moved"}]},
+    )
+    assert query_chat_history(tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER).total_count == 1
+    assert query_chat_history(tmp_path, source="chatgpt", project=PROJECT_A).total_count == 0
+    _store_sessions(cache, PROJECT_B, ["moved"], now=now + timedelta(seconds=2))
+    assert query_chat_history(tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER).total_count == 0
+    assert query_chat_history(tmp_path, source="chatgpt", project=PROJECT_B).total_count == 1
+    cache.store(
+        platform="chatgpt", browser="chrome", source_kind="sources",
+        now=now + timedelta(seconds=2),
+        payload={"recent_sessions": [{"id": "moved", "url": "https://chatgpt.com/c/moved"}]},
+    )
+    assert query_chat_history(tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER).total_count == 0
+
+
+def test_partial_or_untrusted_catalogs_do_not_turn_unknown_sessions_into_no_project(tmp_path: Path) -> None:
+    session_ids = ("missing", "removed", "generic", "history", "marked", "untrusted")
+    _write_history(tmp_path, [(key, f"https://chatgpt.com/c/{key}") for key in session_ids])
+    cache = AgentSourceCache(tmp_path)
+    now = datetime.now(UTC) - timedelta(days=1)
+    _store_projects(cache, now=now)
+    _store_sessions(cache, PROJECT_A, ["removed"], now=now, browser="chrome")
+    _store_sessions(cache, PROJECT_A, [], now=now + timedelta(seconds=1))
+    cache.store(
+        platform="chatgpt", browser="chrome", source_kind="sources", now=now,
+        payload={
+            "sessions": [{"id": "generic", "url": "https://chatgpt.com/c/generic"}],
+            "recent_sessions": [
+                {"id": "marked", "url": "https://chatgpt.com/c/marked", "project_id": PROJECT_A},
+                {"id": "untrusted", "url": "https://untrusted.example/c/untrusted"},
+                None,
+            ],
+        },
+    )
+    cache.store(
+        platform="chatgpt", browser="edge", source_kind="session-history", now=now,
+        payload={"conversation_url": "https://chatgpt.com/c/history"},
+    )
+    page = query_chat_history(tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER)
+    assert page.selected_project == CHATGPT_NO_PROJECT_FILTER
+    assert page.total_count == 0
+    assert all(item.name != "Unavailable project" for item in page.project_options)
+    assert query_chat_history(tmp_path, source="chatgpt").total_count == len(session_ids)
+    assert query_chat_history(tmp_path, source="chatgpt", project=PROJECT_A).total_count == 0
+
+
+def test_partial_project_snapshot_does_not_revive_older_root_membership(tmp_path: Path) -> None:
+    _write_history(tmp_path, [("moved", "https://chatgpt.com/c/moved")])
+    cache = AgentSourceCache(tmp_path)
+    now = datetime.now(UTC) - timedelta(days=1)
+    _store_projects(cache, now=now)
+    cache.store(
+        platform="chatgpt", browser="chrome", source_kind="sources", now=now,
+        payload={"recent_sessions": [{"id": "moved", "url": "https://chatgpt.com/c/moved"}]},
+    )
+    _store_sessions(cache, PROJECT_A, ["moved"], now=now + timedelta(seconds=1), browser="chrome")
+    _store_sessions(cache, PROJECT_A, [], now=now + timedelta(seconds=2))
+    assert query_chat_history(tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER).total_count == 0
+    assert query_chat_history(tmp_path, source="chatgpt", project=PROJECT_A).total_count == 0
+    assert query_chat_history(tmp_path, source="chatgpt").total_count == 1
+    cache.store(
+        platform="chatgpt", browser="chrome", source_kind="sources",
+        now=now + timedelta(seconds=3),
+        payload={"recent_sessions": [{"id": "moved", "url": "https://chatgpt.com/c/moved"}]},
+    )
+    assert query_chat_history(tmp_path, source="chatgpt", project=CHATGPT_NO_PROJECT_FILTER).total_count == 1
+
+
+def test_no_project_option_copy_and_header_source_form_keep_selected_scope(tmp_path: Path) -> None:
+    from app.web.app import create_app
+
+    _write_history(tmp_path, [("ordinary", "https://chatgpt.com/c/ordinary")])
+    cache = AgentSourceCache(tmp_path)
+    cache.store(
+        platform="chatgpt", browser="edge", source_kind="sources",
+        payload={"projects": [], "recent_sessions": [
+            {"id": "ordinary", "url": "https://chatgpt.com/c/ordinary"},
+        ]},
+    )
+    app = create_app(
+        tmp_path,
+        computer_use_settings_path=tmp_path / "settings.json",
+        computer_use_runtime_root=tmp_path / "runtime",
+        agent_external_operations_enabled=False,
+    )
+    with app.test_client() as client:
+        list_response = client.get(f"/browser?view=text&source=chatgpt&project={CHATGPT_NO_PROJECT_FILTER}")
+        detail_response = client.get(
+            f"/browser?view=text&source=chatgpt&project={CHATGPT_NO_PROJECT_FILTER}&session=chatgpt:ordinary"
+        )
+    assert list_response.status_code == detail_response.status_code == 200
+    list_html = list_response.get_data(as_text=True)
+    detail_html = detail_response.get_data(as_text=True)
+    assert '<option value="__no_project__" selected>No project</option>' in list_html
+    assert "Unavailable project" not in list_html
+    assert 'data-browser-search-submit-copy="Press Enter to search chats without a project."' in list_html
+    header_form = re.search(r'<form[^>]+class="browser-header-filter-form">(.*?)</form>', list_html, re.DOTALL)
+    assert header_form is not None
+    assert '<input type="hidden" name="project" value="__no_project__">' in header_form.group(1)
+    assert "Back to No project</a>" in detail_html
+    assert 'aria-label="Search chats without a project"' in detail_html
+    assert 'data-browser-search-global-submit-copy="Press Enter to search chats without a project."' in detail_html
+    assert "Search this project" not in detail_html

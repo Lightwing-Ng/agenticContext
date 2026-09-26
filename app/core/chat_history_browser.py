@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.20.1-codex.0
+# Code version: v1.21.0-codex.0
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ CHAT_HISTORY_SOURCE_VALUES = frozenset(
     {"all", "x", "chatgpt", "claude", "gemini", "grok", "zhihu"}
 )
 CHAT_HISTORY_SORT_VALUES = frozenset({"newest", "oldest", "name"})
+CHATGPT_NO_PROJECT_FILTER = "__no_project__"
 
 
 @dataclass(frozen=True, slots=True)
@@ -627,14 +628,26 @@ def _cached_chatgpt_project_filter(
     local_store_root: Path | str,
     messages: tuple[ChatHistoryMessage, ...],
 ) -> tuple[tuple[ChatHistoryProjectOption, ...], dict[str, str]]:
-    """Read cached project names and positive session membership without discovery.
+    """Read cached project names and explicit session membership without discovery.
 
     Catalogs can be partial, so absence never proves that a session has no project.
+    Only the provider's root recent-session catalog confirms an ordinary chat.
     The newest explicit membership wins when a session has moved between projects.
     """
     latest_projects: tuple[float, list[Any]] | None = None
     project_sessions: dict[str, tuple[float, list[Any]]] = {}
+    project_observations: dict[str, float] = {}
     membership: dict[str, tuple[float, str]] = {}
+
+    def record_membership(conversation_id: str, project_key: str, observed: float) -> None:
+        previous = membership.get(conversation_id)
+        if conversation_id and (
+            previous is None
+            or observed > previous[0]
+            or (observed == previous[0] and project_key != CHATGPT_NO_PROJECT_FILTER)
+        ):
+            membership[conversation_id] = observed, project_key
+
     for message in messages:
         conversation_id, project_key = _chatgpt_session_identity(
             {"url": message.conversation_url}
@@ -644,8 +657,7 @@ def _cached_chatgpt_project_filter(
                 _timestamp_value(message.first_seen_at),
                 _timestamp_value(message.last_seen_at),
             )
-            if observed >= membership.get(conversation_id, (0.0, ""))[0]:
-                membership[conversation_id] = observed, project_key
+            record_membership(conversation_id, project_key, observed)
     for row in read_parquet_rows(agent_source_cache_path(local_store_root)) or []:
         if str(row.get("platform") or "").lower() != "chatgpt":
             continue
@@ -664,6 +676,13 @@ def _cached_chatgpt_project_filter(
             project_key = _chatgpt_project_key(row.get("project_url") or payload.get("project_url"))
             sessions = payload.get("sessions")
             if project_key and isinstance(sessions, list):
+                for candidate in sessions:
+                    if isinstance(candidate, dict):
+                        conversation_id, _ = _chatgpt_session_identity(candidate)
+                        if conversation_id:
+                            project_observations[conversation_id] = max(
+                                observed, project_observations.get(conversation_id, 0.0),
+                            )
                 if project_key not in project_sessions or observed >= project_sessions[project_key][0]:
                     project_sessions[project_key] = observed, sessions
         if row.get("source_kind") == "session-history":
@@ -677,15 +696,25 @@ def _cached_chatgpt_project_filter(
                 if not isinstance(candidate, dict):
                     continue
                 conversation_id, project_key = _chatgpt_session_identity(candidate)
-                if project_key and observed >= membership.get(conversation_id, (0.0, ""))[0]:
-                    membership[conversation_id] = observed, project_key
+                if project_key:
+                    record_membership(conversation_id, project_key, observed)
+        root_sessions = catalog.get("recent_sessions") if isinstance(catalog, dict) else None
+        if row.get("source_kind") in {"sources", "browser-session"} and isinstance(root_sessions, list):
+            for candidate in root_sessions:
+                if not isinstance(candidate, dict) or any(
+                    candidate.get(key) not in (None, "", False)
+                    for key in ("project_id", "project_url", "gizmo_id", "gizmo_type")
+                ):
+                    continue
+                parts = _chatgpt_url_parts(candidate.get("url") or candidate.get("conversation_url"))
+                if len(parts) == 2 and parts[0] == "c" and parts[1]:
+                    record_membership(parts[1], CHATGPT_NO_PROJECT_FILTER, observed)
     for project_key, (observed, sessions) in sorted(project_sessions.items()):
         for session in sessions:
             if not isinstance(session, dict):
                 continue
             conversation_id, _ = _chatgpt_session_identity(session)
-            if conversation_id and observed >= membership.get(conversation_id, (0.0, ""))[0]:
-                membership[conversation_id] = observed, project_key
+            record_membership(conversation_id, project_key, observed)
     names: dict[str, str] = {}
     for project in latest_projects[1] if latest_projects else []:
         if not isinstance(project, dict):
@@ -699,7 +728,12 @@ def _cached_chatgpt_project_filter(
         ChatHistoryProjectOption(key, name)
         for key, name in sorted(names.items(), key=lambda item: (item[1].casefold(), item[0]))
     )
-    return options, {conversation_id: value[1] for conversation_id, value in membership.items()}
+    return options, {
+        conversation_id: value[1]
+        for conversation_id, value in membership.items()
+        if value[1] != CHATGPT_NO_PROJECT_FILTER
+        or value[0] > project_observations.get(conversation_id, -1.0)
+    }
 
 
 def query_chat_history(
@@ -732,7 +766,9 @@ def query_chat_history(
         requested_project = str(project or "").replace("\x00", "").strip()[:240]
         selected_project = _chatgpt_project_key(requested_project) or requested_project
         if selected_project:
-            known_project = any(item.key == selected_project for item in project_options)
+            known_project = selected_project == CHATGPT_NO_PROJECT_FILTER or any(
+                item.key == selected_project for item in project_options
+            )
             if not known_project:
                 project_options += (ChatHistoryProjectOption(selected_project, "Unavailable project"),)
             all_messages = tuple(

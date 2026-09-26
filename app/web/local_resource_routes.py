@@ -5,7 +5,7 @@ for a browser, an Agent, or a cache worker. Serialization of one stored item int
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.2.0-codex.0
+# Code version: v1.2.1-codex.0
 
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ from app.core.storage import (
 from app.web.cache_sources import CACHE_SOURCE_VIEWS, get_cache_source_label
 from app.web.presentation import (
     build_browser_search_suggestions,
+    cached_message_source_links,
     format_media_size,
     render_cached_message,
     render_prompt_markdown,
@@ -244,6 +245,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             format_media_size=format_media_size,
             render_prompt_markdown=render_prompt_markdown,
             render_cached_message=render_cached_message,
+            cached_message_source_links=cached_message_source_links,
             file_manager_label=local_file_manager_label(),
             version=APP_VERSION,
         )

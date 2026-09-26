@@ -1,4 +1,4 @@
-"""Isolated Local resources Project filtering. Code version: v1.0.0-codex.0."""
+"""Isolated Local resources Project filtering. Code version: v1.1.0-codex.0."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from playwright.sync_api import Browser, Locator, Page, expect
 from werkzeug.serving import make_server
 
 from app.core.agent_source_cache import AgentSourceCache
+from app.core.chat_history_browser import CHATGPT_NO_PROJECT_FILTER
 from app.core.resource_persistence import CHATGPT_HISTORY_SCHEMA, write_parquet_rows_atomic
 from tests import test_sidebar_e2e
 
@@ -72,7 +73,9 @@ def project_browser_server_url(tmp_path_factory: pytest.TempPathFactory) -> Iter
         platform="chatgpt",
         browser="edge",
         source_kind="sources",
-        payload={"projects": projects},
+        payload={"projects": projects, "recent_sessions": [
+            {"id": "ordinary-000", "url": "https://chatgpt.com/c/ordinary-000"},
+        ]},
     )
     unassigned = dict(history[0])
     unassigned.update(
@@ -83,6 +86,15 @@ def project_browser_server_url(tmp_path_factory: pytest.TempPathFactory) -> Iter
         content_sha256="fixture-unassigned",
     )
     history.append(unassigned)
+    ordinary = dict(unassigned)
+    ordinary.update(
+        conversation_id="ordinary-000",
+        conversation_url="https://chatgpt.com/c/ordinary-000",
+        conversation_title="Ordinary session",
+        message_key="ordinary-000:0:user",
+        content_sha256="fixture-ordinary",
+    )
+    history.append(ordinary)
     write_parquet_rows_atomic(root / "llm/chatgpt/history.parquet", history, CHATGPT_HISTORY_SCHEMA)
     application = create_app(
         root,
@@ -232,7 +244,11 @@ def test_project_filter_survives_navigation_and_clears_other_scopes(
             page.locator("#browser_search_input").press("Enter")
         assert _query(page)["project"] == [ALPHA_PROJECT]
         assert _query(page)["q"] == ["sharedneedle"]
-        expect(page.locator(".browser-chat-message-title")).to_have_text(["Alpha session 000"])
+        expect(page.locator(".browser-chat-message-title")).to_have_count(0)
+        expect(page.locator(".browser-chat-message")).to_have_count(1)
+        expect(page.get_by_role("link", name="Open session", exact=True)).to_have_attribute(
+            "href", "https://chatgpt.com/c/alpha-000"
+        )
         expect(page.locator(".browser-chat-message-content")).to_have_text(["sharedneedle"])
         page.go_back(wait_until="domcontentloaded")
         with page.expect_navigation(wait_until="domcontentloaded"):
@@ -270,5 +286,61 @@ def test_project_filter_survives_navigation_and_clears_other_scopes(
             assert "project" not in _query(page)
             expect(page.locator("#browser_project_filter")).to_have_count(0)
         _assert_no_horizontal_overflow(page)
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", (1_006, 390))
+def test_no_project_selection_survives_search_details_and_same_source_selection(
+    disposable_browser: Browser, project_browser_server_url: str, width: int,
+) -> None:
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 844}, reduced_motion="reduce",
+        has_touch=width == 390,
+    )
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(f"{project_browser_server_url}/browser?view=text&source=chatgpt&session_view=1")
+        _choose_project(page, "No project")
+        expect(page.locator("#browser_project_filter")).to_have_value(CHATGPT_NO_PROJECT_FILTER)
+        expect(page.locator(SESSION_TITLES)).to_have_text(["Ordinary session"])
+        assert _query(page)["project"] == [CHATGPT_NO_PROJECT_FILTER]
+        _sidebar(page, opened=False)
+        page.locator("[data-browser-header-filter] [data-browser-source-filter-trigger]").click()
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.locator(
+                '#browser_header_source_filter_options [data-browser-source-filter-option="chatgpt"]'
+            ).click()
+        assert _query(page)["project"] == [CHATGPT_NO_PROJECT_FILTER]
+        expect(page.locator(SESSION_TITLES)).to_have_text(["Ordinary session"])
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.locator(SESSION_TITLES).click()
+        expect(page.locator(".browser-heading-copy h2")).to_have_text("Ordinary session")
+        expect(page.get_by_role("link", name="Back to No project", exact=True)).to_be_visible()
+        expect(page.locator("[data-browser-session-scope-remove]")).to_have_attribute(
+            "aria-label", "Search chats without a project",
+        )
+        page.locator("#browser_search_input").fill("sharedneedle")
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.locator("#browser_search_input").press("Enter")
+        assert _query(page)["project"] == [CHATGPT_NO_PROJECT_FILTER]
+        expect(page.locator(".browser-chat-message-content")).to_have_text(["sharedneedle"])
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.get_by_role("link", name="Back to No project", exact=True).click()
+        assert _query(page)["project"] == [CHATGPT_NO_PROJECT_FILTER]
+        expect(page.locator(SESSION_TITLES)).to_have_text(["Ordinary session"])
+        expect(page.locator("#browser_search_input")).to_have_attribute(
+            "data-browser-search-submit-copy", "Press Enter to search chats without a project.",
+        )
+        page.locator("[data-browser-header-filter] [data-browser-source-filter-trigger]").click()
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.locator(
+                '#browser_header_source_filter_options [data-browser-source-filter-option="gemini"]'
+            ).click()
+        assert "project" not in _query(page)
+        _assert_no_horizontal_overflow(page)
+        assert not errors
     finally:
         context.close()

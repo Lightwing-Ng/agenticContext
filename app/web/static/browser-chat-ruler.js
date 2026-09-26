@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.0 */
+/* Code version: v1.1.0-codex.0 */
 
 (function initializeBrowserChatRulers() {
     "use strict";
@@ -27,6 +27,32 @@
         let previewHovered = false;
         let closeTimer = 0;
         let frame = 0;
+        let lensFrame = 0;
+        let pointerY = null;
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+        const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)");
+
+        function updateMagnification() {
+            if (lensFrame) window.cancelAnimationFrame(lensFrame);
+            lensFrame = 0;
+            const focusBounds = focusedEntry?.marker.matches(":focus-visible")
+                ? focusedEntry.marker.getBoundingClientRect() : null;
+            const center = pointerY ?? (focusBounds ? focusBounds.top + focusBounds.height / 2 : null);
+            const enabled = center !== null && !reducedMotion.matches && finePointer.matches;
+            // Transform the strokes only, keeping message layout and pointer targets stable.
+            entries.forEach(({ marker }) => {
+                const bounds = marker.getBoundingClientRect();
+                const radius = Math.max(1, bounds.height) * 3;
+                const distance = enabled ? Math.abs(bounds.top + bounds.height / 2 - center) / radius : 1;
+                const influence = distance < 1 ? (1 + Math.cos(Math.PI * distance)) / 2 : 0;
+                marker.style.setProperty("--chat-marker-scale", String(1 + influence * 0.6));
+                marker.style.setProperty("--chat-marker-shift", `${-3 * influence}px`);
+            });
+        }
+
+        function scheduleMagnification() {
+            if (!lensFrame) lensFrame = window.requestAnimationFrame(updateMagnification);
+        }
 
         function setDescription(entry, visible) {
             if (!entry) return;
@@ -65,7 +91,7 @@
             const content = entry.message.querySelector(".browser-chat-message-content");
             const text = (content?.textContent || "").replace(/\s+/g, " ").trim();
             const characters = Array.from(text);
-            previewLabel.textContent = `${author}${number ? ` #${number}` : ""}`;
+            previewLabel.textContent = `${author}${number ? ` · ${number}` : ""}`;
             previewCopy.textContent = characters.length > 240
                 ? `${characters.slice(0, 240).join("")}…`
                 : text || "No text preview available.";
@@ -103,6 +129,7 @@
                 entry.marker.tabIndex = entry === (focusedEntry || closest) ? 0 : -1;
             });
             positionPreview();
+            updateMagnification();
         }
 
         function scheduleUpdate() {
@@ -116,15 +143,19 @@
             const padding = Number.parseFloat(window.getComputedStyle(scrollport).paddingTop) || 0;
             const top = scrollport.scrollTop + entry.message.getBoundingClientRect().top
                 - scrollport.getBoundingClientRect().top - scrollport.clientTop - padding;
-            const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-            scrollport.scrollTo({ top: Math.max(0, top), behavior: reducedMotion ? "instant" : "smooth" });
+            scrollport.scrollTo({ top: Math.max(0, top), behavior: reducedMotion.matches ? "instant" : "smooth" });
             scheduleUpdate();
         }
 
         entries.forEach((entry, index) => {
-            entry.marker.addEventListener("pointerenter", () => {
+            entry.marker.addEventListener("pointerenter", (event) => {
                 hoveredEntry = entry;
                 dismissedEntry = null;
+                if (event.pointerType !== "touch") {
+                    const bounds = entry.marker.getBoundingClientRect();
+                    pointerY = Number.isFinite(event.clientY) ? event.clientY : bounds.top + bounds.height / 2;
+                    scheduleMagnification();
+                }
                 showPreview(entry);
             });
             entry.marker.addEventListener("pointerleave", () => {
@@ -162,6 +193,18 @@
                 entries[targetIndex].marker.focus({ preventScroll: true });
             });
         });
+
+        ruler.addEventListener("pointermove", (event) => {
+            if (event.pointerType === "touch") return;
+            pointerY = event.clientY;
+            scheduleMagnification();
+        });
+        ruler.addEventListener("pointerleave", () => {
+            pointerY = null;
+            scheduleMagnification();
+        });
+        reducedMotion.addEventListener("change", scheduleMagnification);
+        finePointer.addEventListener("change", scheduleMagnification);
 
         preview.addEventListener("pointerenter", () => {
             previewHovered = true;

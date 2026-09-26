@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.146.7-codex.0
+# Code version: v1.147.5-codex.0
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from app.core.resource_persistence import (
 )
 from app.web.app import create_app
 from app.web.presentation import (
+    cached_message_source_links,
     format_media_size,
     reconcile_cached_snapshot,
     render_agent_response,
@@ -904,7 +905,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.151.4-codex.0"
+                expected_style_version = "style-v2.156.0-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1331,7 +1332,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.151.4-codex.0', local_body)
+        self.assertIn('style-v2.156.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -5353,7 +5354,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="browser_filter_form"', body)
         self.assertIn('form="browser_filter_form"', body)
         self.assertGreater(body.index("data-browser-search"), body.index("</aside>"))
-        self.assertIn("browser-search.css?v=browser-search-v1.4.2-codex.1", body)
+        self.assertIn("browser-search.css?v=browser-search-v1.4.4-codex.0", body)
         self.assertIn('type="module"', body)
         self.assertIn("browser-search.js?v=browser-search-v2.2.1-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
@@ -5607,7 +5608,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.151.4-codex.0", body)
+            self.assertIn("style-v2.156.0-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.36.0-codex.0', body)
@@ -6117,6 +6118,146 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(format_media_size(1_024), "1.00 KiB")
         self.assertEqual(format_media_size(1_805_089), "1.72 MiB")
         self.assertEqual(format_media_size(1_024**3), "1.00 GiB")
+
+    def test_browser_chat_bubbles_keep_message_metadata_and_unique_sources(self) -> None:
+        conversation_url = "https://chatgpt.com/c/bubble-metadata"
+        inline_url = "https://example.com/inline?a=1&b=2"
+        metadata_url = "https://example.com/metadata-only"
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root) / "local_store"
+            rows = []
+            for index, (content_text, content_html, source_links, timestamp) in enumerate(
+                (
+                    (f"Read [the source]({inline_url}).", "", [inline_url], ""),
+                    (
+                        "Rich text with sources",
+                        '<p>Read <a href="https://example.com/inline?a=1&amp;b=2">the source</a>.</p>',
+                        [inline_url, metadata_url],
+                        "2026-09-26T05:00:00Z",
+                    ),
+                )
+            ):
+                rows.append(
+                    {
+                        "schema_version": 1,
+                        "platform": "chatgpt",
+                        "conversation_id": "bubble-metadata",
+                        "conversation_url": conversation_url,
+                        "conversation_title": "Session heading only",
+                        "message_key": f"bubble-metadata:{index}",
+                        "turn_index": index,
+                        "message_index": index,
+                        "role": "user" if index == 0 else "assistant",
+                        "author_label": "You" if index == 0 else "ChatGPT",
+                        "content_text": content_text,
+                        "content_html": content_html,
+                        "content_sha256": f"bubble-hash-{index}",
+                        "source_links": source_links,
+                        "model_label": "",
+                        "first_seen_at": "",
+                        "last_seen_at": timestamp,
+                    }
+                )
+            write_parquet_rows_atomic(
+                root / "llm" / "chatgpt" / "history.parquet",
+                rows,
+                CHATGPT_HISTORY_SCHEMA,
+            )
+            app = create_app(root)
+            session_id = query_chat_history(root, source="chatgpt", session_view=True).sessions[0].stable_id
+            with app.test_client() as client:
+                detail = client.get(
+                    f"/browser?source=chatgpt&view=text&session_view=1&session={session_id}"
+                )
+                combined = client.get("/browser?source=chatgpt&view=text&session_view=0")
+
+        for response in (detail, combined):
+            self.assertEqual(response.status_code, 200)
+            bubbles = re.findall(
+                r'<article\b[^>]*class="browser-chat-message [^"]*"[^>]*>(.*?)</article>',
+                response.get_data(as_text=True),
+                re.DOTALL,
+            )
+            self.assertEqual(len(bubbles), 2)
+            for bubble in bubbles:
+                self.assertNotIn("browser-chat-message-title", bubble)
+                self.assertNotIn("Session heading only", bubble)
+                self.assertNotIn("Unknown time", bubble)
+                self.assertRegex(
+                    bubble,
+                    r'(?s)class="browser-chat-message-meta".*class="browser-chat-message-number '
+                    r'investment-holdings-allocation-badge" aria-label="Message [12]"',
+                )
+                self.assertNotRegex(bubble, r">#[12]</span>")
+                self.assertEqual(bubble.count('href="https://example.com/inline?a=1&amp;b=2"'), 1)
+            self.assertEqual(sum('<time ' in bubble for bubble in bubbles), 1)
+            self.assertEqual(sum('href="https://example.com/metadata-only"' in bubble for bubble in bubbles), 1)
+        detail_bubbles = re.findall(r'<article\b[^>]*>(.*?)</article>', detail.get_data(as_text=True), re.DOTALL)
+        self.assertEqual(sum('class="browser-chat-message-links"' in bubble for bubble in detail_bubbles), 1)
+        self.assertNotIn("Open session</a>", detail.get_data(as_text=True))
+        self.assertEqual(combined.get_data(as_text=True).count("Open session</a>"), 2)
+
+    def test_cached_message_sources_deduplicate_only_displayed_links(self) -> None:
+        inline_url = "https://example.com/source?a=1&b=2"
+        other_url = "https://example.com/other"
+        cases = (
+            (f"[Inline]({inline_url})", "", (other_url,)),
+            (inline_url, "", (inline_url, other_url)),
+            (f"`[Code]({inline_url})`", "", (inline_url, other_url)),
+            (
+                f"[Markdown fallback]({inline_url})",
+                '<p>Rich text without a link</p>',
+                (inline_url, other_url),
+            ),
+            (
+                "Fallback",
+                '<a href="https://example.com/source?a=1&amp;b=2">Inline</a>',
+                (other_url,),
+            ),
+            (
+                "Fallback",
+                '<script><a href="https://example.com/source?a=1&amp;b=2">Hidden</a></script>',
+                (inline_url, other_url),
+            ),
+            (
+                "Fallback",
+                '<a href="https://example.com/source?a=1&amp;b=2"><svg>Icon</svg></a>',
+                (inline_url, other_url),
+            ),
+            (
+                "Fallback",
+                '<a href="https://example.com/source?a=1&amp;b=2"> &nbsp;\n </a>',
+                (inline_url, other_url),
+            ),
+            (
+                f"[![Source image](https://example.com/image.png)]({inline_url})",
+                "",
+                (other_url,),
+            ),
+        )
+        for content_text, content_html, expected in cases:
+            with self.subTest(content_text=content_text, content_html=content_html):
+                self.assertEqual(
+                    cached_message_source_links(
+                        (inline_url, other_url, other_url),
+                        render_cached_message(content_text, content_html),
+                    ),
+                    expected,
+                )
+
+    def test_cached_message_sources_match_rendered_unicode_urls_without_losing_destinations(self) -> None:
+        for source_link in (
+            "https://zh.wikipedia.org/wiki/人工智能",
+            "https://example.com/search?q=人工智能&language=中文#引用",
+            "https://例子.中国/来源",
+        ):
+            with self.subTest(source_link=source_link):
+                distinct_destination = source_link + "-different"
+                rendered = render_cached_message(f"[Source]({source_link})")
+                self.assertEqual(
+                    cached_message_source_links((source_link, distinct_destination), rendered),
+                    (distinct_destination,),
+                )
 
     def test_prompt_markdown_renderer_escapes_embedded_html(self) -> None:
         rendered = str(render_prompt_markdown("**Safe** <script>alert('x')</script> 简体中文"))

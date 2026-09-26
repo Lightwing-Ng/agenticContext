@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.14-codex.0
+Code version: v1.88.0-codex.0
 """
 
 import hashlib
@@ -47,7 +47,7 @@ def test_process_list_catalog_publishes_the_production_component() -> None:
     catalog_template = (
         PROJECT_ROOT / "app/web/templates/settings_style_tokens.html"
     ).read_text(encoding="utf-8")
-    assert "style-v2.151.4-codex.0" in catalog_template
+    assert "style-v2.156.0-codex.0" in catalog_template
 
 
 def test_agent_session_scrollport_preserves_physical_effect_bleed() -> None:
@@ -1330,7 +1330,7 @@ def test_style_token_component_catalog_consumes_the_sibling_control_contracts() 
         "--scrollable-data-table-header-material: var(--frosted-glass-background);",
         "--shared-select-trigger-material: var(--frosted-glass-background);",
         "--shared-select-trigger-material-hover: var(--frosted-glass-background-hover);",
-        "--shared-select-dropdown-material: var(--frosted-glass-background);",
+        "--shared-select-dropdown-surface-opacity: 62%;",
         "--shared-select-border: var(--frosted-glass-border);",
         "--shared-select-shadow: var(--frosted-glass-shadow);",
         "--shared-select-shadow-hover: var(--frosted-glass-shadow-hover);",
@@ -1456,6 +1456,38 @@ def test_browser_filter_select_uses_one_shared_frosted_surface() -> None:
     assert "position: relative;" in select_shell_rule
     assert "z-index: var(--layer-global-popover);" in stylesheet
     assert "display: grid;" in open_rule
+    settings_host_start = stylesheet.index(
+        "#settings_workspace .workspace-article-card:has(> [data-settings-content-scrollport]) {"
+    )
+    settings_host = stylesheet[
+        settings_host_start:stylesheet.index("\n}", settings_host_start)
+    ]
+    assert "backdrop-filter: none;" in settings_host
+    assert "-webkit-backdrop-filter: none;" in settings_host
+    assert "background:" not in settings_host
+    assert "border:" not in settings_host
+    assert "box-shadow:" not in settings_host
+    assert (
+        ".style-token-demo:has(.browser-filter-select.is-open),\n"
+        ".style-token-demo:has(.agent-combobox.is-agent-combobox-open) {\n"
+        "    z-index: var(--layer-global-popover);"
+        in stylesheet
+    )
+    material = re.search(
+        r"--shared-select-dropdown-material:\s*(.*?);", stylesheet, re.DOTALL,
+    ).group(1)
+    assert "var(--frosted-glass-background)" not in material
+    assert "var(--frosted-glass-opaque-background)" not in material
+    for fragment in (
+        "var(--theme-glass-highlight) 56%, transparent",
+        "var(--theme-glass-highlight) 16%, transparent",
+        "var(--theme-background) var(--shared-select-dropdown-surface-opacity), transparent",
+    ):
+        assert fragment in material
+    assert (
+        '.browser-filter-select[data-shared-select-kind="agent-operating-system"] {'
+        not in stylesheet
+    )
 
 
 def test_shared_select_reuses_regular_labels_pill_options_and_browser_height() -> None:
@@ -2105,10 +2137,10 @@ def test_browser_prompt_remarks_use_pill_tags_and_stored_controls() -> None:
     assert ".browser-prompt-remark-add:focus-visible" not in stylesheet
     input_start = stylesheet.index('.browser-prompt-remark-editor input[type="text"] {')
     input_rule = stylesheet[input_start:stylesheet.index("\n}", input_start)]
-    assert "min-height: 32px;" in input_rule
-    assert "height: 32px;" in input_rule
+    assert "min-height: 30px;" in input_rule
+    assert "height: 30px;" in input_rule
     assert "border: 0;" in input_rule
-    assert "border-radius: var(--radius-panel);" in input_rule
+    assert "border-radius: var(--radius-pill);" in input_rule
     assert "font-size: var(--font-size-3);" in input_rule
 
 
@@ -2290,9 +2322,21 @@ def test_browser_picker_arrow_matches_the_shared_select_arrow() -> None:
         "background-color: currentColor;",
         "mask: var(--shared-select-chevron-mask) center / contain no-repeat;",
         "-webkit-mask: var(--shared-select-chevron-mask) center / contain no-repeat;",
+        "transform: rotate(var(--shared-select-chevron-closed-rotation));",
         "transition: transform var(--shared-select-chevron-transition-duration) var(--motion-standard);",
     ):
         assert token in arrow_rule
+    assert "--shared-select-chevron-closed-rotation: -90deg;" in stylesheet
+    assert "--shared-select-chevron-open-rotation: 0deg;" in stylesheet
+    for selector in (
+        ".cache-source-switcher-combobox.is-cache-source-menu-open .browser-picker-trigger-chevron {",
+        ".browser-session-panel.is-browser-menu-open .browser-picker-trigger-chevron {",
+        ".agent-combobox.is-agent-combobox-open .browser-picker-trigger-chevron {",
+        '.trade-strategy-trigger[aria-expanded="true"] .browser-picker-trigger-chevron {',
+    ):
+        rule_start = stylesheet.index(selector)
+        rule = stylesheet[rule_start:stylesheet.index("\n}", rule_start)]
+        assert "transform: rotate(var(--shared-select-chevron-open-rotation));" in rule
 
     select_start = stylesheet.index(".browser-filter-form select.form-select {")
     select_rule = stylesheet[select_start:stylesheet.index("\n}", select_start)]
@@ -2404,7 +2448,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.151.4-codex.0 */",
+        "/* Code version: v2.156.0-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -3846,7 +3890,8 @@ def test_circular_icon_button_has_canonical_tokens_and_real_consumers() -> None:
     ).read_text(encoding="utf-8")
 
     for token in (
-        "--circular-icon-button-size: 36px;",
+        "--circular-icon-button-size: 30px;",
+        "--circular-icon-button-size: 44px;",
         "--circular-icon-button-icon-size: 18px;",
         "--circular-icon-button-material: var(--frosted-glass-background);",
         "--circular-icon-button-background: var(--circular-icon-button-material);",
@@ -3859,6 +3904,23 @@ def test_circular_icon_button_has_canonical_tokens_and_real_consumers() -> None:
     assert 'class="circular-icon-button settings-round-icon-button style-token-round-icon-demo"' in style_token_template
     assert 'class="circular-icon-button sidebar-toggle"' in browser_template
     assert 'class="circular-icon-button browser-media-round-action browser-media-source-link"' in browser_template
+
+    for invariant in (
+        "--sidebar-toggle-center-offset: calc(var(--layout-global-anchor-top) + (var(--settings-round-icon-button-size) / 2));",
+        "--layout-global-action-inline-size: var(--settings-round-icon-button-size);",
+        "--workspace-title-rail-control-height: var(--settings-round-icon-button-size);",
+        "--workspace-title-rail-collapsed-pad-inline-start: calc(var(--settings-round-icon-button-size) + 22px);",
+        "--workspace-modal-close-size: 24px;",
+        "--workspace-modal-icon-size: 36px;",
+        "--process-list-marker-size: 32px;",
+    ):
+        assert invariant in stylesheet
+    title_start = stylesheet.index(
+        "#workspace_panel .settings-workspace-header.settings-shell-style-tokens:first-child > .settings-summary-card {"
+    )
+    title_rule = stylesheet[title_start:stylesheet.index("\n}", title_start)]
+    assert "height: var(--workspace-title-rail-height);" in title_rule
+    assert "height: 46px;" not in title_rule
 
 
 def test_pagination_hover_and_focus_share_accent_color_and_motion_tokens() -> None:

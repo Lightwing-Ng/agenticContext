@@ -1,4 +1,4 @@
-<!-- Code version: v1.78.3-codex.0 -->
+<!-- Code version: v1.81.1-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,17 +9,18 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.151.4-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.156.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.2-codex.1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.4-codex.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.36.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.0.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.1.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.0.0-codex.0') }}"></script>
     <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.6.0-codex.0') }}"></script>
@@ -31,8 +32,12 @@
 {% from "_pagination.html" import render_browser_pagination %}
 {% from "_notice_banner.html" import render_notice_banner %}
 {% set is_zhihu_text = filters.view == "text" and filters.source == "zhihu" %}
-{% macro render_browser_message_time(value) %}
+{% set no_project_filter = "__no_project__" %}
+{% set is_no_project = filters.project == no_project_filter %}
+{% set project_search_copy = "Press Enter to search chats without a project." if is_no_project else ("Press Enter to search this project." if filters.project else "Press Enter to search all cached text.") %}
+{% macro render_browser_message_time(value, hide_unknown=false) %}
     {% set timestamp_label = format_chat_message_timestamp_label(value) %}
+    {% if not hide_unknown or timestamp_label != "Unknown time" %}
     <time datetime="{{ value }}" class="browser-session-message-time">
         {% if timestamp_label == "Unknown time" %}
         <span class="browser-session-message-time-unknown">{{ timestamp_label }}</span>
@@ -44,6 +49,7 @@
         {% endif %}
         {% endif %}
     </time>
+    {% endif %}
 {% endmacro %}
 {% macro render_browser_media_previews(media_refs) %}
     {% if media_refs %}
@@ -227,6 +233,7 @@
                             aria-label="Filter by project"
                         >
                             <option value="">All projects</option>
+                            <option value="{{ no_project_filter }}" {% if is_no_project %}selected{% endif %}>No project</option>
                             {% for project in text_page.project_options %}
                             <option value="{{ project.key }}" {% if filters.project == project.key %}selected{% endif %}>{{ project.name }}</option>
                             {% endfor %}
@@ -290,7 +297,7 @@
                     <div class="browser-content-toolbar">
                         <div class="browser-session-detail-actions browser-local-resources-header-actions{% if filters.view == 'text' and text_page.session_detail %} browser-session-detail-actions--session{% endif %}" data-browser-local-resources-header-actions>
                             {% if filters.view == "text" and text_page.session_detail %}
-                            <a class="secondary-button browser-session-back-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">{{ "Back to all answerers" if is_zhihu_text else ("Back to project sessions" if filters.project else "Back to all sessions") }}</a>
+                            <a class="secondary-button browser-session-back-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">{{ "Back to all answerers" if is_zhihu_text else ("Back to No project" if is_no_project else ("Back to project sessions" if filters.project else "Back to all sessions")) }}</a>
                             <nav class="browser-session-neighbor-nav" aria-label="{{ 'Answerer navigation' if is_zhihu_text else 'Session navigation' }}">
                                 {% if text_page.previous_session %}
                                 <a
@@ -361,7 +368,7 @@
                                     {% if filters.view == "text" and text_page.session_detail %}
                                     <span class="browser-prompt-tag browser-search-session-tag" data-browser-session-tag>
                                         <span>{{ text_page.current_session.latest_author_label if is_zhihu_text else "This session" }}</span>
-                                        <button type="button" class="browser-prompt-tag-remove" data-browser-session-scope-remove aria-label="{{ 'Search all cached Zhihu answers' if is_zhihu_text else ('Search this project' if filters.project else 'Search all cached text') }}" title="{{ 'Remove answerer scope' if is_zhihu_text else 'Remove session filter' }}">×</button>
+                                        <button type="button" class="browser-prompt-tag-remove" data-browser-session-scope-remove aria-label="{{ 'Search all cached Zhihu answers' if is_zhihu_text else ('Search chats without a project' if is_no_project else ('Search this project' if filters.project else 'Search all cached text')) }}" title="{{ 'Remove answerer scope' if is_zhihu_text else 'Remove session filter' }}">×</button>
                                     </span>
                                     {% endif %}
                                     <input
@@ -384,8 +391,8 @@
                                         data-browser-search-input
                                         data-browser-search-global-scope="{{ 'true' if filters.view == 'text' and not text_page.session_detail else 'false' }}"
                                         data-browser-search-scope="{{ 'answerer' if is_zhihu_text and text_page.session_detail else ('session' if filters.view == 'text' and text_page.session_detail else 'global') }}"
-                                        data-browser-search-global-submit-copy="{{ 'Press Enter to search all cached Zhihu answers.' if is_zhihu_text else ('Press Enter to search this project.' if filters.project else 'Press Enter to search all cached text.') }}"
-                                        data-browser-search-submit-copy="{{ 'Press Enter to search this answerer’s answers.' if is_zhihu_text and text_page.session_detail else ('Press Enter to search this session.' if filters.view == 'text' and text_page.session_detail else (('Press Enter to search this project.' if filters.project else 'Press Enter to search all cached text.') if filters.view == 'text' else 'Press Enter to search this cache.')) }}"
+                                        data-browser-search-global-submit-copy="{{ 'Press Enter to search all cached Zhihu answers.' if is_zhihu_text else project_search_copy }}"
+                                        data-browser-search-submit-copy="{{ 'Press Enter to search this answerer’s answers.' if is_zhihu_text and text_page.session_detail else ('Press Enter to search this session.' if filters.view == 'text' and text_page.session_detail else (project_search_copy if filters.view == 'text' else 'Press Enter to search this cache.')) }}"
                                     >
                                     <div
                                         class="browser-search-suggestions"
@@ -823,11 +830,14 @@
                     {% elif filters.view == "text" and (text_page.session_detail or (not filters.session_view and text_page.items)) %}
                     {% if text_page.items and not is_zhihu_text %}
                     <div class="browser-chat-pane" data-browser-chat-pane>
+                    <div class="browser-chat-effects" data-chat-effects aria-hidden="true" inert></div>
                     <div class="local-store-pagination-host browser-chat-list" data-chat-scrollport tabindex="0" aria-label="{{ ('Cached ' ~ (text_page.current_session.source|capitalize) ~ ' session messages') if text_page.session_detail else 'Cached messages' }}">
                         {% for message in text_page.items %}
                         {% set message_number = ((text_page.current_page - 1) * text_page.page_size) + loop.index %}
                         {% set is_media_response = message.role == "assistant" and message.media_refs and message.content_text.lstrip().startswith("{") %}
                         {% set show_media_previews = is_media_response and ('"size"' in message.content_text or '"n"' in message.content_text) %}
+                        {% set rendered_message = render_cached_message(message.content_text, message.content_html) if not is_media_response else "" %}
+                        {% set footer_source_links = cached_message_source_links(message.source_links, rendered_message) %}
                         {% set role_icon = namespace(filename="") %}
                         {% if message.role == "assistant" %}
                             {% for source in local_resource_text_sources %}
@@ -849,17 +859,9 @@
                                     </span>
                                     {% endif %}
                                     <span class="{{ 'browser-chat-role-label' if role_icon.filename else ('browser-chat-message-role browser-chat-message-role-' ~ message.role) }}" id="browser_chat_message_role_{{ message.stable_id }}">{{ message.author_label }}</span>
-                                    <span class="browser-chat-message-number">#{{ message_number }}</span>
-                                    {% if not text_page.session_detail and message.conversation_title %}
-                                    {% if message.conversation_url %}
-                                    <a class="browser-chat-message-title" lang="zh-CN" href="{{ message.conversation_url }}" target="_blank" rel="noopener noreferrer">{{ message.conversation_title }}</a>
-                                    {% else %}
-                                    <span class="browser-chat-message-title" lang="zh-CN">{{ message.conversation_title }}</span>
-                                    {% endif %}
-                                    {% endif %}
                                 </div>
                                 <div class="browser-chat-message-meta">
-                                    {{ render_browser_message_time(message.last_seen_at) }}
+                                    {{ render_browser_message_time(message.last_seen_at, hide_unknown=true) }}
                                 {% if message.role == "user" %}
                                     {% set message_prompt_key = prompt_pointer_key(message.source, message.conversation_id, message.message_key) %}
                                     <div class="browser-session-message-actions">
@@ -876,6 +878,7 @@
                                         ><span class="icon browser-prompt-add-icon" aria-hidden="true"></span><span class="browser-prompt-add-feedback" data-prompt-add-feedback aria-live="polite"></span></button>
                                     </div>
                                 {% endif %}
+                                    <span class="browser-chat-message-number investment-holdings-allocation-badge" aria-label="Message {{ '{:,}'.format(message_number) }}"><span class="investment-holdings-allocation-badge-value"><span class="workspace-metric-value-major">{% for glyph in '{:,}'.format(message_number) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}</span></span></span>
                                 </div>
                             </header>
                             {% if not is_media_response %}
@@ -884,12 +887,12 @@
                                 id="browser_session_message_{{ message.stable_id }}"
                                 lang="zh-CN"
                                 data-browser-session-message-source
-                            >{{ render_cached_message(message.content_text, message.content_html) }}</div>
+                            >{{ rendered_message }}</div>
                             {% endif %}
                             {{ render_browser_media_previews(message.media_refs if show_media_previews else []) }}
-                            {% if message.source_links or (message.conversation_url and not text_page.session_detail) %}
+                            {% if footer_source_links or (message.conversation_url and not text_page.session_detail) %}
                             <footer class="browser-chat-message-links" aria-label="Sources for message {{ message_number }}">
-                                {% for source_link in message.source_links %}
+                                {% for source_link in footer_source_links %}
                                 <a class="browser-chat-message-link" href="{{ source_link }}" target="_blank" rel="noopener noreferrer" title="{{ source_link }}" aria-label="Open source link {{ loop.index }}">Source {{ loop.index }}</a>
                                 {% endfor %}
                                 {% if message.conversation_url and not text_page.session_detail %}
@@ -1031,6 +1034,7 @@
                                                 <input type="hidden" name="session_view" value="1">
                                                 <input type="hidden" name="q" value="{{ filters.q }}">
                                                 <input type="hidden" name="sort" value="{{ filters.sort }}">
+                                                {% if filters.project %}<input type="hidden" name="project" value="{{ filters.project }}">{% endif %}
                         <div class="trade-strategy-combobox browser-source-filter-combobox scrollable-data-table-filter-field" data-browser-header-filter data-browser-source-filter>
                             <input type="hidden" name="source" value="{{ filters.source }}" data-browser-source-filter-input>
                             <button
@@ -1192,7 +1196,7 @@
                     <div class="browser-empty-state" role="status">
                         <span class="browser-empty-icon browser-empty-icon-text" aria-hidden="true"></span>
                         <h3>No text messages match these filters.</h3>
-                        <p>{{ "Try another project or search term." if filters.project else "Try a broader chat source or search term." }}</p>
+                        <p>{{ "Try another Project filter or search term." if is_no_project else ("Try another project or search term." if filters.project else "Try a broader chat source or search term.") }}</p>
                     </div>
                     {% elif is_zhihu_text %}
                     <div class="browser-empty-state" role="status">

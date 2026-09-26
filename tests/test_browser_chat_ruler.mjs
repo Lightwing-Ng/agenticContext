@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.0 */
+/* Code version: v1.1.0-codex.0 */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -6,18 +6,21 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../app/web/static/browser-chat-ruler.js", import.meta.url), "utf8");
 
-function fixture({ count = 3, text = "A cached message.", reducedMotion = true, valid = true } = {}) {
+function fixture({ count = 3, text = "A cached message.", reducedMotion = true, finePointer = true, valid = true } = {}) {
     let document;
     function element() {
         const attrs = new Map();
         const listeners = new Map();
         const selectors = new Map();
         return {
-            attrs, selectors, dataset: {}, style: {}, hidden: false,
+            attrs, selectors, dataset: {}, style: {
+                setProperty(name, value) { this[name] = value; },
+            }, hidden: false,
             clientTop: 0, clientHeight: 240, offsetHeight: 120, textContent: "",
             getAttribute: (name) => attrs.get(name) || null,
             setAttribute: (name, value) => attrs.set(name, value),
             removeAttribute: (name) => attrs.delete(name),
+            matches: () => document.activeElement?.focusVisible !== false,
             querySelector: (selector) => selectors.get(selector) || null,
             querySelectorAll: (selector) => selectors.get(selector) || [],
             getBoundingClientRect: () => ({ top: 100, height: 240 }),
@@ -90,8 +93,12 @@ function fixture({ count = 3, text = "A cached message.", reducedMotion = true, 
     const window = element();
     Object.assign(window, {
         getComputedStyle: () => ({ paddingTop: "48px" }),
-        matchMedia: () => ({ matches: reducedMotion }),
+        matchMedia: (query) => ({
+            matches: query.includes("reduced-motion") ? reducedMotion : finePointer,
+            addEventListener() {},
+        }),
         requestAnimationFrame: (callback) => { frames.set(++identifier, callback); return identifier; },
+        cancelAnimationFrame: (id) => frames.delete(id),
         setTimeout: (callback) => { timers.set(++identifier, callback); return identifier; },
         clearTimeout: (id) => timers.delete(id),
     });
@@ -172,7 +179,7 @@ test("preview text truncates by Unicode characters, empty media is explicit, and
     const f = fixture({ text: "🧪".repeat(241) });
     f.markers[2].focus();
     assert.equal(f.copy.textContent, `${"🧪".repeat(240)}…`);
-    assert.equal(f.label.textContent, "User #3");
+    assert.equal(f.label.textContent, "User · 3");
     assert.ok(Number.parseFloat(f.preview.style.top) >= 0);
     assert.ok(Number.parseFloat(f.preview.style.top) + f.preview.offsetHeight <= f.pane.clientHeight);
     f.messages[0].selectors.delete(".browser-chat-message-content");
@@ -198,4 +205,51 @@ test("pointer can move from marker into tooltip, and click follows the motion pr
 test("empty or invalid message targets keep the ruler hidden", () => {
     assert.equal(fixture({ count: 0 }).ruler.hidden, true);
     assert.equal(fixture({ valid: false }).ruler.hidden, true);
+});
+
+test("pointer magnification follows proximity, coalesces movement and clears on exit", () => {
+    const f = fixture({ count: 7, reducedMotion: false });
+    const center = f.markers[3].getBoundingClientRect();
+    for (let index = 0; index < 20; index++) {
+        f.ruler.emit("pointermove", { clientY: center.top + center.height / 2, pointerType: "mouse" });
+    }
+    assert.equal(f.frames.size, 1);
+    f.flushFrames();
+    const scales = f.markers.map((marker) => Number(marker.style["--chat-marker-scale"]));
+    assert.equal(scales[3], 1.6);
+    assert.ok(scales[3] > scales[2] && scales[2] > scales[1] && scales[1] > scales[0]);
+    assert.ok(Math.abs(scales[2] - scales[4]) < 0.001);
+    assert.equal(f.scrolls.length, 0);
+    f.ruler.emit("pointerleave");
+    f.flushFrames();
+    assert.ok(f.markers.every((marker) => Number(marker.style["--chat-marker-scale"]) === 1));
+});
+
+test("keyboard magnifies the focused marker, while reduced motion and touch stay unscaled", () => {
+    const f = fixture({ reducedMotion: false });
+    f.markers[1].focus();
+    f.flushFrames();
+    assert.equal(Number(f.markers[1].style["--chat-marker-scale"]), 1.6);
+    assert.equal(f.scrolls.length, 0);
+    for (const options of [{ reducedMotion: true }, { reducedMotion: false, finePointer: false }]) {
+        const stable = fixture(options);
+        stable.markers[1].focus();
+        stable.flushFrames();
+        stable.ruler.emit("pointermove", { clientY: 180, pointerType: "touch" });
+        stable.flushFrames();
+        assert.ok(stable.markers.every((marker) => Number(marker.style["--chat-marker-scale"]) === 1));
+    }
+});
+
+test("click focus does not leave a sticky magnified ruler after the pointer exits", () => {
+    const f = fixture({ reducedMotion: false });
+    f.markers[1].focusVisible = false;
+    f.markers[1].emit("pointerenter", { pointerType: "mouse" });
+    f.markers[1].emit("click");
+    f.flushFrames();
+    assert.equal(Number(f.markers[1].style["--chat-marker-scale"]), 1.6);
+    f.ruler.emit("pointerleave");
+    f.flushFrames();
+    assert.equal(f.document.activeElement, f.markers[1]);
+    assert.ok(f.markers.every((marker) => Number(marker.style["--chat-marker-scale"]) === 1));
 });

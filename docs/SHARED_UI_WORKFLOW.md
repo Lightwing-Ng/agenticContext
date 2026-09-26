@@ -1,8 +1,12 @@
 # Shared UI workflow
 
-Documentation version: `v1.2.0-codex.0`
+Documentation version: `v1.4.0-codex.0`
 
 ## Shared select keyboard adapter
+
+The standard Circular icon button is 30px on desktop with an unchanged 18px glyph.
+The existing `<=900px` 44px touch adaptation remains; anchor and title-rail geometry
+must consume the size token rather than introduce independent offsets.
 
 `app/web/static/select-controller.js` v1.0.1 is vendored byte-for-byte from
 Worthward's `app/web/static/assets/js/select-controller.js`. The keyboard
@@ -15,6 +19,10 @@ native synchronization, and the explicit `SHARED_SELECT_AUTO.refresh(select)`
 boundary for programmatic option replacement or value assignment. The controller
 owns DOM focus and keyboard navigation. Both entrypoints also import the controller
 when a cached template lacks its script tag, before upgrading the original controls.
+The standard menu uses the approved Worthward Period `62%` theme-background surface
+with its `56%`-to-`16%` highlight gradient, without changing the translucent trigger.
+Shared chevrons point right while closed and down while open through `-90deg` and
+`0deg` rotation tokens; Reduced Motion makes the transition immediate.
 
 `browser-source-filter.js` and product-specific model, browser-session, source, and
 searchable pickers reuse shared visual tokens or the keyboard controller but remain

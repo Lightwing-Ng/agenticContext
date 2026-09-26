@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.54.5-codex.0
+Code version: v1.54.8-codex.0
 """
 
 from __future__ import annotations
@@ -1554,7 +1554,7 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
     disposable_browser: Browser,
     seeded_chatgpt_table_browser_server_url: str,
 ) -> None:
-    """Keep card effects visible while long message tables scroll within their own surface."""
+    """Keep external card shadows with compact padding and independently scrollable tables."""
     page, context = _open_page(
         disposable_browser,
         f"{seeded_chatgpt_table_browser_server_url}/browser?view=text&source=chatgpt&sort=newest&session_view=1",
@@ -1578,6 +1578,7 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
             )
             cards = page.locator(".browser-chat-list .browser-chat-message")
             expect(cards).to_have_count(2)
+            expect(page.locator(".browser-chat-effects [data-chat-effect-for]").first).to_be_attached()
             table_shell = cards.nth(1).get_by_role("region", name="Scrollable message table")
             expect(table_shell).to_be_visible()
             geometry = page.locator(".browser-chat-list").evaluate("""list => {
@@ -1614,6 +1615,9 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
                         cards[1].querySelector('.browser-chat-message-content')
                     ).overflow,
                     cardShadow: getComputedStyle(cards[0]).boxShadow,
+                    externalShadow: getComputedStyle(pane.querySelector(
+                        `[data-chat-effect-for="${cards[0].id}"]`
+                    )).boxShadow,
                     shellOverflowX: getComputedStyle(tableShell).overflowX,
                     shellClientWidth: tableShell.clientWidth,
                     shellScrollWidth: tableShell.scrollWidth,
@@ -1642,15 +1646,18 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
                 assert metric_rect["top"] >= metric_grid_rect["top"] - 1, (width, height, geometry)
                 assert metric_rect["bottom"] <= metric_grid_rect["bottom"] + 1, (width, height, geometry)
             assert geometry["listTop"] >= metric_grid_rect["bottom"] + 7, (width, height, geometry)
-            assert geometry["topBleed"] >= 47, (width, height, geometry)
-            assert geometry["leftBleed"] >= 47, (width, height, geometry)
-            assert geometry["rightBleed"] >= 47, (width, height, geometry)
+            assert geometry["topBleed"] == pytest.approx(8, abs=1), (width, height, geometry)
+            assert geometry["leftBleed"] == pytest.approx(8, abs=1), (width, height, geometry)
+            assert geometry["rightBleed"] == pytest.approx(8, abs=1), (width, height, geometry)
             assert geometry["listOverflowX"] == "hidden", (width, height, geometry)
             assert geometry["listOverflowY"] == "auto", (width, height, geometry)
             assert geometry["listScrollHeight"] > geometry["listClientHeight"], (width, height, geometry)
             assert geometry["cardOverflow"] == "visible", (width, height, geometry)
             assert geometry["contentOverflow"] == "visible", (width, height, geometry)
-            assert geometry["cardShadow"] != "none", (width, height, geometry)
+            assert geometry["cardShadow"] == "none" or all(
+                "inset" in layer for layer in re.split(r",\s*(?![^()]*\))", geometry["cardShadow"])
+            ), (width, height, geometry)
+            assert geometry["externalShadow"] != "none", (width, height, geometry)
             assert geometry["shellOverflowX"] == "auto", (width, height, geometry)
             assert geometry["tableLayout"] == "auto", (width, height, geometry)
             assert geometry["headerBackground"] != "rgba(0, 0, 0, 0)", (width, height, geometry)
@@ -1684,7 +1691,7 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
                 assert scrolled["scrollTop"] > 0, (width, height, scrolled)
                 assert all(scrolled["metricsUncovered"]), (width, height, scroll_fraction, scrolled)
                 if scroll_fraction == 1:
-                    assert scrolled["clearance"] >= 47, (width, height, scrolled)
+                    assert scrolled["clearance"] == pytest.approx(8, abs=1), (width, height, scrolled)
             if (width, height) in {(996, 801), (390, 844)}:
                 theme_toggle = page.locator("#global_theme_toggle")
                 theme_toggle.click()
@@ -11772,6 +11779,10 @@ def test_saved_prompt_columns_fit_and_keep_long_content_actions_usable(
             "expected => window.__savedPromptCopiedText === expected", arg=expected_content,
         )
         input_field = shell.locator("[data-prompt-remark-input]")
+        assert input_field.evaluate("node => node.getBoundingClientRect().height") == 30
+        expect(input_field).to_have_css("border-radius", "999px")
+        assert page.locator(".browser-search-input").evaluate("node => node.getBoundingClientRect().height") == 30
+        assert page.locator(".browser-search-control").evaluate("node => node.getBoundingClientRect().height") == 32
         input_field.fill("Layout checked")
         input_field.press("Enter")
         added_tag = shell.locator('[data-prompt-tag][data-prompt-remark="Layout checked"]')
@@ -12080,8 +12091,8 @@ def test_cached_messages_read_as_conversation_cards(
         card = cards.locator("article.browser-chat-message")
         expect(card).to_have_count(1)
         expect(card.locator(".browser-chat-message-role")).to_have_text("You")
-        expect(card.locator(".browser-chat-message-number")).to_have_text("#1")
-        expect(card.locator(".browser-chat-message-title")).to_have_text("ChatGPT timestamp wrapping")
+        expect(card.locator(".browser-chat-message-number.investment-holdings-allocation-badge")).to_have_text("1")
+        expect(card.locator(".browser-chat-message-title")).to_have_count(0)
         expect(card.locator(".browser-chat-message-content")).to_have_text(
             "A timestamp layout regression fixture."
         )

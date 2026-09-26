@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.16.0-codex.0`
+Documentation version: `v1.20.0-codex.0`
 
 ## Authority
 
@@ -120,13 +120,35 @@ model, browser-session, source, multi-select, or searchable pickers may reuse th
 tokens and controller without being treated as standard-select consumers.
 
 The standard trigger is a `30px` pill and its options have a `36px` minimum height.
-The trigger and menu use the shared translucent Frosted Glass material, semantic
-border, shadow, hover shadow, and blur aliases. The menu opens `4px` from the trigger,
+The trigger uses the shared translucent Frosted Glass material. The menu adopts the
+user-approved Worthward Backtest Period surface: a theme-highlight `56%`-to-`16%`
+gradient over a theme-background layer controlled by
+`--shared-select-dropdown-surface-opacity: 62%`. This dedicated menu alias does not
+change the general Frosted Glass material or notification variant. Both consumers
+retain the semantic border, shadow, hover shadow, and `12px` blur aliases.
+The menu opens `4px` from the trigger,
 uses `10px` padding and the soft radius, and is bounded by `min(360px, 55vh)`. Its
-`12px` by `8px` current-color chevron points down when closed and rotates `180deg`
-when open over `180ms`; Reduced Motion removes the transition. Text-only options use
+`12px` by `8px` current-color down-chevron points right while closed through
+`--shared-select-chevron-closed-rotation: -90deg` and points down while open through
+`--shared-select-chevron-open-rotation: 0deg`. The `90deg` transition uses `180ms`;
+Reduced Motion removes it. Text-only options use
 only check and text columns. Standard fields stay within the smaller of their parent
 inline size and the shared `384px` control width.
+
+The Settings operating-system adapter and Shared select catalog specimen consume
+the same menu material and direction tokens without an OS-specific material override.
+Explicitly opaque Cache/source product adapters remain named exceptions. Their
+shared chevrons adopt the same direction and Reduced Motion contract without
+changing product selection, portal placement, or form behavior.
+Only the existing flat Settings content host with a direct
+`[data-settings-content-scrollport]` child disables its own backdrop filter. A
+nested filtered ancestor would prevent the menu's `12px` blur from obscuring local
+supporting text. The host retains its background, border, shadow, and layout;
+ordinary cards and general Frosted Glass tokens are unchanged.
+The catalog's inline-size containers retain their responsive measurement, but an
+open Shared select elevates its owning `.style-token-demo` through the shared
+global-popover layer. This prevents following specimens from intercepting options
+after the menu's entrance animation finishes, including under Reduced Motion.
 
 ## Shared Settings Dimensions
 
@@ -187,6 +209,48 @@ card shadows, blur, translated controls, or focus rings must escape. Effect host
 uses the 48px effect bleed where needed. The browser content card and cache overview
 content are explicit data scrollports; local tables, answer panes, dropdowns, and
 media viewers may retain clipping only as their documented viewport.
+
+### Session index columns
+
+The Local resources session index assigns all five body columns explicit percentages;
+the shared table controller derives the detached header widths from those cells.
+Every allocation sums to 100%, and every integer percentage is divisible by 2 or 5.
+The index stays narrow, the session title receives the largest share, and Source
+headings and marks are centered. The four-column Zhihu index omits Source and assigns
+that space to the answerer title.
+
+The named `browser-session-index` inline-size container uses the available table
+width, including sidebar and scrollbar effects, rather than a viewport breakpoint.
+Widths above 800px use 4/56/10/10/20%; the middle range uses 5/48/12/15/20%; widths
+up to 500px use 8/28/18/22/24%. Zhihu uses 4/66/10/20%, 5/60/15/20%, and
+8/50/18/24%, respectively. Compact cells use 4px inline padding. Dates, identifiers,
+and headings wrap within their column without creating horizontal table scrolling.
+This is a product-specific table adapter; shared table tokens and financial tables
+retain their existing owners.
+
+### Compact conversation effects
+
+The Local resources conversation scrollport uses 8px padding on all four sides at
+every breakpoint. Session detail reserves a separate 32px navigation rail outside
+the scrollport; the magnified ruler therefore cannot cover message text. Combined
+message lists omit that rail. This is a product adapter, not a change to the shared
+48px physical-effect token.
+
+`browser-chat-effects.js` paints the shared outer card shadows in an inert,
+pointer-transparent sibling layer. Native cards retain their inset highlights,
+while their content remains inside the original scroll owner. The effect layer
+uses layout containment and the shared 48px paint allowance, so tall messages do
+not enlarge the document and shadows can cross the scrollport edge. Full card
+rectangles follow scrolling, resizing, content-size changes, and theme updates;
+no message content or interactive control is copied into the effect layer.
+
+The Local resources search icon keeps its 16px SVG transport and a square slot
+matching the search control's inner height. Its native lens center, rather than
+the bounding box including the handle, aligns with the pill's semicircular end.
+The shared Local resources search input is 30px high at every breakpoint; its
+existing 1px outer border makes the full pill 32px high. Saved prompt remark
+inputs use the same 30px height and the existing 999px `--radius-pill` token.
+These are local component sizes, not changes to the global form-control tokens.
 
 ### Cache activity disclosure
 
@@ -255,12 +319,17 @@ that target. Named icon-free form dialogs inherit the same material while
 preserving their product-specific grid, width, scrolling, and security behavior.
 See tests/test_style_alignment_e2e.py for isolated responsive acceptance checks.
 
-Circular actions use `.circular-icon-button` as the reusable primitive. Its 36px
-control, 18px icon, pill radius, `--circular-icon-button-material` Frosted Glass
+Circular actions use `.circular-icon-button` as the reusable primitive. Its 30px
+desktop control, 18px icon, pill radius, `--circular-icon-button-material` Frosted Glass
 surface, border, shadow, and state colors come from `--circular-icon-button-*`; the former
 `--settings-round-icon-button-*` names are compatibility aliases only. Sidebar,
 global, Browser session, and media actions keep their semantic classes as adapters
 and also expose the canonical class in markup.
+The existing `<=900px` responsive adaptation keeps the 44px touch target. Sidebar
+toggle offsets, title rails, global action reserves, and catalog copy rails derive
+from the current size token; the shared 10px edge gap and vertical centerline do not
+change. The 24px dismiss action, 32px Process List marker, and 36px topic icon or
+Agent session rail remain separate semantic sizes.
 
 Pagination keeps `.local-store-pagination` and `.local-store-page-button` as its
 public markup contract. Non-active page, arrow, and ellipsis controls inherit
