@@ -1,12 +1,14 @@
 """Security helpers for exposing the local Agent control plane on a LAN."""
 
-# Code version: v1.1.0-codex.1
+# Code version: v1.2.0-codex.0
 
 from __future__ import annotations
 
 import os
 import secrets
 from ipaddress import ip_address, ip_network
+
+from app.core.config import load_network_access_config
 
 
 AGENT_ACCESS_PASSWORD_ENV = "AGENTIC_CONTEXT_AGENT_PASSWORD"
@@ -21,10 +23,11 @@ PRIVATE_NETWORKS = (
 
 
 def resolve_agent_access_password() -> str:
-    """Return the explicitly configured six-digit LAN password."""
+    """Resolve an explicit environment PIN before the private persisted LAN PIN."""
     return (
         str(os.environ.get(AGENT_ACCESS_PASSWORD_ENV, "")).strip()
         or str(os.environ.get(LEGACY_AGENT_ACCESS_PASSWORD_ENV, "")).strip()
+        or load_network_access_config().get("agent_password", "")
     )
 
 
@@ -38,9 +41,10 @@ def validate_agent_access_password(presented_password: str | None) -> bool:
     """Compare one submitted password without exposing the configured value."""
     configured_password = resolve_agent_access_password()
     normalized_presented_password = str(presented_password or "").strip()
-    return agent_access_password_is_configured() and secrets.compare_digest(
-        normalized_presented_password,
-        configured_password,
+    return (
+        normalized_presented_password.isascii()
+        and agent_access_password_is_configured()
+        and secrets.compare_digest(normalized_presented_password, configured_password)
     )
 
 

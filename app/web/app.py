@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.2.0-codex.0
+# Code version: v2.2.1-codex.0
 
 from __future__ import annotations
 
@@ -299,8 +299,9 @@ def create_app(
             or os.environ.get("CACHELIKES_SESSION_SECRET", "").strip()
         )
         or secrets.token_urlsafe(32),
+        SESSION_COOKIE_NAME="agentic_context_session",
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SAMESITE="Strict",
         AGENT_EXTERNAL_OPERATIONS_ENABLED=bool(agent_external_operations_enabled),
     )
     register_beta(

@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.54.1-codex.0
+Code version: v1.54.5-codex.0
 """
 
 from __future__ import annotations
@@ -613,6 +613,117 @@ def test_cache_source_switcher_menu_has_an_opaque_base(
         expect(trigger).to_have_attribute("aria-expanded", "false")
         expect(trigger).to_be_focused()
         expect(page).to_have_url(route)
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("width", "height", "touch"),
+    ((1_006, 791, False), (390, 844, True), (1_006, 560, True)),
+)
+@pytest.mark.parametrize("color_scheme", ("light", "dark"))
+def test_local_resources_source_filter_has_an_opaque_base_and_keyboard_navigation(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    width: int,
+    height: int,
+    touch: bool,
+    color_scheme: str,
+) -> None:
+    """Keep the shared Text and Media source menu opaque above sidebar content."""
+    page, context = _open_page(
+        disposable_browser,
+        f"{sidebar_server_url}/browser?view=media&session_view=1&source=claude&sort=newest&q=",
+        width,
+        height,
+        touch=touch,
+    )
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.emulate_media(color_scheme=color_scheme)
+        for view in ("media", "text"):
+            route = (
+                f"{sidebar_server_url}/browser?view={view}&session_view=1"
+                "&source=claude&sort=newest&q="
+            )
+            page.goto(route, wait_until="domcontentloaded")
+            expect(page.locator("#global_theme_toggle")).to_have_attribute(
+                "data-effective-theme", color_scheme,
+            )
+            sidebar_toggle = page.locator("#sidebar_toggle")
+            if sidebar_toggle.get_attribute("aria-expanded") != "true":
+                sidebar_toggle.click()
+            trigger = page.locator("#browser_filter_form [data-browser-source-filter-trigger]")
+            menu = page.locator("#" + trigger.get_attribute("aria-controls"))
+            # Keyboard presses do not wait for the sidebar to become visibly focusable.
+            expect(trigger).to_be_visible()
+            trigger.focus()
+            expect(trigger).to_be_focused()
+            trigger.press("ArrowDown")
+            expect(menu).to_be_visible()
+            selected = menu.locator('[data-browser-source-filter-option="claude"]')
+            expect(selected).to_be_focused()
+            expect(selected).to_have_attribute("aria-selected", "true")
+
+            rendering = menu.evaluate("""element => {
+                const probe = document.createElement('span');
+                probe.style.backgroundColor = 'var(--theme-background)';
+                document.body.append(probe);
+                const themeBackground = getComputedStyle(probe).backgroundColor;
+                probe.remove();
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                const options = [...element.querySelectorAll('[data-browser-source-filter-option]')]
+                    .filter(option => !option.hidden);
+                const hitTests = [options[0], options.at(-1)].map(option => {
+                    option.scrollIntoView({block: 'nearest'});
+                    const box = option.getBoundingClientRect();
+                    return option.contains(document.elementFromPoint(
+                        box.left + box.width / 2, box.top + box.height / 2,
+                    ));
+                });
+                return {
+                    backgroundColor: style.backgroundColor,
+                    backgroundImage: style.backgroundImage,
+                    blur: style.backdropFilter,
+                    themeBackground,
+                    left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
+                    hitTests,
+                    documentOverflow: document.documentElement.scrollWidth - innerWidth,
+                };
+            }""")
+            assert rendering["backgroundColor"] == rendering["themeBackground"], rendering
+            assert rendering["backgroundColor"].startswith("rgb("), rendering
+            assert rendering["backgroundImage"] != "none", rendering
+            assert "blur(" in rendering["blur"], rendering
+            assert rendering["left"] >= -1 and rendering["right"] <= width + 1, rendering
+            assert rendering["top"] >= -1 and rendering["bottom"] <= height + 1, rendering
+            assert all(rendering["hitTests"]), rendering
+            assert rendering["documentOverflow"] <= 1, rendering
+
+            selected.press("Home")
+            expect(menu.locator('[role="option"]').first).to_be_focused()
+            page.keyboard.press("End")
+            expect(menu.locator('[role="option"]').last).to_be_focused()
+            expect(selected).to_have_attribute("aria-selected", "true")
+            page.keyboard.press("Escape")
+            expect(menu).to_be_hidden()
+            expect(trigger).to_be_focused()
+            expect(page).to_have_url(route)
+
+            trigger.press("ArrowDown")
+            menu.locator('[data-browser-source-filter-option="chatgpt"]').focus()
+            with page.expect_navigation(wait_until="domcontentloaded"):
+                page.keyboard.press("Enter")
+            expect(page.locator("#browser_filter_form [data-browser-source-filter-input]")).to_have_value(
+                "chatgpt",
+            )
+            assert f"view={view}" in page.url
+            expect(page.locator("#browser_source_filter_options")).to_be_hidden()
+        assert not errors
     finally:
         context.close()
 
@@ -1457,7 +1568,9 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
         detail_url = session.get_attribute("href")
         assert detail_url
 
-        for width, height in ((996, 801), (1_280, 959), (390, 844), (996, 600)):
+        for width, height in (
+            (996, 801), (1_280, 959), (390, 844), (996, 600), (1_006, 791), (1_006, 500),
+        ):
             page.set_viewport_size({"width": width, "height": height})
             page.goto(
                 f"{seeded_chatgpt_table_browser_server_url}{detail_url}",
@@ -1475,7 +1588,20 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
                 const listRect = list.getBoundingClientRect();
                 const firstRect = cards[0].getBoundingClientRect();
                 const listStyle = getComputedStyle(list);
+                const contentCard = list.closest('.browser-text-summary-card');
+                const pane = list.closest('[data-browser-chat-pane]');
+                const metricGrid = contentCard.querySelector('.browser-text-metric-grid');
+                const rectangle = element => {
+                    const rect = element.getBoundingClientRect();
+                    return {top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left};
+                };
                 return {
+                    contentRect: rectangle(contentCard),
+                    paneRect: rectangle(pane),
+                    listRect: rectangle(list),
+                    metricGridRect: rectangle(metricGrid),
+                    metricRects: [...metricGrid.querySelectorAll('.metric-card')].map(rectangle),
+                    listTop: listRect.top,
                     topBleed: firstRect.top - listRect.top,
                     leftBleed: firstRect.left - listRect.left,
                     rightBleed: listRect.right - firstRect.right,
@@ -1496,6 +1622,26 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
                     documentOverflow: document.documentElement.scrollWidth - innerWidth,
                 };
             }""")
+            content_rect = geometry["contentRect"]
+            metric_grid_rect = geometry["metricGridRect"]
+            assert metric_grid_rect["left"] >= content_rect["left"] - 1, (width, height, geometry)
+            assert metric_grid_rect["right"] <= content_rect["right"] + 1, (width, height, geometry)
+            assert metric_grid_rect["top"] >= content_rect["top"] - 1, (width, height, geometry)
+            assert metric_grid_rect["bottom"] <= content_rect["bottom"] + 1, (width, height, geometry)
+            for child_key, parent_rect in (
+                ("paneRect", content_rect), ("listRect", geometry["paneRect"]),
+            ):
+                child_rect = geometry[child_key]
+                assert child_rect["left"] >= parent_rect["left"] - 1, (width, height, geometry)
+                assert child_rect["right"] <= parent_rect["right"] + 1, (width, height, geometry)
+                assert child_rect["top"] >= parent_rect["top"] - 1, (width, height, geometry)
+                assert child_rect["bottom"] <= parent_rect["bottom"] + 1, (width, height, geometry)
+            for metric_rect in geometry["metricRects"]:
+                assert metric_rect["left"] >= metric_grid_rect["left"] - 1, (width, height, geometry)
+                assert metric_rect["right"] <= metric_grid_rect["right"] + 1, (width, height, geometry)
+                assert metric_rect["top"] >= metric_grid_rect["top"] - 1, (width, height, geometry)
+                assert metric_rect["bottom"] <= metric_grid_rect["bottom"] + 1, (width, height, geometry)
+            assert geometry["listTop"] >= metric_grid_rect["bottom"] + 7, (width, height, geometry)
             assert geometry["topBleed"] >= 47, (width, height, geometry)
             assert geometry["leftBleed"] >= 47, (width, height, geometry)
             assert geometry["rightBleed"] >= 47, (width, height, geometry)
@@ -1515,17 +1661,30 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
             table_shell.focus()
             assert table_shell.evaluate("element => document.activeElement === element")
 
-            bottom = page.locator(".browser-chat-list").evaluate("""list => {
-                list.scrollTop = list.scrollHeight;
-                const lastCard = list.lastElementChild;
-                return {
-                    clearance: list.getBoundingClientRect().bottom
-                        - lastCard.getBoundingClientRect().bottom,
-                    scrollTop: list.scrollTop,
-                };
-            }""")
-            assert bottom["scrollTop"] > 0, (width, height, bottom)
-            assert bottom["clearance"] >= 47, (width, height, bottom)
+            for scroll_fraction in (0.5, 1):
+                scrolled = page.locator(".browser-chat-list").evaluate("""async (list, fraction) => {
+                    list.scrollTop = (list.scrollHeight - list.clientHeight) * fraction;
+                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    const lastCard = list.lastElementChild;
+                    const metricGrid = list.closest('.browser-text-summary-card')
+                        .querySelector('.browser-text-metric-grid');
+                    return {
+                        clearance: list.getBoundingClientRect().bottom
+                            - lastCard.getBoundingClientRect().bottom,
+                        scrollTop: list.scrollTop,
+                        metricsUncovered: [...metricGrid.querySelectorAll('.metric-card')].map(card => {
+                            const rect = card.getBoundingClientRect();
+                            const hit = document.elementFromPoint(
+                                rect.left + rect.width / 2, rect.top + rect.height / 2
+                            );
+                            return card.contains(hit);
+                        }),
+                    };
+                }""", scroll_fraction)
+                assert scrolled["scrollTop"] > 0, (width, height, scrolled)
+                assert all(scrolled["metricsUncovered"]), (width, height, scroll_fraction, scrolled)
+                if scroll_fraction == 1:
+                    assert scrolled["clearance"] >= 47, (width, height, scrolled)
             if (width, height) in {(996, 801), (390, 844)}:
                 theme_toggle = page.locator("#global_theme_toggle")
                 theme_toggle.click()
@@ -11248,7 +11407,7 @@ def test_modal_reuses_the_unmodified_frosted_material(disposable_browser, sideba
         material = page.locator(".workspace-modal-dialog.style-token-modal-demo").evaluate(
             """node => {
                 const probe = document.createElement('div');
-                probe.style.cssText = 'background:var(--frosted-glass-background);backdrop-filter:var(--frosted-glass-blur)';
+                probe.style.cssText = 'background:var(--frosted-glass-notice-background);backdrop-filter:var(--frosted-glass-notice-blur)';
                 node.append(probe);
                 const result = {
                     background: getComputedStyle(node).background,
@@ -11464,6 +11623,164 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
             return input.getBoundingClientRect().bottom <= tags.getBoundingClientRect().top
                 && getComputedStyle(input).fontFamily === getComputedStyle(document.body).fontFamily;
         }""")
+    finally:
+        context.close()
+
+
+@pytest.fixture()
+def long_saved_prompt_server_url(tmp_path: Path) -> Iterator[str]:
+    """Keep wide Markdown and remarks in a disposable saved-prompt store."""
+    from app.core.prompt_store import PromptStore
+    from app.web.app import create_app
+
+    root = tmp_path / "local-store"
+    content = (
+        "Review this long synthetic prompt before sharing. " * 8
+        + "\n\n" + "UnbrokenPromptContent" * 12
+        + "\n\n| Field | Value |\n| --- | --- |\n| Metadata | "
+        + "LongUnbrokenTableValue" * 10
+        + " |\n\n```text\n" + "LongUnbrokenCodeValue" * 12 + "\n```"
+    )
+    write_parquet_rows_atomic(
+        root / "llm/chatgpt/history.parquet",
+        [{
+            "schema_version": 1,
+            "platform": "chatgpt",
+            "conversation_id": "prompt-layout-session",
+            "conversation_url": "https://chatgpt.com/c/prompt-layout-session",
+            "conversation_title": "LongUnbrokenConversationTitle" * 8,
+            "message_key": "prompt-layout-session:0",
+            "turn_index": 0,
+            "message_index": 0,
+            "role": "user",
+            "author_label": "You",
+            "content_text": content,
+            "content_html": "",
+            "content_sha256": "synthetic-prompt-layout",
+            "source_links": [],
+            "model_label": "",
+            "first_seen_at": "2026-09-26T10:00:00Z",
+            "last_seen_at": "2026-09-25T10:00:00Z",
+        }],
+        CHATGPT_HISTORY_SCHEMA,
+    )
+    store = PromptStore(root)
+    prompt, _ = store.add_pointer(
+        source="chatgpt", conversation_id="prompt-layout-session", message_key="prompt-layout-session:0",
+    )
+    store.add_remark(prompt.stable_id, "LongUnbrokenRemark" * 2)
+    application = create_app(
+        root,
+        agent_external_operations_enabled=False,
+        computer_use_settings_path=tmp_path / "settings.json",
+        computer_use_runtime_root=tmp_path / "runtime",
+    )
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    assert server.server_port != 8666
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "touch"),
+    ((1_006, 791, False), (390, 844, True), (1_006, 500, True)),
+)
+def test_saved_prompt_columns_fit_and_keep_long_content_actions_usable(
+    disposable_browser: Browser,
+    long_saved_prompt_server_url: str,
+    width: int,
+    height: int,
+    touch: bool,
+) -> None:
+    page, context = _open_page(
+        disposable_browser,
+        f"{long_saved_prompt_server_url}/browser?view=prompts&source=chatgpt",
+        width,
+        height,
+        touch=touch,
+        init_script="""
+            Object.defineProperty(navigator, 'clipboard', {
+                configurable: true,
+                value: {writeText: async text => { window.__savedPromptCopiedText = text; }},
+            });
+        """,
+    )
+    try:
+        shell = page.locator(".browser-prompt-table-shell")
+        expect(shell).to_be_visible()
+        page.evaluate("""async () => {
+            await document.fonts.ready;
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }""")
+        geometry = shell.evaluate("""shell => {
+            const header = shell.querySelector('table[data-table-header]');
+            const body = shell.querySelector('table[data-table-body]');
+            const scroll = shell.querySelector('[data-table-scroll]');
+            const content = shell.querySelector('.browser-prompt-table-content');
+            const remark = shell.querySelector('.browser-prompt-tag-label');
+            const rect = node => {
+                const box = node.getBoundingClientRect();
+                return {left: box.left, right: box.right, width: box.width, height: box.height};
+            };
+            return {
+                shell: rect(shell), header: rect(header), body: rect(body),
+                scrollWidth: scroll.clientWidth,
+                headings: [...header.rows[0].cells].map(rect),
+                cells: [...body.rows[0].cells].map(rect),
+                overflow: [shell, header, scroll, body, content,
+                    ...content.querySelectorAll('table, pre'), remark.closest('[data-prompt-tag]')]
+                    .map(node => ({tag: node.tagName, extra: node.scrollWidth - node.clientWidth})),
+                remark: rect(remark.closest('[data-prompt-tag]')),
+                remarkCell: rect(remark.closest('td')),
+                codeHeight: content.querySelector('pre').getBoundingClientRect().height,
+                codeLineHeight: parseFloat(getComputedStyle(content.querySelector('code')).lineHeight),
+                codeText: content.querySelector('code').textContent,
+                documentOverflow: document.documentElement.scrollWidth - innerWidth,
+            };
+        }""")
+        assert abs(geometry["body"]["width"] - geometry["scrollWidth"]) <= 1, geometry
+        assert abs(geometry["header"]["width"] - geometry["body"]["width"]) <= 1, geometry
+        assert geometry["body"]["left"] >= geometry["shell"]["left"] - 1, geometry
+        assert geometry["body"]["right"] <= geometry["shell"]["right"] + 1, geometry
+        for heading, cell in zip(geometry["headings"], geometry["cells"], strict=True):
+            assert abs(heading["left"] - cell["left"]) <= 1, geometry
+            assert abs(heading["width"] - cell["width"]) <= 1, geometry
+        percentages = (8, 52, 15, 25) if width <= 560 else (5, 60, 10, 25)
+        assert sum(percentages) == 100
+        assert all(value >= 5 and (value % 2 == 0 or value % 5 == 0) for value in percentages)
+        for cell, percentage in zip(geometry["cells"], percentages, strict=True):
+            assert abs(cell["width"] - geometry["body"]["width"] * percentage / 100) <= 1, geometry
+        assert all(item["extra"] <= 1 for item in geometry["overflow"]), geometry
+        assert geometry["documentOverflow"] <= 1, geometry
+        assert geometry["codeHeight"] > geometry["codeLineHeight"] * 2, geometry
+        assert geometry["codeText"].rstrip() == "LongUnbrokenCodeValue" * 12
+        assert geometry["remark"]["left"] >= geometry["remarkCell"]["left"] - 1, geometry
+        assert geometry["remark"]["right"] <= geometry["remarkCell"]["right"] + 1, geometry
+
+        copy_button = shell.locator("[data-prompt-copy]")
+        expected_content = copy_button.get_attribute("data-prompt-text")
+        copy_button.focus()
+        expect(copy_button).to_have_css("opacity", "1")
+        copy_button.click()
+        page.wait_for_function(
+            "expected => window.__savedPromptCopiedText === expected", arg=expected_content,
+        )
+        input_field = shell.locator("[data-prompt-remark-input]")
+        input_field.fill("Layout checked")
+        input_field.press("Enter")
+        added_tag = shell.locator('[data-prompt-tag][data-prompt-remark="Layout checked"]')
+        expect(added_tag).to_be_visible()
+        expect(input_field).to_have_value("")
+        added_tag.locator("[data-prompt-remark-remove]").click()
+        expect(added_tag).to_have_count(0)
+        assert shell.evaluate("element => element.scrollWidth <= element.clientWidth + 1")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
     finally:
         context.close()
 

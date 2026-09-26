@@ -1,0 +1,181 @@
+/* Code version: v1.1.0-codex.0 */
+
+.page[data-cache-page] {
+    width: 100%;
+}
+
+.cache-activity {
+    --cache-activity-available-width: calc(100vw - var(--layout-global-anchor-right) - var(--layout-global-anchor-left));
+    --cache-activity-available-height: calc(var(--viewport-block-size) - var(--layout-global-anchor-top) - var(--layout-global-anchor-bottom));
+    --cache-activity-width: min(var(--layout-control-width), var(--cache-activity-available-width));
+    position: fixed;
+    right: var(--global-quick-actions-right);
+    bottom: var(--layout-global-anchor-bottom);
+    z-index: var(--layer-global-popover);
+    width: var(--circular-icon-button-size);
+    height: var(--circular-icon-button-size);
+}
+
+.cache-activity[hidden] {
+    display: none;
+}
+
+.cache-activity-surface {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    box-sizing: border-box;
+    width: var(--circular-icon-button-size);
+    height: var(--circular-icon-button-size);
+    border: var(--circular-icon-button-border);
+    border-radius: calc(var(--circular-icon-button-size) / 2);
+    background: var(--circular-icon-button-background);
+    box-shadow: var(--circular-icon-button-shadow);
+    backdrop-filter: var(--frosted-glass-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-blur);
+    pointer-events: none;
+    transition: width 460ms var(--motion-emphasized), height 460ms var(--motion-emphasized),
+        border-radius 460ms var(--motion-emphasized), background 180ms var(--motion-standard);
+}
+
+.cache-activity[data-open="true"] .cache-activity-surface {
+    width: var(--cache-activity-width);
+    height: var(--cache-activity-panel-height);
+    border: var(--glass-popover-border);
+    border-radius: var(--radius-soft);
+    background: var(--glass-popover-background);
+    box-shadow: var(--glass-popover-shadow);
+    backdrop-filter: var(--glass-popover-blur);
+    -webkit-backdrop-filter: var(--glass-popover-blur);
+}
+
+.cache-activity-trigger {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    z-index: var(--layer-raised-control);
+    background: transparent;
+    box-shadow: none;
+    border-color: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+.cache-activity-trigger:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 3px;
+}
+
+.cache-activity-panel {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    width: var(--cache-activity-width);
+    max-height: var(--cache-activity-available-height);
+    padding: 16px 16px calc(var(--circular-icon-button-size) + 8px);
+    border-radius: var(--radius-soft);
+    outline: none;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateY(8px) scale(0.96);
+    transform-origin: right bottom;
+    transition: opacity 140ms var(--motion-standard), transform 360ms var(--motion-emphasized),
+        visibility 0s 360ms;
+}
+
+.cache-activity[data-open="true"] .cache-activity-panel {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: none;
+    transition-delay: 100ms, 60ms, 0s;
+}
+
+.cache-activity-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--layout-edge-gap);
+    margin-bottom: 12px;
+}
+
+.cache-activity-heading h2 {
+    margin: 0;
+    font-size: var(--font-ui-md);
+    font-weight: var(--font-weight-semibold);
+}
+
+.cache-activity-count,
+.cache-activity-meta,
+.cache-activity-progress,
+.cache-activity-unavailable {
+    color: var(--muted);
+    font-size: var(--font-ui-sm);
+    line-height: 1.5;
+}
+
+.cache-activity-tasks {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    list-style: none;
+}
+
+.cache-activity-task {
+    display: grid;
+    gap: 4px;
+    overflow-wrap: anywhere;
+}
+
+.cache-activity-task + .cache-activity-task {
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+}
+
+.cache-activity-task-title {
+    font-size: var(--font-ui-md);
+    font-weight: var(--font-weight-medium);
+    color: var(--text);
+}
+
+main[data-cache-page] .cache-activity-meter {
+    margin: 4px 0;
+}
+
+.cache-activity-progress-track {
+    width: 100%;
+    min-width: 0;
+}
+
+.cache-activity-meta,
+.cache-activity-progress,
+.cache-activity-unavailable {
+    margin: 0;
+}
+
+.cache-activity-unavailable {
+    margin-bottom: 12px;
+}
+
+.cache-activity[data-stale="true"] .live-marker::before,
+.cache-activity[data-stale="true"] .live-marker::after {
+    animation: none;
+    opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cache-activity-surface,
+    .cache-activity-panel {
+        transition: none;
+        transform: none;
+    }
+}

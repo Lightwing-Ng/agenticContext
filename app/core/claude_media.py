@@ -1,6 +1,6 @@
 """Cache rendered first-party Claude images through an owned Safari session.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -541,19 +541,21 @@ def sync_claude_media(
             conversations: list[ClaudeConversationLink] = []
         else:
             _wait_for_claude_ready(page)
-            conversations = discover_claude_conversations(page)
-            if not conversations:
+            conversations = discover_claude_conversations(page, should_stop=should_stop)
+            stopped = should_stop()
+            if not conversations and not stopped:
                 raise RuntimeError(
                     "Claude media discovery returned no rendered sessions. "
                     "The authenticated Chats page may not have loaded."
                 )
-            state.update(
-                phase="downloading",
-                discovered_tweets=len(conversations),
-                discovery_complete=False,
-                message=f"Found {len(conversations):,} Claude sessions; caching rendered images...",
-            )
-            state.append_event(f"Found {len(conversations):,} Claude sessions in Safari.")
+            if not stopped:
+                state.update(
+                    phase="downloading",
+                    discovered_tweets=len(conversations),
+                    discovery_complete=False,
+                    message=f"Found {len(conversations):,} Claude sessions; caching rendered images...",
+                )
+                state.append_event(f"Found {len(conversations):,} Claude sessions in Safari.")
 
         for index, conversation in enumerate(conversations, start=1):
             if should_stop():

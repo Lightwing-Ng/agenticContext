@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.14.5-codex.0
+# Code version: v2.15.0-codex.0
 
 from __future__ import annotations
 
@@ -1105,7 +1105,7 @@ def test_run_applescript_retries_transient_safari_errors() -> None:
     failed = type("Process", (), {"returncode": 1, "stderr": "execution error (-1712)", "stdout": ""})()
     succeeded = type("Process", (), {"returncode": 0, "stderr": "", "stdout": "ok\n"})()
 
-    with patch("app.core.safari_automation.subprocess.run", side_effect=[failed, succeeded]), patch(
+    with patch("app.core.safari_automation.execute_applescript", side_effect=[failed, succeeded]), patch(
         "app.core.safari_automation.time.sleep"
     ) as sleep:
         assert run_applescript("return true") == "ok"
@@ -1115,7 +1115,7 @@ def test_run_applescript_retries_transient_safari_errors() -> None:
 
 def test_run_applescript_bounds_a_hung_safari_event() -> None:
     with patch(
-        "app.core.safari_automation.subprocess.run",
+        "app.core.safari_automation.execute_applescript",
         side_effect=subprocess.TimeoutExpired("osascript", 20),
     ), patch("app.core.safari_automation.time.sleep"), pytest.raises(
         RuntimeError,
@@ -1131,7 +1131,7 @@ def test_run_applescript_never_retries_native_mutating_input() -> None:
         {"returncode": 1, "stderr": "execution error (-1712)", "stdout": ""},
     )()
 
-    with patch("app.core.safari_automation.subprocess.run", return_value=failed) as run, patch(
+    with patch("app.core.safari_automation.execute_applescript", return_value=failed) as run, patch(
         "app.core.safari_automation.time.sleep"
     ), pytest.raises(RuntimeError, match="-1712"):
         run_applescript("key code 36", retry_transient=False)

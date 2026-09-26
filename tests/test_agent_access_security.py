@@ -1,6 +1,6 @@
 """Focused tests for the LAN Agent password gate."""
 
-# Code version: v1.1.0-codex.1
+# Code version: v1.1.1-codex.0
 
 from __future__ import annotations
 
@@ -45,6 +45,16 @@ def test_agent_password_keeps_the_legacy_environment_alias(
     monkeypatch.setenv("CACHELIKES_AGENT_PASSWORD", "135790")
 
     assert resolve_agent_access_password() == "135790"
+
+
+@pytest.mark.parametrize("password", ("１２３４５６", "密碼", "12345é"))
+def test_agent_password_rejects_non_ascii_submissions_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+    password: str,
+) -> None:
+    monkeypatch.setenv("AGENTIC_CONTEXT_AGENT_PASSWORD", "246810")
+
+    assert not validate_agent_access_password(password)
 
 
 @pytest.mark.parametrize("password", ("12345", "1234567", "abcdef", "１２３４５６"))

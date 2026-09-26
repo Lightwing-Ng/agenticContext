@@ -1,6 +1,6 @@
 # Safari Cache acceptance
 
-Document version: `v1.1.4-codex.0`
+Document version: `v1.1.8-codex.0`
 Application version: `v1.33.2`
 Reviewed: 26 Sep 2026
 
@@ -76,7 +76,53 @@ documentation checker. No native Windows run or full quality-gate result is clai
 
 ### Real Safari probes
 
-All probe writes were isolated from the production cache. These bounded reads do
+Claude Text discovery follow-up, 26 Sep 2026: the production job started at
+16:40:26 HKT and failed before discovering any sessions. The production history
+remained at one session and three messages last written on 6 Sep 2026. A
+task-owned Safari tab reproduced an initially empty Chats document followed by
+seven visible conversation links and seven main-list rows. The previous
+discovery implementation waited 500 ms and stopped at its first unmoving scroll,
+which could treat that initial document shell as an empty completed list.
+
+`claude_history.py` v1.3.0-codex.0 now waits for visible main-list content, respects
+loading indicators, and requires stable observations after scrolling. It uses a
+monotonic deadline and cooperative cancellation; login and verification states
+stop discovery. Claude Media v1.1.2-codex.0 passes the same cancellation callback.
+The original link selectors and 12-scroll bound remain, so this fix does not
+establish exhaustive account coverage. Thirty-nine focused tests passed,
+including three real Chromium document-hydration regressions; Ruff and diff
+checks passed. The diagnostic Safari tab was closed and the original four tabs
+and active tab were restored.
+
+The user restarted the service in Terminal. Listener PID 90055 started from this
+repository at 16:53:06 HKT, after the discovery repair. Reloading the Claude Text
+Safari page resolved a previous busy-check error and returned Signed in. Start
+was activated on that page, and production job `80b14e187f8a` ran from 16:57:59
+to 16:58:52 HKT on 26 Sep 2026. It inspected seven sessions and 37 messages,
+updated five message rows, retained 32 unchanged messages, skipped three
+unchanged sessions, and finished with zero failures. The official
+`local_store/llm/claude/history.parquet` was atomically rewritten at 16:58:49 HKT
+and contains seven distinct sessions and 37 rows. The live page displayed
+Finished, 100%, Signed in, and an enabled Start button. This establishes an actual
+production cache run through the requested UI with the repaired worker.
+
+Claude session recency follow-up, 26 Sep 2026: some rendered messages omit source
+timestamps, so their persisted `last_seen_at` equals their `first_seen_at` capture
+time. Treating those values as conversation activity ranked older conversations
+by collection order. `chat_history_browser.py` v1.20.1-codex.0 now applies the
+existing ChatGPT capture-time exclusion to Claude as well. Sessions use their
+latest available source message time; sessions without a known source time remain
+last in both date sort directions. No production Parquet rewrite is needed.
+Eighteen history-browser tests passed, including two regressions covering both
+sort directions and adjacent-session navigation. An isolated Flask render using
+a temporary copy of the seven-session production history confirmed that the
+conversation with a latest message on 24 Sep 2026 is first under Newest first and
+last under Oldest first, with all seven message bodies retained. After the user
+restarted port 8666, listener PID 96122 began at 17:09:53 HKT. A subsequent live
+Local resources readback confirmed that conversation is first in Newest first,
+and its detail page has no previous session. The recency repair is adopted.
+
+The earlier bounded probe writes below were isolated from the production cache. These reads do
 not certify a complete account crawl or every supported file type.
 
 | Provider | Text evidence | Media evidence |

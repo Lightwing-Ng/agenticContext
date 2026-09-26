@@ -1,6 +1,6 @@
 """Focused tests for the local text-history browser."""
 
-# Code version: v1.9.0-codex.0
+# Code version: v1.10.1-codex.0
 
 from datetime import datetime
 import hashlib
@@ -15,6 +15,7 @@ from app.core.chat_history_browser import (
 )
 from app.core.local_media_browser import LocalMediaItem
 from app.core.resource_persistence import (
+    CLAUDE_HISTORY_SCHEMA,
     GEMINI_HISTORY_SCHEMA,
     ZHIHU_HISTORY_SCHEMA,
     write_parquet_rows_atomic,
@@ -335,6 +336,97 @@ def test_chatgpt_capture_fallback_is_unknown_until_source_time_is_refreshed(tmp_
 
     assert page.items[0].last_seen_at == ""
     assert format_chat_message_timestamp_label(page.items[0].last_seen_at) == "Unknown time"
+
+
+def _claude_capture_fallback_rows() -> list[dict[str, object]]:
+    """Make capture order disagree with the actual conversation update order."""
+    rows = []
+    for conversation_id, captured_at, source_time in (
+        ("newest", "2026-09-26T08:00:00Z", "2026-09-23T12:00:00Z"),
+        ("middle", "2026-09-26T09:00:00Z", "2026-09-17T12:00:00Z"),
+        ("oldest", "2026-09-26T10:00:00Z", "2026-09-10T12:00:00Z"),
+        ("unknown", "2026-09-26T11:00:00Z", ""),
+    ):
+        messages = [("user", captured_at)]
+        if source_time:
+            messages.append(("assistant", source_time))
+        for index, (role, last_seen_at) in enumerate(messages):
+            rows.append(
+                {
+                    **_history_row(
+                        conversation_id,
+                        f"{conversation_id}:{role}",
+                        f"Synthetic {conversation_id} {role} message",
+                        role=role,
+                        conversation_title=f"Claude {conversation_id}",
+                        first_seen_at=captured_at,
+                        last_seen_at=last_seen_at,
+                        message_index=index,
+                    ),
+                    "platform": "claude",
+                    "conversation_url": f"https://claude.ai/chat/{conversation_id}",
+                    "author_label": "You" if role == "user" else "Claude",
+                }
+            )
+    return rows
+
+
+def test_claude_sessions_aggregate_source_time_and_keep_capture_fallback_last(
+    tmp_path: Path,
+) -> None:
+    write_parquet_rows_atomic(
+        tmp_path / "llm/claude/history.parquet",
+        _claude_capture_fallback_rows(),
+        CLAUDE_HISTORY_SCHEMA,
+    )
+
+    for sort, expected_order in (
+        ("newest", ["newest", "middle", "oldest", "unknown"]),
+        ("oldest", ["oldest", "middle", "newest", "unknown"]),
+    ):
+        page = query_chat_history(tmp_path, source="claude", session_view=True, sort=sort)
+        assert [session.conversation_id for session in page.sessions] == expected_order
+        by_id = {session.conversation_id: session for session in page.sessions}
+        assert by_id["newest"].last_seen_at == "2026-09-23T12:00:00Z"
+        assert by_id["middle"].last_seen_at == "2026-09-17T12:00:00Z"
+        assert by_id["oldest"].last_seen_at == "2026-09-10T12:00:00Z"
+        for conversation_id in ("newest", "middle", "oldest"):
+            session = by_id[conversation_id]
+            assert session.message_count == 2
+            assert session.latest_role == "assistant"
+            assert session.latest_message == f"Synthetic {conversation_id} assistant message"
+        assert by_id["unknown"].last_seen_at == ""
+        assert format_chat_message_timestamp_label(by_id["unknown"].last_seen_at) == "Unknown time"
+        assert by_id["unknown"].first_seen_at == "2026-09-26T11:00:00Z"
+        assert all(message.last_seen_at == "" for message in page.items if message.role == "user")
+
+
+def test_claude_adjacent_sessions_follow_source_time_with_unknown_sessions_last(
+    tmp_path: Path,
+) -> None:
+    write_parquet_rows_atomic(
+        tmp_path / "llm/claude/history.parquet",
+        _claude_capture_fallback_rows(),
+        CLAUDE_HISTORY_SCHEMA,
+    )
+
+    for sort, previous_id, next_id in (
+        ("newest", "newest", "oldest"),
+        ("oldest", "oldest", "newest"),
+    ):
+        middle_page = query_chat_history(
+            tmp_path, source="claude", session_view=True, session="claude:middle", sort=sort,
+        )
+        assert middle_page.previous_session is not None
+        assert middle_page.previous_session.conversation_id == previous_id
+        assert middle_page.next_session is not None
+        assert middle_page.next_session.conversation_id == next_id
+        unknown_page = query_chat_history(
+            tmp_path, source="claude", session_view=True, session="claude:unknown", sort=sort,
+        )
+        assert unknown_page.previous_session is not None
+        assert unknown_page.previous_session.conversation_id == next_id
+        assert unknown_page.next_session is None
 
 
 def test_query_chatgpt_history_lists_sessions_on_the_home_page(tmp_path: Path) -> None:

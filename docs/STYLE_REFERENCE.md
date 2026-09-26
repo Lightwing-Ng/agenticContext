@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.15.0-codex.0`
+Documentation version: `v1.16.0-codex.0`
 
 ## Authority
 
@@ -8,6 +8,10 @@ Documentation version: `v1.15.0-codex.0`
 `../../neoMe/app` is the third maintained consumer of applicable shared components.
 When a UI decision is not explicitly constrained by this project, follow the current
 Worthward implementation and verify neoMe wherever it exposes the same component.
+The explicit notification exception is the user-approved Local resources waiting
+card during local media delete/restore. Its `--frosted-glass-notice-*` variant is
+the shared notification baseline in all three projects; it does not replace the
+general control material.
 
 Before changing a shared UI component, also read
 `docs/SHARED_UI_WORKFLOW.md` and the central ledger at
@@ -184,6 +188,33 @@ uses the 48px effect bleed where needed. The browser content card and cache over
 content are explicit data scrollports; local tables, answer panes, dropdowns, and
 media viewers may retain clipping only as their documented viewport.
 
+### Cache activity disclosure
+
+Cache pages reuse the shared Circular icon button and Live marker for a task entry
+point that is hidden when no cache worker is running. The button shares the theme
+action's horizontal center. Its right and bottom clearances are equal relative to
+the Cache content scrollport, measured from that owner's rendered rectangle so the
+compact layout and safe-area insets remain authoritative. The disclosure is outside
+the scrollport and never participates in content layout or scrolling.
+The Cache page uses the shared full-width page rectangle; retaining its legacy
+1,560px cap would place the viewport-anchored theme action outside the content owner
+on wider displays and make these two anchor requirements incompatible.
+
+Clicking expands the same glass surface toward the upper left, using the existing
+popover material, soft radius, control-width maximum, and emphasized motion curve.
+The read-only nonmodal dialog contains active providers, known run modes, phase
+descriptions, and work-item counts. Escape restores the trigger's focus; clicking
+outside closes it. Reduced Motion makes expansion immediate and keeps a static live
+marker. Long task lists scroll internally within the content owner's bounds.
+
+The lightweight `/api/cache/activity` endpoint reads in-memory task snapshots,
+including the independent Grok text worker. It never hydrates caches or probes a
+browser. Unknown run modes are omitted rather than inferred from current settings.
+Refresh failure retains the last known list with an explicit stale-status message
+and pauses the breathing animation. Successful empty responses hide the entry point.
+This Cache-specific adapter remains a Candidate review in the shared UI ledger;
+Worthward and neoMe applicability is Pending.
+
 The product-specific local directory browser reuses the Workspace modal surface, Secondary and
 primary buttons, text-input material, folder asset, radii, typography, and color tokens. Its dialog
 is viewport-bounded and overflow-hidden; the folder list is its single vertical scroll owner.
@@ -215,6 +246,13 @@ The unchanged 36px topic icon and the paragraph or outside-marker list begin tog
 in the second row. List markers remain outside the content box so wrapped lines use a
 hanging indent through the shared modal list-padding and marker-gap tokens, and the
 shared 4px row gap owns all space between title and body.
+Modal and floating-banner surfaces consume the canonical notification background,
+border, shadow, and `saturate(160%) blur(18px)` directly. Catalog-only theme
+overrides must not alter this variant. Notification titles are 15px semibold;
+paragraph and list copy is 15px regular muted text, and the X glyph is 12px inside
+the unchanged 24px close target. Wrapped titles grow without clipping or moving
+that target. Named icon-free form dialogs inherit the same material while
+preserving their product-specific grid, width, scrolling, and security behavior.
 See tests/test_style_alignment_e2e.py for isolated responsive acceptance checks.
 
 Circular actions use `.circular-icon-button` as the reusable primitive. Its 36px

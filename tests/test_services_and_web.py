@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.8-codex.0
+Code version: v1.8.9-codex.0
 """
 
 from __future__ import annotations
@@ -21,8 +21,9 @@ from app.web.app import LEGACY_ENDPOINT_ALIASES, create_app
 from app.web.cache_sources import CACHE_SOURCE_VIEWS
 
 
-NEW_GEMINI_TUNNEL_ENDPOINTS = frozenset(
+NEW_BLUEPRINT_ENDPOINTS = frozenset(
     {
+        "cache.api_cache_activity",
         "tunnel.api_project",
         "tunnel.api_gemini_config",
         "tunnel.api_gemini_copy_value",
@@ -85,7 +86,7 @@ def test_pre_blueprint_endpoints_remain_buildable_without_dispatching_requests(a
     }
     assert len(LEGACY_ENDPOINT_ALIASES) == 93
     assert set(LEGACY_ENDPOINT_ALIASES.values()) == (
-        current_endpoints - NEW_GEMINI_TUNNEL_ENDPOINTS
+        current_endpoints - NEW_BLUEPRINT_ENDPOINTS
     )
 
     rules_by_endpoint: dict[str, list[object]] = {}

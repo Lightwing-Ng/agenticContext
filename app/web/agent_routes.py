@@ -10,7 +10,7 @@ Jury, and Cache route modules borrow those few Agent capabilities without import
 this module's internals or duplicating the gate.
 """
 
-# Code version: v1.1.2-codex.0
+# Code version: v1.1.3-codex.0
 
 from __future__ import annotations
 
@@ -749,6 +749,7 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
             record_agent_unlock_failure()
             return render_agent_access_unlock("The password is incorrect.", status_code=401)
         clear_agent_unlock_failures()
+        session.clear()
         session[AGENT_ACCESS_SESSION_KEY] = True
         settings = context.computer_use_settings.settings
         platform = settings.platform if settings.platform in SUPPORTED_AGENT_PLATFORMS else "chatgpt"

@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.9-codex.0
+Code version: v1.86.14-codex.0
 """
 
 import hashlib
@@ -47,7 +47,7 @@ def test_process_list_catalog_publishes_the_production_component() -> None:
     catalog_template = (
         PROJECT_ROOT / "app/web/templates/settings_style_tokens.html"
     ).read_text(encoding="utf-8")
-    assert "style-v2.150.7-codex.0" in catalog_template
+    assert "style-v2.151.4-codex.0" in catalog_template
 
 
 def test_agent_session_scrollport_preserves_physical_effect_bleed() -> None:
@@ -1260,7 +1260,7 @@ def test_style_token_secondary_button_preview_stays_intrinsic_and_reserves_svg_i
 def test_prompt_tag_specimen_reuses_the_saved_prompt_tag_contract() -> None:
     """Keep the Style tokens tag specimen on the live prompt-tag classes."""
     stylesheet = _stylesheet()
-    prompt_tag_start = stylesheet.index(".browser-prompt-tag {")
+    prompt_tag_start = stylesheet.index("\n.browser-prompt-tag {") + 1
     prompt_tag_rule = stylesheet[prompt_tag_start:stylesheet.index("\n}", prompt_tag_start)]
 
     for token in (
@@ -1325,8 +1325,8 @@ def test_style_token_component_catalog_consumes_the_sibling_control_contracts() 
         "--circular-icon-button-material: var(--frosted-glass-background);",
         "--settings-round-icon-button-material: var(--circular-icon-button-material);",
         "--settings-action-package-material: var(--frosted-glass-background);",
-        "--workspace-modal-material: var(--frosted-glass-background);",
-        "--notice-floating-material: var(--frosted-glass-background);",
+        "--workspace-modal-material: var(--frosted-glass-notice-background);",
+        "--notice-floating-material: var(--frosted-glass-notice-background);",
         "--scrollable-data-table-header-material: var(--frosted-glass-background);",
         "--shared-select-trigger-material: var(--frosted-glass-background);",
         "--shared-select-trigger-material-hover: var(--frosted-glass-background-hover);",
@@ -1347,6 +1347,23 @@ def test_style_token_component_catalog_consumes_the_sibling_control_contracts() 
         ".style-token-card { grid-template-columns: minmax(0, 1fr); }",
     ):
         assert fragment in stylesheet
+
+
+def test_floating_notice_material_cannot_rejoin_the_generic_dock_shader() -> None:
+    """Keep late surface overrides on the approved notification variant."""
+    stylesheet = _stylesheet()
+    assert ".notice-floating,\n.sidebar-dock {" not in stylesheet
+    rules = re.findall(r"(?m)^\.notice-floating \{([^}]+)\}", stylesheet)
+    assert len(rules) >= 2
+    for rule in rules:
+        for declaration in (
+            "background: var(--notice-floating-material);",
+            "border: var(--frosted-glass-notice-border);",
+            "box-shadow: var(--frosted-glass-notice-shadow);",
+            "backdrop-filter: var(--frosted-glass-notice-blur);",
+            "-webkit-backdrop-filter: var(--frosted-glass-notice-blur);",
+        ):
+            assert declaration in rule
 
 
 def test_strategy_tuning_catalog_uses_the_shared_button_panel_contract() -> None:
@@ -2058,9 +2075,9 @@ def test_browser_prompt_table_reallocates_space_after_saved_column_removal() -> 
     remarks_start = stylesheet.index(".browser-prompt-table .browser-prompt-col-remarks {")
     remarks_rule = stylesheet[remarks_start:stylesheet.index("\n}", remarks_start)]
 
-    assert "width: 50%;" in content_rule
-    assert "width: 10%;" in source_rule
-    assert "width: 33%;" in remarks_rule
+    assert "width: var(--browser-prompt-content-width);" in content_rule
+    assert "width: var(--browser-prompt-source-width);" in source_rule
+    assert "width: var(--browser-prompt-remarks-width);" in remarks_rule
 
 
 def test_browser_prompt_copy_action_is_hidden_until_prompt_hover_or_focus() -> None:
@@ -2080,7 +2097,7 @@ def test_browser_prompt_remarks_use_pill_tags_and_stored_controls() -> None:
     """Keep saved prompt remarks compact, removable, and keyboard reachable."""
     stylesheet = _stylesheet()
 
-    tag_start = stylesheet.index(".browser-prompt-tag {")
+    tag_start = stylesheet.index("\n.browser-prompt-tag {") + 1
     tag_rule = stylesheet[tag_start:stylesheet.index("\n}", tag_start)]
     assert "border-radius: var(--radius-pill);" in tag_rule
     assert ".browser-prompt-remark-editor input {" in stylesheet
@@ -2387,7 +2404,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.150.8-codex.0 */",
+        "/* Code version: v2.151.4-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',

@@ -1,6 +1,6 @@
 """Browser-rendered Claude history collection and local persistence.
 
-Code version: v1.2.1-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -22,6 +23,7 @@ from .browser_sessions import (
     claude_composer_snapshot,
     goto_with_retry,
     launch_chromium_context,
+    page_shows_security_verification,
     sync_playwright_or_error,
 )
 from .config import LOCAL_STORE_ROOT, CrawlConfig
@@ -46,6 +48,7 @@ CLAUDE_HISTORY_RELATIVE_DIR = Path("llm") / "claude"
 CLAUDE_READY_TIMEOUT_SECONDS = 45.0
 CLAUDE_RENDER_SETTLE_MILLISECONDS = 1_000
 CLAUDE_DISCOVERY_ROUND_LIMIT = 12
+CLAUDE_DISCOVERY_STABLE_CHECKS = 3
 CLAUDE_CONVERSATION_RETRY_LIMIT = 3
 CLAUDE_HOSTS = frozenset({"claude.ai", "www.claude.ai"})
 CLAUDE_RESTRICTED_MARKERS = (
@@ -200,26 +203,104 @@ def _scroll_claude_navigation(page: Any) -> dict[str, Any]:
     return dict(result) if isinstance(result, dict) else {}
 
 
-def discover_claude_conversations(page: Any) -> list[ClaudeConversationLink]:
-    """Enumerate all conversations exposed by Claude's rendered chats page."""
+def _claude_discovery_loading(page: Any) -> bool:
+    """Read loading and access state without interpreting cached session titles."""
+    if page_shows_security_verification(page):
+        raise RuntimeError("Claude requires human verification. Complete the check in the browser before retrying.")
+    current_path = urlsplit(str(getattr(page, "url", "") or "")).path.lower()
+    if re.match(r"^/(?:login|signin|sign-in|signup|sign-up|auth)(?:/|$)", current_path):
+        raise RuntimeError("The selected browser is not signed in to Claude.")
+    status = page.evaluate(
+        r"""() => {
+            const visible = (element) => element.getClientRects().length > 0;
+            const main = document.querySelector('main');
+            const listContent = main && [...main.querySelectorAll(
+                'tbody tr, [role="row"] [role="cell"], '
+                + 'a[href*="/chat/"], a[href*="/c/"], a[href*="?chat="]'
+            )].some(visible);
+            return {
+                loading: !listContent || [...main.querySelectorAll('[aria-busy="true"], [role="progressbar"]')]
+                    .some(visible) || main.getAttribute('aria-busy') === 'true',
+                loginRequired: [...document.querySelectorAll('form')].some((form) =>
+                    visible(form) && form.querySelector('input[type="email"], input[name="email"]')
+                ),
+                noticeText: [...document.querySelectorAll('[role="alert"], [role="alertdialog"]')]
+                    .filter(visible).map((element) => element.innerText || '').join('\n'),
+            };
+        }"""
+    )
+    if not isinstance(status, dict):
+        return True
+    if status.get("loginRequired"):
+        raise RuntimeError("The selected browser is not signed in to Claude.")
+    notice = str(status.get("noticeText") or "").lower()
+    if any(marker in notice for marker in CLAUDE_RESTRICTED_MARKERS):
+        raise RuntimeError("The selected Claude account is restricted or unavailable.")
+    return bool(status.get("loading"))
 
-    goto_with_retry(page, CLAUDE_CHATS_URL, attempts=2, timeout_ms=90_000)
-    page.wait_for_timeout(500)
+
+def discover_claude_conversations(
+    page: Any,
+    *,
+    should_stop: Callable[[], bool] | None = None,
+) -> list[ClaudeConversationLink]:
+    """Wait for hydrated Chats content, then observe a stable rendered list."""
+    stop_requested = should_stop or (lambda: False)
+    if stop_requested():
+        return []
+    if page_shows_security_verification(page):
+        raise RuntimeError("Claude requires human verification. Complete the check in the browser before retrying.")
+    goto_with_retry(
+        page, CLAUDE_CHATS_URL, attempts=2, timeout_ms=90_000,
+        should_stop=stop_requested,
+    )
+    deadline = monotonic() + CLAUDE_READY_TIMEOUT_SECONDS
     collected: dict[str, ClaudeConversationLink] = {}
     previous_signature: tuple[int, int, int] | None = None
-    for _round_index in range(CLAUDE_DISCOVERY_ROUND_LIMIT):
-        for link in _discover_claude_links_from_dom(page):
-            collected.setdefault(link.url, link)
-        scroll_state = _scroll_claude_navigation(page)
-        signature = (
-            len(collected),
-            int(scroll_state.get("scrollTop") or 0),
-            int(scroll_state.get("scrollHeight") or 0),
-        )
-        if signature == previous_signature or not scroll_state.get("moved"):
+    stable_checks = 0
+    scroll_rounds = 0
+    while monotonic() < deadline:
+        if stop_requested():
             break
-        previous_signature = signature
-        page.wait_for_timeout(300)
+        loading = _claude_discovery_loading(page)
+        if stop_requested() or monotonic() >= deadline:
+            break
+        if not loading:
+            for link in _discover_claude_links_from_dom(page):
+                collected.setdefault(link.url, link)
+            if stop_requested() or monotonic() >= deadline:
+                break
+            if collected:
+                if scroll_rounds >= CLAUDE_DISCOVERY_ROUND_LIMIT:
+                    return list(collected.values())
+                scroll_state = _scroll_claude_navigation(page)
+                if stop_requested() or monotonic() >= deadline:
+                    break
+                signature = (
+                    len(collected),
+                    int(scroll_state.get("scrollTop") or 0),
+                    int(scroll_state.get("scrollHeight") or 0),
+                )
+                stable_checks = (
+                    stable_checks + 1
+                    if signature == previous_signature and not scroll_state.get("moved")
+                    else 0
+                )
+                if stable_checks >= CLAUDE_DISCOVERY_STABLE_CHECKS:
+                    return list(collected.values())
+                scroll_rounds += int(bool(scroll_state.get("moved")))
+                previous_signature = signature
+        else:
+            stable_checks = 0
+            previous_signature = None
+        remaining = deadline - monotonic()
+        if remaining <= 0 or wait_for_cache_scan(
+            min(0.5, remaining), stop_requested,
+            wait=lambda seconds: page.wait_for_timeout(seconds * 1_000),
+        ):
+            break
+    if collected and not stop_requested():
+        raise RuntimeError("Claude Chats did not finish loading a stable session list before the discovery timeout.")
     return list(collected.values())
 
 
@@ -529,20 +610,22 @@ def sync_claude_history(
     with _open_claude_history_page(descriptor) as page:
         goto_with_retry(page, CLAUDE_HOME_URL, attempts=3, timeout_ms=90_000)
         _wait_for_claude_ready(page)
-        conversations = discover_claude_conversations(page)
-        if not conversations:
+        conversations = discover_claude_conversations(page, should_stop=should_stop)
+        stopped = should_stop()
+        if not conversations and not stopped:
             raise RuntimeError(
                 "Claude history discovery returned no rendered sessions. "
                 "The authenticated Chats page may not have loaded."
             )
-        state.update(
-            phase="downloading",
-            discovered_tweets=len(conversations),
-            queued_tweets=len(conversations),
-            discovery_complete=True,
-            message=f"Found {len(conversations):,} Claude sessions; loading rendered messages...",
-        )
-        state.append_event(f"Found {len(conversations):,} Claude sessions in {descriptor.label}.")
+        if not stopped:
+            state.update(
+                phase="downloading",
+                discovered_tweets=len(conversations),
+                queued_tweets=len(conversations),
+                discovery_complete=True,
+                message=f"Found {len(conversations):,} Claude sessions; loading rendered messages...",
+            )
+            state.append_event(f"Found {len(conversations):,} Claude sessions in {descriptor.label}.")
 
         for index, conversation in enumerate(conversations, start=1):
             if should_stop():

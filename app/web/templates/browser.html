@@ -1,4 +1,4 @@
-<!-- Code version: v1.76.0-codex.0 -->
+<!-- Code version: v1.78.3-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.150.8-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.151.4-codex.0') }}">
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.2-codex.1') }}">
@@ -17,11 +17,12 @@
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.35.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.36.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.0.0-codex.0') }}"></script>
     <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.5.1-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.6.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-actions.js', v='browser-session-actions-v1.1.1-codex.1') }}"></script>
 </head>
@@ -216,6 +217,22 @@
                             </div>
                         </div>
                     </label>
+                    {% if filters.view == "text" and filters.source == "chatgpt" %}
+                    <label class="field browser-filter-field" for="browser_project_filter">
+                        <span>Project</span>
+                        <select
+                            id="browser_project_filter"
+                            name="project"
+                            class="form-select"
+                            aria-label="Filter by project"
+                        >
+                            <option value="">All projects</option>
+                            {% for project in text_page.project_options %}
+                            <option value="{{ project.key }}" {% if filters.project == project.key %}selected{% endif %}>{{ project.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    {% endif %}
                     {% if is_zhihu_text %}
                     <label class="field browser-filter-field" for="browser_answerer_filter">
                         <span>Answerer</span>
@@ -273,12 +290,12 @@
                     <div class="browser-content-toolbar">
                         <div class="browser-session-detail-actions browser-local-resources-header-actions{% if filters.view == 'text' and text_page.session_detail %} browser-session-detail-actions--session{% endif %}" data-browser-local-resources-header-actions>
                             {% if filters.view == "text" and text_page.session_detail %}
-                            <a class="secondary-button browser-session-back-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">{{ "Back to all answerers" if is_zhihu_text else "Back to all sessions" }}</a>
+                            <a class="secondary-button browser-session-back-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">{{ "Back to all answerers" if is_zhihu_text else ("Back to project sessions" if filters.project else "Back to all sessions") }}</a>
                             <nav class="browser-session-neighbor-nav" aria-label="{{ 'Answerer navigation' if is_zhihu_text else 'Session navigation' }}">
                                 {% if text_page.previous_session %}
                                 <a
                                     class="circular-icon-button browser-session-control-button browser-session-neighbor-button"
-                                    href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.previous_session.stable_id, session_page=filters.session_page, page=1) }}"
+                                    href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.previous_session.stable_id, session_page=filters.session_page, page=1) }}"
                                     aria-label="{{ 'Previous answerer' if is_zhihu_text else 'Previous session' }}"
                                     title="{{ 'Previous answerer' if is_zhihu_text else 'Previous session' }}: {{ text_page.previous_session.conversation_title }}"
                                 ><span class="icon browser-session-neighbor-prev-icon" aria-hidden="true"></span></a>
@@ -288,7 +305,7 @@
                                 {% if text_page.next_session %}
                                 <a
                                     class="circular-icon-button browser-session-control-button browser-session-neighbor-button"
-                                    href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.next_session.stable_id, session_page=filters.session_page, page=1) }}"
+                                    href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', session=text_page.next_session.stable_id, session_page=filters.session_page, page=1) }}"
                                     aria-label="{{ 'Next answerer' if is_zhihu_text else 'Next session' }}"
                                     title="{{ 'Next answerer' if is_zhihu_text else 'Next session' }}: {{ text_page.next_session.conversation_title }}"
                                 ><span class="icon browser-session-neighbor-next-icon" aria-hidden="true"></span></a>
@@ -317,7 +334,7 @@
                                 <button
                                     type="button"
                                     class="browser-session-action-button browser-session-refresh-button"
-                                    data-browser-session-refresh-url="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view='1', session=text_page.current_session.stable_id, session_page=filters.session_page, page=filters.page, refresh='1') }}"
+                                    data-browser-session-refresh-url="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=filters.answerer, q=filters.q, sort=filters.sort, session_view='1', session=text_page.current_session.stable_id, session_page=filters.session_page, page=filters.page, refresh='1') }}"
                                     data-wait-title="Refreshing page"
                                     data-wait-copy="{{ 'Reloading this answerer’s cached answers.' if is_zhihu_text else 'Reloading the current cached session page.' }}"
                                     aria-label="Refresh current page"
@@ -344,7 +361,7 @@
                                     {% if filters.view == "text" and text_page.session_detail %}
                                     <span class="browser-prompt-tag browser-search-session-tag" data-browser-session-tag>
                                         <span>{{ text_page.current_session.latest_author_label if is_zhihu_text else "This session" }}</span>
-                                        <button type="button" class="browser-prompt-tag-remove" data-browser-session-scope-remove aria-label="{{ 'Search all cached Zhihu answers' if is_zhihu_text else 'Search all cached text' }}" title="{{ 'Remove answerer scope' if is_zhihu_text else 'Remove session filter' }}">×</button>
+                                        <button type="button" class="browser-prompt-tag-remove" data-browser-session-scope-remove aria-label="{{ 'Search all cached Zhihu answers' if is_zhihu_text else ('Search this project' if filters.project else 'Search all cached text') }}" title="{{ 'Remove answerer scope' if is_zhihu_text else 'Remove session filter' }}">×</button>
                                     </span>
                                     {% endif %}
                                     <input
@@ -367,8 +384,8 @@
                                         data-browser-search-input
                                         data-browser-search-global-scope="{{ 'true' if filters.view == 'text' and not text_page.session_detail else 'false' }}"
                                         data-browser-search-scope="{{ 'answerer' if is_zhihu_text and text_page.session_detail else ('session' if filters.view == 'text' and text_page.session_detail else 'global') }}"
-                                        data-browser-search-global-submit-copy="{{ 'Press Enter to search all cached Zhihu answers.' if is_zhihu_text else 'Press Enter to search all cached text.' }}"
-                                        data-browser-search-submit-copy="{{ 'Press Enter to search this answerer’s answers.' if is_zhihu_text and text_page.session_detail else ('Press Enter to search this session.' if filters.view == 'text' and text_page.session_detail else ('Press Enter to search all cached text.' if filters.view == 'text' else 'Press Enter to search this cache.')) }}"
+                                        data-browser-search-global-submit-copy="{{ 'Press Enter to search all cached Zhihu answers.' if is_zhihu_text else ('Press Enter to search this project.' if filters.project else 'Press Enter to search all cached text.') }}"
+                                        data-browser-search-submit-copy="{{ 'Press Enter to search this answerer’s answers.' if is_zhihu_text and text_page.session_detail else ('Press Enter to search this session.' if filters.view == 'text' and text_page.session_detail else (('Press Enter to search this project.' if filters.project else 'Press Enter to search all cached text.') if filters.view == 'text' else 'Press Enter to search this cache.')) }}"
                                     >
                                     <div
                                         class="browser-search-suggestions"
@@ -805,7 +822,8 @@
                     </div>
                     {% elif filters.view == "text" and (text_page.session_detail or (not filters.session_view and text_page.items)) %}
                     {% if text_page.items and not is_zhihu_text %}
-                    <div class="local-store-pagination-host browser-chat-list" aria-label="{{ ('Cached ' ~ (text_page.current_session.source|capitalize) ~ ' session messages') if text_page.session_detail else 'Cached messages' }}">
+                    <div class="browser-chat-pane" data-browser-chat-pane>
+                    <div class="local-store-pagination-host browser-chat-list" data-chat-scrollport tabindex="0" aria-label="{{ ('Cached ' ~ (text_page.current_session.source|capitalize) ~ ' session messages') if text_page.session_detail else 'Cached messages' }}">
                         {% for message in text_page.items %}
                         {% set message_number = ((text_page.current_page - 1) * text_page.page_size) + loop.index %}
                         {% set is_media_response = message.role == "assistant" and message.media_refs and message.content_text.lstrip().startswith("{") %}
@@ -817,7 +835,9 @@
                             {% endfor %}
                         {% endif %}
                         <article
+                            id="{{ message.stable_id }}"
                             class="browser-chat-message browser-chat-message--{{ message.role }}"
+                            data-chat-author="{{ message.author_label }}" data-chat-number="{{ message_number }}"
                             {% if text_page.session_detail %}data-chat-session-id="{{ text_page.current_session.stable_id }}" {% endif %}data-chat-message-id="{{ message.stable_id }}"
                             aria-labelledby="browser_chat_message_role_{{ message.stable_id }}"
                         >
@@ -828,7 +848,7 @@
                                         <img class="browser-chat-role-icon" src="{{ url_for('static', filename=role_icon.filename) }}" alt="">
                                     </span>
                                     {% endif %}
-                                    <span class="browser-chat-message-role browser-chat-message-role-{{ message.role }}" id="browser_chat_message_role_{{ message.stable_id }}">{{ message.author_label }}</span>
+                                    <span class="{{ 'browser-chat-role-label' if role_icon.filename else ('browser-chat-message-role browser-chat-message-role-' ~ message.role) }}" id="browser_chat_message_role_{{ message.stable_id }}">{{ message.author_label }}</span>
                                     <span class="browser-chat-message-number">#{{ message_number }}</span>
                                     {% if not text_page.session_detail and message.conversation_title %}
                                     {% if message.conversation_url %}
@@ -879,6 +899,22 @@
                             {% endif %}
                         </article>
                         {% endfor %}
+                    </div>
+                    {% if text_page.session_detail %}
+                    <nav class="browser-chat-ruler" aria-label="Message navigation" hidden>
+                        {% for message in text_page.items %}
+                        {% set marker_number = ((text_page.current_page - 1) * text_page.page_size) + loop.index %}
+                        <button type="button" class="browser-chat-marker" data-chat-marker
+                                data-chat-target="{{ message.stable_id }}" data-chat-role="{{ message.role }}"
+                                aria-label="Go to message {{ marker_number }}: {{ message.author_label }}"
+                                aria-controls="{{ message.stable_id }}"></button>
+                        {% endfor %}
+                    </nav>
+                    <div class="browser-chat-preview" id="browser_chat_preview" data-chat-preview role="tooltip" hidden>
+                        <span class="browser-chat-preview-label" data-chat-preview-label></span>
+                        <span class="browser-chat-preview-copy" data-chat-preview-copy></span>
+                    </div>
+                    {% endif %}
                     </div>
                     {% elif text_page.items %}
                     <div class="events-table-shell scrollable-data-table-shell local-store-pagination-host browser-session-table-shell browser-session-detail-shell">
@@ -1052,7 +1088,7 @@
                                         {% endif %}
                                         <th scope="col" class="browser-session-col-count">{{ "Answers" if is_zhihu_text else "Messages" }}</th>
                                         <th scope="col" class="browser-session-col-updated" aria-sort="{{ 'ascending' if filters.sort == 'oldest' else ('descending' if filters.sort == 'newest' else 'none') }}">
-                                            <a class="browser-session-sort-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=filters.answerer, q=filters.q, sort='newest' if filters.sort == 'oldest' else 'oldest', session_view='1', page=1) }}" aria-label="Last updated: sort {{ 'newest first' if filters.sort == 'oldest' else 'oldest first' }}">Last updated <span aria-hidden="true">{{ '↑' if filters.sort == 'oldest' else '↓' }}</span></a>
+                                            <a class="browser-session-sort-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=filters.answerer, q=filters.q, sort='newest' if filters.sort == 'oldest' else 'oldest', session_view='1', page=1) }}" aria-label="Last updated: sort {{ 'newest first' if filters.sort == 'oldest' else 'oldest first' }}">Last updated <span aria-hidden="true">{{ '↑' if filters.sort == 'oldest' else '↓' }}</span></a>
                                         </th>
                                     </tr>
                                 </thead>
@@ -1064,7 +1100,7 @@
                                     <tr data-chat-session-id="{{ session.stable_id }}">
                                         <td class="browser-session-table-number">{{ ((text_page.current_page - 1) * text_page.page_size) + loop.index }}</td>
                                         <td>
-                                            <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('local_resources.browser', view='text', source=filters.source, answerer=('' if is_zhihu_text else filters.answerer), q='', sort=filters.sort, session_view='1', session=session.stable_id, session_page=filters.page, page=1) }}">{{ session.conversation_title }}</a>
+                                            <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=('' if is_zhihu_text else filters.answerer), q='', sort=filters.sort, session_view='1', session=session.stable_id, session_page=filters.page, page=1) }}">{{ session.conversation_title }}</a>
                                             {% if not is_zhihu_text %}
                                             <span class="browser-session-table-id">{{ session.conversation_id }}</span>
                                             {% endif %}
@@ -1156,7 +1192,7 @@
                     <div class="browser-empty-state" role="status">
                         <span class="browser-empty-icon browser-empty-icon-text" aria-hidden="true"></span>
                         <h3>No text messages match these filters.</h3>
-                        <p>Try a broader chat source or search term.</p>
+                        <p>{{ "Try another project or search term." if filters.project else "Try a broader chat source or search term." }}</p>
                     </div>
                     {% elif is_zhihu_text %}
                     <div class="browser-empty-state" role="status">

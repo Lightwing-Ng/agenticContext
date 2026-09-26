@@ -1,4 +1,4 @@
-/* Code version: v1.5.1-codex.1 */
+/* Code version: v1.6.0-codex.0 */
 
 (() => {
     const controllerUrl = new URL("select-controller.js?v=select-controller-v1.0.1", document.currentScript.src);
@@ -70,7 +70,7 @@
             });
             setMenuOpen(false);
             if (sourceChanged) {
-                for (const name of ["session", "session_page", "answerer"]) {
+                for (const name of ["session", "session_page", "answerer", "project"]) {
                     const field = form.querySelector(`[name="${name}"]`);
                     if (field) field.disabled = true;
                 }

@@ -1,6 +1,6 @@
 """Focused tests for authenticated Claude rendered-image caching.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -95,6 +95,61 @@ def test_claude_media_accepts_only_first_party_rendered_image_urls() -> None:
         ) is None
 
 
+@pytest.mark.parametrize("discovered_count", (0, 1))
+def test_claude_media_cancelled_discovery_stops_without_session_failure(
+    tmp_path: Path, macos_host, discovered_count: int,
+) -> None:
+    state = TaskState("test")
+    stop_requested = False
+
+    def should_stop() -> bool:
+        return stop_requested
+
+    def cancel_discovery(_page, *, should_stop):
+        nonlocal stop_requested
+        assert should_stop() is False
+        stop_requested = True
+        assert should_stop() is True
+        return [
+            ClaudeConversationLink("chat-1", "https://claude.ai/chat/chat-1", "Chat")
+        ][:discovered_count]
+
+    with _rendered_media_session([], None) as page, patch(
+        "app.core.claude_media.discover_claude_conversations", side_effect=cancel_discovery,
+    ) as discover, patch(
+        "app.core.claude_media._prepare_claude_conversation_for_rendering",
+    ) as prepare:
+        result = sync_claude_media(
+            state, CrawlConfig(claude_browser="safari"), should_stop, tmp_path,
+        )
+        discover.assert_called_once_with(page, should_stop=should_stop)
+        prepare.assert_not_called()
+        page.download_to_path.assert_not_called()
+
+    assert result.stopped is True
+    assert result.incomplete is False
+    assert result.sessions == result.failed_sessions == result.failed_images == 0
+    snapshot = state.snapshot()
+    assert snapshot["phase"] == "stopped"
+    assert snapshot["discovery_complete"] is False
+    assert snapshot["discovered_tweets"] == discovered_count
+    assert snapshot["failed_tweets"] == 0
+    assert not list(claude_media_dir(tmp_path).glob("img_*"))
+
+
+def test_claude_media_uncancelled_empty_discovery_remains_a_failure(
+    tmp_path: Path, macos_host,
+) -> None:
+    with _rendered_media_session([], None) as page, patch(
+        "app.core.claude_media.discover_claude_conversations", return_value=[],
+    ):
+        with pytest.raises(RuntimeError, match="Claude media discovery returned no rendered sessions"):
+            sync_claude_media(
+                TaskState("test"), CrawlConfig(claude_browser="safari"), lambda: False, tmp_path,
+            )
+        page.download_to_path.assert_not_called()
+
+
 def test_claude_safari_media_sync_saves_real_images_and_skips_known_bytes(
     tmp_path: Path, macos_host
 ) -> None:
@@ -113,6 +168,8 @@ def test_claude_safari_media_sync_saves_real_images_and_skips_known_bytes(
             return "Claude"
 
         def evaluate(self, script: str, *_args):
+            if "loginRequired" in script:
+                return {"loading": False}
             if "document.body" in script:
                 return "New chat"
             if "composerSelector" in script:

@@ -1,12 +1,13 @@
 """Fail-closed recovery for verified task-owned Safari idle windows."""
 
-# Code version: v1.0.1-codex.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 
@@ -195,4 +196,85 @@ def test_safari_verified_inert_ghost_is_protected_before_replacement_document(tm
             context._release_context_lock()
 
     close.assert_called_once_with(456, require_empty=True)
+    clear.assert_not_called()
+
+
+@pytest.mark.parametrize("inert_ghost", (True, False))
+def test_safari_stale_owned_window_records_idle_before_recovering_empty_shell(
+    tmp_path: Path,
+    inert_ghost: bool,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    original_baseline = [{"window_id": 123, "tab_count": 4}]
+    state_path.write_text(json.dumps({
+        "version": SAFARI_CONTEXT_LEASE_VERSION,
+        "state": "owned",
+        "window_id": 456,
+        "owner_pid": os.getpid() + 1,
+        "ownership_token": "a" * 32,
+        "baseline_windows": original_baseline,
+        "safari_process_identity": "same-process",
+    }))
+    context = SafariContext("https://chatgpt.com/", lock_blocking=False)
+    inventory_reads = 0
+
+    def read_inventory():
+        nonlocal inventory_reads
+        inventory_reads += 1
+        return {123: 4, 456: 1 if inventory_reads == 1 else 0}
+
+    def fail_idle_tab(window_id, _url, *, expect_empty_window):
+        idle = json.loads(state_path.read_text())
+        assert idle["state"] == "idle"
+        assert idle["window_id"] == window_id == 456
+        assert idle["baseline_windows"] == original_baseline
+        assert idle["owner_pid"] == os.getpid()
+        assert idle["ownership_token"] == context._ownership_token
+        assert expect_empty_window is True
+        raise RuntimeError("Safari idle task tab did not become addressable. (-1719)")
+
+    def create_document(_url):
+        creating = json.loads(state_path.read_text())
+        assert creating["state"] == "creating"
+        assert creating["baseline_windows"] == [
+            *original_baseline,
+            {"window_id": 456, "tab_count": 0},
+        ]
+        return "789"
+
+    with patch("app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH", lock_path), patch(
+        "app.core.safari_automation._safari_process_identity", return_value="same-process"
+    ), patch("app.core.safari_automation._safari_pid_is_alive", return_value=False), patch(
+        "app.core.safari_automation._safari_window_inventory", side_effect=read_inventory
+    ), patch("app.core.safari_automation._close_safari_window_id", return_value=False) as close, patch(
+        "app.core.safari_automation._safari_window_is_inert_ghost", return_value=inert_ghost
+    ), patch.object(context, "_create_tab", side_effect=fail_idle_tab) as create_tab, patch.object(
+        context, "_create_window", side_effect=create_document
+    ) as create, patch.object(context, "_clear_context_lease_state") as clear, patch.object(
+        SafariPage, "goto"
+    ):
+        context._acquire_context_lock()
+        try:
+            if inert_ghost:
+                assert context._create_page("https://chatgpt.com/").window_id == 789
+                owned = json.loads(state_path.read_text())
+                assert owned["state"] == "owned"
+                assert owned["window_id"] == 789
+                assert owned["baseline_windows"] == [
+                    *original_baseline,
+                    {"window_id": 456, "tab_count": 0},
+                ]
+            else:
+                with pytest.raises(RuntimeError, match="did not become addressable"):
+                    context._create_page("https://chatgpt.com/")
+                idle = json.loads(state_path.read_text())
+                assert idle["state"] == "idle"
+                assert idle["baseline_windows"] == original_baseline
+        finally:
+            context._release_context_lock()
+
+    assert close.call_args_list == [call(456), call(456, require_empty=True)]
+    create_tab.assert_called_once_with(456, "https://chatgpt.com/", expect_empty_window=True)
+    assert create.call_count == int(inert_ghost)
     clear.assert_not_called()

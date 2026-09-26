@@ -9,7 +9,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.2.0-codex.0
+# Code version: v1.3.0-codex.0
 
 from __future__ import annotations
 
@@ -176,6 +176,50 @@ def build_reconciled_grok_history_snapshot(context: CacheRouteContext) -> dict[s
 def build_reconciled_chatgpt_snapshot(context: CacheRouteContext) -> dict[str, Any]:
     """Refresh ChatGPT image counters from disk without discarding live task status."""
     return build_reconciled_cache_snapshot(context, "chatgpt")
+
+
+def build_cache_activity(context: CacheRouteContext) -> dict[str, Any]:
+    """Read active task summaries without scanning caches or probing browsers."""
+    phase_messages = {
+        "starting": "Preparing the cache task.",
+        "collecting": "Discovering items to cache.",
+        "downloading": "Caching items.",
+        "committing": "Saving cached items.",
+        "stopping": "Stopping after the current work item.",
+    }
+    units = {"items", "images", "conversations", "sessions", "resources", "answers"}
+    tasks = []
+    runtimes = [
+        (key, runtime.state, "media" if key == "grok" else "")
+        for key, runtime in context.cache_runtimes.items()
+    ]
+    runtimes.append(("grok", context.grok_history_state, "text"))
+    for source_key, state, fixed_mode in runtimes:
+        snapshot = state.snapshot()
+        source = get_cache_source_view(source_key)
+        if not snapshot["running"] or source is None:
+            continue
+        metrics = snapshot.get("performance_metrics") or {}
+        content_mode = fixed_mode or metrics.get("content_mode", "")
+        if content_mode not in {"text", "media"}:
+            content_mode = ""
+        phase = snapshot["phase"]
+        if phase not in phase_messages:
+            phase = "running"
+        unit = snapshot.get("progress_unit", "items")
+        tasks.append({
+            "id": f"grok:{fixed_mode}" if source_key == "grok" else source_key,
+            "source": source_key,
+            "label": source.label,
+            "content_mode": content_mode,
+            "phase": phase,
+            "message": phase_messages.get(phase, "Cache task in progress."),
+            "processed": max(0, int(snapshot.get("processed_tweets", 0))),
+            "total": max(0, int(snapshot.get("queued_tweets", 0))),
+            "unit": unit if unit in units else "items",
+        })
+    tasks.sort(key=lambda task: (task["label"].casefold(), task["id"]))
+    return {"tasks": tasks}
 
 
 def cache_source_switcher_path(
@@ -617,6 +661,12 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
         if get_cache_source_view(source_key) is None or source_key not in context.cache_runtimes:
             abort(404)
         return jsonify(build_reconciled_cache_snapshot(context, source_key))
+
+    @blueprint.get("/api/cache/activity")
+    def api_cache_activity():
+        response = jsonify(build_cache_activity(context))
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @blueprint.post("/api/browser/chatgpt/session/refresh")
     def refresh_browser_chatgpt_session():

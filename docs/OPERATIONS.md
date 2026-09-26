@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.37.2-codex.0`
+Documentation version: `v1.38.0-codex.0`
 
 ## Launch
 
@@ -52,6 +52,19 @@ installations. It skips an otherwise supported interpreter when required applica
 missing, so an already prepared platform installation can still start the app without a manual
 interpreter override.
 
+Safari automation reuses one background AppleScript worker instead of starting `osascript` for
+every API poll or media slice. The worker cannot activate or display a Dock item; it does not
+open or close Terminal windows. Scripts and results travel through anonymous pipes, and each
+exchange keeps the existing 20-second timeout. A failed transport is reaped before another
+request can start. This execution-layer change requires a normal service restart when no
+browser-owning job is active; a page reload alone does not update a running Python process.
+
+If closing a stale Safari task window leaves a zero-tab shell, reconciliation records it as
+idle before trying to reuse it. A shell that cannot accept a tab can then follow the existing
+ownership-checked recovery path; an occupied or unverified window still blocks replacement.
+Failure to prepare this temporary window means the account check did not run, not that the
+user signed out. The user's authenticated browser windows remain outside this recovery path.
+
 Browser-mode Agent and Settings directory controls use an in-page local folder browser on macOS and Windows.
 The browser starts
 from the current valid value or the nearest readable existing parent, supports breadcrumbs, Up,
@@ -72,7 +85,23 @@ loopback-only and accepts only the Tunnel project field.
 The normal server address is `http://127.0.0.1:8666`, and the application binds only to loopback by
 default. To opt in to trusted-LAN access, set `AGENTIC_CONTEXT_HOST=0.0.0.0` and set
 `AGENTIC_CONTEXT_AGENT_PASSWORD` to exactly six ASCII digits before launch. There is no built-in
-password. A successful unlock is stored in the signed Flask session for that browser.
+password. A successful unlock clears the previous session and creates an application-specific
+signed browser session with `HttpOnly` and `SameSite=Strict`, matching Worthward's PIN-gate
+semantics without sharing its cookie name or signing key. Neither the PIN nor the session cookie
+is transport-encrypted over HTTP.
+
+For persistent opt-in, place an owner-only `network-access.json` beside the resolved
+`settings.json`, outside the repository. On macOS the default location is
+`~/Library/Application Support/agenticContext/network-access.json`. Its JSON object contains
+`host` (`0.0.0.0` for LAN or `127.0.0.1` for loopback) and `agent_password` (a string containing
+exactly six ASCII digits). Keep POSIX permissions at `0600`, or restrict the Windows file ACL
+to its owner. The file stores the PIN as a local credential, as Worthward's configuration does;
+never add it to Git, logs, exported cache settings, or the shared synchronization ledger.
+Both values must be valid, otherwise the file contributes no bind or credential. Missing,
+malformed, oversized, unreadable, or symlinked files fail closed. Existing current and legacy
+environment overrides still take precedence. A normal service restart applies the saved bind;
+the default launcher requires no extra arguments. Reusing a Worthward PIN is an explicit
+one-time local configuration step, not an ongoing dependency on its source tree or process.
 
 When LAN access is enabled, every application route requires that signed session; static assets
 and the unlock flow are the only pre-authentication exceptions. Unsafe private-network requests

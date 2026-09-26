@@ -1,4 +1,4 @@
-/* Code version: v2.150.9-codex.0 */
+/* Code version: v2.151.4-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -348,8 +348,8 @@
     --settings-round-icon-button-color-hover: var(--circular-icon-button-color-hover);
     --settings-round-icon-button-material: var(--circular-icon-button-material);
     --settings-action-package-material: var(--frosted-glass-background);
-    --workspace-modal-material: var(--frosted-glass-background);
-    --notice-floating-material: var(--frosted-glass-background);
+    --workspace-modal-material: var(--frosted-glass-notice-background);
+    --notice-floating-material: var(--frosted-glass-notice-background);
     --local-store-pagination-material: var(--frosted-glass-background);
     --scrollable-data-table-header-material: var(--frosted-glass-background);
     --shared-select-control-height: 30px;
@@ -3151,10 +3151,10 @@ a.ghost-link[href$="/settings"] {
     margin: 0;
     padding: 12px 12px 12px 14px;
     background: var(--notice-floating-material);
-    box-shadow: var(--frosted-glass-shadow);
-    backdrop-filter: var(--frosted-glass-blur);
-    -webkit-backdrop-filter: var(--frosted-glass-blur);
-    border: var(--frosted-glass-border);
+    box-shadow: var(--frosted-glass-notice-shadow);
+    backdrop-filter: var(--frosted-glass-notice-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-notice-blur);
+    border: var(--frosted-glass-notice-border);
     z-index: var(--layer-global-popover);
 }
 
@@ -3217,6 +3217,7 @@ a.ghost-link[href$="/settings"] {
     min-width: 0;
     margin: 0;
     align-self: start;
+    color: var(--muted);
     font-weight: var(--font-weight-regular);
 }
 
@@ -3228,7 +3229,7 @@ a.ghost-link[href$="/settings"] {
     align-self: center;
     color: var(--text);
     font-size: var(--font-ui-lg);
-    font-weight: var(--font-weight-bold);
+    font-weight: var(--font-weight-semibold);
     line-height: 1.2;
     text-align: left;
     overflow-wrap: anywhere;
@@ -3251,7 +3252,7 @@ a.ghost-link[href$="/settings"] {
     min-width: 0;
     margin: 0;
     align-self: start;
-    color: var(--text);
+    color: var(--muted);
     font-size: var(--font-form-label);
     font-weight: var(--font-weight-regular);
     line-height: 1.45;
@@ -3312,8 +3313,8 @@ a.ghost-link[href$="/settings"] {
 }
 
 .dismiss-button .icon {
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
 }
 
 .notice-close {
@@ -3398,7 +3399,7 @@ a.ghost-link[href$="/settings"] {
     min-width: 0;
     margin: 0;
     align-self: start;
-    color: var(--text);
+    color: var(--muted);
     font-size: var(--font-form-label);
     font-weight: var(--font-weight-regular);
     line-height: 1.45;
@@ -5973,6 +5974,13 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     --frosted-glass-shadow-hover: 0 22px 48px rgba(10, 14, 25, 0.16), inset 0 1px 0 color-mix(in srgb, var(--theme-glass-highlight) 64%, transparent);
     --frosted-glass-shadow-active: 0 12px 28px rgba(10, 14, 25, 0.14), inset 0 1px 0 color-mix(in srgb, var(--theme-glass-highlight) 48%, transparent);
     --frosted-glass-blur: saturate(160%) blur(18px);
+    /* The approved Local resources waiting card owns this notification variant. */
+    --frosted-glass-notice-background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.24) 0%, rgba(248, 249, 250, 0.18) 100%),
+        rgba(255, 255, 255, 0.08);
+    --frosted-glass-notice-border: 1px solid rgba(255, 255, 255, 0.30);
+    --frosted-glass-notice-shadow: 0 18px 40px rgba(10, 14, 25, 0.12), inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.55) 52%, transparent);
+    --frosted-glass-notice-blur: saturate(160%) blur(18px);
     --settings-action-package-radius: var(--settings-general-option-radius);
     --settings-action-package-pad-block: var(--settings-general-option-pad-block);
     --settings-action-package-pad-inline: var(--settings-general-option-pad-inline);
@@ -6064,12 +6072,12 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline);
     pointer-events: auto;
     opacity: 1;
-    border: var(--frosted-glass-border);
+    border: var(--frosted-glass-notice-border);
     border-radius: var(--workspace-modal-radius);
-    background: var(--frosted-glass-background);
-    box-shadow: var(--frosted-glass-shadow);
-    backdrop-filter: var(--frosted-glass-blur);
-    -webkit-backdrop-filter: var(--frosted-glass-blur);
+    background: var(--workspace-modal-material);
+    box-shadow: var(--frosted-glass-notice-shadow);
+    backdrop-filter: var(--frosted-glass-notice-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-notice-blur);
     overflow: hidden;
 }
 
@@ -6123,6 +6131,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
 .workspace-modal-title {
     grid-column: 2;
     grid-row: 1;
+    min-width: 0;
     margin: 0;
     align-self: center;
     color: var(--text);
@@ -6517,7 +6526,6 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     box-shadow: var(--frosted-glass-shadow);
 }
 
-.notice-floating,
 .sidebar-dock {
     border: var(--frosted-glass-border);
     box-shadow: var(--frosted-glass-shadow);
@@ -6527,6 +6535,10 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 
 .notice-floating {
     background: var(--notice-floating-material);
+    border: var(--frosted-glass-notice-border);
+    box-shadow: var(--frosted-glass-notice-shadow);
+    backdrop-filter: var(--frosted-glass-notice-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-notice-blur);
 }
 
 .sidebar-dock {
@@ -6756,6 +6768,11 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme-override="light"]) {
+        --frosted-glass-notice-background:
+            linear-gradient(180deg, rgba(72, 88, 112, 0.18) 0%, rgba(42, 48, 64, 0.135) 100%),
+            rgba(10, 14, 20, 0.06);
+        --frosted-glass-notice-border: 1px solid rgba(210, 224, 244, 0.225);
+        --frosted-glass-notice-shadow: 0 18px 40px rgba(0, 0, 0, 0.22), inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.08) 36%, transparent);
         --sidebar-shell-background:
             linear-gradient(180deg, rgba(72, 88, 112, 0.18) 0%, rgba(42, 48, 64, 0.135) 100%),
             rgba(10, 14, 20, 0.06);
@@ -6775,6 +6792,11 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 }
 
 :root[data-theme-override="dark"] {
+    --frosted-glass-notice-background:
+        linear-gradient(180deg, rgba(72, 88, 112, 0.18) 0%, rgba(42, 48, 64, 0.135) 100%),
+        rgba(10, 14, 20, 0.06);
+    --frosted-glass-notice-border: 1px solid rgba(210, 224, 244, 0.225);
+    --frosted-glass-notice-shadow: 0 18px 40px rgba(0, 0, 0, 0.22), inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.08) 36%, transparent);
     --sidebar-shell-background:
         linear-gradient(180deg, rgba(72, 88, 112, 0.18) 0%, rgba(42, 48, 64, 0.135) 100%),
         rgba(10, 14, 20, 0.06);
@@ -7090,6 +7112,10 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 
 .browser-source-filter-combobox.is-open {
     z-index: var(--layer-global-popover);
+}
+
+.browser-source-filter-dropdown {
+    background: var(--frosted-glass-opaque-background);
 }
 
 .browser-filter-select {
@@ -7699,11 +7725,20 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     height: 100%;
 }
 
+.browser-chat-pane {
+    position: relative;
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    width: 100%;
+}
+
 .browser-text-summary-card .browser-chat-list {
+    box-sizing: border-box;
     flex: 1 1 0;
     min-height: 0;
-    margin-block-start: calc(-1 * var(--layout-physical-effect-bleed));
-    margin-inline-start: calc(-1 * var(--layout-physical-effect-bleed));
+    width: 100%;
     padding-block: var(--layout-physical-effect-bleed);
     padding-inline-start: var(--layout-physical-effect-bleed);
     padding-inline-end: var(--layout-physical-effect-bleed);
@@ -7711,6 +7746,116 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     overflow-y: auto;
     scroll-padding-block-end: var(--layout-physical-effect-bleed);
     overscroll-behavior: contain;
+}
+
+.browser-chat-ruler {
+    position: absolute;
+    z-index: var(--layer-control-affordance);
+    inset-block: 8px;
+    inset-inline-end: 12px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    width: 24px;
+    min-height: 0;
+}
+
+.browser-chat-marker {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 1 24px;
+    min-width: 0;
+    min-height: 0;
+    width: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    box-shadow: none;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.browser-chat-marker::before {
+    content: "";
+    width: 12px;
+    height: 2px;
+    border-radius: 999px;
+    background: var(--theme-muted);
+    opacity: 0.55;
+    transition: width 140ms var(--motion-standard), background 140ms var(--motion-standard);
+}
+
+.browser-chat-marker[data-chat-role="user"]::before {
+    width: 18px;
+}
+
+.browser-chat-marker:hover::before,
+.browser-chat-marker:focus-visible::before,
+.browser-chat-marker[aria-current="true"]::before {
+    width: 22px;
+    background: var(--accent-text);
+    opacity: 1;
+}
+
+.browser-chat-marker:focus-visible {
+    outline: 2px solid var(--accent-focus-ring);
+    outline-offset: 1px;
+}
+
+.browser-chat-preview {
+    position: absolute;
+    z-index: var(--layer-global-popover);
+    right: 44px;
+    display: grid;
+    gap: 6px;
+    box-sizing: border-box;
+    width: min(320px, calc(100% - 56px));
+    max-height: calc(100% - 16px);
+    padding: 12px;
+    border: var(--frosted-glass-border);
+    border-radius: var(--radius-panel);
+    background: var(--frosted-glass-background);
+    box-shadow: var(--frosted-glass-shadow);
+    backdrop-filter: var(--frosted-glass-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-blur);
+    color: var(--text);
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+
+.browser-chat-preview-label {
+    font-size: var(--font-ui-xs);
+    font-weight: var(--font-weight-semibold);
+    color: var(--muted);
+}
+
+.browser-chat-preview-copy {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 6;
+    line-clamp: 6;
+    overflow: hidden;
+    font-size: var(--font-ui-sm);
+    line-height: 1.5;
+}
+
+.browser-chat-ruler[hidden],
+.browser-chat-preview[hidden] {
+    display: none;
+}
+
+.browser-chat-role-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip-path: inset(50%);
+    overflow: hidden;
+    white-space: nowrap;
 }
 
 .browser-text-summary-card .browser-session-table-shell {
@@ -8420,25 +8565,43 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-prompt-table {
-    min-width: 820px;
+    --browser-prompt-number-width: 5%;
+    --browser-prompt-content-width: 60%;
+    --browser-prompt-source-width: 10%;
+    --browser-prompt-remarks-width: 25%;
+    width: 100%;
+    min-width: 0;
 }
 
+.browser-prompt-table > tbody > tr > td:nth-child(1),
 .browser-prompt-table .browser-prompt-col-number {
-    width: 7%;
+    width: var(--browser-prompt-number-width);
     text-align: center;
 }
 
+.browser-prompt-table > tbody > tr > td:nth-child(2),
 .browser-prompt-table .browser-prompt-col-content {
-    width: 50%;
+    width: var(--browser-prompt-content-width);
 }
 
+.browser-prompt-table > tbody > tr > td:nth-child(3),
 .browser-prompt-table .browser-prompt-col-source {
-    width: 10%;
+    width: var(--browser-prompt-source-width);
     text-align: center;
 }
 
+.browser-prompt-table > tbody > tr > td:nth-child(4),
 .browser-prompt-table .browser-prompt-col-remarks {
-    width: 33%;
+    width: var(--browser-prompt-remarks-width);
+}
+
+@media (max-width: 560px) {
+    .browser-prompt-table {
+        --browser-prompt-number-width: 8%;
+        --browser-prompt-content-width: 52%;
+        --browser-prompt-source-width: 15%;
+        --browser-prompt-remarks-width: 25%;
+    }
 }
 
 .browser-prompt-table-prompt-cell {
@@ -8480,6 +8643,30 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-prompt-table-content > :last-child {
     margin-bottom: 0;
+}
+
+.browser-prompt-table-content pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.browser-prompt-table-content table {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+}
+
+.browser-prompt-table-content :is(img, video) {
+    max-width: 100%;
+    height: auto;
+}
+
+.browser-prompt-table .browser-prompt-tag {
+    box-sizing: border-box;
+}
+
+.browser-prompt-table .browser-prompt-tag-remove {
+    flex: 0 0 16px;
 }
 
 .browser-prompt-table-remarks {
@@ -13048,6 +13235,11 @@ dialog.browser-dialog:not([open]) {
  * remains switchable between Light and Dark modes.
  */
 :root[data-style-token-reference-skin]:not([data-theme-override="light"]) {
+    --frosted-glass-notice-background:
+        linear-gradient(180deg, rgba(72, 88, 112, 0.18) 0%, rgba(42, 48, 64, 0.135) 100%),
+        rgba(10, 14, 20, 0.06);
+    --frosted-glass-notice-border: 1px solid rgba(210, 224, 244, 0.225);
+    --frosted-glass-notice-shadow: 0 18px 40px rgba(0, 0, 0, 0.22), inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.08) 36%, transparent);
     color-scheme: dark;
     --color-scheme: dark;
     --theme-background: #0b0c0c;

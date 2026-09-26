@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.145.2-codex.0
+# Code version: v1.146.7-codex.0
 
 from __future__ import annotations
 
@@ -708,7 +708,7 @@ class WebAppTests(unittest.TestCase):
         self.assertGreaterEqual(chatgpt_body.count('href="/cache/chatgpt/text/edge"'), 1)
         self.assertGreaterEqual(chatgpt_body.count('href="/cache/chatgpt/media/edge"'), 1)
         self.assertIn(
-            'chatgpt-page.js?v=chatgpt-page-v1.4.0-codex.1',
+            'chatgpt-page.js?v=chatgpt-page-v1.4.1-codex.0',
             chatgpt_body,
         )
         self.assertIn('data-browser-session-account-label="ChatGPT"', chatgpt_body)
@@ -904,19 +904,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = (
-                    "style-v2.150.7-codex.0"
-                    if page_source == "agent"
-                    else (
-                        "style-v2.150.8-codex.0"
-                        if page_source == "local-resources"
-                        else (
-                            "style-v2.150.9-codex.0"
-                            if page_source in {"x", "grok", "chatgpt", "gemini", "claude", "zhihu"}
-                            else "style-v2.150.0-codex.0"
-                        )
-                    )
-                )
+                expected_style_version = "style-v2.151.4-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1020,7 +1008,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Cached media browser", browser_body)
         self.assertIn('data-browser-source-filter', browser_body)
         self.assertEqual(browser_body.count('data-browser-source-filter-option='), 5)
-        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.5.1-codex.1', browser_body)
+        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.6.0-codex.0', browser_body)
         self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"', browser_body)
 
         self.assertIn('class="trade-strategy-dropdown-option browser-source-filter-option', browser_body)
@@ -1265,7 +1253,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(correct_unlock.status_code, 303)
         self.assertEqual(correct_unlock.headers["Location"], "/agent/tunnel/chatgpt")
         self.assertIn("HttpOnly", correct_unlock.headers["Set-Cookie"])
-        self.assertIn("SameSite=Lax", correct_unlock.headers["Set-Cookie"])
+        self.assertIn("SameSite=Strict", correct_unlock.headers["Set-Cookie"])
         self.assertEqual(unlocked_lan_page.status_code, 200)
         self.assertEqual(unlocked_lan_status.status_code, 200)
         self.assertEqual(unlocked_settings.status_code, 200)
@@ -1343,7 +1331,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.150.7-codex.0', local_body)
+        self.assertIn('style-v2.151.4-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -5415,7 +5403,7 @@ class WebAppTests(unittest.TestCase):
         source_filter_script = BROWSER_SOURCE_FILTER_SCRIPT_PATH.read_text(encoding="utf-8")
         for fragment in (
             "const sourceChanged = value !== input.value;",
-            'for (const name of ["session", "session_page", "answerer"])',
+            'for (const name of ["session", "session_page", "answerer", "project"])',
             "if (field) field.disabled = true;",
         ):
             with self.subTest(source_filter_script_fragment=fragment):
@@ -5619,10 +5607,10 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.150.8-codex.0", body)
+            self.assertIn("style-v2.151.4-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.35.0-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.36.0-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -6327,7 +6315,7 @@ class WebAppTests(unittest.TestCase):
             'formData.set("source", "chatgpt");',
             'workspace.dataset.browserNavigationSkeleton = "1";',
             'document.documentElement.setAttribute("aria-busy", "true");',
-            'event.target.matches("select[name=\'answerer\']")',
+            'event.target.matches("select[name=\'answerer\'], select[name=\'project\']")',
             'for (const name of ["session", "session_page"])',
             'const fallbackTimer = window.setTimeout(commitNavigation, 120);',
             'window.requestAnimationFrame(() => {',
@@ -6344,6 +6332,16 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(normalize_browser_filters(source="all", view="media")["view"], "media")
         self.assertEqual(normalize_browser_filters(source="all", view="media")["source"], "all")
         self.assertEqual(normalize_browser_filters(source="all", view="prompts")["source"], "all")
+        self.assertEqual(
+            normalize_browser_filters(source="chatgpt", view="text", project="  project-id\x00  ")["project"],
+            "project-id",
+        )
+        for source, view in (("gemini", "text"), ("chatgpt", "media"), ("chatgpt", "prompts")):
+            with self.subTest(source=source, view=view):
+                self.assertEqual(
+                    normalize_browser_filters(source=source, view=view, project="project-id")["project"],
+                    "",
+                )
         self.assertEqual(
             normalize_browser_filters(
                 source="zhihu",

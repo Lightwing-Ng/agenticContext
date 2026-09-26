@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.14.5-codex.0
+# Code version: v2.15.1-codex.0
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from threading import RLock
 from typing import Any
 from urllib.parse import urlsplit
 
+from .macos_applescript import execute_applescript
 from .platform_lock import lock_file, unlock_file
 
 
@@ -300,12 +301,8 @@ def run_applescript(source: str, *, retry_transient: bool = True) -> str:
     retry_limit = SAFARI_APPLESCRIPT_RETRY_LIMIT if retry_transient else 0
     for attempt_index in range(retry_limit + 1):
         try:
-            process = subprocess.run(
-                ["osascript"],
-                input=source,
-                text=True,
-                capture_output=True,
-                check=False,
+            process = execute_applescript(
+                source,
                 timeout=SAFARI_APPLESCRIPT_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
@@ -2590,6 +2587,8 @@ class SafariContext:
                 self._durable_lease_started = True
                 self._adopted_window_id = window_id
                 self._adopted_window_was_empty = current_inventory[window_id] == 0
+                if self._adopted_window_was_empty:
+                    self._write_idle_context_lease_state(window_id)
                 return
         else:
             if self._uncertain_creation_candidates(current_inventory, baseline):
