@@ -13684,6 +13684,10 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
     .style-token-page {
         --workspace-title-rail-pad-block-start: calc(var(--global-quick-actions-top) - var(--page-compact-edge-pad));
     }
+
+    .style-token-page .style-token-copy-button {
+        margin-inline-end: max(0px, calc(var(--global-quick-actions-right) - var(--page-compact-edge-pad)));
+    }
 }
 
 .trade-strategy-select.browser-filter-select-trigger,

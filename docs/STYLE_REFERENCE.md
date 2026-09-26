@@ -330,6 +330,10 @@ toggle offsets, title rails, global action reserves, and catalog copy rails deri
 from the current size token; the shared 10px edge gap and vertical centerline do not
 change. The 24px dismiss action, 32px Process List marker, and 36px topic icon or
 Agent session rail remain separate semantic sizes.
+The catalog title and copy rail compensate for the existing 8px compact page pad
+at `<=560px` using the global-anchor-minus-page-pad equation. This preserves their
+centerline and right axis without introducing another breakpoint or moving the
+global controls.
 
 Pagination keeps `.local-store-pagination` and `.local-store-page-button` as its
 public markup contract. Non-active page, arrow, and ellipsis controls inherit
