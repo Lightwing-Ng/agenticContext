@@ -1,4 +1,4 @@
-"""Shared component annotation regressions. Code version: v1.7.0-codex.1."""
+"""Shared component annotation regressions. Code version: v1.8.1-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -229,7 +229,7 @@ def test_shared_primitive_catalog_geometry_and_states(
 
         circular = page.locator(".style-token-round-icon-demo")
         expect(circular).to_have_class("circular-icon-button settings-round-icon-button style-token-round-icon-demo")
-        round_control_size = "44px" if width <= 900 else "36px"
+        round_control_size = "44px" if width <= 900 else "30px"
         expect(circular).to_have_css("width", round_control_size)
         expect(circular).to_have_css("height", round_control_size)
         circular.focus()

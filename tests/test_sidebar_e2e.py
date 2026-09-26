@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.53.0-codex.0
+Code version: v1.55.1-codex.0
 """
 
 from __future__ import annotations
@@ -2046,12 +2046,12 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
         token_control = page.locator(
             '[data-style-token-name="--circular-icon-button-size"]'
         ).first
-        expect(token_control).to_have_attribute("data-style-token-value", "36")
+        expect(token_control).to_have_attribute("data-style-token-value", "30")
         token_control.locator('[data-style-token-stepper="up"]').click()
-        expect(token_control).to_have_attribute("data-style-token-value", "37")
+        expect(token_control).to_have_attribute("data-style-token-value", "31")
         assert page.locator("[data-style-token-shell]").evaluate(
             "element => element.style.getPropertyValue('--circular-icon-button-size')"
-        ) == "37px"
+        ) == "31px"
     finally:
         context.close()
 

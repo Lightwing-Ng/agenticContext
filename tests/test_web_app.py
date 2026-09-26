@@ -905,15 +905,15 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
-                    "style-v2.150.7-codex.0"
+                    "style-v2.156.1-codex.0"
                     if page_source == "agent"
                     else (
-                        "style-v2.150.8-codex.0"
+                        "style-v2.156.1-codex.0"
                         if page_source == "local-resources"
                         else (
-                            "style-v2.150.9-codex.0"
+                            "style-v2.156.1-codex.0"
                             if page_source in {"x", "grok", "chatgpt", "gemini", "claude", "zhihu"}
-                            else "style-v2.150.0-codex.0"
+                            else "style-v2.156.1-codex.0"
                         )
                     )
                 )
@@ -1343,7 +1343,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.150.7-codex.0', local_body)
+        self.assertIn('style-v2.156.1-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -5605,7 +5605,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.150.8-codex.0", body)
+            self.assertIn("style-v2.156.1-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.35.0-codex.0', body)

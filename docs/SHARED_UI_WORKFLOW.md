@@ -1,6 +1,13 @@
 # Shared UI workflow
 
-Documentation version: `v1.2.0-codex.0`
+Documentation version: `v1.4.1-codex.0`
+
+## Shared Circular icon button
+
+The standard Circular icon button is 30px on desktop with an unchanged 18px glyph.
+The existing `<=900px` 44px adaptation remains; anchor and title-rail geometry
+consume the size token rather than independent offsets. Coarse pointers do not
+enlarge only the sidebar toggle and break its alignment with the theme button.
 
 ## Shared select keyboard adapter
 

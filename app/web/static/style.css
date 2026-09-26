@@ -1,4 +1,4 @@
-/* Code version: v2.150.9-codex.0 */
+/* Code version: v2.156.1-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -323,7 +323,7 @@
     --page-mobile-active-bottom-pad: var(--page-mobile-scroll-bottom-pad-base);
     --sidebar-dock-mobile-bottom-gap: 4px;
     --sidebar-dock-mobile-shadow: 0 -10px 24px var(--theme-glass-border), 0 0 0 1px color-mix(in srgb, var(--theme-glass-highlight) 44%, transparent);
-    --circular-icon-button-size: 36px;
+    --circular-icon-button-size: 30px;
     --circular-icon-button-icon-size: 18px;
     --circular-icon-button-radius: var(--radius-pill);
     --circular-icon-button-material: var(--frosted-glass-background);
@@ -6743,10 +6743,10 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     .page > .sidebar-toggle:hover,
     .page > .sidebar-toggle:focus-visible,
     .page > .sidebar-toggle:active {
-        width: 44px;
-        min-width: 44px;
-        height: 44px;
-        min-height: 44px;
+        width: var(--circular-icon-button-size);
+        min-width: var(--circular-icon-button-size);
+        height: var(--circular-icon-button-size);
+        min-height: var(--circular-icon-button-size);
         touch-action: manipulation;
         z-index: var(--layer-sidebar-toggle);
         transform: translate3d(var(--sidebar-toggle-x), 0, 0);
@@ -11621,21 +11621,21 @@ dialog.browser-dialog:not([open]) {
     display: flex;
     flex: 0 0 auto;
     flex-direction: column;
-    height: 46px;
+    height: var(--workspace-title-rail-height);
     min-height: 0;
-    padding: 10px 12px 0;
+    padding: var(--workspace-title-rail-pad-block-start) var(--workspace-article-pad-inline) 0;
     width: min(100%, var(--layout-content-width));
     max-width: var(--layout-content-width);
 }
 
 #workspace_panel .settings-workspace-header:first-child > .settings-summary-card {
-    height: 46px;
+    height: var(--workspace-title-rail-height);
     min-height: 0;
-    padding: 10px 12px 0;
+    padding: var(--workspace-title-rail-pad-block-start) var(--workspace-article-pad-inline) 0;
 }
 
 .settings-shell-style-tokens > .settings-summary-card .report-heading-row {
-    min-height: 36px;
+    min-height: var(--workspace-title-rail-control-height);
 }
 
 /* Code version: v1.2.0-codex.1
@@ -13183,9 +13183,9 @@ dialog.browser-dialog:not([open]) {
 }
 
 #workspace_panel .settings-workspace-header.settings-shell-style-tokens:first-child > .settings-summary-card {
-    height: 46px;
-    min-height: 46px;
-    padding: 10px 12px 0;
+    height: var(--workspace-title-rail-height);
+    min-height: var(--workspace-title-rail-height);
+    padding: var(--workspace-title-rail-pad-block-start) var(--workspace-article-pad-inline) 0;
     border: 0;
     background: transparent;
     box-shadow: none;
@@ -13194,7 +13194,7 @@ dialog.browser-dialog:not([open]) {
 }
 
 #workspace_panel .settings-shell-style-tokens > .settings-summary-card > .report-heading-row {
-    min-height: 36px;
+    min-height: var(--workspace-title-rail-control-height);
     margin: 0;
     padding: 0;
     gap: 1ch;
@@ -13286,6 +13286,16 @@ html.sidebar-memory-collapsed .style-token-page #workspace_panel .settings-shell
 @media (max-width: 900px) {
     #workspace_panel .settings-shell-style-tokens > .settings-summary-card > .report-heading-row {
         padding-inline-start: calc(var(--settings-round-icon-button-size) + 10px);
+    }
+}
+
+@media (max-width: 560px) {
+    .style-token-page {
+        --workspace-title-rail-pad-block-start: calc(var(--global-quick-actions-top) - var(--page-compact-edge-pad));
+    }
+
+    .style-token-page .style-token-copy-button {
+        margin-inline-end: max(0px, calc(var(--global-quick-actions-right) - var(--page-compact-edge-pad)));
     }
 }
 

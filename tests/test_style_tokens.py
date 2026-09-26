@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.86.9-codex.0
+Code version: v1.88.1-codex.0
 """
 
 import hashlib
@@ -47,7 +47,7 @@ def test_process_list_catalog_publishes_the_production_component() -> None:
     catalog_template = (
         PROJECT_ROOT / "app/web/templates/settings_style_tokens.html"
     ).read_text(encoding="utf-8")
-    assert "style-v2.150.7-codex.0" in catalog_template
+    assert "style-v2.156.1-codex.0" in catalog_template
 
 
 def test_agent_session_scrollport_preserves_physical_effect_bleed() -> None:
@@ -2387,7 +2387,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.150.8-codex.0 */",
+        "/* Code version: v2.156.1-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -3829,7 +3829,8 @@ def test_circular_icon_button_has_canonical_tokens_and_real_consumers() -> None:
     ).read_text(encoding="utf-8")
 
     for token in (
-        "--circular-icon-button-size: 36px;",
+        "--circular-icon-button-size: 30px;",
+        "--circular-icon-button-size: 44px;",
         "--circular-icon-button-icon-size: 18px;",
         "--circular-icon-button-material: var(--frosted-glass-background);",
         "--circular-icon-button-background: var(--circular-icon-button-material);",
@@ -3842,6 +3843,29 @@ def test_circular_icon_button_has_canonical_tokens_and_real_consumers() -> None:
     assert 'class="circular-icon-button settings-round-icon-button style-token-round-icon-demo"' in style_token_template
     assert 'class="circular-icon-button sidebar-toggle"' in browser_template
     assert 'class="circular-icon-button browser-media-round-action browser-media-source-link"' in browser_template
+
+    for invariant in (
+        "--sidebar-toggle-center-offset: calc(var(--layout-global-anchor-top) + (var(--settings-round-icon-button-size) / 2));",
+        "--layout-global-action-inline-size: var(--settings-round-icon-button-size);",
+        "--workspace-title-rail-control-height: var(--settings-round-icon-button-size);",
+        "--workspace-title-rail-collapsed-pad-inline-start: calc(var(--settings-round-icon-button-size) + 22px);",
+        "--workspace-modal-close-size: 24px;",
+        "--workspace-modal-icon-size: 36px;",
+        "--process-list-marker-size: 32px;",
+    ):
+        assert invariant in stylesheet
+    title_start = stylesheet.index(
+        "#workspace_panel .settings-workspace-header.settings-shell-style-tokens:first-child > .settings-summary-card {"
+    )
+    title_rule = stylesheet[title_start:stylesheet.index("\n}", title_start)]
+    assert "height: var(--workspace-title-rail-height);" in title_rule
+    assert "height: 46px;" not in title_rule
+    coarse_start = stylesheet.index("@media (hover: none) and (pointer: coarse) {")
+    coarse_rule = stylesheet[coarse_start:stylesheet.index("\n}", coarse_start)]
+    assert "width: var(--circular-icon-button-size);" in coarse_rule
+    assert "height: var(--circular-icon-button-size);" in coarse_rule
+    assert "width: 44px;" not in coarse_rule
+    assert "height: 44px;" not in coarse_rule
 
 
 def test_pagination_hover_and_focus_share_accent_color_and_motion_tokens() -> None:

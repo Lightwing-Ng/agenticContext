@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.15.0-codex.0`
+Documentation version: `v1.20.1-codex.0`
 
 ## Authority
 
@@ -217,12 +217,22 @@ hanging indent through the shared modal list-padding and marker-gap tokens, and 
 shared 4px row gap owns all space between title and body.
 See tests/test_style_alignment_e2e.py for isolated responsive acceptance checks.
 
-Circular actions use `.circular-icon-button` as the reusable primitive. Its 36px
-control, 18px icon, pill radius, `--circular-icon-button-material` Frosted Glass
+Circular actions use `.circular-icon-button` as the reusable primitive. Its 30px
+desktop control, 18px icon, pill radius, `--circular-icon-button-material` Frosted Glass
 surface, border, shadow, and state colors come from `--circular-icon-button-*`; the former
 `--settings-round-icon-button-*` names are compatibility aliases only. Sidebar,
 global, Browser session, and media actions keep their semantic classes as adapters
 and also expose the canonical class in markup.
+The existing `<=900px` responsive adaptation keeps the 44px touch target. Sidebar
+toggle offsets, title rails, global action reserves, and catalog copy rails derive
+from the current size token; the shared 10px edge gap and vertical centerline do not
+change. Coarse pointers consume the same current size instead of enlarging only
+the toggle while leaving the theme button smaller. The 24px dismiss action, 32px
+Process List marker, and 36px topic icon or Agent session rail remain separate sizes.
+The catalog title and copy rail compensate for the existing 8px compact page pad
+at `<=560px` using the global-anchor-minus-page-pad equation. This preserves their
+centerline and right axis without introducing another breakpoint or moving the
+global controls.
 
 Pagination keeps `.local-store-pagination` and `.local-store-page-button` as its
 public markup contract. Non-active page, arrow, and ellipsis controls inherit
