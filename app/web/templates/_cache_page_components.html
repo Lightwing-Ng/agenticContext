@@ -1,4 +1,4 @@
-{# Code version: v1.3.0-codex.0 #}
+{# Code version: v1.3.1-codex.0 #}
 
 {% from "_browser_session_status.html" import render_browser_session_status %}
 
@@ -57,7 +57,8 @@
         cache_source.browser_empty_message,
         "Ready to download",
         account_label=cache_source.label,
-        hide_ready_message=true
+        hide_ready_message=true,
+        recheck_action=true
     ) }}
 </div>
 {%- endmacro %}

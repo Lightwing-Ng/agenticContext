@@ -1,6 +1,6 @@
 """Focused tests for browser-rendered Claude history caching.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from pathlib import Path
@@ -18,7 +18,9 @@ from app.core.claude_history import (
     sync_claude_history,
 )
 from app.core.config import CrawlConfig
-from app.core.state import TaskState
+from app.core.claude_history_service import ClaudeHistoryService
+from app.core.job_lock import CacheTaskLock
+from app.core.state import TaskSnapshot, TaskState
 
 
 class _RenderedClaudePage:
@@ -184,3 +186,30 @@ def test_claude_safari_sync_caches_rendered_text_in_owned_context(
     assert result["messages"] == 2
     assert result["failed"] == 0
     assert ClaudeHistoryStore(tmp_path / "llm" / "claude" / "history.parquet").cached_messages == 2
+
+
+def test_claude_history_service_reports_partial_sync_as_incomplete(tmp_path: Path) -> None:
+    class _ImmediateThread:
+        def __init__(self, *, target, **_kwargs) -> None:
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+    state = TaskState("test", snapshot_factory=lambda version: TaskSnapshot(version=version))
+    service = ClaudeHistoryService(
+        state, local_store_root=tmp_path, task_lock=CacheTaskLock(tmp_path / "cache-task.lock")
+    )
+    with patch("app.core.claude_history_service.Thread", _ImmediateThread), patch(
+        "app.core.claude_history_service.sync_claude_history",
+        return_value={
+            "sessions": 2, "messages": 1, "added_or_changed": 1,
+            "unchanged": 0, "failed": 1, "stopped": False,
+        },
+    ), patch("app.core.claude_history_service.append_shadow_backup_completion") as backup:
+        service.start(CrawlConfig(claude_browser="safari"))
+
+    assert state.snapshot()["phase"] == "failed"
+    assert "incomplete" in state.snapshot()["message"]
+    assert "1 sessions failed" in state.snapshot()["message"]
+    backup.assert_not_called()

@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.53.1-codex.0
+Code version: v1.54.1-codex.0
 """
 
 from __future__ import annotations
@@ -526,7 +526,7 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ]
             assert options.evaluate_all(
@@ -2212,7 +2212,7 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
         "claude": "/cache/claude/text/edge",
         "gemini": "/cache/gemini/text/edge",
         "grok": "/cache/grok/text/edge",
-        "x": "/cache/x",
+        "x": "/cache/x/text/edge",
         "zhihu": "/cache/zhihu/text/edge",
     }
     page, context = _open_page(
@@ -2224,18 +2224,13 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
     )
     try:
         for target_source, expected_path in expected_paths.items():
-            page.goto(f"{sidebar_server_url}/cache/{page_source}", wait_until="domcontentloaded")
+            page.goto(f"{sidebar_server_url}/cache/{page_source}/text/edge", wait_until="domcontentloaded")
             if page_source != "x":
                 page.locator('[data-cache-content-mode-option="text"]').click()
                 page.goto(f"{sidebar_server_url}/cache/{page_source}", wait_until="domcontentloaded")
                 expect(page.locator('[data-cache-content-mode-option="text"]')).to_have_attribute(
                     "aria-checked",
                     "true",
-                )
-            if target_source == "x" and page_source != "x":
-                page.locator('[data-cache-content-mode-option="media"]').click()
-                assert page.locator('[data-cache-source-switcher-option="x"]').evaluate(
-                    "element => !element.hidden"
                 )
             page.locator("[data-cache-source-switcher-trigger]").click()
             page.locator(
@@ -3374,7 +3369,7 @@ def test_cache_notice_flows_without_overlap_and_keeps_polling(
         page.goto(f"{sidebar_server_url}/cache/{source}", wait_until="domcontentloaded")
         expect(page.locator("#message")).to_have_text("Status refresh 2", timeout=10_000)
         expect(page.locator("#overview .summary-list, #output_dir, [data-output-directory-open]")).to_have_count(0)
-        notice = page.locator("#overview .notice-inline-banner")
+        notice = page.locator("#overview .notice-inline-banner:not([hidden])")
         if source == "chatgpt":
             expect(notice).to_have_count(0)
             expect(page.locator("#overview .cache-summary-metrics")).to_be_visible()
@@ -5147,14 +5142,15 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         expect(x_source_option).to_be_hidden()
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "gemini", "grok", "zhihu"]
+        ) == ["chatgpt", "claude", "gemini", "grok", "x", "zhihu"]
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_hidden()
             expect(page.locator('[name="chatgpt_project_url"]')).to_be_disabled()
 
         media_option.click()
-        expect(page).to_have_url(re.compile(rf"/cache/{source_key}/media/edge$"))
+        media_browser = "safari" if source_key == "claude" else "edge"
+        expect(page).to_have_url(re.compile(rf"/cache/{source_key}/media/{media_browser}$"))
         expect(page.locator('[data-cache-content-mode-option="media"]')).to_have_attribute(
             "aria-checked",
             "true",
@@ -12053,5 +12049,52 @@ def test_zhihu_cached_answer_metric_tracks_live_progress_without_overstating_fai
         expect(page.locator("#progress_processed_tweets")).to_have_text("412")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(("width", "height", "touch"), ((914, 791, False), (390, 844, True), (914, 500, True)))
+def test_safari_cache_switches_preserve_current_mode_and_browser(
+    disposable_browser: Browser, sidebar_server_url: str, macos_host,
+    width: int, height: int, touch: bool,
+) -> None:
+    """Exercise the four requested providers after changing mode without reloading."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": height},
+        has_touch=touch,
+        is_mobile=touch,
+        reduced_motion="reduce",
+    )
+    context.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "browser": "safari", "logged_in": True, "can_download": True,
+        "account_name": "Signed in", "message": "Ready.",
+    }))
+    page = context.new_page()
+    try:
+        page.goto(f"{sidebar_server_url}/cache/chatgpt/text/safari", wait_until="domcontentloaded")
+        if width <= 900:
+            page.locator("#sidebar_toggle").click()
+        for mode in ("media", "text"):
+            page.locator(f'[data-cache-content-mode-option="{mode}"]').click()
+            for source in ("x", "grok", "claude", "chatgpt"):
+                page.locator("[data-cache-source-switcher-trigger]").click()
+                expect(page.locator("[data-cache-source-switcher-trigger]")).to_have_attribute("aria-expanded", "true")
+                page.locator(f'[data-cache-source-switcher-option="{source}"]').click()
+                target_url = f"{sidebar_server_url}/cache/{source}/{mode}/safari"
+                # Server-rendered controls can precede their deferred event handlers.
+                page.wait_for_url(target_url, wait_until="domcontentloaded")
+                expect(page).to_have_url(target_url)
+                expect(page.locator(f'[data-cache-content-mode-option="{mode}"]')).to_have_attribute("aria-checked", "true")
+                expect(page.locator(f'input[name="{source}_browser"]')).to_have_value("safari")
+                if source == "x":
+                    if mode == "text":
+                        expect(page.locator("#cached_text_posts")).to_be_visible()
+                        expect(page.locator("#downloaded_images")).to_be_hidden()
+                    else:
+                        expect(page.locator("#cached_text_posts")).to_be_hidden()
+                        expect(page.locator("#downloaded_images")).to_be_visible()
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
     finally:
         context.close()

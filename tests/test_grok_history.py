@@ -1,6 +1,6 @@
 """Focused tests for Grok text-history persistence and API pagination."""
 
-# Code version: v1.5.1-codex.0
+# Code version: v1.5.2-codex.0
 
 import json
 import re
@@ -24,6 +24,8 @@ from app.core.grok_history import (
     sync_grok_history,
 )
 from app.core.config import CrawlConfig
+from app.core.grok_history_service import GrokHistoryService
+from app.core.job_lock import CacheTaskLock
 from app.core.safari_automation import SafariContext, SafariPage, SafariResponse
 from app.core.state import TaskSnapshot, TaskState
 
@@ -383,3 +385,90 @@ def test_grok_api_timeout_uses_existing_retry_backoff() -> None:
 
     assert _grok_api_json(page, "/rest/test") == {"ok": True}
     assert page.waits == [1_000]
+
+
+@pytest.mark.parametrize(
+    "node_payload,response_payload",
+    [
+        ({}, None),
+        ({"responseNodes": []}, None),
+        ({"responseNodes": [{"responseId": "r1"}]}, {}),
+        (
+            {"responseNodes": [{"responseId": "r1"}, {"responseId": "r2"}]},
+            {"responses": [{"responseId": "r1", "sender": "human", "message": "Partial"}]},
+        ),
+    ],
+)
+def test_grok_safari_incomplete_responses_preserve_cached_history(
+    tmp_path: Path, macos_host, node_payload: dict, response_payload: dict | None
+) -> None:
+    """A successful HTTP response must not erase cached rows when its data is incomplete."""
+    path = tmp_path / "llm/grok/history.parquet"
+    conversation = GrokConversation("conversation-1", "Cached", "", "", "https://grok.com/c/conversation-1")
+    GrokHistoryStore(path).replace_conversation(
+        conversation,
+        [_message("conversation-1:r1", "user", 0, "Original cached message")],
+        "2026-09-25T00:00:00Z",
+    )
+    original_bytes = path.read_bytes()
+    context = MagicMock()
+    page = SafariPage(context, window_id=123)
+    context.primary_page = page
+    context.__enter__.return_value = context
+    payloads = [
+        {"conversations": [{"conversationId": "conversation-1", "title": "Cached"}]},
+        node_payload,
+    ]
+    if response_payload is not None:
+        payloads.append(response_payload)
+    context.request.request_from_page.side_effect = [
+        SafariResponse(status=200, body_text=json.dumps(payload)) for payload in payloads
+    ]
+    state = TaskState("test", snapshot_factory=lambda version: TaskSnapshot(version=version))
+
+    with patch("app.core.grok_history.SafariContext", return_value=context), patch.object(
+        page, "wait_for_timeout"
+    ):
+        result = sync_grok_history(
+            state, CrawlConfig(grok_browser="safari"), lambda: False, local_store_root=str(tmp_path)
+        )
+
+    assert path.read_bytes() == original_bytes
+    assert result["failed"] == 1
+    assert result["messages"] == 0
+    assert state.snapshot()["phase"] == "failed"
+    context.__exit__.assert_called_once()
+
+
+def test_grok_malformed_conversation_list_is_not_an_empty_success() -> None:
+    with patch("app.core.grok_history._grok_api_json", return_value={}), pytest.raises(
+        RuntimeError, match="conversation list"
+    ):
+        list_grok_conversations(object())
+
+
+def test_grok_history_service_reports_partial_sync_as_incomplete(tmp_path: Path) -> None:
+    class _ImmediateThread:
+        def __init__(self, *, target, **_kwargs) -> None:
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+    state = TaskState("test", snapshot_factory=lambda version: TaskSnapshot(version=version))
+    service = GrokHistoryService(
+        state, local_store_root=tmp_path, task_lock=CacheTaskLock(tmp_path / "cache-task.lock")
+    )
+    with patch("app.core.grok_history_service.Thread", _ImmediateThread), patch(
+        "app.core.grok_history_service.sync_grok_history",
+        return_value={
+            "sessions": 2, "messages": 1, "added_or_changed": 1,
+            "unchanged": 0, "failed": 1, "stopped": False,
+        },
+    ), patch("app.core.grok_history_service.append_shadow_backup_completion") as backup:
+        service.start(CrawlConfig(grok_browser="safari"))
+
+    assert state.snapshot()["phase"] == "failed"
+    assert "incomplete" in state.snapshot()["message"]
+    assert "1 sessions failed" in state.snapshot()["message"]
+    backup.assert_not_called()

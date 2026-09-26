@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.7.0-codex.0
+# Code version: v1.8.0-codex.0
 
 from __future__ import annotations
 
@@ -157,6 +157,7 @@ _CACHE_SOURCE_VIEWS = (
         progress_strategy="discovery",
         progress_aria_label="Download progress",
         settings_link_label="Open media settings",
+        show_content_mode=True,
     ),
     CacheSourceView(
         key="grok",

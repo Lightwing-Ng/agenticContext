@@ -1,6 +1,6 @@
 """Background service for Claude session history sync.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.3-codex.0
 """
 
 from __future__ import annotations
@@ -103,23 +103,29 @@ class ClaudeHistoryService(CooperativeCacheWorker):
                     self._is_stop_requested,
                     self._local_store_root,
                 )
+                skip_summary = (
+                    f"Skipped {result.skipped_known:,} known files, "
+                    f"{result.skipped_excluded:,} excluded by deletion, "
+                    f"{result.skipped_size:,} over the size limit, and "
+                    f"{result.skipped_unsupported:,} unsupported references."
+                )
                 if result.stopped:
                     self._state.finish_stopped(
-                        f"Claude rendered-image cache stopped. {result.cached_images:,} local image files are present."
+                        f"Claude rendered-image cache stopped. {result.cached_images:,} local image files are present. "
+                        f"{skip_summary}"
                     )
                     return
                 if result.incomplete:
                     self._state.finish_error(
                         "Claude rendered-image cache is incomplete. Cached files were preserved; "
-                        f"{result.failed_images:,} images and {result.failed_sessions:,} sessions failed."
+                        f"{result.failed_images:,} images and {result.failed_sessions:,} sessions failed. "
+                        f"{skip_summary}"
                     )
                     return
                 completion_message = (
                     f"Finished Claude rendered-image cache. Inspected {result.sessions:,} sessions, "
                     f"found {result.discovered_images:,} eligible images, downloaded "
-                    f"{result.downloaded_images:,} new files, skipped {result.skipped_known:,} "
-                    f"known files, {result.skipped_excluded:,} excluded by deletion and "
-                    f"{result.skipped_unsupported:,} unsupported references; "
+                    f"{result.downloaded_images:,} new files. {skip_summary} "
                     f"{result.cached_images:,} local image files present. Other attachments and videos "
                     "are outside this image-only mode."
                 )
@@ -144,6 +150,12 @@ class ClaudeHistoryService(CooperativeCacheWorker):
             if result["stopped"]:
                 self._state.finish_stopped(
                     f"Claude history sync stopped. Cached {result['messages']:,} messages."
+                )
+                return
+            if result["failed"]:
+                self._state.finish_error(
+                    "Claude history sync is incomplete. Cached history was preserved; "
+                    f"{result['failed']:,} sessions failed."
                 )
                 return
             completion_message = (

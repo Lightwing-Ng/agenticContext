@@ -1,4 +1,4 @@
-{# Code version: v1.36.1-codex.0 #}
+{# Code version: v1.36.3-codex.0 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -16,7 +16,7 @@
     <script defer src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.13.3-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.9.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.17.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.17.2-codex.0') }}"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -139,6 +139,7 @@
                                 class="trade-strategy-dropdown-option browser-source-filter-option{% if source.key == cache_source.key %} is-selected is-active{% endif %}"
                                 data-cache-source-switcher-option="{{ source.key }}"
                                 data-cache-source-text-available="{{ 'true' if source.show_content_mode or source.include_in_llm_switcher or source.group_key == 'llm' else 'false' }}"
+                                data-cache-source-browsers="{{ (source.supported_browsers or ('edge', 'chrome', 'safari'))|join(',') }}"
                                 data-cache-source-switcher-path="{{ cache_source_switcher_path(cache_source.key, source.key) }}"
                                 role="option"
                                 aria-selected="{{ 'true' if source.key == cache_source.key else 'false' }}"

@@ -1,11 +1,12 @@
 """Shared task state for the web UI and worker."""
 
-# Code version: v1.5.0-codex.0
+# Code version: v1.6.0-codex.0
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
 
@@ -56,6 +57,24 @@ def build_initial_snapshot(version: str) -> TaskSnapshot:
         f"{snapshot.cached_text_posts:,} text posts, "
         f"{downloaded_images:,} images, {downloaded_videos:,} videos."
     )
+    return snapshot
+
+
+def build_x_text_snapshot(version: str, local_store_root: Path | str | None = None) -> TaskSnapshot:
+    """Hydrate X text independently of media files and media counters."""
+    history_path = x_text_history_path(LOCAL_STORE_ROOT if local_store_root is None else local_store_root)
+    snapshot = TaskSnapshot(
+        version=version,
+        output_dir=str(history_path.parent),
+        performance_metrics={"content_mode": "text"},
+    )
+    try:
+        snapshot.cached_text_posts = XTextHistoryStore(history_path).cached_posts
+    except RuntimeError as exc:
+        snapshot.last_error = str(exc)
+        return snapshot
+    if snapshot.cached_text_posts:
+        snapshot.message = f"Ready. Found existing X text cache: {snapshot.cached_text_posts:,} liked posts."
     return snapshot
 
 

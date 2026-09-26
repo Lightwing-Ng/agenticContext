@@ -1,6 +1,6 @@
 """Browser-rendered Claude history collection and local persistence.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -606,7 +606,7 @@ def sync_claude_history(
 
         stopped = stopped or should_stop()
 
-    phase = "stopped" if stopped else "completed"
+    phase = "stopped" if stopped else ("failed" if failed_sessions else "completed")
     message = (
         f"{'Stopped' if stopped else 'Finished'} Claude history sync after "
         f"{processed_sessions:,}/{len(conversations):,} sessions; found {discovered_messages:,} messages, "

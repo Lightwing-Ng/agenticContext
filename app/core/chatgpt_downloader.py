@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.49.6-codex.0
+# Code version: v1.49.7-codex.0
 
 from __future__ import annotations
 
@@ -3666,6 +3666,15 @@ def _download_chatgpt_image_via_safari(
                 resolved_candidate = replace(candidate, source_url=source_url, request_headers={})
 
         if download_error is not None:
+            if max_file_size_bytes > 0 and re.fullmatch(
+                r"(?:Safari media request failed: )?Safari media exceeds the "
+                r"(?:configured|[\d,]+-byte) cache limit\.",
+                str(download_error),
+            ):
+                raise ChatGPTImageSizeLimitError(
+                    f"ChatGPT image {candidate.file_id} exceeded the "
+                    f"{max_file_size_bytes:,}-byte cache limit."
+                ) from download_error
             raise download_error
 
     _require_safe_chatgpt_media_path(target_dir, partial_path)

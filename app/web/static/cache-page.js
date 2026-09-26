@@ -1,4 +1,4 @@
-/* Code version: v1.17.0-codex.0 */
+/* Code version: v1.17.2-codex.0 */
 
 (() => {
     "use strict";
@@ -124,6 +124,12 @@
     function contentModeFromCacheUrl() {
         const match = cacheSelectionPathPattern.exec(window.location.pathname);
         return match ? match[2] : "";
+    }
+
+    function currentCacheContentMode() {
+        return contentModeFromCacheUrl()
+            || cacheSourceSwitcher?.dataset.cacheSourceContentMode
+            || readRememberedContentMode();
     }
 
     function browserFromCacheUrl() {
@@ -346,6 +352,14 @@
             if (!targetPath) return;
 
             const targetUrl = new URL(targetPath, window.location.origin);
+            const selectedPath = cacheSelectionPathPattern.exec(targetUrl.pathname);
+            if (selectedPath) {
+                const selectedMode = currentCacheContentMode();
+                const selectedBrowser = currentCacheBrowser();
+                const supportsSelectedBrowser = (option.dataset.cacheSourceBrowsers || "")
+                    .split(",").includes(selectedBrowser);
+                targetUrl.pathname = `/cache/${selectedPath[1]}/${selectedMode}/${supportsSelectedBrowser ? selectedBrowser : selectedPath[3]}`;
+            }
             if (targetUrl.origin !== window.location.origin || targetUrl.href === window.location.href) {
                 setMenuOpen(false);
                 trigger.focus({ preventScroll: true });
@@ -626,7 +640,7 @@
     });
 
     function updateProgress(data) {
-        const strategy = sourceKey === "grok" && readRememberedContentMode() === "text"
+        const strategy = sourceKey === "grok" && currentCacheContentMode() === "text"
             ? progressStrategies.queue
             : progressStrategies[progressStrategyName] || progressStrategies.queue;
         renderProgressState(strategy(data));
@@ -680,12 +694,12 @@
         statusRefreshInFlight = true;
         try {
             const requestUrl = new URL(statusUrl, window.location.href);
-            const requestedMode = readRememberedContentMode();
+            const requestedMode = currentCacheContentMode();
             requestUrl.searchParams.set("content_mode", requestedMode);
             const response = await fetch(requestUrl, { cache: "no-store" });
             if (!response.ok) throw new Error(`Status request failed with ${response.status}`);
             const data = await response.json();
-            if (requestedMode === readRememberedContentMode()) renderStatus(data);
+            if (requestedMode === currentCacheContentMode()) renderStatus(data);
         } catch (_error) {
             statusRefreshFailed = true;
             setTextIfChanged(statusProgressDetail, "Status refresh temporarily unavailable.");

@@ -1,6 +1,6 @@
 """Background service for Grok media sync."""
 
-# Code version: v1.3.1-codex.1
+# Code version: v1.3.2-codex.0
 
 from __future__ import annotations
 
@@ -98,6 +98,13 @@ class GrokDownloadService(CooperativeCacheWorker):
                         "cached_images": result.cached_images,
                         "cached_videos": result.cached_videos,
                     },
+                )
+                return
+
+            if result.failed_count or self._state.snapshot()["task_failures"]:
+                self._state.finish_error(
+                    "Grok media sync is incomplete. Cached files were preserved; "
+                    "retry the remaining items. See recent activity for details."
                 )
                 return
 

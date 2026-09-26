@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.41.2-codex.0
+# Code version: v1.41.3-codex.0
 
 from __future__ import annotations
 
@@ -1911,7 +1911,13 @@ def test_chatgpt_safari_refresh_keeps_the_media_byte_limit(tmp_path: Path) -> No
     assert catalog.summarize() == 1
 
 
-def test_chatgpt_safari_rejects_oversize_before_writing_a_catalog_entry(tmp_path: Path) -> None:
+@pytest.mark.parametrize("refresh_source", [False, True])
+@pytest.mark.parametrize("limit_source", ["browser", "stream"])
+def test_chatgpt_safari_rejects_oversize_before_writing_a_catalog_entry(
+    tmp_path: Path,
+    refresh_source: bool,
+    limit_source: str,
+) -> None:
     target_dir = tmp_path / "media" / "chatgpt" / "demo-project"
     candidate = ChatGPTImageCandidate(
         source_url="https://chatgpt.com/backend-api/estuary/content?id=file_large",
@@ -1924,16 +1930,30 @@ def test_chatgpt_safari_rejects_oversize_before_writing_a_catalog_entry(tmp_path
     catalog = ChatGPTImageCatalog.build(target_dir)
     limit = len(PNG_PAYLOAD) - 1
 
-    def reject_oversize(_url, _destination_path, _should_stop, headers=None, max_bytes=0):
-        assert max_bytes == limit
-        raise RuntimeError("Safari media exceeds the configured cache limit.")
+    calls = 0
 
-    with patch.object(page, "download_to_path", side_effect=reject_oversize):
-        with pytest.raises(RuntimeError, match="cache limit"):
+    def reject_oversize(_url, _destination_path, _should_stop, headers=None, max_bytes=0):
+        nonlocal calls
+        calls += 1
+        assert max_bytes == limit
+        if refresh_source and calls == 1:
+            raise RuntimeError("Safari media request returned HTTP 403 with 0 bytes.")
+        if limit_source == "browser":
+            raise RuntimeError(
+                "Safari media request failed: Safari media exceeds the configured cache limit."
+            )
+        raise RuntimeError(f"Safari media exceeds the {limit:,}-byte cache limit.")
+
+    with patch.object(page, "download_to_path", side_effect=reject_oversize), patch(
+        "app.core.chatgpt_downloader._resolve_chatgpt_image_source_url",
+        return_value=candidate.source_url,
+    ):
+        with pytest.raises(ChatGPTImageSizeLimitError, match="cache limit"):
             download_chatgpt_image(
                 context, catalog, target_dir, candidate, max_file_size_bytes=limit
             )
 
+    assert calls == (2 if refresh_source else 1)
     assert catalog.summarize() == 0
     assert not list(target_dir.glob("img_*"))
 

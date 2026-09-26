@@ -1,6 +1,6 @@
 """Collect liked tweet URLs from the logged-in X account."""
 
-# Code version: v1.5.1-codex.0
+# Code version: v1.7.0-codex.0
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from .browser_sessions import (
 from .config import CrawlConfig
 from .safari_automation import SafariContext
 from .state import TaskState
+from .x_photo_downloader import XMediaPost
 from .x_text_history import XTextPost
 
 try:
@@ -586,16 +587,18 @@ def selected_x_browser_descriptor(config: CrawlConfig):
     return descriptor
 
 
-def collect_liked_tweet_urls_via_safari(
+def collect_liked_tweet_urls_from_rendered_page(
+    page,
     account_handle: str,
     likes_url: str,
     config: CrawlConfig,
     state: TaskState,
     *,
     on_text_posts: Callable[[list[XTextPost]], None] | None = None,
+    on_media_posts: Callable[[list[XMediaPost]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[str]:
-    """Collect liked URLs and visible post text inside signed-in Safari."""
+    """Read primary timeline posts with the same selectors in every browser."""
     rounds = max(1, int(config.max_scroll_rounds))
     pause_seconds = max(0.2, float(config.scroll_pause_seconds))
     stale_limit = max(1, int(config.stale_round_limit))
@@ -635,6 +638,55 @@ def collect_liked_tweet_urls_via_safari(
     .filter((post) => post && post.content_text));
 }
 """.strip()
+    collect_media_js = r"""
+() => {
+    const primaryColumn = document.querySelector('main [data-testid="primaryColumn"]');
+    if (!primaryColumn) return JSON.stringify([]);
+    const statusId = href => {
+        try {
+            const url = new URL(href, location.href);
+            if (!['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'].includes(url.hostname)) return '';
+            if (!['https:', 'http:'].includes(url.protocol)) return '';
+            return url.pathname.match(/^\/(?:[A-Za-z0-9_]{1,15}|i\/web)\/status\/(\d+)(?:\/|$)/)?.[1] || '';
+        } catch { return ''; }
+    };
+    return JSON.stringify([...primaryColumn.querySelectorAll('article[data-testid="tweet"]')]
+        .filter(article => !article.parentElement?.closest('article[data-testid="tweet"]'))
+        .map(article => {
+            const href = article.querySelector('time')?.closest('a[href*="/status/"]')?.href;
+            const primaryId = statusId(href || '');
+            if (!primaryId) return null;
+            const belongsToPrimary = element => {
+                if (element.closest('article[data-testid="tweet"]') !== article) return false;
+                if (element.closest('[data-testid="quoteTweet"]')) return false;
+                const anchor = element.closest('a[href*="/status/"]');
+                if (anchor && statusId(anchor.href) !== primaryId) return false;
+                const quotedContainer = element.closest('[role="link"]');
+                const quotedHref = quotedContainer?.querySelector('time')?.closest('a[href*="/status/"]')?.href;
+                return !quotedHref || statusId(quotedHref) === primaryId;
+            };
+            const photos = [];
+            for (const photo of article.querySelectorAll('[data-testid="tweetPhoto"]')) {
+                if (!belongsToPrimary(photo)) continue;
+                const anchor = photo.closest('a[href*="/status/"]');
+                if (!anchor || statusId(anchor.href) !== primaryId) continue;
+                for (const image of photo.querySelectorAll('img')) {
+                    try {
+                        const url = new URL(image.currentSrc || image.src, location.href);
+                        if (url.origin === 'https://pbs.twimg.com' && !url.username && !url.password && url.pathname.startsWith('/media/')) {
+                            photos.push(url.href);
+                        }
+                    } catch { continue; }
+                }
+            }
+            return {
+                tweet_url: href,
+                photo_urls: [...new Set(photos)],
+                has_video: [...article.querySelectorAll('[data-testid="videoPlayer"], video')].some(belongsToPrimary),
+            };
+        }).filter(Boolean));
+}
+""".strip()
     scroll_js = """
 () => {
     window.scrollBy(0, Math.max(window.innerHeight, 6000));
@@ -647,10 +699,10 @@ def collect_liked_tweet_urls_via_safari(
     return 'scrolled';
 }
 """.strip()
-    state.append_event(f"Launching a background Safari window for X likes collection at {likes_url}.")
     seen_urls: set[str] = set()
     seen_posts: dict[str, XTextPost] = {}
     pending_posts: dict[str, XTextPost] = {}
+    seen_media_posts: dict[str, XMediaPost] = {}
     stale_rounds = 0
 
     def flush_text_posts() -> None:
@@ -659,76 +711,168 @@ def collect_liked_tweet_urls_via_safari(
         on_text_posts(list(pending_posts.values()))
         pending_posts.clear()
 
-    if stop_requested():
+    for round_index in range(rounds):
+        if stop_requested():
+            break
+        before_count = len(seen_urls)
+        links_json = page.evaluate(collect_links_js)
+        if isinstance(links_json, str):
+            with contextlib.suppress(json.JSONDecodeError):
+                payload = json.loads(links_json)
+                if isinstance(payload, list):
+                    seen_urls.update(
+                        normalized
+                        for normalized in (normalize_status_url(str(link)) for link in payload)
+                        if normalized
+                    )
+        changed_text = False
+        if on_text_posts is not None:
+            posts_json = page.evaluate(collect_posts_js)
+            if isinstance(posts_json, str):
+                with contextlib.suppress(json.JSONDecodeError):
+                    posts = json.loads(posts_json)
+                    if isinstance(posts, list):
+                        for item in posts:
+                            if not isinstance(item, dict):
+                                continue
+                            url = normalize_status_url(str(item.get("url") or ""))
+                            content_text = str(item.get("content_text") or "").strip()
+                            if not url or not content_text:
+                                continue
+                            post = XTextPost(
+                                url=url,
+                                content_text=content_text,
+                                author_handle=str(item.get("author_handle") or ""),
+                                created_at=str(item.get("created_at") or ""),
+                            )
+                            if seen_posts.get(url) != post:
+                                seen_posts[url] = post
+                                pending_posts[url] = post
+                                changed_text = True
+            if len(pending_posts) >= 50:
+                flush_text_posts()
+        changed_media = False
+        if on_media_posts is not None:
+            media_json = page.evaluate(collect_media_js)
+            if isinstance(media_json, str):
+                with contextlib.suppress(json.JSONDecodeError):
+                    media_payload = json.loads(media_json)
+                    if isinstance(media_payload, list):
+                        changed_posts = []
+                        for item in media_payload:
+                            if not isinstance(item, dict) or not isinstance(item.get("photo_urls"), list):
+                                continue
+                            tweet_url = normalize_status_url(str(item.get("tweet_url") or ""))
+                            if not tweet_url or tweet_url not in seen_urls:
+                                continue
+                            photo_urls = tuple(dict.fromkeys(
+                                url for url in item["photo_urls"]
+                                if isinstance(url, str)
+                                and urlparse(url).scheme == "https"
+                                and urlparse(url).netloc == "pbs.twimg.com"
+                                and urlparse(url).path.startswith("/media/")
+                            ))
+                            previous_media = seen_media_posts.get(tweet_url)
+                            if previous_media is not None:
+                                # Virtualized timelines can unload photos after they were observed.
+                                photo_urls = tuple(dict.fromkeys((*previous_media.photo_urls, *photo_urls)))
+                            media_post = XMediaPost(
+                                tweet_url,
+                                photo_urls,
+                                item.get("has_video") is True or bool(previous_media and previous_media.has_video),
+                            )
+                            if seen_media_posts.get(tweet_url) != media_post:
+                                seen_media_posts[tweet_url] = media_post
+                                changed_posts.append(media_post)
+                        if changed_posts:
+                            on_media_posts(changed_posts)
+                            changed_media = True
+        state.update(discovered_tweets=len(seen_urls), phase="collecting")
+        state.append_event(
+            f"Likes round {round_index + 1}: found {len(seen_urls):,} unique post URLs."
+        )
+        stale_rounds = 0 if len(seen_urls) > before_count or changed_text or changed_media else stale_rounds + 1
+        if stale_rounds >= stale_limit or stop_requested() or round_index + 1 >= rounds:
+            break
+        page.evaluate(scroll_js)
+        page.wait_for_timeout(int(pause_seconds * 1_000))
+    flush_text_posts()
+    final_url = page.url
+
+    ordered_urls = sorted(seen_urls)
+    state.update(account_name=account_handle, discovered_tweets=len(seen_urls), phase="collecting")
+    state.append_event(
+        f"Collected {len(seen_urls):,} unique liked tweet URLs from {final_url.strip() or likes_url}."
+    )
+    return ordered_urls
+
+
+def collect_liked_tweet_urls_via_safari(
+    account_handle: str,
+    likes_url: str,
+    config: CrawlConfig,
+    state: TaskState,
+    *,
+    on_text_posts: Callable[[list[XTextPost]], None] | None = None,
+    on_media_posts: Callable[[list[XMediaPost]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> list[str]:
+    """Collect liked URLs and visible post text inside signed-in Safari."""
+    if should_stop and should_stop():
         return []
+    state.append_event(f"Launching a background Safari window for X likes collection at {likes_url}.")
     with SafariContext(likes_url, lock_blocking=False) as context:
         page = context.primary_page
         page.wait_for_timeout(8_000)
         current_url = urlparse(str(page.url or ""))
         expected_url = urlparse(likes_url)
+        expected_path_matches = (
+            current_url.path.rstrip("/").lower() == expected_url.path.rstrip("/").lower()
+        )
+        trusted_origin = current_url.scheme == "https" and current_url.netloc.lower() in {"x.com", "www.x.com"}
         if (
-            current_url.hostname not in {"x.com", "www.x.com"}
-            or current_url.path.rstrip("/").lower() != expected_url.path.rstrip("/").lower()
+            trusted_origin
+            and not expected_path_matches
+            and expected_url.scheme == "https"
+            and current_url.netloc.lower() == expected_url.netloc.lower()
+            and current_url.path.rstrip("/") == "/i/history/likes"
+        ):
+            expected_path_matches = page.evaluate(
+                """expected => {
+                    const normalizePath = path => path.replace(/\\/+$/, '').toLowerCase();
+                    if (location.origin !== expected.origin || normalizePath(location.pathname) !== '/i/history/likes') return false;
+                    const profileLink = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+                    if (!profileLink) return false;
+                    const profileUrl = new URL(profileLink.href, location.href);
+                    if (profileUrl.origin !== expected.origin || normalizePath(profileUrl.pathname) !== expected.profilePath) return false;
+                    return [...document.querySelectorAll('nav a[href]')].some(link => {
+                        const selected = link.getAttribute('aria-selected') === 'true'
+                            || ['page', 'true'].includes(link.getAttribute('aria-current'));
+                        if (!selected) return false;
+                        const target = new URL(link.href, location.href);
+                        return target.origin === expected.origin && normalizePath(target.pathname) === '/i/history/likes';
+                    });
+                }""",
+                {
+                    "origin": f"https://{expected_url.netloc.lower()}",
+                    "profilePath": f"/{account_handle.strip().lstrip('@').lower()}",
+                },
+            ) is True
+        if (
+            not trusted_origin
+            or not expected_path_matches
         ):
             raise RuntimeError("Safari did not open the authenticated X likes timeline.")
-        for round_index in range(rounds):
-            if stop_requested():
-                break
-            before_count = len(seen_urls)
-            links_json = page.evaluate(collect_links_js)
-            if isinstance(links_json, str):
-                with contextlib.suppress(json.JSONDecodeError):
-                    payload = json.loads(links_json)
-                    if isinstance(payload, list):
-                        seen_urls.update(
-                            normalized
-                            for normalized in (normalize_status_url(str(link)) for link in payload)
-                            if normalized
-                        )
-            changed_text = False
-            if on_text_posts is not None:
-                posts_json = page.evaluate(collect_posts_js)
-                if isinstance(posts_json, str):
-                    with contextlib.suppress(json.JSONDecodeError):
-                        posts = json.loads(posts_json)
-                        if isinstance(posts, list):
-                            for item in posts:
-                                if not isinstance(item, dict):
-                                    continue
-                                url = normalize_status_url(str(item.get("url") or ""))
-                                content_text = str(item.get("content_text") or "").strip()
-                                if not url or not content_text:
-                                    continue
-                                post = XTextPost(
-                                    url=url,
-                                    content_text=content_text,
-                                    author_handle=str(item.get("author_handle") or ""),
-                                    created_at=str(item.get("created_at") or ""),
-                                )
-                                if seen_posts.get(url) != post:
-                                    seen_posts[url] = post
-                                    pending_posts[url] = post
-                                    changed_text = True
-                if len(pending_posts) >= 50:
-                    flush_text_posts()
-            state.update(discovered_tweets=len(seen_urls), phase="collecting")
-            state.append_event(
-                f"Safari likes round {round_index + 1}: found {len(seen_urls):,} unique post URLs."
-            )
-            stale_rounds = 0 if len(seen_urls) > before_count or changed_text else stale_rounds + 1
-            if stale_rounds >= stale_limit or stop_requested() or round_index + 1 >= rounds:
-                break
-            page.evaluate(scroll_js)
-            page.wait_for_timeout(int(pause_seconds * 1_000))
-        flush_text_posts()
-        final_url = page.url
-
-    ordered_urls = sorted(seen_urls)
-    state.update(account_name=account_handle, discovered_tweets=len(seen_urls), phase="collecting")
-    state.append_event(
-        f"Safari collected {len(seen_urls)} unique liked tweet URLs from {final_url.strip() or likes_url}."
-    )
-    return ordered_urls
+        return collect_liked_tweet_urls_from_rendered_page(
+            page,
+            account_handle,
+            likes_url,
+            config,
+            state,
+            on_text_posts=on_text_posts,
+            on_media_posts=on_media_posts,
+            should_stop=should_stop,
+        )
 
 
 def collect_liked_tweet_urls(
@@ -736,6 +880,7 @@ def collect_liked_tweet_urls(
     state: TaskState,
     *,
     on_text_posts: Callable[[list[XTextPost]], None] | None = None,
+    on_media_posts: Callable[[list[XMediaPost]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> tuple[str, list[str]]:
     """Open X likes and return the account handle plus all discovered tweet URLs."""
@@ -771,6 +916,7 @@ def collect_liked_tweet_urls(
             config,
             state,
             on_text_posts=on_text_posts,
+            on_media_posts=on_media_posts,
             should_stop=should_stop,
         )
         if not ordered_urls and not (should_stop and should_stop()):
@@ -814,8 +960,23 @@ def collect_liked_tweet_urls(
                     "browser": descriptor.browser_id,
                 },
             )
-            initial_likes_response = wait_for_initial_likes_timeline_response(page, likes_response_box)
-            if initial_likes_response is not None:
+            initial_likes_response = (
+                wait_for_initial_likes_timeline_response(page, likes_response_box)
+                if on_text_posts is None and on_media_posts is None
+                else None
+            )
+            if on_text_posts is not None or on_media_posts is not None:
+                ordered_urls = collect_liked_tweet_urls_from_rendered_page(
+                    page,
+                    account_handle,
+                    likes_url,
+                    config,
+                    state,
+                    on_text_posts=on_text_posts,
+                    on_media_posts=on_media_posts,
+                    should_stop=should_stop,
+                )
+            elif initial_likes_response is not None:
                 ordered_urls = collect_liked_tweet_urls_via_api(
                     page=page,
                     account_handle=account_handle,
@@ -836,7 +997,7 @@ def collect_liked_tweet_urls(
                 )
                 ordered_urls = collect_liked_tweet_urls_via_dom(page, config, state)
 
-            if not ordered_urls:
+            if not ordered_urls and not (should_stop and should_stop()):
                 raise RuntimeError("No liked tweet URLs were found. The likes timeline may be empty or blocked.")
 
             logger.info(

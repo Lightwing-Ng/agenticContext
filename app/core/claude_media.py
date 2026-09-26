@@ -1,6 +1,6 @@
 """Cache rendered first-party Claude images through an owned Safari session.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -83,10 +83,15 @@ class ClaudeMediaSyncResult:
     failed_images: int = 0
     failed_sessions: int = 0
     stopped: bool = False
+    skipped_size: int = 0
 
     @property
     def incomplete(self) -> bool:
         return self.failed_images > 0 or self.failed_sessions > 0
+
+
+class ClaudeMediaSizeLimitError(RuntimeError):
+    """Identify a configured size skip separately from a failed image transfer."""
 
 
 def claude_media_dir(local_store_root: Path | str = LOCAL_STORE_ROOT) -> Path:
@@ -449,16 +454,29 @@ def _download_claude_image(
     partial_dir.mkdir(parents=True, exist_ok=True)
     _require_safe_store_path(partial_path, catalog.local_store_root)
     try:
-        content_type, _resumed = page.download_to_path(
-            candidate.source_url,
-            partial_path,
-            should_stop,
-            max_bytes=max_bytes,
-        )
+        try:
+            content_type, _resumed = page.download_to_path(
+                candidate.source_url,
+                partial_path,
+                should_stop,
+                max_bytes=max_bytes,
+            )
+        except RuntimeError as exc:
+            if max_bytes > 0 and re.fullmatch(
+                r"(?:Safari media request failed: )?Safari media exceeds the "
+                r"(?:configured|[\d,]+-byte) cache limit\.",
+                str(exc),
+            ):
+                raise ClaudeMediaSizeLimitError(
+                    "Claude image exceeded the configured media size limit."
+                ) from exc
+            raise
         _require_safe_store_path(partial_path, catalog.local_store_root)
         size = partial_path.stat().st_size
-        if size <= 0 or size > max_bytes:
-            raise RuntimeError("Claude image exceeded the configured media size limit.")
+        if size <= 0:
+            raise RuntimeError("Claude returned an empty image response.")
+        if size > max_bytes:
+            raise ClaudeMediaSizeLimitError("Claude image exceeded the configured media size limit.")
         if str(content_type or "").lower().startswith(("text/", "application/json")):
             raise RuntimeError("Claude returned a non-image response.")
         content = partial_path.read_bytes()
@@ -509,6 +527,7 @@ def sync_claude_media(
     skipped_known = 0
     skipped_excluded = 0
     skipped_unsupported = 0
+    skipped_size = 0
     failed_images = 0
     failed_sessions = 0
     processed_images = 0
@@ -581,7 +600,7 @@ def sync_claude_media(
                     processed_images += 1
                     state.update(
                         processed_tweets=processed_images,
-                        skipped_tweets=skipped_known + skipped_excluded,
+                        skipped_tweets=skipped_known + skipped_excluded + skipped_size,
                     )
                     continue
                 if catalog.contains(candidate):
@@ -589,7 +608,7 @@ def sync_claude_media(
                     processed_images += 1
                     state.update(
                         processed_tweets=processed_images,
-                        skipped_tweets=skipped_known + skipped_excluded,
+                        skipped_tweets=skipped_known + skipped_excluded + skipped_size,
                     )
                     continue
                 last_error: Exception | None = None
@@ -607,6 +626,14 @@ def sync_claude_media(
                         break
                     except SafariAuthenticationRequiredError:
                         raise
+                    except ClaudeMediaSizeLimitError:
+                        skipped_size += 1
+                        last_error = None
+                        state.append_event(
+                            f"Skipped Claude image {candidate.asset_id} above the "
+                            f"{config.max_media_file_size_mib:,} MiB cache limit."
+                        )
+                        break
                     except Exception as exc:
                         last_error = exc
                         if should_stop():
@@ -624,7 +651,7 @@ def sync_claude_media(
                     downloaded_posts=catalog.cached_count,
                     downloaded_tweets=catalog.cached_count,
                     downloaded_images=catalog.cached_count,
-                    skipped_tweets=skipped_known + skipped_excluded,
+                    skipped_tweets=skipped_known + skipped_excluded + skipped_size,
                     failed_tweets=failed_images + failed_sessions,
                 )
             if stopped:
@@ -642,12 +669,14 @@ def sync_claude_media(
         failed_images=failed_images,
         failed_sessions=failed_sessions,
         stopped=stopped,
+        skipped_size=skipped_size,
     )
     message = (
         f"{'Stopped' if stopped else 'Finished'} Claude rendered-image cache after "
         f"{processed_sessions:,}/{len(conversations):,} sessions: "
         f"{discovered_images:,} eligible images, {downloaded_images:,} new files, "
         f"{skipped_known:,} already cached, {skipped_excluded:,} excluded by deletion, "
+        f"{skipped_size:,} over the size limit, "
         f"{skipped_unsupported:,} unsupported references, "
         f"{failed_images + failed_sessions:,} failures; {result.cached_images:,} recorded files present. "
         "Other attachments and videos are outside this image-only mode."
@@ -662,7 +691,7 @@ def sync_claude_media(
         downloaded_posts=result.cached_images,
         downloaded_tweets=result.cached_images,
         downloaded_images=result.cached_images,
-        skipped_tweets=skipped_known + skipped_excluded,
+        skipped_tweets=skipped_known + skipped_excluded + skipped_size,
         failed_tweets=failed_images + failed_sessions,
         message=message,
     )

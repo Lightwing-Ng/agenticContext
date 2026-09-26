@@ -1,6 +1,6 @@
 """Focused regression tests for the cache orchestration service.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from __future__ import annotations
@@ -95,7 +95,8 @@ class CacheLikesServiceTests(unittest.TestCase):
 
         snapshot = state.snapshot()
         self.assertEqual(download.call_count, 2)
-        self.assertEqual(snapshot["phase"], "finished")
+        self.assertEqual(snapshot["phase"], "failed")
+        self.assertIn("incomplete", snapshot["message"])
         self.assertEqual(snapshot["downloaded_posts"], 1)
         self.assertEqual(snapshot["downloaded_images"], 1)
         self.assertEqual(snapshot["failed_tweets"], 1)
@@ -169,7 +170,7 @@ class CacheLikesServiceTests(unittest.TestCase):
         service = CacheLikesService(state)
         config = CrawlConfig(x_browser="safari", max_media_items=1)
 
-        def collect(_config, _state, *, on_text_posts, should_stop):
+        def collect(_config, _state, *, on_text_posts, should_stop, on_media_posts=None):
             self.assertIs(_config, config)
             self.assertFalse(should_stop())
             on_text_posts([XTextPost(

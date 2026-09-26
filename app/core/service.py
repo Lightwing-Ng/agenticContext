@@ -1,6 +1,6 @@
 """Orchestration service for the cache job."""
 
-# Code version: v1.8.0-codex.0
+# Code version: v1.10.0-codex.0
 
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from .cache_service_support import CooperativeCacheWorker, append_shadow_backup_
 from .config import CrawlConfig, LOCAL_STORE_ROOT, X_LOCAL_STORE_DIRNAME
 from .downloader import DownloadResult, LocalTweetCacheIndex, download_tweet_media
 from .job_lock import CacheTaskLock
-from .scraper import collect_liked_tweet_urls
+from .scraper import collect_liked_tweet_urls, normalize_status_url
 from .shadow_backup import ShadowBackupService
 from .state import TaskState
+from .x_photo_downloader import XMediaPost
 from .x_text_history import XTextHistoryStore, XTextPost, x_text_history_path
 
 logger = logging.getLogger(__name__)
@@ -32,8 +33,10 @@ class CacheLikesService(CooperativeCacheWorker):
         super().__init__(state, task_lock)
         self._shadow_backup_service = shadow_backup_service
 
-    def start(self, config: CrawlConfig) -> None:
-        """Start a new background job."""
+    def start(self, config: CrawlConfig, *, content_mode: str = "media") -> None:
+        """Start one text or media job while preserving the legacy media default."""
+        if content_mode not in {"text", "media"}:
+            raise RuntimeError(f"Unsupported X cache content mode: {content_mode}")
         self._start_worker(
             lock_owner="x-cache",
             already_running_message="A cache job is already running.",
@@ -42,7 +45,7 @@ class CacheLikesService(CooperativeCacheWorker):
                 "Stop it there before starting a new task."
             ),
             target=self._run,
-            args=(config,),
+            args=(config, content_mode),
             thread_factory=Thread,
         )
 
@@ -52,15 +55,17 @@ class CacheLikesService(CooperativeCacheWorker):
             "Emergency stop requested. Waiting for current task to stop."
         )
 
-    def _run(self, config: CrawlConfig) -> None:
+    def _run(self, config: CrawlConfig, content_mode: str = "media") -> None:
         """Execute the full job pipeline."""
         job_id, token = self._begin_worker_job()
         try:
+            self._state.update(performance_metrics={"content_mode": content_mode})
             logger.info(
                 "Cache job started.",
                 extra={
                     "job_id": job_id,
                     "x_browser": config.x_browser,
+                    "content_mode": content_mode,
                     "chrome_profile_directory": config.chrome_profile_directory,
                     "chrome_user_data_dir": str(config.chrome_user_data_dir),
                     "headless": config.headless,
@@ -77,11 +82,13 @@ class CacheLikesService(CooperativeCacheWorker):
 
             text_store = (
                 XTextHistoryStore(x_text_history_path(LOCAL_STORE_ROOT))
-                if config.x_browser == "safari"
+                if content_mode == "text" or config.x_browser == "safari"
                 else None
             )
             if text_store is not None:
                 self._state.update(cached_text_posts=text_store.cached_posts)
+            if content_mode == "text":
+                self._state.update(output_dir=str(x_text_history_path(LOCAL_STORE_ROOT).parent))
 
             def cache_text_posts(posts: list[XTextPost]) -> None:
                 if text_store is None:
@@ -89,13 +96,25 @@ class CacheLikesService(CooperativeCacheWorker):
                 text_store.upsert(posts)
                 self._state.update(cached_text_posts=text_store.cached_posts)
 
+            media_posts: dict[str, XMediaPost] = {}
+
+            def remember_media_posts(posts: list[XMediaPost]) -> None:
+                for post in posts:
+                    normalized_url = normalize_status_url(post.tweet_url)
+                    if normalized_url:
+                        media_posts[normalized_url] = post
+
+            collection_options = {}
+            if content_mode == "media" and config.x_browser == "safari":
+                collection_options["on_media_posts"] = remember_media_posts
             account_handle, tweet_urls = collect_liked_tweet_urls(
                 config,
                 self._state,
                 on_text_posts=cache_text_posts if text_store is not None else None,
                 should_stop=self._is_stop_requested,
+                **collection_options,
             )
-            tweet_urls = list(dict.fromkeys(tweet_urls))
+            tweet_urls = list(dict.fromkeys(normalize_status_url(url) or url for url in tweet_urls))
             if self._is_stop_requested():
                 message = f"X cache stopped after collecting {len(tweet_urls):,} liked post URLs."
                 if text_store is not None:
@@ -104,6 +123,25 @@ class CacheLikesService(CooperativeCacheWorker):
                         f"{text_store.cached_posts:,} text posts remain cached."
                     )
                 self._state.finish_stopped(message)
+                return
+            if content_mode == "text":
+                self._state.update(
+                    account_name=account_handle,
+                    discovered_tweets=len(tweet_urls),
+                    processed_tweets=len(tweet_urls),
+                    discovery_complete=True,
+                )
+                completion_message = (
+                    f"Finished X text cache. Discovered {len(tweet_urls):,} liked posts; "
+                    f"{text_store.cached_posts:,} text posts are cached."
+                )
+                completion_message = append_shadow_backup_completion(
+                    completion_message,
+                    shadow_backup_service=self._shadow_backup_service,
+                    state=self._state,
+                    config=config,
+                )
+                self._state.finish_success(completion_message)
                 return
             account_name = config.sanitized_account_name(account_handle)
             output_dir = LOCAL_STORE_ROOT / X_LOCAL_STORE_DIRNAME
@@ -208,6 +246,7 @@ class CacheLikesService(CooperativeCacheWorker):
                                     remaining_media_items=worker_media_budget,
                                     cache_index=cache_index,
                                     should_stop=self._is_stop_requested,
+                                    media_post=media_posts.get(normalize_status_url(tweet_url)),
                                 )
                             ] = (tweet_index, tweet_url)
 
@@ -298,6 +337,13 @@ class CacheLikesService(CooperativeCacheWorker):
                         "skipped_tweets": skipped,
                         "failed_tweets": failed,
                     },
+                )
+                return
+
+            if failed or self._state.snapshot()["task_failures"]:
+                self._state.finish_error(
+                    "X media cache is incomplete. Cached files were preserved; "
+                    "retry the remaining posts. See recent activity for details."
                 )
                 return
 

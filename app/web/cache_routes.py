@@ -9,7 +9,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.2.0-codex.0
 
 from __future__ import annotations
 
@@ -57,6 +57,7 @@ from app.core.storage import (
     local_file_manager_label,
     open_directory_path,
 )
+from app.core.state import build_x_text_snapshot
 from app.web.cache_sources import (
     LLM_CACHE_SOURCE_VIEWS,
     LLM_SWITCHER_SOURCE_VIEWS,
@@ -109,6 +110,24 @@ def build_reconciled_cache_snapshot(
     mode = content_mode or request.args.get("content_mode")
     if source_key == "grok" and mode == "text":
         return build_reconciled_grok_history_snapshot(context)
+    if source_key == "x":
+        selected_mode = "text" if mode == "text" else "media"
+        hydrated = asdict(
+            build_x_text_snapshot(APP_VERSION, context.media_catalog.local_store_root)
+            if selected_mode == "text" else runtime.hydrate_snapshot()
+        )
+        live = runtime.state.snapshot()
+        live_mode = str((live.get("performance_metrics") or {}).get("content_mode") or "media")
+        if live_mode != selected_mode:
+            if live.get("running"):
+                hydrated.update(
+                    running=True,
+                    phase=live["phase"],
+                    started_at=live["started_at"],
+                    message=f"X {live_mode} cache is running.",
+                )
+            return hydrated
+        return reconcile_cached_snapshot(live, hydrated)
     if source_key == "chatgpt" and mode == "text":
         hydrated = asdict(build_chatgpt_text_snapshot(APP_VERSION, context.media_catalog.local_store_root))
         snapshot = reconcile_cached_snapshot(runtime.state.snapshot(), hydrated)
@@ -409,6 +428,9 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
                 runtime.service.start(runtime_config, content_mode=content_mode)
             elif source_key == "claude":
                 content_mode = "media" if request.form.get("cache_content_mode") == "media" else "text"
+                runtime.service.start(runtime_config, content_mode=content_mode)
+            elif source_key == "x":
+                content_mode = "text" if request.form.get("cache_content_mode") == "text" else "media"
                 runtime.service.start(runtime_config, content_mode=content_mode)
             elif source_key == "zhihu":
                 runtime.service.start(

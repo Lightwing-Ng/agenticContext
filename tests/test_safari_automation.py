@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.14.1-codex.0
+# Code version: v2.14.5-codex.0
 
 from __future__ import annotations
 
@@ -1277,7 +1277,7 @@ def test_safari_reuses_an_owned_zero_tab_shell_after_page_cleanup(
             third._release_context_lock()
 
 
-def test_safari_idle_shell_waits_for_one_tab_after_navigation() -> None:
+def test_safari_idle_shell_waits_for_addressable_tab_before_navigation() -> None:
     context = SafariContext("https://x.com/home", lock_blocking=False)
     with patch(
         "app.core.safari_automation.run_applescript", return_value="1"
@@ -1285,12 +1285,32 @@ def test_safari_idle_shell_waits_for_one_tab_after_navigation() -> None:
         assert context._create_tab(456, "https://x.com/home", expect_empty_window=True) == 1
 
     script = run.call_args.args[0]
+    assert script.index("make new tab") < script.index("repeat with prepareIndex")
+    assert script.index("repeat with prepareIndex") < script.index("set URL of newTab")
+    assert script.index("set newTab to tab 1 of targetWindow") < script.index("set URL of newTab")
+    assert script.index("if not newTabReady then") < script.index("set current tab of targetWindow to newTab")
+    assert "set readyTabIndex to index of tab 1 of targetWindow" in script
+    assert "if readyTabIndex is 1 then" in script
+    assert 'error "Safari idle task tab did not become addressable."' in script
+    assert "if ownedTabCount > 1 then" in script
     assert script.index("set URL of newTab") < script.index("repeat with settleIndex")
     assert script.index("set current tab of targetWindow to newTab") < script.index(
         "repeat with settleIndex"
     )
     assert 'error "Safari idle task window gained an extra tab."' in script
     assert "close newTab" in script
+    assert "close targetWindow" not in script
+
+
+def test_safari_new_tab_in_populated_owned_window_does_not_rebind_first_tab() -> None:
+    context = SafariContext("https://x.com/home", lock_blocking=False)
+    with patch("app.core.safari_automation.run_applescript", return_value="2") as run:
+        assert context._create_tab(456, "https://x.com/home") == 2
+
+    script = run.call_args.args[0]
+    assert "repeat with prepareIndex" not in script
+    assert "set newTab to tab 1 of targetWindow" not in script
+    assert "return index of newTab" in script
     assert "close targetWindow" not in script
 
 
@@ -1603,16 +1623,19 @@ def test_safari_page_reads_navigation_state_without_json_wrapping() -> None:
     with patch.object(
         page,
         "_run_in_window",
-        return_value="https://chatgpt.com/project\ninteractive",
+        return_value="https://chatgpt.com/project\nhttps://chatgpt.com/project\ninteractive",
     ) as run:
         state = page._read_navigation_state()
 
     assert state == {
         "href": "https://chatgpt.com/project",
+        "nativeHref": "https://chatgpt.com/project",
         "readyState": "interactive",
     }
     assert "URL of targetTab" in run.call_args.args[0]
     assert "document.readyState" in run.call_args.args[0]
+    assert "location.href" in run.call_args.args[0]
+    assert "in targetTab" in run.call_args.args[0]
 
 
 def test_safari_page_close_closes_the_owned_window() -> None:

@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.144.3-codex.0
+# Code version: v1.145.2-codex.0
 
 from __future__ import annotations
 
@@ -306,7 +306,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual({source.start_button_label for source in CACHE_SOURCE_VIEWS}, {"Start"})
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS if source.show_content_mode},
-            {"chatgpt", "claude", "gemini", "grok", "zhihu"},
+            {"chatgpt", "claude", "gemini", "grok", "x", "zhihu"},
         )
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS if source.browser_panel_label == "Authorized browser"},
@@ -751,7 +751,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.17.0-codex.0', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.17.2-codex.0', chatgpt_body)
         self.assertIn('numeric-display.js?v=numeric-display-v1.1.0-codex.0', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
@@ -1001,7 +1001,7 @@ class WebAppTests(unittest.TestCase):
                     "/cache/claude/text/edge",
                     "/cache/gemini/text/edge",
                     "/cache/grok/text/edge",
-                    "/cache/x",
+                    "/cache/x/text/chrome",
                     "/cache/zhihu/text/edge",
                 )
                 for expected_path in expected_paths:
@@ -1113,7 +1113,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
             "gemini": (
@@ -1121,7 +1121,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
             "grok": (
@@ -1129,7 +1129,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
             "claude": (
@@ -1137,7 +1137,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
             "zhihu": (
@@ -1145,7 +1145,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
         }
@@ -1168,7 +1168,7 @@ class WebAppTests(unittest.TestCase):
                     self.assertIn('data-cache-source-text-available="true"', option)
                 x_option_start = aside.index('data-cache-source-switcher-option="x"')
                 x_option = aside[x_option_start:aside.index("</button>", x_option_start)]
-                self.assertIn('data-cache-source-text-available="false"', x_option)
+                self.assertIn('data-cache-source-text-available="true"', x_option)
                 for expected_path in expected_paths_by_page[page_source]:
                     self.assertIn(
                         f'data-cache-source-switcher-path="{expected_path}"',
@@ -3576,6 +3576,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('data-role="browser-session-login"', body)
         self.assertIn('data-role="browser-session-login-message"', body)
+        self.assertIn('data-role="browser-session-recheck"', body)
         for fragment in (
             "payload.logged_in === false",
             'fetch("/api/browser-session/open-login"',
@@ -3589,6 +3590,19 @@ class WebAppTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
+
+    def test_cache_browser_session_offers_recheck_without_a_login_action(self) -> None:
+        app = create_app()
+        with app.test_client() as client:
+            for source in ("chatgpt", "x", "grok", "claude"):
+                for mode in ("text", "media"):
+                    with self.subTest(source=source, mode=mode):
+                        response = client.get(f"/cache/{source}/{mode}/safari")
+                        body = response.get_data(as_text=True)
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn('data-role="browser-session-recheck"', body)
+                        self.assertNotIn('data-role="browser-session-login"', body)
+                        self.assertNotIn('data-role="browser-session-login-message"', body)
 
     def test_agent_conversation_route_opens_the_current_target_in_the_selected_browser(self) -> None:
         app = create_app()
@@ -6696,7 +6710,7 @@ def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path) -> None
     assert media.status_code == 200
     assert 'data-cache-page-content-mode="media"' in media.get_data(as_text=True)
     assert invalid_mode.status_code == 404
-    assert x_selected.status_code == 404
+    assert x_selected.status_code == 200
     assert zhihu_safari.status_code == 404
 
 
@@ -6787,6 +6801,7 @@ def test_grok_text_status_and_stop_use_the_history_runtime(tmp_path: Path) -> No
 def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> None:
     application = create_app(tmp_path / "local_store")
     services = {
+        "x": "app.core.service.CacheLikesService.start",
         "chatgpt": "app.core.chatgpt_service.ChatGPTDownloadService.start",
         "claude": "app.core.claude_history_service.ClaudeHistoryService.start",
         "gemini": "app.core.gemini_service.GeminiHistoryService.start",
@@ -6802,7 +6817,7 @@ def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> Non
         assert response.status_code == 302
         start.assert_called_once()
         assert getattr(start.call_args.args[0], f"{source}_browser") == "edge"
-        if source == "chatgpt":
+        if source in {"chatgpt", "x"}:
             assert start.call_args.kwargs == {"content_mode": "text"}
         elif source == "claude":
             assert start.call_args.kwargs == {"content_mode": "text"}

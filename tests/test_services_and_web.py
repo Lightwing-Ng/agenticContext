@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.7-codex.0
+Code version: v1.8.8-codex.0
 """
 
 from __future__ import annotations
@@ -224,7 +224,7 @@ def test_web_pages_and_status_apis_are_available(client) -> None:
 @pytest.mark.integration
 def test_legacy_cache_page_paths_redirect_to_canonical_namespace(client) -> None:
     for legacy_path, canonical_path in (
-        ("/", "/cache/x"),
+        ("/", "/cache/x/text/chrome"),
         ("/grok", "/cache/grok/text/edge"),
         ("/chatgpt", "/cache/chatgpt/text/edge"),
         ("/gemini", "/cache/gemini/text/edge"),
