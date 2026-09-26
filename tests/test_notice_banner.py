@@ -1,4 +1,4 @@
-"""Regression coverage for the shared floating-banner contract. Code version: v0.2.0-codex.0."""
+"""Regression coverage for the shared floating-banner contract. Code version: v0.2.1-codex.0."""
 
 from pathlib import Path
 
@@ -88,9 +88,9 @@ def test_banner_surface_reuses_the_modal_dialog_material_and_close_contract() ->
     dismiss_state_rule = stylesheet[dismiss_state_start:stylesheet.index("\n}", dismiss_state_start)]
 
     assert "background: var(--notice-floating-material);" in floating_rule
-    assert "box-shadow: var(--frosted-glass-shadow);" in floating_rule
-    assert "backdrop-filter: var(--frosted-glass-blur);" in floating_rule
-    assert "border: var(--frosted-glass-border);" in floating_rule
+    assert "box-shadow: var(--frosted-glass-notice-shadow);" in floating_rule
+    assert "backdrop-filter: var(--frosted-glass-notice-blur);" in floating_rule
+    assert "border: var(--frosted-glass-notice-border);" in floating_rule
     assert "border: 0;" in dismiss_rule
     assert "background: transparent;" in dismiss_state_rule
     assert "box-shadow: none;" in dismiss_state_rule

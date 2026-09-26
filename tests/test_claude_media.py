@@ -1,20 +1,22 @@
 """Focused tests for authenticated Claude rendered-image caching.
 
-Code version: v1.1.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import io
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PIL import Image
 
 from app.core.claude_media import (
     ClaudeMediaCatalog,
+    ClaudeMediaSizeLimitError,
     ClaudeMediaSyncResult,
     _candidate_from_rendered_image,
     _download_claude_image,
@@ -35,6 +37,40 @@ def _png_bytes() -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (2, 2), (0, 85, 204)).save(output, format="PNG")
     return output.getvalue()
+
+
+def _rendered_candidate(image_index: int = 0):
+    candidate = _candidate_from_rendered_image(
+        {
+            "source_url": f"https://claude.ai/images/image-{image_index}.png",
+            "message_index": 0,
+            "image_index": image_index,
+            "role": "assistant",
+        },
+        ClaudeConversationLink("chat-1", "https://claude.ai/chat/chat-1", "Chat"),
+    )
+    assert candidate is not None
+    return candidate
+
+
+@contextmanager
+def _rendered_media_session(candidates, transfer):
+    """Replace browser I/O while exercising the real sync and media downloader."""
+    page = MagicMock()
+    page.download_to_path.side_effect = transfer
+    context = MagicMock()
+    context.primary_page = page
+    context.__enter__.return_value = context
+    with patch("app.core.claude_media.SafariContext", return_value=context), patch(
+        "app.core.claude_media.goto_with_retry"
+    ), patch("app.core.claude_media._wait_for_claude_ready"), patch(
+        "app.core.claude_media.discover_claude_conversations",
+        return_value=[ClaudeConversationLink("chat-1", "https://claude.ai/chat/chat-1", "Chat")],
+    ), patch("app.core.claude_media._prepare_claude_conversation_for_rendering"), patch(
+        "app.core.claude_media.discover_claude_rendered_images", return_value=(candidates, 0),
+    ):
+        yield page
+    context.__exit__.assert_called_once()
 
 
 def test_claude_media_accepts_only_first_party_rendered_image_urls() -> None:
@@ -59,6 +95,61 @@ def test_claude_media_accepts_only_first_party_rendered_image_urls() -> None:
         ) is None
 
 
+@pytest.mark.parametrize("discovered_count", (0, 1))
+def test_claude_media_cancelled_discovery_stops_without_session_failure(
+    tmp_path: Path, macos_host, discovered_count: int,
+) -> None:
+    state = TaskState("test")
+    stop_requested = False
+
+    def should_stop() -> bool:
+        return stop_requested
+
+    def cancel_discovery(_page, *, should_stop):
+        nonlocal stop_requested
+        assert should_stop() is False
+        stop_requested = True
+        assert should_stop() is True
+        return [
+            ClaudeConversationLink("chat-1", "https://claude.ai/chat/chat-1", "Chat")
+        ][:discovered_count]
+
+    with _rendered_media_session([], None) as page, patch(
+        "app.core.claude_media.discover_claude_conversations", side_effect=cancel_discovery,
+    ) as discover, patch(
+        "app.core.claude_media._prepare_claude_conversation_for_rendering",
+    ) as prepare:
+        result = sync_claude_media(
+            state, CrawlConfig(claude_browser="safari"), should_stop, tmp_path,
+        )
+        discover.assert_called_once_with(page, should_stop=should_stop)
+        prepare.assert_not_called()
+        page.download_to_path.assert_not_called()
+
+    assert result.stopped is True
+    assert result.incomplete is False
+    assert result.sessions == result.failed_sessions == result.failed_images == 0
+    snapshot = state.snapshot()
+    assert snapshot["phase"] == "stopped"
+    assert snapshot["discovery_complete"] is False
+    assert snapshot["discovered_tweets"] == discovered_count
+    assert snapshot["failed_tweets"] == 0
+    assert not list(claude_media_dir(tmp_path).glob("img_*"))
+
+
+def test_claude_media_uncancelled_empty_discovery_remains_a_failure(
+    tmp_path: Path, macos_host,
+) -> None:
+    with _rendered_media_session([], None) as page, patch(
+        "app.core.claude_media.discover_claude_conversations", return_value=[],
+    ):
+        with pytest.raises(RuntimeError, match="Claude media discovery returned no rendered sessions"):
+            sync_claude_media(
+                TaskState("test"), CrawlConfig(claude_browser="safari"), lambda: False, tmp_path,
+            )
+        page.download_to_path.assert_not_called()
+
+
 def test_claude_safari_media_sync_saves_real_images_and_skips_known_bytes(
     tmp_path: Path, macos_host
 ) -> None:
@@ -77,6 +168,8 @@ def test_claude_safari_media_sync_saves_real_images_and_skips_known_bytes(
             return "Claude"
 
         def evaluate(self, script: str, *_args):
+            if "loginRequired" in script:
+                return {"loading": False}
             if "document.body" in script:
                 return "New chat"
             if "composerSelector" in script:
@@ -196,7 +289,16 @@ def test_claude_safari_media_sync_saves_real_images_and_skips_known_bytes(
     assert build_claude_media_initial_snapshot("v-test", tmp_path).downloaded_images == 0
 
 
-def test_claude_media_rejects_oversized_bytes_without_catalog_entry(tmp_path: Path) -> None:
+@pytest.mark.parametrize("bridge_error", (
+    None,
+    "Safari media exceeds the configured cache limit.",
+    "Safari media request failed: Safari media exceeds the configured cache limit.",
+    "Safari media exceeds the 8-byte cache limit.",
+    "Safari media request failed: Safari media exceeds the 8-byte cache limit.",
+))
+def test_claude_media_rejects_oversized_bytes_without_catalog_entry(
+    tmp_path: Path, bridge_error: str | None,
+) -> None:
     conversation = ClaudeConversationLink("chat-1", "https://claude.ai/chat/chat-1", "Chat")
     candidate = _candidate_from_rendered_image(
         {
@@ -215,19 +317,143 @@ def test_claude_media_rejects_oversized_bytes_without_catalog_entry(tmp_path: Pa
             self, _source_url: str, destination: Path, _should_stop, *, max_bytes: int
         ) -> tuple[str, bool]:
             assert max_bytes == 8
+            if bridge_error:
+                raise RuntimeError(bridge_error)
             destination.write_bytes(_png_bytes())
             return "image/png", False
 
-    try:
+    with pytest.raises(ClaudeMediaSizeLimitError, match="size limit|cache limit"):
         _download_claude_image(_Page(), catalog, candidate, lambda: False, 8)
-    except RuntimeError as exc:
-        assert "size limit" in str(exc)
-    else:
-        raise AssertionError("Oversized image was accepted")
 
     assert catalog.cached_count == 0
     assert not list(catalog.root.glob("img_*"))
     assert not list((catalog.root / ".partial").glob("*.part"))
+
+
+def test_claude_media_accepts_exactly_the_configured_byte_limit(tmp_path: Path) -> None:
+    payload = _png_bytes()
+    catalog = ClaudeMediaCatalog(claude_media_dir(tmp_path))
+    page = MagicMock()
+
+    def transfer(_url, destination, _stop, *, max_bytes):
+        assert max_bytes == len(payload)
+        destination.write_bytes(payload)
+        return "image/png", False
+
+    page.download_to_path.side_effect = transfer
+    assert _download_claude_image(page, catalog, _rendered_candidate(), lambda: False, len(payload))
+    assert catalog.cached_count == 1
+    assert [path.read_bytes() for path in catalog.root.glob("img_*")] == [payload]
+
+
+@pytest.mark.parametrize("boundary", ("declared_length", "range_metadata", "stream", "measured_bytes"))
+def test_claude_media_size_skip_does_not_retry_or_fail_the_sync(
+    tmp_path: Path, macos_host, boundary: str,
+) -> None:
+    candidate = _rendered_candidate()
+    state = TaskState("test")
+    config = CrawlConfig(claude_browser="safari", max_media_file_size_mib=1)
+
+    def transfer(_url, destination, _stop, *, max_bytes):
+        assert max_bytes == 1_048_576
+        if boundary == "measured_bytes":
+            destination.write_bytes(b"x" * (max_bytes + 1))
+            return "image/png", False
+        if boundary == "range_metadata":
+            raise RuntimeError(f"Safari media exceeds the {max_bytes:,}-byte cache limit.")
+        if boundary == "stream":
+            destination.write_bytes(b"partial image")
+        raise RuntimeError("Safari media request failed: Safari media exceeds the configured cache limit.")
+
+    with _rendered_media_session([candidate], transfer) as page:
+        result = sync_claude_media(state, config, lambda: False, tmp_path)
+        page.download_to_path.assert_called_once()
+
+    assert result.skipped_size == 1
+    assert result.failed_images == 0
+    assert result.incomplete is False
+    assert result.downloaded_images == 0
+    assert result.cached_images == 0
+    snapshot = state.snapshot()
+    assert snapshot["phase"] == "completed"
+    assert snapshot["processed_tweets"] == snapshot["queued_tweets"] == 1
+    assert snapshot["skipped_tweets"] == 1
+    assert snapshot["failed_tweets"] == 0
+    assert not list(claude_media_dir(tmp_path).glob("img_*"))
+    assert not list((claude_media_dir(tmp_path) / ".partial").glob("*.part"))
+
+
+@pytest.mark.parametrize("failure", ("stream_error", "empty_response"))
+def test_claude_media_real_failures_still_retry_and_mark_sync_incomplete(
+    tmp_path: Path, macos_host, failure: str,
+) -> None:
+    state = TaskState("test")
+
+    def transfer(_url, destination, _stop, *, max_bytes):
+        if failure == "stream_error":
+            destination.write_bytes(b"partial image")
+            raise RuntimeError("Safari media request failed: stream interrupted before cache limit.")
+        destination.write_bytes(b"")
+        return "image/png", False
+
+    with _rendered_media_session([_rendered_candidate()], transfer) as page:
+        result = sync_claude_media(
+            state, CrawlConfig(claude_browser="safari", max_media_file_size_mib=1),
+            lambda: False, tmp_path,
+        )
+        assert page.download_to_path.call_count == 2
+
+    assert result.skipped_size == 0
+    assert result.failed_images == 1
+    assert result.incomplete is True
+    snapshot = state.snapshot()
+    assert snapshot["phase"] == "failed"
+    assert snapshot["processed_tweets"] == snapshot["queued_tweets"] == 1
+    assert snapshot["skipped_tweets"] == 0
+    assert snapshot["failed_tweets"] == 1
+    assert not list(claude_media_dir(tmp_path).glob("img_*"))
+    assert not list((claude_media_dir(tmp_path) / ".partial").glob("*.part"))
+
+
+def test_claude_size_skip_progress_preserves_cached_image_above_a_lowered_limit(
+    tmp_path: Path, macos_host,
+) -> None:
+    output = io.BytesIO()
+    Image.new("RGB", (800, 600), (0, 85, 204)).save(output, format="PNG", compress_level=0)
+    payload = output.getvalue()
+    assert 1_048_576 < len(payload) < 2_097_152
+    catalog = ClaudeMediaCatalog(claude_media_dir(tmp_path))
+    known = _rendered_candidate(1)
+    seed_page = MagicMock()
+
+    def seed_transfer(_url, destination, _stop, *, max_bytes):
+        destination.write_bytes(payload)
+        return "image/png", False
+
+    seed_page.download_to_path.side_effect = seed_transfer
+    assert _download_claude_image(seed_page, catalog, known, lambda: False, 2_097_152)
+    manifest_before = catalog.path.read_bytes()
+    state = TaskState("test")
+
+    def reject_oversized(url, _destination, _stop, *, max_bytes):
+        assert url != known.source_url
+        raise RuntimeError(f"Safari media exceeds the {max_bytes:,}-byte cache limit.")
+
+    with _rendered_media_session([_rendered_candidate(), known], reject_oversized) as page:
+        result = sync_claude_media(
+            state, CrawlConfig(claude_browser="safari", max_media_file_size_mib=1),
+            lambda: False, tmp_path,
+        )
+        page.download_to_path.assert_called_once()
+
+    assert result.skipped_size == result.skipped_known == 1
+    assert result.downloaded_images == result.failed_images == 0
+    assert result.cached_images == 1
+    assert result.incomplete is False
+    assert state.snapshot()["skipped_tweets"] == 2
+    assert state.snapshot()["processed_tweets"] == state.snapshot()["queued_tweets"] == 2
+    assert [path.read_bytes() for path in catalog.root.glob("img_*")] == [payload]
+    assert catalog.path.read_bytes() == manifest_before
 
 
 def test_claude_media_rejects_images_above_pixel_limit() -> None:

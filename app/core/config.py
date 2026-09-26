@@ -1,6 +1,6 @@
 """Configuration helpers."""
 
-# Code version: v1.20.1-codex.1
+# Code version: v1.21.0-codex.0
 
 from __future__ import annotations
 
@@ -103,6 +103,7 @@ def resolve_listen_host() -> str:
             LISTEN_HOST_ENV,
             LEGACY_LISTEN_HOST_ENV,
         )
+        or load_network_access_config().get("host", "")
         or "127.0.0.1"
     )
 
@@ -114,7 +115,6 @@ MEDIA_STORE_ROOT = LOCAL_STORE_ROOT / MEDIA_STORE_DIRNAME
 X_LOCAL_STORE_DIRNAME = "x"
 LOGS_ROOT = RUNTIME_ROOT / "logs"
 LEGACY_SETTINGS_PATH = RUNTIME_ROOT / ".cachelikes-settings.json"
-DEFAULT_HOST = resolve_listen_host()
 DEFAULT_PORT = 8666
 DEFAULT_CHROME_USER_DATA_DIR = default_chrome_user_data_dir()
 # Safari is opt-in: its authenticated Apple Events path owns a real Safari
@@ -182,9 +182,44 @@ def legacy_default_settings_path() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / f"{LEGACY_SETTINGS_DIRECTORY_NAME}/settings.json"
 
 
+def network_access_config_path() -> Path:
+    """Keep explicit LAN credentials beside private settings, outside cache payloads."""
+    return default_settings_path().with_name("network-access.json")
+
+
+def load_network_access_config() -> dict[str, str]:
+    """Fail closed unless the private launch file contains both a bind and a valid PIN."""
+    path = network_access_config_path()
+    try:
+        if path.is_symlink():
+            return {}
+        with path.open("r", encoding="utf-8") as config_file:
+            raw = config_file.read(4_097)
+        if len(raw) > 4_096:
+            return {}
+        payload = json.loads(raw)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    host = payload.get("host")
+    password = payload.get("agent_password")
+    if (
+        not isinstance(host, str)
+        or host not in {"127.0.0.1", "0.0.0.0"}
+        or not isinstance(password, str)
+        or len(password) != 6
+        or not password.isascii()
+        or not password.isdigit()
+    ):
+        return {}
+    return {"host": host, "agent_password": password}
+
+
 # Backward-compatible import-time snapshot. Runtime read/write helpers resolve the
 # current environment again so tests and isolated processes can redirect settings safely.
 SETTINGS_PATH = default_settings_path()
+DEFAULT_HOST = resolve_listen_host()
 
 
 @dataclass(slots=True)

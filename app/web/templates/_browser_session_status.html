@@ -1,4 +1,4 @@
-{# Code version: v1.4.0-codex.1 #}
+{# Code version: v1.4.1-codex.0 #}
 
 {% macro render_literal_status(label) -%}
 <span class="browser-session-status-literal">
@@ -7,7 +7,7 @@
 </span>
 {%- endmacro %}
 
-{% macro render_browser_session_status(empty_message="No signed-in account detected", ready_label="Ready", terminal_execution=none, account_label="", compact=false, hide_ready_message=false, login_action=false) -%}
+{% macro render_browser_session_status(empty_message="No signed-in account detected", ready_label="Ready", terminal_execution=none, account_label="", compact=false, hide_ready_message=false, login_action=false, recheck_action=false) -%}
 <div
     class="browser-session-status-card{% if compact %} browser-session-status-card-compact{% endif %}"
     data-role="browser-session-status"
@@ -39,7 +39,7 @@
             ></p>
             {% endif %}
             <p class="browser-session-status-message" data-role="browser-session-message" aria-live="polite" hidden></p>
-            {% if login_action %}
+            {% if login_action or recheck_action %}
             <button type="button" class="secondary-button" data-role="browser-session-recheck" hidden>Recheck</button>
             {% endif %}
             {% if terminal_execution %}

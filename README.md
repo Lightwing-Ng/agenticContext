@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.30.1-codex.1`
+Documentation version: `v1.31.0-codex.0`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -64,9 +64,14 @@ control, and motion decisions. Read [STYLE_REFERENCE.md](docs/STYLE_REFERENCE.md
 making any UI change.
 
 This project starts a loopback-only web console on `http://127.0.0.1:8666`. LAN access is an
-explicit opt-in through `AGENTIC_CONTEXT_HOST=0.0.0.0`. When LAN access is enabled, every
+explicit opt-in through `AGENTIC_CONTEXT_HOST=0.0.0.0` or the private
+`network-access.json` launch configuration described in [OPERATIONS.md](docs/OPERATIONS.md).
+When LAN access is enabled, every
 application route requires a signed browser session established with an explicitly configured,
-six-ASCII-digit `AGENTIC_CONTEXT_AGENT_PASSWORD`; no password is built in. Host, Origin, and
+six-ASCII-digit PIN from `AGENTIC_CONTEXT_AGENT_PASSWORD` or that private file; no password is
+built in. The application uses its own `HttpOnly`, `SameSite=Strict` session cookie, so another
+application on the same IP cannot overwrite it through a shared cookie name. This PIN gate and
+cookie signing do not encrypt HTTP traffic. Host, Origin, and
 cross-site request checks apply in addition to per-client unlock throttling. Do not expose the LAN
 endpoint through port forwarding, a public tunnel, or a reverse proxy.
 

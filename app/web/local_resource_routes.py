@@ -5,7 +5,7 @@ for a browser, an Agent, or a cache worker. Serialization of one stored item int
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.2.1-codex.0
 
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ from app.core.storage import (
 from app.web.cache_sources import CACHE_SOURCE_VIEWS, get_cache_source_label
 from app.web.presentation import (
     build_browser_search_suggestions,
+    cached_message_source_links,
     format_media_size,
     render_cached_message,
     render_prompt_markdown,
@@ -142,6 +143,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             media_id=request.args.get("media_id"),
             session_page=request.args.get("session_page"),
             answerer=request.args.get("answerer"),
+            project=request.args.get("project"),
         )
         force_refresh = request.args.get("refresh") == "1"
         prompt_page = None
@@ -157,8 +159,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                 session_view=filters["session_view"],
                 session=filters["session"],
                 answerer=filters["answerer"],
+                project=filters["project"],
             )
             filters["answerer"] = text_page.selected_answerer
+            filters["project"] = text_page.selected_project
             text_page = attach_media_references(
                 text_page,
                 media_items,
@@ -231,7 +235,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             filters=filters,
             browser_search_suggestions=browser_search_suggestions,
             has_any_media=bool(all_items),
-            has_any_text=bool(text_page and (text_page.total_count or filters["q"])),
+            has_any_text=bool(text_page and (text_page.total_count or filters["q"] or filters["project"])),
             has_any_prompts=context.prompt_store.has_any(),
             saved_prompt_keys=saved_prompt_keys,
             prompt_remark_options=context.prompt_store.remark_options(),
@@ -241,6 +245,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             format_media_size=format_media_size,
             render_prompt_markdown=render_prompt_markdown,
             render_cached_message=render_cached_message,
+            cached_message_source_links=cached_message_source_links,
             file_manager_label=local_file_manager_label(),
             version=APP_VERSION,
         )

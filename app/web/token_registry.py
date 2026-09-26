@@ -1,6 +1,6 @@
 """Read the local CSS foundation token registry for the Style tokens page.
 
-Code version: v0.14.0-codex.0
+Code version: v0.14.2-codex.0
 """
 
 from __future__ import annotations
@@ -295,7 +295,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "sample_kind": "modal-dialog",
             "sample_title": "Refreshing local cache",
             "sample_copy": "We are checking the local catalog for new items. Keep this page open while the refresh finishes.",
-            "token_names": ("--workspace-modal-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-title-row-min-height", "--workspace-modal-icon-size", "--workspace-modal-column-gap", "--workspace-modal-row-gap", "--workspace-modal-list-padding-inline-start", "--workspace-modal-list-marker-gap"),
+            "token_names": ("--workspace-modal-material", "--frosted-glass-notice-background", "--frosted-glass-notice-border", "--frosted-glass-notice-shadow", "--frosted-glass-notice-blur", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-title-row-min-height", "--workspace-modal-icon-size", "--workspace-modal-column-gap", "--workspace-modal-row-gap", "--workspace-modal-list-padding-inline-start", "--workspace-modal-list-marker-gap"),
             "material_names": ("--workspace-modal-material",),
         },
         {
@@ -308,7 +308,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
                 "New browser sessions will use the saved settings and retain the selected local cache policy.",
                 "Existing sessions keep their current settings until the next refresh.",
             ),
-            "token_names": ("--notice-floating-material", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-title-row-min-height", "--workspace-modal-icon-size", "--workspace-modal-column-gap", "--workspace-modal-row-gap", "--workspace-modal-list-padding-inline-start", "--workspace-modal-list-marker-gap"),
+            "token_names": ("--notice-floating-material", "--frosted-glass-notice-background", "--frosted-glass-notice-border", "--frosted-glass-notice-shadow", "--frosted-glass-notice-blur", "--workspace-modal-radius", "--workspace-modal-pad-block", "--workspace-modal-pad-inline", "--workspace-modal-close-offset", "--workspace-modal-close-center-offset", "--workspace-modal-close-size", "--workspace-modal-title-row-min-height", "--workspace-modal-icon-size", "--workspace-modal-column-gap", "--workspace-modal-row-gap", "--workspace-modal-list-padding-inline-start", "--workspace-modal-list-marker-gap"),
             "material_names": ("--notice-floating-material",),
             "related_styles": ({"name": "Modal dialog", "target_id": "modal-dialog"},),
         },
@@ -384,7 +384,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
             "sample_copy": "The standard Period trigger exposes the full shared option range.",
             "sample_value": "1y",
             "sample_options": period_options,
-            "token_names": ("--shared-select-dropdown-material",),
+            "token_names": ("--shared-select-dropdown-surface-opacity", "--shared-select-dropdown-material"),
             "material_names": ("--shared-select-dropdown-material",),
             "related_styles": ({"name": "Shared select filter", "target_id": "shared-select-filter"},),
         },
@@ -397,6 +397,7 @@ def build_style_token_component_rows() -> list[dict[str, object]]:
                 "--shared-select-control-height",
                 "--shared-select-trigger-material",
                 "--shared-select-trigger-material-hover",
+                "--shared-select-dropdown-surface-opacity",
                 "--shared-select-dropdown-material",
                 "--shared-select-border",
                 "--shared-select-shadow",

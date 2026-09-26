@@ -7,7 +7,7 @@ touches a Flask request, a service, or an application instance, so route modules
 import it directly instead of receiving it through the application factory.
 """
 
-# Code version: v1.2.0-codex.0
+# Code version: v1.3.1-codex.0
 
 from __future__ import annotations
 
@@ -488,6 +488,52 @@ def render_cached_message(
     return Markup(_wrap_rendered_tables(rendered, aria_label="Scrollable message table"))
 
 
+def _cached_message_link_key(value: str) -> str:
+    """Match the renderer's URL encoding without discarding query or fragment identity."""
+    return PROMPT_MARKDOWN_RENDERER.normalizeLink(value.strip())
+
+
+class _RenderedMessageLinkCollector(HTMLParser):
+    """Collect actual clickable destinations after message rendering and sanitization."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.destinations: set[str] = set()
+        self.current_destination = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "a":
+            self.current_destination = _cached_message_link_key(attributes.get("href") or "")
+        elif tag == "img" and attributes.get("src") and self.current_destination:
+            self.destinations.add(self.current_destination)
+
+    def handle_data(self, data: str) -> None:
+        if data.strip() and self.current_destination:
+            self.destinations.add(self.current_destination)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self.current_destination = ""
+
+
+def cached_message_source_links(
+    source_links: Iterable[str],
+    rendered_message: str,
+) -> tuple[str, ...]:
+    """Keep metadata sources only when the displayed message does not already link them."""
+    collector = _RenderedMessageLinkCollector()
+    collector.feed(str(rendered_message))
+    collector.close()
+    remaining: list[str] = []
+    for source_link in source_links:
+        destination = _cached_message_link_key(source_link)
+        if destination not in collector.destinations:
+            remaining.append(source_link)
+            collector.destinations.add(destination)
+    return tuple(remaining)
+
+
 def build_browser_search_suggestions(
     *,
     view: str,
@@ -630,6 +676,7 @@ def validate_local_directory_path(raw_path: str) -> tuple[bool, str, str]:
 
 
 __all__ = [
+    "cached_message_source_links",
     "CACHE_RECONCILE_PHASES",
     "PROMPT_MARKDOWN_RENDERER",
     "build_browser_search_suggestions",

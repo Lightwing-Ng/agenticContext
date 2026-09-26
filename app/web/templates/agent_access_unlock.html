@@ -1,4 +1,4 @@
-{# Code version: v1.3.54-codex.0 #}
+{# Code version: v1.3.61-codex.0 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -10,37 +10,14 @@
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.156.1-codex.0') }}">
     <style>
-        .agent-access-overlay {
-            isolation: isolate;
-            background: color-mix(in srgb, var(--bg) 76%, transparent);
-            backdrop-filter: blur(18px) saturate(1.08);
-            -webkit-backdrop-filter: blur(18px) saturate(1.08);
-        }
-
         .agent-access-dialog {
             display: grid;
             grid-template-columns: minmax(0, 1fr);
             gap: 0;
             width: min(380px, calc(100vw - 32px));
             padding: 24px;
-            border: 1px solid color-mix(in srgb, var(--theme-glass-highlight) 58%, var(--theme-glass-border));
             border-radius: var(--radius-panel);
-            background: color-mix(in srgb, var(--glass-surface-background-dense) 94%, transparent);
-            box-shadow:
-                0 34px 90px -44px color-mix(in srgb, var(--theme-shadow) 68%, transparent),
-                0 14px 34px -24px var(--theme-shadow-ambient),
-                inset 0 1px 0 color-mix(in srgb, var(--theme-glass-highlight) 82%, transparent);
-            backdrop-filter: blur(32px) saturate(1.28);
-            -webkit-backdrop-filter: blur(32px) saturate(1.28);
             font-family: var(--font-family-base);
-        }
-
-        .agent-access-dialog::after {
-            background: linear-gradient(
-                180deg,
-                color-mix(in srgb, var(--color-white-adaptive) 14%, transparent) 0%,
-                transparent 58%
-            );
         }
 
         .agent-access-heading {

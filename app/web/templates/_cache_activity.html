@@ -1,0 +1,21 @@
+{# Code version: v1.0.0-codex.0 #}
+<div class="cache-activity" data-cache-activity data-activity-url="{{ url_for('cache.api_cache_activity') }}" hidden>
+    <div class="cache-activity-surface" aria-hidden="true"></div>
+    <section class="cache-activity-panel" id="cache_activity_panel" data-cache-activity-panel
+             role="dialog" aria-modal="false" aria-labelledby="cache_activity_title"
+             aria-hidden="true" tabindex="-1" inert>
+        <header class="cache-activity-heading">
+            <h2 id="cache_activity_title">Running cache tasks</h2>
+            <span class="cache-activity-count" data-cache-activity-count></span>
+        </header>
+        <p class="cache-activity-unavailable" data-cache-activity-unavailable hidden>
+            Status temporarily unavailable. Showing the last known tasks.
+        </p>
+        <ul class="cache-activity-tasks" data-cache-activity-tasks></ul>
+    </section>
+    <button type="button" class="circular-icon-button cache-activity-trigger" data-cache-activity-trigger
+            data-layout-role="cache-activity-anchor" aria-label="Show running cache tasks"
+            aria-haspopup="dialog" aria-expanded="false" aria-controls="cache_activity_panel">
+        <span class="live-marker" aria-hidden="true"></span>
+    </button>
+</div>

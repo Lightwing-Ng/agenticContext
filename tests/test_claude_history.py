@@ -1,10 +1,10 @@
 """Focused tests for browser-rendered Claude history caching.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -18,7 +18,9 @@ from app.core.claude_history import (
     sync_claude_history,
 )
 from app.core.config import CrawlConfig
-from app.core.state import TaskState
+from app.core.claude_history_service import ClaudeHistoryService
+from app.core.job_lock import CacheTaskLock
+from app.core.state import TaskSnapshot, TaskState
 
 
 class _RenderedClaudePage:
@@ -133,6 +135,8 @@ def test_claude_safari_sync_caches_rendered_text_in_owned_context(
             return "Claude"
 
         def evaluate(self, script: str, *_args):
+            if "loginRequired" in script:
+                return {"loading": False}
             if "document.body" in script:
                 return "New chat"
             if "composerSelector" in script:
@@ -184,3 +188,66 @@ def test_claude_safari_sync_caches_rendered_text_in_owned_context(
     assert result["messages"] == 2
     assert result["failed"] == 0
     assert ClaudeHistoryStore(tmp_path / "llm" / "claude" / "history.parquet").cached_messages == 2
+
+
+def test_claude_history_service_reports_partial_sync_as_incomplete(tmp_path: Path) -> None:
+    class _ImmediateThread:
+        def __init__(self, *, target, **_kwargs) -> None:
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+    state = TaskState("test", snapshot_factory=lambda version: TaskSnapshot(version=version))
+    service = ClaudeHistoryService(
+        state, local_store_root=tmp_path, task_lock=CacheTaskLock(tmp_path / "cache-task.lock")
+    )
+    with patch("app.core.claude_history_service.Thread", _ImmediateThread), patch(
+        "app.core.claude_history_service.sync_claude_history",
+        return_value={
+            "sessions": 2, "messages": 1, "added_or_changed": 1,
+            "unchanged": 0, "failed": 1, "stopped": False,
+        },
+    ), patch("app.core.claude_history_service.append_shadow_backup_completion") as backup:
+        service.start(CrawlConfig(claude_browser="safari"))
+
+    assert state.snapshot()["phase"] == "failed"
+    assert "incomplete" in state.snapshot()["message"]
+    assert "1 sessions failed" in state.snapshot()["message"]
+    backup.assert_not_called()
+
+
+def test_claude_text_sync_stop_during_discovery_preserves_cached_history(tmp_path: Path) -> None:
+    history_path = tmp_path / "llm/claude/history.parquet"
+    store = ClaudeHistoryStore(history_path)
+    conversation = ClaudeConversationLink("chat-1", "https://claude.ai/chat/chat-1", "Cached")
+    store.replace_conversation(
+        conversation, extract_claude_conversation_messages(_RenderedClaudePage(), conversation),
+        "2026-09-03T01:01:00Z",
+    )
+    store.save()
+    before = history_path.read_bytes()
+    stop_requested = False
+
+    def cancel_discovery(_page, *, should_stop):
+        nonlocal stop_requested
+        assert should_stop() is False
+        stop_requested = True
+        return []
+
+    state = TaskState("test")
+    with patch("app.core.claude_history._open_claude_history_page") as context, patch(
+        "app.core.claude_history.goto_with_retry",
+    ), patch("app.core.claude_history._wait_for_claude_ready"), patch(
+        "app.core.claude_history.discover_claude_conversations", side_effect=cancel_discovery,
+    ):
+        context.return_value.__enter__.return_value = Mock()
+        result = sync_claude_history(
+            state, CrawlConfig(), lambda: stop_requested, tmp_path,
+        )
+
+    assert result["stopped"] is True
+    assert result["failed"] == result["sessions"] == 0
+    assert state.snapshot()["phase"] == "stopped"
+    assert state.snapshot()["discovery_complete"] is False
+    assert history_path.read_bytes() == before

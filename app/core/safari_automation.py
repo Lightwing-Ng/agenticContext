@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.14.1-codex.0
+# Code version: v2.15.1-codex.0
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from threading import RLock
 from typing import Any
 from urllib.parse import urlsplit
 
+from .macos_applescript import execute_applescript
 from .platform_lock import lock_file, unlock_file
 
 
@@ -300,12 +301,8 @@ def run_applescript(source: str, *, retry_transient: bool = True) -> str:
     retry_limit = SAFARI_APPLESCRIPT_RETRY_LIMIT if retry_transient else 0
     for attempt_index in range(retry_limit + 1):
         try:
-            process = subprocess.run(
-                ["osascript"],
-                input=source,
-                text=True,
-                capture_output=True,
-                check=False,
+            process = execute_applescript(
+                source,
                 timeout=SAFARI_APPLESCRIPT_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
@@ -411,13 +408,17 @@ def _safari_pid_is_alive(pid: int) -> bool:
     return True
 
 
-def _close_safari_window_id(window_id: int) -> bool:
+def _close_safari_window_id(window_id: int, *, require_empty: bool = False) -> bool:
     """Close one leftover task window without activating Safari.
 
     Returns True when the window is absent afterward.
     """
     if type(window_id) is not int or window_id <= 0:
         return False
+    empty_window_guard = (
+        f'if (count of tabs of (first window whose id is {window_id})) is not 0 then return "not-empty"'
+        if require_empty else ""
+    )
     source = f"""
 tell application "System Events"
     set safariIsRunning to exists application process "Safari"
@@ -428,6 +429,7 @@ tell application "Safari"
     if not (exists (first window whose id is {window_id})) then
         return "absent"
     end if
+    {empty_window_guard}
     try
         close (first window whose id is {window_id})
     end try
@@ -461,6 +463,73 @@ def _safari_context_lease_path() -> Path:
     """Derive durable state beside the separately locked coordination file."""
     return SAFARI_CONTEXT_LOCK_PATH.with_name(
         f"{SAFARI_CONTEXT_LOCK_PATH.name}.state"
+    )
+
+
+def _safari_window_inert_state(window_id: int) -> dict[str, object]:
+    """Read fixed window properties without returning document titles or URLs."""
+    state: dict[str, object] = {
+        "exists": None,
+        "tab_count": None,
+        "visible": None,
+        "miniaturized": None,
+        "has_document": None,
+        "read_error": True,
+    }
+    if type(window_id) is not int or window_id <= 0:
+        return state
+    source = f"""
+tell application "System Events"
+    if not (exists application process "Safari") then return "exists:false"
+end tell
+tell application "Safari"
+    if not (exists (first window whose id is {window_id})) then return "exists:false"
+    set targetWindow to first window whose id is {window_id}
+    set tabCountValue to "unknown"
+    set visibleValue to "unknown"
+    set miniaturizedValue to "unknown"
+    set documentValue to "unknown"
+    try
+        set tabCountValue to (count of tabs of targetWindow) as text
+    end try
+    try
+        set visibleValue to (visible of targetWindow) as text
+    end try
+    try
+        set miniaturizedValue to (miniaturized of targetWindow) as text
+    end try
+    try
+        set documentValue to (exists document of targetWindow) as text
+    end try
+    return "exists:true|tab_count:" & tabCountValue & "|visible:" & visibleValue & "|miniaturized:" & miniaturizedValue & "|has_document:" & documentValue
+end tell
+""".strip()
+    try:
+        raw = run_applescript(source, retry_transient=False).strip()
+    except RuntimeError:
+        return state
+    values = dict(item.split(":", 1) for item in raw.split("|") if ":" in item)
+    for key in ("exists", "visible", "miniaturized", "has_document"):
+        state[key] = {"true": True, "false": False}.get(values.get(key, "").lower())
+    count = values.get("tab_count", "")
+    if count.isdigit():
+        state["tab_count"] = int(count)
+    state["read_error"] = state["exists"] is not False and any(
+        state[key] is None for key in ("exists", "tab_count", "visible", "miniaturized", "has_document")
+    )
+    return state
+
+
+def _safari_window_is_inert_ghost(window_id: int) -> bool:
+    """Read whether a retained scripting window has no native document or tabs."""
+    state = _safari_window_inert_state(window_id)
+    return (
+        state["exists"] is True
+        and state["tab_count"] == 0
+        and state["visible"] is False
+        and state["miniaturized"] is False
+        and state["has_document"] is False
+        and state["read_error"] is False
     )
 
 
@@ -1264,27 +1333,45 @@ class SafariPage:
         self.keep_rendering_in_background()
 
     def _read_navigation_state(self) -> dict[str, str] | None:
-        """Return Safari's native URL and DOM readiness during navigation."""
+        """Accept DOM readiness only when it describes Safari's committed URL."""
         raw_state = self._run_in_window(
             """
 set pageUrlValue to ""
-set pageStateValue to ""
+set pageDocumentValue to ""
 try
     set candidateUrl to URL of targetTab
     if candidateUrl is not missing value then set pageUrlValue to candidateUrl as text
 end try
 try
-    set candidateState to do JavaScript "document.readyState || ''" in current tab of targetWindow
-    if candidateState is not missing value then set pageStateValue to candidateState as text
+    set candidateDocument to do JavaScript "String(location.href || '') + String.fromCharCode(10) + String(document.readyState || '')" in targetTab
+    if candidateDocument is not missing value then set pageDocumentValue to candidateDocument as text
 end try
-return pageUrlValue & linefeed & pageStateValue
+return pageUrlValue & linefeed & pageDocumentValue
 """.strip(),
             reveal_tab=True,
         )
-        state_lines = raw_state.split("\n", maxsplit=1)
+        state_lines = raw_state.split("\n", maxsplit=2)
+        native_url = state_lines[0].strip() if state_lines else ""
+        document_url = state_lines[1].strip() if len(state_lines) > 1 else ""
+        ready_state = state_lines[2].strip() if len(state_lines) > 2 else ""
+        urls_agree = False
+        if native_url and document_url:
+            try:
+                native = urlsplit(native_url)
+                document = urlsplit(document_url)
+                urls_agree = (
+                    native.scheme == document.scheme
+                    and native.netloc.casefold() == document.netloc.casefold()
+                    and (native.path.rstrip("/") or "/") == (document.path.rstrip("/") or "/")
+                    and native.query == document.query
+                    and native.fragment == document.fragment
+                )
+            except ValueError:
+                pass
         return {
-            "href": state_lines[0].strip() if state_lines else "",
-            "readyState": state_lines[1].strip() if len(state_lines) > 1 else "",
+            "href": document_url,
+            "nativeHref": native_url,
+            "readyState": ready_state if urls_agree else "",
         }
 
     def wait_for_load_state(self, state: str, timeout: int) -> None:
@@ -2500,6 +2587,8 @@ class SafariContext:
                 self._durable_lease_started = True
                 self._adopted_window_id = window_id
                 self._adopted_window_was_empty = current_inventory[window_id] == 0
+                if self._adopted_window_was_empty:
+                    self._write_idle_context_lease_state(window_id)
                 return
         else:
             if self._uncertain_creation_candidates(current_inventory, baseline):
@@ -2767,11 +2856,19 @@ class SafariContext:
                         "No task page was opened."
                     )
                 if current_inventory[adopted_window_id] == 0:
-                    tab_index = self._create_tab(
-                        adopted_window_id,
-                        url,
-                        expect_empty_window=True,
-                    )
+                    try:
+                        tab_index = self._create_tab(
+                            adopted_window_id,
+                            url,
+                            expect_empty_window=True,
+                        )
+                    except RuntimeError as exc:
+                        if (
+                            "Safari idle task tab did not become addressable." not in str(exc)
+                            or not self._retire_unaddressable_idle_window(adopted_window_id)
+                        ):
+                            raise
+                        return self._create_page(url)
                     page = SafariPage(self, adopted_window_id, tab_index=tab_index)
                 else:
                     page = SafariPage(self, adopted_window_id, tab_index=1)
@@ -2795,6 +2892,47 @@ class SafariContext:
                     SAFARI_PENDING_CONTEXTS[id(self)] = self
             raise
         return page
+
+    def _retire_unaddressable_idle_window(self, window_id: int) -> bool:
+        """Replace only an absent shell or an inert shell retained in the new baseline."""
+        if self._context_lock_handle is None or not self._durable_lease_started:
+            return False
+        payload = self._read_context_lease_state()
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") != SAFARI_CONTEXT_LEASE_VERSION
+            or payload.get("state") != "idle"
+            or payload.get("window_id") != window_id
+            or not isinstance(payload.get("ownership_token"), str)
+            or not re.fullmatch(r"[0-9a-f]{32}", payload["ownership_token"])
+            or type(payload.get("owner_pid")) is not int
+            or payload["owner_pid"] <= 0
+        ):
+            return False
+        baseline = self._validated_baseline_inventory(payload.get("baseline_windows"))
+        if window_id in baseline or baseline != self._creation_baseline_inventory:
+            return False
+        recorded_process = payload.get("safari_process_identity")
+        if recorded_process is None or recorded_process != _safari_process_identity():
+            return False
+        inventory = _safari_window_inventory()
+        if window_id in inventory:
+            if inventory[window_id] != 0:
+                return False
+            _close_safari_window_id(window_id, require_empty=True)
+            after_close = _safari_window_inventory()
+            if window_id in after_close:
+                if (
+                    after_close[window_id] != 0
+                    or recorded_process != _safari_process_identity()
+                    or not _safari_window_is_inert_ghost(window_id)
+                ):
+                    return False
+                # Keep the old lease until the next creation records this inert
+                # object in its protected baseline. It was not proven absent.
+                return True
+        self._clear_context_lease_state()
+        return True
 
     def _reindex_tabs_after_close(self, closed_page: SafariPage) -> None:
         """Keep remaining tab indexes aligned after Safari closes one owned tab."""
@@ -2902,6 +3040,7 @@ end tell
     ) -> int:
         """Add one tab to the already owned Safari window without activating it."""
         empty_window_guard = ""
+        new_tab_ready_guard = ""
         single_tab_guard = ""
         tab_index_result = "index of newTab"
         if expect_empty_window:
@@ -2909,6 +3048,29 @@ end tell
                 'if (count of tabs of targetWindow) is not 0 then '
                 'error "Safari idle task window now contains a tab." number -1719'
             )
+            new_tab_ready_guard = """
+        set newTabReady to false
+        repeat with prepareIndex from 1 to 20
+            set ownedTabCount to count of tabs of targetWindow
+            if ownedTabCount > 1 then
+                error "Safari idle task window gained an extra tab." number -1719
+            end if
+            if ownedTabCount is 1 then
+                try
+                    set readyTabIndex to index of tab 1 of targetWindow
+                    if readyTabIndex is 1 then
+                        set newTab to tab 1 of targetWindow
+                        set newTabReady to true
+                        exit repeat
+                    end if
+                end try
+            end if
+            delay 0.1
+        end repeat
+        if not newTabReady then
+            error "Safari idle task tab did not become addressable." number -1719
+        end if
+""".strip()
             single_tab_guard = """
         repeat with settleIndex from 1 to 10
             if (count of tabs of targetWindow) is 1 then exit repeat
@@ -2935,6 +3097,7 @@ tell application "Safari"
     try
         {empty_window_guard}
         set newTab to make new tab at end of tabs of targetWindow
+        {new_tab_ready_guard}
         set URL of newTab to "{escape_applescript_text(url)}"
         set current tab of targetWindow to newTab
         {single_tab_guard}

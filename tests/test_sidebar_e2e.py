@@ -38,6 +38,7 @@ from app.core.computer_use_agent import (
     load_computer_use_settings,
 )
 from app.core.agent.action_protocol import parse_agent_action
+from app.core.agent.platform_catalog import detect_host_operating_system
 from app.core.gemini_downloader import inspect_gemini_session
 from app.core.resource_persistence import (
     CHATGPT_HISTORY_SCHEMA,
@@ -525,7 +526,7 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ]
             assert options.evaluate_all(
@@ -612,6 +613,117 @@ def test_cache_source_switcher_menu_has_an_opaque_base(
         expect(trigger).to_have_attribute("aria-expanded", "false")
         expect(trigger).to_be_focused()
         expect(page).to_have_url(route)
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("width", "height", "touch"),
+    ((1_006, 791, False), (390, 844, True), (1_006, 560, True)),
+)
+@pytest.mark.parametrize("color_scheme", ("light", "dark"))
+def test_local_resources_source_filter_has_an_opaque_base_and_keyboard_navigation(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    width: int,
+    height: int,
+    touch: bool,
+    color_scheme: str,
+) -> None:
+    """Keep the shared Text and Media source menu opaque above sidebar content."""
+    page, context = _open_page(
+        disposable_browser,
+        f"{sidebar_server_url}/browser?view=media&session_view=1&source=claude&sort=newest&q=",
+        width,
+        height,
+        touch=touch,
+    )
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.emulate_media(color_scheme=color_scheme)
+        for view in ("media", "text"):
+            route = (
+                f"{sidebar_server_url}/browser?view={view}&session_view=1"
+                "&source=claude&sort=newest&q="
+            )
+            page.goto(route, wait_until="domcontentloaded")
+            expect(page.locator("#global_theme_toggle")).to_have_attribute(
+                "data-effective-theme", color_scheme,
+            )
+            sidebar_toggle = page.locator("#sidebar_toggle")
+            if sidebar_toggle.get_attribute("aria-expanded") != "true":
+                sidebar_toggle.click()
+            trigger = page.locator("#browser_filter_form [data-browser-source-filter-trigger]")
+            menu = page.locator("#" + trigger.get_attribute("aria-controls"))
+            # Keyboard presses do not wait for the sidebar to become visibly focusable.
+            expect(trigger).to_be_visible()
+            trigger.focus()
+            expect(trigger).to_be_focused()
+            trigger.press("ArrowDown")
+            expect(menu).to_be_visible()
+            selected = menu.locator('[data-browser-source-filter-option="claude"]')
+            expect(selected).to_be_focused()
+            expect(selected).to_have_attribute("aria-selected", "true")
+
+            rendering = menu.evaluate("""element => {
+                const probe = document.createElement('span');
+                probe.style.backgroundColor = 'var(--theme-background)';
+                document.body.append(probe);
+                const themeBackground = getComputedStyle(probe).backgroundColor;
+                probe.remove();
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                const options = [...element.querySelectorAll('[data-browser-source-filter-option]')]
+                    .filter(option => !option.hidden);
+                const hitTests = [options[0], options.at(-1)].map(option => {
+                    option.scrollIntoView({block: 'nearest'});
+                    const box = option.getBoundingClientRect();
+                    return option.contains(document.elementFromPoint(
+                        box.left + box.width / 2, box.top + box.height / 2,
+                    ));
+                });
+                return {
+                    backgroundColor: style.backgroundColor,
+                    backgroundImage: style.backgroundImage,
+                    blur: style.backdropFilter,
+                    themeBackground,
+                    left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
+                    hitTests,
+                    documentOverflow: document.documentElement.scrollWidth - innerWidth,
+                };
+            }""")
+            assert rendering["backgroundColor"] == rendering["themeBackground"], rendering
+            assert rendering["backgroundColor"].startswith("rgb("), rendering
+            assert rendering["backgroundImage"] != "none", rendering
+            assert "blur(" in rendering["blur"], rendering
+            assert rendering["left"] >= -1 and rendering["right"] <= width + 1, rendering
+            assert rendering["top"] >= -1 and rendering["bottom"] <= height + 1, rendering
+            assert all(rendering["hitTests"]), rendering
+            assert rendering["documentOverflow"] <= 1, rendering
+
+            selected.press("Home")
+            expect(menu.locator('[role="option"]').first).to_be_focused()
+            page.keyboard.press("End")
+            expect(menu.locator('[role="option"]').last).to_be_focused()
+            expect(selected).to_have_attribute("aria-selected", "true")
+            page.keyboard.press("Escape")
+            expect(menu).to_be_hidden()
+            expect(trigger).to_be_focused()
+            expect(page).to_have_url(route)
+
+            trigger.press("ArrowDown")
+            menu.locator('[data-browser-source-filter-option="chatgpt"]').focus()
+            with page.expect_navigation(wait_until="domcontentloaded"):
+                page.keyboard.press("Enter")
+            expect(page.locator("#browser_filter_form [data-browser-source-filter-input]")).to_have_value(
+                "chatgpt",
+            )
+            assert f"view={view}" in page.url
+            expect(page.locator("#browser_source_filter_options")).to_be_hidden()
+        assert not errors
     finally:
         context.close()
 
@@ -1442,7 +1554,7 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
     disposable_browser: Browser,
     seeded_chatgpt_table_browser_server_url: str,
 ) -> None:
-    """Keep card effects visible while long message tables scroll within their own surface."""
+    """Keep external card shadows with compact padding and independently scrollable tables."""
     page, context = _open_page(
         disposable_browser,
         f"{seeded_chatgpt_table_browser_server_url}/browser?view=text&source=chatgpt&sort=newest&session_view=1",
@@ -1456,7 +1568,9 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
         detail_url = session.get_attribute("href")
         assert detail_url
 
-        for width, height in ((996, 801), (1_280, 959), (390, 844), (996, 600)):
+        for width, height in (
+            (996, 801), (1_280, 959), (390, 844), (996, 600), (1_006, 791), (1_006, 500),
+        ):
             page.set_viewport_size({"width": width, "height": height})
             page.goto(
                 f"{seeded_chatgpt_table_browser_server_url}{detail_url}",
@@ -1464,6 +1578,7 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
             )
             cards = page.locator(".browser-chat-list .browser-chat-message")
             expect(cards).to_have_count(2)
+            expect(page.locator(".browser-chat-effects [data-chat-effect-for]").first).to_be_attached()
             table_shell = cards.nth(1).get_by_role("region", name="Scrollable message table")
             expect(table_shell).to_be_visible()
             geometry = page.locator(".browser-chat-list").evaluate("""list => {
@@ -1474,7 +1589,20 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
                 const listRect = list.getBoundingClientRect();
                 const firstRect = cards[0].getBoundingClientRect();
                 const listStyle = getComputedStyle(list);
+                const contentCard = list.closest('.browser-text-summary-card');
+                const pane = list.closest('[data-browser-chat-pane]');
+                const metricGrid = contentCard.querySelector('.browser-text-metric-grid');
+                const rectangle = element => {
+                    const rect = element.getBoundingClientRect();
+                    return {top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left};
+                };
                 return {
+                    contentRect: rectangle(contentCard),
+                    paneRect: rectangle(pane),
+                    listRect: rectangle(list),
+                    metricGridRect: rectangle(metricGrid),
+                    metricRects: [...metricGrid.querySelectorAll('.metric-card')].map(rectangle),
+                    listTop: listRect.top,
                     topBleed: firstRect.top - listRect.top,
                     leftBleed: firstRect.left - listRect.left,
                     rightBleed: listRect.right - firstRect.right,
@@ -1487,6 +1615,9 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
                         cards[1].querySelector('.browser-chat-message-content')
                     ).overflow,
                     cardShadow: getComputedStyle(cards[0]).boxShadow,
+                    externalShadow: getComputedStyle(pane.querySelector(
+                        `[data-chat-effect-for="${cards[0].id}"]`
+                    )).boxShadow,
                     shellOverflowX: getComputedStyle(tableShell).overflowX,
                     shellClientWidth: tableShell.clientWidth,
                     shellScrollWidth: tableShell.scrollWidth,
@@ -1495,15 +1626,38 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
                     documentOverflow: document.documentElement.scrollWidth - innerWidth,
                 };
             }""")
-            assert geometry["topBleed"] >= 47, (width, height, geometry)
-            assert geometry["leftBleed"] >= 47, (width, height, geometry)
-            assert geometry["rightBleed"] >= 47, (width, height, geometry)
+            content_rect = geometry["contentRect"]
+            metric_grid_rect = geometry["metricGridRect"]
+            assert metric_grid_rect["left"] >= content_rect["left"] - 1, (width, height, geometry)
+            assert metric_grid_rect["right"] <= content_rect["right"] + 1, (width, height, geometry)
+            assert metric_grid_rect["top"] >= content_rect["top"] - 1, (width, height, geometry)
+            assert metric_grid_rect["bottom"] <= content_rect["bottom"] + 1, (width, height, geometry)
+            for child_key, parent_rect in (
+                ("paneRect", content_rect), ("listRect", geometry["paneRect"]),
+            ):
+                child_rect = geometry[child_key]
+                assert child_rect["left"] >= parent_rect["left"] - 1, (width, height, geometry)
+                assert child_rect["right"] <= parent_rect["right"] + 1, (width, height, geometry)
+                assert child_rect["top"] >= parent_rect["top"] - 1, (width, height, geometry)
+                assert child_rect["bottom"] <= parent_rect["bottom"] + 1, (width, height, geometry)
+            for metric_rect in geometry["metricRects"]:
+                assert metric_rect["left"] >= metric_grid_rect["left"] - 1, (width, height, geometry)
+                assert metric_rect["right"] <= metric_grid_rect["right"] + 1, (width, height, geometry)
+                assert metric_rect["top"] >= metric_grid_rect["top"] - 1, (width, height, geometry)
+                assert metric_rect["bottom"] <= metric_grid_rect["bottom"] + 1, (width, height, geometry)
+            assert geometry["listTop"] >= metric_grid_rect["bottom"] + 7, (width, height, geometry)
+            assert geometry["topBleed"] == pytest.approx(8, abs=1), (width, height, geometry)
+            assert geometry["leftBleed"] == pytest.approx(8, abs=1), (width, height, geometry)
+            assert geometry["rightBleed"] == pytest.approx(8, abs=1), (width, height, geometry)
             assert geometry["listOverflowX"] == "hidden", (width, height, geometry)
             assert geometry["listOverflowY"] == "auto", (width, height, geometry)
             assert geometry["listScrollHeight"] > geometry["listClientHeight"], (width, height, geometry)
             assert geometry["cardOverflow"] == "visible", (width, height, geometry)
             assert geometry["contentOverflow"] == "visible", (width, height, geometry)
-            assert geometry["cardShadow"] != "none", (width, height, geometry)
+            assert geometry["cardShadow"] == "none" or all(
+                "inset" in layer for layer in re.split(r",\s*(?![^()]*\))", geometry["cardShadow"])
+            ), (width, height, geometry)
+            assert geometry["externalShadow"] != "none", (width, height, geometry)
             assert geometry["shellOverflowX"] == "auto", (width, height, geometry)
             assert geometry["tableLayout"] == "auto", (width, height, geometry)
             assert geometry["headerBackground"] != "rgba(0, 0, 0, 0)", (width, height, geometry)
@@ -1514,17 +1668,30 @@ def test_chatgpt_session_cards_keep_effect_bleed_and_scrollable_markdown_tables(
             table_shell.focus()
             assert table_shell.evaluate("element => document.activeElement === element")
 
-            bottom = page.locator(".browser-chat-list").evaluate("""list => {
-                list.scrollTop = list.scrollHeight;
-                const lastCard = list.lastElementChild;
-                return {
-                    clearance: list.getBoundingClientRect().bottom
-                        - lastCard.getBoundingClientRect().bottom,
-                    scrollTop: list.scrollTop,
-                };
-            }""")
-            assert bottom["scrollTop"] > 0, (width, height, bottom)
-            assert bottom["clearance"] >= 47, (width, height, bottom)
+            for scroll_fraction in (0.5, 1):
+                scrolled = page.locator(".browser-chat-list").evaluate("""async (list, fraction) => {
+                    list.scrollTop = (list.scrollHeight - list.clientHeight) * fraction;
+                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    const lastCard = list.lastElementChild;
+                    const metricGrid = list.closest('.browser-text-summary-card')
+                        .querySelector('.browser-text-metric-grid');
+                    return {
+                        clearance: list.getBoundingClientRect().bottom
+                            - lastCard.getBoundingClientRect().bottom,
+                        scrollTop: list.scrollTop,
+                        metricsUncovered: [...metricGrid.querySelectorAll('.metric-card')].map(card => {
+                            const rect = card.getBoundingClientRect();
+                            const hit = document.elementFromPoint(
+                                rect.left + rect.width / 2, rect.top + rect.height / 2
+                            );
+                            return card.contains(hit);
+                        }),
+                    };
+                }""", scroll_fraction)
+                assert scrolled["scrollTop"] > 0, (width, height, scrolled)
+                assert all(scrolled["metricsUncovered"]), (width, height, scroll_fraction, scrolled)
+                if scroll_fraction == 1:
+                    assert scrolled["clearance"] == pytest.approx(8, abs=1), (width, height, scrolled)
             if (width, height) in {(996, 801), (390, 844)}:
                 theme_toggle = page.locator("#global_theme_toggle")
                 theme_toggle.click()
@@ -2211,7 +2378,7 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
         "claude": "/cache/claude/text/edge",
         "gemini": "/cache/gemini/text/edge",
         "grok": "/cache/grok/text/edge",
-        "x": "/cache/x",
+        "x": "/cache/x/text/edge",
         "zhihu": "/cache/zhihu/text/edge",
     }
     page, context = _open_page(
@@ -2223,18 +2390,13 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
     )
     try:
         for target_source, expected_path in expected_paths.items():
-            page.goto(f"{sidebar_server_url}/cache/{page_source}", wait_until="domcontentloaded")
+            page.goto(f"{sidebar_server_url}/cache/{page_source}/text/edge", wait_until="domcontentloaded")
             if page_source != "x":
                 page.locator('[data-cache-content-mode-option="text"]').click()
                 page.goto(f"{sidebar_server_url}/cache/{page_source}", wait_until="domcontentloaded")
                 expect(page.locator('[data-cache-content-mode-option="text"]')).to_have_attribute(
                     "aria-checked",
                     "true",
-                )
-            if target_source == "x" and page_source != "x":
-                page.locator('[data-cache-content-mode-option="media"]').click()
-                assert page.locator('[data-cache-source-switcher-option="x"]').evaluate(
-                    "element => !element.hidden"
                 )
             page.locator("[data-cache-source-switcher-trigger]").click()
             page.locator(
@@ -3373,7 +3535,7 @@ def test_cache_notice_flows_without_overlap_and_keeps_polling(
         page.goto(f"{sidebar_server_url}/cache/{source}", wait_until="domcontentloaded")
         expect(page.locator("#message")).to_have_text("Status refresh 2", timeout=10_000)
         expect(page.locator("#overview .summary-list, #output_dir, [data-output-directory-open]")).to_have_count(0)
-        notice = page.locator("#overview .notice-inline-banner")
+        notice = page.locator("#overview .notice-inline-banner:not([hidden])")
         if source == "chatgpt":
             expect(notice).to_have_count(0)
             expect(page.locator("#overview .cache-summary-metrics")).to_be_visible()
@@ -4450,8 +4612,8 @@ def test_agent_recent_provider_sessions_submit_agentic_task_target(
             "can_start": True,
             "runtime": {
                 "ready": True,
-                "host_operating_system": "macos",
-                "message": "Computer Use is ready on this Mac.",
+                "host_operating_system": detect_host_operating_system(),
+                "message": "Computer Use is ready on this host.",
                 "terminal_execution": {
                     "ready": True,
                     "status_label": "Granted",
@@ -4692,8 +4854,8 @@ def test_agent_provider_projects_submit_agentic_task_target(
             "can_start": True,
             "runtime": {
                 "ready": True,
-                "host_operating_system": "macos",
-                "message": "Computer Use is ready on this Mac.",
+                "host_operating_system": detect_host_operating_system(),
+                "message": "Computer Use is ready on this host.",
                 "terminal_execution": {
                     "ready": True,
                     "status_label": "Granted",
@@ -4893,8 +5055,8 @@ def test_agent_project_session_selection_loads_grok_response_immediately(
             "can_start": True,
             "runtime": {
                 "ready": True,
-                "host_operating_system": "macos",
-                "message": "Computer Use is ready on this Mac.",
+                "host_operating_system": detect_host_operating_system(),
+                "message": "Computer Use is ready on this host.",
                 "terminal_execution": {
                     "ready": True,
                     "status_label": "Granted",
@@ -5146,14 +5308,15 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         expect(x_source_option).to_be_hidden()
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "gemini", "grok", "zhihu"]
+        ) == ["chatgpt", "claude", "gemini", "grok", "x", "zhihu"]
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_hidden()
             expect(page.locator('[name="chatgpt_project_url"]')).to_be_disabled()
 
         media_option.click()
-        expect(page).to_have_url(re.compile(rf"/cache/{source_key}/media/edge$"))
+        media_browser = "safari" if source_key == "claude" else "edge"
+        expect(page).to_have_url(re.compile(rf"/cache/{source_key}/media/{media_browser}$"))
         expect(page.locator('[data-cache-content-mode-option="media"]')).to_have_attribute(
             "aria-checked",
             "true",
@@ -5366,8 +5529,8 @@ def _finished_chatgpt_agent_payload() -> dict[str, object]:
         "can_start": True,
         "runtime": {
             "ready": True,
-            "host_operating_system": "macos",
-            "message": "Computer Use is ready on this Mac.",
+            "host_operating_system": detect_host_operating_system(),
+            "message": "Computer Use is ready on this host.",
             "terminal_execution": {
                 "ready": True,
                 "status_label": "Granted",
@@ -11251,7 +11414,7 @@ def test_modal_reuses_the_unmodified_frosted_material(disposable_browser, sideba
         material = page.locator(".workspace-modal-dialog.style-token-modal-demo").evaluate(
             """node => {
                 const probe = document.createElement('div');
-                probe.style.cssText = 'background:var(--frosted-glass-background);backdrop-filter:var(--frosted-glass-blur)';
+                probe.style.cssText = 'background:var(--frosted-glass-notice-background);backdrop-filter:var(--frosted-glass-notice-blur)';
                 node.append(probe);
                 const result = {
                     background: getComputedStyle(node).background,
@@ -11467,6 +11630,168 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
             return input.getBoundingClientRect().bottom <= tags.getBoundingClientRect().top
                 && getComputedStyle(input).fontFamily === getComputedStyle(document.body).fontFamily;
         }""")
+    finally:
+        context.close()
+
+
+@pytest.fixture()
+def long_saved_prompt_server_url(tmp_path: Path) -> Iterator[str]:
+    """Keep wide Markdown and remarks in a disposable saved-prompt store."""
+    from app.core.prompt_store import PromptStore
+    from app.web.app import create_app
+
+    root = tmp_path / "local-store"
+    content = (
+        "Review this long synthetic prompt before sharing. " * 8
+        + "\n\n" + "UnbrokenPromptContent" * 12
+        + "\n\n| Field | Value |\n| --- | --- |\n| Metadata | "
+        + "LongUnbrokenTableValue" * 10
+        + " |\n\n```text\n" + "LongUnbrokenCodeValue" * 12 + "\n```"
+    )
+    write_parquet_rows_atomic(
+        root / "llm/chatgpt/history.parquet",
+        [{
+            "schema_version": 1,
+            "platform": "chatgpt",
+            "conversation_id": "prompt-layout-session",
+            "conversation_url": "https://chatgpt.com/c/prompt-layout-session",
+            "conversation_title": "LongUnbrokenConversationTitle" * 8,
+            "message_key": "prompt-layout-session:0",
+            "turn_index": 0,
+            "message_index": 0,
+            "role": "user",
+            "author_label": "You",
+            "content_text": content,
+            "content_html": "",
+            "content_sha256": "synthetic-prompt-layout",
+            "source_links": [],
+            "model_label": "",
+            "first_seen_at": "2026-09-26T10:00:00Z",
+            "last_seen_at": "2026-09-25T10:00:00Z",
+        }],
+        CHATGPT_HISTORY_SCHEMA,
+    )
+    store = PromptStore(root)
+    prompt, _ = store.add_pointer(
+        source="chatgpt", conversation_id="prompt-layout-session", message_key="prompt-layout-session:0",
+    )
+    store.add_remark(prompt.stable_id, "LongUnbrokenRemark" * 2)
+    application = create_app(
+        root,
+        agent_external_operations_enabled=False,
+        computer_use_settings_path=tmp_path / "settings.json",
+        computer_use_runtime_root=tmp_path / "runtime",
+    )
+    server = make_server("127.0.0.1", 0, application, threaded=True)
+    assert server.server_port != 8666
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "touch"),
+    ((1_006, 791, False), (390, 844, True), (1_006, 500, True)),
+)
+def test_saved_prompt_columns_fit_and_keep_long_content_actions_usable(
+    disposable_browser: Browser,
+    long_saved_prompt_server_url: str,
+    width: int,
+    height: int,
+    touch: bool,
+) -> None:
+    page, context = _open_page(
+        disposable_browser,
+        f"{long_saved_prompt_server_url}/browser?view=prompts&source=chatgpt",
+        width,
+        height,
+        touch=touch,
+        init_script="""
+            Object.defineProperty(navigator, 'clipboard', {
+                configurable: true,
+                value: {writeText: async text => { window.__savedPromptCopiedText = text; }},
+            });
+        """,
+    )
+    try:
+        shell = page.locator(".browser-prompt-table-shell")
+        expect(shell).to_be_visible()
+        page.evaluate("""async () => {
+            await document.fonts.ready;
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }""")
+        geometry = shell.evaluate("""shell => {
+            const header = shell.querySelector('table[data-table-header]');
+            const body = shell.querySelector('table[data-table-body]');
+            const scroll = shell.querySelector('[data-table-scroll]');
+            const content = shell.querySelector('.browser-prompt-table-content');
+            const remark = shell.querySelector('.browser-prompt-tag-label');
+            const rect = node => {
+                const box = node.getBoundingClientRect();
+                return {left: box.left, right: box.right, width: box.width, height: box.height};
+            };
+            return {
+                shell: rect(shell), header: rect(header), body: rect(body),
+                scrollWidth: scroll.clientWidth,
+                headings: [...header.rows[0].cells].map(rect),
+                cells: [...body.rows[0].cells].map(rect),
+                overflow: [shell, header, scroll, body, content,
+                    ...content.querySelectorAll('table, pre'), remark.closest('[data-prompt-tag]')]
+                    .map(node => ({tag: node.tagName, extra: node.scrollWidth - node.clientWidth})),
+                remark: rect(remark.closest('[data-prompt-tag]')),
+                remarkCell: rect(remark.closest('td')),
+                codeHeight: content.querySelector('pre').getBoundingClientRect().height,
+                codeLineHeight: parseFloat(getComputedStyle(content.querySelector('code')).lineHeight),
+                codeText: content.querySelector('code').textContent,
+                documentOverflow: document.documentElement.scrollWidth - innerWidth,
+            };
+        }""")
+        assert abs(geometry["body"]["width"] - geometry["scrollWidth"]) <= 1, geometry
+        assert abs(geometry["header"]["width"] - geometry["body"]["width"]) <= 1, geometry
+        assert geometry["body"]["left"] >= geometry["shell"]["left"] - 1, geometry
+        assert geometry["body"]["right"] <= geometry["shell"]["right"] + 1, geometry
+        for heading, cell in zip(geometry["headings"], geometry["cells"], strict=True):
+            assert abs(heading["left"] - cell["left"]) <= 1, geometry
+            assert abs(heading["width"] - cell["width"]) <= 1, geometry
+        percentages = (8, 52, 15, 25) if width <= 560 else (5, 60, 10, 25)
+        assert sum(percentages) == 100
+        assert all(value >= 5 and (value % 2 == 0 or value % 5 == 0) for value in percentages)
+        for cell, percentage in zip(geometry["cells"], percentages, strict=True):
+            assert abs(cell["width"] - geometry["body"]["width"] * percentage / 100) <= 1, geometry
+        assert all(item["extra"] <= 1 for item in geometry["overflow"]), geometry
+        assert geometry["documentOverflow"] <= 1, geometry
+        assert geometry["codeHeight"] > geometry["codeLineHeight"] * 2, geometry
+        assert geometry["codeText"].rstrip() == "LongUnbrokenCodeValue" * 12
+        assert geometry["remark"]["left"] >= geometry["remarkCell"]["left"] - 1, geometry
+        assert geometry["remark"]["right"] <= geometry["remarkCell"]["right"] + 1, geometry
+
+        copy_button = shell.locator("[data-prompt-copy]")
+        expected_content = copy_button.get_attribute("data-prompt-text")
+        copy_button.focus()
+        expect(copy_button).to_have_css("opacity", "1")
+        copy_button.click()
+        page.wait_for_function(
+            "expected => window.__savedPromptCopiedText === expected", arg=expected_content,
+        )
+        input_field = shell.locator("[data-prompt-remark-input]")
+        assert input_field.evaluate("node => node.getBoundingClientRect().height") == 30
+        expect(input_field).to_have_css("border-radius", "999px")
+        assert page.locator(".browser-search-input").evaluate("node => node.getBoundingClientRect().height") == 30
+        assert page.locator(".browser-search-control").evaluate("node => node.getBoundingClientRect().height") == 32
+        input_field.fill("Layout checked")
+        input_field.press("Enter")
+        added_tag = shell.locator('[data-prompt-tag][data-prompt-remark="Layout checked"]')
+        expect(added_tag).to_be_visible()
+        expect(input_field).to_have_value("")
+        added_tag.locator("[data-prompt-remark-remove]").click()
+        expect(added_tag).to_have_count(0)
+        assert shell.evaluate("element => element.scrollWidth <= element.clientWidth + 1")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
     finally:
         context.close()
 
@@ -11766,8 +12091,8 @@ def test_cached_messages_read_as_conversation_cards(
         card = cards.locator("article.browser-chat-message")
         expect(card).to_have_count(1)
         expect(card.locator(".browser-chat-message-role")).to_have_text("You")
-        expect(card.locator(".browser-chat-message-number")).to_have_text("#1")
-        expect(card.locator(".browser-chat-message-title")).to_have_text("ChatGPT timestamp wrapping")
+        expect(card.locator(".browser-chat-message-number.investment-holdings-allocation-badge")).to_have_text("1")
+        expect(card.locator(".browser-chat-message-title")).to_have_count(0)
         expect(card.locator(".browser-chat-message-content")).to_have_text(
             "A timestamp layout regression fixture."
         )
@@ -12052,5 +12377,52 @@ def test_zhihu_cached_answer_metric_tracks_live_progress_without_overstating_fai
         expect(page.locator("#progress_processed_tweets")).to_have_text("412")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(("width", "height", "touch"), ((914, 791, False), (390, 844, True), (914, 500, True)))
+def test_safari_cache_switches_preserve_current_mode_and_browser(
+    disposable_browser: Browser, sidebar_server_url: str, macos_host,
+    width: int, height: int, touch: bool,
+) -> None:
+    """Exercise the four requested providers after changing mode without reloading."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": height},
+        has_touch=touch,
+        is_mobile=touch,
+        reduced_motion="reduce",
+    )
+    context.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "browser": "safari", "logged_in": True, "can_download": True,
+        "account_name": "Signed in", "message": "Ready.",
+    }))
+    page = context.new_page()
+    try:
+        page.goto(f"{sidebar_server_url}/cache/chatgpt/text/safari", wait_until="domcontentloaded")
+        if width <= 900:
+            page.locator("#sidebar_toggle").click()
+        for mode in ("media", "text"):
+            page.locator(f'[data-cache-content-mode-option="{mode}"]').click()
+            for source in ("x", "grok", "claude", "chatgpt"):
+                page.locator("[data-cache-source-switcher-trigger]").click()
+                expect(page.locator("[data-cache-source-switcher-trigger]")).to_have_attribute("aria-expanded", "true")
+                page.locator(f'[data-cache-source-switcher-option="{source}"]').click()
+                target_url = f"{sidebar_server_url}/cache/{source}/{mode}/safari"
+                # Server-rendered controls can precede their deferred event handlers.
+                page.wait_for_url(target_url, wait_until="domcontentloaded")
+                expect(page).to_have_url(target_url)
+                expect(page.locator(f'[data-cache-content-mode-option="{mode}"]')).to_have_attribute("aria-checked", "true")
+                expect(page.locator(f'input[name="{source}_browser"]')).to_have_value("safari")
+                if source == "x":
+                    if mode == "text":
+                        expect(page.locator("#cached_text_posts")).to_be_visible()
+                        expect(page.locator("#downloaded_images")).to_be_hidden()
+                    else:
+                        expect(page.locator("#cached_text_posts")).to_be_hidden()
+                        expect(page.locator("#downloaded_images")).to_be_visible()
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
     finally:
         context.close()

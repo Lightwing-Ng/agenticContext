@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.26.0-codex.0
+# Code version: v1.27.0-codex.0
 
 from __future__ import annotations
 
@@ -619,6 +619,7 @@ def normalize_browser_filters(
     media_id: str | None = None,
     session_page: object = 1,
     answerer: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Normalize user-controlled browser filters to safe allowlisted values."""
     normalized_source = str(source or "").strip().lower()
@@ -641,6 +642,9 @@ def normalize_browser_filters(
     normalized_answerer = str(answerer or "").replace("\x00", "").strip()[:160]
     if normalized_view != "text" or safe_source != "zhihu":
         normalized_answerer = ""
+    normalized_project = str(project or "").replace("\x00", "").strip()[:512]
+    if normalized_view != "text" or safe_source != "chatgpt":
+        normalized_project = ""
     return {
         "source": safe_source,
         "kind": normalized_kind if normalized_kind in MEDIA_KIND_VALUES else "all",
@@ -657,6 +661,7 @@ def normalize_browser_filters(
         "view": normalized_view,
         "media_id": str(media_id or "").strip()[:96],
         "answerer": normalized_answerer,
+        "project": normalized_project,
     }
 
 

@@ -1,4 +1,4 @@
-/* Code version: v1.35.0-codex.0 */
+/* Code version: v1.36.0-codex.0 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -121,6 +121,7 @@
         targetUrl.search = new URLSearchParams(formData).toString();
         ["page", "media_id", "session", "session_page"].forEach((name) => targetUrl.searchParams.delete(name));
         if (mode !== "media") targetUrl.searchParams.delete("kind");
+        if (mode !== "text") targetUrl.searchParams.delete("project");
         renderOptimisticContentModeNavigation(mode);
         let navigationCommitted = false;
         const commitNavigation = () => {
@@ -161,7 +162,7 @@
                 navigateToContentMode(event.target.value);
                 return;
             }
-            if (event.target.matches("select[name='answerer']")) {
+            if (event.target.matches("select[name='answerer'], select[name='project']")) {
                 for (const name of ["session", "session_page"]) {
                     const field = filterForm.querySelector(`[name="${name}"]`);
                     if (field) field.disabled = true;

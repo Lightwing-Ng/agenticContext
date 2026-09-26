@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.144.3-codex.0
+# Code version: v1.147.5-codex.0
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from app.core.resource_persistence import (
 )
 from app.web.app import create_app
 from app.web.presentation import (
+    cached_message_source_links,
     format_media_size,
     reconcile_cached_snapshot,
     render_agent_response,
@@ -306,7 +307,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual({source.start_button_label for source in CACHE_SOURCE_VIEWS}, {"Start"})
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS if source.show_content_mode},
-            {"chatgpt", "claude", "gemini", "grok", "zhihu"},
+            {"chatgpt", "claude", "gemini", "grok", "x", "zhihu"},
         )
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS if source.browser_panel_label == "Authorized browser"},
@@ -708,7 +709,7 @@ class WebAppTests(unittest.TestCase):
         self.assertGreaterEqual(chatgpt_body.count('href="/cache/chatgpt/text/edge"'), 1)
         self.assertGreaterEqual(chatgpt_body.count('href="/cache/chatgpt/media/edge"'), 1)
         self.assertIn(
-            'chatgpt-page.js?v=chatgpt-page-v1.4.0-codex.1',
+            'chatgpt-page.js?v=chatgpt-page-v1.4.1-codex.0',
             chatgpt_body,
         )
         self.assertIn('data-browser-session-account-label="ChatGPT"', chatgpt_body)
@@ -751,7 +752,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.17.0-codex.0', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.17.2-codex.0', chatgpt_body)
         self.assertIn('numeric-display.js?v=numeric-display-v1.1.0-codex.0', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
@@ -904,19 +905,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = (
-                    "style-v2.156.1-codex.0"
-                    if page_source == "agent"
-                    else (
-                        "style-v2.156.1-codex.0"
-                        if page_source == "local-resources"
-                        else (
-                            "style-v2.156.1-codex.0"
-                            if page_source in {"x", "grok", "chatgpt", "gemini", "claude", "zhihu"}
-                            else "style-v2.156.1-codex.0"
-                        )
-                    )
-                )
+                expected_style_version = "style-v2.156.1-codex.0"
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -1001,7 +990,7 @@ class WebAppTests(unittest.TestCase):
                     "/cache/claude/text/edge",
                     "/cache/gemini/text/edge",
                     "/cache/grok/text/edge",
-                    "/cache/x",
+                    "/cache/x/text/chrome",
                     "/cache/zhihu/text/edge",
                 )
                 for expected_path in expected_paths:
@@ -1020,7 +1009,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Cached media browser", browser_body)
         self.assertIn('data-browser-source-filter', browser_body)
         self.assertEqual(browser_body.count('data-browser-source-filter-option='), 5)
-        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.5.1-codex.1', browser_body)
+        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.6.0-codex.0', browser_body)
         self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"', browser_body)
 
         self.assertIn('class="trade-strategy-dropdown-option browser-source-filter-option', browser_body)
@@ -1113,7 +1102,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
             "gemini": (
@@ -1121,7 +1110,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
             "grok": (
@@ -1129,7 +1118,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
             "claude": (
@@ -1137,7 +1126,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
             "zhihu": (
@@ -1145,7 +1134,7 @@ class WebAppTests(unittest.TestCase):
                 "/cache/claude/text/edge",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
-                "/cache/x",
+                "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ),
         }
@@ -1168,7 +1157,7 @@ class WebAppTests(unittest.TestCase):
                     self.assertIn('data-cache-source-text-available="true"', option)
                 x_option_start = aside.index('data-cache-source-switcher-option="x"')
                 x_option = aside[x_option_start:aside.index("</button>", x_option_start)]
-                self.assertIn('data-cache-source-text-available="false"', x_option)
+                self.assertIn('data-cache-source-text-available="true"', x_option)
                 for expected_path in expected_paths_by_page[page_source]:
                     self.assertIn(
                         f'data-cache-source-switcher-path="{expected_path}"',
@@ -1265,7 +1254,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(correct_unlock.status_code, 303)
         self.assertEqual(correct_unlock.headers["Location"], "/agent/tunnel/chatgpt")
         self.assertIn("HttpOnly", correct_unlock.headers["Set-Cookie"])
-        self.assertIn("SameSite=Lax", correct_unlock.headers["Set-Cookie"])
+        self.assertIn("SameSite=Strict", correct_unlock.headers["Set-Cookie"])
         self.assertEqual(unlocked_lan_page.status_code, 200)
         self.assertEqual(unlocked_lan_status.status_code, 200)
         self.assertEqual(unlocked_settings.status_code, 200)
@@ -3576,6 +3565,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('data-role="browser-session-login"', body)
         self.assertIn('data-role="browser-session-login-message"', body)
+        self.assertIn('data-role="browser-session-recheck"', body)
         for fragment in (
             "payload.logged_in === false",
             'fetch("/api/browser-session/open-login"',
@@ -3589,6 +3579,19 @@ class WebAppTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
+
+    def test_cache_browser_session_offers_recheck_without_a_login_action(self) -> None:
+        app = create_app()
+        with app.test_client() as client:
+            for source in ("chatgpt", "x", "grok", "claude"):
+                for mode in ("text", "media"):
+                    with self.subTest(source=source, mode=mode):
+                        response = client.get(f"/cache/{source}/{mode}/safari")
+                        body = response.get_data(as_text=True)
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn('data-role="browser-session-recheck"', body)
+                        self.assertNotIn('data-role="browser-session-login"', body)
+                        self.assertNotIn('data-role="browser-session-login-message"', body)
 
     def test_agent_conversation_route_opens_the_current_target_in_the_selected_browser(self) -> None:
         app = create_app()
@@ -5351,7 +5354,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="browser_filter_form"', body)
         self.assertIn('form="browser_filter_form"', body)
         self.assertGreater(body.index("data-browser-search"), body.index("</aside>"))
-        self.assertIn("browser-search.css?v=browser-search-v1.4.2-codex.1", body)
+        self.assertIn("browser-search.css?v=browser-search-v1.4.4-codex.0", body)
         self.assertIn('type="module"', body)
         self.assertIn("browser-search.js?v=browser-search-v2.2.1-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
@@ -5401,7 +5404,7 @@ class WebAppTests(unittest.TestCase):
         source_filter_script = BROWSER_SOURCE_FILTER_SCRIPT_PATH.read_text(encoding="utf-8")
         for fragment in (
             "const sourceChanged = value !== input.value;",
-            'for (const name of ["session", "session_page", "answerer"])',
+            'for (const name of ["session", "session_page", "answerer", "project"])',
             "if (field) field.disabled = true;",
         ):
             with self.subTest(source_filter_script_fragment=fragment):
@@ -5608,7 +5611,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("style-v2.156.1-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.35.0-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.36.0-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -6116,6 +6119,146 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(format_media_size(1_805_089), "1.72 MiB")
         self.assertEqual(format_media_size(1_024**3), "1.00 GiB")
 
+    def test_browser_chat_bubbles_keep_message_metadata_and_unique_sources(self) -> None:
+        conversation_url = "https://chatgpt.com/c/bubble-metadata"
+        inline_url = "https://example.com/inline?a=1&b=2"
+        metadata_url = "https://example.com/metadata-only"
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root) / "local_store"
+            rows = []
+            for index, (content_text, content_html, source_links, timestamp) in enumerate(
+                (
+                    (f"Read [the source]({inline_url}).", "", [inline_url], ""),
+                    (
+                        "Rich text with sources",
+                        '<p>Read <a href="https://example.com/inline?a=1&amp;b=2">the source</a>.</p>',
+                        [inline_url, metadata_url],
+                        "2026-09-26T05:00:00Z",
+                    ),
+                )
+            ):
+                rows.append(
+                    {
+                        "schema_version": 1,
+                        "platform": "chatgpt",
+                        "conversation_id": "bubble-metadata",
+                        "conversation_url": conversation_url,
+                        "conversation_title": "Session heading only",
+                        "message_key": f"bubble-metadata:{index}",
+                        "turn_index": index,
+                        "message_index": index,
+                        "role": "user" if index == 0 else "assistant",
+                        "author_label": "You" if index == 0 else "ChatGPT",
+                        "content_text": content_text,
+                        "content_html": content_html,
+                        "content_sha256": f"bubble-hash-{index}",
+                        "source_links": source_links,
+                        "model_label": "",
+                        "first_seen_at": "",
+                        "last_seen_at": timestamp,
+                    }
+                )
+            write_parquet_rows_atomic(
+                root / "llm" / "chatgpt" / "history.parquet",
+                rows,
+                CHATGPT_HISTORY_SCHEMA,
+            )
+            app = create_app(root)
+            session_id = query_chat_history(root, source="chatgpt", session_view=True).sessions[0].stable_id
+            with app.test_client() as client:
+                detail = client.get(
+                    f"/browser?source=chatgpt&view=text&session_view=1&session={session_id}"
+                )
+                combined = client.get("/browser?source=chatgpt&view=text&session_view=0")
+
+        for response in (detail, combined):
+            self.assertEqual(response.status_code, 200)
+            bubbles = re.findall(
+                r'<article\b[^>]*class="browser-chat-message [^"]*"[^>]*>(.*?)</article>',
+                response.get_data(as_text=True),
+                re.DOTALL,
+            )
+            self.assertEqual(len(bubbles), 2)
+            for bubble in bubbles:
+                self.assertNotIn("browser-chat-message-title", bubble)
+                self.assertNotIn("Session heading only", bubble)
+                self.assertNotIn("Unknown time", bubble)
+                self.assertRegex(
+                    bubble,
+                    r'(?s)class="browser-chat-message-meta".*class="browser-chat-message-number '
+                    r'investment-holdings-allocation-badge" aria-label="Message [12]"',
+                )
+                self.assertNotRegex(bubble, r">#[12]</span>")
+                self.assertEqual(bubble.count('href="https://example.com/inline?a=1&amp;b=2"'), 1)
+            self.assertEqual(sum('<time ' in bubble for bubble in bubbles), 1)
+            self.assertEqual(sum('href="https://example.com/metadata-only"' in bubble for bubble in bubbles), 1)
+        detail_bubbles = re.findall(r'<article\b[^>]*>(.*?)</article>', detail.get_data(as_text=True), re.DOTALL)
+        self.assertEqual(sum('class="browser-chat-message-links"' in bubble for bubble in detail_bubbles), 1)
+        self.assertNotIn("Open session</a>", detail.get_data(as_text=True))
+        self.assertEqual(combined.get_data(as_text=True).count("Open session</a>"), 2)
+
+    def test_cached_message_sources_deduplicate_only_displayed_links(self) -> None:
+        inline_url = "https://example.com/source?a=1&b=2"
+        other_url = "https://example.com/other"
+        cases = (
+            (f"[Inline]({inline_url})", "", (other_url,)),
+            (inline_url, "", (inline_url, other_url)),
+            (f"`[Code]({inline_url})`", "", (inline_url, other_url)),
+            (
+                f"[Markdown fallback]({inline_url})",
+                '<p>Rich text without a link</p>',
+                (inline_url, other_url),
+            ),
+            (
+                "Fallback",
+                '<a href="https://example.com/source?a=1&amp;b=2">Inline</a>',
+                (other_url,),
+            ),
+            (
+                "Fallback",
+                '<script><a href="https://example.com/source?a=1&amp;b=2">Hidden</a></script>',
+                (inline_url, other_url),
+            ),
+            (
+                "Fallback",
+                '<a href="https://example.com/source?a=1&amp;b=2"><svg>Icon</svg></a>',
+                (inline_url, other_url),
+            ),
+            (
+                "Fallback",
+                '<a href="https://example.com/source?a=1&amp;b=2"> &nbsp;\n </a>',
+                (inline_url, other_url),
+            ),
+            (
+                f"[![Source image](https://example.com/image.png)]({inline_url})",
+                "",
+                (other_url,),
+            ),
+        )
+        for content_text, content_html, expected in cases:
+            with self.subTest(content_text=content_text, content_html=content_html):
+                self.assertEqual(
+                    cached_message_source_links(
+                        (inline_url, other_url, other_url),
+                        render_cached_message(content_text, content_html),
+                    ),
+                    expected,
+                )
+
+    def test_cached_message_sources_match_rendered_unicode_urls_without_losing_destinations(self) -> None:
+        for source_link in (
+            "https://zh.wikipedia.org/wiki/人工智能",
+            "https://example.com/search?q=人工智能&language=中文#引用",
+            "https://例子.中国/来源",
+        ):
+            with self.subTest(source_link=source_link):
+                distinct_destination = source_link + "-different"
+                rendered = render_cached_message(f"[Source]({source_link})")
+                self.assertEqual(
+                    cached_message_source_links((source_link, distinct_destination), rendered),
+                    (distinct_destination,),
+                )
+
     def test_prompt_markdown_renderer_escapes_embedded_html(self) -> None:
         rendered = str(render_prompt_markdown("**Safe** <script>alert('x')</script> 简体中文"))
 
@@ -6313,7 +6456,7 @@ class WebAppTests(unittest.TestCase):
             'formData.set("source", "chatgpt");',
             'workspace.dataset.browserNavigationSkeleton = "1";',
             'document.documentElement.setAttribute("aria-busy", "true");',
-            'event.target.matches("select[name=\'answerer\']")',
+            'event.target.matches("select[name=\'answerer\'], select[name=\'project\']")',
             'for (const name of ["session", "session_page"])',
             'const fallbackTimer = window.setTimeout(commitNavigation, 120);',
             'window.requestAnimationFrame(() => {',
@@ -6330,6 +6473,16 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(normalize_browser_filters(source="all", view="media")["view"], "media")
         self.assertEqual(normalize_browser_filters(source="all", view="media")["source"], "all")
         self.assertEqual(normalize_browser_filters(source="all", view="prompts")["source"], "all")
+        self.assertEqual(
+            normalize_browser_filters(source="chatgpt", view="text", project="  project-id\x00  ")["project"],
+            "project-id",
+        )
+        for source, view in (("gemini", "text"), ("chatgpt", "media"), ("chatgpt", "prompts")):
+            with self.subTest(source=source, view=view):
+                self.assertEqual(
+                    normalize_browser_filters(source=source, view=view, project="project-id")["project"],
+                    "",
+                )
         self.assertEqual(
             normalize_browser_filters(
                 source="zhihu",
@@ -6696,7 +6849,7 @@ def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path) -> None
     assert media.status_code == 200
     assert 'data-cache-page-content-mode="media"' in media.get_data(as_text=True)
     assert invalid_mode.status_code == 404
-    assert x_selected.status_code == 404
+    assert x_selected.status_code == 200
     assert zhihu_safari.status_code == 404
 
 
@@ -6787,6 +6940,7 @@ def test_grok_text_status_and_stop_use_the_history_runtime(tmp_path: Path) -> No
 def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> None:
     application = create_app(tmp_path / "local_store")
     services = {
+        "x": "app.core.service.CacheLikesService.start",
         "chatgpt": "app.core.chatgpt_service.ChatGPTDownloadService.start",
         "claude": "app.core.claude_history_service.ClaudeHistoryService.start",
         "gemini": "app.core.gemini_service.GeminiHistoryService.start",
@@ -6802,7 +6956,7 @@ def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> Non
         assert response.status_code == 302
         start.assert_called_once()
         assert getattr(start.call_args.args[0], f"{source}_browser") == "edge"
-        if source == "chatgpt":
+        if source in {"chatgpt", "x"}:
             assert start.call_args.kwargs == {"content_mode": "text"}
         elif source == "claude":
             assert start.call_args.kwargs == {"content_mode": "text"}

@@ -1,4 +1,4 @@
-/* Code version: v1.4.0-codex.1 */
+/* Code version: v1.4.1-codex.0 */
 
 (() => {
     "use strict";
@@ -34,6 +34,24 @@
 
     function selectedBrowser() {
         return String(browserInput?.value || "").trim().toLowerCase();
+    }
+
+    function projectUrlKey(value) {
+        const url = String(value || "").trim();
+        try {
+            const parsed = new URL(url);
+            const projectPath = parsed.pathname.match(/^\/g\/(g-p-[^/]+?)(?:\/project)?\/?$/i);
+            if (parsed.protocol === "https:"
+                && ["chatgpt.com", "www.chatgpt.com"].includes(parsed.hostname)
+                && !parsed.port && !parsed.username && !parsed.password && projectPath) {
+                // Match the Agent catalog's stable identity across renamed project slugs.
+                const projectId = projectPath[1].match(/^g-p-[0-9a-f]{32}(?=-|$)/i)?.[0];
+                return `https://chatgpt.com/g/${(projectId || projectPath[1]).toLowerCase()}`;
+            }
+        } catch (_error) {
+            // Unrecognized locations keep their exact saved identity.
+        }
+        return url;
     }
 
     function projectOptionButton(url, name, selected = false, project = {}) {
@@ -127,18 +145,20 @@
     function renderProjectOptions(projects, errorMessage = "") {
         if (!projectMenu || !(projectUrlInput instanceof HTMLInputElement)) return;
         const selectedUrl = String(projectUrlInput.value || "").trim();
+        const selectedKey = projectUrlKey(selectedUrl);
         const savedName = String(projectNameInput?.value || "").trim();
         const options = [projectOptionButton("", "All generated media", !selectedUrl)];
         let selectedOption = selectedUrl ? null : options[0];
-        const seenUrls = new Set([""]);
+        const seenProjects = new Set([""]);
 
         (Array.isArray(projects) ? projects : []).forEach((project) => {
             const url = String(project?.url || "").trim();
+            const key = projectUrlKey(url);
             const name = String(project?.title || "").trim() || "Untitled project";
-            if (!url || seenUrls.has(url)) return;
-            seenUrls.add(url);
-            const option = projectOptionButton(url, name, url === selectedUrl, project);
-            if (url === selectedUrl) selectedOption = option;
+            if (!url || seenProjects.has(key)) return;
+            seenProjects.add(key);
+            const option = projectOptionButton(url, name, key === selectedKey, project);
+            if (key === selectedKey) selectedOption = option;
             options.push(option);
         });
 

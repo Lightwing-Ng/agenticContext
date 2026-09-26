@@ -1,6 +1,6 @@
 """Download media from tweet URLs with yt-dlp."""
 
-# Code version: v1.10.0-codex.0
+# Code version: v1.11.0-codex.0
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,18 @@ from .cache_catalog import LocalTweetCacheIndex
 from .config import CrawlConfig, is_windows_host
 from .local_media_browser import BrowserDeletionCatalog
 from .state import TaskState
+from .x_photo_downloader import (
+    PLAN_FILENAME,
+    XMediaPost,
+    XPhotoDownloadInterrupted,
+    download_x_photos,
+    photo_plan_fingerprint,
+    photo_plan_is_complete,
+    read_photo_plan,
+    safe_photo_directory,
+    validate_media_post,
+    write_photo_plan,
+)
 
 
 MEDIA_MARKER_PREFIX = "__CACHELIKES_MEDIA__:"
@@ -446,7 +459,221 @@ def run_yt_dlp_with_retries(
     return last_result
 
 
+class _PendingXCacheIndex:
+    """Persist completed video bindings while the plan marker keeps the post pending."""
+
+    def __init__(self, cache: LocalTweetCacheIndex, tweet_url: str) -> None:
+        self.cache = cache
+        self.completed_successfully = False
+        self.budget_stopped = False
+        self.archive_path: Path | None = None
+        self.existing_paths: set[Path] = set()
+        self.archive_video_paths: set[Path] = set()
+        root = cache.output_dir.resolve(strict=False)
+        for directory in cache.lookup_directories(tweet_url):
+            if (
+                directory.is_symlink()
+                or not directory.is_dir()
+                or not directory.resolve().is_relative_to(root)
+                or any(parent.is_symlink() for parent in directory.parents)
+            ):
+                continue
+            for path in directory.iterdir():
+                if path.is_symlink() or not path.is_file() or path.stat().st_size <= 0:
+                    continue
+                if path.suffix.lower() in IMAGE_SUFFIXES | VIDEO_SUFFIXES:
+                    self.existing_paths.add(path.resolve())
+                # The fixed output template binds both names to the extractor media ID.
+                if path.suffix.lower() in VIDEO_SUFFIXES and path.stem == directory.name and path.stem.isdigit():
+                    self.archive_video_paths.add(path)
+
+    def prepare_archive(self, directory: Path) -> None:
+        """Exclude only completed, bound media before yt-dlp counts its download budget."""
+        entries = sorted({f"twitter {path.stem}" for path in self.archive_video_paths})
+        if len(entries) > 256:
+            raise RuntimeError("X video retry archive exceeds the per-post bound.")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, prefix=".x-video-archive-", delete=False) as stream:
+            self.archive_path = Path(stream.name)
+            stream.write("".join(f"{entry}\n" for entry in entries))
+
+    def close(self) -> None:
+        if self.archive_path is not None:
+            self.archive_path.unlink(missing_ok=True)
+
+    def claim(self, _tweet_url: str) -> bool:
+        return True
+
+    def release_claim(self, _tweet_url: str) -> None:
+        return None
+
+    def contains_complete_cache(self, tweet_url: str) -> bool:
+        return self.cache.contains_complete_cache(tweet_url)
+
+    def register(self, tweet_url: str, tweet_dir: Path | None = None, metadata: dict | None = None) -> None:
+        if tweet_dir is not None:
+            root = self.cache.output_dir.resolve(strict=False)
+            if (
+                tweet_dir.is_symlink()
+                or not tweet_dir.is_dir()
+                or not tweet_dir.resolve().is_relative_to(root)
+                or any(parent.is_symlink() for parent in tweet_dir.parents)
+            ):
+                raise RuntimeError("Unsafe X video cache directory.")
+        self.cache.register(tweet_url, tweet_dir, metadata)
+
+
+def _cached_video_directories(cache: LocalTweetCacheIndex, tweet_url: str, max_bytes: int) -> set[Path]:
+    """Find finished video files for this status, including an interrupted prior run."""
+    root = cache.output_dir.resolve(strict=False)
+    status_id = tweet_url.rsplit("/", 1)[1]
+    candidates = cache.lookup_directories(tweet_url)
+    candidates.update(
+        uploader / status_id
+        for uploader in root.iterdir()
+        if uploader.is_dir() and not uploader.is_symlink()
+    )
+    found: set[Path] = set()
+    for directory in candidates:
+        if directory.is_symlink() or not directory.is_dir() or not directory.resolve().is_relative_to(root):
+            continue
+        if any(parent.is_symlink() for parent in directory.parents):
+            continue
+        if any(
+            path.suffix.lower() in VIDEO_SUFFIXES
+            and not path.is_symlink()
+            and path.is_file()
+            and 0 < path.stat().st_size <= max_bytes
+            for path in directory.iterdir()
+        ):
+            found.add(directory)
+    return found
+
+
 def download_tweet_media(
+    tweet_url: str,
+    output_dir: Path,
+    config: CrawlConfig,
+    state: TaskState,
+    remaining_media_items: int | None = None,
+    cache_index: LocalTweetCacheIndex | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    timeout_seconds: float = YT_DLP_TWEET_TIMEOUT_SECONDS,
+    *,
+    media_post: XMediaPost | None = None,
+) -> DownloadResult:
+    """Download a bound photo plan and retain the existing yt-dlp video path."""
+    plan = validate_media_post(media_post, tweet_url) if media_post is not None else None
+    if plan is None or (not plan.photo_urls and not plan.has_video):
+        return _download_tweet_media_legacy(
+            tweet_url, output_dir, config, state, remaining_media_items,
+            cache_index, should_stop, timeout_seconds,
+        )
+    if BrowserDeletionCatalog(output_dir.parent).is_excluded("x", tweet_url):
+        state.append_event(f"Skipped removed X resource {tweet_url}")
+        return DownloadResult(skipped=True)
+    directory = safe_photo_directory(plan, output_dir)
+    local_cache = cache_index or LocalTweetCacheIndex.build(output_dir)
+    if not local_cache.claim(tweet_url, allow_cached=True):
+        return DownloadResult(skipped=True)
+    try:
+        if should_stop is not None and should_stop():
+            return DownloadResult(stopped=True)
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        fingerprint = photo_plan_fingerprint(plan, config.max_media_file_size_bytes)
+        previously_complete = photo_plan_is_complete(directory, fingerprint)
+        previous_plan = read_photo_plan(directory)
+        videos = _cached_video_directories(local_cache, tweet_url, config.max_media_file_size_bytes) if plan.has_video else set()
+        video_complete = bool(videos) and (
+            not (directory / PLAN_FILENAME).exists()
+            or (
+                previous_plan.get("video_complete") is True
+                and previous_plan.get("max_bytes") == config.max_media_file_size_bytes
+            )
+        )
+        write_photo_plan(
+            directory, fingerprint, complete=False, video_complete=video_complete,
+            max_bytes=config.max_media_file_size_bytes,
+        )
+        try:
+            photos = download_x_photos(
+                plan, output_dir, config.max_media_file_size_bytes, should_stop, deadline,
+                max_new_items=remaining_media_items,
+            )
+        except XPhotoDownloadInterrupted as exc:
+            return DownloadResult(
+                downloaded_media_count=exc.result.downloaded_count,
+                downloaded_post_count=int(bool(exc.result.downloaded_count)),
+                downloaded_image_count=exc.result.downloaded_count,
+                skipped_oversized_media_count=exc.result.skipped_size,
+                stopped=exc.reason == "stopped",
+                timed_out=exc.reason == "timed_out",
+            )
+        result = DownloadResult(
+            downloaded_media_count=photos.downloaded_count,
+            downloaded_image_count=photos.downloaded_count,
+            downloaded_post_count=int(bool(photos.downloaded_count)),
+            skipped_oversized_media_count=photos.skipped_size,
+        )
+        photos_complete = len(photos.paths) + photos.skipped_size == len(plan.photo_urls)
+        if not photos_complete:
+            result.skipped = not bool(result.downloaded_media_count)
+            return result
+        pending = _PendingXCacheIndex(local_cache, tweet_url)
+        if plan.has_video and not video_complete:
+            remaining = None if remaining_media_items is None else remaining_media_items - photos.downloaded_count
+            if remaining is not None and remaining <= 0:
+                result.skipped = not bool(result.downloaded_media_count)
+                return result
+            try:
+                pending.prepare_archive(directory)
+                video_result = _download_tweet_media_legacy(
+                    tweet_url, output_dir, config, state, remaining, pending,
+                    should_stop, max(0.0, deadline - time.monotonic()),
+                )
+            finally:
+                pending.close()
+            video_result.skipped_oversized_media_count += sum(
+                path.stat().st_size > config.max_media_file_size_bytes
+                for path in pending.archive_video_paths
+            )
+            result.downloaded_media_count += video_result.downloaded_media_count
+            result.downloaded_image_count += video_result.downloaded_image_count
+            result.downloaded_video_count += video_result.downloaded_video_count
+            result.downloaded_post_count = int(bool(result.downloaded_media_count))
+            result.skipped_oversized_media_count += video_result.skipped_oversized_media_count
+            result.stopped = video_result.stopped
+            result.timed_out = video_result.timed_out
+            if result.stopped or result.timed_out:
+                return result
+            videos = _cached_video_directories(local_cache, tweet_url, config.max_media_file_size_bytes)
+            if pending.budget_stopped and videos and video_result.downloaded_video_count:
+                return result
+            if not pending.completed_successfully or (not videos and not video_result.skipped_oversized_media_count):
+                raise RuntimeError("X media download did not complete the observed video.")
+            video_complete = True
+        for video_dir in videos:
+            if video_dir not in local_cache.lookup_directories(tweet_url):
+                local_cache.register(tweet_url, video_dir, {"_type": "video", "display_id": tweet_url.rsplit("/", 1)[1]})
+        if photos.paths:
+            local_cache.register(tweet_url, directory, {
+                "_type": "image", "display_id": tweet_url.rsplit("/", 1)[1],
+                "uploader_id": tweet_url.split("/")[3], "webpage_url": tweet_url,
+            })
+        write_photo_plan(
+            directory, fingerprint, complete=True, video_complete=video_complete,
+            max_bytes=config.max_media_file_size_bytes,
+        )
+        result.skipped = not bool(result.downloaded_media_count)
+        if result.downloaded_media_count:
+            state.append_event(f"Downloaded media for {tweet_url}")
+        elif previously_complete:
+            state.append_event(f"Skipped cached X media for {tweet_url}")
+        return result
+    finally:
+        local_cache.release_claim(tweet_url)
+
+
+def _download_tweet_media_legacy(
     tweet_url: str,
     output_dir: Path,
     config: CrawlConfig,
@@ -502,6 +729,8 @@ def download_tweet_media(
         ]
         if remaining_media_items is not None:
             command.extend(["--max-downloads", str(max(1, remaining_media_items))])
+        if isinstance(local_cache, _PendingXCacheIndex) and local_cache.archive_path is not None:
+            command.extend(["--download-archive", str(local_cache.archive_path)])
         command.append(tweet_url)
 
         logger.info(
@@ -526,6 +755,7 @@ def download_tweet_media(
                 path
                 for path in parse_downloaded_paths(exc.stdout)
                 if path.is_file() and path.resolve(strict=False).is_relative_to(output_root)
+                and (not isinstance(local_cache, _PendingXCacheIndex) or path.resolve() not in local_cache.existing_paths)
             ]
             oversized_paths = [
                 path for path in completed_paths
@@ -556,12 +786,42 @@ def download_tweet_media(
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         combined = "\n".join(part for part in (stdout.strip(), stderr.strip()) if part).strip()
+        if isinstance(local_cache, _PendingXCacheIndex):
+            local_cache.completed_successfully = result.returncode == 0
+            local_cache.budget_stopped = (
+                result.returncode == 101
+                and remaining_media_items is not None
+                and "maximum number of downloads reached" in combined.lower()
+                and "--max-downloads" in combined.lower()
+            )
         downloaded_paths = parse_downloaded_paths(stdout)
+        if isinstance(local_cache, _PendingXCacheIndex):
+            downloaded_paths = [
+                path for path in downloaded_paths
+                if path.resolve(strict=False) not in local_cache.existing_paths
+            ]
         metadata_rows = parse_download_metadata(stdout)
         downloaded_paths, oversized_paths = discard_oversized_downloads(
             downloaded_paths,
             config.max_media_file_size_bytes,
         )
+        if result.returncode != 0 and isinstance(local_cache, _PendingXCacheIndex):
+            for completed_path in downloaded_paths:
+                if completed_path.is_file() and not completed_path.is_symlink() and completed_path.stat().st_size > 0:
+                    local_cache.register(
+                        tweet_url,
+                        completed_path.parent,
+                        metadata_for_downloaded_path(completed_path, metadata_rows),
+                    )
+            if local_cache.budget_stopped and downloaded_paths:
+                image_count, video_count = count_downloaded_media_types(downloaded_paths)
+                return DownloadResult(
+                    downloaded_media_count=len(downloaded_paths),
+                    downloaded_post_count=1,
+                    downloaded_image_count=image_count,
+                    downloaded_video_count=video_count,
+                    skipped_oversized_media_count=len(oversized_paths),
+                )
         if oversized_paths:
             state.append_event(
                 f"Skipped {len(oversized_paths):,} X media file(s) above the {config.max_media_file_size_mib:,} MiB cache limit."

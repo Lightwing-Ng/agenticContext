@@ -1,6 +1,6 @@
 """Persistent local X cache catalog backed by typed Parquet rows."""
 
-# Code version: v1.5.0-codex.1
+# Code version: v1.6.0-codex.0
 
 from __future__ import annotations
 
@@ -238,11 +238,11 @@ class LocalTweetCacheIndex:
         with self._lock:
             return self._contains_complete_cache_unlocked(tweet_url)
 
-    def claim(self, tweet_url: str) -> bool:
+    def claim(self, tweet_url: str, *, allow_cached: bool = False) -> bool:
         """Claim one tweet URL for active processing inside the current process."""
         claim_keys = self._claim_keys(tweet_url)
         with self._lock:
-            if self._contains_complete_cache_unlocked(tweet_url):
+            if not allow_cached and self._contains_complete_cache_unlocked(tweet_url):
                 return False
             if any(key in self._inflight_keys for key in claim_keys):
                 return False
@@ -263,7 +263,16 @@ class LocalTweetCacheIndex:
     def summarize(self) -> tuple[int, int, int]:
         """Return cached posts, images, and videos for the indexed output directory."""
         with self._lock:
-            downloaded_posts = len(self.media_counts_by_directory)
+            status_by_directory = {
+                directory: status_id
+                for status_id, directories in self.directories_by_status_id.items()
+                for directory in directories
+            }
+            downloaded_posts = len({
+                ("status", status_by_directory[directory])
+                if directory in status_by_directory else ("directory", str(directory))
+                for directory in self.media_counts_by_directory
+            })
             downloaded_images = sum(image_count for image_count, _video_count in self.media_counts_by_directory.values())
             downloaded_videos = sum(video_count for _image_count, video_count in self.media_counts_by_directory.values())
             return downloaded_posts, downloaded_images, downloaded_videos
@@ -426,6 +435,22 @@ class LocalTweetCacheIndex:
         return directories
 
     def _contains_complete_cache_unlocked(self, tweet_url: str) -> bool:
+        status_id = extract_status_id(tweet_url)
+        if status_id:
+            photo_root = self.output_dir / "photos"
+            photo_dir = photo_root / status_id
+            marker = photo_dir / ".x-media-plan.json"
+            if photo_root.is_symlink() or photo_dir.is_symlink() or marker.is_symlink():
+                return False
+            if marker.exists():
+                try:
+                    if not marker.is_file() or marker.stat().st_size > 4096:
+                        return False
+                    plan = json.loads(marker.read_text(encoding="utf-8"))
+                    if not isinstance(plan, dict) or plan.get("complete") is not True:
+                        return False
+                except (OSError, ValueError):
+                    return False
         return any(tweet_dir_has_cached_media(tweet_dir) for tweet_dir in self._lookup_directories_unlocked(tweet_url))
 
     def _claim_keys(self, tweet_url: str) -> tuple[str, ...]:

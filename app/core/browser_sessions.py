@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.27.14-codex.0
+# Code version: v1.27.15-codex.0
 
 from __future__ import annotations
 
@@ -799,20 +799,31 @@ def _probe_chatgpt_session(
     project_url = CHATGPT_HOME_URL
 
     if descriptor.engine == "safari":
+        def safari_challenge_status(page: Any) -> dict[str, Any] | None:
+            status = _security_verification_status_if_present(page, descriptor.label, "ChatGPT")
+            if status is not None:
+                status = {
+                    **status,
+                    "message": (
+                        "ChatGPT reported a verification requirement in Safari. "
+                        "Open your existing ChatGPT tab in Safari, complete any required "
+                        "verification there manually, then choose Recheck. "
+                        "The temporary account-check window has been closed. "
+                        "Do not retry, reload, or click the Cloudflare challenge from this app."
+                    ),
+                }
+            return status
+
         with SafariContext(project_url, lock_blocking=False) as context:
             page = context.primary_page
-            challenge = _security_verification_status_if_present(
-                page, descriptor.label, "ChatGPT"
-            )
+            challenge = safari_challenge_status(page)
             if challenge is not None:
                 return challenge
             current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
             if current_url != project_url.rstrip("/"):
                 page.goto(project_url, wait_until="domcontentloaded", timeout=60_000)
                 page.wait_for_load_state("domcontentloaded", 60_000)
-                challenge = _security_verification_status_if_present(
-                    page, descriptor.label, "ChatGPT"
-                )
+                challenge = safari_challenge_status(page)
                 if challenge is not None:
                     return challenge
             response = context.request.get(

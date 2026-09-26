@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.48.2-codex.0`
+Documentation version: `v1.49.0-codex.0`
 
 ## Runtime flow
 
@@ -101,6 +101,13 @@ subset of the façades; the regression no longer freezes one module's exact faç
   ordinary Zhihu Cache worker.
 - `app/core/scraper.py` and `app/core/browser_sessions.py`: X timeline discovery and browser
   session probing for Chrome, Edge, and Safari.
+- `app/core/macos_applescript.py`: one lazy, process-local AppleScript worker shared by Safari
+  reads and media transfers. Its AppKit activation policy prohibits Dock presentation and
+  activation. Anonymous pipes carry serialized, identified requests and bounded responses;
+  the transport deadline covers writes and reads. Timeout or malformed output kills and reaps
+  only this worker without replaying the request. The Safari layer retains its existing
+  transient-error retry policy and disables retries for native input. Application exit closes
+  the worker; browser-window ownership stays in `safari_automation.py`.
 - `app/core/downloader.py`, `app/core/grok_downloader.py`, and
   `app/core/chatgpt_downloader.py`: source-specific cache acquisition, recovery state, and
   content validation.
@@ -117,7 +124,11 @@ subset of the façades; the regression no longer freezes one module's exact faç
   Projects, and Project sessions. Its cache key isolates provider, browser, source kind, and
   Project URL, while atomic replacement preserves the other providers' entries.
 - `app/core/agent_access_security.py`: the Agent password resolver, constant-time password
-  comparison, and loopback/private-network request boundary.
+  comparison, and loopback/private-network request boundary. Environment credentials override
+  the validated private `network-access.json` beside local settings; `config.py` uses that same
+  explicit file for the persisted LAN bind. It never enters `CrawlConfig` or settings API payloads.
+  The Web gate uses an independent `agentic_context_session` cookie with `HttpOnly` and
+  `SameSite=Strict`, and clears previous session content after successful authentication.
 - `app/core/computer_use_agent.py`: the Agent run loop - selected ChatGPT, Gemini, Grok, or Claude
   Web session targets, runtime-discovered ChatGPT effort selection, confirmed interrupted-session
   continuation, and mandatory bodycheck ordering. It composes the slices below and keeps thin

@@ -1,4 +1,4 @@
-/* Code version: v1.4.2-codex.1 */
+/* Code version: v1.4.4-codex.0 */
 
 .browser-heading-copy {
     display: flex;
@@ -85,17 +85,22 @@
 
 .browser-search-icon {
     position: absolute;
-    top: 50%;
-    left: 13px;
+    top: 0;
+    left: 0;
     z-index: 1;
     display: block;
-    width: 16px;
-    height: 16px;
+    width: auto;
+    height: 100%;
+    aspect-ratio: 1;
     background-color: var(--theme-muted);
     mask: url("/static/images/magnifyingglass.svg") center/contain no-repeat;
     -webkit-mask: url("/static/images/magnifyingglass.svg") center/contain no-repeat;
+    /* Align the native SVG lens center with the pill's semicircular end cap. */
+    mask-size: 16px;
+    -webkit-mask-size: 16px;
+    mask-position: calc(50% + 1.615px) calc(50% + 1.574px);
+    -webkit-mask-position: calc(50% + 1.615px) calc(50% + 1.574px);
     pointer-events: none;
-    transform: translateY(-50%);
 }
 
 .browser-search-input {
@@ -103,7 +108,8 @@
     box-sizing: border-box;
     width: 100%;
     min-width: 0;
-    min-height: 32px;
+    min-height: 30px;
+    height: 30px;
     padding-block: 2px;
     padding-inline: 42px 14px;
     border: 0;

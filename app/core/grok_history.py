@@ -1,6 +1,6 @@
 """Grok text history collection and local persistence.
 
-Code version: v1.5.1-codex.0
+Code version: v1.5.2-codex.0
 """
 
 from __future__ import annotations
@@ -409,7 +409,7 @@ def list_grok_conversations(page: Any) -> list[GrokConversation]:
         )
         items = payload.get("conversations")
         if not isinstance(items, list):
-            break
+            raise RuntimeError("Grok returned an invalid conversation list; cached history was preserved.")
         for raw_item in items:
             if not isinstance(raw_item, dict):
                 continue
@@ -432,7 +432,13 @@ def _response_nodes(page: Any, conversation_id: str) -> list[dict[str, Any]]:
         f"/rest/app-chat/conversations/{conversation_id}/response-node",
     )
     nodes = payload.get("responseNodes")
-    return [item for item in nodes if isinstance(item, dict)] if isinstance(nodes, list) else []
+    if not isinstance(nodes, list) or any(
+        not isinstance(item, dict)
+        or not str(item.get("responseId") or item.get("id") or "").strip()
+        for item in nodes
+    ):
+        raise RuntimeError("Grok returned invalid response nodes; cached history was preserved.")
+    return nodes
 
 
 def _load_responses(
@@ -452,13 +458,17 @@ def _load_responses(
         )
         items = payload.get("responses")
         if not isinstance(items, list):
-            continue
+            raise RuntimeError("Grok returned an invalid response batch; cached history was preserved.")
+        loaded_ids: set[str] = set()
         for item in items:
             if not isinstance(item, dict):
                 continue
             response_id = str(item.get("responseId") or item.get("id") or "").strip()
             if response_id:
                 responses[response_id] = item
+                loaded_ids.add(response_id)
+        if set(batch) - loaded_ids:
+            raise RuntimeError("Grok returned an incomplete response batch; cached history was preserved.")
     return responses
 
 
@@ -556,6 +566,8 @@ class GrokHistoryStore:
             self._rows,
             conversation_id,
         )
+        if previous and not messages:
+            raise RuntimeError("Grok returned no text for a cached session; cached history was preserved.")
         added_or_changed = 0
         unchanged = 0
         for message in messages:
@@ -737,7 +749,7 @@ def sync_grok_history(
             f"{store.cached_messages:,} messages remain cached."
         )
     else:
-        phase = "completed"
+        phase = "failed" if failed_sessions else "completed"
         message = (
             f"Finished Grok history sync. Inspected {processed_sessions:,} sessions, "
             f"found {discovered_messages:,} messages, added or changed {added_or_changed:,}, "

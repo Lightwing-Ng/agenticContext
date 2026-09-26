@@ -1,4 +1,4 @@
-{# Code version: v1.2.0-codex.0 #}
+{# Code version: v1.2.1-codex.0 #}
 {% extends "_cache_page.html" %}
 {% from "_cache_page_components.html" import render_metric, render_progress_metric %}
 
@@ -12,7 +12,7 @@
 {{ render_metric("Sessions discovered", "discovered_tweets", snapshot.discovered_tweets, "claude_media_sessions", content_mode="media") }}
 {{ render_metric("Images discovered", "discovered_images", snapshot.discovered_images, "claude_media_discovered", content_mode="media") }}
 {{ render_metric("Images cached", "downloaded_images", snapshot.downloaded_images, "claude_media_cached", content_mode="media") }}
-{{ render_metric("Known images skipped", "skipped_tweets", snapshot.skipped_tweets, "claude_media_skipped", content_mode="media") }}
+{{ render_metric("Images skipped", "skipped_tweets", snapshot.skipped_tweets, "claude_media_skipped", content_mode="media") }}
 {{ render_metric("Image or session failures", "failed_tweets", snapshot.failed_tweets, "claude_media_failures", content_mode="media") }}
 {% endblock %}
 
