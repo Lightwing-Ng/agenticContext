@@ -1,6 +1,6 @@
 """tunnel-client supervision tests with a local fake client.
 
-Code version: v1.5.1-codex.0
+Code version: v1.5.2-codex.0
 """
 
 from __future__ import annotations
@@ -159,6 +159,49 @@ def test_failed_reconnect_start_revokes_old_generation_and_retains_error(
     assert runtime.authorization_matches("Bearer old-test-token") is False
     assert runtime._set_state_for_generation(3, "ready", "Stale ready") is False
     assert runtime.snapshot()["state"] == "error"
+
+
+def test_authorization_guard_finishes_admission_before_disconnect_snapshots_calls(
+    tmp_path: Path,
+) -> None:
+    active_calls = []
+    snapshot_authorization = []
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    runtime._enabled = True
+    runtime._authorization = "Bearer admitted-test-token"
+    runtime._process = _FakeRunningProcess()
+
+    def activity_provider():
+        snapshot_authorization.append(runtime.authorization_matches("Bearer admitted-test-token"))
+        return {"active_calls": list(active_calls)}
+
+    runtime._activity_provider = activity_provider
+    disconnect_started = threading.Event()
+    disconnect_finished = threading.Event()
+
+    def disconnect() -> None:
+        disconnect_started.set()
+        runtime.disconnect()
+        disconnect_finished.set()
+
+    worker = threading.Thread(target=disconnect)
+    with runtime.authorization_guard("Bearer admitted-test-token") as authorized:
+        assert authorized
+        worker.start()
+        assert disconnect_started.wait(5)
+        assert not disconnect_finished.wait(0.05)
+        active_calls.append({"call_id": 17, "tool": "write_file", "started_at": 1.0})
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert disconnect_finished.is_set()
+    assert snapshot_authorization == [False]
+    assert runtime._uncertain_calls[0]["call_id"] == 17
+    with runtime.authorization_guard("Bearer admitted-test-token") as authorized:
+        assert not authorized
 
 
 def test_failed_reconnect_cannot_revoke_a_newer_successful_start(

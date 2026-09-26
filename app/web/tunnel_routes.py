@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.10.6-codex.0
+# Code version: v1.10.7-codex.0
 
 from __future__ import annotations
 
@@ -932,30 +932,45 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         """Serve MCP tool calls forwarded by the local tunnel-client only."""
         if not is_loopback_address(request.remote_addr):
             abort(403)
-        if not context.tunnel_runtime.authorization_matches(request.headers.get("Authorization")):
+        authorization = request.headers.get("Authorization")
+
+        @contextmanager
+        def admit_authorization() -> Iterator[None]:
+            with context.tunnel_runtime.authorization_guard(authorization) as authorized:
+                if not authorized:
+                    raise McpAdmissionRevoked("ChatGPT Tunnel authorization changed.")
+                yield
+
+        try:
+            with admit_authorization():
+                pass
+            try:
+                _read_bounded_request_body(MAX_MCP_BODY_BYTES)
+            except RequestEntityTooLarge:
+                with admit_authorization():
+                    return jsonify(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": None,
+                            "error": {"code": -32600, "message": "Request is too large."},
+                        }
+                    ), 413
+            body = request.get_json(silent=True, force=True)
+            if body is None:
+                with admit_authorization():
+                    return jsonify(
+                        {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error."}}
+                    ), 400
+            status, payload = context.tunnel_mcp_service.handle(
+                body,
+                request.headers,
+                provider="chatgpt",
+                admission=admit_authorization,
+            )
+        except McpAdmissionRevoked:
             return jsonify(
                 {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Unauthorized."}}
             ), 401
-        try:
-            _read_bounded_request_body(MAX_MCP_BODY_BYTES)
-        except RequestEntityTooLarge:
-            return jsonify(
-                {
-                    "jsonrpc": "2.0",
-                    "id": None,
-                    "error": {"code": -32600, "message": "Request is too large."},
-                }
-            ), 413
-        body = request.get_json(silent=True, force=True)
-        if body is None:
-            return jsonify(
-                {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error."}}
-            ), 400
-        status, payload = context.tunnel_mcp_service.handle(
-            body,
-            request.headers,
-            provider="chatgpt",
-        )
         if payload is None:
             return Response(status=status)
         return jsonify(payload), status

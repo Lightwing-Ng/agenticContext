@@ -1,4 +1,4 @@
-"""Compact chat padding and unclipped external shadows. Code version: v1.0.0-codex.0."""
+"""Compact chat padding and contained external shadows. Code version: v1.0.1-codex.0."""
 
 from io import BytesIO
 import math
@@ -72,7 +72,7 @@ def _chat_geometry(page: Page) -> dict:
                 };
             }),
             ruler: pane.querySelector('.browser-chat-ruler') ? rectangle(pane.querySelector('.browser-chat-ruler')) : null,
-            metricsBottom: metrics.getBoundingClientRect().bottom,
+            metrics: rectangle(metrics), metricsBottom: metrics.getBoundingClientRect().bottom,
             scrollTop: list.scrollTop, scrollHeight: list.scrollHeight, clientHeight: list.clientHeight,
             documentOverflow: document.documentElement.scrollWidth - innerWidth,
         };
@@ -139,6 +139,22 @@ def _assert_shadow_pixels_outside_scrollport(page: Page, geometry: dict) -> None
     assert changed_pixels >= 24, {"crop": crop, "changedPixels": changed_pixels, "geometry": geometry}
 
 
+def _assert_metrics_unaffected_by_chat_effects(page: Page, geometry: dict) -> None:
+    """Scrolling message shadows must not paint over the transparent summary metrics."""
+    metrics = geometry["metrics"]
+    clip = {"x": metrics["left"], "y": metrics["top"],
+            "width": metrics["width"], "height": metrics["height"]}
+    layer = page.locator(".browser-chat-effects")
+    painted = Image.open(BytesIO(page.screenshot(clip=clip, animations="disabled"))).convert("RGB")
+    layer.evaluate("node => { node.style.visibility = 'hidden'; }")
+    try:
+        hidden = Image.open(BytesIO(page.screenshot(clip=clip, animations="disabled"))).convert("RGB")
+    finally:
+        layer.evaluate("node => { node.style.removeProperty('visibility'); }")
+    difference = ImageChops.difference(painted, hidden)
+    assert difference.getbbox() is None, {"clip": clip, "changedBounds": difference.getbbox(), "geometry": geometry}
+
+
 @pytest.mark.parametrize(
     ("width", "height", "touch"),
     ((1_006, 791, False), (390, 844, True), (1_006, 500, False)),
@@ -172,15 +188,19 @@ def test_chat_effects_keep_eight_pixel_padding_and_paint_outside_scrollport(
             geometry = _chat_geometry(page)
             _assert_compact_geometry(geometry, has_ruler=True)
             _assert_shadow_pixels_outside_scrollport(page, geometry)
+            _assert_metrics_unaffected_by_chat_effects(page, geometry)
         page.set_viewport_size({"width": 430 if touch else 720, "height": 700 if touch else 560})
         _wait_for_effect_sync(page)
         resized = _chat_geometry(page)
         _assert_compact_geometry(resized, has_ruler=True)
         _assert_shadow_pixels_outside_scrollport(page, resized)
+        _assert_metrics_unaffected_by_chat_effects(page, resized)
         page.locator("#global_theme_toggle").click()
         expect(page.locator("html")).to_have_attribute("data-theme-override", "dark")
         _wait_for_effect_sync(page)
-        _assert_compact_geometry(_chat_geometry(page), has_ruler=True)
+        dark = _chat_geometry(page)
+        _assert_compact_geometry(dark, has_ruler=True)
+        _assert_metrics_unaffected_by_chat_effects(page, dark)
         if not touch and height == 791:
             page.goto(f"{seeded_ruler_browser_server_url}/browser?view=text&source=chatgpt&session_view=0")
             expect(page.locator(".browser-chat-ruler")).to_have_count(0)

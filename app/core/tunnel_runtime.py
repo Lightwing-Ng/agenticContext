@@ -1,6 +1,6 @@
 """Supervise OpenAI's tunnel-client so ChatGPT can reach the local MCP endpoint.
 
-Code version: v1.8.0-codex.0
+Code version: v1.8.1-codex.0
 
 The Tunnel connection has three parts:
 
@@ -34,7 +34,8 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -665,10 +666,17 @@ class TunnelRuntime:
 
     def authorization_matches(self, header_value: str | None) -> bool:
         """Return whether a request carries this start's bearer token."""
-        expected = self._authorization
-        return bool(expected) and secrets.compare_digest(
-            str(header_value or "").encode(), expected.encode()
-        )
+        with self._lock:
+            expected = self._authorization
+            return bool(expected) and secrets.compare_digest(
+                str(header_value or "").encode(), expected.encode()
+            )
+
+    @contextmanager
+    def authorization_guard(self, header_value: str | None) -> Iterator[bool]:
+        """Keep bearer validation atomic with admission, never workspace execution."""
+        with self._lock:
+            yield self.authorization_matches(header_value)
 
     def snapshot(self) -> dict[str, Any]:
         """Return a UI-safe status record; it never includes secrets."""
@@ -1014,7 +1022,13 @@ class TunnelRuntime:
         *,
         reason_code: str,
     ) -> int:
-        """Remember calls whose response delivery may have been cut by a restart."""
+        """Close admission before observing calls whose delivery may be interrupted."""
+        with self._lock:
+            if not self._current(generation):
+                return 0
+            # Admission uses the same lock while assigning a call id. Revoke first
+            # so no new call can slip in after the active-call snapshot below.
+            self._authorization = ""
         try:
             activity = self._activity_provider()
         except Exception:

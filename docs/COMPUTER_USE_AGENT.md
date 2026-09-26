@@ -1,6 +1,6 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.77.2-codex.0`
+Documentation version: `v3.77.3-codex.0`
 
 ## Purpose
 
@@ -775,6 +775,13 @@ worker snapshot does not own that selected history.
    exclusions include `coverage/`, `htmlcov/`, `playwright-report/`, and `test-results/`. A nested
    source or fixture with one of the root-only verification names remains readable, searchable,
    and fingerprinted.
+  The exact reference-material directories `forPrompts/` and `docs/forPrompts/` are also
+  excluded from content fingerprints only when Git confirms that the directory is ignored and
+  contains no tracked files. This avoids downloading cloud placeholders unrelated to the code
+  check. Linked directories remain refused, and missing Git, failed queries, or tracked content
+  retain the ordinary scan. The exclusion is revalidated before a fingerprint is accepted.
+  Other Git-ignored files and nested same-named directories remain covered; this exception changes
+  neither file access nor the checks for concurrent source changes.
   It re-stats every observed entry before accepting the result. A directory whose metadata changed
   is accepted only when a fresh scan, using the same exclusions, proves that its included immediate
   child inventory is unchanged; ignored Finder or runtime churn therefore cannot hide a source

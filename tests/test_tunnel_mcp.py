@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.11.0-codex.0
+Code version: v2.11.1-codex.0
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import pytest
 from app.core import tunnel_mcp as tunnel_mcp_module
 from app.core.agent.capability_registry import capability_for_action
 from app.core.computer_use_agent import ComputerUseSettings
+from app.core.tunnel_credentials import TunnelCredentials, save_tunnel_credentials
 from app.core.tunnel_mcp import (
     MAX_MCP_BATCH_ITEMS,
     MCP_STATELESS_PROTOCOL_VERSION,
@@ -41,6 +42,7 @@ from app.core.tunnel_projects import (
     parse_project_registry,
 )
 from app.web.tunnel_routes import MAX_MCP_BODY_BYTES
+from app.web import tunnel_routes
 from app.web.app import create_app
 
 EXPECTED_TOOLS = [
@@ -3051,6 +3053,182 @@ def test_mcp_route_requires_the_tunnel_bearer_token(mcp_client) -> None:
     )
     assert notification.status_code == 202
     assert mcp_client.get("/mcp").status_code == 405
+
+
+def _chatgpt_write_request(registry: ProjectRegistry, request_id: int) -> dict:
+    project = registry.resolve("main", "")
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "tools/call",
+        "params": {
+            "name": "write_file",
+            "arguments": {
+                "project": "main",
+                "project_identity": project.identity,
+                "path": f"admission-{request_id}.txt",
+                "content": "Admitted write.\n",
+                "request_id": f"admission-request-{request_id}",
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize("revocation", ["disconnect", "restart", "clear_credentials"])
+@pytest.mark.parametrize("pause_at", ["body", "tool_admission"])
+def test_chatgpt_revocation_rejects_write_before_admission(
+    mcp_client,
+    registry: ProjectRegistry,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    revocation: str,
+    pause_at: str,
+) -> None:
+    application = mcp_client.application
+    service = application.extensions["tunnel_mcp_service"]
+    service._registry = registry
+    runtime = application.extensions["tunnel_runtime"]
+    runtime._enabled = True
+    monkeypatch.setattr(runtime, "_supervise", lambda _generation: None)
+    save_tunnel_credentials(
+        TunnelCredentials("tunnel_" + "a" * 32, "sk-test-admission-key"),
+        application.extensions["tunnel_credentials_path"],
+    )
+
+    def revoke() -> None:
+        if revocation == "clear_credentials":
+            with application.test_client() as local_client:
+                response = local_client.post(
+                    "/api/agent/tunnel/credentials", json={"tunnel_id": ""}
+                )
+                assert response.status_code == 200
+        else:
+            getattr(runtime, revocation)()
+
+    if pause_at == "body":
+        read_body = tunnel_routes._read_bounded_request_body
+
+        def revoke_then_read(max_bytes):
+            revoke()
+            return read_body(max_bytes)
+
+        monkeypatch.setattr(tunnel_routes, "_read_bounded_request_body", revoke_then_read)
+    else:
+        dispatch = service._dispatch
+
+        def revoke_then_dispatch(*args, **kwargs):
+            revoke()
+            return dispatch(*args, **kwargs)
+
+        monkeypatch.setattr(service, "_dispatch", revoke_then_dispatch)
+
+    response = mcp_client.post(
+        "/mcp",
+        json=_chatgpt_write_request(registry, 1),
+        headers={"Authorization": "Bearer test-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["error"]["code"] == -32001
+    assert not (workspace / "admission-1.txt").exists()
+    activity = service.activity_snapshot("chatgpt")
+    assert activity["call_count"] == 0
+    assert activity["active_calls"] == []
+    assert activity["recent_calls"] == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+        b'{"jsonrpc":"2.0","method":"notifications/initialized"}',
+        b"{",
+        b"x" * (MAX_MCP_BODY_BYTES + 1),
+        b"[]",
+        b"[" + b",".join([b"{}"] * (MAX_MCP_BATCH_ITEMS + 1)) + b"]",
+    ],
+    ids=["metadata", "notification", "malformed-json", "oversized-body", "empty-batch", "oversized-batch"],
+)
+def test_chatgpt_revocation_rejects_metadata_and_early_responses(
+    mcp_client,
+    monkeypatch: pytest.MonkeyPatch,
+    body: bytes,
+) -> None:
+    runtime = mcp_client.application.extensions["tunnel_runtime"]
+    read_body = tunnel_routes._read_bounded_request_body
+
+    def revoke_then_read(max_bytes):
+        runtime.disconnect()
+        return read_body(max_bytes)
+
+    monkeypatch.setattr(tunnel_routes, "_read_bounded_request_body", revoke_then_read)
+    response = mcp_client.post(
+        "/mcp",
+        data=body,
+        content_type="application/json",
+        headers={"Authorization": "Bearer test-token"},
+    )
+    assert response.status_code == 401
+    assert response.get_json()["error"]["code"] == -32001
+
+
+def test_chatgpt_batch_disconnect_preserves_admitted_write_and_refuses_later_items(
+    mcp_client,
+    registry: ProjectRegistry,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = mcp_client.application
+    service = application.extensions["tunnel_mcp_service"]
+    service._registry = registry
+    runtime = application.extensions["tunnel_runtime"]
+    runtime._enabled = True
+    runtime._process = object()
+    monkeypatch.setattr("app.core.tunnel_runtime._terminate", lambda _process: None)
+    run_tool = service._run_tool
+    disconnected = threading.Event()
+
+    def disconnect() -> None:
+        runtime.disconnect()
+        disconnected.set()
+
+    worker = threading.Thread(target=disconnect)
+
+    def disconnect_after_admission(tool, arguments):
+        worker.start()
+        # Workspace execution must not retain the admission lock or this blocks.
+        assert disconnected.wait(5)
+        return run_tool(tool, arguments)
+
+    monkeypatch.setattr(service, "_run_tool", disconnect_after_admission)
+    try:
+        response = mcp_client.post(
+            "/mcp",
+            json=[
+                _chatgpt_write_request(registry, 1),
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                _chatgpt_write_request(registry, 2),
+                {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+                42,
+            ],
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        worker.join(5)
+    assert not worker.is_alive()
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert [item["id"] for item in payload] == [1, 2, 3, None]
+    assert payload[0]["result"]["structuredContent"]["ok"] is True
+    assert [item["error"]["code"] for item in payload[1:]] == [-32001, -32001, -32600]
+    assert (workspace / "admission-1.txt").read_text() == "Admitted write.\n"
+    assert not (workspace / "admission-2.txt").exists()
+    activity = service.activity_snapshot("chatgpt")
+    assert activity["call_count"] == 1
+    assert activity["active_calls"] == []
+    assert len(runtime._uncertain_calls) == 1
+    assert runtime._uncertain_calls[0]["tool"] == "write_file"
+    assert runtime._uncertain_calls[0]["reason_code"] == "manual_disconnect"
 
 
 def test_chatgpt_mcp_route_rejects_oversized_body_before_json_parsing(mcp_client) -> None:

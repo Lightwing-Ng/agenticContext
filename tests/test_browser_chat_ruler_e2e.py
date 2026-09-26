@@ -1,4 +1,4 @@
-"""Isolated message ruler behavior and geometry. Code version: v1.1.0-codex.0."""
+"""Isolated message ruler behavior and geometry. Code version: v1.1.1-codex.0."""
 
 from collections.abc import Iterator
 from pathlib import Path
@@ -104,23 +104,43 @@ def _assert_message_badges(page: Page) -> None:
         assert "investment-holdings-allocation-badge" in badge.get_attribute("class")
         geometry = badge.evaluate("""badge => {
             const header = badge.closest('.browser-chat-message-header');
+            const article = badge.closest('.browser-chat-message');
             const box = badge.getBoundingClientRect();
             const headerBox = header.getBoundingClientRect();
             const style = getComputedStyle(badge);
+            const cardStyle = getComputedStyle(article);
             const time = header.querySelector('.browser-session-message-time');
             const timeBox = time?.getBoundingClientRect();
+            const actionsBox = header.querySelector('.browser-session-message-actions')?.getBoundingClientRect();
+            const mutedProbe = document.createElement('span');
+            mutedProbe.style.color = 'var(--theme-muted)';
+            badge.append(mutedProbe);
+            const mutedColor = getComputedStyle(mutedProbe).color;
+            mutedProbe.remove();
             return {rightGap: headerBox.right - box.right, topGap: box.top - headerBox.top,
-                background: style.backgroundColor, color: style.color,
+                background: style.backgroundColor, color: style.color, mutedColor,
+                padding: [cardStyle.paddingTop, cardStyle.paddingRight,
+                    cardStyle.paddingBottom, cardStyle.paddingLeft],
                 radius: parseFloat(style.borderTopRightRadius), height: box.height,
+                timeRightGap: timeBox ? box.right - timeBox.right : null,
+                timeBelowGap: timeBox ? timeBox.top - Math.max(box.bottom, actionsBox?.bottom || box.bottom) : null,
+                actionsGap: actionsBox ? box.left - actionsBox.right : null,
                 timeOverlaps: timeBox && Math.min(box.right, timeBox.right) > Math.max(box.left, timeBox.left)
                     && Math.min(box.bottom, timeBox.bottom) > Math.max(box.top, timeBox.top)};
         }""")
         assert abs(geometry["rightGap"]) <= 1, geometry
         assert abs(geometry["topGap"]) <= 4, geometry
         assert not geometry["timeOverlaps"], geometry
+        assert geometry["padding"] == ["8px", "12px", "8px", "12px"], geometry
+        assert geometry["color"] == geometry["mutedColor"], geometry
         assert geometry["background"] != "rgba(0, 0, 0, 0)", geometry
         assert geometry["background"] != geometry["color"], geometry
         assert geometry["radius"] < geometry["height"] / 2, geometry
+        if geometry["timeRightGap"] is not None:
+            assert abs(geometry["timeRightGap"]) <= 1, geometry
+            assert geometry["timeBelowGap"] == pytest.approx(4, abs=1), geometry
+        if geometry["actionsGap"] is not None:
+            assert geometry["actionsGap"] >= 7, geometry
 
 
 def _scroll_positions(page: Page) -> dict:
@@ -308,7 +328,7 @@ def test_message_ruler_dense_magnification_preserves_hit_targets_and_layout(
         resting = _ruler_geometry(page)
         assert [tick["width"] for tick in resting["ticks"]] == [22, 12, 18, 12, 18, 12, 18]
         for index in range(1, 7):
-            assert resting["markers"][index]["y"] - resting["markers"][index - 1]["y"] == 12
+            assert resting["markers"][index]["y"] - resting["markers"][index - 1]["y"] == 8
         assert all(tick["scale"] == 1 for tick in resting["ticks"]), resting
         before_scroll = _scroll_positions(page)
         center = resting["markers"][3]

@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.26.2-codex.0`
+Documentation version: `v1.26.3-codex.0`
 
 ## Supported commands
 
@@ -161,6 +161,16 @@ terminate a real owned process through WMI and a process handle; they run only o
 quality gate. The credential-error browser test proves at desktop, narrow, and short viewports that
 a refused save is announced in the Tunnel status line without horizontal overflow, and that the
 next edit retracts it while rejected field values remain field markers only.
+
+Workspace fingerprint regressions cover the exact `forPrompts/` and `docs/forPrompts/` reference
+directories: only ignored, wholly untracked, non-linked directories may be excluded. Tracked
+content, ordinary ignored fixtures, non-Git workspaces, failed Git queries, and a tracking change
+during the scan retain coverage or refuse an incomplete snapshot. The excluded materials are
+never opened, so cloud hydration cannot block a code check.
+
+The Tunnel tests also revoke ChatGPT bearer authority between HTTP authentication and tool
+admission, including later calls in a batch, while preserving already admitted work and its
+uncertain-outcome reporting.
 
 The Tunnel tests pin the exact fourteen-tool public catalog, closed-schema enforcement,
 discovery/dispatcher agreement, rejection of removed compatibility names, direct invocation

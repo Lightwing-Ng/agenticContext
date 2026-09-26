@@ -1,4 +1,4 @@
-/* Code version: v2.156.1-codex.0 */
+/* Code version: v2.156.2-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -7771,7 +7771,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     z-index: 0;
     contain: layout;
     overflow: visible;
-    clip-path: inset(calc(-1 * var(--layout-physical-effect-bleed)));
+    /* Keep scrolling shadows below the summary while preserving side and bottom effects. */
+    clip-path: inset(0 calc(-1 * var(--layout-physical-effect-bleed)) calc(-1 * var(--layout-physical-effect-bleed)));
     pointer-events: none;
 }
 
@@ -7862,7 +7863,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 @media (hover: hover) and (pointer: fine) {
     .browser-chat-marker {
-        flex-basis: 12px;
+        flex-basis: 8px;
     }
 }
 
@@ -9375,7 +9376,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     display: grid;
     gap: 12px;
     min-width: 0;
-    padding: 14px 16px;
+    padding: 8px 12px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
     background: var(--workspace-article-background);
@@ -9517,7 +9518,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     box-sizing: border-box;
     display: inline-flex;
     flex: 0 0 auto;
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 1;
     align-self: start;
     align-items: flex-end;
@@ -9525,8 +9526,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     inline-size: fit-content;
     padding: 2px 6px;
     border-radius: 2px;
-    background: var(--accent-text);
-    color: var(--theme-background);
+    background: color-mix(in srgb, var(--theme-muted) 16%, var(--theme-background));
+    color: var(--theme-muted);
     font-size: var(--font-ui-xs);
     font-variant-numeric: tabular-nums;
     line-height: 1.3;
@@ -9548,15 +9549,19 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-chat-message-header .browser-session-message-time {
     display: inline-flex;
-    grid-column: 1;
-    grid-row: 1;
+    grid-column: 1 / -1;
+    grid-row: 2;
     flex: 0 0 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    justify-self: end;
     gap: 6px;
     color: var(--theme-muted);
     font-size: var(--font-ui-xs);
     font-variant-numeric: tabular-nums;
     line-height: 1.35;
-    white-space: nowrap;
+    text-align: right;
+    white-space: normal;
 }
 
 .browser-chat-message--user {
@@ -9565,29 +9570,20 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-chat-message-meta {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     flex: 0 0 auto;
     align-items: center;
     justify-content: flex-end;
     justify-self: end;
-    gap: 8px;
+    gap: 4px 8px;
     min-width: 0;
 }
 
 .browser-chat-message-meta > .browser-session-message-actions {
-    grid-column: 2;
+    grid-column: 1;
     grid-row: 1;
+    justify-self: end;
     min-height: 0;
-}
-
-@media (max-width: 600px) {
-    .browser-chat-message-header .browser-session-message-time {
-        grid-column: 1 / -1;
-        grid-row: 2;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-        white-space: normal;
-    }
 }
 
 .browser-chat-message-meta .browser-prompt-add-button {

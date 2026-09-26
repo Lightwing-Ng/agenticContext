@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.38.0-codex.0`
+Documentation version: `v1.38.1-codex.0`
 
 ## Launch
 
@@ -431,6 +431,11 @@ Runtime behavior:
 - `/mcp` accepts only loopback callers that present the current bearer token. `GET /mcp` returns
   405 (no SSE stream). An `OAuth discovery failed` warning in the client log is expected: the app
   uses No auth, so no OAuth metadata is published and readiness does not depend on it.
+  Bearer authority is rechecked atomically when each tool call enters the service, including
+  each item in a JSON-RPC batch. Disconnecting, restarting, or clearing credentials refuses
+  requests that passed the HTTP entry check but have not entered tool execution. Already admitted
+  operations retain the existing uncertain-outcome handling and must be reconciled by reading
+  their results rather than blindly replayed.
 - Both authenticated MCP ingress routes cap JSON request bodies at 2 MiB. JSON-RPC batches are
   rejected before dispatch when they contain more than eight items, so an oversized batch cannot
   partially execute. Each accepted request therefore has a bounded parse cost, dispatch count, and

@@ -1,6 +1,6 @@
 """Workspace evidence: bounded Git status and mutation fingerprints."""
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.0.1-codex.0
 
 from __future__ import annotations
 
@@ -50,6 +50,78 @@ WORKSPACE_FINGERPRINT_MAX_BYTES = 512 * 1_024 * 1_024
 
 
 WORKSPACE_FINGERPRINT_TIMEOUT_SECONDS = 15
+
+
+_REFERENCE_ARTIFACT_DIRECTORIES = (Path("forPrompts"), Path("docs/forPrompts"))
+
+
+def _ignored_reference_artifact_directories(
+    workspace: Path,
+    *,
+    deadline: float,
+    should_stop: Callable[[], bool],
+) -> frozenset[Path]:
+    """Exclude only ignored, wholly untracked reference directories at known locations.
+
+    Git ignore rules alone never define the source fingerprint. These two explicit
+    reference-material locations may contain cloud placeholders; all other ignored
+    source and fixture paths retain the ordinary content checks.
+    """
+    candidates: list[Path] = []
+    for relative in _REFERENCE_ARTIFACT_DIRECTORIES:
+        current = workspace
+        for part in relative.parts:
+            current /= part
+            if _path_is_link_like(current) or not current.is_dir():
+                break
+        else:
+            candidates.append(relative)
+    if not candidates or not (workspace / ".git").exists():
+        return frozenset()
+    git = _trusted_system_executable("git", forbidden_root=workspace)
+    if git is None:
+        return frozenset()
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"}
+    }
+    excluded: set[Path] = set()
+    for relative in candidates:
+        for arguments in (
+            ["check-ignore", "--quiet", "--", relative.as_posix()],
+            ["ls-files", "--error-unmatch", "--", relative.as_posix()],
+        ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or should_stop():
+                return frozenset()
+            try:
+                result = subprocess.run(
+                    [
+                        str(git),
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-c",
+                        "core.untrackedCache=false",
+                        *arguments,
+                    ],
+                    cwd=workspace,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=remaining,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return frozenset()
+            if result.returncode not in {0, 1}:
+                return frozenset()
+            if arguments[0] == "check-ignore" and result.returncode != 0:
+                break
+            if arguments[0] == "ls-files" and result.returncode == 1:
+                excluded.add(relative)
+    return frozenset(excluded)
 
 
 def _safe_untracked_paths_from_status(status: str) -> list[Path]:
@@ -292,6 +364,11 @@ def _workspace_mutation_fingerprint(
     ] = {}
     deadline = time.monotonic() + max(0.001, float(timeout_seconds))
     stop_requested = should_stop or (lambda: False)
+    ignored_references = _ignored_reference_artifact_directories(
+        workspace,
+        deadline=deadline,
+        should_stop=stop_requested,
+    )
     try:
         resolved_workspace = workspace.resolve(strict=True)
         root_stat = os.stat(workspace, follow_symlinks=False)
@@ -340,6 +417,7 @@ def _workspace_mutation_fingerprint(
                 _path_has_ignored_part(relative)
                 or _path_is_ignored_fingerprint_artifact(relative)
                 or _path_has_controller_internal_file(relative)
+                or relative in ignored_references
             ):
                 continue
             try:
@@ -491,6 +569,7 @@ def _workspace_mutation_fingerprint(
                 _path_has_ignored_part(relative)
                 or _path_is_ignored_fingerprint_artifact(relative)
                 or _path_has_controller_internal_file(relative)
+                or relative in ignored_references
             ):
                 continue
             try:
@@ -508,6 +587,14 @@ def _workspace_mutation_fingerprint(
         if tuple(current_directory_entries) != observed_directory_entries.get(path):
             return digest.hexdigest(), False
 
+    if ignored_references and ignored_references != _ignored_reference_artifact_directories(
+        workspace,
+        deadline=deadline,
+        should_stop=stop_requested,
+    ):
+        return digest.hexdigest(), False
+    if time.monotonic() >= deadline or stop_requested():
+        return digest.hexdigest(), False
     digest.update(
         (
             f"files:{inspected_files}\0directories:{inspected_directories}"

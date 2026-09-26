@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.20.1-codex.0`
+Documentation version: `v1.20.2-codex.0`
 
 ## Authority
 
@@ -236,11 +236,18 @@ the scrollport; the magnified ruler therefore cannot cover message text. Combine
 message lists omit that rail. This is a product adapter, not a change to the shared
 48px physical-effect token.
 
+Message cards use 8px block and 12px inline padding at every breakpoint. Ordinal
+badges use the existing muted theme token and a 16% muted background. Known
+timestamps sit below the ordinal, right-aligned with a 4px row gap. Fine-pointer
+ruler pitch is 8px; coarse pointers retain the 24px targets.
+
 `browser-chat-effects.js` paints the shared outer card shadows in an inert,
 pointer-transparent sibling layer. Native cards retain their inset highlights,
 while their content remains inside the original scroll owner. The effect layer
-uses layout containment and the shared 48px paint allowance, so tall messages do
-not enlarge the document and shadows can cross the scrollport edge. Full card
+uses layout containment and the shared 48px paint allowance at its sides and
+bottom. Its top clips at the chat pane boundary so scrolling shadows cannot paint
+over the preceding transparent summary metrics. Tall messages do not enlarge
+the document, and shadows can still cross the side and bottom edges. Full card
 rectangles follow scrolling, resizing, content-size changes, and theme updates;
 no message content or interactive control is copied into the effect layer.
 
