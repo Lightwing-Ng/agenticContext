@@ -1,4 +1,4 @@
-/* Code version: v3.69.1-codex.0 */
+/* Code version: v3.69.2-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -1195,6 +1195,9 @@
     }
 
     function tunnelKickoffPrefix(context = tunnelProjectContext) {
+        if (context?.selectedProjectIds?.length > 1) {
+            return `Use @AgenticContext. Multiple Tunnel projects are selected (selection revision ${context.revision}). First call current_project to discover which selected project directories are available and whether each is writable or read-only. Report their project IDs and permissions, then choose the project or projects needed for the task. Do not assume the current project is the only target. If the target is unclear, ask me before making changes. For each target, call project_overview, read its instructions and current changes, and keep its project ID and identity pinned throughout the task without altering unrelated work.`;
+        }
         const project = context?.current;
         if (!project?.id || !project?.identity) return "";
         return `Use @AgenticContext for project ID "${project.id}" (identity "${project.identity}", selection revision ${context.revision}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.`;

@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.7.5-codex.0
+Code version: v1.7.6-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import json
 import os
 import re
 import stat
+from html import unescape
 from pathlib import Path
 from unittest.mock import patch
 
@@ -41,6 +42,57 @@ def agent_client(credentials_path: Path):
     application.config.update(TESTING=True)
     with application.test_client() as client:
         yield client
+
+
+@pytest.mark.parametrize("selected_ids", [("alpha",), ("alpha", "reference")])
+def test_kickoff_server_rendering_matches_selected_project_scope(agent_client, selected_ids):
+    """Initial HTML chooses discovery for multi-selection before JavaScript loads."""
+    current = {
+        "id": "alpha",
+        "identity": "a" * 16,
+        "available": True,
+        "registered": True,
+        "writable": True,
+        "selected": True,
+    }
+    reference = {
+        **current,
+        "id": "reference",
+        "identity": "b" * 16,
+        "writable": False,
+        "selected": "reference" in selected_ids,
+    }
+    status = {
+        "presentation": {"tone": "ready"},
+        "credentials": {"qualified": True},
+        "project_context": {
+            "current": current,
+            "revision": 7,
+            "selected_project_ids": selected_ids,
+            "projects": [current, reference],
+        },
+    }
+    with patch("app.web.agent_routes.tunnel_status_payload", return_value=status):
+        response = agent_client.get("/agent/tunnel/chatgpt")
+    assert response.status_code == 200
+    match = re.search(
+        r'<textarea id="agent_tunnel_kickoff"[^>]*>(.*?)</textarea>',
+        response.get_data(as_text=True),
+        re.DOTALL,
+    )
+    assert match is not None
+    prompt = unescape(match.group(1))
+    assert prompt.endswith("\n\nTask:\n[describe your task].")
+    if len(selected_ids) > 1:
+        assert "Multiple Tunnel projects are selected (selection revision 7)" in prompt
+        assert "First call current_project to discover" in prompt
+        assert "writable or read-only" in prompt
+        assert "For each target, call project_overview" in prompt
+        assert 'Use @AgenticContext for project ID "alpha"' not in prompt
+    else:
+        assert f'project ID "alpha" (identity "{current["identity"]}", selection revision 7)' in prompt
+        assert "First call current_project to confirm this selection" in prompt
+        assert "Multiple Tunnel projects" not in prompt
 
 
 def test_credentials_round_trip_with_owner_only_file(credentials_path: Path) -> None:

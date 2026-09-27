@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.26.3-codex.0`
+Documentation version: `v1.26.4-codex.0`
 
 ## Supported commands
 
@@ -167,6 +167,12 @@ directories: only ignored, wholly untracked, non-linked directories may be exclu
 content, ordinary ignored fixtures, non-Git workspaces, failed Git queries, and a tracking change
 during the scan retain coverage or refuse an incomplete snapshot. The excluded materials are
 never opened, so cloud hydration cannot block a code check.
+
+ChatGPT kickoff browser tests cover single-project identity pinning, multi-project discovery and
+permission reporting, target clarification, per-project overview, and task-body preservation.
+They switch the confirmed selection in both directions, reject an uncommitted change, and verify
+that copying uses the updated prompt at desktop and narrow viewports. Initial server-rendered
+multi-project instructions match the client-generated prefix.
 
 The Tunnel tests also revoke ChatGPT bearer authority between HTTP authentication and tool
 admission, including later calls in a batch, while preserving already admitted work and its

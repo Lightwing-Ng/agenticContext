@@ -1,4 +1,4 @@
-<!-- Code version: v3.80.10-codex.0 -->
+<!-- Code version: v3.80.11-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -482,7 +482,7 @@
                                         <li class="agent-tunnel-numbered-item">
                                             <div class="agent-tunnel-numbered-copy">
                                                 <label id="agent_tunnel_kickoff_title" class="agent-tunnel-kickoff-title" for="agent_tunnel_kickoff" data-agent-tunnel-kickoff-title data-agent-tunnel-kickoff-state="{{ tunnel_kickoff_state }}" aria-live="polite">{{ tunnel_kickoff_title }}</label>
-                                                <textarea id="agent_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-tunnel-kickoff aria-labelledby="agent_tunnel_kickoff_title" rows="1"{% if not tunnel_kickoff_ready %} hidden disabled{% endif %}>Use @AgenticContext for project ID "{{ tunnel_current_project.id if tunnel_current_project else '' }}" (identity "{{ tunnel_current_project.identity if tunnel_current_project else '' }}", selection revision {{ tunnel_project_context.revision | default(0) }}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.
+                                                <textarea id="agent_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-tunnel-kickoff aria-labelledby="agent_tunnel_kickoff_title" rows="1"{% if not tunnel_kickoff_ready %} hidden disabled{% endif %}>{% if tunnel_project_context.selected_project_ids | default([]) | length > 1 %}Use @AgenticContext. Multiple Tunnel projects are selected (selection revision {{ tunnel_project_context.revision | default(0) }}). First call current_project to discover which selected project directories are available and whether each is writable or read-only. Report their project IDs and permissions, then choose the project or projects needed for the task. Do not assume the current project is the only target. If the target is unclear, ask me before making changes. For each target, call project_overview, read its instructions and current changes, and keep its project ID and identity pinned throughout the task without altering unrelated work.{% else %}Use @AgenticContext for project ID "{{ tunnel_current_project.id if tunnel_current_project else '' }}" (identity "{{ tunnel_current_project.identity if tunnel_current_project else '' }}", selection revision {{ tunnel_project_context.revision | default(0) }}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.{% endif %}
 
 Task:
 [describe your task].</textarea>
@@ -775,6 +775,6 @@ Task:
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.69.1-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.69.2-codex.0') }}"></script>
 </body>
 </html>

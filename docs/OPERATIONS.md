@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.38.1-codex.0`
+Documentation version: `v1.38.2-codex.0`
 
 ## Launch
 
@@ -582,8 +582,12 @@ Daily two-page workflow:
    failed. The folder action selects an existing registered root or registers a new writable
    project. Existing registry permissions remain unchanged.
 2. Open ChatGPT, choose `@AgenticContext`, and describe the task normally. Copying the local prompt
-   is optional; when used, it includes the exact project id and preserves the user's task text as
-   the selection changes.
+   is optional. With one selected project, it pins that exact project id and identity. With more
+   than one, it first discovers available selected projects and their permissions through
+   `current_project`, reports the result, then resolves the task's target projects. An unclear
+   target requires clarification before edits. Each target gets its own `project_overview` and
+   pinned id/identity; read-only projects remain references. Confirmed selection changes update
+   the generated instructions while preserving the user's task text.
 3. A task with no supplied id calls `current_project`, pins the returned id/identity, then reads
    `project_overview` and the applicable instructions before any file operation. Every later call
    still sends that explicit id.

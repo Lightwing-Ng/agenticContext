@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.33.10-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.33.11-codex.0."""
 
 import re
 from copy import deepcopy
@@ -516,12 +516,108 @@ def test_tunnel_kickoff_allows_the_first_task_without_prior_plugin_activity(
         context.close()
 
 
+def _assert_multi_project_kickoff(prompt, revision):
+    """Check the copied task's project-discovery and permission contract."""
+    expect(prompt).to_have_value(re.compile(
+        rf"Multiple Tunnel projects are selected \(selection revision {revision}\)"
+    ))
+    prefix = prompt.input_value().split("\n\nTask:\n", 1)[0]
+    assert prefix.startswith("Use @AgenticContext.")
+    assert prefix.index("First call current_project") < prefix.index("then choose")
+    assert "whether each is writable or read-only" in prefix
+    assert "Report their project IDs and permissions" in prefix
+    assert "choose the project or projects needed for the task" in prefix
+    assert "Do not assume the current project is the only target" in prefix
+    assert "If the target is unclear, ask me before making changes" in prefix
+    assert "For each target, call project_overview" in prefix
+    assert "keep its project ID and identity pinned throughout the task" in prefix
+    assert 'Use @AgenticContext for project ID "' not in prefix
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_tunnel_kickoff_discovers_initial_multi_selection_and_copies_task(
+    disposable_browser,
+    sidebar_server_url,
+    width,
+):
+    """Initial multi-selection discovers scope without promoting a read-only project."""
+    context = disposable_browser.new_context(viewport={"width": width, "height": 900})
+    context.add_init_script("""Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {writeText: async (text) => { window.copiedKickoff = text; }}
+    });""")
+    page = context.new_page()
+    status = _tunnel_onboarding_status(activity_observed=False)
+    alpha = _tunnel_project_context("alpha")["current"]
+    beta = _tunnel_project_context("beta")["current"]
+    beta.update({"writable": False, "access": "Read only"})
+    status["project_context"].update({
+        "current": beta,
+        "selected_project_ids": ["alpha", "beta"],
+        "projects": [alpha, beta],
+    })
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=deepcopy(status)),
+    )
+    selection_requests = []
+    page.route(
+        "**/api/agent/tunnel/project?platform=chatgpt",
+        lambda route: (
+            selection_requests.append(route.request.post_data_json),
+            route.fulfill(status=409, json={"error": "No selection changes expected."}),
+        ),
+    )
+    try:
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        if width < 900 and "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute("class"):
+            page.locator("#sidebar_toggle").click()
+        prompt = page.locator("[data-agent-tunnel-kickoff]")
+        _assert_multi_project_kickoff(prompt, 1)
+        assert 'identity "beta' not in prompt.input_value()
+        assert 'project ID "beta"' not in prompt.input_value()
+        assert "All selected projects are writable" not in prompt.input_value()
+        task = "Compare alpha with beta. Preserve beta as a read-only reference.\nKeep this second line."
+        prompt.fill(prompt.input_value().replace("[describe your task].", task))
+        button = page.locator("[data-agent-tunnel-copy-kickoff]")
+        button.focus()
+        button.press("Enter")
+        expect(button).to_have_text("Copied")
+        assert page.evaluate("window.copiedKickoff") == prompt.input_value()
+        assert prompt.input_value().endswith("\n\nTask:\n" + task)
+        assert prompt.evaluate("element => element.clientHeight >= element.scrollHeight")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert selection_requests == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
 def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_body(
     disposable_browser,
     sidebar_server_url,
+    width,
 ):
     """Multiple checked projects persist while the current project follows selection."""
-    context = disposable_browser.new_context(viewport={"width": 876, "height": 1_100})
+    context = disposable_browser.new_context(viewport={"width": width, "height": 1_100})
+    context.add_init_script("""Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {writeText: async (text) => { window.copiedKickoff = text; }}
+    });
+    const nativeFetch = window.fetch.bind(window);
+    window.__releaseFirstProjectSelection = null;
+    window.__heldFirstProjectSelection = false;
+    window.fetch = (input, options = {}) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        if (url.pathname === '/api/agent/tunnel/project' && options.method === 'POST'
+            && !window.__heldFirstProjectSelection) {
+            window.__heldFirstProjectSelection = true;
+            return new Promise(resolve => {
+                window.__releaseFirstProjectSelection = () => resolve(nativeFetch(input, options));
+            });
+        }
+        return nativeFetch(input, options);
+    };""")
     page = context.new_page()
     status = _tunnel_onboarding_status(activity_observed=False)
     alpha = deepcopy(status["project_context"]["current"])
@@ -591,7 +687,8 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
     page.route("**/api/agent/tunnel/project?platform=chatgpt", fulfill_project)
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
-        page.locator("#sidebar_toggle").click()
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
         alpha_checkbox = page.locator('[data-agent-tunnel-project-checkbox="alpha"]')
         beta_checkbox = page.locator('[data-agent-tunnel-project-checkbox="beta"]')
         expect(alpha_checkbox).not_to_be_checked()
@@ -602,17 +699,35 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
         expect(page.locator(".agent-tunnel-project-details")).to_have_count(0)
         expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/beta")
         prompt = page.locator("[data-agent-tunnel-kickoff]")
-        prompt.fill(prompt.input_value().replace("[describe your task].", "Keep this exact body."))
+        expect(prompt).to_have_value(re.compile(r'project ID "beta" \(identity "beta000000000000"'))
+        task = "Keep this exact body.\nPreserve my second line."
+        prompt.fill(prompt.input_value().replace("[describe your task].", task))
+        copy = page.locator("[data-agent-tunnel-copy-kickoff]")
+        copy.focus()
+        copy.press("Enter")
+        expect(copy).to_have_text("Copied")
+        single_prompt = prompt.input_value()
 
         alpha_checkbox.focus()
         alpha_checkbox.press("Space")
+        page.wait_for_function("window.__heldFirstProjectSelection")
+        expect(prompt).to_have_value(single_prompt)
+        expect(copy).to_have_text("Copied")
+        page.evaluate("window.__releaseFirstProjectSelection()")
         expect(alpha_checkbox).to_be_checked()
         expect(beta_checkbox).to_be_checked()
+        _assert_multi_project_kickoff(prompt, 2)
+        assert prompt.input_value().endswith("\n\nTask:\n" + task)
+        expect(copy).to_have_text("Copy this prompt")
         expect(page.locator('[data-agent-tunnel-project-row="alpha"] [data-agent-tunnel-project-access]')).to_have_count(0)
         expect(page.locator('[data-agent-tunnel-project-row="beta"] [data-agent-tunnel-project-access]')).to_have_text("Read only")
         status_notice = page.locator("[data-agent-tunnel-project-status]")
         expect(status_notice).to_be_hidden()
         expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/beta")
+        copy.focus()
+        copy.press("Enter")
+        expect(copy).to_have_text("Copied")
+        assert page.evaluate("window.copiedKickoff") == prompt.input_value()
 
         beta_checkbox.focus()
         beta_checkbox.press("Space")
@@ -620,8 +735,11 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
         expect(page.locator('[data-agent-tunnel-project-row="beta"] [data-agent-tunnel-project-access]')).to_have_count(0)
         expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/alpha")
         expect(prompt).to_have_value(re.compile(r'project ID "alpha"'))
+        expect(prompt).to_have_value(re.compile(r'identity "alpha00000000000"'))
         expect(prompt).to_have_value(re.compile(r"selection revision 3"))
-        expect(prompt).to_have_value(re.compile(r"Keep this exact body\."))
+        assert prompt.input_value().endswith("\n\nTask:\n" + task)
+        expect(copy).to_have_text("Copy this prompt")
+        confirmed_prompt = prompt.input_value()
 
         beta_checkbox.focus()
         beta_checkbox.press("Space")
@@ -630,6 +748,7 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
         expect(page.locator("[data-agent-tunnel-project-status]")).to_contain_text(
             "selection was rejected"
         )
+        expect(prompt).to_have_value(confirmed_prompt)
         assert requests == [
             {
                 "project_id": "beta",
@@ -1141,9 +1260,7 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
         dialog = page.locator("[data-settings-directory-browser]")
         expect(dialog).to_be_hidden()
         expect(project_path).to_have_value(str(alpha_root))
-        expect(page.locator("[data-agent-tunnel-kickoff]")).to_have_value(
-            re.compile(r'project ID "alpha"')
-        )
+        _assert_multi_project_kickoff(page.locator("[data-agent-tunnel-kickoff]"), 3)
         assert requests == [
             {
                 "project_id": "beta",
@@ -1182,9 +1299,7 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
         )
         expect(page.locator('[data-agent-tunnel-project-checkbox="alpha"]')).to_be_checked()
         expect(project_path).to_have_value(str(alpha_root))
-        expect(page.locator("[data-agent-tunnel-kickoff]")).to_have_value(
-            re.compile(r'project ID "alpha"')
-        )
+        _assert_multi_project_kickoff(page.locator("[data-agent-tunnel-kickoff]"), 3)
         assert requests[-1] == {
             "project_id": "beta",
             "selected_project_ids": ["alpha", "beta"],
@@ -6085,9 +6200,7 @@ def test_tunnel_project_checkbox_reconnects_without_manual_action(disposable_bro
             beta.focus()
             beta.press("Space")
             expect(beta).to_be_checked()
-            expect(page.locator("[data-agent-tunnel-kickoff]")).to_have_value(
-                re.compile(r"selection revision 2")
-            )
+            _assert_multi_project_kickoff(page.locator("[data-agent-tunnel-kickoff]"), 2)
             expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Ready")
             assert len(reconnects) == 1
 
