@@ -1,4 +1,4 @@
-/* Code version: v2.156.2-codex.0 */
+/* Code version: v2.156.3-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -323,8 +323,9 @@
     --page-mobile-active-bottom-pad: var(--page-mobile-scroll-bottom-pad-base);
     --sidebar-dock-mobile-bottom-gap: 4px;
     --sidebar-dock-mobile-shadow: 0 -10px 24px var(--theme-glass-border), 0 0 0 1px color-mix(in srgb, var(--theme-glass-highlight) 44%, transparent);
-    --circular-icon-button-size: 30px;
+    --circular-icon-button-size: 32px;
     --circular-icon-button-icon-size: 18px;
+    --circular-icon-button-hit-size: 44px;
     --circular-icon-button-radius: var(--radius-pill);
     --circular-icon-button-material: var(--frosted-glass-background);
     --circular-icon-button-background: var(--circular-icon-button-material);
@@ -6571,7 +6572,6 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 
 @media (max-width: 900px) {
     .page {
-        --circular-icon-button-size: 44px;
         --settings-round-icon-button-size: var(--circular-icon-button-size);
         --workspace-title-rail-control-height: var(--settings-round-icon-button-size);
         --workspace-title-rail-height: calc(var(--workspace-title-rail-pad-block-start) + var(--workspace-title-rail-control-height));
@@ -6775,6 +6775,22 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 
 /* Keep the touch target stationary while the overlay itself transitions. */
 @media (hover: none) and (pointer: coarse) {
+    .page > .sidebar-toggle::before,
+    #global_theme_toggle::before {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: var(--circular-icon-button-hit-size);
+        height: var(--circular-icon-button-hit-size);
+        transform: translate(-50%, -50%);
+    }
+
+    #global_theme_toggle {
+        position: relative;
+        touch-action: manipulation;
+    }
+
     .page > .sidebar-toggle,
     .page > .sidebar-toggle:hover,
     .page > .sidebar-toggle:focus-visible,

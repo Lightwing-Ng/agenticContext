@@ -1,4 +1,14 @@
-/* Code version: v1.6.0-codex.0 */
+/* Code version: v1.6.1-codex.0 */
+/* Tunnel onboarding uses the wrapper for layout without painting another panel. */
+.workspace-article-card.agent-tunnel-onboarding-card {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
 /*
  * Worthward allocation badge adapter.
  * Source: foundation/tokens.css v0.46.0 and views/investment-tables.css v1.1.1.

@@ -1,6 +1,6 @@
 """Responsive sidebar contract tests.
 
-Code version: v1.1.1-codex.1
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -244,10 +244,18 @@ def test_coarse_pointer_sidebar_toggle_keeps_its_hit_target_stationary() -> None
     assert ".page > .sidebar-toggle:hover" in touch_block
     assert ".page > .sidebar-toggle:focus-visible" in touch_block
     assert ".page > .sidebar-toggle:active" in touch_block
-    assert "width: 44px;" in touch_block
-    assert "min-width: 44px;" in touch_block
-    assert "height: 44px;" in touch_block
-    assert "min-height: 44px;" in touch_block
+    assert "width: var(--circular-icon-button-size);" in touch_block
+    assert "min-width: var(--circular-icon-button-size);" in touch_block
+    assert "height: var(--circular-icon-button-size);" in touch_block
+    assert "min-height: var(--circular-icon-button-size);" in touch_block
+    assert "--circular-icon-button-size: 32px;" in stylesheet
+    assert "--circular-icon-button-size: 44px;" not in stylesheet
+    assert "--circular-icon-button-hit-size: 44px;" in stylesheet
+    assert ".page > .sidebar-toggle::before," in touch_block
+    assert "#global_theme_toggle::before" in touch_block
+    assert "width: var(--circular-icon-button-hit-size);" in touch_block
+    assert "height: var(--circular-icon-button-hit-size);" in touch_block
+    assert "transform: translate(-50%, -50%);" in touch_block
     assert "touch-action: manipulation;" in touch_block
     assert "z-index: var(--layer-sidebar-toggle);" in touch_block
     assert "transform: translate3d(var(--sidebar-toggle-x), 0, 0);" in touch_block

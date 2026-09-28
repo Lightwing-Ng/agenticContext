@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.33.11-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.33.12-codex.0."""
 
 import re
 from copy import deepcopy
@@ -1827,6 +1827,25 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         onboarding = page.locator('[data-agent-tunnel-provider-panel="chatgpt"]')
         guides = onboarding.locator("details.ui-collapse[data-agent-tunnel-guide]")
         summaries = guides.locator("summary")
+        outer_surface = onboarding.evaluate(
+            """node => {
+                const style = getComputedStyle(node);
+                return {
+                    background: style.backgroundColor,
+                    borderWidth: style.borderTopWidth,
+                    radius: style.borderRadius,
+                    shadow: style.boxShadow,
+                    backdrop: style.backdropFilter,
+                };
+            }"""
+        )
+        assert outer_surface == {
+            "background": "rgba(0, 0, 0, 0)",
+            "borderWidth": "0px",
+            "radius": "0px",
+            "shadow": "none",
+            "backdrop": "none",
+        }
         process_theme = onboarding.evaluate(
             """node => {
                 const resolveColor = (token) => {

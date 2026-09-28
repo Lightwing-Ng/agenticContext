@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.20.2-codex.0`
+Documentation version: `v1.20.3-codex.0`
 
 ## Authority
 
@@ -326,17 +326,18 @@ that target. Named icon-free form dialogs inherit the same material while
 preserving their product-specific grid, width, scrolling, and security behavior.
 See tests/test_style_alignment_e2e.py for isolated responsive acceptance checks.
 
-Circular actions use `.circular-icon-button` as the reusable primitive. Its 30px
-desktop control, 18px icon, pill radius, `--circular-icon-button-material` Frosted Glass
+Circular actions use `.circular-icon-button` as the reusable primitive. Its 32px
+control at every viewport width, 18px icon, pill radius, `--circular-icon-button-material` Frosted Glass
 surface, border, shadow, and state colors come from `--circular-icon-button-*`; the former
 `--settings-round-icon-button-*` names are compatibility aliases only. Sidebar,
 global, Browser session, and media actions keep their semantic classes as adapters
 and also expose the canonical class in markup.
-The existing `<=900px` responsive adaptation keeps the 44px touch target. Sidebar
-toggle offsets, title rails, global action reserves, and catalog copy rails derive
-from the current size token; the shared 10px edge gap and vertical centerline do not
-change. Coarse pointers consume the same current size instead of enlarging only
-the toggle while leaving the theme button smaller. The 24px dismiss action, 32px
+Sidebar toggle offsets, title rails, global action reserves, and catalog copy rails
+derive from the same 32px size token; the shared 10px edge gap and vertical
+centerline do not change. Isolated sidebar and global theme actions retain a
+transparent 44px coarse-pointer hit region without changing their painted or
+computed 32px box. Adjacent actions do not gain overlapping hit regions. The
+24px dismiss action, 32px
 Process List marker, and 36px topic icon or Agent session rail remain separate sizes.
 The catalog title and copy rail compensate for the existing 8px compact page pad
 at `<=560px` using the global-anchor-minus-page-pad equation. This preserves their
