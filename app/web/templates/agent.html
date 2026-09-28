@@ -1,4 +1,4 @@
-<!-- Code version: v3.80.13-codex.0 -->
+<!-- Code version: v3.85.1-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.156.3-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.6.1-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.8.1-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
@@ -83,7 +83,7 @@
                     {% if connection_mode != 'tunnel' %}hidden{% endif %}
                 >
                     <label class="field">
-                        <span class="field-label">Project folder</span>
+                        <span class="field-label">Add project folder</span>
                         <span class="shadow-backup-destination-control settings-directory-control">
                             <input
                                 class="text-input-control agent-monospace-input path-display-input"
@@ -110,38 +110,24 @@
                             </button>
                         </span>
                     </label>
-                    <fieldset class="agent-tunnel-project-fieldset">
-                        <legend class="field-label">Selected Tunnel projects</legend>
-                        <div class="selection-list agent-tunnel-project-list" data-agent-tunnel-project-list aria-label="Select Tunnel projects">
-                            {% for project in tunnel_project_context.projects | default([]) %}
-                            {% set project_selected = project.selected | default(false) %}
-                            <div class="selection-list-row agent-tunnel-project-option" data-agent-tunnel-project-row="{{ project.id }}">
-                                <label class="selection-list-identity agent-tunnel-project-identity" for="agent_tunnel_project_{{ loop.index }}">
-                                    <input
-                                        id="agent_tunnel_project_{{ loop.index }}"
-                                        class="selection-list-input"
-                                        type="checkbox"
-                                        value="{{ project.id }}"
-                                        data-agent-tunnel-project-checkbox="{{ project.id }}"
-                                        {% if project_selected and not project.writable %}aria-describedby="agent_tunnel_project_access_{{ loop.index }}"{% endif %}
-                                        {% if project_selected %}checked{% endif %}
-                                        {% if not project_selected and (not project.available or not project.registered) %}disabled{% endif %}
-                                    >
-                                    <span class="selection-list-mark" aria-hidden="true"></span>
-                                    <span class="selection-list-name">{{ project.id }}</span>
-                                </label>
-                                <span class="agent-tunnel-project-trailing">
-                                    {% if project_selected and not project.writable %}
-                                    <span class="agent-tunnel-project-access" id="agent_tunnel_project_access_{{ loop.index }}" data-agent-tunnel-project-access>Read only</span>
-                                    {% endif %}
-                                    {% if project.registered %}
-                                    <button class="circular-icon-button agent-tunnel-project-remove" type="button" data-agent-tunnel-project-remove="{{ project.id }}" aria-label="Remove {{ project.id }} from Tunnel projects" title="Remove {{ project.id }} from Tunnel projects"><span class="agent-tunnel-project-remove-icon" aria-hidden="true"></span></button>
-                                    {% endif %}
-                                </span>
-                            </div>
-                            {% endfor %}
+                    {% set registered_tunnel_projects = tunnel_project_context.projects | default([]) | selectattr('registered') | list %}
+                    <div class="selection-list agent-tunnel-project-list" data-agent-tunnel-project-list role="list" aria-label="Registered Tunnel projects"{% if not registered_tunnel_projects %} hidden{% endif %}>
+                        {% for project in registered_tunnel_projects %}
+                        <div class="selection-list-row agent-tunnel-project-option" data-agent-tunnel-project-row="{{ project.id }}" role="listitem">
+                            <label class="selection-list-identity agent-tunnel-project-identity" for="agent_tunnel_project_{{ loop.index }}">
+                                <input id="agent_tunnel_project_{{ loop.index }}" class="selection-list-input" type="checkbox" value="{{ project.id }}" data-agent-tunnel-project-checkbox="{{ project.id }}"{% if project.selected %} checked{% elif not project.available %} disabled{% endif %}{% if project.selected and not project.writable %} aria-describedby="agent_tunnel_project_access_{{ loop.index }}"{% endif %}>
+                                <span class="selection-list-mark" aria-hidden="true"></span>
+                                <span class="selection-list-name agent-tunnel-project-name">{{ project.id }}</span>
+                            </label>
+                            <span class="agent-tunnel-project-trailing">
+                                {% if project.selected and not project.writable %}
+                                <span class="agent-tunnel-project-access" id="agent_tunnel_project_access_{{ loop.index }}" data-agent-tunnel-project-access>Read only</span>
+                                {% endif %}
+                                <button class="circular-icon-button agent-tunnel-project-remove" type="button" data-agent-tunnel-project-remove="{{ project.id }}" aria-label="Remove {{ project.id }} from Tunnel projects" title="Remove {{ project.id }} from Tunnel projects"><span class="agent-tunnel-project-remove-icon" aria-hidden="true"></span></button>
+                            </span>
                         </div>
-                    </fieldset>
+                        {% endfor %}
+                    </div>
                     {% set tunnel_project_problem = tunnel_project_context.problem | default('') %}
                     <p class="agent-tunnel-project-status" data-agent-tunnel-project-status role="status" aria-live="polite"{% if not tunnel_project_problem %} hidden{% endif %}>{{ tunnel_project_problem }}</p>
                 </div>
@@ -228,6 +214,7 @@
                         data-agent-gemini-authorization-url="/api/agent/tunnel/gemini/authorization"
                         data-agent-tunnel-initial-platform="{{ tunnel_status.platform | default('chatgpt') }}"
                         data-agent-tunnel-initial-enabled="{{ 'true' if tunnel_status.enabled else 'false' }}"
+                        data-agent-tunnel-initial-activity-observed="{{ 'true' if tunnel_status.activity_observed else 'false' }}"
                         data-agent-tunnel-presentation='{{ tunnel_view | tojson }}'
                         data-agent-tunnel-credentials='{{ tunnel_credentials | tojson }}'
                         {% if connection_mode != 'tunnel' %}hidden{% endif %}
@@ -245,15 +232,35 @@
                                     </div>
                                     {% set tunnel_problem = (tunnel_view.hint or tunnel_view.message) if tunnel_view.tone == 'error' else '' %}
                                     <p class="browser-session-status-message agent-tunnel-status-message" data-agent-tunnel-problem aria-live="polite"{% if not tunnel_problem %} hidden{% endif %}>{{ tunnel_problem }}</p>
-                                    {% set recent_usage = tunnel_status.recent_usage | default({}) %}
-                                    {% set recent_tokens_available = (recent_usage.complete | default(false)) and (recent_usage.estimated_tokens is integer) and recent_usage.estimated_tokens >= 0 %}
-                                    {% set recent_usage_description = 'Estimated tool-text tokens since tokenizer recovery; earlier calls excluded' if recent_usage.window | default('') == 'since_tokenizer_ready' else 'Estimated recent tool-text tokens' %}
+                                    {% set recent_usage = tunnel_status.cumulative_usage | default(tunnel_status.recent_usage | default({})) %}
+                                    {% set usage_window = recent_usage.window | default('') %}
+                                    {% set cumulative_usage = usage_window in ['saved_lifetime', 'server_lifetime'] %}
+                                    {% set recent_tokens_available = (cumulative_usage or (recent_usage.complete | default(false))) and (recent_usage.estimated_tokens is integer) and recent_usage.estimated_tokens >= 0 %}
+                                    {% set unestimated_calls = recent_usage.unestimated_calls | default(0) if cumulative_usage else 0 %}
+                                    {% set token_lower_bound = recent_tokens_available and unestimated_calls > 0 %}
+                                    {% if usage_window == 'saved_lifetime' %}
+                                        {% set usage_scope = 'since usage tracking began; saved across app server restarts' %}
+                                    {% elif usage_window == 'server_lifetime' %}
+                                        {% set usage_scope = 'since this app server started; resets when the server restarts' %}
+                                    {% elif usage_window == 'since_tokenizer_ready' %}
+                                        {% set usage_scope = 'since tokenizer recovery; earlier calls excluded' %}
+                                    {% else %}
+                                        {% set usage_scope = 'from retained recent calls' %}
+                                    {% endif %}
+                                    {% if recent_tokens_available %}
+                                        {% set usage_description = 'Tokens: ' ~ ('at least ' if token_lower_bound else '') ~ '{:,}'.format(recent_usage.estimated_tokens) ~ ' estimated tool-text tokens ' ~ usage_scope %}
+                                        {% if token_lower_bound %}
+                                            {% set usage_description = usage_description ~ '; ' ~ '{:,}'.format(unestimated_calls) ~ (' call' if unestimated_calls == 1 else ' calls') ~ ' could not be estimated' %}
+                                        {% endif %}
+                                    {% else %}
+                                        {% set usage_description = 'Tokens: unavailable; estimated tool-text tokens ' ~ usage_scope %}
+                                    {% endif %}
                                     <div class="agent-tunnel-usage" data-agent-tunnel-usage aria-label="Tunnel usage">
                                         <dl class="agent-tunnel-usage-list">
                                             <div class="agent-tunnel-usage-row">
                                                 <dt class="agent-tunnel-usage-label">Tokens:</dt>
-                                                <dd class="agent-tunnel-usage-value agent-tunnel-recent-tokens" tabindex="0" aria-label="{{ recent_usage_description }}" title="{{ recent_usage_description }}">
-                                                    <span class="investment-holdings-allocation-badge" data-tunnel-recent-token-badge{% if not recent_tokens_available %} hidden{% endif %}><span class="investment-holdings-allocation-badge-value"><span class="workspace-metric-value-major" data-tunnel-recent-token-digits>{% if recent_tokens_available %}{% for glyph in '{:,}'.format(recent_usage.estimated_tokens) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}{% endif %}</span></span></span>
+                                                <dd class="agent-tunnel-usage-value agent-tunnel-recent-tokens" tabindex="0" aria-label="{{ usage_description }}" title="{{ usage_description }}">
+                                                    <span class="investment-holdings-allocation-badge" data-tunnel-recent-token-badge{% if not recent_tokens_available %} hidden{% endif %}><span class="investment-holdings-allocation-badge-value"><span class="investment-holdings-allocation-badge-glyph" data-tunnel-token-lower-bound{% if not token_lower_bound %} hidden{% endif %}>≥</span><span class="workspace-metric-value-major" data-tunnel-recent-token-digits>{% if recent_tokens_available %}{% for glyph in '{:,}'.format(recent_usage.estimated_tokens) %}<span class="investment-holdings-allocation-badge-glyph">{{ glyph }}</span>{% endfor %}{% endif %}</span></span></span>
                                                     <span data-tunnel-recent-token-unavailable{% if recent_tokens_available %} hidden{% endif %}>Unavailable</span>
                                                 </dd>
                                             </div>
@@ -471,18 +478,28 @@
                                     {% set tunnel_kickoff_title = 'Wait for the Tunnel to be ready' %}
                                     {% set tunnel_kickoff_state = 'tunnel' %}
                                 {% elif not tunnel_project_ready %}
-                                    {% set tunnel_kickoff_title = 'Choose an available Tunnel project' %}
+                                    {% set tunnel_kickoff_title = 'Describe your task for' if registered_tunnel_projects else 'Add a Tunnel project folder' %}
                                     {% set tunnel_kickoff_state = 'project' %}
                                 {% else %}
-                                    {% set tunnel_kickoff_title = 'Describe your project task' %}
+                                    {% set tunnel_kickoff_title = 'Describe your task for' %}
                                     {% set tunnel_kickoff_state = 'ready' %}
                                 {% endif %}
                                 <div class="agent-tunnel-action-package agent-tunnel-kickoff-package">
                                     <ul class="agent-tunnel-numbered-list agent-tunnel-bullet-list agent-tunnel-kickoff-sequence" aria-label="Run a project task">
                                         <li class="agent-tunnel-numbered-item">
                                             <div class="agent-tunnel-numbered-copy">
-                                                <label id="agent_tunnel_kickoff_title" class="agent-tunnel-kickoff-title" for="agent_tunnel_kickoff" data-agent-tunnel-kickoff-title data-agent-tunnel-kickoff-state="{{ tunnel_kickoff_state }}" aria-live="polite">{{ tunnel_kickoff_title }}</label>
-                                                <textarea id="agent_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-tunnel-kickoff aria-labelledby="agent_tunnel_kickoff_title" rows="1"{% if not tunnel_kickoff_ready %} hidden disabled{% endif %}>{% if tunnel_project_context.selected_project_ids | default([]) | length > 1 %}Use @AgenticContext. Multiple Tunnel projects are selected (selection revision {{ tunnel_project_context.revision | default(0) }}). First call current_project to discover which selected project directories are available and whether each is writable or read-only. Report their project IDs and permissions, then choose the project or projects needed for the task. Do not assume the current project is the only target. If the target is unclear, ask me before making changes. For each target, call project_overview, read its instructions and current changes, and keep its project ID and identity pinned throughout the task without altering unrelated work.{% else %}Use @AgenticContext for project ID "{{ tunnel_current_project.id if tunnel_current_project else '' }}" (identity "{{ tunnel_current_project.identity if tunnel_current_project else '' }}", selection revision {{ tunnel_project_context.revision | default(0) }}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.{% endif %}
+                                                <div class="agent-tunnel-kickoff-heading">
+                                                    <label id="agent_tunnel_kickoff_title" class="agent-tunnel-kickoff-title" for="agent_tunnel_kickoff" data-agent-tunnel-kickoff-title data-agent-tunnel-kickoff-state="{{ tunnel_kickoff_state }}" aria-live="polite">{{ tunnel_kickoff_title }}</label>
+                                                    <div class="agent-tunnel-kickoff-project-field" data-agent-tunnel-kickoff-project-field{% if tunnel_kickoff_state not in ['ready', 'project'] %} hidden{% endif %}>
+                                                        <select id="agent_tunnel_kickoff_project" class="form-select" data-agent-tunnel-kickoff-project data-shared-select-auto data-shared-select-kind="tunnel-kickoff-project" aria-label="Tunnel project for task">
+                                                            {% if not tunnel_current_project or not (tunnel_current_project.registered | default(false)) %}<option value="" selected disabled>Choose project</option>{% endif %}
+                                                            {% for project in registered_tunnel_projects if project.selected %}
+                                                            <option value="{{ project.id }}"{% if tunnel_current_project and tunnel_current_project.id == project.id %} selected{% endif %}{% if not project.available %} disabled{% endif %}>{{ project.id }}</option>
+                                                            {% endfor %}
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <textarea id="agent_tunnel_kickoff" class="agent-tunnel-kickoff-editor" data-agent-tunnel-kickoff aria-labelledby="agent_tunnel_kickoff_title" rows="1"{% if not tunnel_kickoff_ready %} hidden disabled{% endif %}>Use @AgenticContext for project ID "{{ tunnel_current_project.id if tunnel_current_project else '' }}" (identity "{{ tunnel_current_project.identity if tunnel_current_project else '' }}", selection revision {{ tunnel_project_context.revision | default(0) }}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.
 
 Task:
 [describe your task].</textarea>
@@ -500,9 +517,9 @@ Task:
                                             <div class="agent-tunnel-numbered-copy">
                                                 <h5 class="agent-tunnel-kickoff-title" data-agent-tunnel-kickoff-next-step aria-live="polite">Edit and copy the prompt</h5>
                                                 <div class="settings-action-package-form agent-tunnel-action-package-form">
-                                                    <a class="secondary-button agent-tunnel-step-action" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">
+                                                    <a class="secondary-button agent-tunnel-step-action" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer" data-agent-tunnel-kickoff-ask{% if not tunnel_kickoff_ready %} aria-disabled="true" tabindex="-1"{% endif %}>
                                                         <span class="browser-session-trigger-leading">
-                                                            <span class="cache-phase-live-marker" data-agent-tunnel-live-marker aria-hidden="true"{% if not tunnel_status.activity_observed %} hidden{% endif %}></span>
+                                                            <span class="cache-phase-live-marker" data-agent-tunnel-live-marker aria-hidden="true"{% if not tunnel_kickoff_ready or not tunnel_status.enabled %} hidden{% endif %}></span>
                                                             <span>Ask in ChatGPT</span>
                                                         </span>
                                                     </a>
@@ -769,12 +786,14 @@ Task:
 {% include "_settings_directory_browser.html" %}
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.24.1-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.2.1-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
+<script src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.13.3-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.69.2-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.74.0-codex.0') }}"></script>
 </body>
 </html>

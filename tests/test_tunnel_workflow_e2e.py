@@ -1,6 +1,6 @@
 """Isolated local-page to authenticated MCP workflow acceptance.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -140,10 +140,10 @@ def test_selected_project_completes_authenticated_crud_check_and_review(
             },
         )
         assert narrowed.status_code == 200
-        narrowed_context = narrowed.get_json()["project_context"]
-        assert narrowed_context["revision"] == 2
-        assert narrowed_context["selected_project_ids"] == ["acceptance"]
-        assert {item["id"]: item["selected"] for item in narrowed_context["projects"]} == {
+        project_context = narrowed.get_json()["project_context"]
+        assert project_context["revision"] == 2
+        assert project_context["selected_project_ids"] == ["acceptance"]
+        assert {item["id"]: item["selected"] for item in project_context["projects"]} == {
             "acceptance": True,
             "reference": False,
         }

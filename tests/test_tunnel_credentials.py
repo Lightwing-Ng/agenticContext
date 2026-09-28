@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.7.6-codex.0
+Code version: v1.9.0-codex.0
 """
 
 from __future__ import annotations
@@ -45,8 +45,10 @@ def agent_client(credentials_path: Path):
 
 
 @pytest.mark.parametrize("selected_ids", [("alpha",), ("alpha", "reference")])
-def test_kickoff_server_rendering_matches_selected_project_scope(agent_client, selected_ids):
-    """Initial HTML chooses discovery for multi-selection before JavaScript loads."""
+def test_kickoff_server_rendering_targets_one_project_among_registered_projects(
+    agent_client, selected_ids
+):
+    """Initial HTML keeps one exact project prompt regardless of bridge scope."""
     current = {
         "id": "alpha",
         "identity": "a" * 16,
@@ -83,16 +85,17 @@ def test_kickoff_server_rendering_matches_selected_project_scope(agent_client, s
     assert match is not None
     prompt = unescape(match.group(1))
     assert prompt.endswith("\n\nTask:\n[describe your task].")
-    if len(selected_ids) > 1:
-        assert "Multiple Tunnel projects are selected (selection revision 7)" in prompt
-        assert "First call current_project to discover" in prompt
-        assert "writable or read-only" in prompt
-        assert "For each target, call project_overview" in prompt
-        assert 'Use @AgenticContext for project ID "alpha"' not in prompt
-    else:
-        assert f'project ID "alpha" (identity "{current["identity"]}", selection revision 7)' in prompt
-        assert "First call current_project to confirm this selection" in prompt
-        assert "Multiple Tunnel projects" not in prompt
+    assert f'project ID "alpha" (identity "{current["identity"]}", selection revision 7)' in prompt
+    assert "First call current_project to confirm this selection" in prompt
+    assert "Multiple Tunnel projects" not in prompt
+    body = response.get_data(as_text=True)
+    assert 'aria-label="Registered Tunnel projects"' in body
+    assert 'data-agent-tunnel-project-checkbox="alpha" checked' in body
+    assert f'data-agent-tunnel-project-checkbox="reference"{" checked" if reference["selected"] else ""}' in body
+    assert 'Selected Tunnel projects' not in body
+    assert 'data-agent-tunnel-kickoff-project' in body
+    assert '<option value="alpha" selected>alpha</option>' in body
+    assert ('<option value="reference">reference</option>' in body) == reference["selected"]
 
 
 def test_credentials_round_trip_with_owner_only_file(credentials_path: Path) -> None:

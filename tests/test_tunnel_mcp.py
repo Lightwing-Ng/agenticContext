@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.11.1-codex.0
+Code version: v2.14.2-codex.0
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -23,6 +24,7 @@ import pytest
 from app.core import tunnel_mcp as tunnel_mcp_module
 from app.core.agent.capability_registry import capability_for_action
 from app.core.computer_use_agent import ComputerUseSettings
+from app.core.owner_only_files import owner_only_problem, write_owner_only_text
 from app.core.tunnel_credentials import TunnelCredentials, save_tunnel_credentials
 from app.core.tunnel_mcp import (
     MAX_MCP_BATCH_ITEMS,
@@ -1029,6 +1031,342 @@ def test_request_id_replays_the_recorded_result_in_process_and_after_restart(
     assert target.read_text(encoding="utf-8") == "aa\n"
 
 
+def test_chatgpt_token_usage_survives_service_recreation(
+    service: TunnelMcpService,
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    assert call(service, "list_files")["isError"] is False
+    before = service.activity_snapshot("chatgpt")["cumulative_usage"]
+    path = tmp_path / "runtime" / tunnel_mcp_module.CHATGPT_USAGE_FILENAME
+    assert path.is_file()
+    assert owner_only_problem(path) == ""
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "schema_version": tunnel_mcp_module.CHATGPT_USAGE_SCHEMA_VERSION,
+        "calls": 1,
+        "known_calls": 1,
+        "estimated_tokens": before["estimated_tokens"],
+        "unestimated_calls": 0,
+    }
+
+    restarted = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=tmp_path / "runtime",
+    )
+    assert restarted.activity_snapshot("chatgpt")["call_count"] == 0
+    assert restarted.activity_snapshot("chatgpt")["recent_calls"] == []
+    assert restarted.activity_snapshot("chatgpt")["cumulative_usage"] == before
+    assert call(restarted, "list_files")["isError"] is False
+    after = restarted.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert after["calls"] == 2
+    assert after["estimated_tokens"] > before["estimated_tokens"]
+    assert after["window"] == "saved_lifetime"
+
+
+def test_stale_chatgpt_service_merges_without_replacing_a_higher_total(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    runtime = tmp_path / "shared-runtime"
+
+    def make_service() -> TunnelMcpService:
+        return TunnelMcpService(
+            lambda: ComputerUseSettings(workspace_path=str(workspace)),
+            registry=ProjectRegistry(registry.path),
+            runtime_root=runtime,
+        )
+
+    first = make_service()
+    stale = make_service()
+    tool = tunnel_mcp_module.TUNNEL_TOOLS_BY_NAME["list_files"]
+    large_call = first._start_activity(tool, {"project": "main"})
+    first._finish_activity(large_call, True, 0.01, "x" * 34_120)
+    first_total = first.activity_snapshot("chatgpt")["cumulative_usage"]["estimated_tokens"]
+
+    small_call = stale._start_activity(tool, {"project": "main"})
+    stale._finish_activity(small_call, True, 0.01, "small")
+    small_tokens = stale.activity_snapshot("chatgpt")["recent_calls"][0][
+        "estimated_tokens"
+    ]
+    merged = stale.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert merged["calls"] == 2
+    assert merged["estimated_tokens"] == first_total + small_tokens
+
+    later_call = first._start_activity(tool, {"project": "main"})
+    first._finish_activity(later_call, True, 0.01, "later")
+    later_tokens = first.activity_snapshot("chatgpt")["recent_calls"][0][
+        "estimated_tokens"
+    ]
+    restarted = make_service()
+    assert restarted.activity_snapshot("chatgpt")["cumulative_usage"][
+        "estimated_tokens"
+    ] == first_total + small_tokens + later_tokens
+    assert restarted.activity_snapshot("chatgpt")["cumulative_usage"]["calls"] == 3
+
+
+def test_idle_chatgpt_service_reads_another_instances_saved_total(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    runtime = tmp_path / "shared-runtime"
+
+    def make_service() -> TunnelMcpService:
+        return TunnelMcpService(
+            lambda: ComputerUseSettings(workspace_path=str(workspace)),
+            registry=ProjectRegistry(registry.path),
+            runtime_root=runtime,
+        )
+
+    writer = make_service()
+    idle = make_service()
+    assert idle.activity_snapshot("chatgpt")["cumulative_usage"]["estimated_tokens"] == 0
+    tool = tunnel_mcp_module.TUNNEL_TOOLS_BY_NAME["list_files"]
+    call_id = writer._start_activity(tool, {"project": "main"})
+    writer._finish_activity(call_id, True, 0.01, "x" * 34_120)
+    expected = writer.activity_snapshot("chatgpt")["cumulative_usage"]
+    usage_path = runtime / tunnel_mcp_module.CHATGPT_USAGE_FILENAME
+    modified_at = usage_path.stat().st_mtime_ns
+
+    observed = idle.activity_snapshot("chatgpt")
+
+    assert observed["call_count"] == 0
+    assert observed["recent_calls"] == []
+    assert observed["cumulative_usage"] == expected
+    assert usage_path.stat().st_mtime_ns == modified_at
+
+
+def test_chatgpt_service_repairs_a_lower_valid_disk_snapshot(
+    service: TunnelMcpService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    tool = tunnel_mcp_module.TUNNEL_TOOLS_BY_NAME["list_files"]
+    first_call = service._start_activity(tool, {"project": "main"})
+    service._finish_activity(first_call, True, 0.01, "x" * 34_120)
+    before = service.activity_snapshot("chatgpt")["cumulative_usage"]
+    path = tmp_path / "runtime" / tunnel_mcp_module.CHATGPT_USAGE_FILENAME
+    write_owner_only_text(path, json.dumps({
+        "schema_version": tunnel_mcp_module.CHATGPT_USAGE_SCHEMA_VERSION,
+        "calls": 0,
+        "known_calls": 0,
+        "estimated_tokens": 0,
+        "unestimated_calls": 0,
+    }))
+
+    second_call = service._start_activity(tool, {"project": "main"})
+    service._finish_activity(second_call, True, 0.01, "small")
+    after = service.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert after["estimated_tokens"] > before["estimated_tokens"]
+    assert after["calls"] == 2
+    assert json.loads(path.read_text(encoding="utf-8"))["estimated_tokens"] == (
+        after["estimated_tokens"]
+    )
+
+
+def test_chatgpt_usage_invalidated_after_startup_fails_closed_on_read(
+    service: TunnelMcpService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    tool = tunnel_mcp_module.TUNNEL_TOOLS_BY_NAME["list_files"]
+    call_id = service._start_activity(tool, {"project": "main"})
+    service._finish_activity(call_id, True, 0.01, "known")
+    path = tmp_path / "runtime" / tunnel_mcp_module.CHATGPT_USAGE_FILENAME
+    write_owner_only_text(path, "{bad json")
+    original = path.read_bytes()
+
+    snapshot = service.activity_snapshot("chatgpt")["cumulative_usage"]
+
+    assert snapshot["estimated_tokens"] is None
+    assert snapshot["complete"] is False
+    another_call = service._start_activity(tool, {"project": "main"})
+    service._finish_activity(another_call, True, 0.01, "more")
+    assert path.read_bytes() == original
+
+
+def test_concurrent_chatgpt_services_save_both_calls(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    runtime = tmp_path / "shared-runtime"
+    services = [
+        TunnelMcpService(
+            lambda: ComputerUseSettings(workspace_path=str(workspace)),
+            registry=ProjectRegistry(registry.path),
+            runtime_root=runtime,
+        )
+        for _ in range(2)
+    ]
+    tool = tunnel_mcp_module.TUNNEL_TOOLS_BY_NAME["list_files"]
+    calls = [
+        service._start_activity(tool, {"project": "main"})
+        for service in services
+    ]
+    barrier = threading.Barrier(3)
+    errors: list[Exception] = []
+
+    def finish(service: TunnelMcpService, call_id: int, response: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            service._finish_activity(call_id, True, 0.01, response)
+        except Exception as exc:
+            errors.append(exc)
+
+    workers = [
+        threading.Thread(target=finish, args=(service, call_id, response))
+        for service, call_id, response in zip(
+            services, calls, ("a" * 100, "b" * 200), strict=True
+        )
+    ]
+    for worker in workers:
+        worker.start()
+    barrier.wait(timeout=5)
+    for worker in workers:
+        worker.join(timeout=5)
+
+    assert not any(worker.is_alive() for worker in workers)
+    assert errors == []
+    expected = sum(
+        service.activity_snapshot("chatgpt")["recent_calls"][0]["estimated_tokens"]
+        for service in services
+    )
+    restarted = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=runtime,
+    )
+    aggregate = restarted.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert aggregate["calls"] == 2
+    assert aggregate["estimated_tokens"] == expected
+    assert owner_only_problem(runtime / tunnel_mcp_module.CHATGPT_USAGE_FILENAME) == ""
+
+
+def test_invalid_chatgpt_usage_file_stays_unavailable_without_blocking_tools(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    path = runtime / tunnel_mcp_module.CHATGPT_USAGE_FILENAME
+    write_owner_only_text(path, "{bad json")
+    original = path.read_bytes()
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=runtime,
+    )
+
+    assert service.activity_snapshot("chatgpt")["cumulative_usage"]["estimated_tokens"] is None
+    assert call(service, "list_files")["isError"] is False
+    assert service.activity_snapshot("chatgpt")["cumulative_usage"]["estimated_tokens"] is None
+    assert path.read_bytes() == original
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode-bit boundary")
+def test_non_owner_only_chatgpt_usage_file_is_not_read_or_replaced(
+    registry: ProjectRegistry,
+    workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    path = runtime / tunnel_mcp_module.CHATGPT_USAGE_FILENAME
+    content = json.dumps({
+        "schema_version": tunnel_mcp_module.CHATGPT_USAGE_SCHEMA_VERSION,
+        "calls": 1,
+        "known_calls": 1,
+        "estimated_tokens": 34_120,
+        "unestimated_calls": 0,
+    })
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o644)
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(workspace_path=str(workspace)),
+        registry=ProjectRegistry(registry.path),
+        runtime_root=runtime,
+    )
+
+    assert service.activity_snapshot("chatgpt")["cumulative_usage"]["estimated_tokens"] is None
+    assert call(service, "list_files")["isError"] is False
+    assert path.read_text(encoding="utf-8") == content
+    assert owner_only_problem(path) != ""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file boundary")
+@pytest.mark.parametrize("replacement", ["wide_permissions", "symlink"])
+def test_chatgpt_usage_refuses_owner_invalid_target_after_startup(
+    service: TunnelMcpService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    assert call(service, "list_files")["isError"] is False
+    path = tmp_path / "runtime" / tunnel_mcp_module.CHATGPT_USAGE_FILENAME
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    if replacement == "wide_permissions":
+        path.chmod(0o644)
+        original = path.read_bytes()
+    else:
+        path.unlink()
+        path.symlink_to(outside)
+
+    assert call(service, "list_files")["isError"] is False
+    usage = service.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert usage["estimated_tokens"] is None
+    assert usage["complete"] is False
+    assert outside.read_text(encoding="utf-8") == "keep"
+    if replacement == "wide_permissions":
+        assert path.read_bytes() == original
+        assert owner_only_problem(path) != ""
+    else:
+        assert path.is_symlink()
+
+
+def test_chatgpt_usage_write_failure_keeps_tool_callable_and_hides_unsaved_total(
+    service: TunnelMcpService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_mcp_module, "_estimated_tool_tokens", len)
+    with patch.object(
+        tunnel_mcp_module,
+        "write_owner_only_text",
+        side_effect=OSError("unavailable"),
+    ):
+        assert call(service, "list_files")["isError"] is False
+    unavailable = service.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert unavailable["calls"] == 1
+    assert unavailable["estimated_tokens"] is None
+    assert unavailable["complete"] is False
+
+    assert call(service, "list_files")["isError"] is False
+    recovered = service.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert recovered["calls"] == 2
+    assert recovered["estimated_tokens"] > 0
+    assert recovered["complete"] is True
+
+
 def test_pruned_request_ids_remain_non_replayable_after_restart(
     registry: ProjectRegistry,
     workspace: Path,
@@ -1911,7 +2249,7 @@ def test_switching_the_saved_project_does_not_redirect_a_pinned_task(
     assert registry.resolve("main").identity == resolved["identity"]
 
 
-def test_multi_project_preference_is_atomic_without_revoking_registry_access(
+def test_multi_project_preference_filters_discovery_without_revoking_registry_access(
     service: TunnelMcpService,
     tmp_path: Path,
 ) -> None:
@@ -1975,12 +2313,12 @@ def test_multi_project_preference_is_atomic_without_revoking_registry_access(
         project["id"]: project for project in narrowed_discovery["projects"]
     }
     assert narrowed_records["ref"]["selected"] is False
-    # The preference list is not an authority boundary. Explicit access to a
-    # registered read-only reference remains available.
+    assert narrowed_discovery["selection"]["selected_project_ids"] == ["main"]
+    # The preferred subset does not revoke a registered project's authority.
     assert call(service, "project_overview", project="ref")["isError"] is False
 
 
-def test_selected_fallback_recovers_when_the_previous_current_project_is_removed(
+def test_removed_current_project_does_not_silently_choose_another_registered_project(
     service: TunnelMcpService,
     registry: ProjectRegistry,
     reference: Path,
@@ -1996,9 +2334,40 @@ def test_selected_fallback_recovers_when_the_previous_current_project_is_removed
 
     discovered = content(call(service, "current_project", project=None))
 
-    assert discovered["current_project"]["id"] == "ref"
-    assert discovered["selection"]["source"] == "only_selected_project"
+    assert discovered["current_project"] is None
+    assert discovered["selection"]["source"] == "selection"
     assert discovered["selection"]["selected_project_ids"] == ["ref"]
+    assert "no longer registered" in discovered["problem"]
+
+
+def test_unavailable_current_project_does_not_silently_choose_another_registered_project(
+    tmp_path: Path,
+) -> None:
+    available = tmp_path / "available"
+    available.mkdir()
+    missing = tmp_path / "missing"
+    registry = write_registry(
+        tmp_path / "tunnel-projects.json",
+        [
+            {"id": "available", "root": str(available), "writable": True},
+            {"id": "missing", "root": str(missing), "writable": True},
+        ],
+    )
+    service = TunnelMcpService(
+        lambda: ComputerUseSettings(),
+        registry=registry,
+        runtime_root=tmp_path / "runtime",
+    )
+    service.selection_store.save(
+        "missing",
+        selected_project_ids=["available", "missing"],
+    )
+
+    discovered = content(call(service, "current_project", project=None))
+
+    assert discovered["current_project"] is None
+    assert discovered["selection"]["selected_project_ids"] == ["available", "missing"]
+    assert "unavailable" in discovered["problem"]
 
 
 def test_tunnel_browse_root_uses_the_current_home_without_a_username_literal(
@@ -2675,6 +3044,145 @@ def test_git_root_workspace_is_the_only_fallback_project(tmp_path: Path) -> None
     assert discovered["current_project"]["id"] == "solo"
     assert discovered["current_project"]["registered"] is False
     assert discovered["current_project"]["writable"] is True
+    assert "read-only" not in discovered["registry"]
+
+
+def test_registering_the_implicit_git_root_materializes_its_mapping(tmp_path: Path) -> None:
+    repository = tmp_path / "solo"
+    repository.mkdir()
+    git(repository, "init", "-q")
+    registry = ProjectRegistry(tmp_path / "settings" / "tunnel-projects.json")
+
+    fallback = registry.projects(str(repository))
+    assert len(fallback) == 1
+    assert registry.uses_fallback() is True
+
+    registered = registry.register(str(repository), str(repository))
+
+    assert registry.uses_fallback() is False
+    assert registered.id == fallback[0].id
+    assert registered.root == fallback[0].root
+    assert registered.identity == fallback[0].identity
+    assert registry.projects() == (registered,)
+
+
+def test_project_readers_cannot_see_registration_before_selection_commit(tmp_path: Path) -> None:
+    """A failed registration never exposes its temporary root to local or MCP readers."""
+    project = tmp_path / "new-project"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("# New project\n", encoding="utf-8")
+    registry_path = tmp_path / "settings" / "tunnel-projects.json"
+    app = create_app(
+        tmp_path / "store",
+        computer_use_settings_path=tmp_path / "settings" / "settings.json",
+        computer_use_runtime_root=tmp_path / "runtime",
+        tunnel_projects_path=registry_path,
+        agent_external_operations_enabled=False,
+    )
+    tunnel = app.extensions["tunnel_mcp_service"]
+    save_started = threading.Event()
+    release_save = threading.Event()
+    overview_started = threading.Event()
+    overview_done = threading.Event()
+    discovery_started = threading.Event()
+    discovery_done = threading.Event()
+    local_started = threading.Event()
+    local_done = threading.Event()
+    results: dict[str, Any] = {}
+    failures: list[BaseException] = []
+
+    def fail_after_registry_write(*_args: Any, **_kwargs: Any) -> None:
+        save_started.set()
+        if not release_save.wait(5):
+            raise AssertionError("The selection save was not released.")
+        raise OSError("The selection file could not be saved.")
+
+    def register_project() -> None:
+        try:
+            with app.test_client() as client:
+                results["register"] = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(project), "expected_revision": 0},
+                )
+        except BaseException as exc:
+            failures.append(exc)
+
+    def overview_project() -> None:
+        overview_started.set()
+        try:
+            results["overview"] = call_without_test_defaults(
+                tunnel, "project_overview", {"project": project.name}
+            )
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            overview_done.set()
+
+    def discover_projects() -> None:
+        discovery_started.set()
+        try:
+            results["discovery"] = call_without_test_defaults(
+                tunnel, "current_project", {}
+            )
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            discovery_done.set()
+
+    def read_local_projects() -> None:
+        local_started.set()
+        try:
+            with app.test_client() as client:
+                results["local"] = client.get("/api/agent/tunnel/project")
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            local_done.set()
+
+    with patch.object(tunnel.selection_store, "save", side_effect=fail_after_registry_write):
+        register_thread = threading.Thread(target=register_project)
+        overview_thread = threading.Thread(target=overview_project)
+        discovery_thread = threading.Thread(target=discover_projects)
+        local_thread = threading.Thread(target=read_local_projects)
+        register_thread.start()
+        try:
+            assert save_started.wait(5)
+            assert registry_path.exists()
+            overview_thread.start()
+            discovery_thread.start()
+            local_thread.start()
+            assert overview_started.wait(5)
+            assert discovery_started.wait(5)
+            assert local_started.wait(5)
+            assert not overview_done.wait(0.2)
+            assert not discovery_done.wait(0.2)
+            assert not local_done.wait(0.2)
+        finally:
+            release_save.set()
+            register_thread.join(timeout=5)
+            if overview_thread.ident is not None:
+                overview_thread.join(timeout=5)
+            if discovery_thread.ident is not None:
+                discovery_thread.join(timeout=5)
+            if local_thread.ident is not None:
+                local_thread.join(timeout=5)
+
+    assert not failures
+    assert not register_thread.is_alive()
+    assert not overview_thread.is_alive()
+    assert not discovery_thread.is_alive()
+    assert not local_thread.is_alive()
+    assert results["register"].status_code == 500
+    assert not registry_path.exists()
+    assert results["overview"]["isError"] is True
+    assert content(results["overview"])["code"] == "unknown_project"
+    assert project.name not in {
+        item["id"] for item in content(results["discovery"])["projects"]
+    }
+    assert results["local"].status_code == 200
+    local_context = results["local"].get_json()["project_context"]
+    assert local_context["revision"] == 0
+    assert project.name not in {item["id"] for item in local_context["projects"]}
 
 
 def test_invalid_git_placeholder_cannot_enter_read_only_fallback(tmp_path: Path) -> None:

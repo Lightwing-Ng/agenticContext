@@ -1,6 +1,6 @@
 """Shared MCP endpoint reached through authenticated provider transports.
 
-Code version: v2.11.3-codex.0
+Code version: v2.14.0-codex.0
 
 ChatGPT and Gemini call the same tool catalog through separate authenticated
 transports. Every project-scoped
@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import secrets
+import stat
 import sys
 import threading
 import time
@@ -47,6 +48,12 @@ from typing import Any
 
 from app.core.agent.capability_registry import capability_for_action, validate_closed_schema
 from app.core.brand import PRODUCT_NAME
+from app.core.owner_only_files import (
+    ensure_owner_only,
+    owner_only_problem,
+    write_owner_only_text,
+)
+from app.core.platform_lock import lock_file, unlock_file
 from app.core.tunnel_checks import (
     DEFAULT_TIMEOUT_SECONDS as CHECK_DEFAULT_TIMEOUT_SECONDS,
     MAX_TIMEOUT_SECONDS as CHECK_MAX_TIMEOUT_SECONDS,
@@ -67,6 +74,7 @@ from app.core.tunnel_projects import (
     ProjectSelectionStore,
     TunnelProject,
     project_availability,
+    project_transaction_lock,
     resolve_current_project,
     selected_projects,
 )
@@ -101,6 +109,9 @@ MAX_EDITS = 16
 MAX_MCP_BATCH_ITEMS = 8
 DEFAULT_READ_LINES = 240
 TUNNEL_ACTIVITY_LIMIT = 20
+CHATGPT_USAGE_FILENAME = "chatgpt-token-usage.json"
+CHATGPT_USAGE_SCHEMA_VERSION = 1
+CHATGPT_USAGE_MAX_BYTES = 1024
 REQUEST_JOURNAL_DIRNAME = "tunnel-requests"
 REQUEST_JOURNAL_LIMIT = 256
 REQUEST_JOURNAL_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
@@ -1088,6 +1099,19 @@ class TunnelMcpService:
         self._activity: deque[dict[str, Any]] = deque(maxlen=TUNNEL_ACTIVITY_LIMIT)
         self._call_count = 0
         self._provider_call_counts: dict[str, int] = {}
+        self._provider_usage: dict[str, dict[str, int]] = {}
+        self._chatgpt_usage_pending = {
+            "calls": 0,
+            "known_calls": 0,
+            "estimated_tokens": 0,
+            "unestimated_calls": 0,
+        }
+        self._chatgpt_usage_path = (
+            runtime_root / CHATGPT_USAGE_FILENAME if runtime_root is not None else None
+        )
+        self._chatgpt_usage_saved = True
+        self._chatgpt_usage_writable = True
+        self._load_chatgpt_usage()
         self._last_success: dict[tuple[str, str], dict[str, Any]] = {}
         self._call_sequence = 0
         self._active_calls: dict[int, dict[str, Any]] = {}
@@ -1106,6 +1130,155 @@ class TunnelMcpService:
         """Make any in-flight controller command stop at its next check."""
         self._stopping = True
 
+    def _load_chatgpt_usage(self) -> None:
+        """Refresh local counters from a validated owner-only aggregate."""
+        path = self._chatgpt_usage_path
+        if path is None or not self._chatgpt_usage_writable:
+            return
+        try:
+            root_metadata = path.parent.lstat()
+        except FileNotFoundError:
+            if self._provider_usage.get("chatgpt", {}).get("calls", 0):
+                self._chatgpt_usage_saved = False
+            return
+        except OSError:
+            self._reject_chatgpt_usage_store("runtime directory cannot be inspected")
+            return
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            self._reject_chatgpt_usage_store("runtime root is not a directory")
+            return
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            if self._provider_usage.get("chatgpt", {}).get("calls", 0):
+                self._chatgpt_usage_saved = False
+            return
+        except OSError:
+            self._reject_chatgpt_usage_store("usage file cannot be inspected")
+            return
+        if metadata.st_size > CHATGPT_USAGE_MAX_BYTES or owner_only_problem(path):
+            self._reject_chatgpt_usage_store("usage file is not owner-only or bounded")
+            return
+        try:
+            with path.open("rb") as handle:
+                content = handle.read(CHATGPT_USAGE_MAX_BYTES + 1)
+            if len(content) > CHATGPT_USAGE_MAX_BYTES:
+                raise ValueError("usage file exceeds its size limit")
+            payload = json.loads(content.decode("utf-8"))
+            counts = self._validated_chatgpt_usage(payload)
+        except (OSError, UnicodeError, ValueError):
+            self._reject_chatgpt_usage_store("usage file is unreadable or invalid")
+            return
+        usage = self._provider_usage.setdefault(
+            "chatgpt", {key: 0 for key in self._chatgpt_usage_pending}
+        )
+        usage.update(self._merged_chatgpt_usage(usage, counts))
+        if not self._chatgpt_usage_pending["calls"]:
+            self._chatgpt_usage_saved = True
+
+    def _merged_chatgpt_usage(
+        self, usage: dict[str, int], stored: dict[str, int] | None
+    ) -> dict[str, int]:
+        """Keep the higher valid baseline and add only this instance's unsaved calls."""
+        pending = self._chatgpt_usage_pending
+        local_base = {key: usage[key] - pending[key] for key in pending}
+        baseline = {
+            key: max(local_base[key], (stored or {}).get(key, 0))
+            for key in pending
+        }
+        merged = {key: baseline[key] + pending[key] for key in pending}
+        merged["calls"] = merged["known_calls"] + merged["unestimated_calls"]
+        return merged
+
+    @staticmethod
+    def _validated_chatgpt_usage(payload: Any) -> dict[str, int]:
+        keys = {
+            "schema_version", "calls", "known_calls", "estimated_tokens",
+            "unestimated_calls",
+        }
+        if not isinstance(payload, dict) or set(payload) != keys:
+            raise ValueError("invalid usage fields")
+        if type(payload["schema_version"]) is not int or (
+            payload["schema_version"] != CHATGPT_USAGE_SCHEMA_VERSION
+        ):
+            raise ValueError("unsupported usage schema")
+        counts = {key: payload[key] for key in keys - {"schema_version"}}
+        if any(type(value) is not int or value < 0 for value in counts.values()):
+            raise ValueError("invalid usage counters")
+        if counts["calls"] != counts["known_calls"] + counts["unestimated_calls"]:
+            raise ValueError("inconsistent usage counters")
+        return counts
+
+    def _reject_chatgpt_usage_store(self, reason: str) -> None:
+        self._chatgpt_usage_saved = False
+        self._chatgpt_usage_writable = False
+        LOGGER.warning("ChatGPT Tunnel token usage is unavailable: %s.", reason)
+
+    def _save_chatgpt_usage(self, usage: dict[str, int]) -> None:
+        """Merge this process's new calls under a cross-process file lock."""
+        path = self._chatgpt_usage_path
+        if path is None or not self._chatgpt_usage_writable:
+            return
+        pending = self._chatgpt_usage_pending
+        lock_path = path.with_name(f".{path.name}.lock")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                root_metadata = path.parent.lstat()
+            except FileNotFoundError:
+                root_metadata = None
+            if root_metadata is not None and not stat.S_ISDIR(root_metadata.st_mode):
+                raise OSError("Tunnel runtime root is not a directory")
+            descriptor = os.open(
+                lock_path,
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            with os.fdopen(descriptor, "r+") as lock_handle:
+                ensure_owner_only(lock_path)
+                lock_file(lock_handle)
+                try:
+                    stored: dict[str, int] | None = None
+                    try:
+                        metadata = path.lstat()
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        if metadata.st_size > CHATGPT_USAGE_MAX_BYTES or owner_only_problem(path):
+                            self._reject_chatgpt_usage_store(
+                                "usage file changed outside the owner-only boundary"
+                            )
+                            return
+                        try:
+                            with path.open("rb") as handle:
+                                content = handle.read(CHATGPT_USAGE_MAX_BYTES + 1)
+                            if len(content) > CHATGPT_USAGE_MAX_BYTES:
+                                raise ValueError("usage file exceeds its size limit")
+                            stored = self._validated_chatgpt_usage(
+                                json.loads(content.decode("utf-8"))
+                            )
+                        except (OSError, UnicodeError, ValueError):
+                            self._reject_chatgpt_usage_store(
+                                "usage file changed to unreadable or invalid data"
+                            )
+                            return
+                    merged = self._merged_chatgpt_usage(usage, stored)
+                    payload = {"schema_version": CHATGPT_USAGE_SCHEMA_VERSION, **merged}
+                    write_owner_only_text(path, json.dumps(payload, separators=(",", ":")))
+                    usage.update(merged)
+                    pending.update({key: 0 for key in pending})
+                finally:
+                    unlock_file(lock_handle)
+        except OSError as exc:
+            if self._chatgpt_usage_saved:
+                LOGGER.warning(
+                    "ChatGPT Tunnel token usage could not be saved (%s).",
+                    exc.__class__.__name__,
+                )
+            self._chatgpt_usage_saved = False
+        else:
+            self._chatgpt_usage_saved = True
+
     def activity_snapshot(
         self,
         provider: str | None = None,
@@ -1114,15 +1287,16 @@ class TunnelMcpService:
     ) -> dict[str, Any]:
         """Return recent tool calls, optionally scoped to one trusted ingress.
 
-        ``recent_usage`` sums the retained calls whose tokenizer was ready when
-        their request was counted. Earlier unknown calls remain in ``recent_calls``,
-        but are excluded after recovery; a window with no new calls stays
-        unavailable. MCP exposes neither conversation boundaries nor model billing.
+        ``recent_usage`` sums retained calls. ChatGPT ``cumulative_usage`` keeps
+        an owner-only saved lower bound after calls leave the bounded history.
+        MCP exposes neither conversation boundaries nor model billing.
         """
         normalized_provider = str(provider or "").strip().lower()
         with _TOOL_ENCODING_LOCK:
             encoding_ready = _TOOL_ENCODING is not None
         with self._activity_lock:
+            if normalized_provider == "chatgpt":
+                self._load_chatgpt_usage()
             active_calls = list(self._active_calls.values())
             recent_calls = list(self._activity)
             if normalized_provider:
@@ -1157,7 +1331,7 @@ class TunnelMcpService:
                 for (record_provider, project), record in self._last_success.items()
                 if not normalized_provider or record_provider == normalized_provider
             }
-            return {
+            result = {
                 "call_count": (
                     self._provider_call_counts.get(normalized_provider, 0)
                     if normalized_provider
@@ -1179,6 +1353,27 @@ class TunnelMcpService:
                 "usage_scope": "tool_call",
                 "usage_encoding": "o200k_base",
             }
+            if normalized_provider == "chatgpt":
+                usage = self._provider_usage.get("chatgpt", {})
+                calls = usage.get("calls", 0)
+                known_calls = usage.get("known_calls", 0)
+                unestimated_calls = usage.get("unestimated_calls", 0)
+                result["cumulative_usage"] = {
+                    "calls": calls,
+                    "estimated_tokens": (
+                        usage.get("estimated_tokens", 0)
+                        if self._chatgpt_usage_saved and (known_calls or not calls)
+                        else None
+                    ),
+                    "complete": self._chatgpt_usage_saved and unestimated_calls == 0,
+                    "scope": "tool_text_estimate",
+                    "window": (
+                        "saved_lifetime"
+                        if self._chatgpt_usage_path is not None else "server_lifetime"
+                    ),
+                    "unestimated_calls": unestimated_calls,
+                }
+            return result
 
     # JSON-RPC transport -------------------------------------------------
 
@@ -1432,37 +1627,38 @@ class TunnelMcpService:
         _reject_absolute_paths(arguments)
         if not tool.project_scoped:
             return getattr(self, f"_tool_{tool.name}")(arguments)
-        project = self._registry.resolve(arguments["project"], self._fallback_workspace())
-        availability_problem = project_availability(project)
-        if availability_problem:
-            if "replaced after this project identity" in availability_problem:
+        with project_transaction_lock(self._registry):
+            project = self._registry.resolve(arguments["project"], self._fallback_workspace())
+            availability_problem = project_availability(project)
+            if availability_problem:
+                if "replaced after this project identity" in availability_problem:
+                    raise ToolFailure(
+                        "project_changed",
+                        f"Project {project.id} changed on disk after it was resolved, so the "
+                        "call was refused. Call current_project or project_overview again, "
+                        "then start a new task with the new project identity.",
+                        project=project.id,
+                    )
                 raise ToolFailure(
-                    "project_changed",
-                    f"Project {project.id} changed on disk after it was resolved, so the "
-                    "call was refused. Call current_project or project_overview again, "
-                    "then start a new task with the new project identity.",
+                    "project_unavailable",
+                    availability_problem,
                     project=project.id,
                 )
-            raise ToolFailure(
-                "project_unavailable",
-                availability_problem,
-                project=project.id,
-            )
-        pinned = arguments.get("project_identity")
-        if pinned and pinned != project.identity:
-            raise ToolFailure(
-                "project_changed",
-                f"Project {project.id} was re-registered (different folder or write access) "
-                "since this task resolved it, so the call was refused. Call current_project "
-                "or project_overview again and confirm the project with the user.",
-                project=project.id,
-            )
-        if not tool.read_only and not project.writable:
-            raise ToolFailure(
-                "read_only_project",
-                f"Project {project.id} is read-only; {tool.name} is not allowed there.",
-                project=project.id,
-            )
+            pinned = arguments.get("project_identity")
+            if pinned and pinned != project.identity:
+                raise ToolFailure(
+                    "project_changed",
+                    f"Project {project.id} was re-registered (different folder or write access) "
+                    "since this task resolved it, so the call was refused. Call current_project "
+                    "or project_overview again and confirm the project with the user.",
+                    project=project.id,
+                )
+            if not tool.read_only and not project.writable:
+                raise ToolFailure(
+                    "read_only_project",
+                    f"Project {project.id} is read-only; {tool.name} is not allowed there.",
+                    project=project.id,
+                )
         request_id = arguments.get("request_id")
         arguments = {
             key: value
@@ -1484,37 +1680,38 @@ class TunnelMcpService:
         tool: TunnelTool | None = None,
     ) -> TunnelProject:
         """Recheck registry authority after any wait and before touching project state."""
-        try:
-            current = self._registry.resolve(project.id, self._fallback_workspace())
-        except ProjectRegistryError as exc:
-            raise ToolFailure(
-                "project_changed",
-                f"Project {project.id} is no longer authorized by the current registry. "
-                "Call current_project or project_overview again before making another call.",
-                project=project.id,
-            ) from exc
-        if current.identity != project.identity:
-            raise ToolFailure(
-                "project_changed",
-                f"Project {project.id} changed while this call was queued, so it was refused. "
-                "nothing was replayed. Call current_project or project_overview again "
-                "and confirm the current project identity before retrying.",
-                project=project.id,
-            )
-        availability_problem = project_availability(current)
-        if availability_problem:
-            code = (
-                "project_changed"
-                if "replaced after this project identity" in availability_problem
-                else "project_unavailable"
-            )
-            raise ToolFailure(code, availability_problem, project=project.id)
-        if tool is not None and not tool.read_only and not current.writable:
-            raise ToolFailure(
-                "read_only_project",
-                f"Project {project.id} is read-only; {tool.name} is not allowed there.",
-                project=project.id,
-            )
+        with project_transaction_lock(self._registry):
+            try:
+                current = self._registry.resolve(project.id, self._fallback_workspace())
+            except ProjectRegistryError as exc:
+                raise ToolFailure(
+                    "project_changed",
+                    f"Project {project.id} is no longer authorized by the current registry. "
+                    "Call current_project or project_overview again before making another call.",
+                    project=project.id,
+                ) from exc
+            if current.identity != project.identity:
+                raise ToolFailure(
+                    "project_changed",
+                    f"Project {project.id} changed while this call was queued, so it was refused. "
+                    "nothing was replayed. Call current_project or project_overview again "
+                    "and confirm the current project identity before retrying.",
+                    project=project.id,
+                )
+            availability_problem = project_availability(current)
+            if availability_problem:
+                code = (
+                    "project_changed"
+                    if "replaced after this project identity" in availability_problem
+                    else "project_unavailable"
+                )
+                raise ToolFailure(code, availability_problem, project=project.id)
+            if tool is not None and not tool.read_only and not current.writable:
+                raise ToolFailure(
+                    "read_only_project",
+                    f"Project {project.id} is read-only; {tool.name} is not allowed there.",
+                    project=project.id,
+                )
         return current
 
     def _run_journaled(
@@ -1772,17 +1969,18 @@ class TunnelMcpService:
         """Return the model-facing current-project discovery result."""
         fallback = self._fallback_workspace()
         try:
-            projects = self._registry.projects(fallback)
+            with project_transaction_lock(self._registry):
+                projects = self._registry.projects(fallback)
+                selection = self._selection_store.load()
+                current = resolve_current_project(projects, selection, fallback)
+                registry_configured = not self._registry.uses_fallback()
+                preferred_projects = selected_projects(projects, selection)
         except ProjectRegistryError as exc:
             return {
                 "ok": False,
                 "code": "project_unavailable",
                 "error": f"{exc} Fix tunnel-projects.json on this computer.",
             }
-        selection = self._selection_store.load()
-        current = resolve_current_project(projects, selection, fallback)
-        registry_configured = not self._registry.uses_fallback()
-        preferred_projects = selected_projects(projects, selection)
         selected_ids = {project.id for project in preferred_projects}
 
         def record(project: TunnelProject) -> dict[str, Any]:
@@ -1811,10 +2009,11 @@ class TunnelMcpService:
             "projects": [record(project) for project in projects],
             "limits": self._host_file_limits(),
         }
-        if self._registry.uses_fallback():
+        if not registry_configured:
             result["registry"] = (
                 "No project registry exists, so only the Agent's selected Git folder is "
-                "offered, read-only."
+                "offered as an unregistered fallback. Register it on the local Tunnel "
+                "page before using a kickoff prompt."
             )
         if current.project is not None:
             result["next_step"] = (
@@ -2436,6 +2635,28 @@ class TunnelMcpService:
             self._provider_call_counts[provider] = (
                 self._provider_call_counts.get(provider, 0) + 1
             )
+            usage = self._provider_usage.setdefault(provider, {
+                "calls": 0,
+                "known_calls": 0,
+                "estimated_tokens": 0,
+                "unestimated_calls": 0,
+            })
+            usage["calls"] += 1
+            estimate = record["estimated_tokens"]
+            if type(estimate) is int and estimate >= 0:
+                usage["known_calls"] += 1
+                usage["estimated_tokens"] += estimate
+            else:
+                usage["unestimated_calls"] += 1
+            if provider == "chatgpt":
+                pending = self._chatgpt_usage_pending
+                pending["calls"] += 1
+                if type(estimate) is int and estimate >= 0:
+                    pending["known_calls"] += 1
+                    pending["estimated_tokens"] += estimate
+                else:
+                    pending["unestimated_calls"] += 1
+                self._save_chatgpt_usage(usage)
             if ok and record.get("project"):
                 self._last_success[(provider, record["project"])] = {
                     "tool": record["tool"],

@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.38.2-codex.0`
+Documentation version: `v1.39.3-codex.0`
 
 ## Launch
 
@@ -363,8 +363,9 @@ One-time setup:
    behind an existing Tunnel app, refresh that app under ChatGPT Settings → Apps so it lists the
    current tools.
 4. Register the projects ChatGPT may use in `tunnel-projects.json` beside `settings.json`
-   (`~/Library/Application Support/agenticContext/` on macOS). The file is user-owned; the
-   service only reads it, and edits apply on the next tool call without a restart:
+   (`~/Library/Application Support/agenticContext/` on macOS). The file may be edited directly;
+   registry edits apply on the next tool call without a restart. The local `Add project folder`
+   control can also register a chosen folder:
 
    ```json
    {
@@ -378,26 +379,29 @@ One-time setup:
    }
    ```
 
-   `writable` defaults to `false`; grant it only to projects ChatGPT may change. The registry is the
-   maximum authorization boundary. Roots must be absolute canonical paths, must not overlap, and
+   `writable` defaults to `true`; set it to `false` for projects ChatGPT may only inspect. The
+   registry is the maximum authorization boundary. Roots must be absolute canonical paths, must not overlap, and
    must not be the filesystem root or the home folder. A structurally invalid registry fails
    closed, but a valid entry whose directory is absent makes only that project unavailable; the
-   other valid projects remain usable. Without this file, the Agent's selected workspace is the
-   only project, and only when it is a Git repository root, so a parent folder such as the Desktop
-   is never exposed as one project.
-5. Return to Agent → Tunnel. Check the registered projects that should form the preferred discovery
-   set, then choose one checked and available project as `Current`. Each row shows the exact id,
-   host path, read/write authority, identity fingerprint, and availability. The preferred set and
-   current id are saved together only after the service accepts the current selection revision.
-   This checklist does not change registry authority: an explicitly named registered reference
-   remains available, and a checked read-only project remains read-only. If the current project is
-   later removed or becomes unavailable, the page can fall back to another available preferred
-   project instead of leaving a deleted entry as a global blocker.
-6. The circular Project folder action opens the local directory browser at the current macOS
-   account's `Path.home() / "Desktop"` when available, otherwise at that account's home directory.
-   The start folder is not an authorized project. Selecting a folder switches only when its
-   canonical path exactly equals a registered root; a nested, parent, same-named, or unregistered
-   directory leaves permissions and selection unchanged.
+   other valid projects remain usable. Without this file, the Agent's selected workspace is offered
+   as one unregistered compatibility project only when it is a Git repository root, so a parent
+   folder such as the Desktop is never exposed as one project.
+5. Return to Agent → Tunnel. Every registered project is checked for preferred discovery by
+   default; an unavailable root remains visible but cannot be used until it is restored. The
+   sidebar offers concise green checkboxes beside registered folders and labels read-only or
+   unavailable entries. Checking or unchecking changes discovery preference without revoking a
+   registered project's authority. In Step 4, use the inline project selector beside the task
+   heading to choose one checked, available registered project for the precise
+   kickoff prompt. The current id and revision change only after the service accepts the choice.
+   A missing or unavailable current project requires another explicit choice; it does not silently
+   redirect an existing task. Registry permissions remain unchanged.
+6. The circular `Add project folder` action keeps the host-native folder chooser. On macOS it
+   starts at the account's `Path.home() / "Desktop"` when available, otherwise at that account's
+   home directory; the start folder itself grants no authority. Choosing an existing registered
+   root makes it current. Choosing a new nonoverlapping root registers it as writable and makes it
+   current. An invalid or cancelled choice leaves the current project and permissions unchanged.
+   Project updates and MCP registry reads share an owner-only file lock. If a registration
+   cannot save the current selection, its mapping is rolled back before a tool can resolve it.
 
 Runtime behavior:
 
@@ -454,17 +458,19 @@ Runtime behavior:
   on the service-owned Tunnel process.
 - `current_project` is the only project-less tool. It lets a direct natural-language request such
   as `@AgenticContext check the current project` discover the locally selected registered id,
-  identity, permission, availability, selection revision, and preferred project ids before calling
-  `project_overview`. It also returns bounded records and preferred-state flags for all other
-  registry-authorized projects, so one task may explicitly consult a read-only reference even when
-  that project is not in the local preferred checklist. Host paths stay local to the management
-  page and are not returned to the model.
+  identity, permission, availability, selection revision, and registered project ids before calling
+  `project_overview`. It also returns bounded records for all other registry-authorized projects,
+  so one task may explicitly consult a read-only reference. The `selected_project_ids` response
+  field contains the checked discovery subset, initially all registered ids. Host paths stay local
+  to the management page and are not
+  returned to the model.
 - Every other tool names one resolved `project`; the normal page workflow requires a registered
-  project. The no-registry compatibility fallback is explicitly unregistered and read-only, and
-  the page will not present it as authorized or enable kickoff. Each id matches exactly and is never
-  interpreted as a path. `project_overview` establishes the id and identity; every later
-  project-scoped call
-  must carry the returned `project_identity`, so changing the page selection cannot redirect an
+  project. The no-registry compatibility fallback is explicitly unregistered and retains its
+  existing writable authority when the selected workspace is a Git work-tree root; the page does
+  not present it as a registered project or enable kickoff until explicit registration. Each id
+  matches exactly and is never interpreted as a path. `project_overview` establishes the id and
+  identity; every later project-scoped call must carry the returned `project_identity`, so changing
+  the page selection cannot redirect an
   older request. The identity also binds the directory's native filesystem identity: replacing a
   root at the same path invalidates the old identity, and the failed request is never replayed
   against the replacement. Paths are relative to
@@ -477,9 +483,10 @@ Runtime behavior:
   modification time therefore invalidates cached authority. Queued project operations resolve and
   compare the project identity and permission again after acquiring the per-project lock; a
   revocation or remapping while queued is refused before the operation runs.
-- If the registry file is absent, the read-only compatibility fallback is available only when
+- If the registry file is absent, the compatibility fallback is available only when
   `git rev-parse --show-toplevel` confirms that the selected directory is itself the work-tree
-  root. A `.git` placeholder or a nested directory is not sufficient.
+  root. A `.git` placeholder or a nested directory is not sufficient. Choosing that same folder
+  through `Add project folder` materializes its registration before the page enables kickoff.
 - Availability is evaluated per registered project. A root that is temporarily absent remains
   visible as registered but unavailable and cannot be selected or opened; it does not suppress
   other usable projects. If that root later appears, discovery binds its native filesystem
@@ -550,10 +557,20 @@ Runtime behavior:
 - Every tool call is logged as
   `Tunnel tool <name> provider=<provider> ok=<bool> duration=<s> project=<id> target=<path or command>` in the
   application log, so a ChatGPT session can be audited after a restart.
-- The status card exposes one `Tokens:` row. Its value is a bounded estimate for retained MCP
-  request/response tool text, not ChatGPT billing, account balance, remaining quota, or a model
-  task total. The accessible label and tooltip identify that estimate explicitly, and incomplete
-  data is shown as unavailable instead of becoming a fabricated zero. The `o200k_base` tokenizer
+- The status card exposes one `Tokens:` row. For ChatGPT Tunnel, its value accumulates estimated
+  MCP request/response tool-text tokens across normal app server restarts. Only aggregate counts
+  are saved in owner-only atomic JSON under the Tunnel runtime root. Independent service
+  instances serialize updates through a neighboring owner-only lock file and merge only
+  their unsaved calls with the validated saved count. The estimate does not
+  decrease when an older call leaves the 20-call diagnostic history. An absent store begins at
+  zero; an invalid, inaccessible, or unsaved store makes the value unavailable rather than
+  silently restarting it at zero. A failed save does not block tool execution, and a later
+  successful save restores the displayed total. The accessible label and tooltip state the
+  saved scope. Calls whose tokens
+  cannot be estimated are excluded from the cumulative number and make it a labeled lower bound;
+  if none can be estimated yet, the value is unavailable. Gemini Tunnel continues to show a
+  credential-generation-scoped estimate for retained calls. Neither number represents ChatGPT
+  billing, account balance, remaining quota, or a model task total. The `o200k_base` tokenizer
   caches only successful loads. First loads and retries run in the background, with a 30-second
   cooldown after failure. Browser Agent tasks pin the available `o200k_base` tokenizer or the
   UTF-8 byte-count estimate at their first counting boundary. The chosen method survives
@@ -563,7 +580,10 @@ Runtime behavior:
   it. Once a background load succeeds, earlier unknown calls remain visible in the 20-call
   history, but `recent_usage` moves to a clearly labeled tokenizer-recovery window. That
   window remains unavailable until a complete new call finishes; it never treats earlier
-  unknown counts as zero. The shared tokenizer cache can be adopted without waiting for a
+  unknown counts as zero. ChatGPT `cumulative_usage` retains its already known total across that
+  recovery and server restarts, with an unknown-call count so the UI can label the displayed
+  lower bound. The shared
+  tokenizer cache can be adopted without waiting for a
   second Tunnel cooldown. Restart the Python service to load changed application code;
   reconnecting the Tunnel alone cannot do that.
 - Arbitrary shell commands, arbitrary executables, and general background processes are
@@ -574,20 +594,19 @@ Runtime behavior:
 
 Daily two-page workflow:
 
-1. Open `http://localhost:8666/agent/tunnel/chatgpt` and check every registered project needed for
-   the task. More than one project can stay selected. The server keeps one current project for
-   tasks that do not name a project; selecting a folder makes that registered project current, and
-   deselecting the current project moves that role to another selected project. Wait for the saved
-   selection revision and a Ready transport; use Retry/Reconnect if the transport is stale or
-   failed. The folder action selects an existing registered root or registers a new writable
-   project. Existing registry permissions remain unchanged.
+1. Open `http://localhost:8666/agent/tunnel/chatgpt`. All registered folders are checked for
+   preferred discovery by default; use `Add project folder` and its host-native chooser to select
+   an existing registered root or register a new writable root. Existing permissions remain
+   unchanged. Choose one checked, available registered project from the inline selector in Step 4,
+   then wait for the confirmed current-project revision and a Ready transport. The prompt layout
+   remains visible during the switch, while Copy and Ask are disabled until the confirmed prompt
+   is ready. Use Retry/Reconnect if the transport is stale or failed.
 2. Open ChatGPT, choose `@AgenticContext`, and describe the task normally. Copying the local prompt
-   is optional. With one selected project, it pins that exact project id and identity. With more
-   than one, it first discovers available selected projects and their permissions through
-   `current_project`, reports the result, then resolves the task's target projects. An unclear
-   target requires clarification before edits. Each target gets its own `project_overview` and
-   pinned id/identity; read-only projects remain references. Confirmed selection changes update
-   the generated instructions while preserving the user's task text.
+   is optional. Its single template pins the chosen project's exact id, identity, and selection
+   revision, calls `current_project` to confirm that choice, and then calls `project_overview` for
+   that id. A confirmed selector change updates those project fields while retaining edited task
+   text. Explicitly named other registered projects may still be inspected as references within
+   their registry permissions; read-only projects remain read-only.
 3. A task with no supplied id calls `current_project`, pins the returned id/identity, then reads
    `project_overview` and the applicable instructions before any file operation. Every later call
    still sends that explicit id.

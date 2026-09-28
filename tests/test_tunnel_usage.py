@@ -1,4 +1,4 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.5.3-codex.2."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.7.0-codex.0."""
 
 from __future__ import annotations
 
@@ -195,6 +195,74 @@ def test_parallel_calls_and_bounded_history_are_not_task_totals(service, monkeyp
     assert snapshot["call_count"] > len(snapshot["recent_calls"])
     assert all(record["estimated_tokens"] == 2 for record in snapshot["recent_calls"])
     assert snapshot["task_usage"] is None
+
+
+def test_chatgpt_cumulative_tokens_survive_recent_history_eviction(service, monkeypatch):
+    monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", len)
+    tool = tunnel_mcp.TUNNEL_TOOLS_BY_NAME["list_files"]
+    large_call = service._start_activity(tool, {"project": "main"})
+    service._finish_activity(large_call, True, 1, "x" * 34_120)
+    first = service.activity_snapshot("chatgpt")
+    first_total = first["cumulative_usage"]["estimated_tokens"]
+    assert first_total >= 34_120
+    assert first["cumulative_usage"]["complete"] is True
+
+    added_tokens = 0
+    for _ in range(tunnel_mcp.TUNNEL_ACTIVITY_LIMIT):
+        call_id = service._start_activity(tool, {"project": "main"})
+        service._finish_activity(call_id, True, 1, "x")
+        added_tokens += service.activity_snapshot("chatgpt")["recent_calls"][0][
+            "estimated_tokens"
+        ]
+
+    after_eviction = service.activity_snapshot("chatgpt")
+    assert len(after_eviction["recent_calls"]) == tunnel_mcp.TUNNEL_ACTIVITY_LIMIT
+    assert all(record["call_id"] != large_call for record in after_eviction["recent_calls"])
+    assert after_eviction["recent_usage"]["estimated_tokens"] < first_total
+    assert after_eviction["cumulative_usage"] == {
+        "calls": tunnel_mcp.TUNNEL_ACTIVITY_LIMIT + 1,
+        "estimated_tokens": first_total + added_tokens,
+        "complete": True,
+        "scope": "tool_text_estimate",
+        "window": "saved_lifetime",
+        "unestimated_calls": 0,
+    }
+
+    gemini_call = service._start_activity(tool, {"project": "main"}, provider="gemini")
+    service._finish_activity(gemini_call, True, 1, "x" * 50_000)
+    assert service.activity_snapshot("chatgpt")["cumulative_usage"] == (
+        after_eviction["cumulative_usage"]
+    )
+    assert "cumulative_usage" not in service.activity_snapshot("gemini")
+
+
+def test_chatgpt_cumulative_usage_marks_missing_estimates_as_lower_bound(
+    service, monkeypatch
+):
+    tool = tunnel_mcp.TUNNEL_TOOLS_BY_NAME["list_files"]
+    monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", lambda _text: None)
+    unknown_call = service._start_activity(tool, {"project": "main"})
+    service._finish_activity(unknown_call, True, 1, "unknown")
+    unavailable = service.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert unavailable["estimated_tokens"] is None
+    assert unavailable["complete"] is False
+    assert unavailable["unestimated_calls"] == 1
+
+    monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", len)
+    known_call = service._start_activity(tool, {"project": "main"})
+    service._finish_activity(known_call, True, 1, "known")
+    recovered = service.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert recovered["calls"] == 2
+    assert recovered["estimated_tokens"] > 0
+    assert recovered["complete"] is False
+    assert recovered["unestimated_calls"] == 1
+
+    monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", lambda _text: None)
+    another_unknown = service._start_activity(tool, {"project": "main"})
+    service._finish_activity(another_unknown, True, 1, "unknown")
+    lower_bound = service.activity_snapshot("chatgpt")["cumulative_usage"]
+    assert lower_bound["estimated_tokens"] == recovered["estimated_tokens"]
+    assert lower_bound["unestimated_calls"] == 2
 
 
 def test_unknown_estimate_never_becomes_zero_or_a_partial_total(service, monkeypatch):
@@ -395,6 +463,8 @@ def test_early_unknown_call_does_not_poison_badge_after_background_recovery(
         before = client.get("/api/agent/tunnel/status?platform=chatgpt").get_json()
         assert before["recent_usage"]["complete"] is False
         assert before["recent_usage"]["estimated_tokens"] is None
+        assert before["cumulative_usage"]["estimated_tokens"] is None
+        assert before["cumulative_usage"]["unestimated_calls"] == 1
         assert len(before["recent_calls"]) == 1
         assert "data-tunnel-recent-token-badge hidden" in client.get(
             "/agent/tunnel/chatgpt"
@@ -428,10 +498,15 @@ def test_early_unknown_call_does_not_poison_badge_after_background_recovery(
         assert usage["window"] == "since_tokenizer_ready"
         assert usage["complete"] is True
         assert usage["estimated_tokens"] == recent[0]["estimated_tokens"]
+        assert status["cumulative_usage"]["estimated_tokens"] == usage["estimated_tokens"]
+        assert status["cumulative_usage"]["complete"] is False
+        assert status["cumulative_usage"]["unestimated_calls"] == 1
         html = client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
         assert "data-tunnel-recent-token-badge hidden" not in html
         assert "data-tunnel-recent-token-unavailable hidden" in html
-        assert "Estimated tool-text tokens since tokenizer recovery" in html
+        assert "Tokens: at least " in html
+        assert "1 call could not be estimated" in html
+        assert "data-tunnel-token-lower-bound>≥</span>" in html
 
         # An unknown count after recovery invalidates the whole new window.
         monkeypatch.setattr(tunnel_mcp, "_estimated_tool_tokens", lambda _text: None)
@@ -444,6 +519,10 @@ def test_early_unknown_call_does_not_poison_badge_after_background_recovery(
         assert incomplete["recent_usage"]["excluded_pre_encoding_calls"] == 1
         assert incomplete["recent_usage"]["complete"] is False
         assert incomplete["recent_usage"]["estimated_tokens"] is None
+        assert incomplete["cumulative_usage"]["estimated_tokens"] == (
+            status["cumulative_usage"]["estimated_tokens"]
+        )
+        assert incomplete["cumulative_usage"]["unestimated_calls"] == 2
 
 
 def test_status_endpoint_and_initial_html_share_the_call_record(tmp_path, monkeypatch):
@@ -461,10 +540,21 @@ def test_status_endpoint_and_initial_html_share_the_call_record(tmp_path, monkey
     with app.test_client() as client:
         payload = client.get("/api/agent/tunnel/status").get_json()
         assert payload["active_calls"][0]["call_id"] == call_id
+        assert payload["cumulative_usage"] == {
+            "calls": 0,
+            "estimated_tokens": 0,
+            "complete": True,
+            "scope": "tool_text_estimate",
+            "window": "saved_lifetime",
+            "unestimated_calls": 0,
+        }
         html = client.get("/agent/tunnel/chatgpt").get_data(as_text=True)
         assert html.count('class="agent-tunnel-usage-label"') == 1
         assert '<dt class="agent-tunnel-usage-label">Tokens:</dt>' in html
-        assert 'aria-label="Estimated recent tool-text tokens"' in html
+        assert (
+            'aria-label="Tokens: 0 estimated tool-text tokens since usage tracking '
+            'began; saved across app server restarts"' in html
+        )
         for removed_label in (
             "Total calls:",
             "Active calls:",
@@ -482,6 +572,73 @@ def usage_record(identity, count, state="running"):
         "state": state, "estimated_tokens": count,
         "usage_partial": state == "running",
     }
+
+
+@pytest.mark.parametrize("width", [824, 390])
+def test_cumulative_token_badge_survives_recent_history_eviction(
+    disposable_browser, sidebar_server_url, width,
+):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 844}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    page.clock.install()
+    payload = {
+        "platform": "chatgpt",
+        "presentation": {"tone": "ready", "label": "Ready", "hint": ""},
+        "recent_usage": {"estimated_tokens": 34_120, "complete": True},
+        "cumulative_usage": {
+            "estimated_tokens": 34_120,
+            "complete": True,
+            "window": "server_lifetime",
+            "unestimated_calls": 0,
+        },
+    }
+    page.route(
+        "**/api/agent/tunnel/status?platform=chatgpt",
+        lambda route: route.fulfill(json=payload),
+    )
+
+    def refresh():
+        with page.expect_response("**/api/agent/tunnel/status?platform=chatgpt"):
+            page.clock.run_for(10_100)
+
+    try:
+        page.goto(f"{sidebar_server_url}/agent/tunnel/chatgpt")
+        page.get_by_role("button", name="Toggle sidebar", exact=True).click()
+        digits = page.locator("[data-tunnel-recent-token-digits]")
+        prefix = page.locator("[data-tunnel-token-lower-bound]")
+        value = page.locator(".agent-tunnel-recent-tokens")
+        expect(digits).to_have_text("34,120")
+        expect(prefix).to_be_hidden()
+
+        payload["recent_usage"] = {"estimated_tokens": 12_590, "complete": True}
+        refresh()
+        expect(digits).to_have_text("34,120")
+
+        payload["cumulative_usage"] = {
+            **payload["cumulative_usage"],
+            "complete": False,
+            "unestimated_calls": 1,
+        }
+        refresh()
+        expect(digits).to_have_text("34,120")
+        expect(prefix).to_be_visible()
+        prefix_box = prefix.bounding_box()
+        digits_box = digits.bounding_box()
+        assert prefix_box["x"] + prefix_box["width"] <= digits_box["x"] + 1
+        assert page.locator("[data-tunnel-recent-token-badge]").evaluate(
+            "element => element.scrollWidth <= element.clientWidth + 1"
+        )
+        expect(value).to_have_attribute(
+            "aria-label",
+            "Tokens: at least 34,120 estimated tool-text tokens since this app "
+            "server started; resets when the server restarts; "
+            "1 call could not be estimated",
+        )
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize("width", [1280, 875, 390, 320])
@@ -518,7 +675,7 @@ def test_summary_polling_states_and_long_integer_geometry(
             ["Tokens:"]
         )
         expect(recent_tokens).to_have_attribute(
-            "aria-label", "Estimated recent tool-text tokens"
+            "aria-label", "Tokens: 0 estimated tool-text tokens from retained recent calls"
         )
         assert all(
             height <= 20
@@ -583,7 +740,10 @@ def test_summary_polling_states_and_long_integer_geometry(
             "excluded_pre_encoding_calls": 1,
         }
         refresh()
-        description = "Estimated tool-text tokens since tokenizer recovery; earlier calls excluded"
+        description = (
+            "Tokens: 12,345,678 estimated tool-text tokens since tokenizer "
+            "recovery; earlier calls excluded"
+        )
         expect(recent_tokens).to_have_attribute("aria-label", description)
         expect(recent_tokens).to_have_attribute("title", description)
         payload["recent_calls"] = [usage_record(1, 12_345_678, "completed")]
@@ -596,15 +756,21 @@ def test_summary_polling_states_and_long_integer_geometry(
         }
         refresh()
         expect(recent_tokens).to_have_attribute(
-            "aria-label", "Estimated recent tool-text tokens"
+            "aria-label",
+            "Tokens: 12,345,678 estimated tool-text tokens from retained recent calls",
         )
         expect(recent_tokens).to_have_attribute(
-            "title", "Estimated recent tool-text tokens"
+            "title",
+            "Tokens: 12,345,678 estimated tool-text tokens from retained recent calls",
         )
         for unknown in [None, -1, 9_007_199_254_740_992, "12", True]:
             payload["recent_usage"] = {"estimated_tokens": unknown, "complete": False}
             refresh()
             expect(recent_tokens.locator("[data-tunnel-recent-token-unavailable]")).to_be_visible()
+            expect(recent_tokens).to_have_attribute(
+                "aria-label",
+                "Tokens: unavailable; estimated tool-text tokens from retained recent calls",
+            )
         payload["active_calls"] = []
         payload["recent_calls"] = []
         payload["recent_usage"] = {"estimated_tokens": 0, "complete": True}

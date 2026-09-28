@@ -1,4 +1,4 @@
-/* Code version: v1.6.1-codex.0 */
+/* Code version: v1.8.1-codex.0 */
 /* Tunnel onboarding uses the wrapper for layout without painting another panel. */
 .workspace-article-card.agent-tunnel-onboarding-card {
     border: 0;
@@ -106,7 +106,13 @@
     line-height: var(--workspace-metric-value-line-height);
     letter-spacing: var(--workspace-metric-value-letter-spacing);
 }
+.agent-tunnel-usage [data-tunnel-token-lower-bound] {
+    grid-column: 2;
+    align-self: end;
+    line-height: 1;
+}
 .agent-tunnel-usage .workspace-metric-value-major {
+    grid-column: 3;
     align-self: end;
     display: flex;
     align-items: flex-end;
@@ -134,17 +140,9 @@
     display: none;
 }
 
-.agent-tunnel-project-fieldset {
-    min-inline-size: 0;
-    margin: 0;
-    padding: 0;
-    border: 0;
-}
-
-.agent-tunnel-project-fieldset > legend {
-    margin-block-end: 4px;
-    padding: 0;
-    font-size: var(--font-ui-lg);
+.agent-tunnel-project-field #agent_tunnel_project_path {
+    height: 32px;
+    min-height: 32px;
 }
 
 .agent-tunnel-project-list {
@@ -159,12 +157,23 @@
     scrollbar-gutter: stable;
 }
 
+.agent-tunnel-project-list[hidden] {
+    display: none;
+}
+
 .agent-tunnel-project-option {
     position: relative;
     padding-block: 2px;
 }
 
 .agent-tunnel-project-identity {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.agent-tunnel-project-name {
+    grid-column: 2;
+    grid-row: 1;
     align-self: center;
 }
 
@@ -230,6 +239,93 @@
     line-height: 1.4;
 }
 
+.agent-tunnel-kickoff-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    min-inline-size: 0;
+}
+
+.agent-tunnel-kickoff-project-field {
+    flex: 1 1 220px;
+    min-inline-size: min(100%, 220px);
+    max-inline-size: 100%;
+    --shared-select-option-min-height: 32px;
+    --shared-select-option-padding: 7px 10px;
+}
+
+.agent-tunnel-kickoff-project-field[hidden] {
+    display: none;
+}
+
+.agent-tunnel-kickoff-project-field > select,
+.agent-tunnel-kickoff-project-field .browser-filter-select-trigger {
+    box-sizing: border-box;
+    height: 30px;
+    min-height: 30px;
+    padding-block: 0;
+}
+
+.agent-tunnel-kickoff-project-field .browser-filter-select {
+    inline-size: 100%;
+    max-inline-size: 100%;
+}
+
+.agent-tunnel-kickoff-project-field .browser-filter-select-trigger {
+    inline-size: max-content;
+    min-inline-size: 44px;
+    max-inline-size: 100%;
+    justify-content: center;
+    padding-inline: 10px;
+    border: var(--shared-select-border);
+    background: var(--shared-select-trigger-material);
+    box-shadow: var(--shared-select-shadow);
+    backdrop-filter: var(--shared-select-blur);
+    -webkit-backdrop-filter: var(--shared-select-blur);
+    text-align: center;
+}
+
+.agent-tunnel-kickoff-project-field .browser-filter-select-trigger:is(:hover, :focus, :focus-visible, [aria-expanded="true"]) {
+    background: var(--shared-select-trigger-material-hover);
+    box-shadow: var(--shared-select-shadow-hover);
+}
+
+.agent-tunnel-kickoff-project-field .browser-filter-select-trigger .browser-session-trigger-label {
+    justify-content: center;
+    inline-size: auto;
+    max-inline-size: 100%;
+}
+
+.agent-tunnel-kickoff-project-field .browser-filter-select-trigger .browser-picker-trigger-chevron {
+    display: none;
+}
+
+.agent-tunnel-kickoff-project-field .browser-filter-select-dropdown {
+    inset-inline-end: auto;
+    inline-size: max-content;
+    min-inline-size: min(100%, 120px);
+    max-inline-size: 100%;
+}
+
+.agent-tunnel-kickoff-project-field .browser-filter-select-dropdown .trade-strategy-dropdown-text {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.agent-tunnel-kickoff-editor[aria-busy="true"] {
+    opacity: 0.65;
+}
+
+.agent-tunnel-step-action[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+    transform: none;
+}
+
 /* Keep the loading spinner in the same square slot as the ready checkmark. */
 #agent_runtime_form [data-agent-tunnel-spinner] {
     margin-block: 5px;
@@ -246,8 +342,8 @@
 }
 
 .agent-tunnel-connection-icon {
-    mask-image: url("/static/images/link.circle.fill.svg");
-    -webkit-mask-image: url("/static/images/link.circle.fill.svg");
+    mask-image: url("/static/images/link.icloud.fill.svg");
+    -webkit-mask-image: url("/static/images/link.icloud.fill.svg");
 }
 
 [data-agent-tunnel-action="disconnect"] .agent-tunnel-connection-icon {

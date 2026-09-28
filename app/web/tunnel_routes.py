@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.10.7-codex.0
+# Code version: v1.11.5-codex.0
 
 from __future__ import annotations
 
@@ -16,10 +16,12 @@ from dataclasses import dataclass
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 from threading import RLock
+import tempfile
 import time
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -66,6 +68,7 @@ from app.core.agent import (
     valid_tunnel_id,
     www_authenticate_challenge,
 )
+from app.core.tunnel_projects import project_transaction_lock
 
 
 TUNNEL_BLUEPRINT_NAME = "tunnel"
@@ -502,18 +505,29 @@ def _local_project_context(
     workspace_path = str(settings_store.settings.workspace_path or "")
     registry = tunnel_mcp_service.registry
     selection_store = tunnel_mcp_service.selection_store
-    selection = selection_store.load()
-    registry_configured = not registry.uses_fallback()
+    registry_configured = False
+    revision = 0
+    selected_at = 0.0
     try:
-        projects = registry.projects(workspace_path)
-        resolved = resolve_current_project(projects, selection, workspace_path)
+        with project_transaction_lock(registry):
+            selection = selection_store.load()
+            revision = selection.revision
+            selected_at = selection.selected_at
+            registry_configured = not registry.uses_fallback()
+            projects = registry.projects(workspace_path)
+            resolved = resolve_current_project(projects, selection, workspace_path)
     except ProjectRegistryError as exc:
         return {
             **empty,
             "registry_configured": registry_configured,
-            "revision": selection.revision,
-            "selected_at": selection.selected_at,
+            "revision": revision,
+            "selected_at": selected_at,
             "problem": str(exc),
+        }
+    except OSError:
+        return {
+            **empty,
+            "problem": "The Tunnel project configuration could not be read.",
         }
 
     preferred_projects = selected_projects(projects, selection)
@@ -890,6 +904,43 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
     """Register the Tunnel transport, credential, and page routes on one blueprint."""
     blueprint = Blueprint(TUNNEL_BLUEPRINT_NAME, __name__)
     gemini_gateway = context.gemini_gateway
+    project_update_lock = RLock()
+
+    def registry_snapshot(path: Path) -> bytes | None:
+        if path.is_symlink():
+            raise OSError("The Tunnel project registry cannot be a symlink.")
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def restore_registry_snapshot(path: Path, before: bytes | None, after: bytes | None) -> bool:
+        if registry_snapshot(path) != after:
+            return False
+        if before is None:
+            path.unlink()
+            return True
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(before)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        return True
+
+    @contextmanager
+    def rollback_registry_on_failure(registry: Any) -> Iterator[None]:
+        before = registry_snapshot(registry.path)
+        try:
+            yield
+        except Exception as error:
+            after = registry_snapshot(registry.path)
+            if after != before and not restore_registry_snapshot(registry.path, before, after):
+                raise OSError("The Tunnel project registry changed during recovery.") from error
+            raise
 
     def status_payload(platform: str = "chatgpt") -> dict[str, Any]:
         return tunnel_status_payload(
@@ -1101,48 +1152,56 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             ), 400
 
         registry = context.tunnel_mcp_service.registry
-        if registry.uses_fallback():
-            return jsonify(
-                {
-                    "error": (
-                        "Register this project in tunnel-projects.json before selecting "
-                        "it for Tunnel tasks."
-                    )
-                }
-            ), 409
         workspace_path = str(context.settings_store.settings.workspace_path or "")
         try:
-            projects = registry.projects(workspace_path)
-            previous_selection = context.tunnel_mcp_service.selection_store.load()
-            previous_ids = {
-                item.id for item in selected_projects(projects, previous_selection)
-            }
-            project = registry.resolve(payload["project_id"], workspace_path)
-            problem = project_availability(project)
-            if problem:
-                return jsonify({"error": problem}), 409
-            normalized_selected_ids: tuple[str, ...] | None = None
-            if selected_ids is not None:
-                normalized_selected_ids = tuple(selected_ids)
-                for selected_id in normalized_selected_ids:
-                    registry.resolve(selected_id, workspace_path)
-                if project.id not in normalized_selected_ids:
+            with project_update_lock, project_transaction_lock(registry):
+                if registry.uses_fallback():
                     return jsonify(
-                        {"error": "The current Tunnel project must also be selected."}
-                    ), 400
-            saved_selection = context.tunnel_mcp_service.selection_store.save(
-                project.id,
-                selected_project_ids=normalized_selected_ids,
-                expected_revision=payload["expected_revision"],
-            )
-            should_reconnect = (
-                saved_selection.project_id != previous_selection.project_id
-                or bool(
-                    {
-                        item.id for item in selected_projects(projects, saved_selection)
-                    } - previous_ids
+                        {
+                            "error": (
+                                "Register this project in tunnel-projects.json before "
+                                "selecting it for Tunnel tasks."
+                            )
+                        }
+                    ), 409
+                projects = registry.projects(workspace_path)
+                previous_selection = context.tunnel_mcp_service.selection_store.load()
+                previous_ids = {
+                    item.id for item in selected_projects(projects, previous_selection)
+                }
+                project = registry.resolve(payload["project_id"], workspace_path)
+                problem = project_availability(project)
+                if problem:
+                    return jsonify({"error": problem}), 409
+                if selected_ids is not None:
+                    seen_selected_ids: set[str] = set()
+                    for selected_id in selected_ids:
+                        registry.resolve(selected_id, workspace_path)
+                        folded = selected_id.casefold()
+                        if folded in seen_selected_ids:
+                            raise ProjectRegistryError(
+                                f"Selected project {selected_id} is selected twice."
+                            )
+                        seen_selected_ids.add(folded)
+                    if project.id not in selected_ids:
+                        return jsonify(
+                            {"error": "The current Tunnel project must also be selected."}
+                        ), 400
+                saved_selection = context.tunnel_mcp_service.selection_store.save(
+                    project.id,
+                    selected_project_ids=(
+                        tuple(selected_ids) if selected_ids is not None else None
+                    ),
+                    expected_revision=payload["expected_revision"],
                 )
-            )
+                should_reconnect = (
+                    saved_selection.project_id != previous_selection.project_id
+                    or bool(
+                        {
+                            item.id for item in selected_projects(projects, saved_selection)
+                        } - previous_ids
+                    )
+                )
         except ProjectSelectionConflict as exc:
             return jsonify(
                 {
@@ -1193,35 +1252,38 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         selection_store = context.tunnel_mcp_service.selection_store
         workspace_path = str(context.settings_store.settings.workspace_path or "")
         try:
-            previous_selection = selection_store.load()
-            if previous_selection.revision != payload["expected_revision"]:
-                raise ProjectSelectionConflict(
-                    "The current project changed in another window. Review the selection "
-                    "and choose again."
+            with project_update_lock, project_transaction_lock(registry):
+                previous_selection = selection_store.load()
+                if previous_selection.revision != payload["expected_revision"]:
+                    raise ProjectSelectionConflict(
+                        "The current project changed in another window. Review the selection "
+                        "and choose again."
+                    )
+                previous_ids = {
+                    item.id for item in selected_projects(
+                        registry.projects(workspace_path), previous_selection
+                    )
+                }
+                with rollback_registry_on_failure(registry):
+                    project = registry.register(payload["path"], workspace_path)
+                    problem = project_availability(project)
+                    if problem:
+                        raise ProjectSelectionConflict(problem)
+                    projects = registry.projects(workspace_path)
+                    selected_project_ids = [
+                        item.id for item in selected_projects(projects, previous_selection)
+                    ]
+                    if project.id not in selected_project_ids:
+                        selected_project_ids.append(project.id)
+                    saved_selection = selection_store.save(
+                        project.id,
+                        selected_project_ids=tuple(selected_project_ids),
+                        expected_revision=payload["expected_revision"],
+                    )
+                should_reconnect = (
+                    saved_selection.project_id != previous_selection.project_id
+                    or project.id not in previous_ids
                 )
-            previous_ids = {
-                item.id for item in selected_projects(
-                    registry.projects(workspace_path), previous_selection
-                )
-            }
-            project = registry.register(payload["path"], workspace_path)
-            problem = project_availability(project)
-            if problem:
-                return jsonify({"error": problem}), 409
-            projects = registry.projects(workspace_path)
-            selection = selection_store.load()
-            selected_ids = [item.id for item in selected_projects(projects, selection)]
-            if project.id not in selected_ids:
-                selected_ids.append(project.id)
-            saved_selection = selection_store.save(
-                project.id,
-                selected_project_ids=tuple(selected_ids),
-                expected_revision=payload["expected_revision"],
-            )
-            should_reconnect = (
-                saved_selection.project_id != previous_selection.project_id
-                or project.id not in previous_ids
-            )
         except ProjectSelectionConflict as exc:
             return jsonify(
                 {
@@ -1240,7 +1302,11 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                     "error": (
                         "The project could not be registered. Check the local Tunnel "
                         "configuration folder and try again."
-                    )
+                    ),
+                    "project_context": _local_project_context(
+                        context.settings_store,
+                        context.tunnel_mcp_service,
+                    ),
                 }
             ), 500
 
@@ -1271,28 +1337,35 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         registry = context.tunnel_mcp_service.registry
         selection_store = context.tunnel_mcp_service.selection_store
         try:
-            selection = selection_store.load()
-            if selection.revision != payload["expected_revision"]:
-                raise ProjectSelectionConflict(
-                    "The current project changed in another window. Review the selection "
-                    "and choose again."
-                )
-            projects = registry.projects()
-            preferred_ids = [item.id for item in selected_projects(projects, selection)]
-            remaining = registry.unregister(payload["project_id"])
-            remaining_ids = {item.id for item in remaining}
-            selected_ids = [item for item in preferred_ids if item in remaining_ids]
-            if remaining and not selected_ids:
-                selected_ids = [remaining[0].id]
-            if selection.project_id in selected_ids:
-                current_id = selection.project_id
-            else:
-                current_id = selected_ids[0] if selected_ids else ""
-            selection_store.save(
-                current_id,
-                selected_project_ids=selected_ids,
-                expected_revision=payload["expected_revision"],
-            )
+            with project_update_lock, project_transaction_lock(registry):
+                selection = selection_store.load()
+                if selection.revision != payload["expected_revision"]:
+                    raise ProjectSelectionConflict(
+                        "The current project changed in another window. Review the selection "
+                        "and choose again."
+                    )
+                selected_ids_before = [
+                    item.id for item in selected_projects(registry.projects(), selection)
+                ]
+                with rollback_registry_on_failure(registry):
+                    remaining = registry.unregister(payload["project_id"])
+                    remaining_ids = {item.id for item in remaining}
+                    selected_ids = [
+                        project_id
+                        for project_id in selected_ids_before
+                        if project_id in remaining_ids
+                    ]
+                    if remaining and not selected_ids:
+                        selected_ids = [remaining[0].id]
+                    if selection.project_id in selected_ids:
+                        current_id = selection.project_id
+                    else:
+                        current_id = selected_ids[0] if selected_ids else ""
+                    selection_store.save(
+                        current_id,
+                        selected_project_ids=selected_ids,
+                        expected_revision=payload["expected_revision"],
+                    )
         except ProjectSelectionConflict as exc:
             return jsonify(
                 {
@@ -1307,7 +1380,13 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             return jsonify({"error": str(exc)}), 400
         except (OSError, ValueError, KeyError, TypeError):
             return jsonify(
-                {"error": "The Tunnel project mapping could not be removed. Try again."}
+                {
+                    "error": "The Tunnel project mapping could not be removed. Try again.",
+                    "project_context": _local_project_context(
+                        context.settings_store,
+                        context.tunnel_mcp_service,
+                    ),
+                }
             ), 500
 
         platform = str(request.args.get("platform") or "chatgpt").strip().lower()

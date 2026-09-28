@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.147.8-codex.0
+# Code version: v1.148.4-codex.0
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import ANY, patch
@@ -1340,7 +1341,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
         self.assertIn('selection-list.css?v=selection-list-v1.0.0-codex.0', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.69.2-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.74.0-codex.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -2179,6 +2180,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(initial["projects"][0]["access"], "Read and write")
                 self.assertEqual(initial["projects"][1]["access"], "Read only")
                 self.assertTrue(all(item["registered"] for item in initial["projects"]))
+                self.assertEqual(initial["selected_project_ids"], ["alpha", "reference"])
 
                 selected = client.post(
                     "/api/agent/tunnel/project",
@@ -2189,6 +2191,20 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(current["current"]["id"], "alpha")
                 self.assertEqual(current["revision"], 1)
                 self.assertRegex(current["current"]["identity"], r"^[0-9a-f]{16}$")
+
+                invalid_subset = client.post(
+                    "/api/agent/tunnel/project",
+                    json={
+                        "project_id": "alpha",
+                        "selected_project_ids": ["reference"],
+                        "expected_revision": 1,
+                    },
+                )
+                self.assertEqual(invalid_subset.status_code, 400)
+                self.assertEqual(
+                    app.extensions["tunnel_mcp_service"].selection_store.load().revision,
+                    1,
+                )
 
                 service = app.extensions["tunnel_mcp_service"]
                 rpc_status, rpc_body = service.handle(
@@ -2277,6 +2293,284 @@ class WebAppTests(unittest.TestCase):
                     json={"path": str(first / "inner"), "expected_revision": 4},
                 )
                 self.assertEqual(overlapping.status_code, 400)
+
+                service.selection_store.save(
+                    "alpha", selected_project_ids=["alpha"], expected_revision=4
+                )
+                restored = client.get("/api/agent/tunnel/project").get_json()[
+                    "project_context"
+                ]
+                self.assertEqual(
+                    restored["selected_project_ids"],
+                    ["alpha"],
+                )
+                self.assertEqual(
+                    {item["id"]: item["selected"] for item in restored["projects"]},
+                    {"alpha": True, "reference": False, "chosen-project": False},
+                )
+
+                later = root / "later project"
+                later.mkdir()
+                registered_later = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(later), "expected_revision": 5},
+                )
+                self.assertEqual(registered_later.status_code, 200)
+                self.assertEqual(
+                    registered_later.get_json()["project_context"]["selected_project_ids"],
+                    ["alpha", "later-project"],
+                )
+
+    def test_adding_the_implicit_git_root_creates_a_registered_tunnel_project(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            repository = root / "solo"
+            repository.mkdir()
+            subprocess.run(
+                ["git", "init", "-q", str(repository)],
+                check=True,
+                capture_output=True,
+            )
+            registry_path = root / "settings" / "tunnel-projects.json"
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            app.extensions["computer_use_settings"].update(
+                ComputerUseSettings(workspace_path=str(repository))
+            )
+
+            with app.test_client() as client:
+                initial = client.get("/api/agent/tunnel/project").get_json()["project_context"]
+                self.assertFalse(initial["registry_configured"])
+                self.assertFalse(initial["current"]["registered"])
+
+                response = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(repository), "expected_revision": 0},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                context = response.get_json()["project_context"]
+                self.assertTrue(context["registry_configured"])
+                self.assertTrue(context["current"]["registered"])
+                self.assertEqual(context["current"]["id"], "solo")
+                self.assertEqual(context["selected_project_ids"], ["solo"])
+                self.assertEqual(len(json.loads(registry_path.read_text())["projects"]), 1)
+
+    def test_tunnel_registry_mutations_roll_back_when_selection_save_fails(self) -> None:
+        """A failed second file write must not change the bridged project set."""
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "alpha"
+            second = root / "beta"
+            first.mkdir()
+            second.mkdir()
+            registry_path = root / "settings" / "tunnel-projects.json"
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            service = app.extensions["tunnel_mcp_service"]
+
+            with patch.object(
+                service.selection_store, "save", side_effect=OSError("sk-private-test-error"),
+            ):
+                with app.test_client() as client:
+                    failed_add = client.post(
+                        "/api/agent/tunnel/project/register",
+                        json={"path": str(first), "expected_revision": 0},
+                    )
+            self.assertEqual(failed_add.status_code, 500)
+            self.assertFalse(registry_path.exists())
+            self.assertNotIn("sk-private-test-error", json.dumps(failed_add.get_json()))
+
+            registry_path.parent.mkdir(parents=True, exist_ok=True)
+            registry_path.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "projects": [
+                        {"id": "alpha", "root": str(first), "writable": True},
+                        {"id": "beta", "root": str(second), "writable": True},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            original = registry_path.read_bytes()
+            with patch.object(
+                service.selection_store, "save", side_effect=OSError("sk-private-test-error"),
+            ):
+                with app.test_client() as client:
+                    failed_remove = client.post(
+                        "/api/agent/tunnel/project/unregister",
+                        json={"project_id": "alpha", "expected_revision": 0},
+                    )
+            self.assertEqual(failed_remove.status_code, 500)
+            self.assertEqual(registry_path.read_bytes(), original)
+            self.assertNotIn("sk-private-test-error", json.dumps(failed_remove.get_json()))
+
+    def test_concurrent_tunnel_registration_rechecks_revision_before_granting_access(self) -> None:
+        """A stale window cannot register another root while a first save is pending."""
+        from threading import Event, Thread
+
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "alpha"
+            second = root / "beta"
+            first.mkdir()
+            second.mkdir()
+            registry_path = root / "settings" / "tunnel-projects.json"
+            registry_path.parent.mkdir()
+            registry_path.write_text(
+                json.dumps({"schema_version": 1, "projects": []}), encoding="utf-8",
+            )
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            registry = app.extensions["tunnel_mcp_service"].registry
+            original_register = registry.register
+            first_registered = Event()
+            release_first = Event()
+            second_started = Event()
+            second_done = Event()
+            responses = {}
+
+            def held_register(path, workspace_path=""):
+                project = original_register(path, workspace_path)
+                if path == str(first):
+                    first_registered.set()
+                    if not release_first.wait(5):
+                        raise AssertionError("The first registration was not released.")
+                return project
+
+            def post_registration(name, path):
+                if name == "second":
+                    second_started.set()
+                with app.test_client() as client:
+                    responses[name] = client.post(
+                        "/api/agent/tunnel/project/register",
+                        json={"path": str(path), "expected_revision": 0},
+                    )
+                if name == "second":
+                    second_done.set()
+
+            with patch.object(registry, "register", side_effect=held_register):
+                first_thread = Thread(target=post_registration, args=("first", first))
+                second_thread = Thread(target=post_registration, args=("second", second))
+                first_thread.start()
+                try:
+                    self.assertTrue(first_registered.wait(5))
+                    second_thread.start()
+                    self.assertTrue(second_started.wait(5))
+                    self.assertFalse(second_done.wait(0.2))
+                finally:
+                    release_first.set()
+                    first_thread.join(timeout=5)
+                    if second_thread.ident is not None:
+                        second_thread.join(timeout=5)
+
+            self.assertFalse(first_thread.is_alive())
+            self.assertFalse(second_thread.is_alive())
+            self.assertEqual(responses["first"].status_code, 200)
+            self.assertEqual(responses["second"].status_code, 409)
+            self.assertEqual(
+                [item["id"] for item in json.loads(registry_path.read_text())["projects"]],
+                ["alpha"],
+            )
+
+    def test_independent_tunnel_apps_serialize_registry_rollback_and_registration(self) -> None:
+        """One failed app transaction cannot undo another app's committed root."""
+        from threading import Event, Thread
+
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "alpha"
+            second = root / "beta"
+            first.mkdir()
+            second.mkdir()
+            registry_path = root / "settings" / "tunnel-projects.json"
+            registry_path.parent.mkdir()
+            registry_path.write_text(
+                json.dumps({"schema_version": 1, "projects": []}), encoding="utf-8",
+            )
+            shared_settings_path = root / "settings" / "settings.json"
+            apps = [
+                create_app(
+                    root / f"store-{index}",
+                    computer_use_settings_path=shared_settings_path,
+                    computer_use_runtime_root=root / f"runtime-{index}",
+                    tunnel_projects_path=registry_path,
+                    agent_external_operations_enabled=False,
+                )
+                for index in (1, 2)
+            ]
+            first_store = apps[0].extensions["tunnel_mcp_service"].selection_store
+            first_save_started = Event()
+            release_first_save = Event()
+            second_started = Event()
+            second_done = Event()
+            responses = {}
+
+            def fail_after_registry_write(*args, **kwargs):
+                first_save_started.set()
+                if not release_first_save.wait(5):
+                    raise AssertionError("The first app was not released.")
+                raise OSError("The selection file could not be saved.")
+
+            def post_registration(name, app, path):
+                if name == "second":
+                    second_started.set()
+                with app.test_client() as client:
+                    responses[name] = client.post(
+                        "/api/agent/tunnel/project/register",
+                        json={"path": str(path), "expected_revision": 0},
+                    )
+                if name == "second":
+                    second_done.set()
+
+            with patch.object(first_store, "save", side_effect=fail_after_registry_write):
+                first_thread = Thread(
+                    target=post_registration,
+                    args=("first", apps[0], first),
+                )
+                second_thread = Thread(
+                    target=post_registration,
+                    args=("second", apps[1], second),
+                )
+                first_thread.start()
+                try:
+                    self.assertTrue(first_save_started.wait(5))
+                    second_thread.start()
+                    self.assertTrue(second_started.wait(5))
+                    self.assertFalse(second_done.wait(0.2))
+                finally:
+                    release_first_save.set()
+                    first_thread.join(timeout=5)
+                    if second_thread.ident is not None:
+                        second_thread.join(timeout=5)
+
+            self.assertFalse(first_thread.is_alive())
+            self.assertFalse(second_thread.is_alive())
+            self.assertEqual(responses["first"].status_code, 500)
+            self.assertEqual(responses["second"].status_code, 200)
+            self.assertEqual(
+                [item["id"] for item in json.loads(registry_path.read_text())["projects"]],
+                ["beta"],
+            )
+            self.assertEqual(first_store.load().revision, 1)
+            lock_path = registry_path.with_name(f".{registry_path.name}.lock")
+            self.assertTrue(lock_path.is_file())
+            self.assertEqual(lock_path.stat().st_mode & 0o077, 0)
 
     def test_tunnel_project_change_reconnects_only_after_a_qualified_chatgpt_save(self) -> None:
         """A confirmed writable selection refreshes ChatGPT before the response."""
@@ -2374,6 +2668,10 @@ class WebAppTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(narrowed.status_code, 200)
+                self.assertEqual(
+                    narrowed.get_json()["project_context"]["selected_project_ids"],
+                    ["beta"],
+                )
                 self.assertEqual(reconnect.call_count, 2)
 
                 stale = client.post(
@@ -3757,7 +4055,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.69.2-codex.0',
+            'computer-use-agent-v3.74.0-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',

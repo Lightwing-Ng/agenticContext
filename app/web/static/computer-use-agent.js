@@ -1,4 +1,4 @@
-/* Code version: v3.69.2-codex.0 */
+/* Code version: v3.74.0-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -121,10 +121,13 @@
         tunnelLiveMarkers: Array.from(document.querySelectorAll("[data-agent-tunnel-live-marker]")),
         tunnelKickoffPrompt: document.querySelector("[data-agent-tunnel-kickoff]"),
         tunnelKickoffTitle: document.querySelector("[data-agent-tunnel-kickoff-title]"),
+        tunnelKickoffProject: document.querySelector("[data-agent-tunnel-kickoff-project]"),
+        tunnelKickoffProjectField: document.querySelector("[data-agent-tunnel-kickoff-project-field]"),
         tunnelKickoffCopyForm: document.querySelector("[data-agent-tunnel-kickoff-copy-form]"),
         tunnelKickoffCopy: document.querySelector("[data-agent-tunnel-copy-kickoff]"),
         tunnelKickoffCopyLabel: document.querySelector("[data-agent-tunnel-copy-label]"),
         tunnelKickoffActionStep: document.querySelector("[data-agent-tunnel-kickoff-action-step]"),
+        tunnelKickoffAsk: document.querySelector("[data-agent-tunnel-kickoff-ask]"),
         tunnelKickoffNextStep: document.querySelector("[data-agent-tunnel-kickoff-next-step]"),
         geminiKickoffPrompt: document.querySelector("[data-agent-gemini-kickoff]"),
         claudePublicOrigin: document.querySelector("[data-agent-claude-public-origin]"),
@@ -406,6 +409,7 @@
     }
 
     function restoreExecutionConfiguration(agent, {force = false} = {}) {
+        if (selectedConnectionMode() !== "browser") return;
         if (agent?.session_id !== executionSessionId || !agent.workspace_path
             || agent.platform !== selectedPlatform() || agent.browser !== selectedBrowser()) return;
         const signature = JSON.stringify([executionScope, executionSessionId, agent.run_id,
@@ -1071,7 +1075,7 @@
         credentials: readTunnelCredentials(),
         enabled: elements.tunnelField?.dataset.agentTunnelInitialEnabled === "true",
         projectContext: readTunnelProjectContext(),
-        activityObserved: elements.tunnelLiveMarkers.some((marker) => !marker.hidden),
+        activityObserved: elements.tunnelField?.dataset.agentTunnelInitialActivityObserved === "true",
         config: safeGeminiConfig(null),
         authorization: emptyGeminiAuthorization(),
         usageKnown: false,
@@ -1080,7 +1084,6 @@
     let tunnelPresentation = initialTunnelSnapshot.presentation;
     let tunnelCredentials = initialTunnelSnapshot.credentials;
     let tunnelProjectContext = initialTunnelSnapshot.projectContext;
-    let tunnelActivityObserved = initialTunnelSnapshot.activityObserved;
     let tunnelPollTimer = null;
     let tunnelPollRevision = 0;
     let tunnelPollController = null;
@@ -1091,10 +1094,14 @@
     let tunnelCredentialError = "";
     let tunnelProjectSaveRevision = 0;
     let tunnelProjectBusy = false;
+    let tunnelProjectPendingSelectedIds = null;
+    let tunnelProjectPendingCurrentId = "";
+    let tunnelKickoffRetainDuringSwitch = false;
+    let tunnelKickoffAwaitingStatus = false;
     let tunnelProjectNotice = "";
     let tunnelProjectPathTouched = false;
     let tunnelProjectListSignature = "";
-    let tunnelProjectPendingSelectedIds = null;
+    let tunnelKickoffProjectOptionsSignature = "";
     let tunnelConnectionRevision = 0;
     let tunnelConnectionBusy = false;
     let tunnelKickoffPrefixValue = "";
@@ -1195,9 +1202,6 @@
     }
 
     function tunnelKickoffPrefix(context = tunnelProjectContext) {
-        if (context?.selectedProjectIds?.length > 1) {
-            return `Use @AgenticContext. Multiple Tunnel projects are selected (selection revision ${context.revision}). First call current_project to discover which selected project directories are available and whether each is writable or read-only. Report their project IDs and permissions, then choose the project or projects needed for the task. Do not assume the current project is the only target. If the target is unclear, ask me before making changes. For each target, call project_overview, read its instructions and current changes, and keep its project ID and identity pinned throughout the task without altering unrelated work.`;
-        }
         const project = context?.current;
         if (!project?.id || !project?.identity) return "";
         return `Use @AgenticContext for project ID "${project.id}" (identity "${project.identity}", selection revision ${context.revision}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.`;
@@ -1228,6 +1232,54 @@
         resizeTunnelKickoffPrompt();
     }
 
+    function syncTunnelKickoffProjectOptions() {
+        const select = elements.tunnelKickoffProject;
+        if (!(select instanceof HTMLSelectElement)) return;
+        const selectedIds = new Set(
+            tunnelProjectPendingSelectedIds || tunnelProjectContext.selectedProjectIds,
+        );
+        const projects = tunnelProjectContext.projects.filter(
+            (project) => project.registered && selectedIds.has(project.id),
+        );
+        const signature = JSON.stringify(
+            projects.map((project) => [project.id, project.available, project.problem]),
+        );
+        let changed = false;
+        if (signature !== tunnelKickoffProjectOptionsSignature) {
+            const placeholder = document.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = "Choose project";
+            placeholder.disabled = true;
+            const options = projects.map((project) => {
+                const option = document.createElement("option");
+                option.value = project.id;
+                option.textContent = project.available
+                    ? project.id : `${project.id} (Unavailable)`;
+                option.disabled = !project.available;
+                if (project.problem) option.title = project.problem;
+                return option;
+            });
+            select.replaceChildren(placeholder, ...options);
+            tunnelKickoffProjectOptionsSignature = signature;
+            changed = true;
+        }
+        const currentId = tunnelProjectPendingCurrentId
+            || (tunnelProjectContext.current?.registered
+                && selectedIds.has(tunnelProjectContext.current.id)
+                ? tunnelProjectContext.current.id : "");
+        if (select.value !== currentId) {
+            select.value = currentId;
+            changed = true;
+        }
+        const disabled = tunnelProjectBusy || tunnelConnectionBusy
+            || !projects.some((project) => project.available);
+        if (select.disabled !== disabled) {
+            select.disabled = disabled;
+            changed = true;
+        }
+        if (changed) window.SHARED_SELECT_AUTO?.refresh?.(select);
+    }
+
     function syncTunnelProjectUi() {
         if (!elements.tunnelProjectField) return;
         const controlsBusy = tunnelProjectBusy || tunnelConnectionBusy;
@@ -1237,33 +1289,36 @@
         if (elements.tunnelProjectPath) elements.tunnelProjectPath.disabled = tunnelConnectionBusy;
         if (elements.tunnelProjectChoose) elements.tunnelProjectChoose.disabled = controlsBusy;
         const current = tunnelProjectContext.current;
-        const selectedIds = new Set(
-            tunnelProjectPendingSelectedIds || tunnelProjectContext.selectedProjectIds,
-        );
-        const focusedProjectId = document.activeElement instanceof Element
-            ? document.activeElement.dataset.agentTunnelProjectCheckbox
-                || document.activeElement.dataset.agentTunnelProjectRemove || ""
-            : "";
-        const focusedControl = document.activeElement instanceof HTMLButtonElement
-            ? "remove" : "checkbox";
         if (elements.tunnelProjectPath instanceof HTMLInputElement
             && !tunnelProjectPathTouched) {
             elements.tunnelProjectPath.value = current?.root || tunnelProjectContext.browseRoot;
         }
         if (elements.tunnelProjectList) {
             elements.tunnelProjectList.setAttribute("aria-busy", String(controlsBusy));
+            const projects = tunnelProjectContext.projects.filter((project) => project.registered);
+            const selectedIds = new Set(
+                tunnelProjectPendingSelectedIds || tunnelProjectContext.selectedProjectIds,
+            );
             const listSignature = JSON.stringify(
-                tunnelProjectContext.projects.map((project) => [project.id, project.registered]),
+                projects.map((project) => project.id),
             );
             if (listSignature !== tunnelProjectListSignature) {
-                const rows = tunnelProjectContext.projects.map((project, index) => {
+                const focusedControl = document.activeElement instanceof Element
+                    ? (document.activeElement.dataset.agentTunnelProjectCheckbox
+                        ? "checkbox" : document.activeElement.dataset.agentTunnelProjectRemove
+                            ? "remove" : "") : "";
+                const focusedProjectId = document.activeElement instanceof Element
+                    ? (document.activeElement.dataset.agentTunnelProjectCheckbox
+                        || document.activeElement.dataset.agentTunnelProjectRemove || "") : "";
+                const rows = projects.map((project, index) => {
                     const row = document.createElement("div");
                     row.className = "selection-list-row agent-tunnel-project-option";
                     row.dataset.agentTunnelProjectRow = project.id;
+                    row.setAttribute("role", "listitem");
 
-                    const inputId = `agent_tunnel_project_${index + 1}`;
                     const identity = document.createElement("label");
                     identity.className = "selection-list-identity agent-tunnel-project-identity";
+                    const inputId = `agent_tunnel_project_${index + 1}`;
                     identity.htmlFor = inputId;
                     const checkbox = document.createElement("input");
                     checkbox.id = inputId;
@@ -1271,47 +1326,28 @@
                     checkbox.type = "checkbox";
                     checkbox.value = project.id;
                     checkbox.dataset.agentTunnelProjectCheckbox = project.id;
-                    checkbox.checked = selectedIds.has(project.id);
-                    if (checkbox.checked && !project.writable) {
-                        checkbox.setAttribute(
-                            "aria-describedby", `agent_tunnel_project_access_${index + 1}`,
-                        );
-                    }
-                    checkbox.disabled = tunnelConnectionBusy || (!checkbox.checked
-                        && (!project.available || !project.registered));
                     const mark = document.createElement("span");
                     mark.className = "selection-list-mark";
                     mark.setAttribute("aria-hidden", "true");
                     const name = document.createElement("span");
-                    name.className = "selection-list-name";
+                    name.className = "selection-list-name agent-tunnel-project-name";
                     name.textContent = project.id;
                     identity.append(checkbox, mark, name);
 
-                    row.append(identity);
                     const trailing = document.createElement("span");
                     trailing.className = "agent-tunnel-project-trailing";
-                    if (checkbox.checked && !project.writable) {
-                        const access = document.createElement("span");
-                        access.className = "agent-tunnel-project-access";
-                        access.id = `agent_tunnel_project_access_${index + 1}`;
-                        access.dataset.agentTunnelProjectAccess = "";
-                        access.textContent = "Read only";
-                        trailing.append(access);
-                    }
-                    if (project.registered) {
-                        const remove = document.createElement("button");
-                        remove.type = "button";
-                        remove.className = "circular-icon-button agent-tunnel-project-remove";
-                        remove.dataset.agentTunnelProjectRemove = project.id;
-                        remove.setAttribute("aria-label", `Remove ${project.id} from Tunnel projects`);
-                        remove.title = `Remove ${project.id} from Tunnel projects`;
-                        const icon = document.createElement("span");
-                        icon.className = "agent-tunnel-project-remove-icon";
-                        icon.setAttribute("aria-hidden", "true");
-                        remove.append(icon);
-                        trailing.append(remove);
-                    }
-                    row.append(trailing);
+                    const remove = document.createElement("button");
+                    remove.type = "button";
+                    remove.className = "circular-icon-button agent-tunnel-project-remove";
+                    remove.dataset.agentTunnelProjectRemove = project.id;
+                    remove.setAttribute("aria-label", `Remove ${project.id} from Tunnel projects`);
+                    remove.title = `Remove ${project.id} from Tunnel projects`;
+                    const icon = document.createElement("span");
+                    icon.className = "agent-tunnel-project-remove-icon";
+                    icon.setAttribute("aria-hidden", "true");
+                    remove.append(icon);
+                    trailing.append(remove);
+                    row.append(identity, trailing);
                     return row;
                 });
                 elements.tunnelProjectList.replaceChildren(...rows);
@@ -1322,46 +1358,49 @@
                     )?.focus({preventScroll: true});
                 }
             }
-            elements.tunnelProjectList.querySelectorAll(
-                "[data-agent-tunnel-project-row]",
-            ).forEach((row, index) => {
-                const project = tunnelProjectContext.projects[index];
-                const checkbox = row.querySelector("[data-agent-tunnel-project-checkbox]");
-                const trailing = row.querySelector(".agent-tunnel-project-trailing");
-                if (!project || !(checkbox instanceof HTMLInputElement) || !trailing) return;
-                checkbox.checked = selectedIds.has(project.id);
-                checkbox.disabled = tunnelConnectionBusy || (!checkbox.checked
-                    && (!project.available || !project.registered));
-                const accessId = `agent_tunnel_project_access_${index + 1}`;
-                let access = trailing.querySelector("[data-agent-tunnel-project-access]");
-                if (checkbox.checked && !project.writable) {
-                    if (!access) {
-                        access = document.createElement("span");
-                        access.className = "agent-tunnel-project-access";
-                        access.dataset.agentTunnelProjectAccess = "";
-                        access.textContent = "Read only";
-                        trailing.prepend(access);
+            elements.tunnelProjectList.hidden = projects.length === 0;
+            elements.tunnelProjectList.querySelectorAll("[data-agent-tunnel-project-row]")
+                .forEach((row, index) => {
+                    const project = projects[index];
+                    const checkbox = row.querySelector("[data-agent-tunnel-project-checkbox]");
+                    const trailing = row.querySelector(".agent-tunnel-project-trailing");
+                    const remove = row.querySelector("[data-agent-tunnel-project-remove]");
+                    if (!project || !(checkbox instanceof HTMLInputElement) || !trailing) return;
+                    checkbox.checked = selectedIds.has(project.id);
+                    checkbox.disabled = controlsBusy || (!checkbox.checked && !project.available);
+                    const accessId = `agent_tunnel_project_access_${index + 1}`;
+                    const accessLabel = !project.available
+                        ? "Unavailable" : checkbox.checked && !project.writable ? "Read only" : "";
+                    let access = trailing.querySelector("[data-agent-tunnel-project-access]");
+                    if (accessLabel) {
+                        if (!access) {
+                            access = document.createElement("span");
+                            access.className = "agent-tunnel-project-access";
+                            access.dataset.agentTunnelProjectAccess = "";
+                            trailing.prepend(access);
+                        }
+                        access.id = accessId;
+                        access.textContent = accessLabel;
+                        access.title = project.problem || "";
+                        checkbox.setAttribute("aria-describedby", accessId);
+                    } else {
+                        access?.remove();
+                        checkbox.removeAttribute("aria-describedby");
                     }
-                    access.id = accessId;
-                    checkbox.setAttribute("aria-describedby", accessId);
-                } else {
-                    access?.remove();
-                    checkbox.removeAttribute("aria-describedby");
-                }
-            });
-            elements.tunnelProjectList.querySelectorAll(
-                "[data-agent-tunnel-project-remove]",
-            ).forEach((button) => { button.disabled = controlsBusy; });
+                    if (remove instanceof HTMLButtonElement) remove.disabled = controlsBusy;
+                });
         }
         if (elements.tunnelProjectStatus) {
             let notice = tunnelProjectNotice || tunnelProjectContext.problem || current?.problem || "";
             if (!notice && current && !current.registered) {
-                notice = "This is a read-only fallback. Register it before selecting it for Tunnel tasks.";
+                notice = "Register this folder before choosing it for a Tunnel task.";
             }
             elements.tunnelProjectStatus.textContent = notice;
             elements.tunnelProjectStatus.hidden = !notice;
         }
+        syncTunnelKickoffProjectOptions();
         syncTunnelKickoffProjectPrompt();
+        syncTunnelKickoffUi();
     }
 
     function adoptTunnelProjectContext(value) {
@@ -1434,10 +1473,18 @@
         if (
             !tunnelProjectContext.current?.available
             || !tunnelProjectContext.current?.registered
+            || !tunnelProjectContext.selectedProjectIds.includes(tunnelProjectContext.current.id)
         ) {
-            return {ready: false, state: "project", title: "Choose an available Tunnel project"};
+            const hasRegistered = tunnelProjectContext.projects.some(
+                (project) => project.registered && project.selected,
+            );
+            return {
+                ready: false,
+                state: "project",
+                title: hasRegistered ? "Describe your task for" : "Add a Tunnel project folder",
+            };
         }
-        return {ready: true, state: "ready", title: "Describe your project task"};
+        return {ready: true, state: "ready", title: "Describe your task for"};
     }
 
     function syncTunnelKickoffUi() {
@@ -1445,25 +1492,47 @@
         // Keep the prompt in place during a connect attempt; a disconnect closes its gate.
         if (tunnelConnectionBusy && !tunnelSnapshots.get("chatgpt")?.enabled) return;
         const gate = tunnelKickoffGate();
+        if (tunnelKickoffRetainDuringSwitch && !tunnelProjectBusy
+            && !tunnelKickoffAwaitingStatus && gate.ready) {
+            tunnelKickoffRetainDuringSwitch = false;
+        }
+        const showPrompt = gate.ready || tunnelKickoffRetainDuringSwitch;
+        const promptReady = gate.ready && !tunnelProjectBusy
+            && !tunnelKickoffRetainDuringSwitch && !tunnelKickoffAwaitingStatus
+            && Boolean(tunnelKickoffPrefix())
+            && tunnelKickoffPrefixValue === tunnelKickoffPrefix();
         const previousState = elements.tunnelKickoffTitle.dataset.agentTunnelKickoffState || "";
-        elements.tunnelKickoffTitle.dataset.agentTunnelKickoffState = gate.state;
-        elements.tunnelKickoffTitle.textContent = gate.title;
-        if (previousState !== gate.state) resetTunnelKickoffCopyState();
+        const displayState = showPrompt ? "ready" : gate.state;
+        elements.tunnelKickoffTitle.dataset.agentTunnelKickoffState = displayState;
+        elements.tunnelKickoffTitle.textContent = showPrompt ? "Describe your task for" : gate.title;
+        if (previousState !== displayState) resetTunnelKickoffCopyState();
+        if (elements.tunnelKickoffProjectField) {
+            elements.tunnelKickoffProjectField.hidden = !["ready", "project"].includes(displayState)
+                || !tunnelProjectContext.projects.some(
+                    (project) => project.registered && project.selected,
+                );
+        }
         if (elements.tunnelKickoffPrompt) {
-            elements.tunnelKickoffPrompt.hidden = !gate.ready;
-            elements.tunnelKickoffPrompt.disabled = !gate.ready;
+            elements.tunnelKickoffPrompt.hidden = !showPrompt;
+            elements.tunnelKickoffPrompt.disabled = !promptReady;
+            elements.tunnelKickoffPrompt.setAttribute("aria-busy", String(showPrompt && !promptReady));
         }
         if (elements.tunnelKickoffCopyForm) {
-            elements.tunnelKickoffCopyForm.hidden = !gate.ready;
+            elements.tunnelKickoffCopyForm.hidden = !showPrompt;
         }
         if (elements.tunnelKickoffCopy) {
-            elements.tunnelKickoffCopy.disabled = !gate.ready
+            elements.tunnelKickoffCopy.disabled = !promptReady
                 || elements.tunnelKickoffCopy.dataset.agentTunnelCopying === "true";
         }
         if (elements.tunnelKickoffActionStep) {
-            elements.tunnelKickoffActionStep.hidden = !gate.ready;
+            elements.tunnelKickoffActionStep.hidden = !showPrompt;
         }
-        if (gate.ready) resizeTunnelKickoffPrompt();
+        if (elements.tunnelKickoffAsk) {
+            elements.tunnelKickoffAsk.setAttribute("aria-disabled", String(!promptReady));
+            elements.tunnelKickoffAsk.tabIndex = promptReady ? 0 : -1;
+        }
+        syncTunnelLiveMarkers(promptReady);
+        if (showPrompt) resizeTunnelKickoffPrompt();
     }
 
     function syncTunnelCredentialUi() {
@@ -1509,11 +1578,12 @@
         }
     }
 
-    function syncTunnelLiveMarkers() {
+    function syncTunnelLiveMarkers(promptReady = false) {
         const platform = selectedPlatform();
+        const connected = Boolean(tunnelSnapshots.get("chatgpt")?.enabled);
         elements.tunnelLiveMarkers.forEach((marker) => {
             const markerPlatform = marker.dataset.agentTunnelLiveMarker || "chatgpt";
-            marker.hidden = markerPlatform !== platform || !tunnelActivityObserved;
+            marker.hidden = markerPlatform !== platform || !connected || !promptReady;
         });
     }
 
@@ -1592,7 +1662,6 @@
         const snapshot = tunnelSnapshots.get(platform);
         tunnelPresentation = snapshot?.presentation || defaultTunnelPresentation(platform);
         tunnelCredentials = snapshot?.credentials || emptyTunnelCredentials();
-        tunnelActivityObserved = Boolean(snapshot?.activityObserved);
         if (snapshot?.projectContext) adoptTunnelProjectContext(snapshot.projectContext);
         if (
             platform === "chatgpt"
@@ -1670,34 +1739,59 @@
         }
         syncGeminiAuthorizationUi();
         syncTunnelProjectUi();
-        syncTunnelLiveMarkers();
         syncTunnelKickoffUi();
     }
 
     function syncTunnelUsage(payload) {
-        // Recent usage is bounded retained tool text, not a model or billing total.
-        // Incomplete estimates stay unavailable instead of becoming a partial zero.
+        // ChatGPT cumulative usage survives bounded history eviction. Missing
+        // estimates turn a known total into a lower bound, not a fabricated zero.
+        const cumulativeUsage = payload.cumulative_usage
+            && typeof payload.cumulative_usage === "object"
+            ? payload.cumulative_usage : null;
         const recentUsage = payload.recent_usage && typeof payload.recent_usage === "object"
             ? payload.recent_usage : {};
-        const recentTokens = recentUsage.estimated_tokens;
-        const usageDescription = recentUsage.window === "since_tokenizer_ready"
-            ? "Estimated tool-text tokens since tokenizer recovery; earlier calls excluded"
-            : "Estimated recent tool-text tokens";
+        const usage = cumulativeUsage || recentUsage;
+        const tokens = usage.estimated_tokens;
+        const unestimatedCalls = cumulativeUsage
+            && Number.isSafeInteger(cumulativeUsage.unestimated_calls)
+            && cumulativeUsage.unestimated_calls > 0
+            ? cumulativeUsage.unestimated_calls : 0;
+        const hasKnownTokens = Number.isSafeInteger(tokens) && tokens >= 0;
+        const tokensAvailable = hasKnownTokens
+            && (usage.complete === true || Boolean(cumulativeUsage && unestimatedCalls));
+        const lowerBound = Boolean(cumulativeUsage && unestimatedCalls && tokensAvailable);
+        const formatted = tokensAvailable ? tokens.toLocaleString("en-US") : "";
+        const scope = usage.window === "saved_lifetime"
+            ? "since usage tracking began; saved across app server restarts"
+            : usage.window === "server_lifetime"
+                ? "since this app server started; resets when the server restarts"
+                : usage.window === "since_tokenizer_ready"
+                    ? "since tokenizer recovery; earlier calls excluded"
+                    : "from retained recent calls";
+        const missing = lowerBound
+            ? `; ${unestimatedCalls.toLocaleString("en-US")} ${unestimatedCalls === 1 ? "call" : "calls"} could not be estimated`
+            : "";
+        const usageDescription = tokensAvailable
+            ? `Tokens: ${lowerBound ? "at least " : ""}${formatted} estimated tool-text tokens ${scope}${missing}`
+            : `Tokens: unavailable; estimated tool-text tokens ${scope}`;
         const usageValue = elements.tunnelStatus?.querySelector(".agent-tunnel-recent-tokens");
         if (usageValue) {
             usageValue.setAttribute("aria-label", usageDescription);
             usageValue.title = usageDescription;
         }
-        const recentTokensAvailable = recentUsage.complete === true
-            && Number.isSafeInteger(recentTokens)
-            && recentTokens >= 0;
         const badge = elements.tunnelStatus?.querySelector("[data-tunnel-recent-token-badge]");
         const digits = elements.tunnelStatus?.querySelector("[data-tunnel-recent-token-digits]");
+        const prefix = elements.tunnelStatus?.querySelector("[data-tunnel-token-lower-bound]");
         const unavailable = elements.tunnelStatus?.querySelector(
             "[data-tunnel-recent-token-unavailable]",
         );
-        const formatted = recentTokensAvailable ? recentTokens.toLocaleString("en-US") : "";
-        if (digits && digits.textContent !== formatted) {
+        const displayedDigits = digits
+            ? Array.from(
+                digits.querySelectorAll(".investment-holdings-allocation-badge-glyph"),
+                (glyph) => glyph.textContent,
+            ).join("")
+            : "";
+        if (digits && displayedDigits !== formatted) {
             const glyphs = Array.from(formatted, (glyph) => {
                 const span = document.createElement("span");
                 span.className = "investment-holdings-allocation-badge-glyph";
@@ -1706,8 +1800,9 @@
             });
             digits.replaceChildren(...glyphs);
         }
-        if (badge) badge.hidden = !recentTokensAvailable;
-        if (unavailable) unavailable.hidden = recentTokensAvailable;
+        if (prefix) prefix.hidden = !lowerBound || !tokensAvailable;
+        if (badge) badge.hidden = !tokensAvailable;
+        if (unavailable) unavailable.hidden = tokensAvailable;
     }
 
     function applyTunnelStatus(payload, requestedPlatform = selectedPlatform()) {
@@ -1782,6 +1877,9 @@
             recent_calls: Array.isArray(payload.recent_calls) ? payload.recent_calls : [],
             recent_usage: payload.recent_usage && typeof payload.recent_usage === "object"
                 ? payload.recent_usage : {},
+            cumulative_usage: payload.cumulative_usage
+                && typeof payload.cumulative_usage === "object"
+                ? payload.cumulative_usage : null,
             call_count: payload.call_count,
             statusObservedAt: observedAt,
             instanceId,
@@ -1792,6 +1890,9 @@
         tunnelSnapshots.set(requestedPlatform, snapshot);
         tunnelLastSuccessfulStatusAt.set(requestedPlatform, Date.now());
         if (selectedPlatform() !== requestedPlatform) return true;
+        if (requestedPlatform === "chatgpt" && tunnelKickoffAwaitingStatus && !tunnelProjectBusy) {
+            tunnelKickoffAwaitingStatus = false;
+        }
         activateTunnelSnapshot(requestedPlatform);
         syncTunnelStatus();
         if (lastPayload) renderResponseStatus(lastPayload.agent, readinessState(lastPayload));
@@ -1829,7 +1930,7 @@
         const url = elements.tunnelField?.dataset.agentTunnelStatusUrl;
         const requestedPlatform = selectedPlatform();
         if (!url || !tunnelSupportsPlatform(requestedPlatform)) return;
-        if (requestedPlatform === "chatgpt" && tunnelConnectionBusy) return;
+        if (tunnelProjectBusy || (requestedPlatform === "chatgpt" && tunnelConnectionBusy)) return;
         if (tunnelPollController && tunnelPollPlatform === requestedPlatform) return;
         const revision = ++tunnelPollRevision;
         tunnelPollController?.abort();
@@ -1885,12 +1986,14 @@
 
     async function saveTunnelProjectSelection(
         projectId,
-        selectedProjectIds,
-        {path = ""} = {},
+        {selectedProjectIds = tunnelProjectContext.selectedProjectIds, path = ""} = {},
     ) {
         const url = elements.tunnelProjectField?.dataset.agentTunnelProjectUrl;
         const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
-        const normalizedSelected = Array.from(new Set(selectedProjectIds));
+        const requestedIds = new Set(selectedProjectIds);
+        const normalizedSelected = tunnelProjectContext.projects.filter(
+            (item) => item.registered && requestedIds.has(item.id),
+        ).map((item) => item.id);
         if (
             !url
             || tunnelProjectBusy
@@ -1899,9 +2002,9 @@
             || !project.available
             || !normalizedSelected.includes(projectId)
         ) return false;
-        const currentSelected = tunnelProjectContext.selectedProjectIds;
         if (projectId === tunnelProjectContext.current?.id
-            && JSON.stringify(normalizedSelected) === JSON.stringify(currentSelected)) {
+            && JSON.stringify(normalizedSelected)
+                === JSON.stringify(tunnelProjectContext.selectedProjectIds)) {
             return true;
         }
         const operationRevision = ++tunnelProjectSaveRevision;
@@ -1910,6 +2013,11 @@
         invalidateTunnelStatusRequest();
         tunnelProjectBusy = true;
         tunnelProjectPendingSelectedIds = normalizedSelected;
+        tunnelProjectPendingCurrentId = projectId;
+        tunnelKickoffRetainDuringSwitch = Boolean(
+            elements.tunnelKickoffPrompt && !elements.tunnelKickoffPrompt.hidden,
+        );
+        tunnelKickoffAwaitingStatus = false;
         tunnelProjectNotice = "";
         syncTunnelProjectUi();
         let resultUncertain = false;
@@ -1947,11 +2055,12 @@
             return true;
         } catch (error) {
             if (operationRevision !== tunnelProjectSaveRevision) return false;
-            tunnelProjectPendingSelectedIds = null;
             if (error?.payload?.project_context) {
                 adoptTunnelProjectContext(error.payload.project_context);
             }
             resultUncertain = Boolean(error?.resultUncertain);
+            tunnelKickoffAwaitingStatus = resultUncertain;
+            if (!resultUncertain) tunnelKickoffRetainDuringSwitch = false;
             if (path) tunnelProjectPathTouched = false;
             tunnelProjectNotice = String(
                 error?.message || "Unable to save the current Tunnel project.",
@@ -1962,6 +2071,7 @@
             if (operationRevision === tunnelProjectSaveRevision) {
                 tunnelProjectBusy = false;
                 tunnelProjectPendingSelectedIds = null;
+                tunnelProjectPendingCurrentId = "";
                 syncTunnelProjectUi();
                 if (resultUncertain) void refreshTunnelStatus();
             }
@@ -1970,7 +2080,7 @@
 
     function toggleTunnelProject(projectId, shouldSelect) {
         const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
-        if (!project || tunnelProjectBusy || tunnelConnectionBusy) return false;
+        if (!project?.registered || tunnelProjectBusy || tunnelConnectionBusy) return false;
         const selected = tunnelProjectContext.selectedProjectIds.filter((item) => item !== projectId);
         if (shouldSelect) selected.push(projectId);
         if (!selected.length) {
@@ -1990,7 +2100,7 @@
             syncTunnelProjectUi();
             return false;
         }
-        return saveTunnelProjectSelection(currentId, selected);
+        return saveTunnelProjectSelection(currentId, {selectedProjectIds: selected});
     }
 
     async function removeTunnelProject(projectId) {
@@ -2115,7 +2225,10 @@
         const selected = tunnelProjectContext.selectedProjectIds.includes(project.id)
             ? tunnelProjectContext.selectedProjectIds
             : [...tunnelProjectContext.selectedProjectIds, project.id];
-        return saveTunnelProjectSelection(project.id, selected, {path: normalizedPath});
+        return saveTunnelProjectSelection(project.id, {
+            selectedProjectIds: selected,
+            path: normalizedPath,
+        });
     }
 
     async function changeTunnelConnection() {
@@ -2447,7 +2560,10 @@
             invalidateTunnelStatusRequest();
         }
         // The Browser session probe can launch a browser, so Tunnel defers it.
-        if (browserMode) initializeBrowserSessionStatus();
+        if (browserMode) {
+            initializeBrowserSessionStatus();
+            browserStatusController?.setSelection?.(platform, selectedBrowser());
+        }
         if (lastPayload) renderResponseStatus(lastPayload.agent, readinessState(lastPayload));
     }
 
@@ -3078,6 +3194,7 @@
         const sessionSourceMenu = elements.sessionModeCombobox?.querySelector("[data-agent-combobox-menu]");
         sessionSourceMenu?.setAttribute("aria-label", "Choose a session source");
         syncConnectionMode();
+        if (selectedConnectionMode() !== "browser") return;
         if (browserStatusController?.setSelection) {
             browserStatusController.setSelection(platform, selectedBrowser());
         } else {
@@ -3703,27 +3820,36 @@
 
     function initializeTunnelProjectSelector() {
         const list = elements.tunnelProjectList;
-        if (!list) return;
-        list.addEventListener("click", (event) => {
+        list?.addEventListener("change", (event) => {
+            const checkbox = event.target;
+            if (!(checkbox instanceof HTMLInputElement)
+                || !checkbox.matches("[data-agent-tunnel-project-checkbox]")) return;
+            void toggleTunnelProject(
+                String(checkbox.dataset.agentTunnelProjectCheckbox || ""),
+                checkbox.checked,
+            );
+        });
+        list?.addEventListener("click", (event) => {
             if (!(event.target instanceof Element)) return;
             const button = event.target.closest("[data-agent-tunnel-project-remove]");
             if (!(button instanceof HTMLButtonElement)) return;
             void removeTunnelProject(String(button.dataset.agentTunnelProjectRemove || ""));
         });
-        list.addEventListener("change", (event) => {
-            if (!(event.target instanceof Element)) return;
-            const checkbox = event.target.closest("[data-agent-tunnel-project-checkbox]");
-            if (!(checkbox instanceof HTMLInputElement)) return;
-            if (tunnelProjectBusy || tunnelConnectionBusy) {
-                syncTunnelProjectUi();
+        elements.tunnelKickoffProject?.addEventListener("change", (event) => {
+            const projectId = String(event.currentTarget.value || "");
+            const project = tunnelProjectContext.projects.find((item) => item.id === projectId);
+            if (!project?.registered || !project.available
+                || !tunnelProjectContext.selectedProjectIds.includes(projectId)
+                || tunnelProjectBusy || tunnelConnectionBusy) {
+                syncTunnelKickoffProjectOptions();
                 return;
             }
-            const requested = checkbox.checked;
-            const started = toggleTunnelProject(
-                String(checkbox.dataset.agentTunnelProjectCheckbox || ""),
-                requested,
-            );
-            if (started === false) syncTunnelProjectUi();
+            void saveTunnelProjectSelection(projectId);
+        });
+        elements.tunnelKickoffAsk?.addEventListener("click", (event) => {
+            if (elements.tunnelKickoffAsk?.getAttribute("aria-disabled") === "true") {
+                event.preventDefault();
+            }
         });
         elements.tunnelProjectPath?.addEventListener("change", () => {
             tunnelProjectPathTouched = true;
@@ -3844,7 +3970,9 @@
                     resetProjectSessions();
                     setProjectComboboxValue("", projectCollectionLabel());
                     setComboboxLoading(elements.projectCombobox, true);
-                    browserStatusController?.setBrowser(selectedBrowser());
+                    if (selectedConnectionMode() === "browser") {
+                        browserStatusController?.setBrowser(selectedBrowser());
+                    }
                 }
                 if (isRouteSelection) syncAgentRoute();
                 if (combobox.classList.contains("agent-session-mode-combobox")) {
@@ -3888,7 +4016,7 @@
     }
 
     async function loadProjectSessions(projectUrl, options = {}) {
-        if (!projectUrl) return false;
+        if (selectedConnectionMode() !== "browser" || !projectUrl) return false;
         const requestId = ++projectSessionRequestId;
         const projectKey = historyUrlKey(projectUrl);
         try {
@@ -3916,6 +4044,7 @@
     }
 
     async function loadSelectedSessionHistory(conversationUrl) {
+        if (selectedConnectionMode() !== "browser") return;
         const selectedUrl = String(conversationUrl || "").trim();
         const platform = selectedPlatform();
         const supportsHistory = (platform === "chatgpt" && isChatgptConversationUrl(selectedUrl))
@@ -4041,6 +4170,7 @@
     }
 
     async function loadAgentSources(options = {}) {
+        if (selectedConnectionMode() !== "browser") return;
         const forceRefresh = Boolean(options.forceRefresh);
         if (!lastBrowserStatus?.can_download || !selectedBrowser()) return;
         const browserName = selectedBrowser();
@@ -4140,6 +4270,7 @@
     }
 
     function refreshAgentSessionSources() {
+        if (selectedConnectionMode() !== "browser") return;
         const hasBootstrap = Boolean(lastBrowserStatus?.agent_sources);
         if (hasBootstrap && browserStatusController?.refresh) {
             void browserStatusController.refresh();
@@ -5400,7 +5531,8 @@
         renderActivity(agent.activity, running, shouldCollapseActivity, runIdentity);
         updateSessionChoiceInputs();
         if (
-            readiness.ready
+            selectedConnectionMode() === "browser"
+            && readiness.ready
             && !running
             && !completedTransition
             && !automaticSourcesSuppressedAfterCompletion
@@ -5457,7 +5589,8 @@
         });
         // Restored run metadata deliberately omits message bodies; read the bound provider history.
         const historyUrl = selectedHistoryConversationUrl();
-        if (!running && agent.run_id && !agent.response && !agent.history?.length
+        if (selectedConnectionMode() === "browser"
+            && !running && agent.run_id && !agent.response && !agent.history?.length
             && executionSessions.some((item) => item.session_id === executionSessionId)
             && ["chatgpt", "grok"].includes(selectedPlatform())
             && isAgentConversationUrl(selectedPlatform(), historyUrl)

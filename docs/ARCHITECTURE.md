@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.49.0-codex.0`
+Documentation version: `v1.50.4-codex.0`
 
 ## Runtime flow
 
@@ -300,31 +300,47 @@ and the home folder, and a structurally invalid registry fails closed. A syntact
 registration whose root is temporarily absent remains in discovery as unavailable without hiding
 other usable projects; resolution still refuses every filesystem action for that project until its
 root exists and its native identity is bound. When no registry file exists, the Agent's selected
-workspace becomes the only project, and only when it is itself a Git work-tree root; a parent
-folder such as the Desktop never becomes an implicit project.
+workspace is offered as one unregistered compatibility project only when it is itself a Git
+work-tree root; a parent folder such as the Desktop never becomes an implicit project. This
+fallback retains its existing writable authority, but the page does not present it as registered
+or enable the kickoff prompt until the folder is explicitly registered.
 
-The local Tunnel page maintains a preferred subset of registered projects and exactly one current
-project within that subset. Both are persisted separately from the registry with a monotonically
-increasing compare-and-swap revision. Checking or unchecking a project changes discovery
-preference only: it neither registers a path, revokes registry authority for an explicit call, nor
-changes the project's `writable` flag. A removed or unavailable current project falls back
-deterministically to an available preferred project when the explicit preferred-set format is in
-use. The folder browser starts at `Path.home() / "Desktop"` when that directory exists, or at the
-current user's home directory otherwise; this dynamic path is only a browsing start. A folder
-choice changes the current project only when its canonical path exactly matches an existing
-registry root. An unregistered directory therefore cannot become authorized through the picker.
+The local Tunnel page checks every registered project by default. Its concise checkbox list
+persists a preferred discovery subset and exactly one current project within that subset for the
+task prompt. Both are stored separately from the registry with a monotonically increasing
+compare-and-swap revision. Changing a checkbox changes discovery preference, not registry
+authority or a project's write permission: an explicit call may still name any registered project,
+and unregistering is the revocation action. An unavailable or removed current project does
+not silently redirect an existing task to another registered project. Explicit removal of the
+current registration chooses the next remaining registration as the new current project, with
+availability checked before kickoff. The
+`Add project folder` control retains the host-native folder chooser, starting at
+`Path.home() / "Desktop"` when present or the current user's home directory otherwise. This
+dynamic path is only a browsing start. Choosing a canonical path that exactly matches a registered
+root makes it current; choosing a new nonoverlapping root registers it as writable and makes it
+current. Existing registry permissions are unchanged.
+Project registration, switching, removal, and rollback share an owner-only cross-process
+file lock. MCP project resolution and current-project discovery take that lock for their
+short registry reads, so tools cannot adopt a registration before its selection save commits.
+Reconnection occurs after the transaction releases the lock.
 
 The project-less, read-only `current_project` tool returns the current project's id, identity,
-permission, availability, and selection revision, the preferred project ids, and bounded records
-for all other registry-authorized projects with their preferred status; it does not disclose host
-paths. `project_overview` resolves one explicit configured id and returns its identity; every
-subsequent project-scoped tool requires both that id and the returned `project_identity`, failing
-closed if the registry mapping or authority changed. A page selection made later therefore cannot
+permission, availability, and selection revision, the checked ids in the
+`selected_project_ids` field, and bounded records for the other registry-authorized projects;
+it does not disclose host paths. `project_overview` resolves one explicit configured id and returns
+its identity; every subsequent project-scoped tool requires both that id and the returned
+`project_identity`, failing closed if the registry mapping or authority changed. A page selection
+made later therefore cannot
 silently redirect an existing task, while an explicit request may still consult another registered
-read-only reference project. A read-only project
-rejects every mutating tool before the filesystem is touched, and its workspace access is also
-created read-only. Model paths must be project-relative; absolute and `~` paths are refused before resolution, and the
-workspace confinement, symlink, ignored-directory, and credential-file rules then apply to
+read-only reference project. The ChatGPT onboarding prompt remains one precise template for the
+project chosen in the inline selector: its id, identity, and selection revision change only after
+the server confirms the current-project choice, while the editable task body is retained. During
+that switch, the prompt structure remains visible and its copy/open actions stay disabled until
+the confirmed prompt is ready. A
+read-only project rejects every mutating tool before the filesystem is touched, and its workspace
+access is also created read-only. Model paths must be project-relative; absolute and `~` paths are
+refused before resolution, and the workspace confinement, symlink, ignored-directory, and
+credential-file rules then apply to
 the selected root. Each project keeps its own workspace binding, so read receipts, SHA-256 guards,
 edit generations, and verification evidence never cross projects, and a re-registered or replaced
 root rebinds a fresh workspace. A request that detects root replacement fails as `project_changed`;
@@ -350,6 +366,18 @@ After the tokenizer becomes
 available, `recent_usage` counts complete calls in a new recovery window; older unknown
 records remain in the history but are excluded and identified by window metadata. A
 recovered window with no completed calls stays unavailable rather than reporting zero.
+The ChatGPT status also exposes `cumulative_usage`, which sums known completed tool-text
+estimates independently of bounded history. The aggregate counts are atomically saved as an
+owner-only JSON file in the Tunnel runtime root and restored across normal service restarts.
+A neighboring owner-only file lock serializes independent service instances; each writer
+rereads the saved aggregate and merges its unsaved calls before replacement, retaining the
+higher validated baseline if a lower snapshot appeared on disk. The aggregate contains
+no project identity, tool text, or credentials. Invalid or inaccessible
+records are kept and make the metric unavailable rather than silently resetting it. A write
+failure cannot fail a tool call and hides the unsaved total until a later save succeeds. The
+UI can display a labeled lower bound when some calls cannot be estimated without dropping a
+large completed call when that record leaves `recent_calls`. Gemini's credential-generation-
+scoped `recent_usage` remains separate from this saved ChatGPT value.
 Instruction discovery is project-scoped: `project_overview` lists
 root instruction files and nested `AGENTS.md` files inside the project, excluding any nested
 directory that is its own Git repository.
