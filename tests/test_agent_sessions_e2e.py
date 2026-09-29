@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.35.1-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.36.0-codex.0."""
 
 import re
 from copy import deepcopy
@@ -530,7 +530,10 @@ def _assert_exact_project_kickoff(prompt, project_id, identity, revision):
         f'Use @AgenticContext for project ID "{project_id}" '
         f'(identity "{identity}", selection revision {revision}).'
     )
-    assert "First call current_project to confirm this selection" in prefix
+    assert (
+        "First call current_project to confirm this project ID and identity "
+        "in the registered, selected projects list"
+    ) in prefix
     assert "call project_overview for this exact project ID" in prefix
     assert "keep this project identity pinned" in prefix
     assert "Multiple Tunnel projects" not in prefix
@@ -599,183 +602,103 @@ def test_tunnel_kickoff_targets_initial_project_among_registered_roots_and_copie
 
 
 @pytest.mark.parametrize("width", [1280, 390])
-def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_body(
+def test_tunnel_kickoff_project_choice_only_updates_prompt(
     disposable_browser,
     sidebar_server_url,
     width,
 ):
-    """The inline selector pins one task while every registered root stays bridged."""
+    """Choosing a task target does not change the bridged project selection."""
     context = disposable_browser.new_context(viewport={"width": width, "height": 1_100})
     context.add_init_script("""Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
         value: {writeText: async (text) => { window.copiedKickoff = text; }}
     });
     const nativeSetTimeout = window.setTimeout.bind(window);
-    window.__tunnelPollArmed = false;
     window.__tunnelPollTicks = 0;
     window.setTimeout = (callback, delay, ...args) => {
         if (delay === 10_000 && String(callback).includes('refreshTunnelStatus')) {
-            window.__tunnelPollArmed = true;
             return nativeSetTimeout((...callbackArgs) => {
                 window.__tunnelPollTicks += 1;
                 return callback(...callbackArgs);
             }, 200, ...args);
         }
         return nativeSetTimeout(callback, delay, ...args);
-    };
-    const nativeFetch = window.fetch.bind(window);
-    window.__releaseFirstProjectSelection = null;
-    window.__heldFirstProjectSelection = false;
-    window.fetch = (input, options = {}) => {
-        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
-        if (url.pathname === '/api/agent/tunnel/project' && options.method === 'POST'
-            && !window.__heldFirstProjectSelection) {
-            window.__heldFirstProjectSelection = true;
-            return new Promise(resolve => {
-                window.__releaseFirstProjectSelection = () => resolve(nativeFetch(input, options));
-            });
-        }
-        return nativeFetch(input, options);
     };""")
     page = context.new_page()
     status = _tunnel_onboarding_status(activity_observed=False)
     alpha = deepcopy(status["project_context"]["current"])
-    alpha["id"] = "alpha"
-    alpha["identity"] = "alpha00000000000"
-    alpha["root"] = "/tmp/alpha"
+    alpha.update({"id": "alpha", "identity": "alpha00000000000", "root": "/tmp/alpha"})
     beta = deepcopy(alpha)
-    beta.update({
-        "id": "beta",
-        "identity": "beta000000000000",
-        "root": "/tmp/beta",
-        "writable": False,
-        "access": "Read only",
-        "selected": True,
-    })
-    alpha["selected"] = True
+    beta.update({"id": "beta", "identity": "beta000000000000", "root": "/tmp/beta"})
     status["project_context"] = {
         **status["project_context"],
-        "revision": 1,
+        "revision": 7,
         "current": beta,
         "selected_project_ids": ["alpha", "beta"],
         "projects": [alpha, beta],
-        "browse_root": "/tmp",
     }
-    requests = []
+    original_context = deepcopy(status["project_context"])
+    project_requests = []
     status_requests = []
 
     def fulfill_status(route):
         status_requests.append(True)
         route.fulfill(json=deepcopy(status))
 
-    def fulfill_project(route):
-        payload = route.request.post_data_json
-        requests.append(payload)
-        if len(requests) == 1:
-            status["project_context"] = {
-                **status["project_context"],
-                "revision": 2,
-                "current": alpha,
-                "selected_project_ids": ["alpha", "beta"],
-                "projects": [alpha, beta],
-            }
-            status["status_observed_at"] = 2
-            route.fulfill(json=deepcopy(status))
-            return
-        route.fulfill(
-            status=409,
-            json={
-                "error": "The selection was rejected for this test.",
-                "project_context": deepcopy(status["project_context"]),
-            },
-        )
+    def reject_project_change(route):
+        project_requests.append(route.request.post_data_json)
+        route.fulfill(status=409, json={"error": "A task choice must not change selection."})
 
     page.route("**/api/agent/tunnel/status?platform=chatgpt", fulfill_status)
-    page.route("**/api/agent/tunnel/project?platform=chatgpt", fulfill_project)
+    page.route("**/api/agent/tunnel/project?platform=chatgpt", reject_project_change)
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
-        expect(page.locator("[data-agent-tunnel-project-checkbox]")).to_have_count(2)
-        expect(page.locator("[data-agent-tunnel-project-row]")).to_have_count(2)
-        expect(page.locator('[data-agent-tunnel-project-row="alpha"] .agent-tunnel-project-access')).to_have_count(0)
-        expect(page.locator('[data-agent-tunnel-project-row="beta"] .agent-tunnel-project-access')).to_have_text("Read only")
-        expect(page.locator("[data-agent-tunnel-project-use]")).to_have_count(0)
-        expect(page.locator(".agent-tunnel-project-details")).to_have_count(0)
-        expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/beta")
         select = page.locator("[data-agent-tunnel-kickoff-project]")
         trigger = page.locator(
             "[data-agent-tunnel-kickoff-project-field] .browser-filter-select-trigger"
         )
-        expect(select).to_have_value("beta")
-        expect(trigger).to_have_text("beta")
-        expect(trigger).to_have_attribute("aria-haspopup", "listbox")
         prompt = page.locator("[data-agent-tunnel-kickoff]")
-        _assert_exact_project_kickoff(prompt, "beta", beta["identity"], 1)
+        copy = page.locator("[data-agent-tunnel-copy-kickoff]")
+        ask = page.locator("[data-agent-tunnel-kickoff-ask]")
+        marker = ask.locator("[data-agent-tunnel-live-marker]")
+        _assert_exact_project_kickoff(prompt, "beta", beta["identity"], 7)
         task = "Keep this exact body.\nPreserve my second line."
         prompt.fill(prompt.input_value().replace("[describe your task].", task))
-        copy = page.locator("[data-agent-tunnel-copy-kickoff]")
-        copy.focus()
-        copy.press("Enter")
-        expect(copy).to_have_text("Copied")
-        single_prompt = prompt.input_value()
-        prompt_frame = prompt.bounding_box()
-        assert prompt_frame is not None
-        assert page.evaluate("document.visibilityState") == "visible"
-        page.wait_for_function("window.__tunnelPollTicks >= 1", timeout=5_000)
-
         trigger.click()
         page.locator(
             '[data-agent-tunnel-kickoff-project-field] '
             '[data-browser-filter-select-option="alpha"]'
         ).click()
-        page.wait_for_function("window.__heldFirstProjectSelection")
-        expect(prompt).to_have_value(single_prompt)
-        expect(copy).to_have_text("Copied")
-        expect(prompt).to_be_visible()
-        expect(prompt).to_be_disabled()
-        pending_frame = prompt.bounding_box()
-        assert pending_frame is not None
-        assert abs(pending_frame["height"] - prompt_frame["height"]) <= 1
-        expect(copy).to_be_visible()
-        expect(copy).to_be_disabled()
-        ask = page.locator("[data-agent-tunnel-kickoff-ask]")
-        expect(ask).to_be_visible()
-        expect(ask).to_have_attribute("aria-disabled", "true")
-        assert ask.evaluate("""link => {
-            const click = new MouseEvent('click', {bubbles: true, cancelable: true});
-            link.dispatchEvent(click);
-            return click.defaultPrevented;
-        }""")
-        marker = ask.locator("[data-agent-tunnel-live-marker]")
-        expect(marker).to_be_hidden()
-        poll_count = len(status_requests)
-        previous_ticks = page.evaluate("window.__tunnelPollTicks")
-        page.wait_for_function(
-            "ticks => window.__tunnelPollTicks > ticks", arg=previous_ticks, timeout=5_000,
-        )
-        page.wait_for_timeout(100)
-        assert len(status_requests) == poll_count
-        page.evaluate("window.__releaseFirstProjectSelection()")
         expect(select).to_have_value("alpha")
-        expect(trigger).to_have_text("alpha")
-        _assert_exact_project_kickoff(prompt, "alpha", alpha["identity"], 2)
+        _assert_exact_project_kickoff(prompt, "alpha", alpha["identity"], 7)
         assert prompt.input_value().endswith("\n\nTask:\n" + task)
         expect(copy).to_have_text("Copy this prompt")
         expect(copy).to_be_enabled()
         expect(ask).to_have_attribute("aria-disabled", "false")
         expect(marker).to_be_visible()
-        assert marker.evaluate(
-            "element => getComputedStyle(element, '::before').animationName"
-        ) == "live-marker-breath"
-        expect(page.locator('[data-agent-tunnel-project-row="alpha"] .agent-tunnel-project-access')).to_have_count(0)
-        expect(page.locator('[data-agent-tunnel-project-row="beta"] .agent-tunnel-project-access')).to_have_text("Read only")
-        status_notice = page.locator("[data-agent-tunnel-project-status]")
-        expect(status_notice).to_be_hidden()
-        expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/alpha")
         copy.focus()
         copy.press("Enter")
-        expect(copy).to_have_text("Copied")
-        assert page.evaluate("window.copiedKickoff") == prompt.input_value()
-        confirmed_prompt = prompt.input_value()
+        page.wait_for_function(
+            "window.copiedKickoff === document.querySelector('[data-agent-tunnel-kickoff]').value"
+        )
+        for project_id in ("alpha", "beta"):
+            expect(page.locator(
+                f'[data-agent-tunnel-project-checkbox="{project_id}"]'
+            )).to_be_checked()
+        expect(page.locator("#agent_tunnel_project_path")).to_have_value("/tmp/beta")
+        assert status["project_context"] == original_context
+        assert project_requests == []
+
+        prior_poll = page.evaluate("window.__tunnelPollTicks")
+        page.wait_for_function(
+            "previous => window.__tunnelPollTicks > previous",
+            arg=prior_poll,
+            timeout=5_000,
+        )
+        expect(select).to_have_value("alpha")
+        _assert_exact_project_kickoff(prompt, "alpha", alpha["identity"], 7)
+        assert len(status_requests) >= 2
+        assert project_requests == []
 
         trigger.focus()
         trigger.press("End")
@@ -785,54 +708,24 @@ def test_tunnel_project_selection_commits_then_updates_prompt_without_losing_bod
         )
         expect(beta_option).to_be_focused()
         beta_option.press("Enter")
-        expect(page.locator("[data-agent-tunnel-project-status]")).to_contain_text(
-            "selection was rejected"
-        )
-        expect(select).to_have_value("alpha")
-        expect(trigger).to_have_text("alpha")
-        expect(prompt).to_have_value(confirmed_prompt)
-        expect(page.locator("[data-agent-tunnel-project-row]")).to_have_count(2)
-        expect(page.locator("[data-agent-tunnel-project-checkbox]")).to_have_count(2)
-        assert requests == [
-            {
-                "project_id": "alpha",
-                "selected_project_ids": ["alpha", "beta"],
-                "expected_revision": 1,
-            },
-            {
-                "project_id": "beta",
-                "selected_project_ids": ["alpha", "beta"],
-                "expected_revision": 2,
-            },
-        ]
+        expect(select).to_have_value("beta")
+        _assert_exact_project_kickoff(prompt, "beta", beta["identity"], 7)
+        assert prompt.input_value().endswith("\n\nTask:\n" + task)
+        assert status["project_context"] == original_context
+        assert project_requests == []
     finally:
         context.close()
 
 
 @pytest.mark.parametrize("width,height", [(996, 801), (390, 844)])
-def test_tunnel_project_selection_keeps_rows_and_sidebar_stable(
+def test_tunnel_kickoff_choice_keeps_rows_and_sidebar_stable(
     disposable_browser,
     sidebar_server_url,
     width,
     height,
 ):
-    """Changing the task project leaves the registered sidebar list in place."""
+    """Task targeting preserves the registered rows and sidebar geometry."""
     context = disposable_browser.new_context(viewport={"width": width, "height": height})
-    context.add_init_script(
-        """const nativeFetch = window.fetch.bind(window);
-        window.__heldTunnelProjectCount = 0;
-        window.__releaseTunnelProject = null;
-        window.fetch = (input, options = {}) => {
-            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
-            if (url.pathname === '/api/agent/tunnel/project' && options.method === 'POST') {
-                window.__heldTunnelProjectCount += 1;
-                return new Promise((resolve) => {
-                    window.__releaseTunnelProject = () => resolve(nativeFetch(input, options));
-                });
-            }
-            return nativeFetch(input, options);
-        };"""
-    )
     page = context.new_page()
     status = _tunnel_onboarding_status(activity_observed=False)
     project_ids = ("agenticContext", "worthward", "neoMe", "shared-docs")
@@ -854,27 +747,18 @@ def test_tunnel_project_selection_keeps_rows_and_sidebar_stable(
         "selected_project_ids": list(project_ids),
         "projects": projects,
     }
+    original_context = deepcopy(status["project_context"])
+    project_requests = []
     page.route(
         "**/api/agent/tunnel/status?platform=chatgpt",
         lambda route: route.fulfill(json=deepcopy(status)),
     )
 
-    def fulfill_project(route):
-        assert route.request.post_data_json == {
-            "project_id": "neoMe",
-            "selected_project_ids": list(project_ids),
-            "expected_revision": 1,
-        }
-        status["project_context"] = {
-            **status["project_context"],
-            "revision": 2,
-            "current": neome,
-        }
-        status["status_observed_at"] = 2
-        status["state_revision"] += 1
-        route.fulfill(json=deepcopy(status))
+    def reject_project_change(route):
+        project_requests.append(route.request.post_data_json)
+        route.fulfill(status=409, json={"error": "A task choice must not change selection."})
 
-    page.route("**/api/agent/tunnel/project?platform=chatgpt", fulfill_project)
+    page.route("**/api/agent/tunnel/project?platform=chatgpt", reject_project_change)
     geometry_script = """() => {
         const saved = window.__tunnelSelectionNodes;
         const rows = [...document.querySelectorAll('[data-agent-tunnel-project-row]')];
@@ -910,24 +794,12 @@ def test_tunnel_project_selection_keeps_rows_and_sidebar_stable(
             '[data-agent-tunnel-kickoff-project-field] '
             '[data-browser-filter-select-option="neoMe"]'
         ).click()
-        page.wait_for_function("window.__heldTunnelProjectCount === 1")
-        page.evaluate(
-            "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
-        )
-        pending = page.evaluate(geometry_script)
-        assert pending["checkboxesPresent"] and pending["rowsSame"]
-        for before, after in zip(initial["rowsTop"], pending["rowsTop"], strict=True):
-            assert abs(after - before) <= 1, (initial, pending)
-        for key in ("webServiceTop", "sidebarScrollTop"):
-            assert abs(pending[key] - initial[key]) <= 1, (key, initial, pending)
-
-        page.evaluate("window.__releaseTunnelProject()")
         expect(select).to_have_value("neoMe")
         _assert_exact_project_kickoff(
             page.locator("[data-agent-tunnel-kickoff]"),
             "neoMe",
             neome["identity"],
-            2,
+            1,
         )
         settled = page.evaluate(geometry_script)
         assert settled["checkboxesPresent"] and settled["rowsSame"]
@@ -935,6 +807,15 @@ def test_tunnel_project_selection_keeps_rows_and_sidebar_stable(
             assert abs(after - before) <= 1, (initial, settled)
         for key in ("webServiceTop", "sidebarScrollTop"):
             assert abs(settled[key] - initial[key]) <= 1, (key, initial, settled)
+        for project_id in project_ids:
+            expect(page.locator(
+                f'[data-agent-tunnel-project-checkbox="{project_id}"]'
+            )).to_be_checked()
+        expect(page.locator("#agent_tunnel_project_path")).to_have_value(
+            worthward["root"]
+        )
+        assert status["project_context"] == original_context
+        assert project_requests == []
     finally:
         context.close()
 
@@ -1212,19 +1093,12 @@ def test_tunnel_project_checkboxes_commit_subset_and_keep_one_selected(
         context.close()
 
 
-def test_tunnel_project_switch_keeps_prompt_actions_until_reconnect_finishes(
+def test_tunnel_kickoff_choice_keeps_prompt_actions_ready(
     disposable_browser,
     sidebar_server_url,
 ):
-    """A reconnect keeps the prompt frame while blocking stale actions."""
+    """A task target change keeps the ready Tunnel and prompt controls usable."""
     context = disposable_browser.new_context(viewport={"width": 858, "height": 1_218})
-    context.add_init_script("""const nativeSetTimeout = window.setTimeout.bind(window);
-    window.setTimeout = (callback, delay, ...args) => {
-        if (delay === 10_000 && String(callback).includes('refreshTunnelStatus')) {
-            return nativeSetTimeout(callback, 200, ...args);
-        }
-        return nativeSetTimeout(callback, delay, ...args);
-    };""")
     page = context.new_page()
     status = _tunnel_onboarding_status(activity_observed=False)
     alpha = deepcopy(status["project_context"]["current"])
@@ -1237,34 +1111,17 @@ def test_tunnel_project_switch_keeps_prompt_actions_until_reconnect_finishes(
         "selected_project_ids": ["alpha", "beta"],
         "projects": [alpha, beta],
     }
-
-    def fulfill_project(route):
-        assert route.request.post_data_json == {
-            "project_id": "alpha",
-            "selected_project_ids": ["alpha", "beta"],
-            "expected_revision": 1,
-        }
-        status["project_context"] = {
-            **status["project_context"],
-            "revision": 2,
-            "current": alpha,
-        }
-        status["presentation"] = {
-            **status["presentation"],
-            "tone": "loading",
-            "label": "Connecting",
-        }
-        status["state"] = "starting"
-        status["ready"] = False
-        status["status_observed_at"] = 2
-        status["state_revision"] += 1
-        route.fulfill(json=deepcopy(status))
-
+    project_requests = []
     page.route(
         "**/api/agent/tunnel/status?platform=chatgpt",
         lambda route: route.fulfill(json=deepcopy(status)),
     )
-    page.route("**/api/agent/tunnel/project?platform=chatgpt", fulfill_project)
+
+    def reject_project_change(route):
+        project_requests.append(route.request.post_data_json)
+        route.fulfill(status=409, json={"error": "A task choice must not reconnect."})
+
+    page.route("**/api/agent/tunnel/project?platform=chatgpt", reject_project_change)
     try:
         page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
         prompt = page.locator("[data-agent-tunnel-kickoff]")
@@ -1278,35 +1135,25 @@ def test_tunnel_project_switch_keeps_prompt_actions_until_reconnect_finishes(
         expect(marker).to_be_visible()
         before = prompt.bounding_box()
         assert before is not None
+
         trigger.click()
         page.locator(
             '[data-agent-tunnel-kickoff-project-field] '
             '[data-browser-filter-select-option="alpha"]'
         ).click()
-        _assert_exact_project_kickoff(prompt, "alpha", alpha["identity"], 2)
+        _assert_exact_project_kickoff(prompt, "alpha", alpha["identity"], 1)
         expect(prompt).to_be_visible()
-        expect(prompt).to_be_disabled()
+        expect(prompt).to_be_enabled()
         expect(copy).to_be_visible()
-        expect(copy).to_be_disabled()
+        expect(copy).to_be_enabled()
         expect(ask).to_be_visible()
-        expect(ask).to_have_attribute("aria-disabled", "true")
-        expect(marker).to_be_hidden()
+        expect(ask).to_have_attribute("aria-disabled", "false")
+        expect(marker).to_be_visible()
+        expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Tunnel ready")
         during = prompt.bounding_box()
         assert during is not None
         assert abs(during["height"] - before["height"]) <= 1
-
-        status["presentation"] = {
-            **status["presentation"],
-            "tone": "ready",
-            "label": "Ready",
-        }
-        status["state"] = "ready"
-        status["ready"] = True
-        status["status_observed_at"] = 3
-        status["state_revision"] += 1
-        expect(copy).to_be_enabled(timeout=5_000)
-        expect(ask).to_have_attribute("aria-disabled", "false")
-        expect(marker).to_be_visible()
+        assert project_requests == []
     finally:
         context.close()
 
@@ -6657,10 +6504,10 @@ def test_completed_session_accepts_followup_in_composer(disposable_browser, side
         context.close()
 
 
-def test_tunnel_inline_project_selector_reconnects_without_manual_action(
+def test_tunnel_inline_project_selector_leaves_server_selection_and_runtime_unchanged(
     disposable_browser, tmp_path
 ):
-    """Choosing another bridged project refreshes the Tunnel before task use."""
+    """The real service keeps every bridged project active after a task choice."""
     import json
     from unittest.mock import patch
 
@@ -6700,19 +6547,23 @@ def test_tunnel_inline_project_selector_reconnects_without_manual_action(
     application.config.update(TESTING=True)
     service = application.extensions["tunnel_mcp_service"]
     service.selection_store.save("alpha", selected_project_ids=["alpha", "beta"])
+    saved_selection = service.selection_store.load()
     runtime = application.extensions["tunnel_runtime"]
     runtime._enabled = True
     runtime._set_state("ready", "Ready for a project tool call.")
     reconnects = []
-    fail_next_reconnect = {"value": False}
+    project_requests = []
 
     def reconnect():
         reconnects.append(True)
-        if fail_next_reconnect["value"]:
-            raise RuntimeError("sk-private-error-must-not-leak")
-        runtime._generation += 1
-        runtime._set_state("starting", "Reconnecting the Tunnel…")
-        runtime._set_state("ready", "Ready for a project tool call.")
+        raise AssertionError("A task choice must not reconnect the Tunnel.")
+
+    def record_request(request):
+        if (
+            urlsplit(request.url).path == "/api/agent/tunnel/project"
+            and request.method == "POST"
+        ):
+            project_requests.append(request.post_data_json)
 
     server = make_server("127.0.0.1", 0, application, threaded=True)
     server_thread = Thread(target=server.serve_forever, daemon=True)
@@ -6720,17 +6571,30 @@ def test_tunnel_inline_project_selector_reconnects_without_manual_action(
     page = context.new_page()
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
+    page.on("request", record_request)
     with patch.object(runtime, "connect", side_effect=reconnect):
         server_thread.start()
         try:
             base_url = f"http://127.0.0.1:{server.server_port}"
             page.goto(base_url + "/agent/tunnel/chatgpt")
+            initial_response = page.request.get(
+                base_url + "/api/agent/tunnel/status?platform=chatgpt"
+            )
+            assert initial_response.ok
+            initial_status = initial_response.json()
+            initial_context = initial_status["project_context"]
+            assert initial_context["current"]["id"] == "alpha"
+            assert initial_context["selected_project_ids"] == ["alpha", "beta"]
+            beta = next(
+                project for project in initial_context["projects"]
+                if project["id"] == "beta"
+            )
             select = page.locator("[data-agent-tunnel-kickoff-project]")
             trigger = page.locator(
                 "[data-agent-tunnel-kickoff-project-field] .browser-filter-select-trigger"
             )
+            prompt = page.locator("[data-agent-tunnel-kickoff]")
             expect(page.locator("[data-agent-tunnel-project-checkbox]")).to_have_count(2)
-            expect(page.locator("[data-agent-tunnel-project-row]")).to_have_count(2)
             expect(select).to_have_value("alpha")
             expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Ready")
 
@@ -6740,35 +6604,33 @@ def test_tunnel_inline_project_selector_reconnects_without_manual_action(
                 '[data-browser-filter-select-option="beta"]'
             ).click()
             expect(select).to_have_value("beta")
-            expect(page.locator("[data-agent-tunnel-kickoff]")).to_have_value(
-                re.compile(r'project ID "beta".*selection revision 2')
+            _assert_exact_project_kickoff(
+                prompt, "beta", beta["identity"], initial_context["revision"]
             )
             expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Ready")
-            assert len(reconnects) == 1
+            for project_id in ("alpha", "beta"):
+                expect(page.locator(
+                    f'[data-agent-tunnel-project-checkbox="{project_id}"]'
+                )).to_be_checked()
 
-            fail_next_reconnect["value"] = True
             trigger.click()
             page.locator(
                 '[data-agent-tunnel-kickoff-project-field] '
                 '[data-browser-filter-select-option="alpha"]'
             ).click()
             expect(select).to_have_value("alpha")
-            expect(page.locator("[data-agent-tunnel-kickoff]")).to_have_value(
-                re.compile(r'project ID "alpha".*selection revision 3')
+            after_response = page.request.get(
+                base_url + "/api/agent/tunnel/status?platform=chatgpt"
             )
-            expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Unavailable")
-            expect(page.locator("[data-agent-tunnel-problem]")).to_contain_text(
-                "selection was saved"
-            )
-            assert len(reconnects) == 2
-            assert page.locator('[data-agent-tunnel-project-row="beta"] .agent-tunnel-project-access').count() == 0
-            status = page.request.get(base_url + "/api/agent/tunnel/status?platform=chatgpt")
-            assert status.ok
-            assert status.json()["project_context"]["current"]["access"] == "Read and write"
-            assert status.json()["state"] == "error"
-            page.wait_for_timeout(3_200)
-            expect(page.locator("[data-agent-tunnel-state]")).to_have_text("Unavailable")
-            assert not errors
+            assert after_response.ok
+            after_status = after_response.json()
+            assert after_status["project_context"] == initial_context
+            assert after_status["generation"] == initial_status["generation"]
+            assert service.selection_store.load() == saved_selection
+            assert runtime.snapshot()["state"] == "ready"
+            assert reconnects == []
+            assert project_requests == []
+            assert errors == []
         finally:
             context.close()
             server.shutdown()

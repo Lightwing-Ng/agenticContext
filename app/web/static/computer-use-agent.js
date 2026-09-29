@@ -1,4 +1,4 @@
-/* Code version: v3.74.0-codex.0 */
+/* Code version: v3.74.1-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -1084,6 +1084,8 @@
     let tunnelPresentation = initialTunnelSnapshot.presentation;
     let tunnelCredentials = initialTunnelSnapshot.credentials;
     let tunnelProjectContext = initialTunnelSnapshot.projectContext;
+    let tunnelKickoffProjectId = tunnelProjectContext.current?.id || "";
+    let tunnelKickoffProjectIdentity = tunnelProjectContext.current?.identity || "";
     let tunnelPollTimer = null;
     let tunnelPollRevision = 0;
     let tunnelPollController = null;
@@ -1201,10 +1203,30 @@
         }
     }
 
-    function tunnelKickoffPrefix(context = tunnelProjectContext) {
-        const project = context?.current;
+    function tunnelKickoffProject() {
+        const selectedIds = new Set(tunnelProjectContext.selectedProjectIds);
+        const projects = tunnelProjectContext.projects.filter(
+            (project) => project.registered && project.available
+                && selectedIds.has(project.id),
+        );
+        const selected = projects.find(
+            (project) => project.id === tunnelKickoffProjectId
+                && project.identity === tunnelKickoffProjectIdentity,
+        );
+        if (selected) return selected;
+        const fallback = projects.find(
+            (project) => project.id === tunnelProjectContext.current?.id
+                && project.identity === tunnelProjectContext.current?.identity,
+        ) || projects[0] || null;
+        tunnelKickoffProjectId = fallback?.id || "";
+        tunnelKickoffProjectIdentity = fallback?.identity || "";
+        return fallback;
+    }
+
+    function tunnelKickoffPrefix() {
+        const project = tunnelKickoffProject();
         if (!project?.id || !project?.identity) return "";
-        return `Use @AgenticContext for project ID "${project.id}" (identity "${project.identity}", selection revision ${context.revision}). First call current_project to confirm this selection, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.`;
+        return `Use @AgenticContext for project ID "${project.id}" (identity "${project.identity}", selection revision ${tunnelProjectContext.revision}). First call current_project to confirm this project ID and identity in the registered, selected projects list, then call project_overview for this exact project ID, read its instructions and current changes, and keep this project identity pinned for the whole task without altering unrelated work.`;
     }
 
     function syncTunnelKickoffProjectPrompt() {
@@ -1263,10 +1285,7 @@
             tunnelKickoffProjectOptionsSignature = signature;
             changed = true;
         }
-        const currentId = tunnelProjectPendingCurrentId
-            || (tunnelProjectContext.current?.registered
-                && selectedIds.has(tunnelProjectContext.current.id)
-                ? tunnelProjectContext.current.id : "");
+        const currentId = tunnelProjectPendingCurrentId || tunnelKickoffProject()?.id || "";
         if (select.value !== currentId) {
             select.value = currentId;
             changed = true;
@@ -1470,11 +1489,7 @@
         if (!tunnelAvailability().ready) {
             return {ready: false, state: "tunnel", title: "Wait for the Tunnel to be ready"};
         }
-        if (
-            !tunnelProjectContext.current?.available
-            || !tunnelProjectContext.current?.registered
-            || !tunnelProjectContext.selectedProjectIds.includes(tunnelProjectContext.current.id)
-        ) {
+        if (!tunnelKickoffProject()) {
             const hasRegistered = tunnelProjectContext.projects.some(
                 (project) => project.registered && project.selected,
             );
@@ -3844,7 +3859,11 @@
                 syncTunnelKickoffProjectOptions();
                 return;
             }
-            void saveTunnelProjectSelection(projectId);
+            tunnelKickoffProjectId = project.id;
+            tunnelKickoffProjectIdentity = project.identity;
+            syncTunnelKickoffProjectOptions();
+            syncTunnelKickoffProjectPrompt();
+            syncTunnelKickoffUi();
         });
         elements.tunnelKickoffAsk?.addEventListener("click", (event) => {
             if (elements.tunnelKickoffAsk?.getAttribute("aria-disabled") === "true") {

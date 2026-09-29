@@ -1,6 +1,6 @@
 """Tunnel credential storage and Agent Tunnel route tests.
 
-Code version: v1.9.0-codex.0
+Code version: v1.9.1-codex.0
 """
 
 from __future__ import annotations
@@ -86,7 +86,10 @@ def test_kickoff_server_rendering_targets_one_project_among_registered_projects(
     prompt = unescape(match.group(1))
     assert prompt.endswith("\n\nTask:\n[describe your task].")
     assert f'project ID "alpha" (identity "{current["identity"]}", selection revision 7)' in prompt
-    assert "First call current_project to confirm this selection" in prompt
+    assert (
+        "First call current_project to confirm this project ID and identity "
+        "in the registered, selected projects list"
+    ) in prompt
     assert "Multiple Tunnel projects" not in prompt
     body = response.get_data(as_text=True)
     assert 'aria-label="Registered Tunnel projects"' in body
