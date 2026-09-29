@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.26.4-codex.0`
+Documentation version: `v1.27.1-codex.0`
 
 ## Supported commands
 
@@ -515,6 +515,33 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   HTML, complete Local resources answer rendering, source-specific Answerer filtering, query-state
   preservation, removed answer IDs/Projects/Clear filters, literal detail headings, default Edge
   controls, login-probe routing, and the single-character vector logo.
+- Zhihu answerer update tests cover the drawer action's rendering, disabled state without a cached
+  profile link, route URL validation, busy and disabled-operation refusals, and the script-to-route
+  contract. Collector tests cover the newest-answer read: stopping at the first fully cached page,
+  reading to the terminal page when nothing is cached, ignoring provider totals and duplicates,
+  fail-closed cursor and repeated-page handling, and cooperative stop. Sync tests cover its merge
+  metrics and the answerer-URL requirement. `test_zhihu_answerer_refresh_e2e.py` drives the real
+  Zhihu service, collector, and Parquet merge in a disposable browser against injected provider
+  pages: added, unchanged, and provider-failure results, wait-modal release, and the four-action
+  drawer inside 1,138, 1,024, and 390 px viewports. No test contacts Zhihu or opens a host browser
+  profile.
+- ChatGPT Media Sessions index tests seed an isolated ChatGPT media catalog. Unit tests cover cover
+  selection (newest image, tracked before deleted, image before video), title and time ordering,
+  page clamping, `detail_page` agreement with Session View, and the `session_index` filter's
+  restriction to ChatGPT media. Route tests cover the card, link, toggle, sort-label, hidden-field,
+  and pagination markup in every Media state. `test_chatgpt_media_sessions_e2e.py` drives a
+  disposable browser through 26 sessions: the shown cover's natural width identifies the newest
+  image. Landscape, 4:5, tall, and size-less covers must render uncropped: rendered ratio equal to
+  the natural ratio, image as wide as its cover and inside it, and `object-fit: contain`. The grid is
+  four columns whose covers and titles align across a row; the list uses a 112px column. The layout
+  choice persists across reloads, and a sidebar filter, pagination, and dock round trip keep the
+  index. Phone cases at 390 px in light and dark themes assert two uncropped grid columns, an 88px
+  uncropped list column, and no document-level horizontal overflow. No test contacts ChatGPT.
+- `test_select_keyboard_e2e.py` opens the Local resources Media type and Sort order menus at
+  1,280 and 390 px in light and dark themes and asserts an opaque theme-background base, a menu
+  that covers the next field at its overlap, option hit targets, and no horizontal overflow. The
+  Settings operating-system and catalog cases in the same file keep asserting the `62%` Period
+  material for every other standard select.
 - Local resources reader tests seed an isolated ChatGPT history and verify that LLM text renders as
   full-height conversation cards with wrapped source-link chips, a one-row header timestamp at
   1280, 715, and 390 px, and no document-level horizontal overflow, while Zhihu keeps its table.

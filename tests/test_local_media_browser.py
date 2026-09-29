@@ -1,6 +1,6 @@
 """Read-only local media browser tests.
 
-Code version: v1.12.0-codex.0
+Code version: v1.13.0-codex.0
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from app.core.local_media_browser import (
     format_captured_at_timestamp_label,
     format_datetime_label,
     local_file_manager_label,
+    normalize_browser_filters,
+    paginate_chatgpt_session_index,
     paginate_chatgpt_sessions,
     paginate_media_items,
     reveal_media_path,
@@ -802,6 +804,178 @@ def test_catalog_query_uses_session_pagination_only_for_the_chatgpt_filter(
     ]
     assert all_sources_page.pagination_unit == "media"
     assert all_sources_page.total_count == 3
+
+
+def _chatgpt_item(name: str, session_key: str, captured_at: str, **changes) -> LocalMediaItem:
+    """Build one ChatGPT image whose title comes from its session key."""
+    return replace(
+        _item(name, captured_at),
+        source="chatgpt",
+        creator=changes.pop("creator", f"Title {session_key}"),
+        project_name="demo-project",
+        source_url=f"https://chatgpt.com/c/{session_key}",
+        chatgpt_session_key=session_key,
+        **changes,
+    )
+
+
+def test_chatgpt_session_index_uses_only_the_latest_work_of_each_session() -> None:
+    items = (
+        _chatgpt_item("old-a.png", "alpha", "2026-08-01T00:00:00Z"),
+        _chatgpt_item("latest-a.png", "alpha", "2026-08-03T00:00:00Z"),
+        _chatgpt_item("middle-a.png", "alpha", "2026-08-02T00:00:00Z"),
+        _chatgpt_item("only-b.png", "beta", "2026-08-05T00:00:00Z"),
+        # An older image outranks a newer video: a cover is an image whenever one exists.
+        _chatgpt_item("image-c.png", "gamma", "2026-08-04T00:00:00Z"),
+        _chatgpt_item("newer-video-c.mp4", "gamma", "2026-08-06T00:00:00Z", media_kind="video"),
+    )
+
+    page = paginate_chatgpt_session_index(items)
+
+    assert page.pagination_unit == "session_index"
+    assert page.session_count == 3
+    assert page.total_pages == 1
+    assert page.total_count == 6
+    assert page.image_count == 5
+    assert page.video_count == 1
+    assert [summary.cover.filename for summary in page.sessions] == [
+        "only-b.png",
+        "image-c.png",
+        "latest-a.png",
+    ]
+    assert page.items == tuple(summary.cover for summary in page.sessions)
+    by_label = {summary.label: summary for summary in page.sessions}
+    assert by_label["Title alpha"].item_count == 3
+    assert by_label["Title alpha"].image_count == 3
+    assert by_label["Title alpha"].latest_at == "2026-08-03T00:00:00Z"
+    assert by_label["Title alpha"].source_url == "https://chatgpt.com/c/alpha"
+    assert by_label["Title gamma"].item_count == 2
+    assert by_label["Title gamma"].video_count == 1
+
+
+def test_chatgpt_session_index_deep_links_to_the_one_session_per_page_view() -> None:
+    items = (
+        _chatgpt_item("a.png", "alpha", "2026-08-01T00:00:00Z"),
+        _chatgpt_item("b.png", "beta", "2026-08-03T00:00:00Z"),
+        _chatgpt_item("c.png", "gamma", "2026-08-02T00:00:00Z"),
+    )
+
+    for sort in ("newest", "oldest", "name"):
+        page = paginate_chatgpt_session_index(items, sort=sort)
+        for summary in page.sessions:
+            detail = paginate_chatgpt_sessions(items, page=summary.detail_page)
+            assert detail.current_session_key == summary.session_key
+            targeted = paginate_chatgpt_sessions(items, target_session_key=summary.session_key)
+            assert targeted.current_page == summary.detail_page
+
+
+def test_chatgpt_session_index_orders_sessions_by_latest_work_or_title() -> None:
+    items = (
+        _chatgpt_item("a.png", "alpha", "2026-08-02T00:00:00Z", creator="Charlie"),
+        _chatgpt_item("b.png", "beta", "2026-08-03T00:00:00Z", creator="alpha"),
+        _chatgpt_item("c.png", "gamma", "2026-08-01T00:00:00Z", creator="Bravo"),
+    )
+
+    def labels(sort: str) -> list[str]:
+        return [summary.label for summary in paginate_chatgpt_session_index(items, sort=sort).sessions]
+
+    assert labels("newest") == ["alpha", "Charlie", "Bravo"]
+    assert labels("oldest") == ["Bravo", "Charlie", "alpha"]
+    assert labels("name") == ["alpha", "Bravo", "Charlie"]
+    assert labels("unsupported") == labels("newest")
+
+
+def test_chatgpt_session_index_prefers_a_tracked_cover_over_a_deleted_preview() -> None:
+    items = (
+        _chatgpt_item("tracked-old.png", "alpha", "2026-08-01T00:00:00Z"),
+        _chatgpt_item("deleted-new.png", "alpha", "2026-08-05T00:00:00Z", is_deleted=True),
+        _chatgpt_item("deleted-only.png", "beta", "2026-08-02T00:00:00Z", is_deleted=True),
+    )
+
+    page = paginate_chatgpt_session_index(items)
+
+    covers = {summary.label: summary.cover for summary in page.sessions}
+    assert covers["Title alpha"].filename == "tracked-old.png"
+    # A session with nothing left to track still appears, represented by its retained preview.
+    assert covers["Title beta"].filename == "deleted-only.png"
+    assert covers["Title beta"].is_deleted
+    assert {summary.label: summary.item_count for summary in page.sessions}["Title alpha"] == 2
+
+
+def test_chatgpt_session_index_paginates_sessions_and_clamps_the_page() -> None:
+    items = tuple(
+        _chatgpt_item(f"s{index}.png", f"session-{index}", f"2026-08-0{index}T00:00:00Z")
+        for index in range(1, 6)
+    )
+
+    first = paginate_chatgpt_session_index(items, page=1, page_size=2)
+    last = paginate_chatgpt_session_index(items, page=99, page_size=2)
+    empty = paginate_chatgpt_session_index((), page=3)
+
+    assert (first.total_pages, first.current_page, len(first.sessions)) == (3, 1, 2)
+    assert first.session_count == 5
+    assert [summary.cover.filename for summary in first.sessions] == ["s5.png", "s4.png"]
+    assert (last.current_page, [summary.cover.filename for summary in last.sessions]) == (3, ["s1.png"])
+    assert (empty.sessions, empty.items, empty.total_pages, empty.current_page) == ((), (), 1, 1)
+
+
+def test_chatgpt_session_index_title_prefers_the_newest_explicit_branch_title() -> None:
+    items = (
+        _chatgpt_item("latest.png", "alpha", "2026-08-09T12:00:00Z", creator="Studio208cm"),
+        _chatgpt_item("branch.png", "alpha", "2026-08-08T12:00:00Z", creator="Branch · master 0809b"),
+    )
+
+    assert paginate_chatgpt_session_index(items).sessions[0].label == "Branch · master 0809b"
+
+
+def test_catalog_query_serves_the_session_index_only_for_the_chatgpt_filter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = LocalMediaCatalog(tmp_path / "local_store")
+    items = (
+        _chatgpt_item("one.png", "session-one", "2026-08-09T00:00:00Z"),
+        _chatgpt_item("two.png", "session-two", "2026-08-08T00:00:00Z"),
+        _chatgpt_item("two-newer.png", "session-two", "2026-08-10T00:00:00Z"),
+        _item("x-item.png", "2026-08-10T00:00:00Z"),
+    )
+    monkeypatch.setattr(catalog, "snapshot", lambda force_refresh=False: items)
+
+    index_page = catalog.query(source="chatgpt", chatgpt_session_index=True)
+    filtered_page = catalog.query(source="chatgpt", chatgpt_session_index=True, query="one")
+    detail_page = catalog.query(source="chatgpt", chatgpt_session_index=False)
+    all_sources_page = catalog.query(source="all", chatgpt_session_index=True)
+
+    assert index_page.pagination_unit == "session_index"
+    assert [summary.cover.filename for summary in index_page.sessions] == ["two-newer.png", "one.png"]
+    # Search narrows the sessions and the cover candidates to the matching works.
+    assert [summary.cover.filename for summary in filtered_page.sessions] == ["one.png"]
+    assert detail_page.pagination_unit == "session"
+    assert all_sources_page.pagination_unit == "media"
+    assert all_sources_page.sessions == ()
+
+
+@pytest.mark.parametrize(
+    ("view", "source", "session_index", "expected"),
+    (
+        ("media", "chatgpt", "1", True),
+        ("media", "chatgpt", " TRUE ", True),
+        ("media", "chatgpt", "on", True),
+        ("media", "chatgpt", None, False),
+        ("media", "chatgpt", "0", False),
+        ("media", "chatgpt", "false", False),
+        ("media", "all", "1", False),
+        ("media", "x", "1", False),
+        ("text", "chatgpt", "1", False),
+        ("prompts", "chatgpt", "1", False),
+    ),
+)
+def test_session_index_filter_is_limited_to_chatgpt_media(
+    view: str, source: str, session_index: str | None, expected: bool,
+) -> None:
+    filters = normalize_browser_filters(source=source, view=view, session_index=session_index)
+
+    assert filters["session_index"] is expected
 
 
 def test_chatgpt_catalog_missing_falls_back_to_filename(tmp_path: Path) -> None:

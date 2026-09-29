@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.55.2-codex.0
+Code version: v1.55.3-codex.0
 """
 
 from __future__ import annotations
@@ -1288,7 +1288,15 @@ def test_text_browser_omits_redundant_per_page_metric(
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("width", "height", "touch"),
-    ((992, 1_203, False), (900, 959, False), (783, 863, False), (390, 844, True)),
+    (
+        (992, 1_203, False),
+        (900, 959, False),
+        (854, 1_218, False),
+        (783, 863, False),
+        (768, 863, False),
+        (767, 863, False),
+        (390, 844, True),
+    ),
 )
 def test_zhihu_text_browser_shows_answerers_and_complete_answers(
     disposable_browser: Browser,
@@ -1323,7 +1331,10 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
         header = page.locator(".browser-session-index-table[data-table-header]")
         expect(table).to_have_count(1)
         expect(header).to_have_count(1)
-        assert header.locator("thead th").all_inner_texts() == [
+        assert [
+            " ".join(label.split())
+            for label in header.locator("thead th").all_inner_texts()
+        ] == [
             "No.",
             "Answerer",
             "Answers",
@@ -1400,6 +1411,49 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
             "Question",
             "Answer",
         ]
+        if width >= 768:
+            page.evaluate("document.fonts.ready")
+            detail_geometry = detail_table.evaluate(
+                """body => {
+                    const shell = body.closest('.browser-session-detail-shell');
+                    const header = shell.querySelector('[data-table-header]');
+                    const scroll = shell.querySelector('[data-table-scroll]');
+                    const bounds = element => element.getBoundingClientRect();
+                    return {
+                        bodyWidth: bounds(body).width,
+                        scrollWidth: scroll.clientWidth,
+                        scrollOverflow: scroll.scrollWidth - scroll.clientWidth,
+                        cells: [...body.rows[0].cells].map(cell => ({
+                            left: bounds(cell).left,
+                            width: bounds(cell).width,
+                        })),
+                        headings: [...header.rows[0].cells].map(cell => ({
+                            left: bounds(cell).left,
+                            width: bounds(cell).width,
+                        })),
+                        documentOverflow: document.documentElement.scrollWidth - innerWidth,
+                    };
+                }"""
+            )
+            assert detail_geometry["bodyWidth"] == pytest.approx(
+                detail_geometry["scrollWidth"], abs=1
+            )
+            assert detail_geometry["scrollOverflow"] <= 1, detail_geometry
+            for cell, percentage in zip(
+                detail_geometry["cells"], (5, 15, 25, 55), strict=True
+            ):
+                assert cell["width"] == pytest.approx(
+                    detail_geometry["bodyWidth"] * percentage / 100, abs=1
+                ), detail_geometry
+            for heading, cell in zip(
+                detail_geometry["headings"], detail_geometry["cells"], strict=True
+            ):
+                assert heading["left"] == pytest.approx(cell["left"], abs=1), detail_geometry
+            assert detail_geometry["documentOverflow"] <= 1, detail_geometry
+        else:
+            assert detail_table.locator("tbody > tr").first.evaluate(
+                "element => getComputedStyle(element).display"
+            ) == "grid"
         assert page.locator(".browser-text-metric-grid .metric-label").all_inner_texts() == [
             "Answerer",
             "Answers",

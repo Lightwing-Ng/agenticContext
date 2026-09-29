@@ -1,6 +1,6 @@
 """Route and asset coverage for the formal Zhihu cache source.
 
-Code version: v1.6.2-codex.0
+Code version: v1.7.0-codex.0
 """
 
 from __future__ import annotations
@@ -12,8 +12,14 @@ import re
 from unittest.mock import patch
 from xml.etree import ElementTree
 
+import pytest
+
 from app.core.chat_history_browser import query_chat_history
 from app.core.config import CrawlConfig, load_saved_config, save_config
+from app.core.resource_persistence import (
+    ZHIHU_HISTORY_SCHEMA,
+    write_parquet_rows_atomic,
+)
 from app.core.zhihu_answers import (
     normalize_zhihu_answer_payload,
     normalize_zhihu_profile_url,
@@ -29,12 +35,12 @@ ZHIHU_IMAGE_PLACEHOLDER_ASSET = (
 )
 
 
-def _create_zhihu_app(tmp_path: Path):
+def _create_zhihu_app(tmp_path: Path, **app_options: object):
     with patch(
         "app.web.config_store.load_saved_config",
         return_value=CrawlConfig(zhihu_browser="edge"),
     ):
-        return create_app(tmp_path / "local_store")
+        return create_app(tmp_path / "local_store", **app_options)
 
 
 def test_zhihu_cache_page_uses_edge_login_and_text_first_controls(tmp_path: Path) -> None:
@@ -326,3 +332,219 @@ def test_zhihu_image_placeholder_matches_the_requested_worthward_asset() -> None
     assert hashlib.sha256(ZHIHU_IMAGE_PLACEHOLDER_ASSET.read_bytes()).hexdigest() == (
         "007674f3e60a67ed05db925628b1d5d6d22561e70dd22be9ea87601a9ec8533b"
     )
+
+
+def _seed_zhihu_answerer(
+    tmp_path: Path,
+    *,
+    token: str = "fixture-author",
+    name: str = "Fixture Author",
+) -> str:
+    """Cache one answer and return its answerer session ID."""
+    profile = normalize_zhihu_profile_url(f"https://www.zhihu.com/people/{token}")
+    answer = normalize_zhihu_answer_payload(
+        {
+            "id": 2197549311,
+            "content": "<p>Cached answer body</p>",
+            "author": {"id": f"{token}-id", "name": name, "url_token": token},
+            "question": {"id": 495309288, "title": "Fixture question"},
+        },
+        profile,
+    )
+    store = ZhihuHistoryStore(zhihu_history_path(tmp_path / "local_store"))
+    store.merge_answers((answer,), "2026-09-11T00:00:00Z")
+    store.save()
+    return next(
+        item
+        for item in query_chat_history(
+            tmp_path / "local_store", source="zhihu", session_view=True
+        ).sessions
+        if item.conversation_title == name
+    ).stable_id
+
+
+def _zhihu_detail_url(session_id: str) -> str:
+    return f"/browser?view=text&source=zhihu&session_view=1&session={session_id}"
+
+
+def _update_button_tag(body: str) -> str:
+    match = re.search(r"<button[^>]*data-browser-zhihu-answerer-refresh[^>]*>", body)
+    assert match is not None
+    return match.group(0)
+
+
+def test_zhihu_answerer_detail_offers_a_latest_answers_update_action(tmp_path: Path) -> None:
+    session_id = _seed_zhihu_answerer(tmp_path)
+    client = _create_zhihu_app(tmp_path).test_client()
+
+    detail_body = client.get(_zhihu_detail_url(session_id)).get_data(as_text=True)
+    index_body = client.get(
+        "/browser?view=text&source=zhihu&session_view=1"
+    ).get_data(as_text=True)
+
+    button = _update_button_tag(detail_body)
+    assert detail_body.count("data-browser-zhihu-answerer-refresh") == 1
+    assert 'data-browser-zhihu-answerer-url="https://www.zhihu.com/people/fixture-author"' in button
+    assert 'data-browser-zhihu-answerer-label="Fixture Author"' in button
+    assert 'aria-label="Update latest answers from Zhihu"' in button
+    assert 'title="Update latest answers from Zhihu"' in button
+    assert "disabled" not in button
+    assert 'class="icon browser-session-source-update-icon"' in detail_body
+    assert "browser-session-actions--source-update" in detail_body
+    assert detail_body.index("data-browser-session-actions-drawer") < detail_body.index(
+        "data-browser-zhihu-answerer-refresh"
+    )
+    for hook in (
+        "data-zhihu-answerer-refresh-banner",
+        "data-zhihu-answerer-refresh-dismiss",
+        "data-zhihu-answerer-refresh-title",
+        "data-zhihu-answerer-refresh-copy",
+    ):
+        assert hook in detail_body
+    assert "browser-session-actions.js?v=browser-session-actions-v1.2.0-codex.0" in detail_body
+    assert "data-browser-zhihu-answerer-refresh" not in index_body
+    assert "data-zhihu-answerer-refresh-banner" not in index_body
+
+
+def test_zhihu_answerer_without_a_profile_link_cannot_start_an_update(tmp_path: Path) -> None:
+    write_parquet_rows_atomic(
+        zhihu_history_path(tmp_path / "local_store"),
+        [
+            {
+                "schema_version": 1,
+                "platform": "zhihu",
+                "conversation_id": "42",
+                "conversation_url": "https://www.zhihu.com/question/7/answer/42",
+                "conversation_title": "Legacy question",
+                "message_key": "answer:42",
+                "turn_index": 1,
+                "message_index": 0,
+                "role": "answer",
+                "author_label": "Legacy Author",
+                "content_text": "Legacy answer without a cached profile link",
+                "content_html": "",
+                "content_sha256": "legacy-fixture",
+                "source_links": ["https://www.zhihu.com/question/7/answer/42"],
+                "model_label": "",
+                "first_seen_at": "2026-09-11T00:00:00Z",
+                "last_seen_at": "2026-09-11T00:00:00Z",
+            }
+        ],
+        ZHIHU_HISTORY_SCHEMA,
+    )
+    session = query_chat_history(
+        tmp_path / "local_store", source="zhihu", session_view=True
+    ).sessions[0]
+    client = _create_zhihu_app(tmp_path).test_client()
+
+    button = _update_button_tag(client.get(_zhihu_detail_url(session.stable_id)).get_data(as_text=True))
+
+    assert session.conversation_url == ""
+    assert "disabled" in button
+    assert 'data-browser-zhihu-answerer-url=""' in button
+    assert 'aria-label="Zhihu profile link unavailable for this answerer"' in button
+
+
+def test_zhihu_answerer_refresh_route_starts_one_author_run(tmp_path: Path) -> None:
+    application = _create_zhihu_app(tmp_path)
+    service = application.extensions["zhihu_history_service"]
+
+    with patch.object(service, "start") as start:
+        response = application.test_client().post(
+            "/api/browser/zhihu/answerer/refresh",
+            json={"profile_url": "https://www.zhihu.com/people/fixture-author/answers?page=2"},
+        )
+
+    assert response.status_code == 202
+    assert response.get_json() == {
+        "started": True,
+        "author_token": "fixture-author",
+        "status_url": "/api/zhihu/status",
+    }
+    assert start.call_count == 1
+    assert start.call_args.args[0].zhihu_browser == "edge"
+    assert start.call_args.kwargs == {
+        "author_url": "https://www.zhihu.com/people/fixture-author",
+        "latest_only": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {},
+        {"profile_url": ""},
+        {"profile_url": "http://www.zhihu.com/people/fixture-author"},
+        {"profile_url": "https://example.com/people/fixture-author"},
+        {"profile_url": "https://www.zhihu.com.evil.test/people/fixture-author"},
+        {"profile_url": "https://www.zhihu.com/question/1"},
+        {"profile_url": ["https://www.zhihu.com/people/fixture-author"]},
+        ["https://www.zhihu.com/people/fixture-author"],
+    ),
+)
+def test_zhihu_answerer_refresh_route_rejects_targets_outside_a_zhihu_profile(
+    tmp_path: Path, payload: object
+) -> None:
+    application = _create_zhihu_app(tmp_path)
+    service = application.extensions["zhihu_history_service"]
+
+    with patch.object(service, "start") as start:
+        response = application.test_client().post(
+            "/api/browser/zhihu/answerer/refresh", json=payload
+        )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]
+    start.assert_not_called()
+
+
+def test_zhihu_answerer_refresh_route_reports_a_running_cache_and_disabled_operations(
+    tmp_path: Path,
+) -> None:
+    application = _create_zhihu_app(tmp_path)
+    service = application.extensions["zhihu_history_service"]
+    request_body = {"profile_url": "https://www.zhihu.com/people/fixture-author"}
+
+    with patch.object(
+        service,
+        "start",
+        side_effect=RuntimeError("A Zhihu answer cache is already running."),
+    ):
+        busy = application.test_client().post(
+            "/api/browser/zhihu/answerer/refresh", json=request_body
+        )
+
+    isolated = _create_zhihu_app(
+        tmp_path / "isolated", agent_external_operations_enabled=False
+    )
+    isolated_service = isolated.extensions["zhihu_history_service"]
+    with patch.object(isolated_service, "start") as isolated_start:
+        disabled = isolated.test_client().post(
+            "/api/browser/zhihu/answerer/refresh", json=request_body
+        )
+
+    assert busy.status_code == 409
+    assert busy.get_json() == {"error": "A Zhihu answer cache is already running."}
+    assert disabled.status_code == 409
+    assert "disabled" in disabled.get_json()["error"]
+    isolated_start.assert_not_called()
+
+
+def test_zhihu_answerer_refresh_script_targets_the_registered_routes(tmp_path: Path) -> None:
+    application = _create_zhihu_app(tmp_path)
+    routes = {
+        rule.endpoint: rule
+        for rule in application.url_map.iter_rules()
+        if rule.endpoint
+        in {"cache.refresh_browser_zhihu_answerer", "cache.api_zhihu_status"}
+    }
+    script = (REPOSITORY_ROOT / "app/web/static/browser-session-actions.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert routes["cache.refresh_browser_zhihu_answerer"].methods >= {"POST"}
+    assert (
+        f'const zhihuRefreshEndpoint = "{routes["cache.refresh_browser_zhihu_answerer"].rule}";'
+        in script
+    )
+    assert f'startPayload.status_url || "{routes["cache.api_zhihu_status"].rule}"' in script

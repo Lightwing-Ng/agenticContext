@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.14.0-codex.1`
+Documentation version: `v1.16.1-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -24,7 +24,7 @@ Cache is the execution surface. Its canonical source pages are:
 | X | `/cache/x` | Liked-post media | None |
 | Grok | `/cache/grok` | Grok media assets | Grok sessions and messages |
 | ChatGPT | `/cache/chatgpt` | ChatGPT images | ChatGPT sessions and messages |
-| Gemini | `/cache/gemini` | Gemini sessions and messages | Gemini sessions and messages |
+| Gemini | `/cache/gemini` | Rendered Gemini images in Safari | Gemini sessions and messages |
 | Claude | `/cache/claude` | Claude sessions and messages | Claude sessions and messages |
 | Zhihu | `/cache/zhihu` | Upvoted answers or one answerer's answers | One rich-text session per answer plus source links |
 
@@ -151,8 +151,13 @@ selected browser through `GET https://www.zhihu.com/api/v4/me`, then follows the
 account's paginated activity feed and retains only `MEMBER_VOTEUP_ANSWER` targets. An optional
 validated `https://www.zhihu.com/people/<token>` URL switches to complete answerer pagination.
 Both modes deduplicate by answer ID and recheck the newest page before committing. Rows are merged
-cumulatively, so caching another answerer does not remove earlier answers. Local resources renders
-the complete normalized answer text without its generic message-collapse limit. A Zhihu-only
+cumulatively, so caching another answerer does not remove earlier answers. An answerer's Local
+resources detail page starts a newest-answer run of that answerer mode (`latest_only`) through
+`POST /api/browser/zhihu/answerer/refresh` with the cached profile URL, then follows
+`GET /api/zhihu/status` until the shared runtime finishes. That run reads newest-first pages until one
+is entirely cached and never claims completeness; the `Answerer URL` field remains the complete
+run. Local resources renders the complete normalized answer text without its generic
+message-collapse limit. A Zhihu-only
 session list omits the redundant Source column, answer IDs, Projects metric, and Clear filters
 action. Its standard Answerer select is populated from the cached author labels and scopes metrics,
 sessions, search, ordering, and pagination to the selected name. The index shows each literal
@@ -223,6 +228,39 @@ messages and `165` sessions. This baseline is a diagnostic reference, not a hard
 expectation: Grok history changes whenever new conversations are created or removed.
 
 ## 7. Safari cache-window contract
+
+Gemini Text and Media dispatch independent pipelines through the same cooperative worker.
+Media uses a task-owned Safari session to inspect rendered chat images from the observed
+`lh3.googleusercontent.com` host, validates complete JPEG/PNG/GIF/WebP bytes, and commits
+files and a catalog under `local_store/media/gemini/`. It honors size limits, known-file
+hashes, and Local resources deletion exclusions. Videos, external search thumbnails,
+blob URLs, and other attachments are outside this image-only mode. Failed images or
+sessions produce an incomplete status; policy skips do not. Text keeps its Parquet store
+and reports failed sessions as incomplete. Switching modes never displays text-message
+counts as downloaded images. Gemini Media is selectable in Local resources.
+
+Conversation timestamps decode the `hNvQHb` RPC envelope separately from the `MaZiqc`
+history list. Reverse the complete newest-first RPC turn sequence before matching it to
+oldest-first rendered messages, preserving entries with missing timestamps. Bot-check detection
+excludes chat content, same-origin conversation navigation links, and hidden challenge elements;
+the known `/unavailable` route cannot satisfy readiness. Media discovery uses block comments
+because Safari's JavaScript adapter collapses whitespace before execution.
+
+On 29 Sep 2026 Safari access recovered and a live Text run processed 44 of 269 discovered
+sessions, leaving 763 cached sessions and 4,277 messages. That run was stopped after its
+v1.38.0 timestamp mapping was found to reverse multi-turn chronology. A protected backup was
+retained; a verified repair changed only 274 `last_seen_at` values in 25 sessions. Twelve
+independent source re-reads exactly matched the correction, and every other message field and
+the discovery checkpoint remained unchanged. This is partial live acceptance, not a claim that
+all 269 sessions completed.
+
+Source v1.38.1 passes 258 focused checks, including Safari adapter execution, independent
+Text/Media dispatch, media file validation, and desktop/mobile browser checks. The last observed
+8666 process still reported v1.38.0; final runtime adoption requires a native Terminal restart.
+Real image-download acceptance remains pending: the next bounded Safari sample reached Google's
+human-verification page before media discovery. Do not infer downloaded image bytes from Text
+counts or offline tests. The full quality gate also remains blocked by the host's existing
+Streamlit/Pillow dependency conflict; focused success does not make that gate green.
 
 Safari-backed Cache tasks may own exactly one temporary Safari window at a time, and Safari
 is never the default browser for a new Gemini task. The window must remain a standard visible

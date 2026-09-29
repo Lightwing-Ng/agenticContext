@@ -9,7 +9,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.3.0-codex.0
+# Code version: v1.5.0-codex.0
 
 from __future__ import annotations
 
@@ -45,10 +45,12 @@ from app.core.providers import (
     build_chatgpt_initial_snapshot,
     chatgpt_conversation_id,
     build_chatgpt_text_snapshot,
+    build_gemini_media_initial_snapshot,
     build_grok_history_snapshot,
     build_grok_initial_snapshot,
     chatgpt_history_counts,
     is_chatgpt_conversation_url,
+    normalize_zhihu_profile_url,
     reset_chatgpt_state,
     reset_grok_state,
 )
@@ -134,10 +136,14 @@ def build_reconciled_cache_snapshot(
         snapshot["cached_sessions"] = hydrated["downloaded_posts"]
         snapshot["cached_messages"] = hydrated["downloaded_tweets"]
         return snapshot
-    if source_key == "claude":
+    if source_key in {"claude", "gemini"}:
         selected_mode = "media" if mode == "media" else "text"
+        media_snapshot = (
+            build_gemini_media_initial_snapshot if source_key == "gemini"
+            else build_claude_media_initial_snapshot
+        )
         hydrated = asdict(
-            build_claude_media_initial_snapshot(APP_VERSION, context.media_catalog.local_store_root)
+            media_snapshot(APP_VERSION, context.media_catalog.local_store_root)
             if selected_mode == "media" else runtime.hydrate_snapshot()
         )
         live = runtime.state.snapshot()
@@ -148,7 +154,7 @@ def build_reconciled_cache_snapshot(
                     running=True,
                     phase=live["phase"],
                     started_at=live["started_at"],
-                    message=f"Claude {live_mode} cache is running.",
+                    message=f"{source_key.capitalize()} {live_mode} cache is running.",
                 )
             return hydrated
         return reconcile_cached_snapshot(live, hydrated)
@@ -470,7 +476,7 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
                     else "text"
                 )
                 runtime.service.start(runtime_config, content_mode=content_mode)
-            elif source_key == "claude":
+            elif source_key in {"claude", "gemini"}:
                 content_mode = "media" if request.form.get("cache_content_mode") == "media" else "text"
                 runtime.service.start(runtime_config, content_mode=content_mode)
             elif source_key == "x":
@@ -700,6 +706,40 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
                     "session_key": chatgpt_conversation_id(conversation_url),
                     "resource_count": resource_count,
                     "status_url": url_for(f"{CACHE_BLUEPRINT_NAME}.api_chatgpt_status"),
+                }
+            ),
+            202,
+        )
+
+    @blueprint.post("/api/browser/zhihu/answerer/refresh")
+    def refresh_browser_zhihu_answerer():
+        """Start a newest-answers Zhihu refresh for one answerer's public profile."""
+        if not context.external_agent_operations_enabled():
+            return context.reject_external_agent_operation()
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            payload = {}
+        try:
+            profile = normalize_zhihu_profile_url(payload.get("profile_url"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        config = context.config_store.config
+        busy_response = context.reject_active_safari_agent_for_cache(config.zhihu_browser)
+        if busy_response is not None:
+            return busy_response
+
+        runtime = context.cache_runtimes["zhihu"]
+        try:
+            runtime.service.start(config, author_url=profile.profile_url, latest_only=True)
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        return (
+            jsonify(
+                {
+                    "started": True,
+                    "author_token": profile.author_token,
+                    "status_url": url_for(f"{CACHE_BLUEPRINT_NAME}.api_zhihu_status"),
                 }
             ),
             202,

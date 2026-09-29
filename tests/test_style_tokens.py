@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.88.3-codex.0
+Code version: v1.89.3-codex.0
 """
 
 import hashlib
@@ -47,7 +47,7 @@ def test_process_list_catalog_publishes_the_production_component() -> None:
     catalog_template = (
         PROJECT_ROOT / "app/web/templates/settings_style_tokens.html"
     ).read_text(encoding="utf-8")
-    assert "style-v2.156.3-codex.0" in catalog_template
+    assert "style-v2.157.0-codex.0" in catalog_template
 
 
 def test_agent_session_scrollport_preserves_physical_effect_bleed() -> None:
@@ -977,7 +977,7 @@ def test_inline_notice_banner_keeps_copy_wide_and_status_chip_compact() -> None:
 
 
 def test_browser_session_controls_use_standard_round_buttons_and_frosted_tooltips() -> None:
-    """Render both session controls as round icon buttons with structured frosted tooltips."""
+    """Render session mode controls as round icon buttons with structured tooltips."""
     stylesheet = _stylesheet()
     rule_start = stylesheet.index(".browser-session-control-button {")
     rule = stylesheet[rule_start:stylesheet.index("\n}", rule_start)]
@@ -1013,6 +1013,7 @@ def test_browser_session_controls_use_standard_round_buttons_and_frosted_tooltip
     assert ".browser-session-refresh-icon {" in stylesheet
     assert 'mask: url("/static/images/icloud.and.arrow.down.svg") center/contain no-repeat;' in stylesheet
     assert ".browser-session-refresh-button::after" not in stylesheet
+    assert ".browser-result-controls > .browser-session-back-link {" in stylesheet
 
 
 def test_chatgpt_prompt_expands_vertically_inside_its_media_card() -> None:
@@ -1149,6 +1150,76 @@ def test_browser_view_dock_switches_between_grid_and_list_layouts() -> None:
 
     for token in expected_tokens:
         assert token in stylesheet
+
+
+def _css_rule(stylesheet: str, selector: str) -> str:
+    """Return the declarations of the first rule that starts with the exact selector text."""
+    start = stylesheet.index(selector)
+    return stylesheet[start:stylesheet.index("\n}", start)]
+
+
+def test_chatgpt_media_sessions_index_shows_uncropped_covers_in_grid_and_list() -> None:
+    """Keep every Sessions cover complete at the full cover width in both layouts."""
+    stylesheet = _stylesheet()
+
+    for token in (
+        ".browser-session-card {",
+        ".browser-session-card:has(.browser-session-open:focus-visible) {",
+        ".browser-session-card-title {",
+        "-webkit-line-clamp: 2;",
+        '.browser-session-gallery[data-view="list"] .browser-session-open {',
+        "grid-template-columns: 112px minmax(0, 1fr);",
+        '.browser-session-gallery[data-view="list"] .browser-session-card-meta {',
+        "justify-content: flex-end;",
+        '.browser-session-gallery[data-view="list"] .browser-session-card-time::before {',
+        '.browser-session-gallery[data-view="grid"] {',
+        "grid-template-columns: repeat(2, minmax(0, 1fr));",
+        "grid-template-columns: 88px minmax(0, 1fr);",
+    ):
+        assert token in stylesheet
+
+    cover_rule = _css_rule(stylesheet, ".browser-session-cover {")
+    media_rule = _css_rule(stylesheet, ".browser-session-cover-media {")
+    list_cover_rule = _css_rule(stylesheet, '.browser-session-gallery[data-view="list"] .browser-session-cover {')
+    # The grid cover grows to the row's tallest image and centers shorter ones.
+    for declaration in ("display: grid;", "flex: 1 1 auto;", "place-items: center;", "overflow: hidden;"):
+        assert declaration in cover_rule
+    for declaration in ("width: 100%;", "height: auto;", "object-fit: contain;"):
+        assert declaration in media_rule
+    # No fixed frame or crop may return: the image box always follows the image's own ratio.
+    for rule in (cover_rule, media_rule, list_cover_rule):
+        assert "aspect-ratio" not in rule
+        assert "object-fit: cover" not in rule
+        assert "position: absolute" not in rule
+    assert "--browser-session-cover-fit" not in stylesheet
+    # A status-pill minimum applies only while no catalog size reserves the image box.
+    assert (
+        ".browser-session-cover:not(.is-ready):has(> .browser-session-cover-media:not([height])),\n"
+        ".browser-session-cover.is-load-failed {\n    min-height: 96px;"
+    ) in stylesheet
+    # The media gallery's list rules give .browser-preview a 280px minimum height; the covers
+    # keep their own classes so those rules cannot stretch them.
+    assert ".browser-session-cover .browser-preview-media" not in stylesheet
+    assert "min-height: 280px" not in cover_rule + media_rule + list_cover_rule
+
+
+def test_local_resources_sidebar_filter_menus_have_an_opaque_base() -> None:
+    """Keep sidebar filter menus opaque over the next field without changing the shared default."""
+    stylesheet = _stylesheet()
+
+    override = _css_rule(stylesheet, ".browser-filter-form .browser-filter-select {")
+    assert override.strip().endswith(
+        "--shared-select-dropdown-material: var(--frosted-glass-opaque-background);"
+    )
+    # The override follows the shell rule it adapts.
+    assert stylesheet.index(".browser-filter-select {") < stylesheet.index(
+        ".browser-filter-form .browser-filter-select {"
+    )
+    # Every other standard select keeps the approved translucent Period material.
+    assert "--shared-select-dropdown-surface-opacity: 62%;" in stylesheet
+    assert "background: var(--shared-select-dropdown-material);" in _css_rule(
+        stylesheet, ".trade-strategy-dropdown {"
+    )
 
 
 def test_browser_cached_media_previews_preserve_full_image_ratio() -> None:
@@ -1421,7 +1492,7 @@ def test_style_token_refresh_preview_uses_the_13px_annotation_size() -> None:
 
 
 def test_browser_filter_select_uses_one_shared_frosted_surface() -> None:
-    """Keep Local resources and Agent menus on the same frosted base."""
+    """Keep Local resources and Agent menus on one shared surface; only the base material varies."""
     stylesheet = _stylesheet()
     dropdown_start = stylesheet.index(".trade-strategy-dropdown {")
     dropdown_rule = stylesheet[dropdown_start:stylesheet.index("\n}", dropdown_start)]
@@ -2448,7 +2519,7 @@ def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     stylesheet = _stylesheet()
 
     for token in (
-        "/* Code version: v2.156.3-codex.0 */",
+        "/* Code version: v2.158.2-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',

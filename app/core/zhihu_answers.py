@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer normalization and bounded collection.
 
-Code version: v1.1.0-codex.1
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -1219,6 +1219,91 @@ def collect_zhihu_answers(
     return ZhihuCollectionResult(
         answers=tuple(unique_answers.values()),
         expected_total=expected_total,
+        pages_processed=pages_processed,
+        raw_answers=raw_answers,
+        duplicates=duplicates,
+        stopped=False,
+    )
+
+
+def collect_zhihu_latest_answers(
+    profile: ZhihuProfile,
+    fetch_page: Callable[[str], object],
+    should_stop: Callable[[], bool],
+    *,
+    known_answer_ids: frozenset[str] | set[str],
+    on_progress: Callable[[int, int, int | None, int], None] | None = None,
+) -> ZhihuCollectionResult:
+    """Collect an answerer's newest answers until one whole page is already cached.
+
+    The answer API is newest-first, so every answer newer than the cache precedes the
+    first page whose answers are all known. This proves nothing about older answers and
+    reports no provider total: the result is a cumulative-merge input, never a snapshot.
+    """
+
+    unique_answers: dict[str, ZhihuAnswer] = {}
+    page_signatures: set[tuple[str, ...]] = set()
+    raw_answers = 0
+    duplicates = 0
+    pages_processed = 0
+    offset = 0
+    total_content = 0
+
+    while pages_processed < ZHIHU_ANSWER_PAGE_LIMIT:
+        if should_stop():
+            return ZhihuCollectionResult(
+                tuple(unique_answers.values()),
+                None,
+                pages_processed,
+                raw_answers,
+                duplicates,
+                True,
+            )
+        page_answers, _page_total, is_end, next_offset = _parse_api_page(
+            fetch_page(_answer_api_url(profile, offset)),
+            profile,
+            offset,
+        )
+        signature = tuple(answer.answer_id for answer in page_answers)
+        if signature and signature in page_signatures:
+            raise ZhihuArchiveError("Zhihu repeated an answer page; the archive was not replaced.")
+        page_signatures.add(signature)
+        pages_processed += 1
+        raw_answers += len(page_answers)
+        for answer in page_answers:
+            if answer.answer_id in unique_answers:
+                duplicates += 1
+                continue
+            total_content += len(answer.content_html) + len(answer.content_text)
+            if total_content > ZHIHU_ARCHIVE_CONTENT_LIMIT:
+                raise ZhihuArchiveError(
+                    "The Zhihu archive exceeded the 256,000,000-character in-memory safety limit."
+                )
+            unique_answers[answer.answer_id] = answer
+        if len(unique_answers) > ZHIHU_ANSWER_LIMIT:
+            raise ZhihuArchiveError(
+                f"The Zhihu profile exceeds the {ZHIHU_ANSWER_LIMIT:,}-answer safety limit."
+            )
+        if on_progress is not None:
+            on_progress(pages_processed, len(unique_answers), None, duplicates)
+
+        if is_end:
+            break
+        if not page_answers:
+            raise ZhihuArchiveError("Zhihu returned an empty page before the end of the answer list.")
+        if all(answer.answer_id in known_answer_ids for answer in page_answers):
+            break
+        if next_offset is None:
+            raise ZhihuArchiveError("Zhihu omitted the next-page cursor before the terminal page.")
+        offset = next_offset
+    else:
+        raise ZhihuArchiveError(
+            f"Zhihu pagination exceeded the {ZHIHU_ANSWER_PAGE_LIMIT:,}-page safety limit."
+        )
+
+    return ZhihuCollectionResult(
+        answers=tuple(unique_answers.values()),
+        expected_total=None,
         pages_processed=pages_processed,
         raw_answers=raw_answers,
         duplicates=duplicates,

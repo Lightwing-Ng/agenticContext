@@ -1,4 +1,4 @@
-{# Code version: v1.5.0-codex.0 #}
+{# Code version: v1.6.0-codex.0 #}
 {% macro render_browser_pagination(page, aria_label, view, filters, range_unit="pages") %}
 {% set is_zhihu_text = view == "text" and filters.source == "zhihu" %}
 {% set text_detail_label = "Answer" if is_zhihu_text else "Message" %}
@@ -61,7 +61,7 @@
                 {% else %}
                 <a
                     class="browser-pagination-range-option"
-                    href="{{ url_for('local_resources.browser', view='media', source=filters.source, kind=filters.kind, q=filters.q, sort=filters.sort, session_view=('1' if filters.session_view else '0'), page=range_start) }}"
+                    href="{{ url_for('local_resources.browser', view='media', source=filters.source, kind=filters.kind, q=filters.q, sort=filters.sort, session_view=('1' if filters.session_view else '0'), session_index=('1' if filters.session_index else none), page=range_start) }}"
                     role="menuitem"
                     data-pagination-range-start="{{ range_start }}"
                     data-pagination-range-end="{{ range_end }}"
@@ -80,7 +80,7 @@
     {% elif view == "prompts" %}
     {% set item_href = url_for('local_resources.browser', view='prompts', source=filters.source, q=filters.q, sort=filters.sort, page=pagination_item.page) %}
     {% else %}
-    {% set item_href = url_for('local_resources.browser', view='media', source=filters.source, kind=filters.kind, q=filters.q, sort=filters.sort, session_view=('1' if filters.session_view else '0'), page=pagination_item.page) %}
+    {% set item_href = url_for('local_resources.browser', view='media', source=filters.source, kind=filters.kind, q=filters.q, sort=filters.sort, session_view=('1' if filters.session_view else '0'), session_index=('1' if filters.session_index else none), page=pagination_item.page) %}
     {% endif %}
     <a
         class="local-store-page-button{% if pagination_item.is_active %} is-active{% endif %}{% if pagination_item.kind in ('previous', 'next') %} local-store-page-nav{% endif %}"

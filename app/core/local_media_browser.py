@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.27.0-codex.0
+# Code version: v1.29.0-codex.0
 
 from __future__ import annotations
 
@@ -40,13 +40,13 @@ from .resource_persistence import (
 IMAGE_SUFFIXES = frozenset({".avif", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".webp"})
 VIDEO_SUFFIXES = frozenset({".m4v", ".mkv", ".mov", ".mp4", ".webm"})
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
-SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt", "claude"})
+SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt", "claude", "gemini"})
 TEXT_SOURCE_VALUES = frozenset(
     {"all", "x", "chatgpt", "claude", "gemini", "grok", "zhihu"}
 )
-# Gemini has no media cache source. Treat a legacy URL that names Gemini in
+# Zhihu has no media cache source. Treat a legacy URL that names Zhihu in
 # Media mode as the ChatGPT media view instead of silently showing all media.
-TEXT_ONLY_SOURCE_VALUES = frozenset({"gemini", "zhihu"})
+TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu"})
 MEDIA_KIND_VALUES = frozenset({"all", "image", "video"})
 SORT_VALUES = frozenset({"newest", "oldest", "name"})
 VIEW_VALUES = frozenset({"media", "text", "prompts"})
@@ -103,6 +103,22 @@ class LocalMediaPaginationItem:
 
 
 @dataclass(frozen=True, slots=True)
+class LocalMediaSessionSummary:
+    """Describe one ChatGPT session by the latest work that represents it."""
+
+    session_key: str
+    label: str
+    cover: LocalMediaItem
+    item_count: int
+    image_count: int
+    video_count: int
+    latest_at: str
+    detail_page: int
+    source_url: str = ""
+    project_name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class LocalMediaPage:
     """Contain a filtered, sorted, and paginated media result."""
 
@@ -119,6 +135,7 @@ class LocalMediaPage:
     current_session_label: str = ""
     current_session_latest_at: str = ""
     current_session_url: str = ""
+    sessions: tuple[LocalMediaSessionSummary, ...] = ()
 
     @property
     def pagination_items(self) -> tuple[LocalMediaPaginationItem, ...]:
@@ -620,6 +637,7 @@ def normalize_browser_filters(
     session_page: object = 1,
     answerer: str | None = None,
     project: str | None = None,
+    session_index: object = None,
 ) -> dict[str, Any]:
     """Normalize user-controlled browser filters to safe allowlisted values."""
     normalized_source = str(source or "").strip().lower()
@@ -627,6 +645,7 @@ def normalize_browser_filters(
     normalized_sort = str(sort or "").strip().lower()
     normalized_query = str(query or "").strip()[:120]
     normalized_session_view = str(session_view or "").strip().lower()
+    normalized_session_index = str(session_index or "").strip().lower()
     normalized_view = str(view or "").strip().lower()
     if not normalized_view:
         normalized_view = "text"
@@ -658,6 +677,12 @@ def normalize_browser_filters(
             else normalized_session_view not in {"0", "false", "off"}
         ),
         "session_page": _coerce_positive_page(session_page),
+        # The cover-per-session index exists only for ChatGPT media.
+        "session_index": (
+            normalized_view == "media"
+            and safe_source == "chatgpt"
+            and normalized_session_index in {"1", "true", "on"}
+        ),
         "view": normalized_view,
         "media_id": str(media_id or "").strip()[:96],
         "answerer": normalized_answerer,
@@ -786,6 +811,54 @@ def paginate_media_items(
     )
 
 
+def _media_timestamp(item: LocalMediaItem) -> float:
+    """Return one item's capture time as an epoch value, or 0.0 when it is unknown."""
+    timestamp = _parse_datetime(item.captured_at)
+    return timestamp.timestamp() if timestamp is not None else 0.0
+
+
+def _latest_chatgpt_work(group: list[LocalMediaItem]) -> LocalMediaItem:
+    """Return the newest image of one session group, or its newest item without images."""
+    images = [item for item in group if item.media_kind == "image"]
+    candidates = images or group
+    return max(candidates, key=lambda item: (_media_timestamp(item), item.relative_path))
+
+
+def _group_chatgpt_sessions(
+    items: Iterable[LocalMediaItem],
+) -> list[tuple[str, list[LocalMediaItem]]]:
+    """Group items into strict ChatGPT sessions, newest latest image first."""
+    groups: dict[str, list[LocalMediaItem]] = {}
+    for item in items:
+        groups.setdefault(_chatgpt_session_page_key(item), []).append(item)
+    return sorted(
+        groups.items(),
+        key=lambda entry: (
+            -_media_timestamp(_latest_chatgpt_work(entry[1])),
+            entry[0],
+        ),
+    )
+
+
+def _chatgpt_session_label(group: list[LocalMediaItem], latest: LocalMediaItem) -> str:
+    """Return a session's display title, preferring its newest explicit branch title."""
+    explicit_branch_titles = [
+        item
+        for item in group
+        if _CHATGPT_BRANCH_MARKER_RE.search(_display_text(item.creator))
+    ]
+    branch_title = max(
+        explicit_branch_titles,
+        key=lambda item: (_media_timestamp(item), item.relative_path),
+        default=None,
+    )
+    return (
+        branch_title.creator
+        if branch_title is not None and branch_title.creator
+        else latest.creator or latest.project_name or "Unknown session"
+    )
+
+
 def paginate_chatgpt_sessions(
     items: Iterable[LocalMediaItem],
     page: object = 1,
@@ -794,26 +867,7 @@ def paginate_chatgpt_sessions(
 ) -> LocalMediaPage:
     """Return one whole ChatGPT session per page, ordered by its latest image."""
     materialized = tuple(items)
-    groups: dict[str, list[LocalMediaItem]] = {}
-    for item in materialized:
-        groups.setdefault(_chatgpt_session_page_key(item), []).append(item)
-
-    def timestamp_value(item: LocalMediaItem) -> float:
-        timestamp = _parse_datetime(item.captured_at)
-        return timestamp.timestamp() if timestamp is not None else 0.0
-
-    def latest_image(group: list[LocalMediaItem]) -> LocalMediaItem:
-        images = [item for item in group if item.media_kind == "image"]
-        candidates = images or group
-        return max(candidates, key=lambda item: (timestamp_value(item), item.relative_path))
-
-    ordered_groups = sorted(
-        groups.items(),
-        key=lambda entry: (
-            -timestamp_value(latest_image(entry[1])),
-            entry[0],
-        ),
-    )
+    ordered_groups = _group_chatgpt_sessions(materialized)
     session_count = len(ordered_groups)
     total_pages = max(1, session_count)
     current_page = min(total_pages, _coerce_positive_page(page))
@@ -830,23 +884,9 @@ def paginate_chatgpt_sessions(
         )
     if ordered_groups:
         current_session_key, current_group = ordered_groups[current_page - 1]
-        latest = latest_image(current_group)
+        latest = _latest_chatgpt_work(current_group)
         page_items = sort_media_items(current_group, sort)
-        explicit_branch_titles = [
-            item
-            for item in current_group
-            if _CHATGPT_BRANCH_MARKER_RE.search(_display_text(item.creator))
-        ]
-        branch_title = max(
-            explicit_branch_titles,
-            key=lambda item: (timestamp_value(item), item.relative_path),
-            default=None,
-        )
-        current_session_label = (
-            branch_title.creator
-            if branch_title is not None and branch_title.creator
-            else latest.creator or latest.project_name or "Unknown session"
-        )
+        current_session_label = _chatgpt_session_label(current_group, latest)
         current_session_latest_at = latest.captured_at
         current_session_url = latest.source_url
     else:
@@ -869,6 +909,72 @@ def paginate_chatgpt_sessions(
         current_session_label=current_session_label,
         current_session_latest_at=current_session_latest_at,
         current_session_url=current_session_url,
+    )
+
+
+def _chatgpt_session_cover(group: list[LocalMediaItem]) -> LocalMediaItem:
+    """Return the newest work that is still tracked, else the newest deleted preview."""
+    tracked = [item for item in group if not item.is_deleted]
+    return _latest_chatgpt_work(tracked or group)
+
+
+def paginate_chatgpt_session_index(
+    items: Iterable[LocalMediaItem],
+    page: object = 1,
+    sort: str = "newest",
+    page_size: int = PAGE_SIZE,
+) -> LocalMediaPage:
+    """Return one page of ChatGPT sessions, each represented by only its latest work.
+
+    ``sort`` orders the sessions by that cover's capture time or by session title.
+    Each summary records ``detail_page``, the session's page in the one-session-per-page
+    view, so a cover can deep-link into that view regardless of the index order.
+    """
+    materialized = tuple(items)
+    summaries: list[LocalMediaSessionSummary] = []
+    for detail_page, (session_key, group) in enumerate(_group_chatgpt_sessions(materialized), start=1):
+        latest = _latest_chatgpt_work(group)
+        cover = _chatgpt_session_cover(group)
+        summaries.append(
+            LocalMediaSessionSummary(
+                session_key=session_key,
+                label=_chatgpt_session_label(group, latest),
+                cover=cover,
+                item_count=len(group),
+                image_count=sum(1 for item in group if item.media_kind == "image"),
+                video_count=sum(1 for item in group if item.media_kind == "video"),
+                latest_at=cover.captured_at,
+                detail_page=detail_page,
+                source_url=latest.source_url,
+                project_name=latest.project_name,
+            )
+        )
+
+    normalized_sort = str(sort or "").strip().lower()
+    if normalized_sort == "name":
+        summaries.sort(key=lambda summary: (summary.label.casefold(), summary.session_key))
+    elif normalized_sort == "oldest":
+        summaries.sort(key=lambda summary: (_media_timestamp(summary.cover), summary.session_key))
+    else:
+        summaries.sort(key=lambda summary: (-_media_timestamp(summary.cover), summary.session_key))
+
+    safe_page_size = max(1, int(page_size))
+    session_count = len(summaries)
+    total_pages = max(1, (session_count + safe_page_size - 1) // safe_page_size)
+    current_page = min(total_pages, _coerce_positive_page(page))
+    start = (current_page - 1) * safe_page_size
+    page_sessions = tuple(summaries[start : start + safe_page_size])
+    return LocalMediaPage(
+        items=tuple(summary.cover for summary in page_sessions),
+        total_count=len(materialized),
+        image_count=sum(1 for item in materialized if item.media_kind == "image"),
+        video_count=sum(1 for item in materialized if item.media_kind == "video"),
+        current_page=current_page,
+        total_pages=total_pages,
+        page_size=safe_page_size,
+        pagination_unit="session_index",
+        session_count=session_count,
+        sessions=page_sessions,
     )
 
 
@@ -1001,7 +1107,13 @@ class LocalMediaCatalog:
     def _build_snapshot(self) -> tuple[LocalMediaItem, ...]:
         """Scan the cache outside the snapshot-state lock."""
         items: list[LocalMediaItem] = []
-        for scanner in (self._scan_x, self._scan_grok, self._scan_chatgpt, self._scan_claude):
+        for scanner in (
+            self._scan_x,
+            self._scan_grok,
+            self._scan_chatgpt,
+            self._scan_claude,
+            self._scan_gemini,
+        ):
             try:
                 items.extend(scanner())
             except Exception:
@@ -1147,6 +1259,7 @@ class LocalMediaCatalog:
         force_refresh: bool = False,
         chatgpt_session_key: str = "",
         chatgpt_session_view: bool = True,
+        chatgpt_session_index: bool = False,
         media_id: str = "",
     ) -> LocalMediaPage:
         """Return a safe filtered, sorted, and paginated view of the snapshot."""
@@ -1172,6 +1285,8 @@ class LocalMediaCatalog:
             query=filters["q"],
             media_id=filters["media_id"] or media_id,
         )
+        if filters["source"] == "chatgpt" and chatgpt_session_index:
+            return paginate_chatgpt_session_index(filtered, filters["page"], filters["sort"])
         if filters["source"] == "chatgpt" and chatgpt_session_view:
             return paginate_chatgpt_sessions(
                 filtered,
@@ -1337,6 +1452,58 @@ class LocalMediaCatalog:
                     title=alt_text or title or media_path.name,
                     description=title,
                     creator="Claude",
+                    source_url=source_url,
+                    resource_key=_display_text(entry.get("asset_id")),
+                    captured_value=entry.get("cached_at"),
+                    alt_text=alt_text,
+                    stat_result=file_info,
+                )
+            )
+        return items
+
+    def _scan_gemini(self) -> list[LocalMediaItem]:
+        """Show verified Gemini images with their originating session metadata."""
+        root = self.local_store_root / config.MEDIA_STORE_DIRNAME / "gemini"
+        catalog = _read_json_object(root / "catalog.json", self.local_store_root)
+        assets = catalog.get("assets") if catalog.get("schema_version") == 1 else None
+        if not isinstance(assets, list):
+            return []
+
+        items: list[LocalMediaItem] = []
+        seen_paths: set[str] = set()
+        for entry in assets:
+            if not isinstance(entry, Mapping) or entry.get("media_kind") != "image":
+                continue
+            relative_path = _safe_catalog_relative_path(entry.get("relative_path"))
+            if not relative_path or relative_path in seen_paths:
+                continue
+            media_path = root / relative_path
+            if media_path.suffix.lower() not in IMAGE_SUFFIXES or self._resolve_inside(media_path) is None:
+                continue
+            file_info = _stat_media_file(media_path)
+            if file_info is None or file_info.st_size != entry.get("content_bytes"):
+                continue
+            try:
+                conversation = urlsplit(_display_text(entry.get("conversation_url")))
+            except ValueError:
+                continue
+            if (
+                conversation.scheme != "https"
+                or conversation.netloc.lower() != "gemini.google.com"
+                or re.fullmatch(r"/app/[A-Za-z0-9_-]+", conversation.path.rstrip("/")) is None
+            ):
+                continue
+            source_url = f"https://gemini.google.com{conversation.path.rstrip('/')}"
+            seen_paths.add(relative_path)
+            title = _display_text(entry.get("conversation_title"))
+            alt_text = _display_text(entry.get("alt_text"))
+            items.append(
+                self._build_item(
+                    media_path,
+                    source="gemini",
+                    title=alt_text or title or media_path.name,
+                    description=title,
+                    creator="Gemini",
                     source_url=source_url,
                     resource_key=_display_text(entry.get("asset_id")),
                     captured_value=entry.get("cached_at"),

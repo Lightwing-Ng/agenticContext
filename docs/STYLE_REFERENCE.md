@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.20.3-codex.0`
+Documentation version: `v1.22.2-codex.0`
 
 ## Authority
 
@@ -140,6 +140,12 @@ the same menu material and direction tokens without an OS-specific material over
 Explicitly opaque Cache/source product adapters remain named exceptions. Their
 shared chevrons adopt the same direction and Reduced Motion contract without
 changing product selection, portal placement, or form behavior.
+The Local resources sidebar is the third named exception: its standard filter selects
+(Media type, Sort order, Project, and Answerer) open over the next field's label and
+trigger, which would read through the `62%` layer. `.browser-filter-form .browser-filter-select`
+therefore sets `--shared-select-dropdown-material` to `--frosted-glass-opaque-background`,
+the same base as the adjacent Source menu. Trigger material, blur, border, shadow, radius,
+option geometry, and keyboard behavior are unchanged.
 Only the existing flat Settings content host with a direct
 `[data-settings-content-scrollport]` child disables its own backdrop filter. A
 nested filtered ancestor would prevent the menu's `12px` blur from obscuring local
@@ -227,6 +233,58 @@ up to 500px use 8/28/18/22/24%. Zhihu uses 4/66/10/20%, 5/60/15/20%, and
 and headings wrap within their column without creating horizontal table scrolling.
 This is a product-specific table adapter; shared table tokens and financial tables
 retain their existing owners.
+
+### Zhihu answer detail columns
+
+Above the existing 767px card-layout breakpoint, the four-column answer detail
+table assigns No./Time/Question/Answer 5%/15%/25%/55% of the body table width.
+Both the detached header and the body declare this product-specific allocation;
+the shared table controller measures the body cells to keep the header aligned.
+The narrow index and timestamp preserve sufficient space for their labels and
+values, while the long answer receives most of the remaining width. At 767px
+and below, the existing stacked answer cards own the layout instead of column
+percentages. No shared table token or sibling-product table changes are needed.
+
+### Answerer and session actions drawer
+
+The Local resources session-detail actions drawer collapses to one 32px Circular action and expands on
+hover or focus. Its expanded width is derived from `--browser-session-action-count` (three by default)
+rather than a fixed multiple, and each action keeps its own offset of one 42px step (the 32px action
+plus the 10px gap) and a 28ms stagger.
+Zhihu answerer detail adds `Update latest answers from Zhihu` as a fourth action by setting the
+modifier `.browser-session-actions--source-update` (count four); it reuses the local
+`icloud.and.arrow.down.svg` mask that marks the ChatGPT session refresh. While it runs, the wait modal
+covers the page; its unavailable state dims only the icon, so the drawer's hover opacity is unchanged.
+The result reuses the shared `browser-session-refresh-banner` material. This is a product-specific
+adapter; Worthward and neoMe have no equivalent Local resources session drawer.
+
+### ChatGPT Media Sessions index
+
+ChatGPT Media uses the existing semantic `secondary-button browser-session-back-link` anchor
+to enter the Sessions index. Session detail labels it `Back to all sessions` and returns to the
+remembered index page; the flat gallery labels it `All sessions`. The index omits this link
+because it is already the destination, while its Session View button remains available for
+reverse navigation. The link uses the in-project Secondary button material and visible text
+instead of the former `photo.stack.svg` Circular icon toggle and its pressed-state tooltip.
+The index renders one `.browser-session-card` per session inside a `.browser-gallery`
+`.browser-session-gallery`, so the existing four/three/two/one column breakpoints and the shared List
+and Grid dock apply unchanged. Covers are never cropped: the image is drawn whole at the full cover
+width in its own ratio (`width: 100%`, `height: auto`, `object-fit: contain`), with no fixed frame.
+In Grid layout the cover is a flex-grown, centering grid, so every cover in a row takes the tallest
+image's height, shorter images sit centered on `--theme-panel-strong`, and titles stay aligned. The
+catalog's width and height, when recorded, are rendered as `width` and `height` attributes so the
+browser reserves the ratio before lazy loading; a cover without them keeps a 96px minimum only while
+loading or after a failure, for the status pill. List layout is a 112px cover column with the title
+(two lines, then an ellipsis) on the left and the image count and date right-aligned on one line; each
+row is as tall as its image. At 560px and below the list column is 88px, the count and date stack
+under the title, and the grid keeps two columns rather than one.
+
+The cover shell and image use their own `.browser-session-cover` and `.browser-session-cover-media`
+classes. The media gallery's list rules target `.browser-preview` and `.browser-preview-media` with a
+280px minimum height, so reusing those classes would stretch every list cover. Card surface, hover
+lift, and focus ring mirror `.browser-media-card`; the ring appears only for keyboard focus. This is
+a product-specific adapter; Worthward and neoMe have no ChatGPT media surface, and the shared
+Secondary button, Circular button, and view dock primitives are consumed unchanged.
 
 ### Compact conversation effects
 

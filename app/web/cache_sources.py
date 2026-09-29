@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.8.0-codex.0
+# Code version: v1.9.0-codex.0
 
 from __future__ import annotations
 
@@ -116,19 +116,19 @@ _CACHE_SOURCE_VIEWS = (
         template_name="gemini.html",
         icon_filename="images/Google_Gemini_logo_2025_symbol.svg",
         document_title=f"{PRODUCT_NAME} Gemini",
-        overview_title="Gemini history cache overview",
+        overview_title="Gemini cache overview",
         browser_panel_label="Authorized browser",
         browser_empty_message="No authorized Gemini account detected",
         browser_config_field="gemini_browser",
         require_browser_ready=True,
         start_form_id="start_form_gemini",
         start_button_label="Start",
-        start_wait_title="Starting Gemini history sync",
-        start_wait_copy="Preparing the selected browser session and caching Gemini sessions to Parquet.",
-        stop_wait_title="Stopping Gemini history sync",
-        stop_wait_copy="Requesting a safe stop after the current Gemini session.",
+        start_wait_title="Starting Gemini cache",
+        start_wait_copy="Preparing the selected browser session and caching Gemini content.",
+        stop_wait_title="Stopping Gemini cache",
+        stop_wait_copy="Requesting a safe stop after the current Gemini work item.",
         progress_strategy="queue",
-        progress_aria_label="Gemini history sync progress",
+        progress_aria_label="Gemini cache progress",
         group_key="llm",
         group_label="Chats",
         preserve_icon_color=True,

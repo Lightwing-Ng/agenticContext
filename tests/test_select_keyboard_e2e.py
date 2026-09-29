@@ -1,4 +1,4 @@
-"""Shared select keyboard adapters. Code version: v1.2.0-codex.0."""
+"""Shared select keyboard adapters. Code version: v1.3.0-codex.0."""
 
 from pathlib import Path
 
@@ -71,6 +71,98 @@ def test_select_keyboard_adapters(disposable_browser, sidebar_server_url, width,
             trigger.click()
             expect(menu).to_be_visible()
             page.locator("h1").first.click()
+            expect(menu).to_be_hidden()
+        assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(("width", "height", "touch"), ((1_280, 900, False), (390, 844, True)))
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_local_resources_filter_menus_are_opaque_over_the_next_field(
+    disposable_browser, sidebar_server_url, width, height, touch, color_scheme,
+):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": height},
+        color_scheme=color_scheme,
+        has_touch=touch,
+        is_mobile=touch,
+    )
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(
+            f"{sidebar_server_url}/browser?view=media&session_view=1&source=zhihu&answerer=&sort=newest&q="
+        )
+        expect(page.locator("#global_theme_toggle")).to_have_attribute(
+            "data-effective-theme", color_scheme,
+        )
+        sidebar_toggle = page.locator("#sidebar_toggle")
+        if sidebar_toggle.get_attribute("aria-expanded") != "true":
+            sidebar_toggle.click()
+        form = page.locator("#browser_filter_form")
+        kind_trigger = form.get_by_role("button", name=re.compile(r"^Filter by media type"))
+        sort_trigger = form.get_by_role("button", name=re.compile(r"^Order images in the current session"))
+        for trigger, covered in ((kind_trigger, sort_trigger), (sort_trigger, None)):
+            expect(trigger).to_be_visible()
+            menu = page.locator("#" + trigger.get_attribute("aria-controls"))
+            trigger.click()
+            expect(menu).to_be_visible()
+            page.wait_for_function(
+                "node => node.getAnimations().every(animation => animation.playState === 'finished')",
+                arg=menu.element_handle(),
+            )
+            rendering = page.evaluate(
+                """({menu, covered}) => {
+                    const probe = document.createElement('span');
+                    probe.style.backgroundColor = 'var(--theme-background)';
+                    document.body.append(probe);
+                    const themeBackground = getComputedStyle(probe).backgroundColor;
+                    probe.remove();
+                    const style = getComputedStyle(menu);
+                    const box = menu.getBoundingClientRect();
+                    const hitTests = [...menu.querySelectorAll('[role="option"]')].map(option => {
+                        const optionBox = option.getBoundingClientRect();
+                        return option.contains(document.elementFromPoint(
+                            optionBox.left + optionBox.width / 2, optionBox.top + optionBox.height / 2,
+                        ));
+                    });
+                    let overlap = null;
+                    if (covered) {
+                        const field = covered.getBoundingClientRect();
+                        const top = Math.max(box.top, field.top);
+                        const bottom = Math.min(box.bottom, field.bottom);
+                        const left = Math.max(box.left, field.left);
+                        const right = Math.min(box.right, field.right);
+                        overlap = bottom > top && right > left
+                            ? menu.contains(document.elementFromPoint((left + right) / 2, (top + bottom) / 2))
+                            : false;
+                    }
+                    return {
+                        backgroundColor: style.backgroundColor,
+                        backgroundImage: style.backgroundImage,
+                        opacity: style.opacity,
+                        themeBackground,
+                        hitTests,
+                        overlap,
+                        right: box.right,
+                        documentOverflow: document.documentElement.scrollWidth - innerWidth,
+                    };
+                }""",
+                {"menu": menu.element_handle(), "covered": covered.element_handle() if covered else None},
+            )
+            # The next field's label and trigger must not read through the menu.
+            assert rendering["backgroundColor"] == rendering["themeBackground"], rendering
+            assert rendering["backgroundColor"].startswith("rgb("), rendering
+            assert rendering["backgroundImage"] != "none", rendering
+            assert rendering["opacity"] == "1", rendering
+            assert all(rendering["hitTests"]), rendering
+            if covered is not None:
+                assert rendering["overlap"] is True, rendering
+            assert rendering["right"] <= width + 1, rendering
+            assert rendering["documentOverflow"] <= 1, rendering
+            page.keyboard.press("Escape")
             expect(menu).to_be_hidden()
         assert not errors
     finally:

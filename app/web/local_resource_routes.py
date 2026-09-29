@@ -5,7 +5,7 @@ for a browser, an Agent, or a cache worker. Serialization of one stored item int
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.2.1-codex.0
+# Code version: v1.4.0-codex.0
 
 from __future__ import annotations
 
@@ -144,6 +144,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             session_page=request.args.get("session_page"),
             answerer=request.args.get("answerer"),
             project=request.args.get("project"),
+            session_index=request.args.get("session_index"),
         )
         force_refresh = request.args.get("refresh") == "1"
         prompt_page = None
@@ -208,6 +209,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                 page=filters["page"],
                 chatgpt_session_key=filters["session"],
                 chatgpt_session_view=filters["session_view"],
+                chatgpt_session_index=filters["session_index"],
                 media_id=filters["media_id"],
             )
             text_page = None
@@ -222,7 +224,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             "browser.html",
             local_resource_media_sources=tuple(
                 source for source in CACHE_SOURCE_VIEWS
-                if source.key in {"x", "grok", "chatgpt", "claude"}
+                if source.key in {"x", "grok", "chatgpt", "claude", "gemini"}
             ),
             local_resource_text_sources=tuple(
                 source for source in CACHE_SOURCE_VIEWS
@@ -240,6 +242,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             saved_prompt_keys=saved_prompt_keys,
             prompt_remark_options=context.prompt_store.remark_options(),
             prompt_pointer_key=prompt_pointer_key,
+            format_captured_at_label=format_captured_at_label,
             format_captured_at_timestamp_label=format_captured_at_timestamp_label,
             format_chat_message_timestamp_label=format_chat_message_timestamp_label,
             format_media_size=format_media_size,

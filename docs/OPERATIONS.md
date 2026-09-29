@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.39.3-codex.0`
+Documentation version: `v1.40.0-codex.0`
 
 ## Launch
 
@@ -769,6 +769,24 @@ sanitized at the final render boundary; duplicate fallback and lazy-loader copie
 `photo.badge.arrow.down.svg` placeholder per figure. The default `Export Markdown` action downloads
 every cached answer for the selected answerer across all Local resources pages. No provider image URL
 is mounted and no remote image binary is downloaded.
+
+An answerer's Local resources detail page adds `Update latest answers from Zhihu` to its hover or
+focus action drawer. It posts the cached profile link to `POST /api/browser/zhihu/answerer/refresh`,
+which validates it as a Zhihu people URL and starts the ordinary Zhihu worker in newest-answer mode
+with the saved Edge or Chrome selection, using the same signed-in browser clone as the Cache page.
+Zhihu lists an answerer's answers newest first, so the worker reads pages until one whole page is
+already cached, merges what it read cumulatively, and stops. It does not re-enumerate older answers or
+verify a provider total: an answerer whose cache is partial (for example, from vote-up mode) keeps its
+older gaps, and edits to older answers are not fetched, until a complete `Answerer URL` run on the
+Cache page. That complete run reads the whole list and, when Zhihu's list has duplicate-backed gaps,
+enumerates it twice, so a long answerer can take many minutes. The page polls
+`GET /api/zhihu/status`, then reloads with a dismissible result banner naming the answers added and
+already cached among the newest answers checked. Zhihu serves an answer's images from rotating
+hosts, so an answer whose text is unchanged can still be rewritten; the banner counts those as
+refreshed and never as new. The action is disabled when the cached
+answers carry no profile link, is refused while another cache task runs, and is unavailable when
+external operations are disabled. Failures such as human verification are shown once and leave the
+cache unchanged.
 
 ## Concurrency and local compute
 

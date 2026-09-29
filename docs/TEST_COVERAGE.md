@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.8.1-codex.0`
+Test-suite version: `v1.10.1-codex.0`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -42,6 +42,11 @@ This is a behavior map, not a claim of complete coverage or a current test-count
   rejection for the collector shared by the formal Zhihu cache.
 - `test_chat_history_browser.py`, `test_local_media_browser.py`, `test_prompt_store.py`, and
   `test_shadow_backup.py`: local resource browsing, prompts, recovery, and filesystem boundaries.
+- `test_chatgpt_media_sessions_e2e.py` and the Sessions index cases in `test_local_media_browser.py`,
+  `test_web_app.py`, and `test_style_tokens.py`: the ChatGPT Media Sessions index (one uncropped
+  latest-image cover per session in grid or list layout), its Session View deep links, and its
+  state persistence. `test_select_keyboard_e2e.py` also covers the opaque Local resources sidebar
+  filter menus.
 - `test_job_lock.py`: cache job ownership and contention.
 - `test_safari_automation.py`: Safari automation protocol behavior through mocked boundaries.
 - `test_web_app.py`, `test_style_tokens.py`, `test_style_token_registry.py`,
@@ -55,6 +60,11 @@ This is a behavior map, not a claim of complete coverage or a current test-count
 - `test_zhihu_history.py` and `test_zhihu_web.py`: signed-in vote-up filtering, optional answerer
   mode, cumulative formal Parquet persistence, link-only rich media, Edge login controls, exact
   single-character logo extraction, and Local resources readback without a live provider.
+- `test_zhihu_answerer_refresh_e2e.py`, the answerer-update cases in `test_zhihu_web.py`, and the
+  newest-answer cases in `test_zhihu_answer_collection.py` and `test_zhihu_history.py`: the Local
+  resources `Update latest answers from Zhihu` action, its validated start route, bounded newest-first
+  collection, polling, result banner, failure release, and expanded-drawer geometry over injected
+  provider pages.
 - `test_demo_flight_agentic_crud.py`: controller CRUD in an ephemeral copy of an allowlisted
   local demo fixture; source snapshots are read-only and the original is verified afterward.
 

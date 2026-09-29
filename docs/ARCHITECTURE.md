@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.50.4-codex.0`
+Documentation version: `v1.52.1-codex.0`
 
 ## Runtime flow
 
@@ -95,10 +95,11 @@ subset of the façades; the regression no longer freezes one module's exact faç
 - `app/core/grok_history.py` and `app/core/grok_history_service.py`: authenticated Grok Text
   API traversal, normalized message persistence, and the independent Grok Text worker.
 - `app/core/zhihu_answers.py`: strict Zhihu profile normalization, authenticated same-origin API
-  traversal, answer normalization, and stable-snapshot verification shared by the formal cache.
+  traversal, answer normalization, stable-snapshot verification, and the bounded newest-answer
+  read shared by the formal cache.
 - `app/core/zhihu_history.py` and `app/core/zhihu_history_service.py`: signed-in vote-up activity
-  traversal, optional answerer collection, cumulative formal text-history persistence, and the
-  ordinary Zhihu Cache worker.
+  traversal, optional complete or newest-answer answerer collection, cumulative formal text-history
+  persistence, and the ordinary Zhihu Cache worker.
 - `app/core/scraper.py` and `app/core/browser_sessions.py`: X timeline discovery and browser
   session probing for Chrome, Edge, and Safari.
 - `app/core/macos_applescript.py`: one lazy, process-local AppleScript worker shared by Safari
@@ -668,6 +669,25 @@ and pagination; non-Zhihu requests discard it. Each one-answer detail uses its l
 instead of Role and renders without the generic collapsed-message cap. Merges are cumulative across
 default and answerer modes.
 
+The answerer detail's `Update latest answers from Zhihu` action starts the same worker in a bounded
+`author-latest` mode. `browser-session-actions.js` posts the session's cached profile URL to
+`POST /api/browser/zhihu/answerer/refresh` in the Cache blueprint. The route applies the external-
+operations and Safari-conflict guards, validates the URL with `normalize_zhihu_profile_url` through
+the providers facade, and starts the shared `ZhihuHistoryService` with `author_url` and
+`latest_only=True`; a running task or held cache lock returns HTTP 409. `sync_zhihu_history` then calls
+`collect_zhihu_latest_answers`, which follows the newest-first cursor with the same validation, bounds,
+and repeated-page rejection as the complete collector, but stops after the first page whose answers
+are all already cached (the cache's answer IDs come from `ZhihuHistoryStore.answer_ids`). It ignores the
+provider total, so it skips the newest-page recheck and gap enumeration, publishes no unavailable count,
+and returns a cumulative-merge input rather than a snapshot; the merge, atomic save, and readback are
+unchanged. The script polls `GET /api/zhihu/status`, reads `added`, `changed`, and
+`available_answers` (the newest answers read) from the finished snapshot's `performance_metrics`, and
+reloads the page with `answerer_*` query values that render a one-time banner before being removed
+from the address bar. Only `added` leads the banner: a row Zhihu re-serves with different markup,
+such as another image host, is counted as refreshed and qualifies the already-cached count. The
+action is rendered only for Zhihu answerer details, so the shared session drawer keeps three actions
+for every other source.
+
 LLM text (ChatGPT, Gemini, Grok, and Claude) in Local resources reads as conversation cards
 rather than a numbered table, both in a single-session detail and in the ungrouped message list.
 Each card carries the role, message number, timestamp, and the complete rendered Markdown body
@@ -733,6 +753,29 @@ AppleScript. Its approved `.ps1` verification paths run through PowerShell, and
 the Flask application. The browser route allows only readable supported media below the configured
 cache root. Deleting an item moves it to a recoverable hidden browser-trash area and records a
 tombstone; restoring it moves the retained preview back to its original safe path.
+
+ChatGPT Media offers three views over the same filtered snapshot, selected by `session_view` and
+`session_index` (the latter applies only to `view=media&source=chatgpt`):
+
+- All resources (`session_view=0`) is the flat gallery, sorted by absolute generation time.
+- Session View (`session_view=1`) shows one whole session per page, its images ordered by the sort
+  filter, with sessions themselves ordered by their newest image (`paginate_chatgpt_sessions`).
+- Sessions (`session_index=1`) is an index of every session, 24 per page, in which each session
+  contributes only its newest work as a cover (`paginate_chatgpt_session_index`). Each summary
+  carries the session's title, image count, latest capture time, and `detail_page`. The cover
+  prefers the newest image that is still tracked, then any newest work, and falls back to a deleted
+  preview only when nothing else remains. `sort` orders the sessions by that cover's time or by
+  title. A cover links to Session View with both `session=<page key>` and `page=<detail_page>`.
+  `session_page` remembers the index page for the detail view's semantic
+  `secondary-button browser-session-back-link` anchor labeled `Back to all sessions`.
+
+The flat gallery uses the same anchor labeled `All sessions` to enter the index. The index
+does not render a link to itself; Session View remains available there for reverse navigation.
+
+Both session views group by `_chatgpt_session_page_key`, which is strict per project and
+conversation, so a branch conversation is its own session. The List and Grid dock is client-side
+state shared by the gallery and the index (`cachelikes.browser.mediaView`), and the Local resources
+dock memory carries `session_index` alongside the other filter names.
 
 ### Web Computer Use Agent
 

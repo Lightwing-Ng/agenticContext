@@ -1,4 +1,4 @@
-/* Code version: v1.36.0-codex.0 */
+/* Code version: v1.37.1-codex.0 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -120,7 +120,10 @@
         }
         targetUrl.search = new URLSearchParams(formData).toString();
         ["page", "media_id", "session", "session_page"].forEach((name) => targetUrl.searchParams.delete(name));
-        if (mode !== "media") targetUrl.searchParams.delete("kind");
+        if (mode !== "media") {
+            targetUrl.searchParams.delete("kind");
+            targetUrl.searchParams.delete("session_index");
+        }
         if (mode !== "text") targetUrl.searchParams.delete("project");
         renderOptimisticContentModeNavigation(mode);
         let navigationCommitted = false;
@@ -385,6 +388,7 @@
         const targetUrl = new URL(window.location.href);
         targetUrl.searchParams.set("source", "chatgpt");
         targetUrl.searchParams.set("session_view", isPressed ? "0" : "1");
+        targetUrl.searchParams.delete("session_index");
         targetUrl.searchParams.delete("page");
         targetUrl.searchParams.delete("session");
         window.location.assign(targetUrl.toString());
@@ -395,7 +399,9 @@
         mediaGallery.dataset.view = view;
         mediaGallery.setAttribute(
             "aria-label",
-            view === "list" ? "Cached media list" : "Cached media gallery",
+            view === "list"
+                ? mediaGallery.dataset.galleryListLabel || "Cached media list"
+                : mediaGallery.dataset.galleryGridLabel || "Cached media gallery",
         );
         viewButtons.forEach((button) => {
             const isActive = button.dataset.browserView === view;

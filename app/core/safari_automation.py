@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.15.1-codex.0
+# Code version: v2.16.0-codex.0
 
 from __future__ import annotations
 
@@ -2010,8 +2010,9 @@ return "closed"
         headers: dict[str, str] | None = None,
         expected_bytes: int = 0,
         max_bytes: int = 0,
+        reject_redirects: bool = False,
     ) -> tuple[str, bool]:
-        """Stream an authenticated media URL from Safari into a local file."""
+        """Stream authenticated media, optionally rejecting redirects before transferring bytes."""
         with self._context.download_lock, self._background_only_transfer():
             destination_path.parent.mkdir(parents=True, exist_ok=True)
             initial_bytes = destination_path.stat().st_size if destination_path.exists() else 0
@@ -2037,6 +2038,7 @@ return "closed"
                     "headers": request_headers,
                     "referrer": referrer,
                     "maxBytes": max(1, max_bytes - range_start) if max_bytes > 0 else 0,
+                    "rejectRedirects": bool(reject_redirects),
                 }
                 self.evaluate(
                     """(request) => {
@@ -2045,9 +2047,13 @@ return "closed"
                             credentials: "include",
                             cache: "no-store",
                             headers: { ...request.headers, Range: request.rangeHeader },
+                            redirect: request.rejectRedirects ? "error" : "follow",
                         };
                         if (request.referrer) options.referrer = request.referrer;
                         fetch(request.sourceUrl, options).then(async (response) => {
+                            if (request.rejectRedirects && response.redirected) {
+                                throw new Error("Safari media redirects are not allowed for this request.");
+                            }
                             const maxResponseBytes = request.maxBytes;
                             const declaredLength = Number(response.headers.get("content-length") || 0);
                             if (maxResponseBytes && declaredLength > maxResponseBytes) {

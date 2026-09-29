@@ -1,6 +1,6 @@
 """Pure-fixture coverage for the shared Zhihu answer collector.
 
-Code version: v1.1.0-codex.1
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from app.core.zhihu_answers import (
     ZhihuVerificationRequiredError,
     _browser_fetch_json,
     collect_zhihu_answers,
+    collect_zhihu_latest_answers,
     normalize_zhihu_answer_payload,
     normalize_zhihu_profile_url,
     normalize_zhihu_rich_text,
@@ -159,6 +160,124 @@ def test_collects_all_answers_through_the_short_terminal_page() -> None:
     assert result.raw_answers == 333
     assert result.duplicates == 0
     assert requested_offsets == [*range(0, 333, ZHIHU_ANSWER_PAGE_SIZE), 0]
+
+
+def test_latest_collection_stops_at_the_first_page_that_is_entirely_cached() -> None:
+    profile = normalize_zhihu_profile_url(ZHIHU_FIXTURE_PROFILE_URL)
+    requested_offsets: list[int] = []
+    known = {str(answer_id) for answer_id in range(1, 49)}
+
+    def fetch_page(url: str) -> dict[str, Any]:
+        offset = _offset(url)
+        requested_offsets.append(offset)
+        newest_first = list(range(50 - offset, 30 - offset, -1))
+        return _page(
+            newest_first,
+            total=50,
+            is_end=False,
+            next_offset=offset + ZHIHU_ANSWER_PAGE_SIZE,
+        )
+
+    progress: list[tuple[int, int, int | None, int]] = []
+    result = collect_zhihu_latest_answers(
+        profile,
+        fetch_page,
+        lambda: False,
+        known_answer_ids=known,
+        on_progress=lambda *values: progress.append(values),
+    )
+
+    assert requested_offsets == [0, 20]
+    assert [answer.answer_id for answer in result.answers][:3] == ["50", "49", "48"]
+    assert len(result.answers) == 40
+    assert result.pages_processed == 2
+    assert result.expected_total is None
+    assert result.stopped is False
+    assert progress == [(1, 20, None, 0), (2, 40, None, 0)]
+
+
+def test_latest_collection_reads_to_the_terminal_page_when_no_page_is_cached() -> None:
+    profile = normalize_zhihu_profile_url(ZHIHU_FIXTURE_PROFILE_URL)
+    requested_offsets: list[int] = []
+
+    def fetch_page(url: str) -> dict[str, Any]:
+        offset = _offset(url)
+        requested_offsets.append(offset)
+        if offset == 0:
+            return _page(range(25, 5, -1), total=None, is_end=False, next_offset=20)
+        return _page(range(5, 0, -1), total=None, is_end=True)
+
+    result = collect_zhihu_latest_answers(
+        profile, fetch_page, lambda: False, known_answer_ids=frozenset()
+    )
+
+    assert requested_offsets == [0, 20]
+    assert len(result.answers) == 25
+    assert result.raw_answers == 25
+    assert result.expected_total is None
+
+
+def test_latest_collection_ignores_a_reported_total_and_provider_duplicates() -> None:
+    profile = normalize_zhihu_profile_url(ZHIHU_FIXTURE_PROFILE_URL)
+
+    def fetch_page(url: str) -> dict[str, Any]:
+        if _offset(url) == 0:
+            return _page([3, 2], total=99, is_end=False, next_offset=20)
+        return _page([2, 1], total=99, is_end=True)
+
+    result = collect_zhihu_latest_answers(
+        profile, fetch_page, lambda: False, known_answer_ids=frozenset({"1"})
+    )
+
+    assert [answer.answer_id for answer in result.answers] == ["3", "2", "1"]
+    assert result.raw_answers == 4
+    assert result.duplicates == 1
+    assert result.expected_total is None
+
+
+def test_latest_collection_stays_fail_closed_on_pagination_anomalies() -> None:
+    profile = normalize_zhihu_profile_url(ZHIHU_FIXTURE_PROFILE_URL)
+    repeated = _page([2, 1], total=2, is_end=False, next_offset=20)
+
+    with pytest.raises(ZhihuArchiveError, match="repeated an answer page"):
+        collect_zhihu_latest_answers(
+            profile,
+            lambda url: repeated
+            if _offset(url) == 0
+            else _page([2, 1], total=2, is_end=False, next_offset=40),
+            lambda: False,
+            known_answer_ids=frozenset(),
+        )
+    with pytest.raises(ZhihuArchiveError, match="empty page"):
+        collect_zhihu_latest_answers(
+            profile,
+            lambda _url: _page([], total=0, is_end=False, next_offset=20),
+            lambda: False,
+            known_answer_ids=frozenset(),
+        )
+    with pytest.raises(ZhihuArchiveError, match="invalid next-page cursor"):
+        collect_zhihu_latest_answers(
+            profile,
+            lambda _url: _page([1], total=1, is_end=False, next_offset=40),
+            lambda: False,
+            known_answer_ids=frozenset(),
+        )
+
+
+def test_latest_collection_returns_the_partial_read_when_a_stop_is_requested() -> None:
+    profile = normalize_zhihu_profile_url(ZHIHU_FIXTURE_PROFILE_URL)
+    polls = iter((False, True))
+
+    result = collect_zhihu_latest_answers(
+        profile,
+        lambda _url: _page([2, 1], total=9, is_end=False, next_offset=20),
+        lambda: next(polls),
+        known_answer_ids=frozenset(),
+    )
+
+    assert result.stopped is True
+    assert result.pages_processed == 1
+    assert [answer.answer_id for answer in result.answers] == ["2", "1"]
 
 
 def test_collect_deduplicates_overlapping_pages_by_answer_id() -> None:

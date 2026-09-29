@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.148.4-codex.0
+# Code version: v1.149.4-codex.0
 
 from __future__ import annotations
 
@@ -631,7 +631,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-section-link="settings"', grok_body)
         self.assertIn('data-cache-source-switcher-path="/cache/chatgpt/text/edge"', grok_body)
         self.assertIn('data-section-link="local-resources"', browser_body)
-        self.assertIn("Gemini history cache overview", gemini_body)
+        self.assertIn("Gemini cache overview", gemini_body)
         self.assertIn("Claude cache overview", claude_body)
         self.assertIn('name="claude_browser"', claude_body)
         self.assertIn("Browser-rendered history", claude_body)
@@ -904,9 +904,13 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.25.0-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.156.3-codex.0"
+                expected_style_version = (
+                    "style-v2.158.2-codex.0"
+                    if page_source == "local-resources"
+                    else "style-v2.157.0-codex.0"
+                )
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -926,7 +930,7 @@ class WebAppTests(unittest.TestCase):
             'const dockLocationMemoryPrefix = "cachelikes:dock-location:v1:";',
             'const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);',
             'const agentRoutePattern = /^\\/agent\\/(?:safari|edge|chrome)\\/(?:chatgpt|gemini|grok|claude)$/;',
-            'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view"];',
+            'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view", "session_index"];',
             'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/zhihu"]);',
             'const cacheSelectionPathPattern = /^\\/cache\\/(x|grok|chatgpt|gemini|claude|zhihu)(?:\\/(text|media)\\/(safari|edge|chrome))?$/;',
             'if (targetUrl.pathname === "/browser") return "/cache/chatgpt";',
@@ -1009,7 +1013,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-section-link="local-resources"', browser_body)
         self.assertIn("Cached media browser", browser_body)
         self.assertIn('data-browser-source-filter', browser_body)
-        self.assertEqual(browser_body.count('data-browser-source-filter-option='), 5)
+        self.assertEqual(browser_body.count('data-browser-source-filter-option='), 6)
         self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.6.0-codex.0', browser_body)
         self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"', browser_body)
 
@@ -1020,6 +1024,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("--cache-source-mark: url('/static/images/grok.svg')", browser_body)
         self.assertIn("--cache-source-mark: url('/static/images/ChatGPT-Logo.svg')", browser_body)
         self.assertIn("--cache-source-mark: url('/static/images/claude.svg')", browser_body)
+        self.assertIn('data-browser-source-filter-option="gemini"', browser_body)
         self.assertNotIn("Apply filters", browser_body)
         self.assertIn('id="status_progress_detail"', grok_body)
         self.assertIn("data.queued_tweets", cache_page_script)
@@ -1333,7 +1338,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.156.3-codex.0', local_body)
+        self.assertIn('style-v2.157.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -5906,10 +5911,10 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.156.3-codex.0", body)
+            self.assertIn("style-v2.158.2-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.36.0-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.37.1-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -6098,7 +6103,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("browser-session-drawer-refresh-icon", detail_body)
         self.assertIn("data-browser-session-refresh-url", detail_body)
         self.assertEqual(detail_body.count("data-browser-session-actions-drawer"), 1)
-        self.assertIn("browser-session-actions.js?v=browser-session-actions-v1.1.1-codex.1", detail_body)
+        self.assertIn("browser-session-actions.js?v=browser-session-actions-v1.2.0-codex.0", detail_body)
         self.assertEqual(export_response.status_code, 200)
         self.assertEqual(export_response.mimetype, "text/markdown")
         self.assertIn('attachment; filename="Demo_conversation.md"', export_response.headers["Content-Disposition"])
@@ -6358,32 +6363,238 @@ class WebAppTests(unittest.TestCase):
         ]
         self.assertEqual(chronological_positions, sorted(chronological_positions))
 
-    def test_legacy_gemini_browser_url_falls_back_to_chatgpt_media_sessions(self) -> None:
+    @staticmethod
+    def _write_chatgpt_sessions(
+        root: Path,
+        sessions: dict[str, tuple[str, tuple[str, ...]]],
+        sizes: dict[str, tuple[int, int]] | None = None,
+    ) -> None:
+        """Seed ChatGPT images as {conversation id: (title, filenames oldest to newest)}."""
+        project_dir = root / "media" / "chatgpt" / "demo-project"
+        project_dir.mkdir(parents=True)
+        entries: dict[str, dict[str, str]] = {}
+        for session_number, (conversation_id, (title, filenames)) in enumerate(sessions.items()):
+            for image_number, filename in enumerate(filenames):
+                (project_dir / filename).write_bytes(filename.encode("utf-8"))
+                entries[f"file-{filename}"] = {
+                    "file_id": f"file-{filename}",
+                    "relative_path": filename,
+                    "conversation_url": f"https://chatgpt.com/c/{conversation_id}",
+                    "conversation_title": title,
+                    "created_at": f"2026-08-{session_number + 1:02d}T{image_number + 1:02d}:00:00Z",
+                }
+                if sizes and filename in sizes:
+                    width, height = sizes[filename]
+                    entries[f"file-{filename}"].update({"width": width, "height": height})
+        (project_dir / ".chatgpt_catalog.json").write_text(
+            json.dumps({"entries": entries}),
+            encoding="utf-8",
+        )
+
+    def test_browser_lists_chatgpt_sessions_with_only_their_latest_image_as_the_cover(self) -> None:
         with TemporaryDirectory() as raw_root:
             root = Path(raw_root) / "local_store"
-            project_dir = root / "media" / "chatgpt" / "demo-project"
-            project_dir.mkdir(parents=True)
-            for filename in ("new-session.png", "older-session.png"):
-                (project_dir / filename).write_bytes(filename.encode("utf-8"))
-            (project_dir / ".chatgpt_catalog.json").write_text(
+            self._write_chatgpt_sessions(
+                root,
+                {
+                    "older-session": ("Older session", ("older-only.png",)),
+                    "new-session": ("Newest session", ("new-old.png", "new-middle.png", "new-latest.png")),
+                },
+                sizes={"new-latest.png": (1536, 1024)},
+            )
+            app = create_app(root)
+            with app.test_client() as client:
+                index_response = client.get(
+                    "/browser?view=media&source=chatgpt&kind=all&q=&sort=newest&session_view=1&session_index=1"
+                )
+                oldest_response = client.get(
+                    "/browser?view=media&source=chatgpt&sort=oldest&session_view=1&session_index=1"
+                )
+                detail_response = client.get("/browser?view=media&source=chatgpt&session_view=1")
+                flat_response = client.get("/browser?view=media&source=chatgpt&session_view=0")
+                other_source_response = client.get("/browser?view=media&source=x&session_index=1")
+                text_response = client.get("/browser?view=text&source=chatgpt&session_view=1&session_index=1")
+
+        index_body = index_response.get_data(as_text=True)
+        self.assertEqual(index_response.status_code, 200)
+        self.assertIn(
+            'class="browser-gallery browser-session-gallery"\n                        data-view="grid"',
+            index_body,
+        )
+        self.assertIn('data-gallery-list-label="ChatGPT sessions list"', index_body)
+        # Covers use their own classes so the media gallery's list rules cannot resize them.
+        self.assertIn('class="browser-session-cover" data-preview-shell', index_body)
+        self.assertIn('class="browser-session-cover-media"', index_body)
+        self.assertNotIn("browser-preview-media", index_body)
+        # A catalog size reserves the uncropped cover's ratio before the image loads.
+        cover_tags = dict(
+            (match.group(1), match.group(0))
+            for match in re.finditer(
+                r'<img\s+class="browser-session-cover-media"[^>]*?data-media-src="[^"]*/([^"/]+)"[^>]*>',
+                index_body,
+            )
+        )
+        self.assertIn('width="1536" height="1024"', cover_tags["new-latest.png"])
+        self.assertNotIn("width=", cover_tags["older-only.png"])
+        self.assertNotIn("height=", cover_tags["older-only.png"])
+        self.assertEqual(index_body.count("data-chatgpt-session-card"), 2)
+        # Each session shows only its newest work, addressed by the same media URL as the gallery.
+        self.assertIn('data-media-src="/browser/media/chatgpt/demo-project/new-latest.png"', index_body)
+        self.assertIn('data-media-src="/browser/media/chatgpt/demo-project/older-only.png"', index_body)
+        self.assertNotIn("new-old.png", index_body)
+        self.assertNotIn("new-middle.png", index_body)
+        self.assertLess(index_body.index('title="Newest session"'), index_body.index('title="Older session"'))
+        self.assertIn('class="browser-session-card-count">3 images</span>', index_body)
+        self.assertIn('class="browser-session-card-count">1 image</span>', index_body)
+        self.assertIn('title="Latest image: 02/08/2026 11:00:00 (HKT)"', index_body)
+        # A cover opens its session in the one-session-per-page view and remembers the index page.
+        self.assertIn(
+            'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'
+            '&amp;session_view=1&amp;session=chatgpt:session:demo-project:new-session'
+            '&amp;session_page=1&amp;page=1"',
+            index_body,
+        )
+        self.assertIn("&amp;session=chatgpt:session:demo-project:older-session&amp;session_page=1&amp;page=2", index_body)
+        self.assertIn('aria-label="ChatGPT session metrics"', index_body)
+        self.assertIn('data-numeric-display-value="2">2</strong>', index_body)
+        self.assertNotIn("Current session", index_body)
+        self.assertNotIn("browser-session-refresh-button", index_body)
+        self.assertNotIn("data-chatgpt-session-url", index_body)
+        # The index has no redundant return link, and the sidebar keeps it across filter changes.
+        self.assertNotIn("data-chatgpt-session-index", index_body)
+        self.assertRegex(index_body, r'data-chatgpt-session-view\b[^>]*aria-pressed="false"')
+        self.assertIn('name="session_index" value="1"', index_body)
+        self.assertIn("<span>Session order</span>", index_body)
+        self.assertIn('aria-label="Order ChatGPT sessions"', index_body)
+        self.assertIn(">Session name</option>", index_body)
+        self.assertNotIn("Image order in session", index_body)
+        self.assertIn('data-browser-view="list"', index_body)
+        self.assertIn('data-browser-view="grid"', index_body)
+
+        oldest_body = oldest_response.get_data(as_text=True)
+        self.assertLess(oldest_body.index('title="Older session"'), oldest_body.index('title="Newest session"'))
+
+        # Each other ChatGPT Media state offers a native link into the index.
+        for body, label in (
+            (detail_response.get_data(as_text=True), "Back to all sessions"),
+            (flat_response.get_data(as_text=True), "All sessions"),
+        ):
+            self.assertNotIn("browser-session-gallery", body)
+            self.assertNotIn('name="session_index"', body)
+            match = re.search(
+                r"<a\b[^>]*\bdata-chatgpt-session-index\b[^>]*>[^<]*</a>",
+                body,
+            )
+            self.assertIsNotNone(match)
+            link = match.group(0)
+            self.assertIn('class="secondary-button browser-session-back-link"', link)
+            self.assertIn(
+                'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest&amp;session_view=1&amp;session_index=1"',
+                link,
+            )
+            self.assertIn(f">{label}</a>", link)
+            self.assertNotIn("aria-pressed", link)
+            self.assertNotIn("data-chatgpt-session-index-url", body)
+        self.assertIn('class="browser-media-card', detail_response.get_data(as_text=True))
+        for body in (other_source_response.get_data(as_text=True), text_response.get_data(as_text=True)):
+            self.assertNotIn("browser-session-gallery", body)
+            self.assertNotIn("data-chatgpt-session-index", body)
+            self.assertNotIn('name="session_index"', body)
+
+    def test_browser_session_index_pagination_keeps_the_index_and_returns_to_its_page(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root) / "local_store"
+            self._write_chatgpt_sessions(
+                root,
+                {
+                    f"session-{index:02d}": (f"Session title {index:02d}", (f"image-{index:02d}.png",))
+                    for index in range(1, 26)
+                },
+            )
+            app = create_app(root)
+            with app.test_client() as client:
+                first_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1&session_index=1"
+                ).get_data(as_text=True)
+                second_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1&session_index=1&page=2"
+                ).get_data(as_text=True)
+                detail_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1"
+                    "&session=chatgpt:session:demo-project:session-01&session_page=2&page=25"
+                ).get_data(as_text=True)
+
+        self.assertEqual(first_body.count("data-chatgpt-session-card"), 24)
+        self.assertEqual(second_body.count("data-chatgpt-session-card"), 1)
+        self.assertIn('aria-label="ChatGPT session pages"', first_body)
+        self.assertIn(
+            'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'
+            '&amp;session_view=1&amp;session_index=1&amp;page=2"',
+            first_body,
+        )
+        self.assertIn('data-numeric-display-value="25">25</strong>', first_body)
+        # The oldest session is the 25th page of the one-session-per-page view.
+        self.assertIn("&amp;session=chatgpt:session:demo-project:session-01&amp;session_page=2&amp;page=25", second_body)
+        self.assertIn("Session title 01", detail_body)
+        self.assertIn('data-numeric-display-value="25">25</span> / <span data-numeric-display-value="25">25</span>', detail_body)
+        link = re.search(
+            r"<a\b[^>]*\bdata-chatgpt-session-index\b[^>]*>Back to all sessions</a>",
+            detail_body,
+        )
+        self.assertIsNotNone(link)
+        self.assertIn(
+            'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'
+            '&amp;session_view=1&amp;session_index=1&amp;page=2"',
+            link.group(0),
+        )
+
+    def test_media_scripts_switch_between_sessions_and_persist_the_index(self) -> None:
+        media_script = LOCAL_MEDIA_BROWSER_SCRIPT_PATH.read_text(encoding="utf-8")
+        sidebar_script = SIDEBAR_SCRIPT_PATH.read_text(encoding="utf-8")
+        pagination_template = PAGINATION_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+        for fragment in (
+            # Leaving the index for the Session View, or for another content mode, drops it.
+            'targetUrl.searchParams.delete("session_index");',
+            "mediaGallery.dataset.galleryListLabel",
+            "mediaGallery.dataset.galleryGridLabel",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, media_script)
+        self.assertEqual(media_script.count('targetUrl.searchParams.delete("session_index");'), 2)
+        self.assertIn('"session_view", "session_index"]', sidebar_script)
+        self.assertEqual(pagination_template.count("session_index=('1' if filters.session_index else none)"), 2)
+
+    def test_gemini_media_browser_keeps_source_and_excludes_chatgpt_sessions(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root) / "local_store"
+            self._write_chatgpt_sessions(
+                root,
+                {
+                    "new-session": ("Newest session", ("new-session.png",)),
+                    "older-session": ("Older session", ("older-session.png",)),
+                },
+            )
+            gemini_root = root / "media" / "gemini"
+            gemini_root.mkdir(parents=True)
+            gemini_content = b"verified-gemini-image"
+            (gemini_root / "img_gemini.png").write_bytes(gemini_content)
+            (gemini_root / "catalog.json").write_text(
                 json.dumps(
                     {
-                        "entries": {
-                            "file-new": {
-                                "file_id": "file-new",
-                                "relative_path": "new-session.png",
-                                "conversation_url": "https://chatgpt.com/c/new-session",
-                                "conversation_title": "Newest session",
-                                "created_at": "2026-08-10T09:00:00Z",
-                            },
-                            "file-old": {
-                                "file_id": "file-old",
-                                "relative_path": "older-session.png",
-                                "conversation_url": "https://chatgpt.com/c/older-session",
-                                "conversation_title": "Older session",
-                                "created_at": "2026-08-09T09:00:00Z",
-                            },
-                        }
+                        "schema_version": 1,
+                        "assets": [
+                            {
+                                "asset_id": "gemini-image",
+                                "relative_path": "img_gemini.png",
+                                "media_kind": "image",
+                                "conversation_url": "https://gemini.google.com/app/gemini-session",
+                                "conversation_title": "Gemini example session",
+                                "alt_text": "Gemini landscape",
+                                "cached_at": "2026-09-29T00:00:00Z",
+                                "content_bytes": len(gemini_content),
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -6391,14 +6602,29 @@ class WebAppTests(unittest.TestCase):
             app = create_app(root)
             with app.test_client() as client:
                 response = client.get("/browser?view=media&source=gemini&q=&sort=newest&session_view=1")
+                video_response = client.get("/browser?view=media&source=gemini&kind=video")
+                media_response = client.get("/browser/media/media/gemini/img_gemini.png")
 
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertIn('name="view" type="radio" value="media" checked', body)
         self.assertIn("Cached media browser", body)
-        self.assertIn('data-browser-source-filter-selected-label>ChatGPT</span>', body)
-        self.assertIn('aria-label="ChatGPT sessions"', body)
-        self.assertIn('data-numeric-display-value="1">1</span> / <span data-numeric-display-value="2">2</span>', body)
+        self.assertIn('data-browser-source-filter-selected-label>Gemini</span>', body)
+        self.assertIn('data-browser-source-filter-option="gemini"', body)
+        self.assertIn('name="source" value="gemini"', body)
+        self.assertIn("img_gemini.png", body)
+        self.assertIn("https://gemini.google.com/app/gemini-session", body)
+        self.assertEqual(body.count('data-media-id="'), 1)
+        self.assertNotIn('aria-label="ChatGPT sessions"', body)
+        self.assertNotIn("data-chatgpt-session-card", body)
+        self.assertNotIn("new-session.png", body)
+        self.assertNotIn("older-session.png", body)
+        self.assertEqual(video_response.status_code, 200)
+        video_body = video_response.get_data(as_text=True)
+        self.assertIn('data-browser-source-filter-selected-label>Gemini</span>', video_body)
+        self.assertNotIn('data-media-id="', video_body)
+        self.assertEqual(media_response.status_code, 200)
+        self.assertEqual(media_response.data, gemini_content)
 
     def test_theme_toggle_reuses_sibling_light_dark_behavior(self) -> None:
         script = THEME_MODE_SCRIPT_PATH.read_text(encoding="utf-8")
