@@ -1,9 +1,9 @@
-/* Code version: v0.1.0-codex.1 */
+/* Code version: v0.2.0-codex.0 */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runExperiment } from '../app/web/static/beta/engines.mjs';
 
-const ids = ['idea-collision', 'context-capsule', 'question-radar', 'memory-diff', 'decision-wind-tunnel', 'mission-forge'];
+const ids = ['idea-collision', 'context-capsule', 'question-radar', 'memory-diff', 'decision-wind-tunnel', 'mission-forge', 'echo-atlas', 'curiosity-trail'];
 const sample = {
     source: '  Budget: 120\nCan this work offline?\nTODO: verify latency\n缓存必须保留来源。',
     second: 'Budget: 150\nHuman approval before publication\nAcceptance: every output cites a source',
@@ -166,4 +166,132 @@ test('Mission forge preserves requested checks and only extracts explicit human 
     assert.match(defaults.sections[0].body, /not an inferred goal/);
     assert.match(defaults.sections[2].body, /Generated defaults/);
     assert.match(defaults.sections[3].body, /No additional human signoff/);
+});
+
+test('Echo Atlas counts distinct bilingual source lines, not repeated words or duplicate occurrences', () => {
+    const output = runExperiment('echo-atlas', {
+        source: '\n  Cache cache meets memory.  \r\nCACHE CACHE MEETS MEMORY.\r\n缓存连接记忆。\r\n缓存留下线索。\r\nCache traces a river.\r\nThe and with because.\r\nTHE AND WITH BECAUSE.',
+        objective: '缓存',
+    });
+    assert.equal(metric(output, 'Distinct lines'), 5);
+    assert.deepEqual(output.signals, [{ label: '缓存', value: 2 }, { label: 'cache', value: 2 }]);
+    const cache = output.sections.find((section) => section.title === 'Echo: cache');
+    assert.ok(cache.body.includes('[Source L2]\n  Cache cache meets memory.  '));
+    assert.ok(cache.body.includes('Equivalent occurrences: L2, L3; counted as one distinct line.'));
+    assert.ok(cache.body.includes('[Source L6]\nCache traces a river.'));
+    assert.ok(output.sections[0].body.includes('[Source L4]\n缓存连接记忆。'));
+    assert.match(output.sections.at(-1).body, /not semantic clustering/);
+});
+
+test('Echo Atlas bounds its output while counting complete lines and preserves Unicode excerpts', () => {
+    const words = 'amber breeze cedar drift ember forest grove harbor island jasmine';
+    const output = runExperiment('echo-atlas', {
+        source: `${'🌱'.repeat(121)} ${words}\n${words} pond\n${words} marsh\n${words} ridge\n${words} river`,
+    });
+    assert.equal(metric(output, 'Recurring motifs'), 10);
+    assert.equal(output.signals.length, 8);
+    assert.ok(output.signals.every((signal) => signal.value === 5));
+    assert.ok(output.sections[0].body.includes('4 line excerpts shown.'));
+    assert.ok(output.sections[0].body.includes('prefix excerpt, 240/'));
+    assert.equal(output.markdown.isWellFormed(), true);
+    assert.match(output.sections.at(-1).body, /Counts use full source lines/);
+    const single = runExperiment('echo-atlas', { source: 'ＣＡＣＨＥ cache\ncache cache' });
+    assert.equal(metric(single, 'Distinct lines'), 1);
+    assert.deepEqual(single.signals, []);
+    assert.match(single.sections[0].body, /repeating the same line does not create an echo/);
+    const noMotifs = runExperiment('echo-atlas', { source: 'a'.repeat(33) + ' north\n' + 'a'.repeat(33) + ' south' });
+    assert.deepEqual(noMotifs.signals, []);
+    assert.match(noMotifs.sections[0].body, /does not mean/);
+});
+
+test('Echo Atlas ranks counts before objective matches and resolves ties without host locale', () => {
+    const output = runExperiment('echo-atlas', {
+        source: 'river zebra apple\nriver zebra apple stone\nriver quiet',
+        objective: 'zebra',
+    });
+    assert.deepEqual(output.signals, [
+        { label: 'river', value: 3 },
+        { label: 'zebra', value: 2 },
+        { label: 'apple', value: 2 },
+    ]);
+    const tied = runExperiment('echo-atlas', { source: 'zebra apple\napple zebra stone' });
+    assert.deepEqual(tied.signals.map((signal) => signal.label), ['apple', 'zebra']);
+});
+
+test('Curiosity Trail selects an objective anchor, a distant low-overlap contrast, and a further unique line', () => {
+    const output = runExperiment('curiosity-trail', {
+        source: '\nPaper boats follow rivers.\nCACHE MEMORY stays local.\ncache memory stays local.\nCache memory remains nearby.\n\nBirds trace the horizon.\nClouds drift slowly.',
+        objective: 'cache memory',
+    });
+    assert.equal(metric(output, 'Distinct lines'), 5);
+    assert.equal(metric(output, 'Exploration stops'), 3);
+    assert.ok(output.sections[0].body.startsWith('[Source L3]\nCACHE MEMORY stays local.'));
+    assert.ok(output.sections[0].body.includes('Equivalent occurrences: L3, L4; counted as one distinct line.'));
+    assert.ok(output.sections[1].body.startsWith('[Source L8]\nClouds drift slowly.'));
+    assert.ok(output.sections[2].body.startsWith('[Source L2]\nPaper boats follow rivers.'));
+    for (const section of output.sections.slice(0, 3)) {
+        assert.match(section.body, /Observation prompt/);
+        assert.match(section.body, /Evidence and falsification/);
+    }
+    assert.match(output.sections.at(-1).body, /not inferred personal interests, biography/);
+});
+
+test('Curiosity Trail resolves equal overlap and distance by original line order and supports Chinese objectives', () => {
+    const output = runExperiment('curiosity-trail', {
+        source: 'Ocean tides\n缓存来源保持可见。\nBird flight',
+        objective: '来源',
+    });
+    assert.ok(output.sections[0].body.startsWith('[Source L2]\n缓存来源保持可见。'));
+    assert.ok(output.sections[1].body.startsWith('[Source L1]\nOcean tides'));
+    assert.ok(output.sections[2].body.startsWith('[Source L3]\nBird flight'));
+});
+
+test('sparse and token-free material yields honest partial trails without fabricated source references', () => {
+    const one = runExperiment('curiosity-trail', { source: '  A small observation.  \nA SMALL OBSERVATION.' });
+    assert.equal(metric(one, 'Exploration stops'), 1);
+    assert.equal(one.sections.length, 2);
+    assert.match(one.sections.at(-1).body, /add 2 more distinct lines/);
+    assert.match(one.sections.at(-1).body, /Missing stops are not invented/);
+    const two = runExperiment('curiosity-trail', { source: '🌱\n🌧' });
+    assert.equal(metric(two, 'Exploration stops'), 2);
+    assert.ok(two.sections[0].body.startsWith('[Source L1]\n🌱'));
+    assert.ok(two.sections[1].body.startsWith('[Source L2]\n🌧'));
+    assert.match(two.sections.at(-1).body, /add 1 more distinct line\./);
+    assert.match(two.sections.at(-1).body, /no recognized terms means lexical selection has little evidence/);
+});
+
+test('new experiments honor input limits and keep hostile evidence literal inside safe Markdown fences', () => {
+    const hostile = '<img src=x onerror="globalThis.betaExecuted=true"> ````` cache';
+    for (const id of ['echo-atlas', 'curiosity-trail']) {
+        assert.doesNotThrow(() => runExperiment(id, { source: '🌱'.repeat(30000) }));
+        for (const field of ['source', 'objective']) {
+            assert.throws(() => runExperiment(id, { source: 'A supplied line', [field]: 'x'.repeat(60001) }), new RegExp(`${field} exceeds`));
+        }
+        const output = runExperiment(id, { source: `${hostile}\ncache observation`, objective: '<script>globalThis.betaExecuted=true</script>' });
+        const raw = output.sections.filter((section) => section.body.includes(hostile));
+        assert.ok(raw.length > 0);
+        for (const section of raw) assert.ok(output.markdown.includes(`\`\`\`\`\`\`text\n${section.body}\n\`\`\`\`\`\``));
+        assert.equal(globalThis.betaExecuted, undefined);
+    }
+});
+
+test('new experiment prose groups large counts while numeric signals and line identifiers remain exact', () => {
+    const source = Array.from({ length: 1234 }, (_, index) => `cache ${index}`).join('\n');
+    const atlas = runExperiment('echo-atlas', { source });
+    assert.deepEqual(atlas.signals, [{ label: 'cache', value: 1234 }]);
+    assert.match(atlas.sections[0].body, /1,234 distinct source lines/);
+    assert.match(atlas.sections.at(-1).body, /1,234 distinct nonempty lines/);
+    const trail = runExperiment('curiosity-trail', { source, objective: '1233' });
+    assert.ok(trail.sections[0].body.startsWith('[Source L1234]\ncache 1233'));
+    assert.match(trail.sections.at(-1).body, /1,234 distinct nonempty source lines/);
+    const longLine = runExperiment('curiosity-trail', { source: 'cache '.repeat(2000) });
+    assert.match(longLine.sections[0].body, /prefix excerpt, 300\/12,000 characters/);
+});
+
+test('malformed Unicode remains source evidence and does not remove the required anchor', () => {
+    for (const source of ['\ud800', '\udfff', '\u3164', '\uffa0', '\u200b']) {
+        const trail = runExperiment('curiosity-trail', { source });
+        assert.equal(metric(trail, 'Exploration stops'), 1);
+        assert.ok(trail.sections[0].body.startsWith(`[Source L1]\n${source}`));
+    }
 });

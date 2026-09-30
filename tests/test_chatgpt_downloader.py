@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.42.0-claude.0
+# Code version: v1.42.1-claude.0
 
 from __future__ import annotations
 
@@ -2574,6 +2574,14 @@ def test_chatgpt_sync_publishes_already_cached_index_images_as_one_batch(
         )
         for result in results
     ]
+    progress_before_workers: list[tuple[int, int]] = []
+
+    def result_stream():
+        yield from cached_results
+        # A worker needs seconds to open its browser; the cached run must already be visible.
+        snapshot = state.snapshot()
+        progress_before_workers.append((snapshot["processed_tweets"], snapshot["skipped_tweets"]))
+        yield from worker_results
 
     with patch(
         "app.core.chatgpt_downloader.sync_playwright",
@@ -2589,7 +2597,7 @@ def test_chatgpt_sync_publishes_already_cached_index_images_as_one_batch(
         return_value=candidates,
     ), patch(
         "app.core.chatgpt_downloader._iter_chatgpt_index_image_results",
-        return_value=iter(results),
+        return_value=result_stream(),
     ), patch.object(ChatGPTImageCatalog, "summarize", return_value=0) as summarize:
         sync_chatgpt_images(
             state,
@@ -2598,6 +2606,7 @@ def test_chatgpt_sync_publishes_already_cached_index_images_as_one_batch(
         )
 
     snapshot = state.snapshot()
+    assert progress_before_workers == [(60, 60)]
     assert snapshot["processed_tweets"] == len(results)
     assert snapshot["skipped_tweets"] == 60 + sum(result.skipped for result in worker_results)
     events = [event.split("] ", 1)[1] for event in snapshot["recent_events"]]

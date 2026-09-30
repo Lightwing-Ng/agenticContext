@@ -1,6 +1,6 @@
 """Disposable-browser coverage for isolated Beta experiment workflows.
 
-Code version: v0.5.0-codex.1
+Code version: v0.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import re
 import tempfile
 
 import pytest
@@ -27,6 +28,8 @@ EXPERIMENTS = (
     ("memory-diff", "Memory Diff", "Compare snapshots"),
     ("decision-wind-tunnel", "Decision Wind Tunnel", "Challenge proposal"),
     ("mission-forge", "Mission Forge", "Build mission"),
+    ("echo-atlas", "Echo Atlas", "Map echoes"),
+    ("curiosity-trail", "Curiosity Trail", "Build trail"),
 )
 DRAFT_PREFIX = "agenticcontext:beta:v1:draft:"
 
@@ -52,12 +55,20 @@ class BetaPage:
 def beta_page(
     disposable_browser: Browser, sidebar_server_url: str, request: pytest.FixtureRequest
 ) -> Iterator[BetaPage]:
+    requested_options = getattr(request, "param", True)
+    context_options = (
+        requested_options
+        if isinstance(requested_options, dict)
+        else {"java_script_enabled": requested_options}
+    )
     context = disposable_browser.new_context(
-        viewport={"width": 1_280, "height": 900},
-        reduced_motion="reduce",
-        color_scheme="light",
-        accept_downloads=True,
-        java_script_enabled=getattr(request, "param", True),
+        **{
+            "viewport": {"width": 1_280, "height": 900},
+            "reduced_motion": "reduce",
+            "color_scheme": "light",
+            "accept_downloads": True,
+            **context_options,
+        }
     )
     page = context.new_page()
     beta = BetaPage(context, page, sidebar_server_url)
@@ -92,6 +103,9 @@ def _run_example(page: Page, action: str) -> None:
     expect(page.locator("#beta_source")).not_to_have_value("")
     page.get_by_role("button", name=action, exact=True).click()
     expect(page.locator("[data-beta-result]")).to_be_visible()
+    expect(page.locator("#beta-guide-start")).to_have_attribute("open", "")
+    expect(page.locator("#beta-guide-observe")).to_have_attribute("open", "")
+    expect(page.locator("[data-beta-result]")).to_be_focused()
     expect(page.locator("[data-beta-status]")).to_contain_text("Output ready")
     expect(page.locator("[data-beta-sections] section").first).to_be_visible()
     assert page.locator("[data-beta-sections]").inner_text().strip()
@@ -103,13 +117,54 @@ def _assert_no_horizontal_overflow(page: Page) -> None:
     geometry = page.evaluate(
         """() => ({
             page: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - innerWidth,
-            content: [...document.querySelectorAll('.beta-content, .beta-input-card, .beta-result')]
+            content: [...document.querySelectorAll(
+                '.beta-content, .beta-input-card, .beta-result, .process-list-content, .ui-collapse-body',
+            )]
                 .filter(element => !element.hidden)
                 .map(element => element.scrollWidth - element.clientWidth),
         })"""
     )
     assert geometry["page"] <= 1, geometry
     assert all(overflow <= 1 for overflow in geometry["content"]), geometry
+
+
+def _assert_beta_guide_geometry(page: Page) -> None:
+    geometry = page.locator(".beta-content ol.process-list").evaluate(
+        """list => [...list.querySelectorAll(':scope > li.process-list-step')].map(step => {
+            const bounds = element => {
+                const rect = element.getBoundingClientRect();
+                return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+                    width: rect.width, height: rect.height, centerY: rect.top + rect.height / 2 };
+            };
+            return {
+                step: bounds(step),
+                marker: bounds(step.querySelector(':scope > .process-list-marker')),
+                heading: bounds(step.querySelector('.process-list-heading')),
+            };
+        })"""
+    )
+    assert len(geometry) == 3
+    for index, item in enumerate(geometry):
+        assert abs(item["marker"]["width"] - 32) <= 1, item
+        assert abs(item["marker"]["height"] - 32) <= 1, item
+        assert abs(item["marker"]["centerY"] - item["heading"]["centerY"]) <= 1, item
+        assert item["marker"]["right"] < item["heading"]["left"], item
+        if index:
+            assert geometry[index - 1]["step"]["bottom"] <= item["step"]["top"], geometry
+
+
+def _assert_center_is_reachable(page: Page, selector: str) -> None:
+    element = page.locator(selector)
+    element.scroll_into_view_if_needed()
+    expect(element).to_be_in_viewport()
+    assert element.evaluate(
+        """element => {
+            const rect = element.getBoundingClientRect();
+            return element.contains(document.elementFromPoint(
+                rect.x + rect.width / 2, rect.y + rect.height / 2,
+            ));
+        }"""
+    )
 
 
 def _assert_beta_title_rail_and_button_material(page: Page) -> None:
@@ -183,10 +238,15 @@ def test_each_beta_experiment_runs_locally_and_loads_engine_on_demand(
     expect(page.get_by_role("navigation", name="Beta experiments")).to_be_visible()
     expect(page.locator(".beta-nav [aria-current=page]")).to_have_text(title)
     expect(page.locator("[data-beta-result]")).to_be_hidden()
+    expect(page.locator(".beta-content ol.process-list > li.process-list-step")).to_have_count(3)
+    expect(page.locator("#beta-guide-start")).to_have_attribute("open", "")
+    expect(page.locator("#beta-guide-observe")).not_to_have_attribute("open", "")
+    expect(page.locator("#beta-guide-challenge")).not_to_have_attribute("open", "")
     assert not any("/beta/engines.mjs" in url for url in beta_page.requests)
     _run_example(page, action)
     assert any("/beta/engines.mjs" in url for url in beta_page.requests)
     _assert_no_horizontal_overflow(page)
+    _assert_beta_guide_geometry(page)
     page.locator("#beta_source").fill("Changed evidence invalidates the previous result.")
     expect(page.locator("[data-beta-result]")).to_be_hidden()
 
@@ -203,9 +263,11 @@ def test_beta_idea_collision_responsive_layout_and_sidebar(
     expect(page.locator("#global_theme_toggle")).to_have_attribute("data-effective-theme", theme)
     _assert_no_horizontal_overflow(page)
     _assert_beta_title_rail_and_button_material(page)
+    _assert_beta_guide_geometry(page)
     _run_example(page, "Collide ideas")
     _assert_no_horizontal_overflow(page)
     _assert_beta_title_rail_and_button_material(page)
+    _assert_beta_guide_geometry(page)
     if theme == "light":
         page.screenshot(path=str(Path(tempfile.gettempdir()) / f"beta-review-result-{width}.png"))
     page.locator(".beta-scrollport").evaluate("element => { element.scrollTop = 0; }")
@@ -220,6 +282,153 @@ def test_beta_idea_collision_responsive_layout_and_sidebar(
     expect(page.locator(".beta-nav [aria-current=page]")).to_have_text("Question Radar")
     _assert_no_horizontal_overflow(page)
     _assert_beta_title_rail_and_button_material(page)
+
+
+def test_beta_guide_keyboard_steps_open_results_and_clear_resets_disclosures(beta_page: BetaPage) -> None:
+    beta_page.open("question-radar")
+    page = beta_page.page
+    start = page.locator("#beta-guide-start")
+    observe = page.locator("#beta-guide-observe")
+    challenge = page.locator("#beta-guide-challenge")
+    start_summary = start.locator(":scope > summary")
+    observe_summary = observe.locator(":scope > summary")
+    challenge_summary = challenge.locator(":scope > summary")
+
+    start_summary.focus()
+    start_summary.press("Enter")
+    expect(start).not_to_have_attribute("open", "")
+    expect(page.locator("[data-beta-run]")).to_be_hidden()
+    start_summary.press("Tab")
+    expect(observe_summary).to_be_focused()
+    observe_summary.press("Enter")
+    expect(observe.locator(":scope > .ui-collapse-body")).to_be_visible()
+    assert observe.locator(":scope > .ui-collapse-body").inner_text().strip()
+    observe_summary.press("Enter")
+    observe_summary.press("Tab")
+    expect(challenge_summary).to_be_focused()
+    challenge_summary.press("Space")
+    expect(challenge.locator(":scope > .ui-collapse-body")).to_be_visible()
+    expect(challenge.get_by_role("link", name="Try another experiment", exact=True)).to_be_visible()
+    start_summary.focus()
+    start_summary.press("Space")
+    expect(page.locator("[data-beta-run]")).to_be_visible()
+
+    _run_example(page, "Find questions")
+    expect(observe.get_by_role("button", name="Copy", exact=True)).to_be_visible()
+    expect(observe.get_by_role("button", name="Export .md", exact=True)).to_be_visible()
+    observe_summary.click()
+    expect(page.locator("[data-beta-result]")).to_be_hidden()
+    expect(page.locator("[data-beta-status]")).to_be_visible()
+    expect(page.locator("[data-beta-status]")).to_contain_text("Output ready")
+    page.get_by_role("button", name="Find questions", exact=True).click()
+    expect(observe).to_have_attribute("open", "")
+    expect(page.locator("[data-beta-result]")).to_be_focused()
+    page.get_by_role("button", name="Clear draft", exact=True).click()
+    expect(start).to_have_attribute("open", "")
+    expect(observe).not_to_have_attribute("open", "")
+    expect(challenge).not_to_have_attribute("open", "")
+    expect(page.locator("[data-beta-result]")).to_be_hidden()
+    expect(page.locator("#beta_source")).to_have_value("")
+    expect(page.locator("[data-beta-status]")).to_contain_text("draft is cleared")
+
+
+@pytest.mark.parametrize(
+    ("experiment", "link_name"),
+    (("echo-atlas", "Map recurring ideas"), ("curiosity-trail", "Take a curiosity walk")),
+)
+def test_beta_discovery_links_preserve_separate_experiment_drafts(
+    beta_page: BetaPage, experiment: str, link_name: str
+) -> None:
+    beta_page.open("question-radar")
+    page = beta_page.page
+    source_draft = "Which original question must stay with Question Radar?"
+    destination_draft = f"A separate saved draft for {experiment}."
+    page.locator("#beta_source").fill(source_draft)
+    page.get_by_role("link", name=link_name, exact=True).click()
+    expect(page).to_have_url(f"{beta_page.origin}/beta/{experiment}")
+    expect(page.locator("#beta_source")).to_have_value("")
+    page.locator("#beta_source").fill(destination_draft)
+    page.get_by_role("link", name="Question Radar", exact=True).click()
+    expect(page.locator("#beta_source")).to_have_value(source_draft)
+    page.get_by_role("link", name=link_name, exact=True).click()
+    expect(page.locator("#beta_source")).to_have_value(destination_draft)
+    saved_source = page.evaluate(
+        "key => sessionStorage.getItem(key)", DRAFT_PREFIX + "question-radar"
+    )
+    assert json.loads(saved_source)["source"] == source_draft
+
+
+def test_beta_echo_atlas_exposes_labeled_bounded_signal_meters(
+    beta_page: BetaPage, tmp_path: Path
+) -> None:
+    beta_page.open("echo-atlas")
+    page = beta_page.page
+    _run_example(page, "Map echoes")
+    signals = page.locator("[data-beta-signals]")
+    expect(signals).to_be_visible()
+    meters = signals.get_by_role("meter")
+    assert meters.count() > 0
+    for meter in meters.all():
+        expect(meter).to_have_accessible_name(re.compile(r"\S"))
+        assert meter.evaluate(
+            "element => element.min <= element.value && element.value <= element.max && element.max > element.min"
+        )
+    screenshot = tmp_path / "echo-atlas-result.png"
+    page.screenshot(path=str(screenshot))
+    print(f"Echo Atlas visual evidence: {screenshot}")
+    page.locator("#beta_source").fill("A single fresh note without a repeated idea.")
+    expect(page.locator("[data-beta-result]")).to_be_hidden()
+    expect(signals).to_be_hidden()
+
+
+@pytest.mark.parametrize(
+    "beta_page",
+    ({"has_touch": True, "viewport": {"width": 390, "height": 568}},),
+    indirect=True,
+    ids=("short-touch",),
+)
+@pytest.mark.parametrize("theme", ("light", "dark"))
+def test_beta_guided_experiment_is_reachable_on_short_touch_viewport(
+    beta_page: BetaPage, theme: str
+) -> None:
+    page = beta_page.page
+    page.emulate_media(color_scheme=theme)
+    beta_page.open("echo-atlas")
+    toggle = page.get_by_role("button", name="Toggle sidebar", exact=True)
+    if toggle.get_attribute("aria-expanded") == "true":
+        toggle.tap()
+    summary = page.locator("#beta-guide-start > summary")
+    summary.tap()
+    expect(page.locator("[data-beta-run]")).to_be_hidden()
+    summary.tap()
+    expect(page.locator("[data-beta-run]")).to_be_visible()
+    _run_example(page, "Map echoes")
+    _assert_no_horizontal_overflow(page)
+    _assert_beta_guide_geometry(page)
+    _assert_beta_title_rail_and_button_material(page)
+    rail = page.locator("[data-layout-role=title-rail]")
+    initial_rail = rail.bounding_box()
+    _assert_center_is_reachable(page, "[data-beta-copy]")
+    _assert_center_is_reachable(page, "[data-beta-export]")
+    page.locator("#beta-guide-challenge > summary").tap()
+    followup = page.locator("#beta-guide-challenge").get_by_role(
+        "link", name="Try another experiment", exact=True
+    )
+    followup.scroll_into_view_if_needed()
+    expect(followup).to_be_in_viewport()
+    assert followup.evaluate(
+        """element => {
+            const rect = element.getBoundingClientRect();
+            return element.contains(document.elementFromPoint(
+                rect.x + rect.width / 2, rect.y + rect.height / 2,
+            ));
+        }"""
+    )
+    final_rail = rail.bounding_box()
+    assert initial_rail and final_rail
+    assert abs(initial_rail["y"] - final_rail["y"]) <= 1
+    _assert_no_horizontal_overflow(page)
+    expect(page.locator("#global_theme_toggle")).to_have_attribute("data-effective-theme", theme)
 
 
 @pytest.mark.parametrize("beta_page", (True, False), indirect=True, ids=("module-blocked", "javascript-disabled"))

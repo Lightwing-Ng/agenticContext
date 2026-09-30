@@ -1,4 +1,4 @@
-/* Code version: v0.1.0-codex.1 */
+/* Code version: v0.2.0-codex.0 */
 /* Pure, deterministic recipes: this module has no browser, storage, or network access. */
 
 const TEXT_LIMIT = 60000;
@@ -289,6 +289,166 @@ function missionForge({ source, second, objective }) {
     ], [{ label: 'Independent packages', value: 3 }, { label: 'Supplied checks', value: lines(second).filter((line) => line.text.trim()).length }]);
 }
 
+const MOTIF_STOPWORDS = new Set([
+    'about', 'after', 'again', 'also', 'and', 'are', 'because', 'been', 'before', 'being',
+    'but', 'can', 'could', 'does', 'each', 'for', 'from', 'had', 'has', 'have', 'how',
+    'into', 'its', 'just', 'may', 'more', 'most', 'not', 'only', 'other', 'our', 'out',
+    'over', 'same', 'should', 'some', 'than', 'that', 'the', 'their', 'them', 'then',
+    'there', 'these', 'they', 'this', 'those', 'through', 'too', 'under', 'use', 'was',
+    'were', 'what', 'when', 'where', 'which', 'while', 'who', 'will', 'with', 'would',
+    'you', 'your', '一个', '一些', '以及', '但是', '可以', '因为', '如何', '我们', '所以',
+    '是否', '没有', '这个', '这是', '这些', '那个', '那么', '什么', '进行', '需要',
+]);
+
+function lexicalTerms(text) {
+    const value = normalized(text);
+    const terms = new Set();
+    // The 60,000-character input limit bounds analysis; very long Latin runs are not motifs.
+    for (const word of value.match(/[a-z]+(?:['’][a-z]+)*/gu) ?? []) {
+        if (word.length >= 3 && word.length <= 32 && !MOTIF_STOPWORDS.has(word)) terms.add(word);
+    }
+    for (const run of value.match(/\p{Script=Han}+/gu) ?? []) {
+        const characters = Array.from(run);
+        for (let index = 0; index + 1 < characters.length; index += 1) {
+            const pair = characters[index] + characters[index + 1];
+            if (!MOTIF_STOPWORDS.has(pair)) terms.add(pair);
+        }
+    }
+    return terms;
+}
+
+function distinctMaterial(source) {
+    const grouped = new Map();
+    for (const line of lines(source)) {
+        const key = normalized(line.text);
+        if (!key) continue;
+        const existing = grouped.get(key);
+        if (existing) existing.references.push(line.number);
+        else grouped.set(key, { ...line, references: [line.number], terms: lexicalTerms(line.text) });
+    }
+    return [...grouped.values()];
+}
+
+function countText(value) {
+    return value.toLocaleString('en-US');
+}
+
+function materialExcerpt(line, limit = 300) {
+    const text = prefix(line.text, limit);
+    const extent = text.length < line.text.length ? `; prefix excerpt, ${countText(text.length)}/${countText(line.text.length)} characters` : '';
+    const excerpt = `[Source L${line.number}${extent}]\n${text}`;
+    if (line.references.length === 1) return excerpt;
+    const shown = line.references.slice(0, 8).map((number) => `L${number}`).join(', ');
+    const omitted = line.references.length > 8 ? `; ${countText(line.references.length - 8)} more` : '';
+    return `${excerpt}\n[Equivalent occurrences: ${shown}${omitted}; counted as one distinct line.]`;
+}
+
+function echoAtlas({ source, objective }) {
+    const material = distinctMaterial(source);
+    const objectiveTerms = lexicalTerms(objective);
+    const motifs = new Map();
+    for (const line of material) {
+        for (const term of line.terms) {
+            if (!motifs.has(term)) motifs.set(term, []);
+            motifs.get(term).push(line);
+        }
+    }
+    const recurring = [...motifs].filter(([, entries]) => entries.length >= 2).sort((left, right) => (
+        right[1].length - left[1].length
+        || Number(objectiveTerms.has(right[0])) - Number(objectiveTerms.has(left[0]))
+        || left[1][0].number - right[1][0].number
+        || (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)
+    ));
+    const shown = recurring.slice(0, 8);
+    const sections = shown.map(([term, entries]) => ({
+        title: `Echo: ${term}`,
+        body: [
+            `${countText(entries.length)} distinct source lines contain this lexical motif. ${countText(entries.slice(0, 4).length)} line excerpts shown.`,
+            ...entries.slice(0, 4).map((line) => materialExcerpt(line, 240)),
+            'Small observation\nCompare the quoted contexts. Write one way this exact wording is used similarly and one way it differs. Keep the connection unconfirmed if the source does not support it.',
+        ].join('\n\n'),
+    }));
+    if (!shown.length) sections.push({
+        title: 'No recurring lexical motifs',
+        body: material.length < 2
+            ? 'At least two distinct nonempty source lines are needed. Add another excerpt to compare; repeating the same line does not create an echo.'
+            : 'No eligible English word or Chinese bigram occurs in two distinct source lines. A missing lexical match does not mean the excerpts have no meaningful connection.',
+    });
+    sections.push({
+        title: 'How to read this atlas',
+        body: `${countText(material.length)} distinct nonempty lines examined. ${countText(recurring.length)} recurring motifs found; ${countText(shown.length)} shown. Counts use full source lines, while displayed excerpts may be prefixes. Repeated words within a line count once. Lines equivalent after Unicode normalization, lowercasing, and whitespace normalization count once; the first original line supplies the excerpt.\n\nEligible motifs are English words of 3–32 characters and adjacent Chinese character pairs, with a small stopword list removed. Ranking uses distinct-line count, then exact objective-term match, then first source occurrence, then Unicode string order. This is lexical recurrence, not semantic clustering, importance, chronology, or a profile of the person who supplied the text.`,
+    });
+    const output = result('Echo Atlas', 'Find recurring wording across your supplied excerpts, then inspect the original contexts. A repeated word is a starting point for curiosity, not a proven connection.', sections, [
+        { label: 'Distinct lines', value: material.length },
+        { label: 'Recurring motifs', value: recurring.length },
+        { label: 'Motifs shown', value: shown.length },
+    ]);
+    output.signals = shown.map(([label, entries]) => ({ label, value: entries.length }));
+    return output;
+}
+
+function lexicalOverlap(left, right) {
+    let shared = 0;
+    for (const term of left) if (right.has(term)) shared += 1;
+    const total = left.size + right.size - shared;
+    return total ? shared / total : 1;
+}
+
+function curiosityTrail({ source, objective }) {
+    const material = distinctMaterial(source);
+    const anchor = rank(material, objective)[0];
+    const selected = [anchor];
+    // Each next stop minimizes overlap with earlier stops, then maximizes source-line distance.
+    while (selected.length < 3 && selected.length < material.length) {
+        const remaining = material.filter((line) => !selected.some((prior) => prior.number === line.number));
+        const scored = remaining.map((line) => ({
+            line,
+            overlap: Math.max(...selected.map((prior) => lexicalOverlap(line.terms, prior.terms))),
+            distance: Math.min(...selected.map((prior) => Math.abs(line.number - prior.number))),
+        }));
+        scored.sort((left, right) => left.overlap - right.overlap || right.distance - left.distance || left.line.number - right.line.number);
+        selected.push(scored[0].line);
+    }
+    const stops = [
+        {
+            title: '1. Notice one detail',
+            prompt: 'Choose one concrete noun, action, or stated condition in this excerpt. Spend two minutes listing what the line directly says and one detail it leaves unknown.',
+            check: 'Write one question answerable by a small observation. Reject any answer you cannot point to in the excerpt or a new observation; leave it unknown.',
+        },
+        {
+            title: '2. Try a different context',
+            prompt: 'Place this excerpt beside Stop 1. Name one visible difference in wording or stated conditions, then ask whether one explicitly stated detail transfers between them.',
+            check: 'Record one example in each context. Abandon the proposed connection if the same detail has a different role, or if either excerpt supplies no evidence for it.',
+        },
+        {
+            title: '3. Follow a small question',
+            prompt: 'Use this further excerpt to turn the earlier question into a five-minute observation: name one thing to inspect, one expected observation, and one possible surprise.',
+            check: 'Before observing, write a result that would contradict your expectation. Stop after five minutes; record what happened, including no result, without generalizing beyond the inspected case.',
+        },
+    ];
+    const sections = selected.map((line, index) => ({
+        title: stops[index].title,
+        body: [
+            materialExcerpt(line),
+            `Observation prompt\n${stops[index].prompt}`,
+            `Evidence and falsification\n${stops[index].check}`,
+        ].join('\n\n'),
+    }));
+    sections.push({
+        title: 'Route boundary',
+        body: [
+            `Objective\n${objectiveText(objective)}`,
+            `${selected.length} of 3 possible stops drawn from ${countText(material.length)} distinct nonempty source lines.${selected.length < 3 ? ` Insufficient distinct material for a full trail: add ${3 - selected.length} more distinct line${3 - selected.length === 1 ? '' : 's'}. Missing stops are not invented.` : ''}`,
+            'Stop 1 ranks exact objective-keyword matches; ties keep source order. Later stops minimize their greatest lexical overlap with previous stops, then prefer the greatest minimum source-line distance, then source order. Overlap uses English words and Chinese bigrams after a small stopword list; no recognized terms means lexical selection has little evidence.',
+            'Duplicate lines are consolidated after Unicode, case, and whitespace normalization. Distance means line position, not time or conceptual novelty. These are generated observation prompts, not inferred personal interests, biography, semantic connections, or completed experiments.',
+        ].join('\n\n'),
+    });
+    return result('Curiosity Trail', 'Take up to three small observation stops through supplied excerpts. Each stop keeps its source reference; lexical variety offers a prompt to explore, not an interpretation of your life.', sections, [
+        { label: 'Exploration stops', value: selected.length },
+        { label: 'Distinct lines', value: material.length },
+    ]);
+}
+
 const EXPERIMENTS = new Map([
     ['idea-collision', ideaCollision],
     ['context-capsule', contextCapsule],
@@ -296,6 +456,8 @@ const EXPERIMENTS = new Map([
     ['memory-diff', memoryDiff],
     ['decision-wind-tunnel', decisionWindTunnel],
     ['mission-forge', missionForge],
+    ['echo-atlas', echoAtlas],
+    ['curiosity-trail', curiosityTrail],
 ]);
 
 export function runExperiment(id, fields = {}) {

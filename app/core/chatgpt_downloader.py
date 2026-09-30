@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.50.0-claude.0
+# Code version: v1.50.1-claude.0
 
 from __future__ import annotations
 
@@ -4317,11 +4317,10 @@ def sync_chatgpt_images(
                 failed_tweets=failed_count,
             )
 
-        def publish_already_cached_batch() -> None:
+        def announce_already_cached_batch() -> None:
             nonlocal already_cached_batch
             if not already_cached_batch:
                 return
-            publish_index_progress()
             state.append_event(
                 f"Skipped {already_cached_batch:,} direct ChatGPT project-index images "
                 "that were already cached."
@@ -4338,14 +4337,15 @@ def sync_chatgpt_images(
             max_file_size_bytes=runtime_config.max_media_file_size_bytes,
         ):
             if not result.already_cached:
-                publish_already_cached_batch()
+                announce_already_cached_batch()
             indexed_images_processed += 1
             downloaded_count += int(result.downloaded)
             skipped_known += int(result.skipped)
             if result.already_cached:
-                # The file was complete before any worker started, so the catalog is
-                # unchanged: publish the whole run once instead of recounting it per image.
+                # The file was complete before any worker started, so the catalog is unchanged:
+                # keep the counters current without a recount and announce the run once.
                 already_cached_batch += 1
+                publish_index_progress()
                 continue
             if result.skipped_size:
                 size_skipped_count += 1
@@ -4379,7 +4379,7 @@ def sync_chatgpt_images(
                     f"Cached {indexed_images_processed:,}/{len(project_index_candidates):,} "
                     "direct ChatGPT project-index images."
                 )
-        publish_already_cached_batch()
+        announce_already_cached_batch()
 
         if project_index_candidates:
             state.append_event(

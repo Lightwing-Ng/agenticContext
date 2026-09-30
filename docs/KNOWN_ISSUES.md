@@ -1,6 +1,6 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.29.0-claude.0`
+Documentation version: `v1.29.1-claude.0`
 
 ## Concurrent cache tasks on 30 Sep 2026
 
@@ -41,15 +41,21 @@ Documentation version: `v1.29.0-claude.0`
   keep a positional window reference. When Safari was the frontmost application, restoring the
   user's front window made the script return that user window's ID: the task then navigated tab 1
   of the user's window, left its own new window open, and failed cleanup with
-  `Safari task window contains an unexpected tab`. One loopback probe reproduced this on 30 Sep
-  while Safari was in use; the affected tab was restored with one history step and the leftover
-  probe window was closed.
-- Verification used a loopback origin opened in this Mac's Safari, with no provider request: 150
-  parallel transfers across three tabs finished with no error and no content mismatch,
-  three tabs were about 2.5 times faster than one at 0.8 s simulated latency, and the production
-  project-index path cached 24 images in its own window and closed it. No signed-in ChatGPT media
-  run was performed for this change, and the window-binding fix was checked by compiling the
-  script and reading the reference form, not by a run with Safari frontmost.
+  `Safari task window contains an unexpected tab`. One loopback probe on 30 Sep ended in exactly
+  this state; the affected tab was restored with one history step and the leftover probe window
+  was closed.
+- Agent verification used a loopback origin opened in this Mac's Safari, with no provider request:
+  150 parallel transfers across three tabs finished with no error and no content mismatch, three
+  tabs were about 2.5 times faster than one at 0.8 s simulated latency, and the production
+  project-index path cached 24 images in its own window and closed it. The window-binding fix was
+  checked by compiling the script and reading the reference form, not by a run with Safari
+  frontmost.
+- One signed-in ChatGPT Media run, started by the operator on 30 Sep after the change, finished
+  successfully. It reported 1,547 cached images as one batch and attempted the remaining 151
+  across three tabs in about 200 s, about 1.3 s each against about 2.4 s on one tab earlier that
+  day; 14 files were new and none failed. Discovery before the first download (session list,
+  image index, and prompt backfill) still took about 7.8 minutes of that 11.7-minute run and is
+  unchanged.
 
 ## Safari Claude Agent execution on 30 Sep 2026
 

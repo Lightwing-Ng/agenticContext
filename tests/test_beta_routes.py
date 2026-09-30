@@ -1,6 +1,6 @@
 """Behavioral checks for the optional, browser-local Beta boundary.
 
-Code version: v0.5.0-codex.1
+Code version: v0.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -63,10 +63,10 @@ def test_beta_index_and_each_experiment_render_only_the_selected_metadata(
             assert experiment.title in response.get_data(as_text=True)
             assert rendered[-1]["beta_experiment"] == experiment
             assert tuple(rendered[-1]["beta_experiments"]) == BETA_EXPERIMENTS
-            assert rendered[-1]["beta_version"] == "v0.4.0"
+            assert rendered[-1]["beta_version"] == "v0.5.0"
 
 
-def test_beta_catalog_contains_only_the_six_browser_local_experiments() -> None:
+def test_beta_catalog_contains_only_the_eight_browser_local_experiments() -> None:
     assert [experiment.id for experiment in BETA_EXPERIMENTS] == [
         "idea-collision",
         "context-capsule",
@@ -74,6 +74,8 @@ def test_beta_catalog_contains_only_the_six_browser_local_experiments() -> None:
         "memory-diff",
         "decision-wind-tunnel",
         "mission-forge",
+        "echo-atlas",
+        "curiosity-trail",
     ]
 
 
@@ -91,7 +93,10 @@ def test_removed_zhihu_experiment_and_api_are_not_registered(
     assert "beta_zhihu_api" not in application.blueprints
 
 
-@pytest.mark.parametrize("route", ["/beta", "/beta/idea-collision"])
+@pytest.mark.parametrize(
+    "route",
+    ["/beta", "/beta/idea-collision", "/beta/echo-atlas", "/beta/curiosity-trail"],
+)
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
 def test_beta_has_no_mutating_http_routes(
     beta_app_factory: Callable[..., Flask],
