@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.11-codex.0
+Code version: v1.8.12-claude.0
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ NEW_BLUEPRINT_ENDPOINTS = frozenset(
     {
         "cache.api_cache_activity",
         "cache.refresh_browser_zhihu_answerer",
+        "local_resources.remove_browser_prompt",
+        "local_resources.restore_browser_prompt",
         "tunnel.api_project",
         "tunnel.api_gemini_config",
         "tunnel.api_gemini_copy_value",

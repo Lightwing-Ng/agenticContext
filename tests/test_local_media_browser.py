@@ -1,6 +1,6 @@
 """Read-only local media browser tests.
 
-Code version: v1.13.0-codex.0
+Code version: v1.14.0-claude.0
 """
 
 from __future__ import annotations
@@ -919,6 +919,29 @@ def test_chatgpt_session_index_paginates_sessions_and_clamps_the_page() -> None:
     assert (empty.sessions, empty.items, empty.total_pages, empty.current_page) == ((), (), 1, 1)
 
 
+def test_chatgpt_session_index_opens_on_the_page_of_the_session_being_left() -> None:
+    items = tuple(
+        _chatgpt_item(f"s{index}.png", f"session-{index}", f"2026-08-0{index}T00:00:00Z")
+        for index in range(1, 6)
+    )
+    origin_key = "chatgpt:session:demo-project:session-2"
+
+    newest = paginate_chatgpt_session_index(items, page=1, page_size=2, target_session_key=origin_key)
+    oldest = paginate_chatgpt_session_index(
+        items, page=3, sort="oldest", page_size=2, target_session_key="session-2",
+    )
+    unknown = paginate_chatgpt_session_index(items, page=2, page_size=2, target_session_key="session-9")
+    plain = paginate_chatgpt_session_index(items, page=2, page_size=2)
+
+    # The origin's own index page replaces the remembered one, whatever the order.
+    assert (newest.current_page, newest.origin_session_key) == (2, origin_key)
+    assert [summary.cover.filename for summary in newest.sessions] == ["s3.png", "s2.png"]
+    assert (oldest.current_page, oldest.origin_session_key) == (1, origin_key)
+    # Without a known origin the requested page stands and no session is marked.
+    assert (unknown.current_page, unknown.origin_session_key) == (2, "")
+    assert (plain.current_page, plain.origin_session_key) == (2, "")
+
+
 def test_chatgpt_session_index_title_prefers_the_newest_explicit_branch_title() -> None:
     items = (
         _chatgpt_item("latest.png", "alpha", "2026-08-09T12:00:00Z", creator="Studio208cm"),
@@ -942,12 +965,17 @@ def test_catalog_query_serves_the_session_index_only_for_the_chatgpt_filter(
     monkeypatch.setattr(catalog, "snapshot", lambda force_refresh=False: items)
 
     index_page = catalog.query(source="chatgpt", chatgpt_session_index=True)
+    returned_page = catalog.query(
+        source="chatgpt", chatgpt_session_index=True, chatgpt_session_key="session-one",
+    )
     filtered_page = catalog.query(source="chatgpt", chatgpt_session_index=True, query="one")
     detail_page = catalog.query(source="chatgpt", chatgpt_session_index=False)
     all_sources_page = catalog.query(source="all", chatgpt_session_index=True)
 
     assert index_page.pagination_unit == "session_index"
     assert [summary.cover.filename for summary in index_page.sessions] == ["two-newer.png", "one.png"]
+    assert index_page.origin_session_key == ""
+    assert returned_page.origin_session_key == "chatgpt:session:demo-project:session-one"
     # Search narrows the sessions and the cover candidates to the matching works.
     assert [summary.cover.filename for summary in filtered_page.sessions] == ["one.png"]
     assert detail_page.pagination_unit == "session"

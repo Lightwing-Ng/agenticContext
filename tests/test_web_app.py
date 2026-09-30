@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.151.0-claude.0
+# Code version: v1.152.0-claude.0
 
 from __future__ import annotations
 
@@ -907,7 +907,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.25.0-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
-                    "style-v2.158.3-codex.0"
+                    "style-v2.159.0-claude.0"
                     if page_source == "local-resources"
                     else "style-v2.157.0-codex.0"
                 )
@@ -5684,7 +5684,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="browser_filter_form"', body)
         self.assertIn('form="browser_filter_form"', body)
         self.assertGreater(body.index("data-browser-search"), body.index("</aside>"))
-        self.assertIn("browser-search.css?v=browser-search-v1.4.4-codex.0", body)
+        self.assertIn("browser-search.css?v=browser-search-v1.4.5-claude.0", body)
         self.assertIn('type="module"', body)
         self.assertIn("browser-search.js?v=browser-search-v2.2.1-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
@@ -5938,10 +5938,10 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.158.3-codex.0", body)
+            self.assertIn("style-v2.159.0-claude.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.37.1-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.38.0-claude.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -6497,14 +6497,22 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("Image order in session", index_body)
         self.assertIn('data-browser-view="list"', index_body)
         self.assertIn('data-browser-view="grid"', index_body)
+        # An index opened directly has no return origin to mark.
+        self.assertNotIn("is-return-origin", index_body)
+        self.assertNotIn("data-session-return-origin", index_body)
 
         oldest_body = oldest_response.get_data(as_text=True)
         self.assertLess(oldest_body.index('title="Older session"'), oldest_body.index('title="Newest session"'))
 
-        # Each other ChatGPT Media state offers a native link into the index.
-        for body, label in (
-            (detail_response.get_data(as_text=True), "Back to all sessions"),
-            (flat_response.get_data(as_text=True), "All sessions"),
+        # Each other ChatGPT Media state offers a native link into the index. A session
+        # detail names the session it leaves so the index can mark it; the flat gallery has none.
+        for body, label, origin in (
+            (
+                detail_response.get_data(as_text=True),
+                "Back to all sessions",
+                "&amp;session=chatgpt:session:demo-project:new-session",
+            ),
+            (flat_response.get_data(as_text=True), "All sessions", ""),
         ):
             self.assertNotIn("browser-session-gallery", body)
             self.assertNotIn('name="session_index"', body)
@@ -6516,7 +6524,8 @@ class WebAppTests(unittest.TestCase):
             link = match.group(0)
             self.assertIn('class="secondary-button browser-session-back-link"', link)
             self.assertIn(
-                'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest&amp;session_view=1&amp;session_index=1"',
+                'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'
+                f'&amp;session_view=1&amp;session_index=1{origin}"',
                 link,
             )
             self.assertIn(f">{label}</a>", link)
@@ -6550,6 +6559,15 @@ class WebAppTests(unittest.TestCase):
                     "/browser?view=media&source=chatgpt&sort=newest&session_view=1"
                     "&session=chatgpt:session:demo-project:session-01&session_page=2&page=25"
                 ).get_data(as_text=True)
+                # Returning names the session only; its own index page replaces the remembered one.
+                returned_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1&session_index=1"
+                    "&session=chatgpt:session:demo-project:session-01"
+                ).get_data(as_text=True)
+                unknown_origin_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1&session_index=1"
+                    "&page=2&session=chatgpt:session:demo-project:missing"
+                ).get_data(as_text=True)
 
         self.assertEqual(first_body.count("data-chatgpt-session-card"), 24)
         self.assertEqual(second_body.count("data-chatgpt-session-card"), 1)
@@ -6571,9 +6589,23 @@ class WebAppTests(unittest.TestCase):
         self.assertIsNotNone(link)
         self.assertIn(
             'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'
-            '&amp;session_view=1&amp;session_index=1&amp;page=2"',
+            '&amp;session_view=1&amp;session_index=1&amp;page=2'
+            '&amp;session=chatgpt:session:demo-project:session-01"',
             link.group(0),
         )
+        # The index opens on the origin's page and marks exactly that card.
+        self.assertEqual(returned_body.count("data-chatgpt-session-card"), 1)
+        self.assertIn(
+            'class="browser-session-card workspace-article-card is-return-origin" data-chatgpt-session-card'
+            ' data-session-key="chatgpt:session:demo-project:session-01" data-session-return-origin>',
+            returned_body,
+        )
+        # A sidebar filter change starts from the first page again instead of re-targeting the origin.
+        self.assertIn('name="session_index" value="1"', returned_body)
+        self.assertNotIn('name="session" value=', returned_body)
+        self.assertEqual(unknown_origin_body.count("data-chatgpt-session-card"), 1)
+        self.assertNotIn("data-session-return-origin", unknown_origin_body)
+        self.assertNotIn("data-session-return-origin", second_body)
 
     def test_media_scripts_switch_between_sessions_and_persist_the_index(self) -> None:
         media_script = LOCAL_MEDIA_BROWSER_SCRIPT_PATH.read_text(encoding="utf-8")

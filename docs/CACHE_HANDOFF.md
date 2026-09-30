@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.17.1-claude.0`
+Documentation version: `v1.17.2-claude.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -212,7 +212,7 @@ The current persistent cache layout is:
 | `local_store/llm/grok/history.parquet` | Grok Text runtime | Typed Grok messages |
 | `local_store/llm/claude/history.parquet` | Claude Text runtime | Typed Claude messages |
 | `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; rich-text source and source links retained |
-| `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers |
+| `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers, or a `media-prompt:` content key for a media prompt whose conversation has no cached text |
 | `local_store/.cache_task.lock` | Cache runtimes | Gate a starting task passes and a backup or history repair holds |
 | `local_store/.cache_task.<resource>.lock` | Cache runtimes | One advisory lock per running task, exclusive browser, or shared store |
 | `logs/cachelikes.log.jsonl` | All runtimes | Structured diagnostics |

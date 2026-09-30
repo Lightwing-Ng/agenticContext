@@ -1,6 +1,6 @@
 """Disposable-browser coverage for the ChatGPT Media Sessions index.
 
-Code version: v1.1.2-codex.0
+Code version: v1.2.0-claude.0
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ from tests import test_sidebar_e2e as fixtures
 disposable_browser = fixtures.disposable_browser
 
 SESSION_COUNT = 26
+# The focused origin card keeps its 2px hover lift, and scroll offsets round to whole pixels.
+CENTER_TOLERANCE = 4
 INDEX_PATH = "/browser?view=media&source=chatgpt&kind=all&q=&sort=newest&session_view=1&session_index=1"
 # Landscape, 4:5 portrait, and tall portrait covers; any crop would change the rendered ratio.
 LATEST_HEIGHTS = (200, 400, 700)
@@ -222,6 +224,11 @@ def test_session_covers_open_their_session_and_back_link_returns_to_the_same_pag
         expect(cards).to_have_count(2)
         expect(sessions_link).to_have_count(0)
         expect(cards.first.locator(".browser-session-card-title")).to_have_text("Session 02")
+        # The index marks the session just left, and keyboard focus returns to its cover.
+        origin = page.locator("[data-session-return-origin]")
+        expect(origin).to_have_count(1)
+        expect(origin.locator(".browser-session-card-title")).to_have_text("Session 02")
+        expect(origin.locator("a")).to_be_focused()
 
         # Session View leaves the index for the one-session-per-page view.
         session_view_button.click()
@@ -238,6 +245,132 @@ def test_session_covers_open_their_session_and_back_link_returns_to_the_same_pag
         page.wait_for_url(re.compile(r"session_index=1"))
         expect(cards).to_have_count(24)
         expect(sessions_link).to_have_count(0)
+    finally:
+        context.close()
+
+
+def _return_origin_state(origin: Locator) -> dict[str, float | bool | str]:
+    """Measure the marked cover against its scrollport and the standard blue glow."""
+    return origin.evaluate(
+        """card => {
+            const scrollport = card.closest('[data-layout-role="content-scrollport"]');
+            const box = card.getBoundingClientRect();
+            const port = scrollport.getBoundingClientRect();
+            const reference = document.createElement('span');
+            reference.style.border = '1px solid var(--accent-border-medium)';
+            reference.style.boxShadow = '0 0 0 4px var(--accent-focus-ring), 0 0 18px var(--accent-focus-glow)';
+            card.append(reference);
+            const glow = getComputedStyle(reference).boxShadow;
+            const border = getComputedStyle(reference).borderTopColor;
+            reference.remove();
+            const style = getComputedStyle(card);
+            return {
+                centerOffset: (box.top + box.bottom) / 2 - (port.top + port.bottom) / 2,
+                visible: box.bottom > port.top && box.top < port.bottom,
+                scrollTop: scrollport.scrollTop,
+                atEnd: scrollport.scrollTop + scrollport.clientHeight >= scrollport.scrollHeight - 2,
+                glows: glow !== 'none' && style.boxShadow.endsWith(glow),
+                accentBorder: style.borderTopColor === border,
+                documentOverflow: document.documentElement.scrollWidth - innerWidth,
+            };
+        }"""
+    )
+
+
+def test_returning_to_the_index_scrolls_to_and_glows_the_session_just_left(
+    disposable_browser, sessions_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 812, "height": 700})
+    try:
+        page = context.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(f"{sessions_server_url}{INDEX_PATH}")
+        cards = page.locator("[data-chatgpt-session-card]")
+        expect(cards).to_have_count(24)
+        expect(page.locator("[data-session-return-origin]")).to_have_count(0)
+
+        # Session 05 sits near the end of the first index page, far below the fold.
+        expect(cards.nth(21).locator(".browser-session-card-title")).to_have_text("Session 05")
+        cards.nth(21).locator("a").click()
+        page.wait_for_url(re.compile(r"session=chatgpt:session:demo-project:session-05"))
+        # Moving on inside Session View forgets the index page, yet the link still names the session.
+        page.locator('[data-pagination-target="23"]').first.click()
+        expect(page.locator(".browser-session-name-metric strong")).to_have_text("Session 04")
+        back_link = page.locator("[data-chatgpt-session-index]")
+        expect(back_link).to_have_attribute(
+            "href", re.compile(r"session_index=1&session=chatgpt:session:demo-project:session-04$"),
+        )
+        back_link.click()
+        page.wait_for_url(re.compile(r"session_index=1"))
+
+        origin = page.locator("[data-session-return-origin]")
+        expect(origin).to_have_count(1)
+        expect(origin.locator(".browser-session-card-title")).to_have_text("Session 04")
+        expect(cards).to_have_count(24)
+        expect(origin.locator("a")).to_be_focused()
+        # Focus lifts the card through its usual shadow transition; measure the settled state.
+        page.wait_for_function(
+            "() => !document.querySelector('[data-session-return-origin]').getAnimations().length"
+        )
+        state = _return_origin_state(origin)
+        assert state["visible"], state
+        assert state["scrollTop"] > 0, state
+        assert abs(state["centerOffset"]) <= CENTER_TOLERANCE or state["atEnd"], state
+        assert state["glows"] and state["accentBorder"], state
+        assert state["documentOverflow"] <= 1, state
+        # Only the origin carries the glow.
+        assert not _return_origin_state(cards.first)["glows"]
+
+        # A sidebar filter change starts over without the origin.
+        page.locator('select[name="sort"]').evaluate(
+            """select => {
+                select.value = "oldest";
+                select.dispatchEvent(new Event("change", {bubbles: true}));
+            }"""
+        )
+        page.wait_for_url(re.compile(r"sort=oldest"))
+        assert "session=" not in page.url
+        expect(cards.first.locator(".browser-session-card-title")).to_have_text("Session 01")
+        expect(page.locator("[data-session-return-origin]")).to_have_count(0)
+        assert not errors
+    finally:
+        context.close()
+
+
+def test_return_origin_stays_centered_while_a_cover_above_it_loads(
+    disposable_browser, sessions_server_url,
+):
+    context = disposable_browser.new_context(viewport={"width": 812, "height": 520})
+    try:
+        page = context.new_page()
+        page.goto(f"{sessions_server_url}{INDEX_PATH}")
+        page.get_by_role("button", name="List view").click()
+        cards = page.locator("[data-chatgpt-session-card]")
+        # Session 25 has no recorded size, so its list row grows once its cover loads.
+        expect(cards.nth(1).locator(".browser-session-card-title")).to_have_text(f"Session {UNSIZED_SESSION}")
+        expect(cards.nth(2).locator(".browser-session-card-title")).to_have_text("Session 24")
+        cards.nth(2).locator("a").click()
+        page.wait_for_url(re.compile(r"session=chatgpt:session:demo-project:session-24"))
+        page.locator("[data-chatgpt-session-index]").click()
+        page.wait_for_url(re.compile(r"session_index=1"))
+
+        # The row right above the origin is in view, so its cover loads after the first scroll.
+        origin = page.locator("[data-session-return-origin]")
+        expect(origin.locator(".browser-session-card-title")).to_have_text("Session 24")
+        expect(page.locator(".browser-session-gallery")).to_have_attribute("data-view", "list")
+        expect(cards.nth(1).locator("img")).to_have_js_property("naturalWidth", _latest_width(UNSIZED_SESSION))
+        page.wait_for_function(
+            """tolerance => {
+                const card = document.querySelector('[data-session-return-origin]');
+                const scrollport = card.closest('[data-layout-role="content-scrollport"]');
+                const box = card.getBoundingClientRect();
+                const port = scrollport.getBoundingClientRect();
+                return scrollport.scrollTop > 0
+                    && Math.abs((box.top + box.bottom) / 2 - (port.top + port.bottom) / 2) <= tolerance;
+            }""",
+            arg=CENTER_TOLERANCE,
+        )
     finally:
         context.close()
 

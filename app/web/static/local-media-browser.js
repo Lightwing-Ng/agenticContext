@@ -1,4 +1,4 @@
-/* Code version: v1.37.1-codex.0 */
+/* Code version: v1.38.0-claude.0 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -210,6 +210,7 @@
     const promptToggleButtons = Array.from(document.querySelectorAll("[data-media-prompt-toggle]"));
     const promptAddButtons = Array.from(document.querySelectorAll("[data-prompt-add]"));
     const promptCopyButtons = Array.from(document.querySelectorAll("[data-prompt-copy]"));
+    const promptUnsaveButtons = Array.from(document.querySelectorAll("[data-prompt-unsave]"));
     const promptRemarkRemoveButtons = Array.from(document.querySelectorAll("[data-prompt-remark-remove]"));
     const mediaViewStorageKey = "cachelikes.browser.mediaView";
     const paginationMotion = window.CACHELIKES_PAGINATION_MOTION;
@@ -428,6 +429,26 @@
         button.addEventListener("click", () => applyMediaView(button.dataset.browserView || "grid"));
     });
 
+    // Returning from a session: bring its cover back into view under the standard blue glow.
+    const returnOriginCard = document.querySelector("[data-session-return-origin]");
+    if (returnOriginCard) {
+        const revealReturnOrigin = () => {
+            returnOriginCard.scrollIntoView({ block: "center", inline: "nearest" });
+        };
+        returnOriginCard.querySelector(".browser-session-open")?.focus({ preventScroll: true });
+        revealReturnOrigin();
+        // A cover without a recorded size grows as it loads; follow the layout until the reader takes over.
+        if ("ResizeObserver" in window && mediaGallery) {
+            const layoutObserver = new ResizeObserver(revealReturnOrigin);
+            const stopFollowingLayout = () => layoutObserver.disconnect();
+            layoutObserver.observe(mediaGallery);
+            ["wheel", "touchstart", "pointerdown", "keydown"].forEach((type) => {
+                window.addEventListener(type, stopFollowingLayout, { capture: true, once: true, passive: true });
+            });
+            window.setTimeout(stopFollowingLayout, 4_000);
+        }
+    }
+
     const previewObserver = "IntersectionObserver" in window
         ? new IntersectionObserver((entries, observer) => {
             entries.forEach((entry) => {
@@ -585,7 +606,8 @@
     function renderPromptRemarks(root, remarks) {
         const tags = root?.querySelector("[data-prompt-tags]");
         if (!tags) return;
-        tags.replaceChildren();
+        // The duplicate mark shares this row and is not a remark.
+        tags.querySelectorAll("[data-prompt-tag]").forEach((tag) => tag.remove());
         (Array.isArray(remarks) ? remarks : []).forEach((value) => {
             const remark = String(value || "").trim();
             if (!remark) return;
@@ -689,10 +711,21 @@
         });
     });
 
+    function markPromptAdded(button, { announce = false } = {}) {
+        button.disabled = true;
+        button.classList.add("is-added");
+        button.setAttribute("aria-label", "Added as prompt");
+        button.title = "Added as prompt";
+        const feedback = button.querySelector("[data-prompt-add-feedback]");
+        if (feedback && announce) feedback.textContent = "Added as prompt.";
+    }
+
     promptAddButtons.forEach((button) => {
         button.addEventListener("click", async () => {
             if (button.disabled) return;
             button.disabled = true;
+            // A media card names its cached item; a message names its own pointer.
+            const mediaId = button.dataset.promptMediaId || "";
             try {
                 const response = await fetch("/api/browser/prompts", {
                     method: "POST",
@@ -701,7 +734,7 @@
                         Accept: "application/json",
                         "Content-Type": "application/json",
                     },
-                    body: JSON.stringify({
+                    body: JSON.stringify(mediaId ? { media_id: mediaId } : {
                         source: button.dataset.promptSource || "",
                         conversation_id: button.dataset.promptConversationId || "",
                         message_key: button.dataset.promptMessageKey || "",
@@ -709,16 +742,111 @@
                 });
                 const payload = await response.json();
                 if (!response.ok) throw new Error(payload.error || "Unable to save this prompt.");
-                button.classList.add("is-added");
-                button.setAttribute("aria-label", "Added as prompt");
-                button.title = "Added as prompt";
-                const feedback = button.querySelector("[data-prompt-add-feedback]");
-                if (feedback) feedback.textContent = "Added as prompt.";
+                // Every card showing the same prompt of this conversation is saved with it.
+                const contentKey = button.dataset.promptContentKey || "";
+                promptAddButtons
+                    .filter((candidate) => candidate === button
+                        || (contentKey && candidate.dataset.promptContentKey === contentKey))
+                    .forEach((candidate) => markPromptAdded(candidate, { announce: candidate === button }));
             } catch (error) {
                 button.disabled = false;
                 window.alert(error instanceof Error ? error.message : "Unable to save this prompt.");
             }
         });
+    });
+
+    function setPromptDuplicateCount(row, count) {
+        const mark = row.querySelector("[data-prompt-duplicate]");
+        if (!mark) return;
+        const label = `Duplicate prompt: saved ${formatCount(count)} times`;
+        mark.hidden = count < 2;
+        mark.setAttribute("aria-label", label);
+        mark.title = label;
+        const countNode = mark.querySelector("[data-prompt-duplicate-count]");
+        if (countNode) countNode.textContent = `×${formatCount(count)}`;
+    }
+
+    function updatePromptDuplicates(textKey, count) {
+        if (!textKey) return;
+        document.querySelectorAll("tr[data-prompt-text-key]").forEach((row) => {
+            if (row.dataset.promptTextKey !== textKey) return;
+            setPromptDuplicateCount(row, row.classList.contains("is-unsaved") ? 0 : count);
+        });
+    }
+
+    function adjustSavedPromptTotal(delta) {
+        const total = document.querySelector("[data-prompt-total]");
+        if (!total) return;
+        const current = Number.parseInt(
+            String(total.dataset.numericDisplayValue || total.textContent || "").replace(/,/g, ""),
+            10,
+        );
+        if (!Number.isFinite(current)) return;
+        const next = formatCount(Math.max(0, current + delta));
+        if (window.SHARED_NUMERIC_DISPLAY?.renderNumericDisplayElement) {
+            window.SHARED_NUMERIC_DISPLAY.renderNumericDisplayElement(total, next);
+        } else {
+            total.dataset.numericDisplayValue = next;
+            total.textContent = next;
+        }
+    }
+
+    function setPromptRowSaved(row, isSaved) {
+        row.classList.toggle("is-unsaved", !isSaved);
+        const button = row.querySelector("[data-prompt-unsave]");
+        const label = isSaved ? "Remove from saved prompts" : "Add as prompt";
+        if (button) {
+            button.setAttribute("aria-label", label);
+            button.title = label;
+        }
+        row.querySelectorAll("[data-prompt-remark-input], [data-prompt-remark-remove]").forEach((control) => {
+            control.disabled = !isSaved;
+        });
+    }
+
+    // The row stays in place after a removal so the same control can save the prompt again.
+    async function togglePromptSaved(button) {
+        const row = button.closest("tr[data-prompt-id]");
+        const promptId = row?.dataset.promptId || "";
+        if (!row || !promptId) return;
+        const isRestoring = row.classList.contains("is-unsaved");
+        const failureMessage = isRestoring
+            ? "Unable to save this prompt again."
+            : "Unable to remove this saved prompt.";
+        button.disabled = true;
+        try {
+            const response = await fetch(
+                `/api/browser/prompts/${encodeURIComponent(promptId)}${isRestoring ? "/restore" : ""}`,
+                {
+                    method: isRestoring ? "POST" : "DELETE",
+                    cache: "no-store",
+                    headers: { Accept: "application/json" },
+                },
+            );
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || failureMessage);
+            setPromptRowSaved(row, isRestoring);
+            if (isRestoring) {
+                applyPromptRemarkPayload(promptRemarksRoot(button), payload);
+            } else {
+                updatePromptRemarkOptions(payload.remark_options || []);
+            }
+            updatePromptDuplicates(
+                row.dataset.promptTextKey || "",
+                isRestoring ? payload.item?.duplicate_count || 1 : payload.duplicate_count || 0,
+            );
+            adjustSavedPromptTotal(isRestoring ? 1 : -1);
+            const feedback = button.querySelector("[data-prompt-unsave-feedback]");
+            if (feedback) feedback.textContent = isRestoring ? "Added as prompt." : "Removed from saved prompts.";
+        } catch (error) {
+            window.alert(error instanceof Error ? error.message : failureMessage);
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    promptUnsaveButtons.forEach((button) => {
+        button.addEventListener("click", () => togglePromptSaved(button));
     });
 
     const copyFeedbackTimers = new WeakMap();

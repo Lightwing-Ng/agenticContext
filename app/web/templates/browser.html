@@ -1,4 +1,4 @@
-<!-- Code version: v1.84.0-claude.0 -->
+<!-- Code version: v1.85.0-claude.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,16 +9,16 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.158.3-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.159.0-claude.0') }}">
     {% include "_cache_activity_assets.html" %}
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.4-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.5-claude.0') }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.37.1-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.38.0-claude.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.1.0-codex.0') }}"></script>
@@ -37,8 +37,8 @@
 {% set is_no_project = filters.project == no_project_filter %}
 {% set project_search_copy = "Press Enter to search chats without a project." if is_no_project else ("Press Enter to search this project." if filters.project else "Press Enter to search all cached text.") %}
 {% set is_session_index = filters.view == "media" and filters.session_index %}
-{# Return to the ChatGPT Sessions index from a media view. #}
-{% set session_index_url = url_for('local_resources.browser', view='media', source='chatgpt', kind=filters.kind, q=filters.q, sort=filters.sort, session_view='1', session_index='1', page=(none if filters.session_page <= 1 else filters.session_page)) if filters.view == "media" and filters.source == "chatgpt" else "" %}
+{# Return to the ChatGPT Sessions index from a media view; a session detail names itself so the index can mark it. #}
+{% set session_index_url = url_for('local_resources.browser', view='media', source='chatgpt', kind=filters.kind, q=filters.q, sort=filters.sort, session_view='1', session_index='1', page=(none if filters.session_page <= 1 else filters.session_page), session=(media_page.current_session_key or none)) if filters.view == "media" and filters.source == "chatgpt" else "" %}
 {% macro render_browser_message_time(value, hide_unknown=false) %}
     {% set timestamp_label = format_chat_message_timestamp_label(value) %}
     {% if not hide_unknown or timestamp_label != "Unknown time" %}
@@ -148,7 +148,8 @@
                     </div>
                     <input type="hidden" name="session_view" value="{{ '1' if filters.session_view else '0' }}">
                     {% if is_session_index %}<input type="hidden" name="session_index" value="1">{% endif %}
-                    {% if filters.session %}<input type="hidden" name="session" value="{{ filters.session }}">{% endif %}
+                    {# The index keeps its return origin for one arrival only; a filter change drops it. #}
+                    {% if filters.session and not is_session_index %}<input type="hidden" name="session" value="{{ filters.session }}">{% endif %}
                     <label class="field browser-filter-field">
                         <span>{{ "Source" if filters.view == "media" else "Text source" }}</span>
                         {% set source_options = local_resource_media_sources if filters.view == "media" else local_resource_text_sources %}
@@ -478,7 +479,7 @@
                     <div class="metric-grid browser-metric-grid browser-text-metric-grid" aria-label="Saved prompt totals">
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Saved prompts</span>
-                            <strong data-numeric-display-value="{{ '{:,}'.format(prompt_page.total_count) }}">{{ "{:,}".format(prompt_page.total_count) }}</strong>
+                            <strong data-prompt-total data-numeric-display-value="{{ '{:,}'.format(prompt_page.total_count) }}">{{ "{:,}".format(prompt_page.total_count) }}</strong>
                         </div>
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Sources</span>
@@ -649,7 +650,8 @@
                     >
                         {% for session in media_page.sessions %}
                         {% set cover = session.cover %}
-                        <article class="browser-session-card workspace-article-card{% if cover.is_deleted %} is-deleted{% endif %}" data-chatgpt-session-card data-session-key="{{ session.session_key }}">
+                        {% set is_return_origin = media_page.origin_session_key and session.session_key == media_page.origin_session_key %}
+                        <article class="browser-session-card workspace-article-card{% if cover.is_deleted %} is-deleted{% endif %}{% if is_return_origin %} is-return-origin{% endif %}" data-chatgpt-session-card data-session-key="{{ session.session_key }}"{% if is_return_origin %} data-session-return-origin{% endif %}>
                             <a
                                 class="browser-session-open"
                                 href="{{ url_for('local_resources.browser', view='media', source='chatgpt', kind=filters.kind, q=filters.q, sort=filters.sort, session_view='1', session=session.session_key, session_page=media_page.current_page, page=session.detail_page) }}"
@@ -748,19 +750,33 @@
                                 <div class="browser-media-prompt-heading">
                                     <span class="browser-media-prompt-label">Prompt</span>
                                     {% if item.prompt_markdown %}
-                                    <button
-                                        type="button"
-                                        class="browser-media-prompt-expand"
-                                        data-media-prompt-toggle
-                                        data-prompt-source="browser_prompt_{{ item.stable_id }}"
-                                        data-prompt-title="{{ item.filename }}"
-                                        aria-controls="browser_prompt_{{ item.stable_id }}"
-                                        aria-expanded="false"
-                                        aria-label="Expand prompt for {{ item.filename }}"
-                                        title="Expand prompt"
-                                    >
-                                        <span class="icon browser-media-prompt-expand-icon" aria-hidden="true"></span>
-                                    </button>
+                                    {% set item_prompt_key = media_prompt_key(item) %}
+                                    {% set item_prompt_saved = item_prompt_key in saved_prompt_content_keys %}
+                                    <div class="browser-media-prompt-actions">
+                                        <button
+                                            type="button"
+                                            class="circular-icon-button browser-media-round-action browser-prompt-add-button{% if item_prompt_saved %} is-added{% endif %}"
+                                            data-prompt-add
+                                            data-prompt-media-id="{{ item.stable_id }}"
+                                            data-prompt-content-key="{{ item_prompt_key }}"
+                                            aria-label="{{ 'Added as prompt' if item_prompt_saved else 'Add as prompt' }}"
+                                            title="{{ 'Added as prompt' if item_prompt_saved else 'Add as prompt' }}"
+                                            {% if item_prompt_saved %}disabled{% endif %}
+                                        ><span class="icon browser-prompt-add-icon" aria-hidden="true"></span><span class="browser-prompt-add-feedback" data-prompt-add-feedback aria-live="polite"></span></button>
+                                        <button
+                                            type="button"
+                                            class="browser-media-prompt-expand"
+                                            data-media-prompt-toggle
+                                            data-prompt-source="browser_prompt_{{ item.stable_id }}"
+                                            data-prompt-title="{{ item.filename }}"
+                                            aria-controls="browser_prompt_{{ item.stable_id }}"
+                                            aria-expanded="false"
+                                            aria-label="Expand prompt for {{ item.filename }}"
+                                            title="Expand prompt"
+                                        >
+                                            <span class="icon browser-media-prompt-expand-icon" aria-hidden="true"></span>
+                                        </button>
+                                    </div>
                                     {% else %}
                                     <span class="browser-media-prompt-state">Not indexed</span>
                                     {% endif %}
@@ -848,7 +864,7 @@
                             <table class="events-table scrollable-data-table browser-session-table browser-prompt-table" data-table-body aria-label="Saved prompt rows">
                                 <tbody>
                                     {% for prompt in prompt_page.items %}
-                                    <tr data-prompt-id="{{ prompt.stable_id }}">
+                                    <tr data-prompt-id="{{ prompt.stable_id }}" data-prompt-text-key="{{ prompt.text_key }}">
                                         <td class="browser-session-table-number">{{ ((prompt_page.current_page - 1) * prompt_page.page_size) + loop.index }}</td>
                                         <td class="browser-prompt-table-prompt-cell">
                                             <button
@@ -895,8 +911,23 @@
                                                         autocomplete="off"
                                                         enterkeyhint="done"
                                                     >
+                                                    <button
+                                                        type="button"
+                                                        class="circular-icon-button browser-media-round-action browser-prompt-unsave-button"
+                                                        data-prompt-unsave
+                                                        aria-label="Remove from saved prompts"
+                                                        title="Remove from saved prompts"
+                                                    ><span class="icon browser-prompt-unsave-icon" aria-hidden="true"></span><span class="browser-prompt-add-feedback" data-prompt-unsave-feedback aria-live="polite"></span></button>
                                                 </div>
                                                 <div class="browser-prompt-tags" data-prompt-tags>
+                                                    <span
+                                                        class="browser-prompt-duplicate-mark"
+                                                        data-prompt-duplicate
+                                                        role="img"
+                                                        aria-label="Duplicate prompt: saved {{ prompt.duplicate_count }} times"
+                                                        title="Duplicate prompt: saved {{ prompt.duplicate_count }} times"
+                                                        {% if prompt.duplicate_count < 2 %}hidden{% endif %}
+                                                    ><span class="icon browser-prompt-duplicate-icon" aria-hidden="true"></span><span data-prompt-duplicate-count aria-hidden="true">×{{ prompt.duplicate_count }}</span></span>
                                                     {% for remark in prompt.remarks %}
                                                     <span class="browser-prompt-tag" data-prompt-tag data-prompt-remark="{{ remark }}">
                                                         <span class="browser-prompt-tag-label">{{ remark }}</span>

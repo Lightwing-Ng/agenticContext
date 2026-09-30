@@ -5,7 +5,7 @@ for a browser, an Agent, or a cache worker. Serialization of one stored item int
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.4.0-codex.0
+# Code version: v1.5.0-claude.0
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from app.core.storage import (
     local_file_manager_label,
     media_route_relative_path,
     normalize_browser_filters,
+    prompt_content_key,
     prompt_pointer_key,
     query_chat_history,
     resolve_browser_media_path,
@@ -68,6 +69,16 @@ def browser_media_url(relative_path: str) -> str:
         f"{LOCAL_RESOURCES_BLUEPRINT_NAME}.browser_media",
         relative_path=media_route_relative_path(relative_path),
     )
+
+
+def media_prompt_conversation_id(item) -> str:
+    """Return the conversation that owns the prompt recorded with one media item."""
+    return item.chatgpt_session_key or f"media:{item.stable_id}"
+
+
+def media_prompt_key(item) -> str:
+    """Return the saved-prompt key of the prompt recorded with one media item."""
+    return prompt_content_key(item.source, media_prompt_conversation_id(item), item.prompt_markdown)
 
 
 def serialize_media_item(item) -> dict[str, Any]:
@@ -121,6 +132,8 @@ def serialize_prompt_item(item) -> dict[str, Any]:
         "captured_at": item.captured_at,
         "added_at": item.added_at,
         "remarks": list(item.remarks),
+        "duplicate_count": item.duplicate_count,
+        "text_key": item.text_key,
     }
 
 
@@ -149,6 +162,9 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         force_refresh = request.args.get("refresh") == "1"
         prompt_page = None
         saved_prompt_keys = context.prompt_store.saved_pointer_keys()
+        saved_prompt_content_keys = (
+            context.prompt_store.saved_content_keys() if filters["view"] == "media" else frozenset()
+        )
         if filters["view"] == "text":
             media_items = context.media_catalog.snapshot(force_refresh=force_refresh)
             text_page = query_chat_history(
@@ -240,6 +256,8 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             has_any_text=bool(text_page and (text_page.total_count or filters["q"] or filters["project"])),
             has_any_prompts=context.prompt_store.has_any(),
             saved_prompt_keys=saved_prompt_keys,
+            saved_prompt_content_keys=saved_prompt_content_keys,
+            media_prompt_key=media_prompt_key,
             prompt_remark_options=context.prompt_store.remark_options(),
             prompt_pointer_key=prompt_pointer_key,
             format_captured_at_label=format_captured_at_label,
@@ -312,17 +330,66 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
     @blueprint.post("/api/browser/prompts")
     def add_browser_prompt():
         payload = request.get_json(silent=True) or {}
+        media_id = str(payload.get("media_id") or "").strip()
         try:
-            item, created = context.prompt_store.add_pointer(
-                source=str(payload.get("source") or ""),
-                conversation_id=str(payload.get("conversation_id") or ""),
-                message_key=str(payload.get("message_key") or ""),
-            )
+            if media_id:
+                # A media card saves the prompt the local catalog recorded for that item.
+                media_item = next(
+                    (
+                        candidate
+                        for candidate in context.media_catalog.snapshot()
+                        if candidate.stable_id == media_id
+                    ),
+                    None,
+                )
+                if media_item is None:
+                    raise LookupError("Cached media was not found.")
+                item, created = context.prompt_store.add_media_prompt(
+                    source=media_item.source,
+                    conversation_id=media_prompt_conversation_id(media_item),
+                    prompt_text=media_item.prompt_markdown,
+                    conversation_title=media_item.creator,
+                    conversation_url=media_item.source_url,
+                    captured_at=media_item.captured_at,
+                )
+            else:
+                item, created = context.prompt_store.add_pointer(
+                    source=str(payload.get("source") or ""),
+                    conversation_id=str(payload.get("conversation_id") or ""),
+                    message_key=str(payload.get("message_key") or ""),
+                )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except LookupError as exc:
             return jsonify({"error": str(exc)}), 404
         return jsonify({"created": created, "item": serialize_prompt_item(item)})
+
+    @blueprint.delete("/api/browser/prompts/<stable_id>")
+    def remove_browser_prompt(stable_id: str):
+        try:
+            duplicate_count = context.prompt_store.remove(stable_id)
+        except LookupError as exc:
+            return jsonify({"error": str(exc)}), 404
+        return jsonify(
+            {
+                "removed": True,
+                "duplicate_count": duplicate_count,
+                "remark_options": context.prompt_store.remark_options(),
+            }
+        )
+
+    @blueprint.post("/api/browser/prompts/<stable_id>/restore")
+    def restore_browser_prompt(stable_id: str):
+        try:
+            item = context.prompt_store.restore(stable_id)
+        except LookupError as exc:
+            return jsonify({"error": str(exc)}), 404
+        return jsonify(
+            {
+                "item": serialize_prompt_item(item),
+                "remark_options": context.prompt_store.remark_options(),
+            }
+        )
 
     @blueprint.post("/api/browser/prompts/<stable_id>/remarks")
     def add_browser_prompt_remark(stable_id: str):

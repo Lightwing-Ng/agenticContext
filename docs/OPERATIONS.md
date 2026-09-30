@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.43.1-claude.0`
+Documentation version: `v1.43.2-claude.0`
 
 ## Launch
 
@@ -770,7 +770,7 @@ interrupt it, so the optimizer must checkpoint frequently enough for the workloa
 | `local_store/llm/grok/history.parquet` | Grok typed text history |
 | `local_store/llm/claude/history.parquet` | Claude typed text history |
 | `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links |
-| `local_store/prompt/prompts.parquet` | Saved prompt content snapshots and source pointers; prompts remain available if source history disappears |
+| `local_store/prompt/prompts.parquet` | Saved prompt content snapshots and source pointers; prompts remain available if source history disappears. A prompt saved from a media card whose conversation has no cached text carries a `media-prompt:` content key instead of a message pointer. Removing a saved prompt deletes its row and remarks; only the running process can restore it, until it exits |
 | `local_store/agent/agent_source_catalog.parquet` | Provider-neutral Agent session and Project discovery cache |
 | `local_store/.cache_task.lock` | Gate that a starting cache task passes and a shadow backup or history repair holds |
 | `local_store/.cache_task.<resource>.lock` | Advisory lock for one running cache task, exclusive browser, or shared store |

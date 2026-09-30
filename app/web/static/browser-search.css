@@ -1,4 +1,4 @@
-/* Code version: v1.4.4-codex.0 */
+/* Code version: v1.4.5-claude.0 */
 
 .browser-heading-copy {
     display: flex;
@@ -293,6 +293,12 @@
 }
 
 @media (min-width: 601px) and (max-width: 900px) {
+    /* Above the compact flow the search keeps the shared control width instead of the full row. */
+    .browser-local-resources-header-actions .browser-search-field {
+        flex: 0 1 var(--layout-control-width);
+        width: min(100%, var(--layout-control-width));
+    }
+
     .browser-session-detail-actions--session {
         align-items: center;
         flex-wrap: nowrap;

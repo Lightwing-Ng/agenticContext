@@ -1,4 +1,4 @@
-/* Code version: v2.158.3-codex.0 */
+/* Code version: v2.159.0-claude.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -8333,6 +8333,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-session-table-message-shell:focus-within .browser-prompt-add-button,
 .browser-chat-message:hover .browser-prompt-add-button,
 .browser-chat-message:focus-within .browser-prompt-add-button,
+.browser-media-prompt:hover .browser-prompt-add-button,
+.browser-media-prompt:focus-within .browser-prompt-add-button,
 .browser-prompt-add-button:focus-visible {
     opacity: 1;
     pointer-events: auto;
@@ -8988,6 +8990,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-prompt-remark-editor {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 4px;
     min-width: 0;
 }
@@ -9007,9 +9010,86 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     font-size: var(--font-size-3);
 }
 
+/* The input shares its line with the save toggle, which wraps below it in a narrow column. */
 .browser-prompt-remark-editor input {
-    flex: 1 1 100%;
-    width: 100%;
+    flex: 1 1 96px;
+    width: auto;
+}
+
+.browser-prompt-remark-editor .browser-prompt-unsave-button {
+    margin-inline-start: auto;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.browser-prompt-table tbody tr:hover .browser-prompt-unsave-button,
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-unsave-button,
+.browser-prompt-remark-editor .browser-prompt-unsave-button:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+@media (hover: none) {
+    .browser-prompt-remark-editor .browser-prompt-unsave-button {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+/* A narrow pointer-driven window keeps the hidden toggle beside the input, not on an empty line. */
+@media (hover: hover) and (max-width: 600px) {
+    .browser-prompt-remark-editor input {
+        flex-basis: 0;
+    }
+}
+
+.browser-prompt-unsave-icon {
+    mask: url("/static/images/bookmark.slash.fill.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/bookmark.slash.fill.svg") center/contain no-repeat;
+}
+
+/* A removed prompt stays in its row until the page reloads, and the toggle saves it again. */
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-unsave-icon {
+    mask-image: url("/static/images/text.bubble.fill.svg");
+    -webkit-mask-image: url("/static/images/text.bubble.fill.svg");
+}
+
+.browser-prompt-table tbody tr.is-unsaved .browser-session-table-number,
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-table-content,
+.browser-prompt-table tbody tr.is-unsaved .browser-session-table-id,
+.browser-prompt-table tbody tr.is-unsaved .browser-session-source-mark,
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-remark-editor input,
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-tags {
+    opacity: 0.45;
+}
+
+/* A prompt whose text is saved more than once carries a compact warning mark beside its remarks. */
+.browser-prompt-duplicate-mark {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning) 48%, transparent);
+    border-radius: var(--radius-pill);
+    background: var(--theme-warning-translucent);
+    color: var(--theme-warning-text);
+    font-size: var(--font-ui-sm);
+    font-weight: var(--font-weight-medium);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.browser-prompt-duplicate-mark[hidden] {
+    display: none;
+}
+
+.browser-prompt-duplicate-icon {
+    width: 14px;
+    height: 12px;
+    mask: url("/static/images/rectangle.on.rectangle.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/rectangle.on.rectangle.svg") center/contain no-repeat;
 }
 
 .browser-prompt-remark-editor input:focus-visible {
@@ -9942,6 +10022,23 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     line-height: 1;
 }
 
+.browser-media-prompt-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+}
+
+/* The save action is the standard Circular icon button; the Text-view adapter bottom-aligns it. */
+.browser-media-prompt-actions .browser-prompt-add-button {
+    align-self: center;
+}
+
+.browser-media-prompt-actions .browser-prompt-add-button.is-added:disabled {
+    cursor: default;
+    opacity: 1;
+}
+
 .browser-media-prompt-expand {
     display: inline-flex;
     flex: 0 0 30px;
@@ -10523,6 +10620,21 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-session-card:has(.browser-session-open:focus-visible) {
     box-shadow: var(--frosted-glass-shadow-hover), 0 0 0 3px var(--accent-focus-ring);
+}
+
+/* The session the reader just left keeps the standard blue glow until the next navigation. */
+.browser-session-card.is-return-origin {
+    --browser-session-origin-glow: 0 0 0 4px var(--accent-focus-ring), 0 0 18px var(--accent-focus-glow);
+    z-index: var(--layer-raised-control);
+    border-color: var(--accent-border-medium);
+    box-shadow: var(--frosted-glass-shadow), var(--browser-session-origin-glow);
+}
+
+.browser-session-card.is-return-origin:hover,
+.browser-session-card.is-return-origin:focus-within,
+.browser-session-card.is-return-origin:has(.browser-session-open:focus-visible) {
+    z-index: var(--layer-control-affordance);
+    box-shadow: var(--frosted-glass-shadow-hover), var(--browser-session-origin-glow);
 }
 
 .browser-session-card.is-deleted {

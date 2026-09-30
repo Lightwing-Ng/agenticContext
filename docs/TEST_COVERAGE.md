@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.11.0-claude.0`
+Test-suite version: `v1.12.0-claude.0`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -44,9 +44,14 @@ This is a behavior map, not a claim of complete coverage or a current test-count
   `test_shadow_backup.py`: local resource browsing, prompts, recovery, and filesystem boundaries.
 - `test_chatgpt_media_sessions_e2e.py` and the Sessions index cases in `test_local_media_browser.py`,
   `test_web_app.py`, and `test_style_tokens.py`: the ChatGPT Media Sessions index (one uncropped
-  latest-image cover per session in grid or list layout), its Session View deep links, and its
-  state persistence. `test_select_keyboard_e2e.py` also covers the opaque Local resources sidebar
+  latest-image cover per session in grid or list layout), its Session View deep links, its
+  state persistence, and the return origin that the index scrolls to and marks with the standard
+  blue glow. `test_select_keyboard_e2e.py` also covers the opaque Local resources sidebar
   filter menus.
+- `test_saved_prompts_e2e.py` and the media-prompt, removal, and duplicate cases in
+  `test_prompt_store.py`: saving a prompt from a ChatGPT media card, the Saved prompts duplicate
+  mark, and the row toggle that removes a saved prompt and saves it again.
+  `test_browser_search_geometry_e2e.py` covers the header search width at each breakpoint.
 - `test_job_lock.py`: cache job ownership and contention, per-resource lock files, and the
   maintenance lock that keeps a backup or history repair away from active tasks.
 - `test_cache_task_coordinator.py`: concurrent admission by browser and store, the

@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.23.0-claude.0`
+Documentation version: `v1.24.0-claude.0`
 
 ## Authority
 
@@ -286,6 +286,36 @@ lift, and focus ring mirror `.browser-media-card`; the ring appears only for key
 a product-specific adapter; Worthward and neoMe have no ChatGPT media surface, and the shared
 Secondary button, Circular button, and view dock primitives are consumed unchanged.
 
+A session detail's `Back to all sessions` link names the session it leaves. The index opens on
+the page that holds that session, whatever page was remembered, marks its card `.is-return-origin`,
+centers it in the content scrollport, and moves keyboard focus to its cover link. The mark is the
+standard blue interaction glow: the `--accent-border-medium` border with the 4px `--accent-focus-ring`
+ring and the 18px `--accent-focus-glow`, layered over the card's resting or hover shadow. It is a
+static shadow on the card itself, so it moves with native scrolling and needs no scroll handler, and
+it stays until the next navigation. While a cover without a recorded size is still loading, the
+script keeps the card centered on gallery size changes until the first wheel, touch, pointer, or key
+input, or four seconds. A sidebar filter change, pagination, and the Dock entry start without an
+origin. Dark mode uses the same tokens, so the glow is subtler there.
+
+### Saved prompt actions
+
+A ChatGPT media card's Prompt heading carries the same `Add as prompt` action as a cached user
+message. It is the standard 32px Circular icon button, placed before the expand control in
+`.browser-media-prompt-actions`. Hovering or focusing within the prompt section reveals it, touch
+keeps it visible, and the saved state stays visible in the success color. Cards that show the same
+prompt of one conversation share the saved state.
+
+Each Saved prompts row ends its remark input line with a Circular save toggle. Its
+`bookmark.slash.fill.svg` state removes the prompt; the row then stays in place at 45% opacity with
+the toggle showing `text.bubble.fill.svg`, which saves the prompt and its remarks again until the
+page reloads. The toggle is hover-revealed on fine pointers like the Copy action and always visible
+on touch. A touch phone column wraps it under the full-width input, while a narrow pointer window
+keeps it beside the input so no empty line is reserved. A prompt whose text is saved more than once
+starts its remark row with a compact warning mark: `rectangle.on.rectangle.svg` and the copy count
+on `--theme-warning-translucent` in `--theme-warning-text`. Both assets are byte-identical copies
+of the Worthward files. These are product-specific adapters; the shared Circular icon button and
+Tag primitives are consumed unchanged.
+
 ### Compact conversation effects
 
 The Local resources conversation scrollport uses 8px padding on all four sides at
@@ -321,6 +351,9 @@ The shared Local resources search input is 30px high at every breakpoint; its
 existing 1px outer border makes the full pill 32px high. Saved prompt remark
 inputs use the same 30px height and the existing 999px `--radius-pill` token.
 These are local component sizes, not changes to the global form-control tokens.
+Between 601px and 900px the search field takes the shared `--layout-control-width`
+(384px) at the right edge of its toolbar in every Local resources view. The compact
+flow at 600px and below keeps the full row, and the desktop rail keeps its 322px field.
 
 ### Cache activity disclosure
 

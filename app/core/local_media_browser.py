@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.29.0-codex.0
+# Code version: v1.30.0-claude.0
 
 from __future__ import annotations
 
@@ -136,6 +136,8 @@ class LocalMediaPage:
     current_session_latest_at: str = ""
     current_session_url: str = ""
     sessions: tuple[LocalMediaSessionSummary, ...] = ()
+    # The session the reader returned to the index from; the index opens on its page.
+    origin_session_key: str = ""
 
     @property
     def pagination_items(self) -> tuple[LocalMediaPaginationItem, ...]:
@@ -923,16 +925,26 @@ def paginate_chatgpt_session_index(
     page: object = 1,
     sort: str = "newest",
     page_size: int = PAGE_SIZE,
+    target_session_key: str = "",
 ) -> LocalMediaPage:
     """Return one page of ChatGPT sessions, each represented by only its latest work.
 
     ``sort`` orders the sessions by that cover's capture time or by session title.
     Each summary records ``detail_page``, the session's page in the one-session-per-page
     view, so a cover can deep-link into that view regardless of the index order.
+    ``target_session_key`` names the session the reader is returning from: its index page
+    replaces ``page`` and the result records it as ``origin_session_key``.
     """
     materialized = tuple(items)
+    normalized_target = str(target_session_key or "").strip()
+    origin_session_key = ""
     summaries: list[LocalMediaSessionSummary] = []
     for detail_page, (session_key, group) in enumerate(_group_chatgpt_sessions(materialized), start=1):
+        if normalized_target and not origin_session_key and (
+            session_key == normalized_target
+            or any(item.chatgpt_session_key == normalized_target for item in group)
+        ):
+            origin_session_key = session_key
         latest = _latest_chatgpt_work(group)
         cover = _chatgpt_session_cover(group)
         summaries.append(
@@ -962,6 +974,11 @@ def paginate_chatgpt_session_index(
     session_count = len(summaries)
     total_pages = max(1, (session_count + safe_page_size - 1) // safe_page_size)
     current_page = min(total_pages, _coerce_positive_page(page))
+    if origin_session_key:
+        origin_index = next(
+            index for index, summary in enumerate(summaries) if summary.session_key == origin_session_key
+        )
+        current_page = origin_index // safe_page_size + 1
     start = (current_page - 1) * safe_page_size
     page_sessions = tuple(summaries[start : start + safe_page_size])
     return LocalMediaPage(
@@ -975,6 +992,7 @@ def paginate_chatgpt_session_index(
         pagination_unit="session_index",
         session_count=session_count,
         sessions=page_sessions,
+        origin_session_key=origin_session_key,
     )
 
 
@@ -1286,7 +1304,12 @@ class LocalMediaCatalog:
             media_id=filters["media_id"] or media_id,
         )
         if filters["source"] == "chatgpt" and chatgpt_session_index:
-            return paginate_chatgpt_session_index(filtered, filters["page"], filters["sort"])
+            return paginate_chatgpt_session_index(
+                filtered,
+                filters["page"],
+                filters["sort"],
+                target_session_key=chatgpt_session_key,
+            )
         if filters["source"] == "chatgpt" and chatgpt_session_view:
             return paginate_chatgpt_sessions(
                 filtered,

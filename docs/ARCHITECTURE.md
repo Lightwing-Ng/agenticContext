@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.54.1-claude.0`
+Documentation version: `v1.54.2-claude.0`
 
 ## Runtime flow
 
@@ -999,7 +999,7 @@ Doctor. The service never replays a local Action or continues automatically.
 | Location | Owner and purpose | Git policy |
 | --- | --- | --- |
 | `local_store/` | User media, source catalogs, queues, manifests, and deletion previews | Ignored except `.gitkeep` |
-| `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability | Ignored except `.gitkeep` |
+| `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability; a media prompt without cached text history keeps a content-derived key | Ignored except `.gitkeep` |
 | `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
 | `logs/` | Local structured JSON-line logs | Ignored except `.gitkeep` |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local configuration | Outside the repository |
