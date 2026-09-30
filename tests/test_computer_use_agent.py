@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.84.1-codex.0
+Code version: v3.85.0-claude.0
 """
 
 from __future__ import annotations
@@ -86,6 +86,7 @@ from app.core.computer_use_agent import (
     _openai_agentic_token_count,
     _format_binary_size,
     build_context_markdown,
+    agent_execution_blocked_message,
     is_agent_execution_supported,
     is_loopback_address,
     launch_terminal_authorization,
@@ -111,6 +112,7 @@ from app.core.agent.platform_catalog import (
     AGENT_MODEL_OPTIONS_BY_PLATFORM,
     AGENT_PLATFORM_OPTIONS,
     DEFAULT_CHATGPT_MODEL,
+    SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS,
     default_model_for_platform,
     detect_host_operating_system,
     strongest_model_option,
@@ -458,9 +460,9 @@ def test_settings_validate_all_web_agent_platforms_and_model_contracts() -> None
         assert safari_grok.browser == "safari"
         assert safari_grok.platform == "grok"
 
-        for safari_platform, safari_model, safari_target in (
-            ("gemini", "gemini-3.1-pro", "https://gemini.google.com/app"),
-            ("claude", "claude-auto", "https://claude.ai/new"),
+        for safari_platform, safari_model, safari_target, executable in (
+            ("gemini", "gemini-3.1-pro", "https://gemini.google.com/app", False),
+            ("claude", "claude-auto", "https://claude.ai/new", True),
         ):
             safari_sources = validate_computer_use_settings(
                 {
@@ -473,7 +475,7 @@ def test_settings_validate_all_web_agent_platforms_and_model_contracts() -> None
             )
             assert safari_sources.browser == "safari"
             assert safari_sources.platform == safari_platform
-            assert not is_agent_execution_supported("safari", safari_platform)
+            assert is_agent_execution_supported("safari", safari_platform) is executable
         with pytest.raises(ValueError, match="official Gemini HTTPS host"):
             validate_computer_use_settings(
                 {
@@ -486,18 +488,8 @@ def test_settings_validate_all_web_agent_platforms_and_model_contracts() -> None
             )
 
 
-@pytest.mark.parametrize(
-    ("platform", "model", "label"),
-    (
-        ("gemini", "gemini-3.1-pro", "Gemini"),
-        ("claude", "claude-auto", "Claude"),
-    ),
-)
 def test_safari_source_only_selection_cannot_start_full_agent_execution(
     tmp_path: Path,
-    platform: str,
-    model: str,
-    label: str,
 ) -> None:
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -510,19 +502,26 @@ def test_safari_source_only_selection_cannot_start_full_agent_execution(
 
     with pytest.raises(
         RuntimeError,
-        match=rf"Safari can browse {label} Recent sessions here",
+        match=r"Safari can browse Gemini Recent sessions here",
     ):
         service.start(
             "Do not send this prompt",
             str(workspace),
             CrawlConfig(),
-            platform=platform,
+            platform="gemini",
             browser="safari",
-            model=model,
+            model="gemini-3.1-pro",
         )
 
     assert runner_calls == []
     assert service.snapshot()["running"] is False
+
+
+def test_safari_claude_selection_is_execution_capable() -> None:
+    assert is_agent_execution_supported("safari", "claude") is True
+    assert agent_execution_blocked_message("safari", "claude") == ""
+    assert "claude" in SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS
+    assert "gemini" not in SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS
 
 
 def test_legacy_grok_heavy_setting_migrates_to_build(tmp_path: Path) -> None:
@@ -17019,6 +17018,231 @@ def test_safari_grok_submission_guards_the_exact_page_when_binding_is_pending() 
     fill_argument = page.evaluate_calls[0][1]
     assert isinstance(fill_argument, dict)
     assert fill_argument["expectedCurrentUrl"] == "https://grok.com/"
+
+
+def test_safari_claude_submission_uses_paragraph_fill_and_scoped_native_send() -> None:
+    class _Page:
+        url = "https://claude.ai/new"
+
+        def __init__(self) -> None:
+            self.evaluate_calls: list[tuple[str, object]] = []
+            self.native_click_kwargs: list[dict[str, object]] = []
+
+        def locator(self, selector: str) -> object:
+            assert "data-cachelikes-safari-send" in selector
+            page = self
+
+            class _Locator:
+                first = None
+
+                def __init__(self) -> None:
+                    self.first = self
+
+                def count(self) -> int:
+                    return 1
+
+                def is_visible(self) -> bool:
+                    return True
+
+                def click(self, **kwargs: object) -> None:
+                    page.native_click_kwargs.append(dict(kwargs))
+
+            return _Locator()
+
+        def evaluate(self, expression: str, argument: object = None) -> dict[str, object]:
+            self.evaluate_calls.append((expression, argument))
+            if "composer.focus()" in expression:
+                return {"filled": True, "composerCount": 1, "exact": True}
+            return {
+                "ready": True,
+                "ariaLabel": "Send message",
+                "dataTestId": "chat-input-send",
+            }
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = _Page()
+    assert _submit_safari_prompt(
+        page,
+        "Inspect safely.\n\nController turn receipt: agent-turn-123",
+        lambda: False,
+        platform="claude",
+        session_check=lambda _after_submission: page.url,
+        expected_target_url=page.url,
+    ) is True
+
+    fill_expression, fill_argument = page.evaluate_calls[0]
+    send_expression, send_argument = page.evaluate_calls[1]
+    assert isinstance(fill_argument, dict)
+    assert isinstance(send_argument, dict)
+    assert "platform" not in fill_argument
+    assert fill_argument["composerSelector"] == _web_composer_selector("claude")
+    assert fill_argument["expectedCurrentUrl"] == "https://claude.ai/new"
+    assert "static-composer-input" in fill_expression
+    assert "ProseMirror-trailingBreak" in fill_expression
+    assert "composer.textContent = value" not in fill_expression
+    assert "execCommand?.('delete', false)" in fill_expression
+    # Safari collapses every Unicode whitespace run before evaluation, so the
+    # NBSP normalization must stay an ASCII escape rather than a literal U+00A0.
+    assert "\u00a0" not in fill_expression
+    assert "replace(/\\u00a0/g, ' ')" in re.sub(r"\s+", " ", fill_expression)
+    assert send_argument["platform"] == "claude"
+    assert "platform === 'grok' || platform === 'claude'" in send_expression
+    assert "chat-input-send" in send_expression
+    assert "sendButton.click()" not in send_expression
+    assert page.native_click_kwargs == [
+        {"timeout": 3_000, "expected_url": "https://claude.ai/new"}
+    ]
+
+
+def test_safari_claude_submission_reports_a_rejected_fill_without_sending() -> None:
+    class _Page:
+        url = "https://claude.ai/new"
+
+        def __init__(self) -> None:
+            self.evaluate_calls = 0
+
+        def evaluate(self, expression: str, _argument: object = None) -> dict[str, object]:
+            self.evaluate_calls += 1
+            assert "composer.focus()" in expression
+            return {
+                "filled": False,
+                "composerCount": 1,
+                "reason": "readback-mismatch",
+                "paragraphReadback": True,
+                "readbackLength": 12,
+                "expectedLength": 40,
+            }
+
+        def locator(self, _selector: str) -> object:
+            raise AssertionError("A rejected Claude fill must not reach native Send.")
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            raise AssertionError("A rejected Claude fill must fail without polling.")
+
+    page = _Page()
+    with pytest.raises(RuntimeError, match=r"Claude composer\. .*readback-mismatch"):
+        _submit_safari_prompt(
+            page,
+            "Inspect safely.",
+            lambda: False,
+            platform="claude",
+            expected_target_url=page.url,
+        )
+    assert page.evaluate_calls == 1
+
+
+def test_safari_claude_submit_and_wait_attributes_the_receipted_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = SimpleNamespace(url="https://claude.ai/chat/session-1")
+    marker = "agent-turn-0123456789abcdef0123456789abcdef"
+    snapshots = iter(
+        (
+            {
+                "url": page.url,
+                "count": 1,
+                "text": "Existing answer",
+                "userCount": 1,
+                "latestUserText": "Existing prompt",
+            },
+            {
+                "url": page.url,
+                "count": 2,
+                "text": '```json\n{"action":"final","summary":"done"}\n```',
+                "userCount": 2,
+                "latestUserText": f"Inspect safely.\n\nController turn receipt: {marker}",
+                "markerEchoed": True,
+                "assistantAfterLatestUser": True,
+                "generating": False,
+            },
+        )
+    )
+    snapshot_platforms: list[str] = []
+    submitted: list[tuple[str, str]] = []
+
+    def snapshot(_page: object, platform: str, *_args: object, **_kwargs: object) -> dict:
+        snapshot_platforms.append(platform)
+        return next(snapshots)
+
+    monkeypatch.setattr("app.core.computer_use_agent._provider_turn_snapshot", snapshot)
+    monkeypatch.setattr(
+        "app.core.computer_use_agent._submit_safari_prompt",
+        lambda _page, message, _should_stop, **kwargs: submitted.append(
+            (message, str(kwargs["platform"]))
+        ) or True,
+    )
+    monkeypatch.setattr(
+        "app.core.computer_use_agent._platform_web_count",
+        lambda *_args: pytest.fail("Safari Claude must not use the legacy count path."),
+    )
+    monkeypatch.setattr("app.core.computer_use_agent.WEB_RESPONSE_MINIMUM_SECONDS", 0)
+    monkeypatch.setattr("app.core.computer_use_agent.WEB_RESPONSE_STABLE_SECONDS", 0)
+    monkeypatch.setattr("app.core.computer_use_agent.time.monotonic", lambda: 0.0)
+
+    status_messages: list[str] = []
+    assert _submit_and_wait(
+        page,
+        "safari",
+        "Inspect safely.",
+        lambda: False,
+        platform="claude",
+        session_check=lambda _after_submission: page.url,
+        submission_target_url=page.url,
+        session_mode="recent",
+        timeout_seconds=1,
+        on_response_state=lambda **changes: status_messages.append(changes["message"]),
+        turn_receipt_marker=marker,
+    ) == '```json\n{"action":"final","summary":"done"}\n```'
+    assert submitted == [
+        (f"Inspect safely.\n\nController turn receipt: {marker}", "claude")
+    ]
+    assert snapshot_platforms == ["claude", "claude"]
+    assert any(
+        message.startswith("Claude submission attempted;") for message in status_messages
+    )
+    assert not any("ChatGPT" in message for message in status_messages)
+
+
+def test_safari_claude_model_verification_reads_the_current_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.computer_use_agent as computer_use_agent
+
+    captured: dict[str, object] = {}
+
+    def select(
+        _page: object,
+        platform: str,
+        option: dict[str, object],
+        remote_labels: tuple[str, ...],
+        observation: dict[str, object] | None,
+        _should_stop: object,
+    ) -> bool:
+        captured.update(platform=platform, option=dict(option), labels=remote_labels)
+        assert observation is not None
+        observation["observed"] = "Opus 5.5 High"
+        return True
+
+    monkeypatch.setattr(computer_use_agent, "_select_safari_web_model", select)
+    page = SimpleNamespace(url="https://claude.ai/new", locator=lambda _selector: None)
+    observation: dict[str, object] = {}
+
+    assert computer_use_agent._select_web_model(
+        page,
+        "safari",
+        "claude",
+        "claude-auto",
+        observation,
+        should_stop=lambda: False,
+    ) is True
+    assert captured["platform"] == "claude"
+    assert captured["labels"] == ("Auto",)
+    assert captured["option"]["accept_current"] is True
+    assert captured["option"]["key"] == "claude-auto"
+    assert "accept_current" not in AGENT_MODEL_OPTIONS_BY_PLATFORM["claude"][0]
+    assert observation["observed"] == "Opus 5.5 High"
 
 
 @pytest.mark.parametrize("stop_stage", ("after_fill", "during_send_wait"))

@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.41.3-codex.0
+# Code version: v1.41.4-claude.0
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from app.core.browser_sessions import probe_browser_session
 from app.core.chatgpt_downloader import (
     ChatGPTHistoryStore,
     ChatGPTImageSizeLimitError,
+    ChatGPTRateLimitError,
     ChatGPTImageCandidate,
     ChatGPTImageCatalog,
     ChatGPTCatalogEntry,
@@ -2979,3 +2980,89 @@ def test_stopped_text_sync_counts_only_attempted_failures(tmp_path: Path, attemp
     assert result == (0, 0, 0)
     assert fetch.call_count == attempted_failures
     assert state.snapshot()["failed_tweets"] == attempted_failures
+
+
+def _text_session_payload(text: str) -> dict[str, object]:
+    return {"mapping": {"user": {"message": {
+        "author": {"role": "user"}, "create_time": 1771059600,
+        "content": {"parts": [text]},
+    }}}}
+
+
+def test_chatgpt_text_history_cools_down_through_browser_rate_limit_then_paces(
+    tmp_path: Path,
+) -> None:
+    class _ThrottledBrowserPage:
+        def __init__(self) -> None:
+            self.results = [
+                {"status": 429, "payload": None},
+                {"status": 200, "payload": _text_session_payload("First")},
+                {"status": 200, "payload": _text_session_payload("Second")},
+            ]
+
+        def evaluate(self, _script: str, _argument: dict[str, object]) -> dict[str, object]:
+            return self.results.pop(0)
+
+    state = TaskState("test")
+    store = ChatGPTHistoryStore(tmp_path / "history.parquet")
+    with patch("app.core.chatgpt_downloader.wait_for_cache_scan", return_value=False) as wait:
+        result = cache_chatgpt_conversation_history(
+            store, ["https://chatgpt.com/c/first", "https://chatgpt.com/c/second"],
+            _ThrottledBrowserPage(), {}, state, lambda: False,
+        )
+
+    assert result == (2, 2, 0)
+    assert [call.args[0] for call in wait.call_args_list] == [60.0, 2.0]
+    assert state.snapshot()["failed_tweets"] == 0
+    events = "\n".join(state.snapshot()["recent_events"])
+    assert "cooling down for 60 s" in events
+    assert "spacing session requests by 2 s" in events
+
+
+@pytest.mark.parametrize("stop_during_cooldown", [False, True])
+def test_chatgpt_text_history_defers_only_after_every_cooldown(
+    tmp_path: Path, stop_during_cooldown: bool,
+) -> None:
+    state = TaskState("test")
+    store = ChatGPTHistoryStore(tmp_path / "history.parquet")
+    with (
+        patch(
+            "app.core.chatgpt_downloader._get_chatgpt_api_json_via_page",
+            side_effect=ChatGPTRateLimitError("ChatGPT API request returned HTTP 429."),
+        ) as fetch,
+        patch(
+            "app.core.chatgpt_downloader.wait_for_cache_scan",
+            return_value=stop_during_cooldown,
+        ) as wait,
+    ):
+        result = cache_chatgpt_conversation_history(
+            store, ["https://chatgpt.com/c/first", "https://chatgpt.com/c/pending"],
+            object(), {}, state, lambda: False,
+        )
+
+    assert result == (0, 0, 0)
+    if stop_during_cooldown:
+        assert fetch.call_count == 1
+        assert state.snapshot()["failed_tweets"] == 0
+        return
+    assert [call.args[0] for call in wait.call_args_list] == [60.0, 120.0, 240.0, 480.0]
+    assert fetch.call_count == 5
+    assert state.snapshot()["failed_tweets"] == 1
+    assert "still rate-limited at session 1/2" in "\n".join(state.snapshot()["recent_events"])
+
+
+def test_chatgpt_discovery_cools_down_then_paces_rate_limited_list_pages() -> None:
+    with (
+        patch("app.core.chatgpt_downloader._get_chatgpt_api_json", side_effect=[
+            ChatGPTRateLimitError("ChatGPT API request returned HTTP 429."),
+            {"items": [{"id": "recovered"}]},
+            {"items": []},
+        ]),
+        patch("app.core.chatgpt_downloader.wait_for_cache_scan", return_value=False) as wait,
+    ):
+        urls = _collect_all_chatgpt_conversation_urls_via_api(
+            object(), "https://chatgpt.com/", {"Authorization": "fixture"},
+            TaskState("test"), lambda: False,
+        )
+    assert urls == ["https://chatgpt.com/c/recovered"]
+    assert [call.args[0] for call in wait.call_args_list] == [60.0, 2.0]

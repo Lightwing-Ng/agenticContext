@@ -1,4 +1,4 @@
-/* Code version: v2.158.2-codex.0 */
+/* Code version: v2.158.3-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -7831,6 +7831,13 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     /* Keep scrolling shadows below the summary while preserving side and bottom effects. */
     clip-path: inset(0 calc(-1 * var(--layout-physical-effect-bleed)) calc(-1 * var(--layout-physical-effect-bleed)));
     pointer-events: none;
+}
+
+.browser-chat-effect-track {
+    position: absolute;
+    inset: 0;
+    /* The scroll timeline owns this transform; reduced-motion transitions must not join it. */
+    transition: none;
 }
 
 .browser-chat-effect {

@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.22.2-codex.0`
+Documentation version: `v1.22.3-codex.0`
 
 ## Authority
 
@@ -306,8 +306,13 @@ uses layout containment and the shared 48px paint allowance at its sides and
 bottom. Its top clips at the chat pane boundary so scrolling shadows cannot paint
 over the preceding transparent summary metrics. Tall messages do not enlarge
 the document, and shadows can still cross the side and bottom edges. Full card
-rectangles follow scrolling, resizing, content-size changes, and theme updates;
-no message content or interactive control is copied into the effect layer.
+rectangles are placed in scroll-content coordinates and follow resizing,
+content-size changes, and theme updates. A `ScrollTimeline` bound to the message
+scrollport translates their track on the compositor, so shadows move in the same
+frame as native scrolling; never reposition them from a `scroll` handler, which
+trails asynchronous scrolling and visibly detaches shadows from their cards.
+Engines without scroll timelines keep the cards' native, scrollport-clipped
+shadows. No message content or interactive control is copied into the effect layer.
 
 The Local resources search icon keeps its 16px SVG transport and a square slot
 matching the search control's inner height. Its native lens center, rather than

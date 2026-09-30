@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.16.1-codex.0`
+Documentation version: `v1.16.2-claude.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -78,6 +78,16 @@ as incomplete instead of a complete successful synchronization. Existing files i
 After a cooperative stop, unattempted sessions are pending rather than failed.
 The failure counter includes only attempted mapping requests that failed or were
 rate-limited; incomplete discovery and deferred work remain incomplete.
+ChatGPT throttling (HTTP 429) outlasts the short in-request backoff, so a history-list
+page or mapping request that stays rate-limited enters Stop-aware cooldowns of 60, 120,
+240, and 480 seconds and retries the same item after each one. After any cooldown, the
+remaining list pages or mapping requests of that phase are spaced at least 2 seconds apart,
+doubling per throttle episode up to 64 seconds, and never below the configured scan wait.
+A September 2026 Safari probe showed a burst of about ten mapping requests followed by
+roughly one per minute, with no `Retry-After` header, so a full refresh of thousands of
+sessions can span many hours and accumulates across runs. Only a request still
+rate-limited after the final cooldown defers the remaining sessions to the next run; Safari
+and Chromium page requests share this classification.
 
 Grok has two independent runtimes. This split is intentional:
 

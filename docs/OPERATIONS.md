@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.40.0-codex.0`
+Documentation version: `v1.41.0-claude.0`
 
 ## Launch
 
@@ -242,9 +242,9 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
   RFC1918 private IPv4 and IPv6 ULA clients must unlock before any application page or API is
   served; public, cross-site, and host-rebinding requests remain rejected.
 - Each task defaults to a new root-level ChatGPT, Gemini, Grok, or Claude Web conversation in the
-  selected authenticated browser session. On macOS, Safari supports ChatGPT and Grok Agent
-  execution; Safari Gemini and Claude remain valid source-only routes for account, Recent sessions,
-  and Project browsing, while their full execution uses Edge or Chrome. macOS Safari Jury runs
+  selected authenticated browser session. On macOS, Safari supports ChatGPT, Grok, and Claude
+  Agent execution; Safari Gemini remains a valid source-only route for account, Recent sessions,
+  and Project browsing, while its full execution uses Edge or Chrome. macOS Safari Jury runs
   ChatGPT, Grok, and Gemini in one owned window with one tab per juror, including the account
   check, and does not fall back to Edge. Safari Jury rejects Claude; Edge and Chrome still admit
   it when explicitly checked. ChatGPT model selection holds one short focus transaction, because its
@@ -279,8 +279,8 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
   file input.
 - Sending a task transmits the generated context and requested source excerpts to the selected Web
   account. Review that provider's data controls before using private or regulated source code.
-  Safari Gemini and Claude source-only browsing never attaches local context or submits a provider
-  prompt.
+  Safari Gemini source-only browsing never attaches local context or submits a provider prompt.
+  Safari Claude execution also never uploads the context file; context is streamed on demand.
 - Stop requests end current web generation and terminate the active local command process group.
   Each request binds both the selected session and its current run ID; a delayed Stop from an older
   run of the same session returns HTTP 409. Safari resolves one unique semantic Stop control on the
@@ -331,8 +331,11 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
   stale rows while one coalesced quiet refresh runs. Safari Grok uses the same visible-composer and
   authenticated-conversations checks through page-local requests without exporting cookies or
   cloning an Edge profile. Restricted Claude accounts remain unavailable and are not sent through
-  a login-bypass flow. Safari Gemini and Claude stop after catalog discovery, report execution as
-  unsupported, and never enable Ask.
+  a login-bypass flow. Safari Gemini stops after catalog discovery, reports execution as
+  unsupported, and never enables Ask. Safari Claude enables Ask after the same catalog check.
+- Claude.ai can show a Cloudflare `Just a moment...` page in a new Safari task window. The run
+  pauses as human verification and surfaces that window; complete the check there, then resume.
+  Safari Claude verifies the account's current model label read-only and does not switch models.
 
 ### ChatGPT Tunnel connection
 

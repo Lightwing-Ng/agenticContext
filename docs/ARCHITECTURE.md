@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.52.1-codex.0`
+Documentation version: `v1.53.0-claude.0`
 
 ## Runtime flow
 
@@ -119,8 +119,8 @@ subset of the façades; the regression no longer freezes one module's exact faç
 - `app/core/agent_session_sources.py`: the provider-neutral Agent session and Project adapter;
   it maps ChatGPT Projects, Gemini Notebooks, Grok Projects, and Claude Projects into one URL and
   source contract. Gemini, Grok, and Claude catalogs can collect through one owned Chromium or
-  macOS Safari context. Safari Gemini and Claude are catalog-only; Claude source discovery reads
-  rendered links only. All providers share the Parquet cache boundary.
+  macOS Safari context. Safari Gemini is catalog-only; Claude source discovery reads rendered
+  links only. All providers share the Parquet cache boundary.
 - `app/core/agent_source_cache.py`: the shared typed Parquet catalog for Agent recent sessions,
   Projects, and Project sessions. Its cache key isolates provider, browser, source kind, and
   Project URL, while atomic replacement preserves the other providers' entries.
@@ -875,10 +875,14 @@ isolated-context behavior.
 Agent bootstrap checks use quiet, task-independent browser contexts. Edge and Chrome checks use
 Chromium; ChatGPT source checks remain non-headless because its Cloudflare challenge rejects
 headless clones with HTTP 403. Safari catalog checks for all four providers use the serialized
-macOS Apple Events context. Full Safari Agent execution remains limited to ChatGPT and Grok; Gemini
-and Claude are catalog-only and the backend execution gate rejects them before task admission. Their
-canonical routes and persisted preferences remain valid, Ask stays disabled, and neither selection
-is silently rewritten to Edge. Safari Jury is separate: ChatGPT, Grok, and Gemini share one owned
+macOS Apple Events context. Full Safari Agent execution covers ChatGPT, Grok, and Claude; Gemini is
+catalog-only and the backend execution gate rejects it before task admission. Its canonical route
+and persisted preference remain valid, Ask stays disabled, and the selection is not silently
+rewritten to Edge. Safari Grok and Claude turns carry visible controller receipts read through the
+atomic provider turn snapshot; Safari ChatGPT keeps its count-and-text contract. Safari Claude fills
+its hydrated ProseMirror editor with one `insertText` command, verifies a paragraph readback,
+activates Send inside the composer container with one trusted Return, and reads the current model
+label without switching it. Safari Jury is separate: ChatGPT, Grok, and Gemini share one owned
 window with one tab per juror.
 
 Safari credentialed page requests reject cross-origin targets and redirects before reading a

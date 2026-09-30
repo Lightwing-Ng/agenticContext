@@ -6,7 +6,7 @@ the domain facade - so they live in one module instead of being reachable only b
 importing the run loop.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.1.0-claude.0
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ GROK_HOSTS = {"grok.com", "www.grok.com"}
 
 SUPPORTED_BROWSERS = frozenset({"chrome", "edge", "safari"})
 
-SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS = frozenset({"chatgpt", "grok"})
+SUPPORTED_SAFARI_AGENT_EXECUTION_PLATFORMS = frozenset({"chatgpt", "grok", "claude"})
 
 SUPPORTED_SAFARI_WEB_SESSION_PLATFORMS = frozenset(
     {"chatgpt", "grok", "gemini", "claude"}

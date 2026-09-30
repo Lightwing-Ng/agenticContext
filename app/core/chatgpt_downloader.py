@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.49.7-codex.0
+# Code version: v1.49.8-claude.0
 
 from __future__ import annotations
 
@@ -99,6 +99,13 @@ CHATGPT_API_RETRY_LIMIT = 3
 CHATGPT_API_RETRY_DELAY_SECONDS = 1.0
 CHATGPT_API_RATE_LIMIT_RETRY_LIMIT = 6
 CHATGPT_API_RATE_LIMIT_MAX_DELAY_SECONDS = 30.0
+# ChatGPT throttling windows outlast the short in-request backoff, so long-running
+# history reads cool down in escalating, Stop-aware steps before deferring work.
+# Once throttled, the mapping endpoint sustains roughly one request per minute,
+# so adaptive pacing may widen up to that interval.
+CHATGPT_API_RATE_LIMIT_COOLDOWN_SECONDS = (60.0, 120.0, 240.0, 480.0)
+CHATGPT_RATE_LIMITED_MIN_PACE_SECONDS = 2.0
+CHATGPT_RATE_LIMITED_MAX_PACE_SECONDS = 64.0
 CHATGPT_PROMPT_METADATA_PERSIST_BATCH_SIZE = 25
 CHATGPT_PROMPT_METADATA_WORKER_JOIN_TIMEOUT_SECONDS = 5.0
 CHATGPT_HISTORY_RELATIVE_DIR = Path("llm") / "chatgpt"
@@ -528,6 +535,7 @@ def cache_chatgpt_conversation_history(
     new_messages = 0
     unchanged_sessions = 0
     failed_sessions = 0
+    pace_seconds = max(0.0, float(scan_wait_seconds))
     urls = tuple(conversation_urls)
     history_store.refresh_titles(conversation_titles_by_id or {})
     for index, conversation_url in enumerate(urls, start=1):
@@ -544,11 +552,24 @@ def cache_chatgpt_conversation_history(
             processed += 1
             unchanged_sessions += 1
             continue
-        if scan_wait_seconds > 0 and processed:
-            if wait_for_cache_scan(scan_wait_seconds, should_stop):
+        if pace_seconds > 0 and processed:
+            if wait_for_cache_scan(pace_seconds, should_stop):
                 break
         try:
-            payload = _get_chatgpt_api_json_via_page(page, api_url, request_headers)
+            payload, cooled_down = _get_chatgpt_json_after_rate_limit_cooldowns(
+                lambda: _get_chatgpt_api_json_via_page(page, api_url, request_headers),
+                state,
+                should_stop,
+                f"text session {index:,}/{len(urls):,}",
+            )
+            if payload is None:
+                break
+            if cooled_down:
+                pace_seconds = _widen_chatgpt_rate_limited_pace(pace_seconds)
+                state.append_event(
+                    "ChatGPT text history resumed after the rate limit; "
+                    f"spacing session requests by {pace_seconds:g} s."
+                )
             added_count, unchanged = history_store.replace_conversation(
                 conversation_url,
                 payload,
@@ -559,8 +580,8 @@ def cache_chatgpt_conversation_history(
         except ChatGPTRateLimitError:
             failed_sessions += 1
             state.append_event(
-                f"ChatGPT text history reached the API rate limit at session {index:,}/{len(urls):,}; "
-                "deferring the remaining sessions until the next cache run."
+                f"ChatGPT text history is still rate-limited at session {index:,}/{len(urls):,} "
+                "after every cooldown; deferring the remaining sessions until the next cache run."
             )
             break
         except (AttributeError, RuntimeError) as exc:
@@ -1550,6 +1571,47 @@ def _chatgpt_retry_after_seconds(response: object) -> float | None:
     return min(delay_seconds, CHATGPT_API_RATE_LIMIT_MAX_DELAY_SECONDS)
 
 
+def _get_chatgpt_json_after_rate_limit_cooldowns(
+    fetch: Callable[[], dict[str, object]],
+    state: TaskState,
+    should_stop: Callable[[], bool],
+    subject: str,
+) -> tuple[dict[str, object] | None, bool]:
+    """Retry one ChatGPT read through bounded, Stop-aware rate-limit cooldowns.
+
+    Return the payload, or None when Stop interrupted a cooldown, and whether a
+    cooldown was needed. Raise ChatGPTRateLimitError once every cooldown is spent.
+    """
+    cooled_down = False
+    for cooldown_seconds in CHATGPT_API_RATE_LIMIT_COOLDOWN_SECONDS:
+        try:
+            return fetch(), cooled_down
+        except ChatGPTRateLimitError:
+            cooled_down = True
+            logger.warning(
+                "ChatGPT API rate limit persisted; cooling down before retrying.",
+                extra={"subject": subject, "cooldown_seconds": cooldown_seconds},
+            )
+            state.append_event(
+                f"ChatGPT API rate limit reached while loading {subject}; "
+                f"cooling down for {cooldown_seconds:g} s before retrying."
+            )
+            if wait_for_cache_scan(cooldown_seconds, should_stop):
+                return None, cooled_down
+    return fetch(), cooled_down
+
+
+def _widen_chatgpt_rate_limited_pace(pace_seconds: float) -> float:
+    """Double request spacing after a throttle episode to stay below it for the rest of the run."""
+    return max(
+        pace_seconds,
+        min(
+            max(pace_seconds * 2, CHATGPT_RATE_LIMITED_MIN_PACE_SECONDS),
+            CHATGPT_RATE_LIMITED_MAX_PACE_SECONDS,
+        ),
+    )
+
+
 def _get_chatgpt_api_json_via_page(page, url: str, headers: dict[str, str]) -> dict[str, object]:
     """Fetch authenticated ChatGPT JSON inside the authorized browser page."""
     page_context = getattr(page, "context", None)
@@ -1597,6 +1659,8 @@ def _get_chatgpt_api_json_via_page(page, url: str, headers: dict[str, str]) -> d
         return payload
     if 200 <= status < 300:
         raise RuntimeError("ChatGPT browser-page API returned an unexpected JSON payload.")
+    if status == 429:
+        raise ChatGPTRateLimitError(f"ChatGPT browser-page API request returned HTTP {status}.")
     raise RuntimeError(f"ChatGPT browser-page API request returned HTTP {status}.")
 
 
@@ -2304,8 +2368,11 @@ def _collect_all_chatgpt_conversation_urls_via_api(
     conversation_urls: list[str] = []
     seen_ids: set[str] = set()
     offset = 0
+    pace_seconds = 0.0
     for page_index in range(CHATGPT_API_PAGE_LIMIT):
         if should_stop():
+            break
+        if pace_seconds > 0 and wait_for_cache_scan(pace_seconds, should_stop):
             break
         query = urlencode(
             {
@@ -2314,11 +2381,20 @@ def _collect_all_chatgpt_conversation_urls_via_api(
                 "order": "updated",
             }
         )
-        payload = _get_chatgpt_api_json(
-            context,
-            f"https://chatgpt.com/backend-api/conversations?{query}",
-            api_headers,
+        payload, cooled_down = _get_chatgpt_json_after_rate_limit_cooldowns(
+            lambda: _get_chatgpt_api_json(
+                context,
+                f"https://chatgpt.com/backend-api/conversations?{query}",
+                api_headers,
+            ),
+            state,
+            should_stop,
+            f"session list page {page_index + 1}",
         )
+        if payload is None:
+            break
+        if cooled_down:
+            pace_seconds = _widen_chatgpt_rate_limited_pace(pace_seconds)
         raw_items = payload.get("items")
         if not isinstance(raw_items, list):
             break

@@ -1,6 +1,27 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.26.3-codex.0`
+Documentation version: `v1.27.0-claude.0`
+
+## Safari Claude Agent execution on 30 Sep 2026
+
+- `/agent/safari/claude` now starts full Agent tasks. This supersedes the 14 Sep source-only
+  contract for Claude; Safari Gemini remains source-only, and Safari Jury still rejects Claude.
+- Claude's composer is a ProseMirror editor that stores every line as its own paragraph. Safari
+  inserts the message once, verifies a paragraph readback, and clears the draft instead of
+  assigning raw text when the readback differs. The pre-hydration `static-composer-input`
+  textarea is never filled.
+- Safari Claude verifies the account's current model label read-only, for example
+  `Opus 5.5 High`, and does not switch it. Choose the model on claude.ai before starting a task
+  when a different model is wanted.
+- Every turn carries a visible controller receipt. The latest user turn is read from
+  `[data-testid="user-message"]`; the broader legacy selector also matched Claude's account menu
+  button. The context file is never uploaded, so context streams on demand.
+- A new Safari task window can show Claude's Cloudflare `Just a moment...` page. The run pauses as
+  human verification and surfaces the window; in one probe the page cleared after about 53 s once
+  the window had focus.
+- Live verification on 30 Sep 2026 used one Claude conversation for all runs. A read-only
+  new-session run and a later recent-session run in that conversation both finished with verified
+  `Opus 5.5 High`, the expected answers, a bound conversation URL, and the task window closed.
 
 ## Tunnel host parity for Windows and macOS on 24 Sep 2026
 

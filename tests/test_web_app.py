@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.149.4-codex.0
+# Code version: v1.150.0-claude.0
 
 from __future__ import annotations
 
@@ -907,7 +907,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.25.0-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
-                    "style-v2.158.2-codex.0"
+                    "style-v2.158.3-codex.0"
                     if page_source == "local-resources"
                     else "style-v2.157.0-codex.0"
                 )
@@ -1964,33 +1964,56 @@ class WebAppTests(unittest.TestCase):
         start.assert_not_called()
 
     def test_safari_source_only_agent_request_is_rejected_before_admission(self) -> None:
-        providers = (
-            ("gemini", "gemini-3.1-pro", "Gemini"),
-            ("claude", "claude-auto", "Claude"),
-        )
-        for platform, model, label in providers:
-            with self.subTest(platform=platform), TemporaryDirectory() as raw_root:
-                app = create_app(Path(raw_root) / "local_store")
-                agent_service = app.extensions["computer_use_agent_service"]
-                with patch.object(agent_service, "_admission_guard") as admission:
-                    response = app.test_client().post(
-                        "/api/agent/ask",
-                        json={
-                            "prompt": "Do not submit",
-                            "workspace_path": raw_root,
-                            "operating_system": "macos",
-                            "browser": "safari",
-                            "platform": platform,
-                            "model": model,
-                        },
-                    )
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            agent_service = app.extensions["computer_use_agent_service"]
+            with patch.object(agent_service, "_admission_guard") as admission:
+                response = app.test_client().post(
+                    "/api/agent/ask",
+                    json={
+                        "prompt": "Do not submit",
+                        "workspace_path": raw_root,
+                        "operating_system": "macos",
+                        "browser": "safari",
+                        "platform": "gemini",
+                        "model": "gemini-3.1-pro",
+                    },
+                )
 
-            self.assertEqual(response.status_code, 409)
-            self.assertIn(
-                f"Safari can browse {label} Recent sessions here",
-                response.get_json()["error"],
-            )
-            admission.assert_not_called()
+        self.assertEqual(response.status_code, 409)
+        self.assertIn(
+            "Safari can browse Gemini Recent sessions here",
+            response.get_json()["error"],
+        )
+        admission.assert_not_called()
+
+    def test_safari_claude_agent_request_passes_the_execution_gate(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            agent_service = app.extensions["computer_use_agent_service"]
+            with patch(
+                "app.core.computer_use_agent.detect_host_operating_system",
+                return_value="macos",
+            ), patch.object(
+                agent_service,
+                "_admission_guard",
+                side_effect=RuntimeError("Admission reached."),
+            ) as admission:
+                response = app.test_client().post(
+                    "/api/agent/ask",
+                    json={
+                        "prompt": "Do not submit",
+                        "workspace_path": raw_root,
+                        "operating_system": "macos",
+                        "browser": "safari",
+                        "platform": "claude",
+                        "model": "claude-auto",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"], "Admission reached.")
+        admission.assert_called_once()
 
     def test_only_agent_gemini_readiness_prefers_the_initialized_debug_profile(self) -> None:
         status_payload = {
@@ -4233,22 +4256,24 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.get_json()["agent_sources"], source_payload)
         probe.assert_called_once()
 
-    def test_safari_gemini_and_claude_bootstrap_sources_without_execution_permission(self) -> None:
+    def test_safari_gemini_and_claude_bootstrap_sources_report_execution_permission(self) -> None:
         providers = (
             (
                 "gemini",
                 "Gemini",
                 "probe_and_collect_gemini_sources",
                 "https://gemini.google.com/app/session-1",
+                False,
             ),
             (
                 "claude",
                 "Claude",
                 "probe_and_collect_claude_sources",
                 "https://claude.ai/chat/session-1",
+                True,
             ),
         )
-        for platform, label, collector_name, session_url in providers:
+        for platform, label, collector_name, session_url, executable in providers:
             with self.subTest(platform=platform), TemporaryDirectory() as raw_root:
                 status_payload = {
                     "platform": platform,
@@ -4286,11 +4311,14 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 payload = response.get_json()
                 self.assertEqual(payload["agent_sources"]["recent_sessions"][0]["url"], session_url)
-                self.assertFalse(payload["agent_execution_supported"])
-                self.assertIn(
-                    f"Safari can browse {label} Recent sessions here",
-                    payload["agent_execution_message"],
-                )
+                self.assertIs(payload["agent_execution_supported"], executable)
+                if executable:
+                    self.assertEqual(payload["agent_execution_message"], "")
+                else:
+                    self.assertIn(
+                        f"Safari can browse {label} Recent sessions here",
+                        payload["agent_execution_message"],
+                    )
                 collector.assert_called_once_with("safari", ANY, silent=True)
                 legacy_probe.assert_not_called()
 
@@ -5911,7 +5939,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.158.2-codex.0", body)
+            self.assertIn("style-v2.158.3-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.37.1-codex.0', body)

@@ -1,4 +1,4 @@
-"""Compact chat padding and contained external shadows. Code version: v1.0.1-codex.0."""
+"""Compact chat padding and contained external shadows. Code version: v1.1.0-codex.0."""
 
 from io import BytesIO
 import math
@@ -36,6 +36,14 @@ def _wait_for_effect_sync(page: Page) -> None:
     }""")
 
 
+def _set_effect_layer_visibility(page: Page, visibility: str) -> None:
+    """Wait for a presented frame; a running scroll timeline keeps the effect layer composited."""
+    page.locator(".browser-chat-effects").evaluate("""(node, visibility) => new Promise(resolve => {
+        node.style.visibility = visibility;
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+    })""", visibility)
+
+
 def _chat_geometry(page: Page) -> dict:
     return page.locator("[data-browser-chat-pane]").evaluate("""pane => {
         const list = pane.querySelector('[data-chat-scrollport]');
@@ -49,6 +57,7 @@ def _chat_geometry(page: Page) -> dict:
         const style = getComputedStyle(list);
         const cards = [...list.querySelectorAll('[data-chat-message-id]')];
         const metrics = pane.closest('.browser-text-summary-card').querySelector('.browser-text-metric-grid');
+        const track = layer.querySelector('.browser-chat-effect-track');
         return {
             pane: rectangle(pane), list: rectangle(list),
             padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
@@ -60,6 +69,11 @@ def _chat_geometry(page: Page) -> dict:
             effectLayerBackground: getComputedStyle(layer).backgroundColor,
             effectLayerText: layer.textContent.trim(),
             effectLayerFocusable: layer.querySelectorAll('a,button,input,[tabindex]').length,
+            trackMotion: (track ? track.getAnimations() : []).map(motion => ({
+                scrollTimeline: motion.timeline instanceof ScrollTimeline,
+                sourceIsList: motion.timeline?.source === list,
+                axis: motion.timeline?.axis,
+            })),
             cards: cards.map(card => {
                 const box = card.getBoundingClientRect();
                 const effect = layer.querySelector(`[data-chat-effect-for="${card.id}"]`);
@@ -67,6 +81,7 @@ def _chat_geometry(page: Page) -> dict:
                     id: card.id, box: rectangle(card), nativeShadow: getComputedStyle(card).boxShadow,
                     visible: box.bottom > boundary.top + 1 && box.top < boundary.bottom - 1,
                     effect: effect ? rectangle(effect) : null,
+                    effectOffset: effect ? [effect.style.left, effect.style.top] : null,
                     shadow: effect ? getComputedStyle(effect).boxShadow : null,
                     effectBackground: effect ? getComputedStyle(effect).backgroundColor : null,
                 };
@@ -88,6 +103,8 @@ def _assert_compact_geometry(geometry: dict, *, has_ruler: bool) -> None:
     assert geometry["effectLayerBackground"] == "rgba(0, 0, 0, 0)", geometry
     assert geometry["effectLayerText"] == "" and geometry["effectLayerFocusable"] == 0, geometry
     assert geometry["documentOverflow"] <= 1, geometry
+    # Compositor scroll timelines keep shadows in lockstep with native scrolling.
+    assert geometry["trackMotion"] == [{"scrollTimeline": True, "sourceIsList": True, "axis": "block"}], geometry
     assert geometry["list"]["top"] >= geometry["metricsBottom"] + 7, geometry
     assert geometry["pane"]["right"] - geometry["list"]["right"] == pytest.approx(32 if has_ruler else 0, abs=1), geometry
     for card in geometry["cards"]:
@@ -122,13 +139,12 @@ def _assert_shadow_pixels_outside_scrollport(page: Page, geometry: dict) -> None
     center = (top + bottom) / 2
     crop = (math.ceil(boundary["right"] + 2), math.floor(center - 6),
             math.ceil(boundary["right"] + 10), math.ceil(center + 6))
-    layer = page.locator(".browser-chat-effects")
-    painted = Image.open(BytesIO(page.screenshot(animations="disabled"))).convert("RGB")
-    layer.evaluate("node => { node.style.visibility = 'hidden'; }")
+    painted = Image.open(BytesIO(page.screenshot())).convert("RGB")
+    _set_effect_layer_visibility(page, "hidden")
     try:
-        hidden = Image.open(BytesIO(page.screenshot(animations="disabled"))).convert("RGB")
+        hidden = Image.open(BytesIO(page.screenshot())).convert("RGB")
     finally:
-        layer.evaluate("node => { node.style.removeProperty('visibility'); }")
+        _set_effect_layer_visibility(page, "")
     difference = ImageChops.difference(painted.crop(crop), hidden.crop(crop))
     pixels = difference.load()
     changed_pixels = sum(
@@ -144,13 +160,12 @@ def _assert_metrics_unaffected_by_chat_effects(page: Page, geometry: dict) -> No
     metrics = geometry["metrics"]
     clip = {"x": metrics["left"], "y": metrics["top"],
             "width": metrics["width"], "height": metrics["height"]}
-    layer = page.locator(".browser-chat-effects")
-    painted = Image.open(BytesIO(page.screenshot(clip=clip, animations="disabled"))).convert("RGB")
-    layer.evaluate("node => { node.style.visibility = 'hidden'; }")
+    painted = Image.open(BytesIO(page.screenshot(clip=clip))).convert("RGB")
+    _set_effect_layer_visibility(page, "hidden")
     try:
-        hidden = Image.open(BytesIO(page.screenshot(clip=clip, animations="disabled"))).convert("RGB")
+        hidden = Image.open(BytesIO(page.screenshot(clip=clip))).convert("RGB")
     finally:
-        layer.evaluate("node => { node.style.removeProperty('visibility'); }")
+        _set_effect_layer_visibility(page, "")
     difference = ImageChops.difference(painted, hidden)
     assert difference.getbbox() is None, {"clip": clip, "changedBounds": difference.getbbox(), "geometry": geometry}
 
@@ -182,10 +197,16 @@ def test_chat_effects_keep_eight_pixel_padding_and_paint_outside_scrollport(
         expect(page.locator("[data-chat-message-id]")).to_have_count(7)
         page.evaluate("document.fonts.ready")
         scrollport = page.locator("[data-chat-scrollport]")
-        for fraction in (0, 0.5, 1):
+        scroll_invariant_offsets = None
+        # Returning from the end also proves the finished scroll animation keeps tracking.
+        for fraction in (0, 0.5, 1, 0.25):
             scrollport.evaluate("(list, fraction) => { list.scrollTop = fraction * (list.scrollHeight - list.clientHeight); }", fraction)
             _wait_for_effect_sync(page)
             geometry = _chat_geometry(page)
+            offsets = [card["effectOffset"] for card in geometry["cards"]]
+            # Scrolling must not require main-thread repositioning of the effect layer.
+            assert scroll_invariant_offsets in (None, offsets), geometry
+            scroll_invariant_offsets = offsets
             _assert_compact_geometry(geometry, has_ruler=True)
             _assert_shadow_pixels_outside_scrollport(page, geometry)
             _assert_metrics_unaffected_by_chat_effects(page, geometry)

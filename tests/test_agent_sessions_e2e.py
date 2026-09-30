@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.36.0-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.0-claude.0."""
 
 import re
 from copy import deepcopy
@@ -3697,11 +3697,11 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
                     "projects": [],
                 },
                 "agent_execution_supported": (
-                    browser != "safari" or platform in {"chatgpt", "grok"}
+                    browser != "safari" or platform in {"chatgpt", "grok", "claude"}
                 ),
                 "agent_execution_message": (
                     ""
-                    if browser != "safari" or platform in {"chatgpt", "grok"}
+                    if browser != "safari" or platform in {"chatgpt", "grok", "claude"}
                     else f"Safari can browse {platform.title()} Recent sessions here."
                 ),
             }
@@ -3859,7 +3859,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             page.get_by_role("option", name="Claude", exact=True).click()
         expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/claude")
         expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
-        expect(page.locator("#agent_ask_button")).to_be_disabled()
+        expect(page.locator("#agent_ask_button")).to_be_enabled()
         expect(page.locator(".agent-execution-session-title")).to_have_text(
             "Claude Safari recent session"
         )
@@ -5607,6 +5607,241 @@ def test_chatgpt_receipt_marker_is_scoped_to_the_latest_user_root(
         assert current_snapshot["latestUserMessageId"] == "latest-user"
         assert current_snapshot["markerEchoed"] is True
         assert current_snapshot["assistantAfterLatestUser"] is True
+    finally:
+        context.close()
+
+
+def _claude_conversation_html(
+    marker: str,
+    *,
+    generating: bool,
+    assistant_testid: bool = True,
+) -> str:
+    """Mirror Claude's article turns, composer, and a trailing account menu."""
+    stop = (
+        '<button type="button" aria-label="Stop response"></button>'
+        if generating
+        else ""
+    )
+    assistant = (
+        'data-testid="assistant-message" class="font-claude-response"'
+        if assistant_testid
+        else ""
+    )
+    return f"""
+        <main>
+          <div role="feed">
+            <div role="article"><div data-testid="user-message"><p>Earlier task</p></div></div>
+            <div role="article"><div {assistant}><div data-cds="Prose">
+              <p>Earlier answer</p>
+            </div></div></div>
+            <div role="article"><div data-testid="user-message">
+              <p>Inspect safely.</p><p>Controller turn receipt: {marker}</p>
+            </div></div>
+            <div role="article"><div {assistant}><div data-cds="Prose">
+              <p>Reading the entry point.</p>
+              <pre><code>{{"action":"read","path":"main.py"}}</code></pre>
+            </div></div></div>
+          </div>
+          <fieldset>
+            <div class="tiptap ProseMirror" contenteditable="true" role="textbox"
+                 data-testid="chat-input" aria-label="Write your prompt to Claude"><p><br></p></div>
+            {stop}
+            <button type="button" aria-label="Send message" data-testid="chat-input-send"
+                    disabled></button>
+          </fieldset>
+        </main>
+        <div class="sidebar">
+          <button type="button" data-testid="user-menu-button" aria-haspopup="menu">
+            Account
+          </button>
+        </div>
+    """
+
+
+def test_claude_turn_snapshot_reads_article_turns_and_ignores_the_account_menu(
+    disposable_browser,
+):
+    from app.core import computer_use_agent as agent
+
+    context = disposable_browser.new_context()
+    page = context.new_page()
+    marker = "agent-turn-0123456789abcdef0123456789abcdef"
+    try:
+        page.set_content(_claude_conversation_html(marker, generating=True))
+        snapshot = agent._provider_turn_snapshot(page, "claude", receipt_marker=marker)
+        assert snapshot["userCount"] == 2
+        assert snapshot["count"] == 2
+        assert snapshot["markerEchoed"] is True
+        assert snapshot["assistantAfterLatestUser"] is True
+        assert snapshot["generating"] is True
+        assert agent.parse_agent_action(snapshot["text"]) == {
+            "action": "read",
+            "path": "main.py",
+        }
+
+        page.set_content(_claude_conversation_html(marker, generating=False))
+        settled = agent._provider_turn_snapshot(page, "claude", receipt_marker=marker)
+        assert settled["generating"] is False
+        assert settled["composerPresent"] is True
+        assert settled["composerEmpty"] is True
+
+        page.set_content(
+            _claude_conversation_html(marker, generating=False, assistant_testid=False)
+        )
+        article_fallback = agent._provider_turn_snapshot(
+            page,
+            "claude",
+            receipt_marker=marker,
+        )
+        assert article_fallback["count"] == 2
+        assert article_fallback["userCount"] == 2
+        assert article_fallback["markerEchoed"] is True
+        assert article_fallback["assistantAfterLatestUser"] is True
+        assert agent.parse_agent_action(article_fallback["text"]) == {
+            "action": "read",
+            "path": "main.py",
+        }
+
+        page.set_content(f"""
+            <div data-testid="human-turn">Inspect safely. Controller turn receipt: {marker}</div>
+            <div class="font-claude-message"><pre><code>{{"action":"bodycheck"}}</code></pre></div>
+            <div class="ProseMirror" contenteditable="true"></div>
+        """)
+        legacy = agent._provider_turn_snapshot(page, "claude", receipt_marker=marker)
+        assert legacy["markerEchoed"] is True
+        assert legacy["count"] == 1
+        assert agent.parse_agent_action(legacy["text"]) == {"action": "bodycheck"}
+    finally:
+        context.close()
+
+
+_CLAUDE_PARAGRAPH_EDITOR_HTML = """
+    <main>
+      <textarea id="static-composer-input" data-testid="static-composer-input"
+                aria-label="Write your prompt to Claude"></textarea>
+      <div class="tiptap ProseMirror" contenteditable="true" role="textbox"
+           data-testid="chat-input" aria-label="Write your prompt to Claude"><p><br
+           class="ProseMirror-trailingBreak"></p></div>
+    </main>
+    <script>
+      window.transformLine = (line) => line;
+      const nativeExecCommand = document.execCommand.bind(document);
+      document.execCommand = (command, showUi, value) => {
+        const editor = document.querySelector('[data-testid="chat-input"]');
+        if (document.activeElement !== editor) {
+          return nativeExecCommand(command, showUi, value);
+        }
+        const emptyParagraph = () => {
+          const paragraph = document.createElement('p');
+          const trailing = document.createElement('br');
+          trailing.className = 'ProseMirror-trailingBreak';
+          paragraph.appendChild(trailing);
+          return paragraph;
+        };
+        if (command === 'insertText') {
+          editor.replaceChildren(...String(value).split('\\n').map((line) => {
+            if (!line) return emptyParagraph();
+            const paragraph = document.createElement('p');
+            paragraph.textContent = window.transformLine(line);
+            return paragraph;
+          }));
+          return true;
+        }
+        if (command === 'delete') {
+          editor.replaceChildren(emptyParagraph());
+          return true;
+        }
+        return nativeExecCommand(command, showUi, value);
+      };
+    </script>
+"""
+
+
+def test_safari_claude_fill_reads_paragraphs_and_clears_a_mismatched_draft(
+    disposable_browser,
+):
+    from app.core import computer_use_agent as agent
+
+    context = disposable_browser.new_context()
+    page = context.new_page()
+    message = (
+        "Controller transfer ID: agent-transfer-0123456789abcdef0123456789abcdef\n\n"
+        "  indented line\n"
+        '```json\n{"action": "read"}\n```\n\n'
+        "Controller turn receipt: agent-turn-0123456789abcdef0123456789abcdef"
+    )
+    try:
+        page.set_content(_CLAUDE_PARAGRAPH_EDITOR_HTML)
+        filled = agent._fill_safari_claude_composer(
+            page,
+            message,
+            composer_marker="safari-composer-test",
+            expected_current_url=page.url,
+        )
+        assert filled["filled"] is True
+        assert filled["exact"] is True
+        assert filled["paragraphReadback"] is True
+        assert filled["composerCount"] == 1
+        assert page.locator('[data-cachelikes-safari-composer="safari-composer-test"]').evaluate(
+            "(element) => element.getAttribute('data-testid')"
+        ) == "chat-input"
+        assert page.locator("#static-composer-input").input_value() == ""
+
+        page.evaluate("() => { window.transformLine = (line) => line.toUpperCase(); }")
+        rejected = agent._fill_safari_claude_composer(
+            page,
+            message,
+            composer_marker="safari-composer-retry",
+            expected_current_url=page.url,
+        )
+        assert rejected["filled"] is False
+        assert rejected["reason"] == "readback-mismatch"
+        assert page.locator('[data-testid="chat-input"]').evaluate(
+            "(element) => element.innerText.trim()"
+        ) == ""
+
+        moved = agent._fill_safari_claude_composer(
+            page,
+            message,
+            composer_marker="safari-composer-moved",
+            expected_current_url="https://claude.ai/new",
+        )
+        assert moved["filled"] is False
+        assert moved["targetMismatch"] is True
+    finally:
+        context.close()
+
+
+def test_safari_claude_readiness_ignores_static_composer_and_reads_model_label(
+    disposable_browser,
+):
+    from app.core import computer_use_agent as agent
+
+    context = disposable_browser.new_context()
+    page = context.new_page()
+    try:
+        page.set_content(
+            _CLAUDE_PARAGRAPH_EDITOR_HTML
+            + """
+            <button type="button" data-testid="model-selector-dropdown" aria-haspopup="menu"
+                    aria-expanded="false" aria-label="Model: Opus 5.5 High">Opus 5.5 High</button>
+            """
+        )
+        assert agent._wait_for_unique_safari_composer(page, "claude") is True
+        snapshot = agent._safari_web_model_snapshot(
+            page,
+            "claude",
+            ("Auto",),
+            "Auto",
+            accept_current=True,
+            trigger_marker="trigger-test",
+            choice_marker="choice-test",
+        )
+        assert snapshot["ok"] is True
+        assert snapshot["expanded"] is False
+        assert snapshot["current"] == "Opus 5.5 High"
+        assert snapshot["selected"] == "Opus 5.5 High"
     finally:
         context.close()
 
