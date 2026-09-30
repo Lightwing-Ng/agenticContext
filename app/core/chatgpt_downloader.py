@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.49.8-claude.0
+# Code version: v1.50.0-claude.0
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import mimetypes
 import os
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -622,6 +623,8 @@ class ChatGPTImageDownloadWorkResult:
     skipped: bool = False
     error: str = ""
     skipped_size: bool = False
+    # True only for a file that was complete before any worker started.
+    already_cached: bool = False
 
 
 @dataclass(slots=True)
@@ -3315,6 +3318,95 @@ def _iter_chatgpt_conversation_results(
         yield result_queue.get_nowait()
 
 
+def _open_chatgpt_safari_download_pages(
+    context: SafariContext,
+    initial_url: str,
+    tab_count: int,
+) -> list[Any]:
+    """Return the primary Safari page plus best-effort extra tabs for parallel transfers."""
+    pages: list[Any] = [context.primary_page]
+    for _ in range(1, tab_count):
+        page = None
+        try:
+            page = context.new_page()
+            open_chatgpt_page(page, initial_url, settle_ms=0)
+        except Exception as exc:
+            logger.warning(
+                "ChatGPT Safari download tab could not be opened; continuing with fewer tabs.",
+                extra={
+                    "open_tabs": len(pages),
+                    "requested_tabs": tab_count,
+                    "error": _summarize_chatgpt_image_error(exc),
+                },
+            )
+            _close_chatgpt_page(page)
+            break
+        pages.append(page)
+    return pages
+
+
+def _drain_chatgpt_index_candidates(
+    context,
+    pending: deque[ChatGPTImageCandidate],
+    catalog: ChatGPTImageCatalog,
+    target_dir: Path,
+    should_stop,
+    result_queue: BoundedWorkQueue[ChatGPTImageDownloadWorkResult],
+    request_headers: dict[str, str],
+    max_file_size_bytes: int,
+    page=None,
+) -> None:
+    """Download queued project-index originals through one browser page until none remain."""
+    # Chromium and single-tab Safari keep the context-level path; a Safari tab passes its page.
+    page_options = {} if page is None else {"page": page}
+    while not should_stop():
+        try:
+            candidate = pending.popleft()
+        except IndexError:
+            return
+        candidate = replace(
+            candidate,
+            request_headers={
+                **candidate.request_headers,
+                **request_headers,
+            },
+        )
+        try:
+            downloaded = download_chatgpt_image(
+                context,
+                catalog,
+                target_dir,
+                candidate,
+                max_file_size_bytes=max_file_size_bytes,
+                **page_options,
+            )
+        except ChatGPTImageSizeLimitError:
+            result = ChatGPTImageDownloadWorkResult(
+                candidate_file_id=candidate.file_id,
+                skipped=True,
+                skipped_size=True,
+            )
+        except Exception as exc:  # pragma: no cover - depends on live ChatGPT responses
+            if _is_unavailable_chatgpt_image_error(candidate, exc):
+                catalog.mark_unavailable(candidate.file_id)
+                result = ChatGPTImageDownloadWorkResult(
+                    candidate_file_id=candidate.file_id,
+                    skipped=True,
+                )
+            else:
+                result = ChatGPTImageDownloadWorkResult(
+                    candidate_file_id=candidate.file_id,
+                    error=str(exc),
+                )
+        else:
+            result = ChatGPTImageDownloadWorkResult(
+                candidate_file_id=candidate.file_id,
+                downloaded=downloaded,
+                skipped=not downloaded,
+            )
+        _put_chatgpt_result(result_queue, result, should_stop)
+
+
 def _chatgpt_index_image_worker(
     candidates: list[ChatGPTImageCandidate],
     descriptor,
@@ -3323,16 +3415,21 @@ def _chatgpt_index_image_worker(
     should_stop,
     result_queue: BoundedWorkQueue[ChatGPTImageDownloadWorkResult],
     max_file_size_bytes: int = 0,
+    safari_tab_count: int = 1,
 ) -> None:
-    """Download one partition of signed project-index originals in an isolated browser context."""
+    """Download one partition of signed project-index originals in an isolated browser context.
+
+    Safari admits one task context at a time, so its worker spreads the partition across
+    ``safari_tab_count`` tabs of the owned window instead of launching sibling contexts.
+    """
     if not candidates or should_stop():
         return
-    next_candidate_index = 0
+    pending = deque(candidates)
     final_start_error: Exception | None = None
     for start_attempt_index in range(CHATGPT_WORKER_START_RETRY_LIMIT):
-        if should_stop() or next_candidate_index >= len(candidates):
+        if should_stop() or not pending:
             return
-        initial_url = candidates[next_candidate_index].conversation_url or "https://chatgpt.com/"
+        initial_url = pending[0].conversation_url or "https://chatgpt.com/"
         try:
             with _launch_chatgpt_browser_context(descriptor, initial_url) as context:
                 if context is None:
@@ -3347,76 +3444,46 @@ def _chatgpt_index_image_worker(
                     context,
                     initial_url,
                 )
-                for candidate_index in range(next_candidate_index, len(candidates)):
-                    if should_stop():
-                        return
-                    next_candidate_index = candidate_index
-                    candidate = candidates[candidate_index]
-                    candidate = replace(
-                        candidate,
-                        request_headers={
-                            **candidate.request_headers,
-                            **worker_request_headers,
-                        },
+                pages: list[Any] = [None]
+                if isinstance(context, SafariContext) and safari_tab_count > 1:
+                    pages = _open_chatgpt_safari_download_pages(
+                        context,
+                        initial_url,
+                        min(safari_tab_count, len(pending)),
                     )
-                    try:
-                        downloaded = download_chatgpt_image(
-                            context,
-                            catalog,
-                            target_dir,
-                            candidate,
-                            max_file_size_bytes=max_file_size_bytes,
-                        )
-                    except ChatGPTImageSizeLimitError:
-                        _put_chatgpt_result(
-                            result_queue,
-                            ChatGPTImageDownloadWorkResult(
-                                candidate_file_id=candidate.file_id,
-                                skipped=True,
-                                skipped_size=True,
-                            ),
-                            should_stop,
-                        )
-                        next_candidate_index = candidate_index + 1
-                        continue
-                    except Exception as exc:  # pragma: no cover - depends on live ChatGPT responses
-                        if _is_unavailable_chatgpt_image_error(candidate, exc):
-                            catalog.mark_unavailable(candidate.file_id)
-                            _put_chatgpt_result(
-                                result_queue,
-                                ChatGPTImageDownloadWorkResult(
-                                    candidate_file_id=candidate.file_id,
-                                    skipped=True,
-                                ),
-                                should_stop,
-                            )
-                            next_candidate_index = candidate_index + 1
-                            continue
-                        _put_chatgpt_result(
-                            result_queue,
-                            ChatGPTImageDownloadWorkResult(
-                                candidate_file_id=candidate.file_id,
-                                error=str(exc),
-                            ),
-                            should_stop,
-                        )
-                    else:
-                        _put_chatgpt_result(
-                            result_queue,
-                            ChatGPTImageDownloadWorkResult(
-                                candidate_file_id=candidate.file_id,
-                                downloaded=downloaded,
-                                skipped=not downloaded,
-                            ),
-                            should_stop,
-                        )
-                    next_candidate_index = candidate_index + 1
+                drain_arguments = (
+                    context,
+                    pending,
+                    catalog,
+                    target_dir,
+                    should_stop,
+                    result_queue,
+                    worker_request_headers,
+                    max_file_size_bytes,
+                )
+                tab_workers = [
+                    Thread(
+                        target=_drain_chatgpt_index_candidates,
+                        args=drain_arguments + (page,),
+                        daemon=True,
+                        name=f"chatgpt-index-tab-{tab_number}",
+                    )
+                    for tab_number, page in enumerate(pages[1:], start=2)
+                ]
+                for tab_worker in tab_workers:
+                    tab_worker.start()
+                try:
+                    _drain_chatgpt_index_candidates(*drain_arguments, pages[0])
+                finally:
+                    # The owned window must outlive every transfer still in flight on a tab.
+                    for tab_worker in tab_workers:
+                        tab_worker.join()
                 return
         except Exception as exc:  # pragma: no cover - depends on live browser startup
             final_start_error = exc
             can_retry = (
                 not should_stop()
-                and next_candidate_index < len(candidates)
+                and bool(pending)
                 and start_attempt_index + 1 < CHATGPT_WORKER_START_RETRY_LIMIT
             )
             if not can_retry:
@@ -3431,14 +3498,14 @@ def _chatgpt_index_image_worker(
             )
             time.sleep(CHATGPT_WORKER_START_RETRY_DELAY_SECONDS * (start_attempt_index + 1))
 
-    if should_stop() or next_candidate_index >= len(candidates):
+    if should_stop() or not pending:
         return
     worker_error = final_start_error or RuntimeError("ChatGPT image worker startup failed.")
-    for candidate in candidates[next_candidate_index:]:
+    while pending:
         _put_chatgpt_result(
             result_queue,
             ChatGPTImageDownloadWorkResult(
-                candidate_file_id=candidate.file_id,
+                candidate_file_id=pending.popleft().file_id,
                 error=str(worker_error),
             ),
             should_stop,
@@ -3464,6 +3531,7 @@ def _iter_chatgpt_index_image_results(
             yield ChatGPTImageDownloadWorkResult(
                 candidate_file_id=candidate.file_id,
                 skipped=True,
+                already_cached=True,
             )
         else:
             pending_candidates.append(candidate)
@@ -3472,6 +3540,11 @@ def _iter_chatgpt_index_image_results(
         return
 
     worker_count = max(1, min(worker_count, len(pending_candidates)))
+    safari_tab_count = 1
+    if getattr(descriptor, "engine", "") == "safari":
+        # Safari admits one task context at a time, so one worker owns the window
+        # and spreads the downloads across that many of its tabs.
+        safari_tab_count, worker_count = worker_count, 1
     assignments = [
         pending_candidates[worker_index::worker_count]
         for worker_index in range(worker_count)
@@ -3484,6 +3557,7 @@ def _iter_chatgpt_index_image_results(
             target=_chatgpt_index_image_worker,
             args=(worker_candidates, descriptor, catalog, target_dir, should_stop, result_queue)
             + ((max_file_size_bytes,) if max_file_size_bytes > 0 else ()),
+            kwargs={"safari_tab_count": safari_tab_count} if safari_tab_count > 1 else {},
             daemon=True,
             name=f"chatgpt-index-worker-{worker_index + 1}",
         )
@@ -3537,18 +3611,33 @@ def _chatgpt_image_request_headers(candidate: ChatGPTImageCandidate) -> dict[str
     return headers
 
 
-def _resolve_chatgpt_image_source_url(context, candidate: ChatGPTImageCandidate) -> str:
-    """Resolve a file-service asset to its short-lived original image URL."""
+def _resolve_chatgpt_image_source_url(
+    context,
+    candidate: ChatGPTImageCandidate,
+    page=None,
+) -> str:
+    """Resolve a file-service asset to its short-lived original image URL.
+
+    A Safari download tab passes its own ``page`` so parallel tabs never share one request slot.
+    """
     if not _is_chatgpt_file_download_url(candidate.source_url):
         return candidate.source_url
     if not candidate.request_headers:
         raise RuntimeError("ChatGPT image authorization was not captured from the conversation response.")
 
-    response = context.request.get(
-        candidate.source_url,
-        timeout=CHATGPT_IMAGE_TIMEOUT_MS,
-        headers=_chatgpt_image_request_headers(candidate),
-    )
+    if page is None:
+        response = context.request.get(
+            candidate.source_url,
+            timeout=CHATGPT_IMAGE_TIMEOUT_MS,
+            headers=_chatgpt_image_request_headers(candidate),
+        )
+    else:
+        response = context.request.get_from_page(
+            page,
+            candidate.source_url,
+            timeout=CHATGPT_IMAGE_TIMEOUT_MS,
+            headers=_chatgpt_image_request_headers(candidate),
+        )
     if not response.ok:
         raise RuntimeError(f"ChatGPT file metadata request returned HTTP {response.status}.")
     try:
@@ -3626,6 +3715,7 @@ def _is_retryable_chatgpt_image_error(error: Exception) -> bool:
             "load failed",
             "failed to fetch",
             "undefined is not an object",
+            "transfer state was replaced",
             "resumed at byte",
             "did not honor the resume range",
             "bytes[index]",
@@ -3690,9 +3780,13 @@ def _download_chatgpt_image_via_safari(
     target_dir: Path,
     candidate: ChatGPTImageCandidate,
     max_file_size_bytes: int,
+    page=None,
 ) -> bool:
-    """Stream one original image through the authenticated offscreen Safari page."""
-    source_url = _resolve_chatgpt_image_source_url(context, candidate)
+    """Stream one original image through an authenticated offscreen Safari page.
+
+    ``page`` selects the tab that owns this transfer; the primary page is the default.
+    """
+    source_url = _resolve_chatgpt_image_source_url(context, candidate, page)
     resolved_candidate = (
         candidate
         if source_url == candidate.source_url
@@ -3703,9 +3797,10 @@ def _download_chatgpt_image_via_safari(
     partial_dir.mkdir(parents=True, exist_ok=True)
     partial_path = partial_dir / f"{sanitize_filename_part(candidate.file_id)}.part"
     _require_safe_chatgpt_media_path(target_dir, partial_path)
+    transfer_page = context.primary_page if page is None else page
 
     try:
-        content_type, _resumed = context.primary_page.download_to_path(
+        content_type, _resumed = transfer_page.download_to_path(
             source_url,
             partial_path,
             lambda: False,
@@ -3725,9 +3820,13 @@ def _download_chatgpt_image_via_safari(
                 source_url=_chatgpt_file_download_url(candidate.file_id, candidate.conversation_url),
             )
             try:
-                refreshed_source_url = _resolve_chatgpt_image_source_url(context, refresh_candidate)
+                refreshed_source_url = _resolve_chatgpt_image_source_url(
+                    context,
+                    refresh_candidate,
+                    page,
+                )
                 _require_safe_chatgpt_media_path(target_dir, partial_path)
-                content_type, _resumed = context.primary_page.download_to_path(
+                content_type, _resumed = transfer_page.download_to_path(
                     refreshed_source_url,
                     partial_path,
                     lambda: False,
@@ -3790,8 +3889,12 @@ def download_chatgpt_image(
     target_dir: Path,
     candidate: ChatGPTImageCandidate,
     max_file_size_bytes: int = 0,
+    page=None,
 ) -> bool:
-    """Download one original image through the authenticated browser context."""
+    """Download one original image through the authenticated browser context.
+
+    ``page`` pins a Safari transfer to one tab of the context; other browsers ignore it.
+    """
     if not should_cache_chatgpt_candidate(candidate):
         return False
     if BrowserDeletionCatalog(_chatgpt_local_store_root(target_dir)).is_excluded("chatgpt", candidate.file_id):
@@ -3810,6 +3913,7 @@ def download_chatgpt_image(
                         target_dir,
                         candidate,
                         max_file_size_bytes,
+                        page,
                     )
                 response, source_url, resolved_candidate = _request_chatgpt_image_with_refresh(context, candidate)
                 if not response.ok:
@@ -4164,11 +4268,20 @@ def sync_chatgpt_images(
         failed_count = 0
         processed_conversations = 0
         worker_count = max(1, min(int(runtime_config.download_workers), CHATGPT_MAX_CONVERSATION_WORKERS))
+        index_worker_count = worker_count
         if descriptor.engine == "safari":
+            # Session scans navigate their page, so they keep one serialized Safari worker.
+            # Direct project-index downloads only fetch, so they share the owned window's tabs.
             worker_count = CHATGPT_SAFARI_WORKER_COUNT
-            state.append_event(
-                "Using one serialized Safari media worker to preserve the offscreen page byte stream."
-            )
+            if project_index_candidates and index_worker_count > 1:
+                state.append_event(
+                    f"Using up to {index_worker_count} Safari tabs in one task window for "
+                    "direct project-index downloads."
+                )
+            else:
+                state.append_event(
+                    "Using one serialized Safari media worker to preserve the offscreen page byte stream."
+                )
         if direct_session_refresh:
             worker_count = 1
             state.append_event(
@@ -4187,18 +4300,53 @@ def sync_chatgpt_images(
                 "Direct project-index downloads run first."
             )
         indexed_images_processed = 0
+        already_cached_batch = 0
+
+        def publish_index_progress() -> None:
+            state.update(
+                phase="downloading" if downloaded_count else "collecting",
+                discovered_tweets=len(conversation_urls),
+                discovered_images=len(discovered_images),
+                queued_tweets=len(project_index_candidates) or len(conversation_urls),
+                processed_tweets=indexed_images_processed if project_index_candidates else processed_conversations,
+                downloaded_posts=cached_count,
+                downloaded_tweets=cached_count,
+                downloaded_images=cached_count,
+                downloaded_videos=0,
+                skipped_tweets=skipped_known,
+                failed_tweets=failed_count,
+            )
+
+        def publish_already_cached_batch() -> None:
+            nonlocal already_cached_batch
+            if not already_cached_batch:
+                return
+            publish_index_progress()
+            state.append_event(
+                f"Skipped {already_cached_batch:,} direct ChatGPT project-index images "
+                "that were already cached."
+            )
+            already_cached_batch = 0
+
         for result in _iter_chatgpt_index_image_results(
             project_index_candidates,
             descriptor,
             catalog,
             resolved_target_dir,
             should_stop,
-            worker_count,
+            index_worker_count,
             max_file_size_bytes=runtime_config.max_media_file_size_bytes,
         ):
+            if not result.already_cached:
+                publish_already_cached_batch()
             indexed_images_processed += 1
             downloaded_count += int(result.downloaded)
             skipped_known += int(result.skipped)
+            if result.already_cached:
+                # The file was complete before any worker started, so the catalog is
+                # unchanged: publish the whole run once instead of recounting it per image.
+                already_cached_batch += 1
+                continue
             if result.skipped_size:
                 size_skipped_count += 1
                 state.append_event(
@@ -4219,20 +4367,10 @@ def sync_chatgpt_images(
                     },
                 )
 
-            cached_count = catalog.summarize()
-            state.update(
-                phase="downloading" if downloaded_count else "collecting",
-                discovered_tweets=len(conversation_urls),
-                discovered_images=len(discovered_images),
-                queued_tweets=len(project_index_candidates) or len(conversation_urls),
-                processed_tweets=indexed_images_processed if project_index_candidates else processed_conversations,
-                downloaded_posts=cached_count,
-                downloaded_tweets=cached_count,
-                downloaded_images=cached_count,
-                downloaded_videos=0,
-                skipped_tweets=skipped_known,
-                failed_tweets=failed_count,
-            )
+            if result.downloaded:
+                # Only a registered download can change the cached total.
+                cached_count = catalog.summarize()
+            publish_index_progress()
             if (
                 indexed_images_processed == len(project_index_candidates)
                 or indexed_images_processed % CHATGPT_RECENT_IMAGE_PAGE_SIZE == 0
@@ -4241,6 +4379,7 @@ def sync_chatgpt_images(
                     f"Cached {indexed_images_processed:,}/{len(project_index_candidates):,} "
                     "direct ChatGPT project-index images."
                 )
+        publish_already_cached_batch()
 
         if project_index_candidates:
             state.append_event(

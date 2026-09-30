@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.10.1-codex.0`
+Test-suite version: `v1.11.0-claude.0`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -47,7 +47,15 @@ This is a behavior map, not a claim of complete coverage or a current test-count
   latest-image cover per session in grid or list layout), its Session View deep links, and its
   state persistence. `test_select_keyboard_e2e.py` also covers the opaque Local resources sidebar
   filter menus.
-- `test_job_lock.py`: cache job ownership and contention.
+- `test_job_lock.py`: cache job ownership and contention, per-resource lock files, and the
+  maintenance lock that keeps a backup or history repair away from active tasks.
+- `test_cache_task_coordinator.py`: concurrent admission by browser and store, the
+  arrival-order queue, cancelling a queued task, cross-process refusal, deferred post-task
+  backup, worker queue states, and real worker threads for X Media beside ChatGPT Text.
+- `test_cache_concurrency_web.py`, `test_cache_activity.py`, `test_cache_activity_e2e.py`, and
+  `test_cache_queue_e2e.py`: per-mode Start/Stop and status, queued tasks through the routes,
+  the Safari account check while a Safari task runs, the task entry on every application page
+  with its composer clearance, and the queued state on a Cache page.
 - `test_safari_automation.py`: Safari automation protocol behavior through mocked boundaries.
 - `test_web_app.py`, `test_style_tokens.py`, `test_style_token_registry.py`,
   `test_layout_anchor_contract.py`, and `test_style_alignment_e2e.py`: routes, design contracts,

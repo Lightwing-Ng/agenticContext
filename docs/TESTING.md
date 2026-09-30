@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.27.1-codex.0`
+Documentation version: `v1.28.0-claude.0`
 
 ## Supported commands
 
@@ -515,6 +515,17 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   HTML, complete Local resources answer rendering, source-specific Answerer filtering, query-state
   preservation, removed answer IDs/Projects/Clear filters, literal detail headings, default Edge
   controls, login-probe routing, and the single-character vector logo.
+- Concurrent cache task tests never open a browser or contact a provider. Coordinator tests use
+  a temporary lock directory and recorded callbacks for admission by browser and store, queue
+  order, cancellation, a second process, and the deferred post-task backup; one case runs the
+  real X and ChatGPT workers on their own threads with injected collectors. Route tests build
+  the application with idle worker threads, release every admitted task on teardown, and cover
+  per-mode Start, Stop, status, the queue, targeted-refresh refusal, and the Safari account
+  check. `test_cache_activity_e2e.py` and `test_cache_queue_e2e.py` use synthetic activity and
+  status responses in a disposable browser for the task entry on every application page and
+  the queued state on a Cache page. Run them with
+  `./scripts/test.sh tests/test_cache_task_coordinator.py tests/test_cache_concurrency_web.py tests/test_cache_activity.py tests/test_job_lock.py`
+  and `./scripts/test.sh tests/test_cache_activity_e2e.py tests/test_cache_queue_e2e.py`.
 - Zhihu answerer update tests cover the drawer action's rendering, disabled state without a cached
   profile link, route URL validation, busy and disabled-operation refusals, and the script-to-route
   contract. Collector tests cover the newest-answer read: stopping at the first fully cached page,

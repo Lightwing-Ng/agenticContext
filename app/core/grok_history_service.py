@@ -1,6 +1,6 @@
 """Background service for Grok session history sync.
 
-Code version: v1.0.2-codex.0
+Code version: v1.1.0-claude.0
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from .cache_service_support import (
     append_shadow_backup_completion,
     summarize_status_error,
 )
+from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .config import LOCAL_STORE_ROOT, CrawlConfig
 from .grok_history import sync_grok_history
 from .job_lock import CacheTaskLock
@@ -45,8 +46,11 @@ class GrokHistoryService(CooperativeCacheWorker):
         local_store_root: Path | str = LOCAL_STORE_ROOT,
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
+        *,
+        task: CacheTaskIdentity | None = None,
+        coordinator: CacheTaskCoordinator | None = None,
     ) -> None:
-        super().__init__(state, task_lock)
+        super().__init__(state, task_lock, task=task, coordinator=coordinator)
         self._local_store_root = Path(local_store_root)
         self._config = CrawlConfig()
         self._shadow_backup_service = shadow_backup_service
@@ -67,6 +71,7 @@ class GrokHistoryService(CooperativeCacheWorker):
             target=self._run,
             prepare=prepare,
             thread_factory=Thread,
+            browser=config.grok_browser,
         )
 
     def request_stop(self) -> bool:
@@ -116,6 +121,8 @@ class GrokHistoryService(CooperativeCacheWorker):
                 shadow_backup_service=self._shadow_backup_service,
                 state=self._state,
                 config=self._config,
+                coordinator=self._coordinator,
+                task=self._task,
             )
             self._state.finish_success(completion_message)
             logger.info("Grok history sync finished successfully.", extra={"job_id": job_id, **result})

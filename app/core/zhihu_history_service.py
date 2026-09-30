@@ -1,6 +1,6 @@
 """Background service for the formal Zhihu text cache.
 
-Code version: v1.3.0-codex.0
+Code version: v1.4.0-claude.0
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from .cache_service_support import (
     append_shadow_backup_completion,
     summarize_status_error,
 )
+from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .config import LOCAL_STORE_ROOT, CrawlConfig
 from .job_lock import CacheTaskLock
 from .shadow_backup import ShadowBackupService
@@ -65,8 +66,11 @@ class ZhihuHistoryService(CooperativeCacheWorker):
         local_store_root: Path | str = LOCAL_STORE_ROOT,
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
+        *,
+        task: CacheTaskIdentity | None = None,
+        coordinator: CacheTaskCoordinator | None = None,
     ) -> None:
-        super().__init__(state, task_lock)
+        super().__init__(state, task_lock, task=task, coordinator=coordinator)
         self._local_store_root = Path(local_store_root)
         self._shadow_backup_service = shadow_backup_service
         self._config = CrawlConfig()
@@ -79,8 +83,13 @@ class ZhihuHistoryService(CooperativeCacheWorker):
         *,
         author_url: str = "",
         latest_only: bool = False,
+        allow_queue: bool = True,
     ) -> None:
-        """Start one signed-in vote-up, complete author-answer, or newest-answer cache run."""
+        """Start one signed-in vote-up, complete author-answer, or newest-answer cache run.
+
+        A targeted refresh passes ``allow_queue=False`` so it fails at once instead
+        of waiting behind another task that holds the browser.
+        """
 
         normalized_author_url = str(author_url or "").strip()
         def prepare() -> None:
@@ -98,6 +107,8 @@ class ZhihuHistoryService(CooperativeCacheWorker):
             target=self._run,
             prepare=prepare,
             thread_factory=Thread,
+            browser=config.zhihu_browser,
+            allow_queue=allow_queue,
         )
 
     def request_stop(self) -> bool:
@@ -130,6 +141,8 @@ class ZhihuHistoryService(CooperativeCacheWorker):
                 shadow_backup_service=self._shadow_backup_service,
                 state=self._state,
                 config=self._config,
+                coordinator=self._coordinator,
+                task=self._task,
             )
             self._state.finish_success(completion_message)
             logger.info(

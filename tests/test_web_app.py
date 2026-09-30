@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.150.0-claude.0
+# Code version: v1.151.0-claude.0
 
 from __future__ import annotations
 
@@ -525,7 +525,7 @@ class WebAppTests(unittest.TestCase):
                 body = client.get("/settings").get_data(as_text=True)
                 for label in ("ChatGPT · Text", "ChatGPT · Media", "Claude · Text", "Gemini · Text", "Grok · Text", "Grok · Media"):
                     self.assertIn(label, body)
-                with patch.object(app.extensions["chatgpt_service"], "start") as start:
+                with patch("app.core.chatgpt_service.ChatGPTDownloadService.start") as start:
                     response = client.post("/cache/chatgpt/start", data={"chatgpt_content_mode": "text"})
                 self.assertEqual(response.status_code, 302)
                 config = start.call_args.args[0]
@@ -753,7 +753,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.17.2-codex.0', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.18.0-claude.0', chatgpt_body)
         self.assertIn('numeric-display.js?v=numeric-display-v1.1.0-codex.0', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
@@ -788,7 +788,7 @@ class WebAppTests(unittest.TestCase):
                 stop_form_end = body.index(">", stop_form_start)
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', chatgpt_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.0-claude.0', chatgpt_body)
         self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.9.1-codex.0', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
@@ -1335,7 +1335,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.2.1-codex.0', local_body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.0-claude.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
         self.assertIn('style-v2.157.0-codex.0', local_body)
@@ -1888,9 +1888,8 @@ class WebAppTests(unittest.TestCase):
                 "app.core.service.CacheLikesService.start"
             ) as media_start, patch(
                 "app.core.grok_history_service.GrokHistoryService.start"
-            ) as grok_text_start, patch.object(
-                app.extensions["chatgpt_service"],
-                "start",
+            ) as grok_text_start, patch(
+                "app.core.chatgpt_service.ChatGPTDownloadService.start"
             ) as chatgpt_start:
                 with app.test_client() as client:
                     responses = (

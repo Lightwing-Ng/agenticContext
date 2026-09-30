@@ -1,4 +1,4 @@
-/* Code version: v1.1.0-codex.0 */
+/* Code version: v1.2.0-claude.0 */
 
 .page[data-cache-page] {
     width: 100%;
@@ -147,13 +147,35 @@
     color: var(--text);
 }
 
-main[data-cache-page] .cache-activity-meter {
+/* The entry appears on every page, so its meter carries the Cache progress material
+   itself instead of borrowing the Cache page's scoped rules. */
+.cache-activity-meter {
+    display: grid;
+    gap: 6px;
     margin: 4px 0;
 }
 
-.cache-activity-progress-track {
+.cache-activity-meter[hidden],
+.cache-activity-progress[hidden] {
+    display: none;
+}
+
+.cache-activity .cache-activity-progress-track {
     width: 100%;
     min-width: 0;
+    height: 6px;
+    border: 0;
+    background: var(--theme-glass-border);
+}
+
+.cache-activity .cache-activity-meter .cache-activity-progress-track .status-progress-fill {
+    background: var(--theme-accent-positive);
+    box-shadow: none;
+}
+
+/* An unknown total keeps the static segment Cache uses until its motion is designed. */
+.cache-activity .cache-activity-meter .cache-activity-progress-track.is-indeterminate .status-progress-fill {
+    width: 40% !important;
 }
 
 .cache-activity-meta,
@@ -166,8 +188,8 @@ main[data-cache-page] .cache-activity-meter {
     margin-bottom: 12px;
 }
 
-.cache-activity[data-stale="true"] .live-marker::before,
-.cache-activity[data-stale="true"] .live-marker::after {
+.cache-activity:is([data-stale="true"], [data-running="false"]) .live-marker::before,
+.cache-activity:is([data-stale="true"], [data-running="false"]) .live-marker::after {
     animation: none;
     opacity: 0;
 }

@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.15.0-codex.0
+# Code version: v2.16.0-claude.0
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from unittest.mock import patch
 
 import pytest
@@ -345,6 +345,102 @@ def test_safari_page_download_reports_http_authentication_failure_once(tmp_path:
 
     assert error.value.status == 401
     assert evaluate.call_count == 2
+
+
+def test_safari_pages_of_one_context_download_concurrently(tmp_path: Path) -> None:
+    context = SafariContext("https://chatgpt.com/")
+    pages = [SafariPage(context, window_id=123, tab_index=index) for index in (1, 2)]
+    context.pages.extend(pages)
+    contents = [b"first-tab-payload", b"second-tab-payload"]
+    transfer_started = [Event(), Event()]
+
+    def evaluate_for(index: int):
+        def evaluate(expression: str, _argument: object = None) -> object:
+            if "fetch(request.sourceUrl" in expression:
+                transfer_started[index].set()
+                return True
+            # Each tab reports its bytes only while the sibling transfer is also in flight,
+            # which a context-wide download lock would make impossible.
+            assert transfer_started[1 - index].wait(timeout=2)
+            content = contents[index]
+            return {
+                "state": "ready",
+                "status": 200,
+                "contentType": "image/png",
+                "contentRange": "",
+                "contentLength": str(len(content)),
+                "bytes": len(content),
+                "error": "",
+                "encoded": base64.b64encode(content).decode(),
+                "nextOffset": len(content),
+            }
+
+        return evaluate
+
+    with patch.object(pages[0], "evaluate", side_effect=evaluate_for(0)), patch.object(
+        pages[1], "evaluate", side_effect=evaluate_for(1)
+    ), ThreadPoolExecutor(max_workers=2) as executor:
+        downloads = [
+            executor.submit(
+                page.download_to_path,
+                f"https://chatgpt.com/backend-api/estuary/content?id=file_{index}",
+                tmp_path / f"asset-{index}.part",
+                lambda: False,
+            )
+            for index, page in enumerate(pages)
+        ]
+        results = [download.result(timeout=5) for download in downloads]
+
+    assert results == [("image/png", False), ("image/png", False)]
+    assert [(tmp_path / f"asset-{index}.part").read_bytes() for index in (0, 1)] == contents
+
+
+def test_safari_page_binds_every_poll_and_slice_to_its_transfer_token(tmp_path: Path) -> None:
+    context = SafariContext("https://chatgpt.com/")
+    page = SafariPage(context, window_id=123)
+    context.pages.append(page)
+    content = b"0123456789"
+
+    def evaluate(expression: str, argument: object = None) -> object:
+        if "fetch(request.sourceUrl" in expression:
+            return True
+        if "firstSliceEnd" in expression:
+            return {
+                "state": "ready",
+                "status": 200,
+                "contentType": "image/png",
+                "contentRange": "",
+                "contentLength": str(len(content)),
+                "bytes": len(content),
+                "error": "",
+                "encoded": base64.b64encode(content[:4]).decode(),
+                "nextOffset": 4,
+            }
+        assert isinstance(argument, dict)
+        start, end = argument["start"], min(argument["end"], len(content))
+        return {"encoded": base64.b64encode(content[start:end]).decode(), "end": end}
+
+    with patch("app.core.safari_automation.SAFARI_BASE64_SLICE_BYTES", 4), patch.object(
+        page, "evaluate", side_effect=evaluate
+    ) as evaluate_mock:
+        for attempt in range(2):
+            page.download_to_path(
+                "https://chatgpt.com/backend-api/estuary/content?id=file_token",
+                tmp_path / f"asset-{attempt}.part",
+                lambda: False,
+            )
+
+    assert (tmp_path / "asset-0.part").read_bytes() == content
+    arguments = [call.args[1] for call in evaluate_mock.call_args_list]
+    first_transfer, second_transfer = arguments[:4], arguments[4:]
+    tokens = []
+    for start_payload, poll_token, *slice_bounds in (first_transfer, second_transfer):
+        token = start_payload["token"]
+        assert token and poll_token == token
+        assert [bounds["token"] for bounds in slice_bounds] == [token, token]
+        tokens.append(token)
+    # A later transfer on the same tab must never be able to read the earlier one's state.
+    assert tokens[0] != tokens[1]
 
 
 def test_safari_page_background_transfer_rejects_window_mutation_before_execution() -> None:
@@ -1563,7 +1659,14 @@ def test_safari_context_creates_a_standard_visible_background_window() -> None:
     assert script.index("set previousFrontmostProcessName") < script.index("launch")
     assert "set targetDocument to make new document" in script
     assert "(document of candidateWindow) is targetDocument" in script
-    assert "set targetWindow to candidateWindow" in script
+    # A loop item is positional ("item 1 of every window"). Restoring the user's front window
+    # while Safari is frontmost would retarget it, so both lookups bind the window by its ID.
+    assert "set targetWindow to candidateWindow" not in script
+    assert script.count("set targetWindowId to id of candidateWindow") == 2
+    assert script.count("set targetWindow to first window whose id is targetWindowId") == 2
+    assert script.index("set targetWindow to first window whose id is targetWindowId") < script.index(
+        "set index of (first window whose id is previousWindowId) to 1"
+    )
     assert "existingWindowIds" not in script
     assert "emptyWindowIds" not in script
     assert "set visible of targetWindow to true" in script

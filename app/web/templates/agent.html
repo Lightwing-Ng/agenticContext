@@ -1,4 +1,4 @@
-<!-- Code version: v3.85.4-codex.0 -->
+<!-- Code version: v3.86.0-claude.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -10,6 +10,7 @@
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.157.0-codex.0') }}">
+    {% include "_cache_activity_assets.html" %}
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='tunnel-usage.css', v='1.8.1-codex.0') }}">
@@ -679,7 +680,7 @@ Task:
                         </div>
                     </article>
 
-                    <form id="agent_prompt_form" class="agent-prompt-form">
+                    <form id="agent_prompt_form" class="agent-prompt-form" data-cache-activity-clearance>
                         <input type="hidden" name="workspace_path" value="{{ settings.workspace_path }}" data-agent-workspace-input>
                         <input type="hidden" name="operating_system" value="{{ settings.operating_system }}" data-agent-prompt-os>
                         <input type="hidden" name="platform" value="{{ settings.platform }}" data-agent-prompt-platform>
@@ -781,6 +782,7 @@ Task:
 
     {% set dock_section = "agent" %}
     {% include "_sidebar_dock.html" %}
+    {% include "_cache_activity.html" %}
 </main>
 {% include "_waiting_modal.html" %}
 {% include "_settings_directory_browser.html" %}
@@ -788,7 +790,7 @@ Task:
 <script src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.2.1-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
 <script src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
-<script src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.13.3-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.14.0-claude.0') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>

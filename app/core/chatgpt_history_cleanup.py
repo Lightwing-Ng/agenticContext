@@ -1,6 +1,6 @@
 """Conservatively identify legacy ChatGPT tool traces and repair local history."""
 
-# Code version: v1.1.0-codex.1
+# Code version: v1.2.0-claude.0
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import LOCAL_STORE_ROOT
-from .job_lock import CacheTaskLock
+from .job_lock import CACHE_TASK_LOCK_NAME, CacheMaintenanceLock, CacheTaskLock
 from .resource_persistence import CHATGPT_HISTORY_SCHEMA, read_parquet_rows, write_parquet_rows_atomic
 
 
@@ -108,7 +108,7 @@ def plan_history_cleanup(rows: list[dict], reviewed_ids: set[str]) -> tuple[list
 
 def clean_history(root: Path, reviewed_ids: set[str], apply: bool = False) -> dict:
     """Back up and atomically repair history while excluding concurrent cache writers."""
-    lock = CacheTaskLock(root / ".cache_task.lock")
+    lock = CacheMaintenanceLock(CacheTaskLock(root / CACHE_TASK_LOCK_NAME), root)
     if not lock.acquire("chatgpt-history-cleanup"):
         raise RuntimeError("A cache task is running; history was not modified.")
     try:

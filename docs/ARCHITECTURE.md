@@ -1,13 +1,14 @@
 # Architecture guide
 
-Documentation version: `v1.53.0-claude.0`
+Documentation version: `v1.54.1-claude.0`
 
 ## Runtime flow
 
 ```text
 scripts/run_app.sh or scripts/run_app.ps1
   -> Python 3.13 or newer runtime resolution
-  -> main.py
+  -> main.py (reload supervisor: owns the listening socket, restarts the serving child)
+  -> main.py (serving child, Flask debug mode)
   -> structured logging setup
   -> app.web.app.create_app()
   -> Flask routes and static UI
@@ -16,6 +17,10 @@ scripts/run_app.sh or scripts/run_app.ps1
 
 `main.py` is the only supported application entrypoint. The shell runtime resolver accepts Python
 3.13 or newer and the module itself remains runtime-agnostic before Flask is imported.
+It runs Flask in debug mode behind its own reload supervisor. The supervisor never builds
+services, and it waits for the serving child's browser cleanup on reload, interrupt, and
+termination instead of killing it as Werkzeug's stock supervisor does. See the debug mode
+section of [OPERATIONS.md](OPERATIONS.md).
 `create_app()` builds independent state containers for the X, Grok, and ChatGPT workflows,
 registers the local-media browser, and serves the Flask routes.
 
@@ -87,11 +92,14 @@ subset of the façades; the regression no longer freezes one module's exact faç
 - `app/core/config.py`: runtime defaults, persisted settings, paths, and input normalization.
 - `app/core/state.py`: thread-safe task snapshots and cache-summary hydration.
 - `app/core/service.py`: X Likes collection and yt-dlp orchestration.
-- `app/core/cache_service_support.py`: provider-neutral Cache worker startup, cooperative stop,
-  shared task-lock ownership, logging context, bounded status errors, and post-task shadow-backup
+- `app/core/cache_service_support.py`: provider-neutral Cache worker startup, queued and
+  cooperative stop, logging context, bounded status errors, and post-task shadow-backup
   completion. Provider services retain their own pipelines, result handling, and user-facing copy.
-- `app/core/grok_service.py` and `app/core/chatgpt_service.py`: background sync lifecycle,
-  stop signaling, and shared cache-task exclusion.
+- `app/core/cache_task_coordinator.py` and `app/core/job_lock.py`: admission, the arrival-order
+  queue, and cross-process exclusion for concurrent cache tasks; see
+  [Cache task admission and queue](#cache-task-admission-and-queue).
+- `app/core/grok_service.py` and `app/core/chatgpt_service.py`: background sync lifecycle and
+  stop signaling. Each source registers one worker per content mode.
 - `app/core/grok_history.py` and `app/core/grok_history_service.py`: authenticated Grok Text
   API traversal, normalized message persistence, and the independent Grok Text worker.
 - `app/core/zhihu_answers.py`: strict Zhihu profile normalization, authenticated same-origin API
@@ -599,8 +607,43 @@ authenticated X browser session
   -> local_store/x/ and its durable cache catalog
 ```
 
-The service deduplicates URLs, respects a cooperative stop request, shares one cross-workflow
-task lock, and records the resulting summary in `TaskState`.
+The service deduplicates URLs, respects a cooperative stop request, is admitted through the
+shared cache task coordinator, and records the resulting summary in `TaskState`.
+
+### Cache task admission and queue
+
+```text
+Start for one source and content mode
+  -> CooperativeCacheWorker._start_worker -> CacheTaskCoordinator.submit
+       resources: task:<source>:<mode>, browser:<id> when exclusive, store:<name> when shared
+  -> every resource free  -> pass the gate, take one lock file per resource, start the thread
+  -> a resource is busy   -> TaskState phase "queued"; arrival-order queue
+  -> a task finishes      -> release its locks, start every queued task that is now unblocked
+```
+
+Every source and content mode is one task with its own `TaskState`, worker, and lock, so
+X media and ChatGPT text, or the Text and Media modes of one source, are started, queued,
+stopped, and reported independently. Tasks that need different resources run together. A
+task whose resource is held waits behind its holder and behind earlier waiters for the same
+resource, then starts without another request. Stop removes a queued task; a running task
+still stops cooperatively.
+
+Two kinds of resource are exclusive. Safari is one, because Safari automation leases a single
+task-owned window; on Windows, Edge and Chrome are too, because a running browser locks its
+cookies and tasks attach to one project profile over CDP. On macOS, Edge and Chrome tasks each
+clone the profile and run together. The X liked-text history is a shared store: an X Text task
+and a Safari X Media task both write it, so they take turns even in different browsers.
+
+Each resource is also a `local_store/.cache_task.<resource>.lock` file, which keeps a second
+application process off the same task, browser, or store. `local_store/.cache_task.lock` is
+the gate: a starting task passes through it, and a maintenance step holds it for its whole
+run and proceeds only when no resource lock is held. That step is a manual shadow backup or
+the ChatGPT history cleanup command. A post-task shadow backup uses the same rule: it runs at
+once when its task is the only one, and is otherwise deferred until the last task finishes. A
+task submitted during a backup waits in the queue.
+
+A targeted refresh from Local resources passes `allow_queue=False`: its page waits for the
+result, so it is refused with the reason instead of waiting behind a long task.
 
 ### Grok media cache
 
@@ -710,6 +753,16 @@ worker owns its Playwright context and recycles its page after a bounded number 
 recoverable page failures receive one retry. Catalog claims and atomic writes prevent duplicate
 workers from corrupting the local index. Only image payloads that pass signature validation are
 retained. The project name is sanitized before it becomes a cache path.
+
+macOS Safari admits one task context, so it replaces the isolated contexts with tabs of its one
+task-owned window. A single worker owns that window and, for direct project-index downloads only,
+opens up to two more tabs and lets every tab draw from one shared queue. Each `SafariPage` holds
+its own transfer lock and its own in-page transfer slot, and every poll and slice carries the
+token of the request that started it, so an abandoned fetch or a tab whose position shifted can
+never supply another transfer's bytes. A tab that cannot be opened is released and the remaining
+tabs finish the queue. Session scans and prompt backfill are unchanged and stay on the primary tab.
+Images that were complete before the run are reported as one batch and do not trigger a catalog
+recount each.
 
 The local visual-signature and dimension stage is separate from browser and network work. At
 ChatGPT sync startup, entries that need visual hydration are read into bounded immutable image
@@ -901,9 +954,11 @@ model selection requires the provider's checked-state and closed-trigger readbac
 the same one-shot boundary against one unique semantic Stop control and performs read-only
 generation-state confirmation rather than repeating an uncertain native event.
 
-The serialized Safari context is mutually exclusive across workflows: an active Safari Cache task
-blocks Agent admission, and an active Safari Agent task makes Cache admission fail before another
-window or collector is started. Passive Agent catalogs and history serve cached or explicit busy/
+The serialized Safari context is mutually exclusive across workflows: a running or queued Safari
+Cache task blocks Agent admission, judged by the browser the task was started with rather than the
+saved selection, and an active Safari Agent task makes Cache admission fail before another window
+or collector is started. While a Safari Cache task runs, a Cache page's account check is answered
+without opening Safari, so a probe cannot take the context between that task's pages. Passive Agent catalogs and history serve cached or explicit busy/
 unprobed results while a Safari Agent owns the context.
 On macOS, silent probes and executing
 Edge or Chrome task clones the selected profile into one normal, non-offscreen task-owned window so the user can
@@ -956,7 +1011,11 @@ user-owned locations above.
 
 ## Cross-workflow and safety invariants
 
-- Only one cache job may own the shared `CacheTaskLock` at once, regardless of source.
+- Each source and content mode is one cache task. Tasks run together unless they need the same
+  exclusive browser or shared store; a task that does waits in the arrival-order queue.
+- Safari admits one cache task at a time, and on Windows so do Edge and Chrome.
+- A shadow backup or history repair never runs while a cache task holds a resource lock, and no
+  cache task starts while one of them holds the gate.
 - The shared `download_workers` setting is normalized to `1` through `8` at load, save, and direct
   configuration construction. Provider-specific browser limits remain stricter where required.
 - Local compute process workers and in-flight image payload bytes are independently bounded; compute

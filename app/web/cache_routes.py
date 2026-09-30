@@ -2,14 +2,16 @@
 
 Every cache source shares one page contract, one start/stop contract, and one
 reconciled-snapshot rule, so they are registered from one registry rather than one
-route per provider. The snapshot builders are module-level because the Settings page
-renders two of them; everything else is request handling for this surface.
+route per provider. Each source registers one runtime per content mode, so its text
+and media tasks start, queue, stop, and report progress independently. The snapshot
+builders are module-level because the Settings page renders two of them; everything
+else is request handling for this surface.
 
 The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as a
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.5.0-codex.0
+# Code version: v1.6.0-claude.0
 
 from __future__ import annotations
 
@@ -31,12 +33,12 @@ from flask import (
 
 from app.core.agent import is_loopback_address
 from app.core.browser import build_browser_options, browser_descriptors
-from app.core.claude_media import build_claude_media_initial_snapshot
 from app.core.foundation import (
     APP_VERSION,
     DEFAULT_HOST,
     DEFAULT_PORT,
     PRODUCT_NAME,
+    CacheTaskCoordinator,
     TaskState,
     get_log_file_path,
     utc_now,
@@ -44,9 +46,6 @@ from app.core.foundation import (
 from app.core.providers import (
     build_chatgpt_initial_snapshot,
     chatgpt_conversation_id,
-    build_chatgpt_text_snapshot,
-    build_gemini_media_initial_snapshot,
-    build_grok_history_snapshot,
     build_grok_initial_snapshot,
     chatgpt_history_counts,
     is_chatgpt_conversation_url,
@@ -59,7 +58,6 @@ from app.core.storage import (
     local_file_manager_label,
     open_directory_path,
 )
-from app.core.state import build_x_text_snapshot
 from app.web.cache_sources import (
     LLM_CACHE_SOURCE_VIEWS,
     LLM_SWITCHER_SOURCE_VIEWS,
@@ -75,10 +73,15 @@ from app.web.presentation import reconcile_cached_snapshot
 
 CACHE_BLUEPRINT_NAME = "cache"
 
+# A request that names no content mode keeps the mode its source always answered with.
+# Status and start differ for ChatGPT: its legacy status reports media, its form text.
+STATUS_DEFAULT_CONTENT_MODES = {"x": "media", "grok": "media", "chatgpt": "media"}
+START_DEFAULT_CONTENT_MODES = {"x": "media", "grok": "media"}
+
 
 @dataclass(frozen=True, slots=True)
 class CacheRuntimeAdapter:
-    """Connect one registered cache page to its task runtime."""
+    """Connect one cache source and content mode to its task runtime."""
 
     state: TaskState
     service: Any
@@ -87,17 +90,39 @@ class CacheRuntimeAdapter:
 
 @dataclass(frozen=True, slots=True)
 class CacheRouteContext:
-    """The registered cache runtimes plus the stores and policy these routes need."""
+    """The registered cache runtimes plus the stores and policy these routes need.
 
-    cache_runtimes: dict[str, CacheRuntimeAdapter]
+    ``cache_runtimes`` maps each source to its runtimes by content mode.
+    """
+
+    cache_runtimes: dict[str, dict[str, CacheRuntimeAdapter]]
     config_store: SavedConfigStore
     media_catalog: Any
-    grok_history_state: TaskState
-    grok_history_service: Any
-    chatgpt_service: Any
+    cache_task_coordinator: CacheTaskCoordinator
     reject_active_safari_agent_for_cache: Callable[[str], Any]
     external_agent_operations_enabled: Callable[[], bool]
     reject_external_agent_operation: Callable[[], Any]
+
+
+def resolve_cache_runtime(
+    context: CacheRouteContext,
+    source_key: str,
+    content_mode: str | None = None,
+    *,
+    defaults: dict[str, str] = STATUS_DEFAULT_CONTENT_MODES,
+) -> tuple[str, CacheRuntimeAdapter]:
+    """Return the content mode and runtime that answer one source request."""
+    runtimes = context.cache_runtimes.get(source_key)
+    if not runtimes:
+        raise KeyError(source_key)
+    requested_mode = str(content_mode or "").strip().lower()
+    if requested_mode in runtimes:
+        return requested_mode, runtimes[requested_mode]
+    default_mode = defaults.get(source_key, "text")
+    if default_mode in runtimes:
+        return default_mode, runtimes[default_mode]
+    # A single-mode source answers every request with the runtime it has.
+    return next(iter(runtimes.items()))
 
 
 def build_reconciled_cache_snapshot(
@@ -105,62 +130,44 @@ def build_reconciled_cache_snapshot(
     source_key: str,
     content_mode: str | None = None,
 ) -> dict[str, Any]:
-    """Refresh one registered source without discarding live task status."""
-    runtime = context.cache_runtimes.get(source_key)
-    if runtime is None:
-        raise KeyError(source_key)
-    mode = content_mode or request.args.get("content_mode")
-    if source_key == "grok" and mode == "text":
-        return build_reconciled_grok_history_snapshot(context)
-    if source_key == "x":
-        selected_mode = "text" if mode == "text" else "media"
-        hydrated = asdict(
-            build_x_text_snapshot(APP_VERSION, context.media_catalog.local_store_root)
-            if selected_mode == "text" else runtime.hydrate_snapshot()
-        )
-        live = runtime.state.snapshot()
-        live_mode = str((live.get("performance_metrics") or {}).get("content_mode") or "media")
-        if live_mode != selected_mode:
-            if live.get("running"):
-                hydrated.update(
-                    running=True,
-                    phase=live["phase"],
-                    started_at=live["started_at"],
-                    message=f"X {live_mode} cache is running.",
-                )
-            return hydrated
-        return reconcile_cached_snapshot(live, hydrated)
-    if source_key == "chatgpt" and mode == "text":
-        hydrated = asdict(build_chatgpt_text_snapshot(APP_VERSION, context.media_catalog.local_store_root))
-        snapshot = reconcile_cached_snapshot(runtime.state.snapshot(), hydrated)
-        snapshot["cached_sessions"] = hydrated["downloaded_posts"]
-        snapshot["cached_messages"] = hydrated["downloaded_tweets"]
-        return snapshot
-    if source_key in {"claude", "gemini"}:
-        selected_mode = "media" if mode == "media" else "text"
-        media_snapshot = (
-            build_gemini_media_initial_snapshot if source_key == "gemini"
-            else build_claude_media_initial_snapshot
-        )
-        hydrated = asdict(
-            media_snapshot(APP_VERSION, context.media_catalog.local_store_root)
-            if selected_mode == "media" else runtime.hydrate_snapshot()
-        )
-        live = runtime.state.snapshot()
-        live_mode = str((live.get("performance_metrics") or {}).get("content_mode") or "text")
-        if live_mode != selected_mode:
-            if live.get("running"):
-                hydrated.update(
-                    running=True,
-                    phase=live["phase"],
-                    started_at=live["started_at"],
-                    message=f"{source_key.capitalize()} {live_mode} cache is running.",
-                )
-            return hydrated
-        return reconcile_cached_snapshot(live, hydrated)
-    snapshot = reconcile_cached_snapshot(runtime.state.snapshot(), asdict(runtime.hydrate_snapshot()))
+    """Refresh one source and content mode without discarding live task status."""
+    mode, runtime = resolve_cache_runtime(
+        context,
+        source_key,
+        content_mode or request.args.get("content_mode"),
+    )
+    hydrated = asdict(runtime.hydrate_snapshot())
+    live = runtime.state.snapshot()
+    # A mode that has not run, failed, or been reset in this process has no task status
+    # of its own, so the store is the whole answer.
+    unstarted = (
+        not live["running"]
+        and live["phase"] == "idle"
+        and not live["started_at"]
+        and not live["last_error"]
+        and not live["recent_events"]
+    )
+    if unstarted:
+        snapshot = hydrated
+    elif live["running"] and live["phase"] == "queued":
+        # A queued task has not touched the store yet: keep the cached totals on its
+        # page and show only that it is waiting, and for what.
+        snapshot = {
+            **hydrated,
+            "running": True,
+            "phase": live["phase"],
+            "message": live["message"],
+            "started_at": live["started_at"],
+            "recent_events": live["recent_events"],
+        }
+    else:
+        snapshot = reconcile_cached_snapshot(live, hydrated)
     if source_key == "chatgpt":
-        snapshot.update(chatgpt_history_counts(context.media_catalog.local_store_root))
+        if mode == "text":
+            snapshot["cached_sessions"] = hydrated["downloaded_posts"]
+            snapshot["cached_messages"] = hydrated["downloaded_tweets"]
+        else:
+            snapshot.update(chatgpt_history_counts(context.media_catalog.local_store_root))
     return snapshot
 
 def build_reconciled_grok_snapshot(context: CacheRouteContext) -> dict[str, Any]:
@@ -169,15 +176,7 @@ def build_reconciled_grok_snapshot(context: CacheRouteContext) -> dict[str, Any]
 
 def build_reconciled_grok_history_snapshot(context: CacheRouteContext) -> dict[str, Any]:
     """Refresh Grok text-history counters from disk without discarding live task status."""
-    return reconcile_cached_snapshot(
-        context.grok_history_state.snapshot(),
-        asdict(
-            build_grok_history_snapshot(
-                version=APP_VERSION,
-                local_store_root=context.media_catalog.local_store_root,
-            )
-        ),
-    )
+    return build_reconciled_cache_snapshot(context, "grok", "text")
 
 def build_reconciled_chatgpt_snapshot(context: CacheRouteContext) -> dict[str, Any]:
     """Refresh ChatGPT image counters from disk without discarding live task status."""
@@ -185,8 +184,9 @@ def build_reconciled_chatgpt_snapshot(context: CacheRouteContext) -> dict[str, A
 
 
 def build_cache_activity(context: CacheRouteContext) -> dict[str, Any]:
-    """Read active task summaries without scanning caches or probing browsers."""
+    """Read active and queued task summaries without scanning caches or probing browsers."""
     phase_messages = {
+        "queued": "Queued. Waiting to start.",
         "starting": "Preparing the cache task.",
         "collecting": "Discovering items to cache.",
         "downloading": "Caching items.",
@@ -194,37 +194,36 @@ def build_cache_activity(context: CacheRouteContext) -> dict[str, Any]:
         "stopping": "Stopping after the current work item.",
     }
     units = {"items", "images", "conversations", "sessions", "resources", "answers"}
+    task_states = context.cache_task_coordinator.task_states()
     tasks = []
-    runtimes = [
-        (key, runtime.state, "media" if key == "grok" else "")
-        for key, runtime in context.cache_runtimes.items()
-    ]
-    runtimes.append(("grok", context.grok_history_state, "text"))
-    for source_key, state, fixed_mode in runtimes:
-        snapshot = state.snapshot()
+    for source_key, runtimes in context.cache_runtimes.items():
         source = get_cache_source_view(source_key)
-        if not snapshot["running"] or source is None:
+        if source is None:
             continue
-        metrics = snapshot.get("performance_metrics") or {}
-        content_mode = fixed_mode or metrics.get("content_mode", "")
-        if content_mode not in {"text", "media"}:
-            content_mode = ""
-        phase = snapshot["phase"]
-        if phase not in phase_messages:
-            phase = "running"
-        unit = snapshot.get("progress_unit", "items")
-        tasks.append({
-            "id": f"grok:{fixed_mode}" if source_key == "grok" else source_key,
-            "source": source_key,
-            "label": source.label,
-            "content_mode": content_mode,
-            "phase": phase,
-            "message": phase_messages.get(phase, "Cache task in progress."),
-            "processed": max(0, int(snapshot.get("processed_tweets", 0))),
-            "total": max(0, int(snapshot.get("queued_tweets", 0))),
-            "unit": unit if unit in units else "items",
-        })
-    tasks.sort(key=lambda task: (task["label"].casefold(), task["id"]))
+        for content_mode, runtime in runtimes.items():
+            snapshot = runtime.state.snapshot()
+            if not snapshot["running"]:
+                continue
+            phase = snapshot["phase"]
+            if phase not in phase_messages:
+                phase = "running"
+            message = phase_messages.get(phase, "Cache task in progress.")
+            if phase == "queued":
+                # The coordinator words this from registry labels, never from task output.
+                message = task_states.get(f"{source_key}:{content_mode}", {}).get("message") or message
+            unit = snapshot.get("progress_unit", "items")
+            tasks.append({
+                "id": f"{source_key}:{content_mode}",
+                "source": source_key,
+                "label": source.label,
+                "content_mode": content_mode if content_mode in {"text", "media"} else "",
+                "phase": phase,
+                "message": message,
+                "processed": max(0, int(snapshot.get("processed_tweets", 0))),
+                "total": max(0, int(snapshot.get("queued_tweets", 0))),
+                "unit": unit if unit in units else "items",
+            })
+    tasks.sort(key=lambda task: (task["phase"] == "queued", task["label"].casefold(), task["id"]))
     return {"tasks": tasks}
 
 
@@ -448,14 +447,25 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
         return jsonify({"opened": True, "file_manager": local_file_manager_label()})
 
 
-    def start_cache_source_runtime(source_key: str):
-        """Persist shared form values and start one registered runtime."""
+    def requested_form_content_mode() -> str:
+        """Return the content mode a start or stop form names, if it names one."""
+        return str(
+            request.form.get("cache_content_mode")
+            or request.form.get("chatgpt_content_mode")
+            or ""
+        ).strip().lower()
+
+    def start_cache_source_runtime(source_key: str, content_mode: str | None = None):
+        """Persist shared form values and start, or queue, one mode of a source."""
         cache_source = get_cache_source_view(source_key)
-        runtime = context.cache_runtimes.get(source_key)
-        if cache_source is None or runtime is None:
+        if cache_source is None or source_key not in context.cache_runtimes:
             abort(404)
-        if source_key == "grok" and request.form.get("cache_content_mode") == "text":
-            return start_grok_history_runtime()
+        content_mode, runtime = resolve_cache_runtime(
+            context,
+            source_key,
+            content_mode or requested_form_content_mode(),
+            defaults=START_DEFAULT_CONTENT_MODES,
+        )
         config = parse_form_config(context.config_store.config, preserve_missing_booleans=True)
         browser_name = getattr(config, cache_source.browser_config_field)
         busy_response = context.reject_active_safari_agent_for_cache(browser_name)
@@ -469,26 +479,16 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
                 runtime.state.finish_error(f"Unsupported {cache_source.label} browser: {browser_name}")
                 return redirect(cache_source_url(source_key))
         try:
-            if source_key == "chatgpt":
-                content_mode = (
-                    "media"
-                    if request.form.get("cache_content_mode", request.form.get("chatgpt_content_mode")) == "media"
-                    else "text"
-                )
-                runtime.service.start(runtime_config, content_mode=content_mode)
-            elif source_key in {"claude", "gemini"}:
-                content_mode = "media" if request.form.get("cache_content_mode") == "media" else "text"
-                runtime.service.start(runtime_config, content_mode=content_mode)
-            elif source_key == "x":
-                content_mode = "text" if request.form.get("cache_content_mode") == "text" else "media"
-                runtime.service.start(runtime_config, content_mode=content_mode)
+            if source_key == "grok":
+                # Grok text and media are separate services; neither takes a mode.
+                runtime.service.start(runtime_config)
             elif source_key == "zhihu":
                 runtime.service.start(
                     runtime_config,
                     author_url=request.form.get("zhihu_author_url", "").strip(),
                 )
             else:
-                runtime.service.start(runtime_config)
+                runtime.service.start(runtime_config, content_mode=content_mode)
         except RuntimeError as exc:
             if runtime.service.is_running():
                 runtime.state.append_event(str(exc))
@@ -497,43 +497,25 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
                 runtime.state.finish_error(str(exc))
         return redirect(cache_source_url(source_key))
 
-    def stop_cache_source_runtime(source_key: str):
-        """Request a safe stop for one registered runtime."""
-        if source_key == "grok" and request.form.get("cache_content_mode") == "text":
-            return stop_grok_history_runtime()
-        cache_source = get_cache_source_view(source_key)
-        runtime = context.cache_runtimes.get(source_key)
-        if cache_source is None or runtime is None:
+    def stop_cache_source_runtime(source_key: str, content_mode: str | None = None):
+        """Request a safe stop, or leave the queue, for one mode of a source."""
+        runtimes = context.cache_runtimes.get(source_key)
+        if get_cache_source_view(source_key) is None or not runtimes:
             abort(404)
-        runtime.service.request_stop()
+        requested_mode = content_mode or requested_form_content_mode()
+        if requested_mode:
+            _mode, runtime = resolve_cache_runtime(
+                context,
+                source_key,
+                requested_mode,
+                defaults=START_DEFAULT_CONTENT_MODES,
+            )
+            runtime.service.request_stop()
+        else:
+            # A legacy stop names no mode, so it stops whatever this source is running.
+            for runtime in runtimes.values():
+                runtime.service.request_stop()
         return redirect(cache_source_url(source_key))
-
-    def start_grok_history_runtime():
-        """Persist shared form values and start the Grok text-history runtime."""
-        config = parse_form_config(context.config_store.config, preserve_missing_booleans=True)
-        busy_response = context.reject_active_safari_agent_for_cache(config.grok_browser)
-        if busy_response is not None:
-            return busy_response
-        context.config_store.replace(config)
-        browser_name = config.grok_browser
-        descriptor = browser_descriptors(config).get(browser_name)
-        if descriptor is None:
-            context.grok_history_state.finish_error(f"Unsupported Grok browser: {browser_name}")
-            return redirect(cache_source_url("grok"))
-        try:
-            context.grok_history_service.start(config)
-        except RuntimeError as exc:
-            if context.grok_history_service.is_running():
-                context.grok_history_state.append_event(str(exc))
-                context.grok_history_state.update(last_error=str(exc))
-            else:
-                context.grok_history_state.finish_error(str(exc))
-        return redirect(cache_source_url("grok"))
-
-    def stop_grok_history_runtime():
-        """Request a safe stop for the Grok text-history runtime."""
-        context.grok_history_service.request_stop()
-        return redirect(cache_source_url("grok"))
 
     @blueprint.post("/cache/<source_key>/start")
     def start_cache_source(source_key: str):
@@ -561,11 +543,11 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
 
     @blueprint.post("/cache/grok/text/start")
     def start_grok_text_history():
-        return start_grok_history_runtime()
+        return start_cache_source_runtime("grok", "text")
 
     @blueprint.post("/cache/grok/text/stop")
     def stop_grok_text_history():
-        return stop_grok_history_runtime()
+        return stop_cache_source_runtime("grok", "text")
 
     @blueprint.post("/chatgpt/start")
     def start_chatgpt():
@@ -593,8 +575,9 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
 
     @blueprint.post("/chatgpt/reset")
     def reset_chatgpt():
-        runtime = context.cache_runtimes["chatgpt"]
-        if runtime.service.is_running():
+        _mode, runtime = resolve_cache_runtime(context, "chatgpt")
+        # Reset stays unavailable while either ChatGPT mode is running or queued.
+        if any(entry.service.is_running() for entry in context.cache_runtimes["chatgpt"].values()):
             runtime.state.append_event("Reset skipped because a ChatGPT sync is still running.")
             runtime.state.update(last_error="Cannot reset ChatGPT state while a sync is running.")
             return redirect(cache_source_url("chatgpt"))
@@ -616,7 +599,7 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
 
     @blueprint.post("/grok/reset")
     def reset_grok():
-        runtime = context.cache_runtimes["grok"]
+        _mode, runtime = resolve_cache_runtime(context, "grok")
         if runtime.service.is_running():
             runtime.state.append_event("Reset skipped because a Grok sync is still running.")
             runtime.state.update(last_error="Cannot reset Grok state while a sync is running.")
@@ -695,8 +678,10 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             for item in context.media_catalog.snapshot(force_refresh=True)
         )
         session_config = replace(context.config_store.config, chatgpt_project_url=conversation_url)
+        _mode, runtime = resolve_cache_runtime(context, "chatgpt", "media")
         try:
-            context.chatgpt_service.start(session_config)
+            # The page waits for this refresh, so it fails at once instead of queueing.
+            runtime.service.start(session_config, allow_queue=False)
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
         return (
@@ -729,9 +714,15 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
         if busy_response is not None:
             return busy_response
 
-        runtime = context.cache_runtimes["zhihu"]
+        _mode, runtime = resolve_cache_runtime(context, "zhihu")
         try:
-            runtime.service.start(config, author_url=profile.profile_url, latest_only=True)
+            # The page waits for this refresh, so it fails at once instead of queueing.
+            runtime.service.start(
+                config,
+                author_url=profile.profile_url,
+                latest_only=True,
+                allow_queue=False,
+            )
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
         return (
@@ -752,9 +743,11 @@ __all__ = [
     "CACHE_BLUEPRINT_NAME",
     "CacheRouteContext",
     "CacheRuntimeAdapter",
+    "build_cache_activity",
     "build_reconciled_cache_snapshot",
     "build_reconciled_chatgpt_snapshot",
     "build_reconciled_grok_history_snapshot",
     "build_reconciled_grok_snapshot",
     "register_cache_routes",
+    "resolve_cache_runtime",
 ]

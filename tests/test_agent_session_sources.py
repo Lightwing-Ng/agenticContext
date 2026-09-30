@@ -1,12 +1,13 @@
 """Focused tests for the provider-neutral Agent session source adapter.
 
-Code version: v1.13.1-codex.1
+Code version: v1.13.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -1501,3 +1502,196 @@ def test_chatgpt_project_session_listing_keeps_existing_adapter() -> None:
 
     assert payload["platform"] == "chatgpt"
     sessions.assert_called_once()
+
+
+def _claude_lifecycle_page(url="https://claude.ai/new"):
+    """Build a disposable page with observable navigation and DOM boundaries."""
+    return SimpleNamespace(
+        url=url,
+        title=Mock(return_value="Claude"),
+        is_closed=Mock(return_value=False),
+        locator=Mock(
+            return_value=SimpleNamespace(inner_text=lambda **_kwargs: "Welcome back")
+        ),
+        content=Mock(return_value="<main>Welcome back</main>"),
+        wait_for_timeout=Mock(),
+        evaluate=Mock(return_value={"count": 1}),
+        goto=Mock(),
+    )
+
+
+def _install_claude_lifecycle_context(monkeypatch, pages):
+    """Replace both launch boundaries without opening an authenticated browser."""
+    from app.core import agent_session_sources, browser_sessions
+
+    context = SimpleNamespace(pages=pages, new_page=Mock())
+    descriptor = SimpleNamespace(engine="chromium", browser_id="edge", label="Edge")
+    monkeypatch.setattr(
+        browser_sessions, "_serialized_sync_playwright", lambda: nullcontext(object())
+    )
+    monkeypatch.setattr(
+        agent_session_sources, "sync_playwright_or_error", lambda: nullcontext(object())
+    )
+    for module in (browser_sessions, agent_session_sources):
+        monkeypatch.setattr(
+            module,
+            "launch_chromium_context",
+            lambda *_args, **_kwargs: nullcontext(context),
+        )
+    monkeypatch.setattr(
+        agent_session_sources, "browser_descriptors", lambda _config: {"edge": descriptor}
+    )
+    return context, descriptor
+
+
+@pytest.mark.parametrize(
+    "claude_url", ("https://claude.ai/new", "https://claude.ai/new/")
+)
+def test_claude_probe_keeps_shared_chatgpt_tab_and_does_not_reload_home(
+    monkeypatch, claude_url
+):
+    from app.core import browser_sessions
+
+    chatgpt = _claude_lifecycle_page("https://chatgpt.com/")
+    chatgpt.title.return_value = "ChatGPT"
+    claude = _claude_lifecycle_page(claude_url)
+    context, descriptor = _install_claude_lifecycle_context(
+        monkeypatch, [chatgpt, claude]
+    )
+
+    result = browser_sessions._probe_claude_session(descriptor)
+
+    assert result["can_download"] is True
+    chatgpt.goto.assert_not_called()
+    chatgpt.evaluate.assert_not_called()
+    chatgpt.wait_for_timeout.assert_not_called()
+    claude.goto.assert_not_called()
+    claude.evaluate.assert_called_once()
+    context.new_page.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "claude_url", ("https://claude.ai/new", "https://claude.ai/login")
+)
+def test_claude_probe_leaves_existing_verification_untouched(monkeypatch, claude_url):
+    from app.core import browser_sessions
+
+    page = _claude_lifecycle_page(claude_url)
+    page.title.return_value = "Just a moment..."
+    context, descriptor = _install_claude_lifecycle_context(monkeypatch, [page])
+
+    result = browser_sessions._probe_claude_session(descriptor)
+
+    assert result["human_verification"] is True
+    assert result["can_download"] is False
+    page.goto.assert_not_called()
+    page.locator.assert_not_called()
+    page.content.assert_not_called()
+    page.evaluate.assert_not_called()
+    page.wait_for_timeout.assert_not_called()
+    context.new_page.assert_not_called()
+
+
+def test_claude_page_title_challenge_stops_before_dom_and_composer():
+    page = _claude_lifecycle_page()
+    page.title.return_value = "Just a moment..."
+
+    result = _claude_page_status(page, "Edge")
+
+    assert result["human_verification"] is True
+    assert result["can_download"] is False
+    assert result["platform"] == "claude"
+    page.locator.assert_not_called()
+    page.content.assert_not_called()
+    page.wait_for_timeout.assert_not_called()
+    page.evaluate.assert_not_called()
+
+
+def test_claude_bootstrap_preserves_typed_launch_challenge(monkeypatch):
+    from app.core import agent_session_sources, browser_sessions
+
+    payload = browser_sessions.human_verification_probe_status("Edge", "Claude")
+    monkeypatch.setattr(
+        agent_session_sources,
+        "_run_chromium_source_collection",
+        Mock(side_effect=browser_sessions.DebugBrowserHumanVerificationError(payload)),
+    )
+
+    status, sources = probe_and_collect_claude_sources("edge", CrawlConfig())
+
+    assert status == {"platform": "claude", "browser_label": "Edge", **payload}
+    assert sources is None
+
+
+def test_claude_status_stops_a_challenge_that_appears_while_waiting(monkeypatch):
+    from app.core import agent_session_sources
+
+    page = _claude_lifecycle_page()
+    page.evaluate.return_value = {"count": 0}
+
+    def wait(milliseconds):
+        if milliseconds == 250:
+            page.title.return_value = "Just a moment..."
+
+    page.wait_for_timeout.side_effect = wait
+    clock = iter((0.0, 0.0, 0.5, 21.0))
+    monkeypatch.setattr(agent_session_sources.time, "monotonic", lambda: next(clock))
+
+    result = _claude_page_status(page, "Edge")
+
+    assert result["human_verification"] is True
+    page.evaluate.assert_called_once()
+    assert page.wait_for_timeout.call_args_list[-1].args == (250,)
+
+
+@pytest.mark.parametrize("entrypoint", ("probe", "bootstrap"))
+def test_claude_navigation_timeout_does_not_retry_a_new_challenge(
+    monkeypatch, entrypoint
+):
+    from app.core import agent_session_sources, browser_sessions
+
+    page = _claude_lifecycle_page("https://claude.ai/chat/existing")
+
+    def navigate(url, **_kwargs):
+        page.url = url
+        page.title.return_value = "Just a moment..."
+        raise RuntimeError("net::ERR_TIMED_OUT")
+
+    page.goto.side_effect = navigate
+    _context, descriptor = _install_claude_lifecycle_context(monkeypatch, [page])
+    collector = Mock()
+    monkeypatch.setattr(agent_session_sources, "_collect_claude_sources", collector)
+
+    if entrypoint == "probe":
+        status = browser_sessions._probe_claude_session(descriptor)
+    else:
+        status, sources = probe_and_collect_claude_sources("edge", CrawlConfig())
+        assert sources is None
+
+    assert status["human_verification"] is True
+    assert status["can_download"] is False
+    page.goto.assert_called_once()
+    page.evaluate.assert_not_called()
+    page.wait_for_timeout.assert_not_called()
+    collector.assert_not_called()
+
+
+def test_claude_source_collection_leaves_existing_challenge_untouched(monkeypatch):
+    from app.core import browser_sessions
+
+    page = _claude_lifecycle_page("https://claude.ai/login")
+    page.title.return_value = "Just a moment..."
+    _install_claude_lifecycle_context(monkeypatch, [page])
+    collector = Mock()
+
+    with pytest.raises(browser_sessions.DebugBrowserHumanVerificationError) as raised:
+        _run_chromium_source_collection(
+            "edge", CrawlConfig(), "https://claude.ai/new", collector
+        )
+
+    assert raised.value.payload["human_verification"] is True
+    page.goto.assert_not_called()
+    page.locator.assert_not_called()
+    page.content.assert_not_called()
+    page.evaluate.assert_not_called()
+    collector.assert_not_called()

@@ -1,6 +1,6 @@
 """Provider workflows exposed to the application layer."""
 
-# Code version: v1.7.0-codex.0
+# Code version: v1.8.0-claude.0
 
 from ..chatgpt_agent_sources import (
     fetch_chatgpt_conversation_history,
@@ -21,6 +21,7 @@ from ..chatgpt_downloader import (
 from ..chatgpt_service import ChatGPTDownloadService
 from ..claude_history import build_claude_initial_snapshot
 from ..claude_history_service import ClaudeHistoryService
+from ..claude_media import build_claude_media_initial_snapshot
 from ..gemini_downloader import build_gemini_initial_snapshot
 from ..gemini_media import build_gemini_media_initial_snapshot
 from ..gemini_service import GeminiHistoryService
@@ -44,6 +45,7 @@ __all__ = [
     "build_chatgpt_initial_snapshot",
     "build_chatgpt_text_snapshot",
     "build_claude_initial_snapshot",
+    "build_claude_media_initial_snapshot",
     "build_gemini_initial_snapshot",
     "build_gemini_media_initial_snapshot",
     "build_grok_history_snapshot",

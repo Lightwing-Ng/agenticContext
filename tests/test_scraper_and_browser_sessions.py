@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.14.1-codex.0
+Code version: v1.14.2-codex.0
 """
 
 from __future__ import annotations
@@ -467,6 +467,10 @@ def test_claude_probe_waits_for_hydration_before_requiring_unique_composer(hydra
     from app.core.browser_sessions import _probe_claude_session
 
     page = MagicMock()
+    page.url = "https://claude.ai/new"
+    page.is_closed.return_value = False
+    page.title.return_value = "Claude"
+    page.content.return_value = "<main>Welcome back</main>"
     page.locator.return_value = SimpleNamespace(
         inner_text=lambda **_kwargs: "Welcome back"
     )

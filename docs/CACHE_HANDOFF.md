@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.16.2-claude.0`
+Documentation version: `v1.17.1-claude.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -89,7 +89,13 @@ sessions can span many hours and accumulates across runs. Only a request still
 rate-limited after the final cooldown defers the remaining sessions to the next run; Safari
 and Chromium page requests share this classification.
 
-Grok has two independent runtimes. This split is intentional:
+Every source registers one runtime per content mode, each with its own task state, worker,
+and Start/Stop. X, ChatGPT, Gemini, and Claude create one service instance per mode; a mode
+that has not run in this process reads its counters from the store when its page is
+requested. Status without `content_mode` keeps each source's original default: Media for X,
+Grok, and ChatGPT, and Text for the others.
+
+Grok's two runtimes are also two implementations. This split is intentional:
 
 | Operation | UI action | Start route | Status route | Implementation |
 | --- | --- | --- | --- | --- |
@@ -207,7 +213,8 @@ The current persistent cache layout is:
 | `local_store/llm/claude/history.parquet` | Claude Text runtime | Typed Claude messages |
 | `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; rich-text source and source links retained |
 | `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers |
-| `local_store/.cache_task.lock` | Cache runtimes | Cross-process advisory task lock |
+| `local_store/.cache_task.lock` | Cache runtimes | Gate a starting task passes and a backup or history repair holds |
+| `local_store/.cache_task.<resource>.lock` | Cache runtimes | One advisory lock per running task, exclusive browser, or shared store |
 | `logs/cachelikes.log.jsonl` | All runtimes | Structured diagnostics |
 
 The five formal text-history files derive their ordered message fields from one schema builder in
@@ -277,7 +284,10 @@ is never the default browser for a new Gemini task. The window must remain a sta
 window with its native close, minimize, and full screen controls. It may stay behind the user's
 foreground window, but must never be hidden, minimized, moved offscreen, or converted into a
 reusable blank window shell. The shared Safari context captures and restores the user's
-frontmost application whenever it changes Safari window state.
+frontmost application whenever it changes Safari window state. A task may open more tabs inside
+its one window, as ChatGPT Media does for direct project-index downloads, but never a second
+window. The window is bound by its Safari window ID when it is created, so restoring the user's
+front window cannot retarget the task to that window.
 
 This Safari window lifecycle and its AppleScript/`osascript` controller are macOS-only. Windows
 uses the PowerShell controller for approved `.ps1` paths and its Windows process-control path;
@@ -366,9 +376,32 @@ curl -sS 'http://localhost:8666/api/cache/grok/status'
 curl -sS 'http://localhost:8666/api/cache/grok/text/status'
 ```
 
-The Edge session probe must report `logged_in: true`. The media and Text runtimes must
-be idle before starting another task. Only one cache task may hold
-`local_store/.cache_task.lock` across the entire application.
+The Edge session probe must report `logged_in: true`. A mode that is already running or
+queued cannot be started again, but every other source and mode can: see
+[Running several cache tasks](#running-several-cache-tasks).
+
+### Running several cache tasks
+
+Each source and content mode is an independent task. Start X Media, then open ChatGPT Text
+and start it as well; the Text and Media modes of one source are separate tasks too. What
+happens next depends on what the tasks need:
+
+- Different browsers run together. On macOS, two Edge or Chrome tasks also run together,
+  because each clones the selected profile.
+- Safari runs one cache task at a time. A second Safari task is accepted, shows the `queued`
+  phase with the task it waits for, and starts by itself when Safari is free. Its page keeps
+  the cached totals while it waits. On Windows, Edge and Chrome queue the same way.
+- An X Text task and a Safari X Media task both write the liked-text history, so they queue
+  even in different browsers.
+- Stop on a queued task removes it from the queue. Stop on a running task is the usual
+  cooperative stop. Each mode's Stop affects only that mode.
+- While a Safari task runs, another Safari source's account row reads `Not checked` and
+  explains that Start adds the task to the queue. The account is verified when the task runs.
+- A targeted refresh from Local resources does not queue. If its browser or task is busy it
+  is refused with the reason, because its page waits for the result.
+
+The task entry in the lower right of every page lists running tasks first and queued tasks
+after them. `GET /api/cache/activity` returns the same list.
 ### Legacy Grok Text runtime
 
 The legacy Grok Text runtime remains available through its status and start/stop routes
@@ -484,10 +517,15 @@ scrape. The worker clones the selected profile into an isolated temporary contex
 
 ### The task cannot start because another task owns the lock
 
-Query all source status endpoints and inspect the lock metadata:
+A task in this process that needs a busy browser or store is queued, not refused. A refusal
+that names another window means a second application process, a shadow backup, or a history
+repair holds the gate or one of the task's resource locks. Query the active tasks and
+inspect the lock metadata:
 
 ```bash
+curl -sS 'http://localhost:8666/api/cache/activity'
 cat local_store/.cache_task.lock
+ls -a local_store | grep '^\.cache_task\.'
 curl -sS 'http://localhost:8666/api/cache/grok/status'
 curl -sS 'http://localhost:8666/api/cache/grok/text/status'
 curl -sS 'http://localhost:8666/api/chatgpt/status'
@@ -531,12 +569,16 @@ Read these files together before changing Cache behavior:
 - `app/web/cache_sources.py`: source registry and canonical page metadata.
 - `app/web/app.py`: runtime registration, routes, status reconciliation, and redirects.
 - `app/core/grok_history.py`: Grok API traversal, normalization, and Parquet persistence.
-- `app/core/grok_history_service.py`: worker lifecycle and shared task lock.
+- `app/core/cache_task_coordinator.py`: task admission, the queue, and resource locks.
+- `app/core/cache_service_support.py`: worker lifecycle shared by every cache service.
+- `app/core/grok_history_service.py`: Grok Text worker lifecycle.
 - `app/core/claude_history.py`: rendered Claude discovery, extraction, and Parquet persistence.
-- `app/core/claude_history_service.py`: Claude worker lifecycle and shared task lock.
+- `app/core/claude_history_service.py`: Claude worker lifecycle, one worker per mode.
 - `app/core/chat_history_browser.py`: source path mapping and Local resources queries.
 - `app/core/resource_persistence.py`: typed Parquet schemas and atomic writes.
 - `tests/test_grok_history.py`: deterministic Grok Text regression coverage.
+- `tests/test_cache_task_coordinator.py` and `tests/test_cache_concurrency_web.py`: concurrent
+  and queued task coverage at the coordinator and route level.
 - `../SHARED_UI_SYNC.md`: shared-component synchronization ledger.
 
 When adding a new LLM source, update the source allowlist, source-specific path map,

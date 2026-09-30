@@ -1,6 +1,6 @@
 """Background service for Gemini session history sync."""
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.2.0-claude.0
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .cache_service_support import (
     append_shadow_backup_completion,
     summarize_status_error,
 )
+from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .config import LOCAL_STORE_ROOT, CrawlConfig
 from .gemini_downloader import sync_gemini_history
 from .gemini_media import sync_gemini_media
@@ -44,8 +45,11 @@ class GeminiHistoryService(CooperativeCacheWorker):
         local_store_root: Path | str = LOCAL_STORE_ROOT,
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
+        *,
+        task: CacheTaskIdentity | None = None,
+        coordinator: CacheTaskCoordinator | None = None,
     ) -> None:
-        super().__init__(state, task_lock)
+        super().__init__(state, task_lock, task=task, coordinator=coordinator)
         self._local_store_root = Path(local_store_root)
         self._config = CrawlConfig()
         self._content_mode = "text"
@@ -67,6 +71,7 @@ class GeminiHistoryService(CooperativeCacheWorker):
             target=self._run,
             prepare=prepare,
             thread_factory=Thread,
+            browser=config.gemini_browser,
         )
 
     def request_stop(self) -> bool:
@@ -120,6 +125,8 @@ class GeminiHistoryService(CooperativeCacheWorker):
                 shadow_backup_service=self._shadow_backup_service,
                 state=self._state,
                 config=self._config,
+                coordinator=self._coordinator,
+                task=self._task,
             )
             self._state.finish_success(completion_message)
             logger.info(
@@ -172,4 +179,5 @@ class GeminiHistoryService(CooperativeCacheWorker):
         self._state.finish_success(append_shadow_backup_completion(
             message, shadow_backup_service=self._shadow_backup_service,
             state=self._state, config=self._config,
+            coordinator=self._coordinator, task=self._task,
         ))

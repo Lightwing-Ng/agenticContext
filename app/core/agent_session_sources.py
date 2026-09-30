@@ -1,6 +1,6 @@
 """Provider-neutral Web Agent Project and session discovery.
 
-Code version: v1.14.0-codex.1
+Code version: v1.14.1-codex.0
 """
 
 from __future__ import annotations
@@ -13,12 +13,16 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from .browser_sessions import (
+    DebugBrowserHumanVerificationError,
     browser_descriptors,
     claude_composer_snapshot,
+    context_security_verification_status,
     grok_composer_snapshot,
     goto_with_retry,
+    human_verification_probe_status,
     is_grok_security_verification_page,
     launch_chromium_context,
+    page_shows_security_verification,
     select_provider_tab,
     sync_playwright_or_error,
 )
@@ -658,13 +662,20 @@ def probe_and_collect_claude_sources(
             "limit": AGENT_SOURCE_LIMIT,
         }
 
-    return _run_chromium_source_collection(
-        browser_name,
-        config,
-        CLAUDE_HOME_URL,
-        collect,
-        silent=silent,
-    )
+    try:
+        return _run_chromium_source_collection(
+            browser_name,
+            config,
+            CLAUDE_HOME_URL,
+            collect,
+            silent=silent,
+        )
+    except DebugBrowserHumanVerificationError as exc:
+        return {
+            "platform": "claude",
+            "browser_label": descriptor.label,
+            **exc.payload,
+        }, None
 
 
 def probe_and_collect_grok_sources(
@@ -862,7 +873,22 @@ def _grok_page_status(page: Any, browser_label: str) -> dict[str, Any]:
 
 def _claude_page_status(page: Any, browser_label: str) -> dict[str, Any]:
     """Return a bounded readiness result without reading account or credential data."""
+    def challenge_status() -> dict[str, Any] | None:
+        if page_shows_security_verification(page):
+            return {
+                "platform": "claude",
+                "browser_label": browser_label,
+                **human_verification_probe_status(browser_label, "Claude"),
+            }
+        return None
+
+    challenge = challenge_status()
+    if challenge is not None:
+        return challenge
     page.wait_for_timeout(2_000)
+    challenge = challenge_status()
+    if challenge is not None:
+        return challenge
     body_text = ""
     try:
         body_text = page.locator("body").inner_text(timeout=5_000)
@@ -893,6 +919,9 @@ def _claude_page_status(page: Any, browser_label: str) -> dict[str, Any]:
     composer_ready = False
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
+        challenge = challenge_status()
+        if challenge is not None:
+            return challenge
         try:
             composer_count = int(claude_composer_snapshot(page).get("count") or 0)
             if composer_count == 1:
@@ -904,6 +933,9 @@ def _claude_page_status(page: Any, browser_label: str) -> dict[str, Any]:
             pass
         page.wait_for_timeout(250)
     if not composer_ready:
+        challenge = challenge_status()
+        if challenge is not None:
+            return challenge
         if re.search(r"\b(?:sign in|log in|sign up|create account)\b", normalized_body):
             message = f"{browser_label} is not signed in to Claude."
         else:
@@ -1473,7 +1505,22 @@ def _run_chromium_source_collection(
                 hosts = set(GROK_HOSTS)
             elif home_host in CLAUDE_HOSTS:
                 hosts = set(CLAUDE_HOSTS)
+
+            def check_claude_challenge() -> None:
+                if home_host in CLAUDE_HOSTS:
+                    challenge = context_security_verification_status(
+                        context, descriptor.label, "Claude"
+                    )
+                    if challenge is not None:
+                        raise DebugBrowserHumanVerificationError(challenge)
+
+            def collection_should_stop() -> bool:
+                check_claude_challenge()
+                return deadline is not None and time.monotonic() >= float(deadline)
+
+            check_claude_challenge()
             page = select_provider_tab(context, home_url=home_url, hosts=hosts)
+            check_claude_challenge()
             current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
             if current_url != str(home_url).strip().rstrip("/"):
                 goto_with_retry(
@@ -1482,10 +1529,16 @@ def _run_chromium_source_collection(
                     attempts=2,
                     timeout_ms=remaining_timeout_ms(90_000),
                     should_stop=(
-                        None
-                        if deadline is None
-                        else lambda: time.monotonic() >= float(deadline)
+                        collection_should_stop
+                        if home_host in CLAUDE_HOSTS
+                        else (
+                            None
+                            if deadline is None
+                            else lambda: time.monotonic() >= float(deadline)
+                        )
                     ),
                 )
+            check_claude_challenge()
             wait_before_collection(page)
+            check_claude_challenge()
             return collector(page)

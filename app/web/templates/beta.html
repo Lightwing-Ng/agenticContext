@@ -1,4 +1,4 @@
-{# Code version: v0.5.53-codex.0 #}
+{# Code version: v0.6.0-claude.0 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,6 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.157.0-codex.0') }}">
+    {% include "_cache_activity_assets.html" %}
     <link rel="stylesheet" href="{{ url_for('static', filename='beta/beta.css', v=beta_version) }}">
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script type="module" src="{{ url_for('static', filename='beta/beta.js', v=beta_version) }}"></script>
@@ -96,6 +97,7 @@
     </div>
     {% set dock_section = 'beta' %}
     {% include "_sidebar_dock.html" %}
+    {% include "_cache_activity.html" %}
 </main>
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.25.0-codex.0') }}"></script>
 </body>

@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.22.3-codex.0`
+Documentation version: `v1.23.0-claude.0`
 
 ## Authority
 
@@ -324,30 +324,52 @@ These are local component sizes, not changes to the global form-control tokens.
 
 ### Cache activity disclosure
 
-Cache pages reuse the shared Circular icon button and Live marker for a task entry
-point that is hidden when no cache worker is running. The button shares the theme
-action's horizontal center. Its right and bottom clearances are equal relative to
-the Cache content scrollport, measured from that owner's rendered rectangle so the
-compact layout and safe-area insets remain authoritative. The disclosure is outside
-the scrollport and never participates in content layout or scrolling.
+Every application page reuses the shared Circular icon button and Live marker for a
+cache task entry point. It is hidden when no cache task is running or queued, so a
+page without cache work looks as it did before. `_cache_activity.html` and
+`_cache_activity_assets.html` are included by the Cache, Agent, Jury, Local resources,
+Settings, Style tokens, and Beta templates; the locked Agent access page has none.
+
+The button shares the theme action's horizontal center and sits in the lower corner of
+the page's workspace panel. It repeats one clearance below itself: the theme action's
+distance from the workspace panel's right edge. On a Cache page that rectangle is also
+the content scrollport's, so the right and bottom clearances stay equal there. A surface
+pinned to that corner declares `data-cache-activity-clearance`; the Agent and Jury
+composers do, and the entry then sits the same clearance above the composer instead of
+covering its submit action. Geometry is measured from rendered rectangles, so the compact
+layout, a growing composer, and safe-area insets remain authoritative. The disclosure is
+outside the scrollport and never participates in content layout or scrolling.
 The Cache page uses the shared full-width page rectangle; retaining its legacy
 1,560px cap would place the viewport-anchored theme action outside the content owner
 on wider displays and make these two anchor requirements incompatible.
 
 Clicking expands the same glass surface toward the upper left, using the existing
 popover material, soft radius, control-width maximum, and emphasized motion curve.
-The read-only nonmodal dialog contains active providers, known run modes, phase
-descriptions, and work-item counts. Escape restores the trigger's focus; clicking
-outside closes it. Reduced Motion makes expansion immediate and keeps a static live
-marker. Long task lists scroll internally within the content owner's bounds.
+The read-only nonmodal dialog is titled `Cache tasks` and lists running tasks first,
+then queued ones, each named by source and content mode. A running row shows its phase
+description, work-item counts, and a meter. A queued row shows what it waits for and
+has no meter. Escape restores the trigger's focus; clicking outside closes it. Reduced
+Motion makes expansion immediate and keeps a static live marker; the marker is also
+static when every listed task is queued. Long task lists scroll inside the page's content
+scrollport, or below the title rail on a page whose content does not scroll as a whole.
 
-The lightweight `/api/cache/activity` endpoint reads in-memory task snapshots,
-including the independent Grok text worker. It never hydrates caches or probes a
-browser. Unknown run modes are omitted rather than inferred from current settings.
+The meter carries the Cache progress material in `cache-activity.css` rather than the
+Cache page's scoped rules: a 6px borderless track, the positive fill, and the static
+40% segment for an unknown total. It therefore measures the same on every page.
+
+The lightweight `/api/cache/activity` endpoint reads in-memory task snapshots for every
+registered source and content mode. It never hydrates caches or probes a browser. A row's
+mode comes from the runtime it belongs to, and a queued row's reason is worded by the
+task coordinator from registered labels only, never from task output.
 Refresh failure retains the last known list with an explicit stale-status message
 and pauses the breathing animation. Successful empty responses hide the entry point.
-This Cache-specific adapter remains a Candidate review in the shared UI ledger;
-Worthward and neoMe applicability is Pending.
+This adapter remains a Candidate review in the shared UI ledger; Worthward and neoMe
+applicability is Pending.
+
+On a Cache page, a queued task shows the `queued` phase, an empty progress track labeled
+`Queued`, and the Stop action, which removes it from the queue. While another cache task
+owns Safari, the account row reads `Not checked` with the reason and no status glyph, and
+Start stays available because the task waits in the queue.
 
 The product-specific local directory browser reuses the Workspace modal surface, Secondary and
 primary buttons, text-input material, folder asset, radii, typography, and color tokens. Its dialog

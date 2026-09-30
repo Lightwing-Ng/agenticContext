@@ -10,7 +10,7 @@ Jury, and Cache route modules borrow those few Agent capabilities without import
 this module's internals or duplicating the gate.
 """
 
-# Code version: v1.1.3-codex.0
+# Code version: v1.2.0-claude.0
 
 from __future__ import annotations
 
@@ -73,7 +73,13 @@ from app.core.agent import (
 )
 from app.core.browser import open_zhihu_browser_for_login, probe_browser_session
 from app.core.browser_sessions import agent_uses_daily_edge_profile
-from app.core.foundation import APP_VERSION, is_macos_host, is_windows_host
+from app.core.foundation import (
+    APP_VERSION,
+    CacheTaskCoordinator,
+    CacheTaskIdentity,
+    is_macos_host,
+    is_windows_host,
+)
 from app.core.providers import (
     fetch_chatgpt_conversation_history,
     humanize_agent_history_prompts,
@@ -113,8 +119,8 @@ class AgentRouteContext:
     computer_use_agent_service: Any
     agent_session_pool: Any
     agent_source_cache: AgentSourceCache
-    grok_history_service: Any
-    cache_runtimes: dict[str, CacheRuntimeAdapter]
+    cache_runtimes: dict[str, dict[str, CacheRuntimeAdapter]]
+    cache_task_coordinator: CacheTaskCoordinator
     tunnel_runtime: Any
     tunnel_mcp_service: Any
     require_trusted_request_network: Callable[[], None]
@@ -414,24 +420,25 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
         )
 
     def active_safari_cache_consumer() -> str:
-        """Return the active Cache source that currently owns Safari."""
-        for source_key, runtime in context.cache_runtimes.items():
+        """Return the running or queued Cache task that needs Safari."""
+        task_states = context.cache_task_coordinator.task_states()
+        for source_key, runtimes in context.cache_runtimes.items():
             cache_source = get_cache_source_view(source_key)
-            if (
-                cache_source is not None
-                and runtime.service.is_running()
-                and str(
-                    getattr(context.config_store.config, cache_source.browser_config_field, "")
-                    or ""
-                ).strip().lower()
-                == "safari"
-            ):
-                return cache_source.label
-        if (
-            context.grok_history_service.is_running()
-            and str(context.config_store.config.grok_browser).strip().lower() == "safari"
-        ):
-            return "Grok history"
+            if cache_source is None:
+                continue
+            for content_mode, runtime in runtimes.items():
+                if not runtime.service.is_running():
+                    continue
+                admitted = task_states.get(f"{source_key}:{content_mode}")
+                # An admitted task keeps the browser it started with, even after the
+                # saved selection changes; otherwise the saved selection is the answer.
+                browser = (
+                    admitted["browser"]
+                    if admitted is not None
+                    else getattr(context.config_store.config, cache_source.browser_config_field, "")
+                )
+                if str(browser or "").strip().lower() == "safari":
+                    return CacheTaskIdentity(source_key, content_mode, cache_source.label).title
         return ""
 
     def reject_active_safari_agent_for_cache(browser: str):
@@ -1408,6 +1415,30 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                     "busy": True,
                 },
                 409,
+            )
+        safari_cache_task = (
+            context.cache_task_coordinator.running_browser_task("safari")
+            if browser_name == "safari" and scope != "agent"
+            else ""
+        )
+        if safari_cache_task:
+            # Safari leases one task window, so a probe now could take that lease from
+            # the running task between its pages. Starting another Safari cache task
+            # stays available because it waits in the queue.
+            return browser_session_response(
+                {
+                    "platform": platform_name,
+                    "browser": browser_name,
+                    "browser_label": "Safari",
+                    "can_download": False,
+                    "account_name": "",
+                    "message": (
+                        f"Safari is busy with the {safari_cache_task} cache. "
+                        "Start adds this task to the queue; the account is checked when it runs."
+                    ),
+                    "busy": True,
+                    "queue_available": True,
+                }
             )
         if scope == "agent" and platform_name in agent_bootstrap_collectors:
             try:

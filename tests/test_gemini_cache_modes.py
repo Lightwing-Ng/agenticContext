@@ -1,6 +1,6 @@
 """Gemini mode isolation and truthful worker completion.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-claude.0
 """
 
 from dataclasses import asdict
@@ -61,27 +61,61 @@ def test_worker_dispatches_mode_and_preserves_failure_state(tmp_path: Path, mode
     lock.release()
 
 
-@pytest.mark.parametrize("selected_mode,live_mode", (("text", "media"), ("media", "text")))
-@pytest.mark.parametrize("running", (False, True))
-def test_mode_snapshots_never_mix_text_and_media_counts(tmp_path, selected_mode, live_mode, running) -> None:
-    state = TaskState("test")
-    state.update(
-        downloaded_tweets=999, downloaded_images=999, running=running,
-        phase="downloading" if running else "finished",
-        performance_metrics={"content_mode": live_mode},
+@pytest.mark.parametrize("selected_mode,other_mode", (("text", "media"), ("media", "text")))
+@pytest.mark.parametrize("other_running", (False, True))
+def test_mode_snapshots_never_mix_text_and_media_status(tmp_path, selected_mode, other_mode, other_running) -> None:
+    """Each mode owns its task state, so the other mode's run never shows on its page."""
+    states = {
+        "text": TaskState("test", snapshot_factory=TaskSnapshot),
+        "media": TaskState("test", snapshot_factory=TaskSnapshot),
+    }
+    states[other_mode].update(
+        downloaded_tweets=999, downloaded_images=999, running=other_running,
+        phase="downloading" if other_running else "finished", started_at="2026-09-30T00:00:00Z",
     )
-    text_snapshot = TaskSnapshot(version="test", downloaded_posts=2, downloaded_tweets=4)
-    media_snapshot = TaskSnapshot(version="test", downloaded_images=3)
+    hydrated = {
+        "text": TaskSnapshot(version="test", downloaded_posts=2, downloaded_tweets=4),
+        "media": TaskSnapshot(version="test", downloaded_images=3),
+    }
     context = SimpleNamespace(
-        cache_runtimes={"gemini": CacheRuntimeAdapter(state, None, lambda: text_snapshot)},
+        cache_runtimes={"gemini": {
+            mode: CacheRuntimeAdapter(states[mode], None, lambda mode=mode: hydrated[mode])
+            for mode in ("text", "media")
+        }},
         media_catalog=SimpleNamespace(local_store_root=tmp_path),
     )
-    with patch("app.web.cache_routes.build_gemini_media_initial_snapshot", return_value=media_snapshot):
-        result = build_reconciled_cache_snapshot(context, "gemini", selected_mode)
-    expected = asdict(text_snapshot if selected_mode == "text" else media_snapshot)
-    for field in ("downloaded_posts", "downloaded_tweets", "downloaded_images"):
-        assert result[field] == expected[field]
-    assert result["running"] is running
+    result = build_reconciled_cache_snapshot(context, "gemini", selected_mode)
+    assert result == asdict(hydrated[selected_mode])
+    assert result["running"] is False
+    # The mode that ran keeps its own live status.
+    other = build_reconciled_cache_snapshot(context, "gemini", other_mode)
+    assert other["running"] is other_running
+    assert other["downloaded_images"] == (999 if other_running else hydrated[other_mode].downloaded_images)
+
+
+def test_a_mode_that_ran_or_failed_keeps_its_task_status_over_the_store(tmp_path) -> None:
+    state = TaskState("test", snapshot_factory=TaskSnapshot)
+    hydrated = TaskSnapshot(version="test", downloaded_images=3, message="Ready. 3 images.")
+    context = SimpleNamespace(
+        cache_runtimes={"gemini": {"media": CacheRuntimeAdapter(state, None, lambda: hydrated)}},
+        media_catalog=SimpleNamespace(local_store_root=tmp_path),
+    )
+    # A single-mode registration answers every requested mode.
+    assert build_reconciled_cache_snapshot(context, "gemini", "text") == asdict(hydrated)
+
+    state.finish_error("Unsupported Gemini browser: opera")
+    failed = build_reconciled_cache_snapshot(context, "gemini", "media")
+    assert failed["phase"] == "failed"
+    assert failed["message"] == "Unsupported Gemini browser: opera"
+
+    state.reset_for_run()
+    state.update(downloaded_images=1)
+    state.finish_success("Finished Gemini media cache.")
+    finished = build_reconciled_cache_snapshot(context, "gemini", "media")
+    assert finished["phase"] == "finished"
+    assert finished["message"] == "Finished Gemini media cache."
+    # Counters still follow the store once the run is over.
+    assert finished["downloaded_images"] == 3
 
 
 def test_media_page_and_status_do_not_report_history_as_images(tmp_path: Path, macos_host) -> None:

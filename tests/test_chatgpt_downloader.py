@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.41.4-claude.0
+# Code version: v1.42.0-claude.0
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from queue import Queue
 from threading import Event, Lock
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -1157,6 +1158,7 @@ def test_chatgpt_session_authorization_retries_transient_tls_disconnect() -> Non
         "APIRequestContext.get: socket hang up",
         "APIRequestContext.get: read ECONNRESET",
         "APIRequestContext.get: connect ETIMEDOUT",
+        "Safari JavaScript failed: Safari media transfer state was replaced.",
     ),
 )
 def test_chatgpt_image_retries_platform_network_error_messages(message: str) -> None:
@@ -1982,6 +1984,60 @@ def test_chatgpt_safari_refuses_symlinked_partial_directory(tmp_path: Path) -> N
     assert catalog.summarize() == 0
 
 
+def test_chatgpt_safari_tab_download_stays_on_the_supplied_page(tmp_path: Path) -> None:
+    target_dir = tmp_path / "media" / "chatgpt" / "demo-project"
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_tab",
+        file_id="file_tab",
+        conversation_url="https://chatgpt.com/c/tab",
+        request_headers={"authorization": "Bearer test-token"},
+    )
+    context = SafariContext(candidate.conversation_url)
+    primary_page = SafariPage(context, window_id=123)
+    tab_page = SafariPage(context, window_id=123, tab_index=2)
+    context.pages.extend([primary_page, tab_page])
+    catalog = ChatGPTImageCatalog.build(target_dir)
+    signed_url = "https://storage.example/file_tab.png"
+    streamed_urls: list[str] = []
+
+    class _DownloadMetadataResponse:
+        ok = True
+        status = 200
+
+        def text(self) -> str:
+            return json.dumps({"download_url": signed_url})
+
+    def stream_to_path(url, destination_path, _should_stop, headers=None, max_bytes=0):
+        streamed_urls.append(url)
+        if url == candidate.source_url:
+            raise RuntimeError("Safari media request returned HTTP 403 with 0 bytes.")
+        destination_path.write_bytes(PNG_PAYLOAD)
+        return "image/png", False
+
+    with patch.object(tab_page, "download_to_path", side_effect=stream_to_path), patch.object(
+        primary_page,
+        "download_to_path",
+        side_effect=AssertionError("The primary tab must not carry another tab's transfer"),
+    ), patch.object(
+        context.request,
+        "get",
+        side_effect=AssertionError("The primary request slot must not serve another tab"),
+    ), patch.object(
+        context.request,
+        "get_from_page",
+        return_value=_DownloadMetadataResponse(),
+    ) as get_from_page:
+        assert download_chatgpt_image(context, catalog, target_dir, candidate, page=tab_page)
+
+    assert streamed_urls == [candidate.source_url, signed_url]
+    get_from_page.assert_called_once()
+    assert get_from_page.call_args.args[0] is tab_page
+    assert get_from_page.call_args.args[1] == _chatgpt_file_download_url(
+        "file_tab", candidate.conversation_url
+    )
+    assert (target_dir / "img_file_tab.png").read_bytes() == PNG_PAYLOAD
+
+
 def test_chatgpt_reset_removes_only_the_dedicated_cache(tmp_path: Path) -> None:
     target_dir = tmp_path / "media" / "chatgpt" / "demo-project"
     candidate = ChatGPTImageCandidate(
@@ -2400,6 +2456,8 @@ def test_chatgpt_blank_media_url_scans_all_sessions_as_assistant_only(
     collect_project_media.assert_not_called()
     conversation_results.assert_called_once()
     assert conversation_results.call_args.kwargs["assistant_only"] is True
+    # Session scans navigate their page, so Safari keeps them on one serialized worker.
+    assert conversation_results.call_args.args[7] == 1
     assert any(
         "User-uploaded media will be excluded" in event
         for event in state.snapshot()["recent_events"]
@@ -2486,6 +2544,119 @@ def test_chatgpt_sync_uses_the_project_image_index_without_legacy_page_scans(tmp
     assert snapshot["processed_tweets"] == 1
     assert snapshot["progress_unit"] == "images"
     conversation_results.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "worker_results",
+    [
+        (),
+        (
+            ChatGPTImageDownloadWorkResult("file_new", downloaded=True),
+            ChatGPTImageDownloadWorkResult("file_duplicate", skipped=True),
+        ),
+    ],
+)
+def test_chatgpt_sync_publishes_already_cached_index_images_as_one_batch(
+    tmp_path: Path,
+    worker_results: tuple[ChatGPTImageDownloadWorkResult, ...],
+) -> None:
+    state = TaskState("test")
+    cached_results = [
+        ChatGPTImageDownloadWorkResult(f"file_cached_{index}", skipped=True, already_cached=True)
+        for index in range(60)
+    ]
+    results = [*cached_results, *worker_results]
+    candidates = [
+        ChatGPTImageCandidate(
+            source_url=f"https://chatgpt.com/backend-api/estuary/content?id={result.candidate_file_id}",
+            file_id=result.candidate_file_id,
+            conversation_url="https://chatgpt.com/c/project-batch",
+        )
+        for result in results
+    ]
+
+    with patch(
+        "app.core.chatgpt_downloader.sync_playwright",
+        return_value=nullcontext(object()),
+    ), patch(
+        "app.core.chatgpt_downloader.launch_chromium_context",
+        return_value=nullcontext(_ClosableBrowserContext()),
+    ), patch(
+        "app.core.chatgpt_downloader.collect_project_conversation_urls",
+        return_value=["https://chatgpt.com/c/project-batch"],
+    ), patch(
+        "app.core.chatgpt_downloader.collect_chatgpt_project_index_images",
+        return_value=candidates,
+    ), patch(
+        "app.core.chatgpt_downloader._iter_chatgpt_index_image_results",
+        return_value=iter(results),
+    ), patch.object(ChatGPTImageCatalog, "summarize", return_value=0) as summarize:
+        sync_chatgpt_images(
+            state,
+            config=CrawlConfig(),
+            target_dir=tmp_path / "media" / "chatgpt" / DEFAULT_CHATGPT_PROJECT_NAME,
+        )
+
+    snapshot = state.snapshot()
+    assert snapshot["processed_tweets"] == len(results)
+    assert snapshot["skipped_tweets"] == 60 + sum(result.skipped for result in worker_results)
+    events = [event.split("] ", 1)[1] for event in snapshot["recent_events"]]
+    assert [event for event in events if "already cached" in event] == [
+        "Skipped 60 direct ChatGPT project-index images that were already cached."
+    ]
+    # The cached run is reported once: no per-image recount and no per-page progress lines.
+    assert summarize.call_count < 10
+    assert [event for event in events if event.startswith("Cached ")] == (
+        [f"Cached {len(results)}/{len(results)} direct ChatGPT project-index images."]
+        if worker_results
+        else []
+    )
+
+
+@pytest.mark.parametrize(("download_workers", "expected_tabs"), [(4, 3), (2, 2), (1, 1)])
+def test_chatgpt_sync_spreads_safari_index_downloads_across_tabs(
+    tmp_path: Path,
+    macos_host,
+    download_workers: int,
+    expected_tabs: int,
+) -> None:
+    state = TaskState("test")
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_safari_index",
+        file_id="file_safari_index",
+        conversation_url="https://chatgpt.com/c/project-safari-index",
+    )
+
+    with patch("app.core.chatgpt_downloader.sync_playwright", None), patch(
+        "app.core.chatgpt_downloader._launch_chatgpt_browser_context",
+        return_value=nullcontext(_ClosableBrowserContext()),
+    ), patch(
+        "app.core.chatgpt_downloader.collect_project_conversation_urls",
+        return_value=[candidate.conversation_url],
+    ), patch(
+        "app.core.chatgpt_downloader.collect_chatgpt_project_index_images",
+        return_value=[candidate],
+    ), patch(
+        "app.core.chatgpt_downloader._iter_chatgpt_index_image_results",
+        return_value=iter(()),
+    ) as index_results, patch(
+        "app.core.chatgpt_downloader._iter_chatgpt_conversation_results"
+    ) as conversation_results:
+        sync_chatgpt_images(
+            state,
+            config=CrawlConfig(chatgpt_browser="safari", download_workers=download_workers),
+            target_dir=tmp_path / "media" / "chatgpt" / DEFAULT_CHATGPT_PROJECT_NAME,
+        )
+
+    assert index_results.call_args.args[5] == expected_tabs
+    conversation_results.assert_not_called()
+    events = state.snapshot()["recent_events"]
+    assert any(f"Using up to {expected_tabs} Safari tabs" in event for event in events) == (
+        expected_tabs > 1
+    )
+    assert any("one serialized Safari media worker" in event for event in events) == (
+        expected_tabs == 1
+    )
 
 
 class _ConversationPage:
@@ -2752,6 +2923,10 @@ def test_chatgpt_project_index_iterator_skips_complete_files_before_worker_start
     assert {result.candidate_file_id for result in results} == {"file_existing", "file_missing"}
     existing_result = next(result for result in results if result.candidate_file_id == "file_existing")
     assert existing_result.skipped is True
+    # Only the file that was complete before any worker started is marked for batching.
+    assert [result.candidate_file_id for result in results if result.already_cached] == [
+        "file_existing"
+    ]
 
 
 def test_chatgpt_project_index_worker_refreshes_authorization_before_download(tmp_path: Path) -> None:
@@ -2862,6 +3037,176 @@ def test_chatgpt_project_index_iterator_bounds_worker_cleanup_wait(tmp_path: Pat
         release_worker.set()
 
     assert [result.candidate_file_id for result in results] == [candidate.file_id]
+
+
+def _safari_index_candidates(count: int) -> list[ChatGPTImageCandidate]:
+    return [
+        ChatGPTImageCandidate(
+            source_url=f"https://chatgpt.com/backend-api/estuary/content?id=file_tab_{index}",
+            file_id=f"file_tab_{index}",
+            conversation_url="https://chatgpt.com/c/project-conversation",
+        )
+        for index in range(count)
+    ]
+
+
+@pytest.mark.parametrize(("worker_count", "expected_tabs"), [(3, 3), (1, 1)])
+def test_chatgpt_project_index_iterator_gives_safari_one_worker_with_tabs(
+    tmp_path: Path,
+    worker_count: int,
+    expected_tabs: int,
+) -> None:
+    worker_calls: list[tuple[list[str], int]] = []
+
+    def fake_worker(
+        candidates,
+        _descriptor,
+        _catalog,
+        _target_dir,
+        _should_stop,
+        result_queue,
+        safari_tab_count: int = 1,
+    ) -> None:
+        worker_calls.append(([candidate.file_id for candidate in candidates], safari_tab_count))
+        for candidate in candidates:
+            result_queue.put(ChatGPTImageDownloadWorkResult(candidate.file_id, downloaded=True))
+
+    candidates = _safari_index_candidates(5)
+    with patch("app.core.chatgpt_downloader._chatgpt_index_image_worker", side_effect=fake_worker):
+        results = list(
+            _iter_chatgpt_index_image_results(
+                candidates,
+                SimpleNamespace(engine="safari"),
+                ChatGPTImageCatalog.build(tmp_path / "demo-project"),
+                tmp_path / "demo-project",
+                lambda: False,
+                worker_count=worker_count,
+            )
+        )
+
+    # Safari serializes task contexts, so one worker owns every candidate and its tabs.
+    assert worker_calls == [([candidate.file_id for candidate in candidates], expected_tabs)]
+    assert {result.candidate_file_id for result in results} == {
+        candidate.file_id for candidate in candidates
+    }
+
+
+def test_chatgpt_safari_index_worker_downloads_through_parallel_tabs(tmp_path: Path) -> None:
+    candidates = _safari_index_candidates(6)
+    context = SafariContext(candidates[0].conversation_url)
+    primary_page = SafariPage(context, window_id=123)
+    context.pages.append(primary_page)
+    extra_pages = [SafariPage(context, window_id=123, tab_index=index) for index in (2, 3)]
+    result_queue: Queue[ChatGPTImageDownloadWorkResult] = Queue()
+    active_lock = Lock()
+    all_tabs_active = Event()
+    active_downloads = 0
+    downloads: list[tuple[str, object, dict[str, str]]] = []
+
+    def download(_context, _catalog, _target_dir, candidate, max_file_size_bytes=0, page=None):
+        nonlocal active_downloads
+        with active_lock:
+            active_downloads += 1
+            downloads.append((candidate.file_id, page, candidate.request_headers))
+            if active_downloads == 3:
+                all_tabs_active.set()
+        # No transfer finishes until all three tabs carry one at the same time.
+        assert all_tabs_active.wait(timeout=2)
+        with active_lock:
+            active_downloads -= 1
+        return True
+
+    with patch(
+        "app.core.chatgpt_downloader._launch_chatgpt_browser_context",
+        return_value=nullcontext(context),
+    ), patch("app.core.chatgpt_downloader.open_chatgpt_page") as open_page, patch(
+        "app.core.chatgpt_downloader._load_chatgpt_session_request_headers",
+        return_value={"authorization": "Bearer fresh-token"},
+    ), patch.object(context, "new_page", side_effect=extra_pages), patch(
+        "app.core.chatgpt_downloader.download_chatgpt_image",
+        side_effect=download,
+    ):
+        _chatgpt_index_image_worker(
+            candidates,
+            SimpleNamespace(engine="safari"),
+            ChatGPTImageCatalog.build(tmp_path / "demo-project"),
+            tmp_path / "demo-project",
+            lambda: False,
+            result_queue,
+            safari_tab_count=3,
+        )
+
+    assert all_tabs_active.is_set()
+    assert [call.args[0] for call in open_page.call_args_list] == [primary_page, *extra_pages]
+    assert {page for _file_id, page, _headers in downloads} == {primary_page, *extra_pages}
+    assert sorted(file_id for file_id, _page, _headers in downloads) == [
+        candidate.file_id for candidate in candidates
+    ]
+    assert all(
+        headers == {"authorization": "Bearer fresh-token"}
+        for _file_id, _page, headers in downloads
+    )
+    results = [result_queue.get_nowait() for _ in candidates]
+    assert result_queue.empty()
+    assert sorted(result.candidate_file_id for result in results) == [
+        candidate.file_id for candidate in candidates
+    ]
+    assert all(result.downloaded for result in results)
+
+
+def test_chatgpt_safari_index_worker_continues_when_an_extra_tab_cannot_open(
+    tmp_path: Path,
+) -> None:
+    candidates = _safari_index_candidates(4)
+    context = SafariContext(candidates[0].conversation_url)
+    primary_page = SafariPage(context, window_id=123)
+    context.pages.append(primary_page)
+    result_queue: Queue[ChatGPTImageDownloadWorkResult] = Queue()
+    download_pages: list[object] = []
+
+    class _BrokenTab:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    broken_tab = _BrokenTab()
+
+    def open_page(page, _url, settle_ms=2_500) -> None:
+        if page is broken_tab:
+            raise RuntimeError("ChatGPT startup timed out after 60 seconds while opening the page.")
+
+    def download(_context, _catalog, _target_dir, _candidate, max_file_size_bytes=0, page=None):
+        download_pages.append(page)
+        return True
+
+    with patch(
+        "app.core.chatgpt_downloader._launch_chatgpt_browser_context",
+        return_value=nullcontext(context),
+    ), patch("app.core.chatgpt_downloader.open_chatgpt_page", side_effect=open_page), patch(
+        "app.core.chatgpt_downloader._load_chatgpt_session_request_headers",
+        return_value={"authorization": "Bearer fresh-token"},
+    ), patch.object(context, "new_page", side_effect=[broken_tab]) as new_page, patch(
+        "app.core.chatgpt_downloader.download_chatgpt_image",
+        side_effect=download,
+    ):
+        _chatgpt_index_image_worker(
+            candidates,
+            SimpleNamespace(engine="safari"),
+            ChatGPTImageCatalog.build(tmp_path / "demo-project"),
+            tmp_path / "demo-project",
+            lambda: False,
+            result_queue,
+            safari_tab_count=3,
+        )
+
+    # The failed tab is released, no further tab is attempted, and the primary tab finishes the work.
+    new_page.assert_called_once()
+    assert broken_tab.closed is True
+    assert download_pages == [primary_page] * len(candidates)
+    results = [result_queue.get_nowait() for _ in candidates]
+    assert result_queue.empty()
+    assert all(result.downloaded for result in results)
 
 
 def test_chatgpt_project_startup_timeout_is_explicit() -> None:

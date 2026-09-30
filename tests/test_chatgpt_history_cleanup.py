@@ -1,6 +1,6 @@
 """Regression coverage for recoverable local ChatGPT trace cleanup."""
 
-# Code version: v1.1.0-codex.1
+# Code version: v1.2.0-claude.0
 
 import hashlib
 from pathlib import Path
@@ -71,14 +71,16 @@ def test_cleanup_is_locked_backed_up_atomic_and_idempotent(tmp_path: Path):
         row["schema_version"] = 2
     write_parquet_rows_atomic(path, rows, CHATGPT_HISTORY_SCHEMA)
     original = path.read_bytes()
-    lock = CacheTaskLock(tmp_path / ".cache_task.lock")
-    assert lock.acquire("test-writer")
-    try:
-        with pytest.raises(RuntimeError, match="running"):
-            clean_history(tmp_path, set(), True)
-        assert path.read_bytes() == original
-    finally:
-        lock.release()
+    # Either the shared gate or one task's own resource lock marks an active cache writer.
+    for lock_name in (".cache_task.lock", ".cache_task.task-chatgpt-text.lock"):
+        lock = CacheTaskLock(tmp_path / lock_name)
+        assert lock.acquire("test-writer")
+        try:
+            with pytest.raises(RuntimeError, match="running"):
+                clean_history(tmp_path, set(), True)
+            assert path.read_bytes() == original
+        finally:
+            lock.release()
     assert clean_history(tmp_path, set())["removed"] == 1
     assert path.read_bytes() == original
     result = clean_history(tmp_path, set(), True)

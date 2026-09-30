@@ -1,4 +1,4 @@
-<!-- Code version: v1.5.13-codex.0 -->
+<!-- Code version: v1.6.0-claude.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -10,6 +10,7 @@
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.157.0-codex.0') }}">
+    {% include "_cache_activity_assets.html" %}
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='jury.css', v='jury-v1.2.0-codex.0') }}">
@@ -146,7 +147,7 @@
                             </div>
                         </div>
                     </article>
-                    <form class="agent-prompt-form" id="jury_prompt_form">
+                    <form class="agent-prompt-form" id="jury_prompt_form" data-cache-activity-clearance>
                         <div class="field agent-composer-field">
                             <span class="agent-composer-shell">
                                 <textarea class="text-input-control agent-prompt-input" name="question" rows="2" placeholder="What should the jury fact-check?" aria-label="Question for the jury" data-jury-prompt required></textarea>
@@ -162,6 +163,7 @@
     </div>
     {% set dock_section = "agent" %}
     {% include "_sidebar_dock.html" %}
+    {% include "_cache_activity.html" %}
 </main>
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.25.0-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>

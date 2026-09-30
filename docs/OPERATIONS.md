@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.41.0-claude.0`
+Documentation version: `v1.43.1-claude.0`
 
 ## Launch
 
@@ -47,6 +47,29 @@ On Windows:
 .\scripts\run_app.ps1
 ```
 
+### Debug mode and hot reload
+
+`main.py` starts Flask with `debug=True`. Template edits apply on the next request, static files
+are read from disk, and a saved change to `main.py`, `app/`, or an installed dependency restarts
+the serving process automatically. Edits under `tests/`, `scripts/`, `local_store/`, and `logs/`
+never restart it.
+
+The launcher runs two processes. A small supervisor owns the listening socket and restarts the
+serving child; only the child builds services, owns browser sessions, and starts the ChatGPT
+Tunnel. Requests that arrive during a restart wait in the socket backlog.
+
+- A Python reload is a real process restart. The shared runtime shutdown callback runs first, so
+  active cache tasks, Agent sessions, Jury runs, and Tunnel calls end. Do not save Python edits
+  while a browser-owning job is active.
+- In-memory state resets on every reload: LAN sessions, Tunnel authorization grants, and queued
+  work. The session secret is regenerated unless `AGENTIC_CONTEXT_SESSION_SECRET` is set.
+- A change that fails to import stops the service. Fix the error and start the launcher again.
+- Stop the service with Ctrl+C in its terminal, or send `SIGTERM` to the supervisor. Either way the
+  supervisor waits for the child to finish browser cleanup before exiting.
+- Werkzeug's interactive debugger is enabled only on a loopback bind (`127.0.0.1`). With LAN
+  access enabled, errors return a plain 500 response and the traceback stays in the log.
+- Set `DEBUG = False` in `main.py` to return to a single process without automatic restarts.
+
 On macOS, the launcher prefers `python3` from `PATH`, then tries unversioned platform Python
 installations. It skips an otherwise supported interpreter when required application modules are
 missing, so an already prepared platform installation can still start the app without a manual
@@ -55,8 +78,9 @@ interpreter override.
 Safari automation reuses one background AppleScript worker instead of starting `osascript` for
 every API poll or media slice. The worker cannot activate or display a Dock item; it does not
 open or close Terminal windows. Scripts and results travel through anonymous pipes, and each
-exchange keeps the existing 20-second timeout. A failed transport is reaped before another
-request can start. This execution-layer change requires a normal service restart when no
+exchange keeps the existing 20-second timeout. Media bytes return in slices of at most 1 MiB per
+exchange, so a 2 MiB download range needs two exchanges; the fixed cost of an exchange, not its
+size, dominates a transfer. A failed transport is reaped before another request can start. This execution-layer change requires a normal service restart when no
 browser-owning job is active; a page reload alone does not update a running Python process.
 
 If closing a stale Safari task window leaves a zero-tab shell, reconciliation records it as
@@ -217,6 +241,16 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
   window alone until it returns to chatgpt.com. The Agent aside Account row tells the user to
   complete verification now in the open browser, then Recheck. Repeating the probe, opening
   login again, or clicking Turnstile repeatedly restarts the challenge.
+- Claude Agent readiness and source discovery reuse a Claude tab in the selected project debug
+  browser instead of navigating its first tab, which may belong to ChatGPT. An existing `/new`
+  tab is not reloaded. Challenge checks run before navigation, after navigation, and during
+  composer hydration. A pre-attach or newly detected challenge produces the typed
+  `human_verification` status, so passive status reads reuse it until an explicit Recheck.
+  After updating this Python code, restart the console normally when no browser-owning job is
+  active. Complete any remaining challenge manually in the same open Edge window, wait for the
+  Claude page to return, and choose Recheck. These guards prevent application-triggered retries;
+  offline tests do not establish that Claude will accept the browser or network. ChatGPT passing
+  in the same Edge profile does not prove Claude clearance.
 - Copying profile files and launching the clone do not prove provider authentication. The copy
   is not an atomic snapshot of a running browser. Check readiness in the clone; report copy or
   access errors without closing the user's browser or retrying against its writable profile.
@@ -738,7 +772,8 @@ interrupt it, so the optimizer must checkpoint frequently enough for the workloa
 | `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links |
 | `local_store/prompt/prompts.parquet` | Saved prompt content snapshots and source pointers; prompts remain available if source history disappears |
 | `local_store/agent/agent_source_catalog.parquet` | Provider-neutral Agent session and Project discovery cache |
-| `local_store/.cache_task.lock` | Cross-source advisory task lock |
+| `local_store/.cache_task.lock` | Gate that a starting cache task passes and a shadow backup or history repair holds |
+| `local_store/.cache_task.<resource>.lock` | Advisory lock for one running cache task, exclusive browser, or shared store |
 | `local_store/.browser-trash/` | Recoverable previews moved by the local-media browser |
 | `local_store/.browser_deleted.json` | Browser deletion tombstones and exclusion identities |
 | `logs/cachelikes.log.jsonl` | Structured local application log |
@@ -787,16 +822,35 @@ enumerates it twice, so a long answerer can take many minutes. The page polls
 already cached among the newest answers checked. Zhihu serves an answer's images from rotating
 hosts, so an answer whose text is unchanged can still be rewritten; the banner counts those as
 refreshed and never as new. The action is disabled when the cached
-answers carry no profile link, is refused while another cache task runs, and is unavailable when
-external operations are disabled. Failures such as human verification are shown once and leave the
+answers carry no profile link, is refused rather than queued while the Zhihu task or its
+exclusive browser is busy, and is unavailable when external operations are disabled. Failures such as human verification are shown once and leave the
 cache unchanged.
 
 ## Concurrency and local compute
 
+Cache tasks run together. Each source and content mode is one task, so X Media and ChatGPT
+Text, or the Text and Media modes of one source, can be active at once. A task that needs a
+browser or store another task holds is accepted and waits in the queue, then starts by itself:
+
+- Safari runs one cache task at a time. On Windows, Edge and Chrome do too. On macOS, Edge and
+  Chrome tasks each clone the selected profile and run together.
+- An X Text task and a Safari X Media task both write the liked-text history and take turns.
+- Stop removes a queued task from the queue and asks a running task to stop after its current
+  work item.
+- The task entry in the lower right of every page lists running and queued tasks.
+  `GET /api/cache/activity` returns the same list without scanning a cache or opening a browser.
+- A manual shadow backup starts only when no cache task is active. With automatic backup
+  enabled, the copy runs after a task when it is the only one, and otherwise once the last
+  task finishes; a task started during the copy waits for it.
+- The queue is held in memory. Restarting the console discards queued tasks.
+
 The shared `Download workers` setting accepts values from `1` through `8`. Older settings files
 remain readable; values below or above that range are normalized on load, and direct
-`CrawlConfig` construction applies the same limit. Grok remains capped at four download workers,
-ChatGPT remains capped at three isolated Chromium workers, and Safari remains serialized.
+`CrawlConfig` construction applies the same limit. Grok remains capped at four download workers
+and ChatGPT at three isolated Chromium workers. Safari still owns one task window at a time.
+Inside that window, ChatGPT direct project-index downloads use as many tabs as the setting allows,
+up to three; set `Download workers` to `1` to keep them on a single tab. ChatGPT session scans
+and prompt backfill, and every other Safari collector, stay on one tab.
 
 ChatGPT visual-signature hydration is a separate local CPU stage. Small batches stay in the parent
 process, while larger batches may use the automatically discovered conservative process budget.
@@ -869,7 +923,8 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   an optional trailing `length|short`, `length|medium`, or `length|long` option.
   Every line must match the protocol; mixed prose and fenced examples are retained.
   Ordinary prose is retained unless explicitly reviewed with `--remove-message chat-<id>`.
-  The command acquires the cache task lock, backs up the original Parquet and a removal manifest
+  The command holds the cache gate and refuses to run while any cache task is active. It backs up
+  the original Parquet and a removal manifest
   under `local_store/recovery/`, and atomically writes the cleaned history. It preserves user
   messages, retained content, timestamps, and session IDs. Do not restore the backup over an
   active cache job. Channel-less future messages also reject standalone tool syntax; explicit

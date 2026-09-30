@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.16.0-codex.0
+# Code version: v2.17.0-claude.0
 
 from __future__ import annotations
 
@@ -26,7 +26,8 @@ from .platform_lock import lock_file, unlock_file
 
 SAFARI_DOWNLOAD_RANGE_BYTES = 2 * 1024 * 1024
 # Keep Apple Event replies bounded while reducing slice calls per transferred byte.
-SAFARI_BASE64_SLICE_BYTES = 128 * 1024
+# The fixed round trip dominates the per-byte cost, so one range is read in two slices.
+SAFARI_BASE64_SLICE_BYTES = 1024 * 1024
 SAFARI_RESPONSE_TEXT_SLICE_CHARS = 96 * 1024
 SAFARI_POLL_INTERVAL_SECONDS = 0.2
 SAFARI_DOWNLOAD_POLL_INTERVAL_SECONDS = 0.5
@@ -1222,6 +1223,8 @@ class SafariPage:
         self._rendering_active = False
         self._native_input_transaction_depth = 0
         self._background_only_depth = 0
+        # Each tab owns its own transfer slot, so separate tabs can stream concurrently.
+        self._download_lock = RLock()
         self._recovery_url = context.initial_url if not context.pages else "about:blank"
 
     @property
@@ -2012,8 +2015,11 @@ return "closed"
         max_bytes: int = 0,
         reject_redirects: bool = False,
     ) -> tuple[str, bool]:
-        """Stream authenticated media, optionally rejecting redirects before transferring bytes."""
-        with self._context.download_lock, self._background_only_transfer():
+        """Stream authenticated media, optionally rejecting redirects before transferring bytes.
+
+        Transfers are serialized per page; separate tabs of one context may stream concurrently.
+        """
+        with self._download_lock, self._background_only_transfer():
             destination_path.parent.mkdir(parents=True, exist_ok=True)
             initial_bytes = destination_path.stat().st_size if destination_path.exists() else 0
             if max_bytes > 0 and initial_bytes > max_bytes:
@@ -2032,6 +2038,9 @@ return "closed"
 
                 range_end = range_start + SAFARI_DOWNLOAD_RANGE_BYTES - 1
                 request_headers, referrer = _split_fetch_headers(headers or {})
+                # The token binds every poll and slice to this request, so an abandoned
+                # fetch or a tab that shifted position can never supply another transfer's bytes.
+                transfer_token = secrets.token_hex(8)
                 request_payload = {
                     "sourceUrl": source_url,
                     "rangeHeader": f"bytes={range_start}-{range_end}",
@@ -2039,10 +2048,12 @@ return "closed"
                     "referrer": referrer,
                     "maxBytes": max(1, max_bytes - range_start) if max_bytes > 0 else 0,
                     "rejectRedirects": bool(reject_redirects),
+                    "token": transfer_token,
                 }
                 self.evaluate(
                     """(request) => {
-                        window.__cachelikesSafariDownload = { state: "pending" };
+                        const transfer = { state: "pending", token: request.token };
+                        window.__cachelikesSafariDownload = transfer;
                         const options = {
                             credentials: "include",
                             cache: "no-store",
@@ -2086,8 +2097,10 @@ return "closed"
                                     throw new Error("Safari media exceeds the configured cache limit.");
                                 }
                             }
+                            if (window.__cachelikesSafariDownload !== transfer) return;
                             window.__cachelikesSafariDownload = {
                                 state: "ready",
+                                token: request.token,
                                 status: response.status,
                                 contentType: response.headers.get("content-type") || "",
                                 contentRange: response.headers.get("content-range") || "",
@@ -2095,8 +2108,10 @@ return "closed"
                                 bytes,
                             };
                         }).catch((error) => {
+                            if (window.__cachelikesSafariDownload !== transfer) return;
                             window.__cachelikesSafariDownload = {
                                 state: "failed",
+                                token: request.token,
                                 error: String(error && error.message ? error.message : error),
                             };
                         });
@@ -2105,7 +2120,7 @@ return "closed"
                     request_payload,
                 )
 
-                metadata = self._wait_for_download_chunk(should_stop)
+                metadata = self._wait_for_download_chunk(should_stop, transfer_token)
                 status = int(metadata.get("status") or 0)
                 chunk_bytes = int(metadata.get("bytes") or 0)
                 if status == 416 and received_this_call > 0 and expected_total == 0:
@@ -2184,7 +2199,11 @@ return "closed"
                         slice_end = min(chunk_bytes, slice_start + SAFARI_BASE64_SLICE_BYTES)
                         slice_payload = self.evaluate(
                             """(bounds) => {
-                                const bytes = window.__cachelikesSafariDownload.bytes;
+                                const current = window.__cachelikesSafariDownload;
+                                if (current && current.token !== bounds.token) {
+                                    throw new Error("Safari media transfer state was replaced.");
+                                }
+                                const bytes = current.bytes;
                                 const end = Math.min(bytes.byteLength, bounds.end);
                                 let binary = "";
                                 for (let index = bounds.start; index < end; index += 1) {
@@ -2194,7 +2213,7 @@ return "closed"
                                 if (end >= bytes.byteLength) delete window.__cachelikesSafariDownload;
                                 return result;
                             }""",
-                            {"start": slice_start, "end": slice_end},
+                            {"start": slice_start, "end": slice_end, "token": transfer_token},
                         )
                         if not isinstance(slice_payload, dict):
                             raise RuntimeError("Safari returned an invalid media slice.")
@@ -2211,14 +2230,15 @@ return "closed"
 
             return content_type, initial_bytes > 0
 
-    def _wait_for_download_chunk(self, should_stop) -> dict[str, Any]:
+    def _wait_for_download_chunk(self, should_stop, transfer_token: str) -> dict[str, Any]:
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             if should_stop():
                 raise RuntimeError("Stop requested while downloading Grok media.")
             metadata = self.evaluate(
-                f"""() => {{
-                    const current = window.__cachelikesSafariDownload || {{ state: "missing" }};
+                f"""(token) => {{
+                    const owned = window.__cachelikesSafariDownload;
+                    const current = owned && owned.token === token ? owned : {{ state: "missing" }};
                     const result = {{
                         state: current.state || "missing",
                         status: current.status || 0,
@@ -2248,7 +2268,8 @@ return "closed"
                         delete window.__cachelikesSafariDownload;
                     }}
                     return result;
-                }}"""
+                }}""",
+                transfer_token,
             )
             if isinstance(metadata, dict) and metadata.get("state") == "ready":
                 return metadata
@@ -2328,7 +2349,6 @@ class SafariContext:
         self.pages: list[SafariPage] = []
         self.request = SafariRequestClient(self)
         self.request_lock = RLock()
-        self.download_lock = RLock()
         self._close_lock = RLock()
         self._context_lock_handle: Any | None = None
         self._ownership_token = secrets.token_hex(16)
@@ -2951,6 +2971,9 @@ class SafariContext:
                 page.tab_index -= 1
 
     def _create_window(self, url: str) -> str:
+        # A loop item is a positional reference ("item 1 of every window"). The new window
+        # is bound by its ID instead, so restoring the user's front window while Safari is
+        # frontmost cannot retarget the script to that user window.
         source = f"""
 tell application "Safari"
     set targetWindow to missing value
@@ -2966,7 +2989,8 @@ tell application "Safari"
         repeat with candidateWindow in every window
             try
                 if (document of candidateWindow) is targetDocument then
-                    set targetWindow to candidateWindow
+                    set targetWindowId to id of candidateWindow
+                    set targetWindow to first window whose id is targetWindowId
                     exit repeat
                 end if
             end try
@@ -2982,7 +3006,8 @@ tell application "Safari"
             repeat with candidateWindow in every window
                 try
                     if (document of candidateWindow) is targetDocument then
-                        set targetWindow to candidateWindow
+                        set targetWindowId to id of candidateWindow
+                        set targetWindow to first window whose id is targetWindowId
                         exit repeat
                     end if
                 end try
