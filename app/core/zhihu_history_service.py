@@ -1,6 +1,6 @@
 """Background service for the formal Zhihu text cache.
 
-Code version: v1.2.0-codex.1
+Code version: v1.4.0-claude.0
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from .cache_service_support import (
     append_shadow_backup_completion,
     summarize_status_error,
 )
+from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .config import LOCAL_STORE_ROOT, CrawlConfig
 from .job_lock import CacheTaskLock
 from .shadow_backup import ShadowBackupService
@@ -27,6 +28,13 @@ logger = logging.getLogger(__name__)
 def _format_completion_message(result: dict[str, object]) -> str:
     """Describe cache completion without treating provider-unavailable answers as failures."""
 
+    if result.get("collection_mode") == "author-latest":
+        return (
+            f"Finished Zhihu latest-answer update. Checked the newest "
+            f"{int(result['processed_answers']):,} answers across {int(result['pages_processed']):,} "
+            f"pages; added {int(result['added']):,}, changed {int(result['changed']):,}, "
+            f"unchanged {int(result['unchanged']):,}; cached total {int(result['cached_answers']):,}."
+        )
     message = (
         f"Finished Zhihu answer cache. Read {int(result['processed_answers']):,} answers across "
         f"{int(result['pages_processed']):,} pages; added {int(result['added']):,}, changed "
@@ -58,20 +66,36 @@ class ZhihuHistoryService(CooperativeCacheWorker):
         local_store_root: Path | str = LOCAL_STORE_ROOT,
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
+        *,
+        task: CacheTaskIdentity | None = None,
+        coordinator: CacheTaskCoordinator | None = None,
     ) -> None:
-        super().__init__(state, task_lock)
+        super().__init__(state, task_lock, task=task, coordinator=coordinator)
         self._local_store_root = Path(local_store_root)
         self._shadow_backup_service = shadow_backup_service
         self._config = CrawlConfig()
         self._author_url = ""
+        self._latest_only = False
 
-    def start(self, config: CrawlConfig, *, author_url: str = "") -> None:
-        """Start one signed-in vote-up or author-answer cache run."""
+    def start(
+        self,
+        config: CrawlConfig,
+        *,
+        author_url: str = "",
+        latest_only: bool = False,
+        allow_queue: bool = True,
+    ) -> None:
+        """Start one signed-in vote-up, complete author-answer, or newest-answer cache run.
+
+        A targeted refresh passes ``allow_queue=False`` so it fails at once instead
+        of waiting behind another task that holds the browser.
+        """
 
         normalized_author_url = str(author_url or "").strip()
         def prepare() -> None:
             self._config = config
             self._author_url = normalized_author_url
+            self._latest_only = bool(latest_only)
 
         self._start_worker(
             lock_owner="zhihu-history-sync",
@@ -83,6 +107,8 @@ class ZhihuHistoryService(CooperativeCacheWorker):
             target=self._run,
             prepare=prepare,
             thread_factory=Thread,
+            browser=config.zhihu_browser,
+            allow_queue=allow_queue,
         )
 
     def request_stop(self) -> bool:
@@ -101,6 +127,7 @@ class ZhihuHistoryService(CooperativeCacheWorker):
                 self._stop_requested.is_set,
                 self._local_store_root,
                 author_url=self._author_url,
+                latest_only=self._latest_only,
             )
             if result["stopped"]:
                 self._state.finish_stopped(
@@ -114,6 +141,8 @@ class ZhihuHistoryService(CooperativeCacheWorker):
                 shadow_backup_service=self._shadow_backup_service,
                 state=self._state,
                 config=self._config,
+                coordinator=self._coordinator,
+                task=self._task,
             )
             self._state.finish_success(completion_message)
             logger.info(

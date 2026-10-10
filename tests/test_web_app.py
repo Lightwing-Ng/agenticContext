@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.147.7-codex.0
+# Code version: v1.152.0-claude.0
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import ANY, patch
@@ -524,7 +525,7 @@ class WebAppTests(unittest.TestCase):
                 body = client.get("/settings").get_data(as_text=True)
                 for label in ("ChatGPT · Text", "ChatGPT · Media", "Claude · Text", "Gemini · Text", "Grok · Text", "Grok · Media"):
                     self.assertIn(label, body)
-                with patch.object(app.extensions["chatgpt_service"], "start") as start:
+                with patch("app.core.chatgpt_service.ChatGPTDownloadService.start") as start:
                     response = client.post("/cache/chatgpt/start", data={"chatgpt_content_mode": "text"})
                 self.assertEqual(response.status_code, 302)
                 config = start.call_args.args[0]
@@ -630,7 +631,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-section-link="settings"', grok_body)
         self.assertIn('data-cache-source-switcher-path="/cache/chatgpt/text/edge"', grok_body)
         self.assertIn('data-section-link="local-resources"', browser_body)
-        self.assertIn("Gemini history cache overview", gemini_body)
+        self.assertIn("Gemini cache overview", gemini_body)
         self.assertIn("Claude cache overview", claude_body)
         self.assertIn('name="claude_browser"', claude_body)
         self.assertIn("Browser-rendered history", claude_body)
@@ -752,7 +753,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.17.2-codex.0', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.18.0-claude.0', chatgpt_body)
         self.assertIn('numeric-display.js?v=numeric-display-v1.1.0-codex.0', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
@@ -787,7 +788,7 @@ class WebAppTests(unittest.TestCase):
                 stop_form_end = body.index(">", stop_form_start)
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', chatgpt_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.0-claude.0', chatgpt_body)
         self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.9.1-codex.0', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
@@ -903,9 +904,13 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.24.1-codex.0"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.25.0-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = "style-v2.156.2-codex.0"
+                expected_style_version = (
+                    "style-v2.159.0-claude.0"
+                    if page_source == "local-resources"
+                    else "style-v2.157.0-codex.0"
+                )
                 self.assertIn(expected_style_version, body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
@@ -925,7 +930,7 @@ class WebAppTests(unittest.TestCase):
             'const dockLocationMemoryPrefix = "cachelikes:dock-location:v1:";',
             'const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);',
             'const agentRoutePattern = /^\\/agent\\/(?:safari|edge|chrome)\\/(?:chatgpt|gemini|grok|claude)$/;',
-            'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view"];',
+            'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view", "session_index"];',
             'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/zhihu"]);',
             'const cacheSelectionPathPattern = /^\\/cache\\/(x|grok|chatgpt|gemini|claude|zhihu)(?:\\/(text|media)\\/(safari|edge|chrome))?$/;',
             'if (targetUrl.pathname === "/browser") return "/cache/chatgpt";',
@@ -1008,7 +1013,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-section-link="local-resources"', browser_body)
         self.assertIn("Cached media browser", browser_body)
         self.assertIn('data-browser-source-filter', browser_body)
-        self.assertEqual(browser_body.count('data-browser-source-filter-option='), 5)
+        self.assertEqual(browser_body.count('data-browser-source-filter-option='), 6)
         self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.6.0-codex.0', browser_body)
         self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"', browser_body)
 
@@ -1019,6 +1024,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("--cache-source-mark: url('/static/images/grok.svg')", browser_body)
         self.assertIn("--cache-source-mark: url('/static/images/ChatGPT-Logo.svg')", browser_body)
         self.assertIn("--cache-source-mark: url('/static/images/claude.svg')", browser_body)
+        self.assertIn('data-browser-source-filter-option="gemini"', browser_body)
         self.assertNotIn("Apply filters", browser_body)
         self.assertIn('id="status_progress_detail"', grok_body)
         self.assertIn("data.queued_tweets", cache_page_script)
@@ -1329,10 +1335,10 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.2.1-codex.0', local_body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.13.3-codex.0', local_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.0-claude.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.156.2-codex.0', local_body)
+        self.assertIn('style-v2.157.0-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -1340,7 +1346,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
         self.assertIn('selection-list.css?v=selection-list-v1.0.0-codex.0', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.69.2-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.74.0-codex.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -1882,9 +1888,8 @@ class WebAppTests(unittest.TestCase):
                 "app.core.service.CacheLikesService.start"
             ) as media_start, patch(
                 "app.core.grok_history_service.GrokHistoryService.start"
-            ) as grok_text_start, patch.object(
-                app.extensions["chatgpt_service"],
-                "start",
+            ) as grok_text_start, patch(
+                "app.core.chatgpt_service.ChatGPTDownloadService.start"
             ) as chatgpt_start:
                 with app.test_client() as client:
                     responses = (
@@ -1958,33 +1963,56 @@ class WebAppTests(unittest.TestCase):
         start.assert_not_called()
 
     def test_safari_source_only_agent_request_is_rejected_before_admission(self) -> None:
-        providers = (
-            ("gemini", "gemini-3.1-pro", "Gemini"),
-            ("claude", "claude-auto", "Claude"),
-        )
-        for platform, model, label in providers:
-            with self.subTest(platform=platform), TemporaryDirectory() as raw_root:
-                app = create_app(Path(raw_root) / "local_store")
-                agent_service = app.extensions["computer_use_agent_service"]
-                with patch.object(agent_service, "_admission_guard") as admission:
-                    response = app.test_client().post(
-                        "/api/agent/ask",
-                        json={
-                            "prompt": "Do not submit",
-                            "workspace_path": raw_root,
-                            "operating_system": "macos",
-                            "browser": "safari",
-                            "platform": platform,
-                            "model": model,
-                        },
-                    )
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            agent_service = app.extensions["computer_use_agent_service"]
+            with patch.object(agent_service, "_admission_guard") as admission:
+                response = app.test_client().post(
+                    "/api/agent/ask",
+                    json={
+                        "prompt": "Do not submit",
+                        "workspace_path": raw_root,
+                        "operating_system": "macos",
+                        "browser": "safari",
+                        "platform": "gemini",
+                        "model": "gemini-3.1-pro",
+                    },
+                )
 
-            self.assertEqual(response.status_code, 409)
-            self.assertIn(
-                f"Safari can browse {label} Recent sessions here",
-                response.get_json()["error"],
-            )
-            admission.assert_not_called()
+        self.assertEqual(response.status_code, 409)
+        self.assertIn(
+            "Safari can browse Gemini Recent sessions here",
+            response.get_json()["error"],
+        )
+        admission.assert_not_called()
+
+    def test_safari_claude_agent_request_passes_the_execution_gate(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            app = create_app(Path(raw_root) / "local_store")
+            agent_service = app.extensions["computer_use_agent_service"]
+            with patch(
+                "app.core.computer_use_agent.detect_host_operating_system",
+                return_value="macos",
+            ), patch.object(
+                agent_service,
+                "_admission_guard",
+                side_effect=RuntimeError("Admission reached."),
+            ) as admission:
+                response = app.test_client().post(
+                    "/api/agent/ask",
+                    json={
+                        "prompt": "Do not submit",
+                        "workspace_path": raw_root,
+                        "operating_system": "macos",
+                        "browser": "safari",
+                        "platform": "claude",
+                        "model": "claude-auto",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"], "Admission reached.")
+        admission.assert_called_once()
 
     def test_only_agent_gemini_readiness_prefers_the_initialized_debug_profile(self) -> None:
         status_payload = {
@@ -2179,6 +2207,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(initial["projects"][0]["access"], "Read and write")
                 self.assertEqual(initial["projects"][1]["access"], "Read only")
                 self.assertTrue(all(item["registered"] for item in initial["projects"]))
+                self.assertEqual(initial["selected_project_ids"], ["alpha", "reference"])
 
                 selected = client.post(
                     "/api/agent/tunnel/project",
@@ -2189,6 +2218,20 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(current["current"]["id"], "alpha")
                 self.assertEqual(current["revision"], 1)
                 self.assertRegex(current["current"]["identity"], r"^[0-9a-f]{16}$")
+
+                invalid_subset = client.post(
+                    "/api/agent/tunnel/project",
+                    json={
+                        "project_id": "alpha",
+                        "selected_project_ids": ["reference"],
+                        "expected_revision": 1,
+                    },
+                )
+                self.assertEqual(invalid_subset.status_code, 400)
+                self.assertEqual(
+                    app.extensions["tunnel_mcp_service"].selection_store.load().revision,
+                    1,
+                )
 
                 service = app.extensions["tunnel_mcp_service"]
                 rpc_status, rpc_body = service.handle(
@@ -2277,6 +2320,284 @@ class WebAppTests(unittest.TestCase):
                     json={"path": str(first / "inner"), "expected_revision": 4},
                 )
                 self.assertEqual(overlapping.status_code, 400)
+
+                service.selection_store.save(
+                    "alpha", selected_project_ids=["alpha"], expected_revision=4
+                )
+                restored = client.get("/api/agent/tunnel/project").get_json()[
+                    "project_context"
+                ]
+                self.assertEqual(
+                    restored["selected_project_ids"],
+                    ["alpha"],
+                )
+                self.assertEqual(
+                    {item["id"]: item["selected"] for item in restored["projects"]},
+                    {"alpha": True, "reference": False, "chosen-project": False},
+                )
+
+                later = root / "later project"
+                later.mkdir()
+                registered_later = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(later), "expected_revision": 5},
+                )
+                self.assertEqual(registered_later.status_code, 200)
+                self.assertEqual(
+                    registered_later.get_json()["project_context"]["selected_project_ids"],
+                    ["alpha", "later-project"],
+                )
+
+    def test_adding_the_implicit_git_root_creates_a_registered_tunnel_project(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            repository = root / "solo"
+            repository.mkdir()
+            subprocess.run(
+                ["git", "init", "-q", str(repository)],
+                check=True,
+                capture_output=True,
+            )
+            registry_path = root / "settings" / "tunnel-projects.json"
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            app.extensions["computer_use_settings"].update(
+                ComputerUseSettings(workspace_path=str(repository))
+            )
+
+            with app.test_client() as client:
+                initial = client.get("/api/agent/tunnel/project").get_json()["project_context"]
+                self.assertFalse(initial["registry_configured"])
+                self.assertFalse(initial["current"]["registered"])
+
+                response = client.post(
+                    "/api/agent/tunnel/project/register",
+                    json={"path": str(repository), "expected_revision": 0},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                context = response.get_json()["project_context"]
+                self.assertTrue(context["registry_configured"])
+                self.assertTrue(context["current"]["registered"])
+                self.assertEqual(context["current"]["id"], "solo")
+                self.assertEqual(context["selected_project_ids"], ["solo"])
+                self.assertEqual(len(json.loads(registry_path.read_text())["projects"]), 1)
+
+    def test_tunnel_registry_mutations_roll_back_when_selection_save_fails(self) -> None:
+        """A failed second file write must not change the bridged project set."""
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "alpha"
+            second = root / "beta"
+            first.mkdir()
+            second.mkdir()
+            registry_path = root / "settings" / "tunnel-projects.json"
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            service = app.extensions["tunnel_mcp_service"]
+
+            with patch.object(
+                service.selection_store, "save", side_effect=OSError("sk-private-test-error"),
+            ):
+                with app.test_client() as client:
+                    failed_add = client.post(
+                        "/api/agent/tunnel/project/register",
+                        json={"path": str(first), "expected_revision": 0},
+                    )
+            self.assertEqual(failed_add.status_code, 500)
+            self.assertFalse(registry_path.exists())
+            self.assertNotIn("sk-private-test-error", json.dumps(failed_add.get_json()))
+
+            registry_path.parent.mkdir(parents=True, exist_ok=True)
+            registry_path.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "projects": [
+                        {"id": "alpha", "root": str(first), "writable": True},
+                        {"id": "beta", "root": str(second), "writable": True},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            original = registry_path.read_bytes()
+            with patch.object(
+                service.selection_store, "save", side_effect=OSError("sk-private-test-error"),
+            ):
+                with app.test_client() as client:
+                    failed_remove = client.post(
+                        "/api/agent/tunnel/project/unregister",
+                        json={"project_id": "alpha", "expected_revision": 0},
+                    )
+            self.assertEqual(failed_remove.status_code, 500)
+            self.assertEqual(registry_path.read_bytes(), original)
+            self.assertNotIn("sk-private-test-error", json.dumps(failed_remove.get_json()))
+
+    def test_concurrent_tunnel_registration_rechecks_revision_before_granting_access(self) -> None:
+        """A stale window cannot register another root while a first save is pending."""
+        from threading import Event, Thread
+
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "alpha"
+            second = root / "beta"
+            first.mkdir()
+            second.mkdir()
+            registry_path = root / "settings" / "tunnel-projects.json"
+            registry_path.parent.mkdir()
+            registry_path.write_text(
+                json.dumps({"schema_version": 1, "projects": []}), encoding="utf-8",
+            )
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings" / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                tunnel_projects_path=registry_path,
+                agent_external_operations_enabled=False,
+            )
+            registry = app.extensions["tunnel_mcp_service"].registry
+            original_register = registry.register
+            first_registered = Event()
+            release_first = Event()
+            second_started = Event()
+            second_done = Event()
+            responses = {}
+
+            def held_register(path, workspace_path=""):
+                project = original_register(path, workspace_path)
+                if path == str(first):
+                    first_registered.set()
+                    if not release_first.wait(5):
+                        raise AssertionError("The first registration was not released.")
+                return project
+
+            def post_registration(name, path):
+                if name == "second":
+                    second_started.set()
+                with app.test_client() as client:
+                    responses[name] = client.post(
+                        "/api/agent/tunnel/project/register",
+                        json={"path": str(path), "expected_revision": 0},
+                    )
+                if name == "second":
+                    second_done.set()
+
+            with patch.object(registry, "register", side_effect=held_register):
+                first_thread = Thread(target=post_registration, args=("first", first))
+                second_thread = Thread(target=post_registration, args=("second", second))
+                first_thread.start()
+                try:
+                    self.assertTrue(first_registered.wait(5))
+                    second_thread.start()
+                    self.assertTrue(second_started.wait(5))
+                    self.assertFalse(second_done.wait(0.2))
+                finally:
+                    release_first.set()
+                    first_thread.join(timeout=5)
+                    if second_thread.ident is not None:
+                        second_thread.join(timeout=5)
+
+            self.assertFalse(first_thread.is_alive())
+            self.assertFalse(second_thread.is_alive())
+            self.assertEqual(responses["first"].status_code, 200)
+            self.assertEqual(responses["second"].status_code, 409)
+            self.assertEqual(
+                [item["id"] for item in json.loads(registry_path.read_text())["projects"]],
+                ["alpha"],
+            )
+
+    def test_independent_tunnel_apps_serialize_registry_rollback_and_registration(self) -> None:
+        """One failed app transaction cannot undo another app's committed root."""
+        from threading import Event, Thread
+
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "alpha"
+            second = root / "beta"
+            first.mkdir()
+            second.mkdir()
+            registry_path = root / "settings" / "tunnel-projects.json"
+            registry_path.parent.mkdir()
+            registry_path.write_text(
+                json.dumps({"schema_version": 1, "projects": []}), encoding="utf-8",
+            )
+            shared_settings_path = root / "settings" / "settings.json"
+            apps = [
+                create_app(
+                    root / f"store-{index}",
+                    computer_use_settings_path=shared_settings_path,
+                    computer_use_runtime_root=root / f"runtime-{index}",
+                    tunnel_projects_path=registry_path,
+                    agent_external_operations_enabled=False,
+                )
+                for index in (1, 2)
+            ]
+            first_store = apps[0].extensions["tunnel_mcp_service"].selection_store
+            first_save_started = Event()
+            release_first_save = Event()
+            second_started = Event()
+            second_done = Event()
+            responses = {}
+
+            def fail_after_registry_write(*args, **kwargs):
+                first_save_started.set()
+                if not release_first_save.wait(5):
+                    raise AssertionError("The first app was not released.")
+                raise OSError("The selection file could not be saved.")
+
+            def post_registration(name, app, path):
+                if name == "second":
+                    second_started.set()
+                with app.test_client() as client:
+                    responses[name] = client.post(
+                        "/api/agent/tunnel/project/register",
+                        json={"path": str(path), "expected_revision": 0},
+                    )
+                if name == "second":
+                    second_done.set()
+
+            with patch.object(first_store, "save", side_effect=fail_after_registry_write):
+                first_thread = Thread(
+                    target=post_registration,
+                    args=("first", apps[0], first),
+                )
+                second_thread = Thread(
+                    target=post_registration,
+                    args=("second", apps[1], second),
+                )
+                first_thread.start()
+                try:
+                    self.assertTrue(first_save_started.wait(5))
+                    second_thread.start()
+                    self.assertTrue(second_started.wait(5))
+                    self.assertFalse(second_done.wait(0.2))
+                finally:
+                    release_first_save.set()
+                    first_thread.join(timeout=5)
+                    if second_thread.ident is not None:
+                        second_thread.join(timeout=5)
+
+            self.assertFalse(first_thread.is_alive())
+            self.assertFalse(second_thread.is_alive())
+            self.assertEqual(responses["first"].status_code, 500)
+            self.assertEqual(responses["second"].status_code, 200)
+            self.assertEqual(
+                [item["id"] for item in json.loads(registry_path.read_text())["projects"]],
+                ["beta"],
+            )
+            self.assertEqual(first_store.load().revision, 1)
+            lock_path = registry_path.with_name(f".{registry_path.name}.lock")
+            self.assertTrue(lock_path.is_file())
+            self.assertEqual(lock_path.stat().st_mode & 0o077, 0)
 
     def test_tunnel_project_change_reconnects_only_after_a_qualified_chatgpt_save(self) -> None:
         """A confirmed writable selection refreshes ChatGPT before the response."""
@@ -2374,6 +2695,10 @@ class WebAppTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(narrowed.status_code, 200)
+                self.assertEqual(
+                    narrowed.get_json()["project_context"]["selected_project_ids"],
+                    ["beta"],
+                )
                 self.assertEqual(reconnect.call_count, 2)
 
                 stale = client.post(
@@ -3757,7 +4082,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.69.2-codex.0',
+            'computer-use-agent-v3.74.0-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -3930,22 +4255,24 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.get_json()["agent_sources"], source_payload)
         probe.assert_called_once()
 
-    def test_safari_gemini_and_claude_bootstrap_sources_without_execution_permission(self) -> None:
+    def test_safari_gemini_and_claude_bootstrap_sources_report_execution_permission(self) -> None:
         providers = (
             (
                 "gemini",
                 "Gemini",
                 "probe_and_collect_gemini_sources",
                 "https://gemini.google.com/app/session-1",
+                False,
             ),
             (
                 "claude",
                 "Claude",
                 "probe_and_collect_claude_sources",
                 "https://claude.ai/chat/session-1",
+                True,
             ),
         )
-        for platform, label, collector_name, session_url in providers:
+        for platform, label, collector_name, session_url, executable in providers:
             with self.subTest(platform=platform), TemporaryDirectory() as raw_root:
                 status_payload = {
                     "platform": platform,
@@ -3983,11 +4310,14 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 payload = response.get_json()
                 self.assertEqual(payload["agent_sources"]["recent_sessions"][0]["url"], session_url)
-                self.assertFalse(payload["agent_execution_supported"])
-                self.assertIn(
-                    f"Safari can browse {label} Recent sessions here",
-                    payload["agent_execution_message"],
-                )
+                self.assertIs(payload["agent_execution_supported"], executable)
+                if executable:
+                    self.assertEqual(payload["agent_execution_message"], "")
+                else:
+                    self.assertIn(
+                        f"Safari can browse {label} Recent sessions here",
+                        payload["agent_execution_message"],
+                    )
                 collector.assert_called_once_with("safari", ANY, silent=True)
                 legacy_probe.assert_not_called()
 
@@ -5354,7 +5684,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="browser_filter_form"', body)
         self.assertIn('form="browser_filter_form"', body)
         self.assertGreater(body.index("data-browser-search"), body.index("</aside>"))
-        self.assertIn("browser-search.css?v=browser-search-v1.4.4-codex.0", body)
+        self.assertIn("browser-search.css?v=browser-search-v1.4.5-claude.0", body)
         self.assertIn('type="module"', body)
         self.assertIn("browser-search.js?v=browser-search-v2.2.1-codex.1", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
@@ -5608,10 +5938,10 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.156.2-codex.0", body)
+            self.assertIn("style-v2.159.0-claude.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.36.0-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.38.0-claude.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -5800,7 +6130,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("browser-session-drawer-refresh-icon", detail_body)
         self.assertIn("data-browser-session-refresh-url", detail_body)
         self.assertEqual(detail_body.count("data-browser-session-actions-drawer"), 1)
-        self.assertIn("browser-session-actions.js?v=browser-session-actions-v1.1.1-codex.1", detail_body)
+        self.assertIn("browser-session-actions.js?v=browser-session-actions-v1.2.0-codex.0", detail_body)
         self.assertEqual(export_response.status_code, 200)
         self.assertEqual(export_response.mimetype, "text/markdown")
         self.assertIn('attachment; filename="Demo_conversation.md"', export_response.headers["Content-Disposition"])
@@ -6060,32 +6390,270 @@ class WebAppTests(unittest.TestCase):
         ]
         self.assertEqual(chronological_positions, sorted(chronological_positions))
 
-    def test_legacy_gemini_browser_url_falls_back_to_chatgpt_media_sessions(self) -> None:
+    @staticmethod
+    def _write_chatgpt_sessions(
+        root: Path,
+        sessions: dict[str, tuple[str, tuple[str, ...]]],
+        sizes: dict[str, tuple[int, int]] | None = None,
+    ) -> None:
+        """Seed ChatGPT images as {conversation id: (title, filenames oldest to newest)}."""
+        project_dir = root / "media" / "chatgpt" / "demo-project"
+        project_dir.mkdir(parents=True)
+        entries: dict[str, dict[str, str]] = {}
+        for session_number, (conversation_id, (title, filenames)) in enumerate(sessions.items()):
+            for image_number, filename in enumerate(filenames):
+                (project_dir / filename).write_bytes(filename.encode("utf-8"))
+                entries[f"file-{filename}"] = {
+                    "file_id": f"file-{filename}",
+                    "relative_path": filename,
+                    "conversation_url": f"https://chatgpt.com/c/{conversation_id}",
+                    "conversation_title": title,
+                    "created_at": f"2026-08-{session_number + 1:02d}T{image_number + 1:02d}:00:00Z",
+                }
+                if sizes and filename in sizes:
+                    width, height = sizes[filename]
+                    entries[f"file-{filename}"].update({"width": width, "height": height})
+        (project_dir / ".chatgpt_catalog.json").write_text(
+            json.dumps({"entries": entries}),
+            encoding="utf-8",
+        )
+
+    def test_browser_lists_chatgpt_sessions_with_only_their_latest_image_as_the_cover(self) -> None:
         with TemporaryDirectory() as raw_root:
             root = Path(raw_root) / "local_store"
-            project_dir = root / "media" / "chatgpt" / "demo-project"
-            project_dir.mkdir(parents=True)
-            for filename in ("new-session.png", "older-session.png"):
-                (project_dir / filename).write_bytes(filename.encode("utf-8"))
-            (project_dir / ".chatgpt_catalog.json").write_text(
+            self._write_chatgpt_sessions(
+                root,
+                {
+                    "older-session": ("Older session", ("older-only.png",)),
+                    "new-session": ("Newest session", ("new-old.png", "new-middle.png", "new-latest.png")),
+                },
+                sizes={"new-latest.png": (1536, 1024)},
+            )
+            app = create_app(root)
+            with app.test_client() as client:
+                index_response = client.get(
+                    "/browser?view=media&source=chatgpt&kind=all&q=&sort=newest&session_view=1&session_index=1"
+                )
+                oldest_response = client.get(
+                    "/browser?view=media&source=chatgpt&sort=oldest&session_view=1&session_index=1"
+                )
+                detail_response = client.get("/browser?view=media&source=chatgpt&session_view=1")
+                flat_response = client.get("/browser?view=media&source=chatgpt&session_view=0")
+                other_source_response = client.get("/browser?view=media&source=x&session_index=1")
+                text_response = client.get("/browser?view=text&source=chatgpt&session_view=1&session_index=1")
+
+        index_body = index_response.get_data(as_text=True)
+        self.assertEqual(index_response.status_code, 200)
+        self.assertIn(
+            'class="browser-gallery browser-session-gallery"\n                        data-view="grid"',
+            index_body,
+        )
+        self.assertIn('data-gallery-list-label="ChatGPT sessions list"', index_body)
+        # Covers use their own classes so the media gallery's list rules cannot resize them.
+        self.assertIn('class="browser-session-cover" data-preview-shell', index_body)
+        self.assertIn('class="browser-session-cover-media"', index_body)
+        self.assertNotIn("browser-preview-media", index_body)
+        # A catalog size reserves the uncropped cover's ratio before the image loads.
+        cover_tags = dict(
+            (match.group(1), match.group(0))
+            for match in re.finditer(
+                r'<img\s+class="browser-session-cover-media"[^>]*?data-media-src="[^"]*/([^"/]+)"[^>]*>',
+                index_body,
+            )
+        )
+        self.assertIn('width="1536" height="1024"', cover_tags["new-latest.png"])
+        self.assertNotIn("width=", cover_tags["older-only.png"])
+        self.assertNotIn("height=", cover_tags["older-only.png"])
+        self.assertEqual(index_body.count("data-chatgpt-session-card"), 2)
+        # Each session shows only its newest work, addressed by the same media URL as the gallery.
+        self.assertIn('data-media-src="/browser/media/chatgpt/demo-project/new-latest.png"', index_body)
+        self.assertIn('data-media-src="/browser/media/chatgpt/demo-project/older-only.png"', index_body)
+        self.assertNotIn("new-old.png", index_body)
+        self.assertNotIn("new-middle.png", index_body)
+        self.assertLess(index_body.index('title="Newest session"'), index_body.index('title="Older session"'))
+        self.assertIn('class="browser-session-card-count">3 images</span>', index_body)
+        self.assertIn('class="browser-session-card-count">1 image</span>', index_body)
+        self.assertIn('title="Latest image: 02/08/2026 11:00:00 (HKT)"', index_body)
+        # A cover opens its session in the one-session-per-page view and remembers the index page.
+        self.assertIn(
+            'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'
+            '&amp;session_view=1&amp;session=chatgpt:session:demo-project:new-session'
+            '&amp;session_page=1&amp;page=1"',
+            index_body,
+        )
+        self.assertIn("&amp;session=chatgpt:session:demo-project:older-session&amp;session_page=1&amp;page=2", index_body)
+        self.assertIn('aria-label="ChatGPT session metrics"', index_body)
+        self.assertIn('data-numeric-display-value="2">2</strong>', index_body)
+        self.assertNotIn("Current session", index_body)
+        self.assertNotIn("browser-session-refresh-button", index_body)
+        self.assertNotIn("data-chatgpt-session-url", index_body)
+        # The index has no redundant return link, and the sidebar keeps it across filter changes.
+        self.assertNotIn("data-chatgpt-session-index", index_body)
+        self.assertRegex(index_body, r'data-chatgpt-session-view\b[^>]*aria-pressed="false"')
+        self.assertIn('name="session_index" value="1"', index_body)
+        self.assertIn("<span>Session order</span>", index_body)
+        self.assertIn('aria-label="Order ChatGPT sessions"', index_body)
+        self.assertIn(">Session name</option>", index_body)
+        self.assertNotIn("Image order in session", index_body)
+        self.assertIn('data-browser-view="list"', index_body)
+        self.assertIn('data-browser-view="grid"', index_body)
+        # An index opened directly has no return origin to mark.
+        self.assertNotIn("is-return-origin", index_body)
+        self.assertNotIn("data-session-return-origin", index_body)
+
+        oldest_body = oldest_response.get_data(as_text=True)
+        self.assertLess(oldest_body.index('title="Older session"'), oldest_body.index('title="Newest session"'))
+
+        # Each other ChatGPT Media state offers a native link into the index. A session
+        # detail names the session it leaves so the index can mark it; the flat gallery has none.
+        for body, label, origin in (
+            (
+                detail_response.get_data(as_text=True),
+                "Back to all sessions",
+                "&amp;session=chatgpt:session:demo-project:new-session",
+            ),
+            (flat_response.get_data(as_text=True), "All sessions", ""),
+        ):
+            self.assertNotIn("browser-session-gallery", body)
+            self.assertNotIn('name="session_index"', body)
+            match = re.search(
+                r"<a\b[^>]*\bdata-chatgpt-session-index\b[^>]*>[^<]*</a>",
+                body,
+            )
+            self.assertIsNotNone(match)
+            link = match.group(0)
+            self.assertIn('class="secondary-button browser-session-back-link"', link)
+            self.assertIn(
+                'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'
+                f'&amp;session_view=1&amp;session_index=1{origin}"',
+                link,
+            )
+            self.assertIn(f">{label}</a>", link)
+            self.assertNotIn("aria-pressed", link)
+            self.assertNotIn("data-chatgpt-session-index-url", body)
+        self.assertIn('class="browser-media-card', detail_response.get_data(as_text=True))
+        for body in (other_source_response.get_data(as_text=True), text_response.get_data(as_text=True)):
+            self.assertNotIn("browser-session-gallery", body)
+            self.assertNotIn("data-chatgpt-session-index", body)
+            self.assertNotIn('name="session_index"', body)
+
+    def test_browser_session_index_pagination_keeps_the_index_and_returns_to_its_page(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root) / "local_store"
+            self._write_chatgpt_sessions(
+                root,
+                {
+                    f"session-{index:02d}": (f"Session title {index:02d}", (f"image-{index:02d}.png",))
+                    for index in range(1, 26)
+                },
+            )
+            app = create_app(root)
+            with app.test_client() as client:
+                first_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1&session_index=1"
+                ).get_data(as_text=True)
+                second_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1&session_index=1&page=2"
+                ).get_data(as_text=True)
+                detail_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1"
+                    "&session=chatgpt:session:demo-project:session-01&session_page=2&page=25"
+                ).get_data(as_text=True)
+                # Returning names the session only; its own index page replaces the remembered one.
+                returned_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1&session_index=1"
+                    "&session=chatgpt:session:demo-project:session-01"
+                ).get_data(as_text=True)
+                unknown_origin_body = client.get(
+                    "/browser?view=media&source=chatgpt&sort=newest&session_view=1&session_index=1"
+                    "&page=2&session=chatgpt:session:demo-project:missing"
+                ).get_data(as_text=True)
+
+        self.assertEqual(first_body.count("data-chatgpt-session-card"), 24)
+        self.assertEqual(second_body.count("data-chatgpt-session-card"), 1)
+        self.assertIn('aria-label="ChatGPT session pages"', first_body)
+        self.assertIn(
+            'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'
+            '&amp;session_view=1&amp;session_index=1&amp;page=2"',
+            first_body,
+        )
+        self.assertIn('data-numeric-display-value="25">25</strong>', first_body)
+        # The oldest session is the 25th page of the one-session-per-page view.
+        self.assertIn("&amp;session=chatgpt:session:demo-project:session-01&amp;session_page=2&amp;page=25", second_body)
+        self.assertIn("Session title 01", detail_body)
+        self.assertIn('data-numeric-display-value="25">25</span> / <span data-numeric-display-value="25">25</span>', detail_body)
+        link = re.search(
+            r"<a\b[^>]*\bdata-chatgpt-session-index\b[^>]*>Back to all sessions</a>",
+            detail_body,
+        )
+        self.assertIsNotNone(link)
+        self.assertIn(
+            'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'
+            '&amp;session_view=1&amp;session_index=1&amp;page=2'
+            '&amp;session=chatgpt:session:demo-project:session-01"',
+            link.group(0),
+        )
+        # The index opens on the origin's page and marks exactly that card.
+        self.assertEqual(returned_body.count("data-chatgpt-session-card"), 1)
+        self.assertIn(
+            'class="browser-session-card workspace-article-card is-return-origin" data-chatgpt-session-card'
+            ' data-session-key="chatgpt:session:demo-project:session-01" data-session-return-origin>',
+            returned_body,
+        )
+        # A sidebar filter change starts from the first page again instead of re-targeting the origin.
+        self.assertIn('name="session_index" value="1"', returned_body)
+        self.assertNotIn('name="session" value=', returned_body)
+        self.assertEqual(unknown_origin_body.count("data-chatgpt-session-card"), 1)
+        self.assertNotIn("data-session-return-origin", unknown_origin_body)
+        self.assertNotIn("data-session-return-origin", second_body)
+
+    def test_media_scripts_switch_between_sessions_and_persist_the_index(self) -> None:
+        media_script = LOCAL_MEDIA_BROWSER_SCRIPT_PATH.read_text(encoding="utf-8")
+        sidebar_script = SIDEBAR_SCRIPT_PATH.read_text(encoding="utf-8")
+        pagination_template = PAGINATION_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+        for fragment in (
+            # Leaving the index for the Session View, or for another content mode, drops it.
+            'targetUrl.searchParams.delete("session_index");',
+            "mediaGallery.dataset.galleryListLabel",
+            "mediaGallery.dataset.galleryGridLabel",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, media_script)
+        self.assertEqual(media_script.count('targetUrl.searchParams.delete("session_index");'), 2)
+        self.assertIn('"session_view", "session_index"]', sidebar_script)
+        self.assertEqual(pagination_template.count("session_index=('1' if filters.session_index else none)"), 2)
+
+    def test_gemini_media_browser_keeps_source_and_excludes_chatgpt_sessions(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root) / "local_store"
+            self._write_chatgpt_sessions(
+                root,
+                {
+                    "new-session": ("Newest session", ("new-session.png",)),
+                    "older-session": ("Older session", ("older-session.png",)),
+                },
+            )
+            gemini_root = root / "media" / "gemini"
+            gemini_root.mkdir(parents=True)
+            gemini_content = b"verified-gemini-image"
+            (gemini_root / "img_gemini.png").write_bytes(gemini_content)
+            (gemini_root / "catalog.json").write_text(
                 json.dumps(
                     {
-                        "entries": {
-                            "file-new": {
-                                "file_id": "file-new",
-                                "relative_path": "new-session.png",
-                                "conversation_url": "https://chatgpt.com/c/new-session",
-                                "conversation_title": "Newest session",
-                                "created_at": "2026-08-10T09:00:00Z",
-                            },
-                            "file-old": {
-                                "file_id": "file-old",
-                                "relative_path": "older-session.png",
-                                "conversation_url": "https://chatgpt.com/c/older-session",
-                                "conversation_title": "Older session",
-                                "created_at": "2026-08-09T09:00:00Z",
-                            },
-                        }
+                        "schema_version": 1,
+                        "assets": [
+                            {
+                                "asset_id": "gemini-image",
+                                "relative_path": "img_gemini.png",
+                                "media_kind": "image",
+                                "conversation_url": "https://gemini.google.com/app/gemini-session",
+                                "conversation_title": "Gemini example session",
+                                "alt_text": "Gemini landscape",
+                                "cached_at": "2026-09-29T00:00:00Z",
+                                "content_bytes": len(gemini_content),
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -6093,14 +6661,29 @@ class WebAppTests(unittest.TestCase):
             app = create_app(root)
             with app.test_client() as client:
                 response = client.get("/browser?view=media&source=gemini&q=&sort=newest&session_view=1")
+                video_response = client.get("/browser?view=media&source=gemini&kind=video")
+                media_response = client.get("/browser/media/media/gemini/img_gemini.png")
 
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertIn('name="view" type="radio" value="media" checked', body)
         self.assertIn("Cached media browser", body)
-        self.assertIn('data-browser-source-filter-selected-label>ChatGPT</span>', body)
-        self.assertIn('aria-label="ChatGPT sessions"', body)
-        self.assertIn('data-numeric-display-value="1">1</span> / <span data-numeric-display-value="2">2</span>', body)
+        self.assertIn('data-browser-source-filter-selected-label>Gemini</span>', body)
+        self.assertIn('data-browser-source-filter-option="gemini"', body)
+        self.assertIn('name="source" value="gemini"', body)
+        self.assertIn("img_gemini.png", body)
+        self.assertIn("https://gemini.google.com/app/gemini-session", body)
+        self.assertEqual(body.count('data-media-id="'), 1)
+        self.assertNotIn('aria-label="ChatGPT sessions"', body)
+        self.assertNotIn("data-chatgpt-session-card", body)
+        self.assertNotIn("new-session.png", body)
+        self.assertNotIn("older-session.png", body)
+        self.assertEqual(video_response.status_code, 200)
+        video_body = video_response.get_data(as_text=True)
+        self.assertIn('data-browser-source-filter-selected-label>Gemini</span>', video_body)
+        self.assertNotIn('data-media-id="', video_body)
+        self.assertEqual(media_response.status_code, 200)
+        self.assertEqual(media_response.data, gemini_content)
 
     def test_theme_toggle_reuses_sibling_light_dark_behavior(self) -> None:
         script = THEME_MODE_SCRIPT_PATH.read_text(encoding="utf-8")

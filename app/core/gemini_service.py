@@ -1,6 +1,6 @@
 """Background service for Gemini session history sync."""
 
-# Code version: v1.0.2-codex.1
+# Code version: v1.2.0-claude.0
 
 from __future__ import annotations
 
@@ -13,8 +13,10 @@ from .cache_service_support import (
     append_shadow_backup_completion,
     summarize_status_error,
 )
+from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .config import LOCAL_STORE_ROOT, CrawlConfig
 from .gemini_downloader import sync_gemini_history
+from .gemini_media import sync_gemini_media
 from .job_lock import CacheTaskLock
 from .shadow_backup import ShadowBackupService
 from .state import TaskState
@@ -43,16 +45,21 @@ class GeminiHistoryService(CooperativeCacheWorker):
         local_store_root: Path | str = LOCAL_STORE_ROOT,
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
+        *,
+        task: CacheTaskIdentity | None = None,
+        coordinator: CacheTaskCoordinator | None = None,
     ) -> None:
-        super().__init__(state, task_lock)
+        super().__init__(state, task_lock, task=task, coordinator=coordinator)
         self._local_store_root = Path(local_store_root)
         self._config = CrawlConfig()
+        self._content_mode = "text"
         self._shadow_backup_service = shadow_backup_service
 
-    def start(self, config: CrawlConfig) -> None:
-        """Start one Gemini history sync worker."""
+    def start(self, config: CrawlConfig, content_mode: str = "text") -> None:
+        """Start one mode-specific Gemini cache worker."""
         def prepare() -> None:
             self._config = config
+            self._content_mode = "media" if content_mode == "media" else "text"
 
         self._start_worker(
             lock_owner="gemini-history-sync",
@@ -64,6 +71,7 @@ class GeminiHistoryService(CooperativeCacheWorker):
             target=self._run,
             prepare=prepare,
             thread_factory=Thread,
+            browser=config.gemini_browser,
         )
 
     def request_stop(self) -> bool:
@@ -73,15 +81,19 @@ class GeminiHistoryService(CooperativeCacheWorker):
         )
 
     def _run(self) -> None:
-        """Execute the Gemini history sync pipeline."""
+        """Execute the selected Gemini cache pipeline and report partial failures."""
         job_id, token = self._begin_worker_job()
         try:
+            self._state.update(performance_metrics={"content_mode": self._content_mode})
             logger.info(
                 "Gemini history sync started.",
                 extra={"job_id": job_id, "gemini_browser": self._config.gemini_browser},
             )
             if self._is_stop_requested():
                 self._state.finish_stopped("Gemini history sync stopped before the browser was launched.")
+                return
+            if self._content_mode == "media":
+                self._run_media()
                 return
             result = sync_gemini_history(
                 self._state,
@@ -93,6 +105,12 @@ class GeminiHistoryService(CooperativeCacheWorker):
                 self._state.finish_stopped(
                     f"Gemini history sync stopped. Cached {result.cached_conversations:,} sessions "
                     f"and {result.cached_messages:,} messages."
+                )
+                return
+            if result.failed_conversations:
+                self._state.finish_error(
+                    "Gemini history sync is incomplete. Cached history was preserved; "
+                    f"{result.failed_conversations:,} sessions failed."
                 )
                 return
             completion_message = (
@@ -107,6 +125,8 @@ class GeminiHistoryService(CooperativeCacheWorker):
                 shadow_backup_service=self._shadow_backup_service,
                 state=self._state,
                 config=self._config,
+                coordinator=self._coordinator,
+                task=self._task,
             )
             self._state.finish_success(completion_message)
             logger.info(
@@ -124,3 +144,40 @@ class GeminiHistoryService(CooperativeCacheWorker):
             logger.exception("Gemini history sync failed.", extra={"job_id": job_id, "error": str(exc)})
         finally:
             self._finish_worker_job(token)
+
+    def _run_media(self) -> None:
+        """Keep downloaded bytes, policy skips, and transfer failures distinct."""
+        result = sync_gemini_media(
+            self._state, self._config, self._is_stop_requested, self._local_store_root,
+        )
+        skip_summary = (
+            f"Skipped {result.skipped_known:,} known files, "
+            f"{result.skipped_excluded:,} excluded by deletion, "
+            f"{result.skipped_size:,} over the size limit, and "
+            f"{result.skipped_unsupported:,} unsupported references."
+        )
+        if result.stopped:
+            self._state.finish_stopped(
+                f"Gemini image cache stopped. {result.cached_images:,} local image files are present. "
+                f"{skip_summary}"
+            )
+            return
+        if result.incomplete:
+            self._state.finish_error(
+                "Gemini image cache is incomplete. Cached files were preserved; "
+                f"{result.failed_images:,} images and {result.failed_sessions:,} sessions failed. "
+                f"{skip_summary}"
+            )
+            return
+        message = (
+            f"Finished Gemini image cache. Inspected {result.sessions:,} sessions, "
+            f"found {result.discovered_images:,} eligible images, downloaded "
+            f"{result.downloaded_images:,} new files. {skip_summary} "
+            f"{result.cached_images:,} local image files present. "
+            "Videos and other attachments are not included."
+        )
+        self._state.finish_success(append_shadow_backup_completion(
+            message, shadow_backup_service=self._shadow_backup_service,
+            state=self._state, config=self._config,
+            coordinator=self._coordinator, task=self._task,
+        ))

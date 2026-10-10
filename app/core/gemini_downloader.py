@@ -1,6 +1,6 @@
 """Browser-backed Gemini session history caching."""
 
-# Code version: v1.11.0-codex.1
+# Code version: v1.11.4-codex.1
 
 from __future__ import annotations
 
@@ -420,6 +420,7 @@ def inspect_gemini_session(page) -> dict[str, Any]:
                 hasAuthAction: Boolean(authAction),
                 signedOut,
                 unsupportedRegion,
+                serviceUnavailable: /^\/unavailable\/?$/.test(location.pathname),
             };
         }"""
     )
@@ -431,13 +432,48 @@ def inspect_gemini_bot_check(page) -> dict[str, Any]:
     payload = page.evaluate(
         r"""(markers) => {
             const title = document.title || "";
-            const bodyText = document.body ? (document.body.innerText || "") : "";
-            const haystack = `${title}\n${bodyText}`.toLowerCase();
+            const chatSelector = 'user-query, model-response, [data-test-id="user-query-content"], '
+                + '[data-test-id="model-response"], [data-message-author-role], '
+                + 'textarea, [contenteditable="true"]';
+            const chatContent = (element) => {
+                if (element.closest(chatSelector)) return true;
+                const link = element.closest('a[href]');
+                if (!link) return false;
+                try {
+                    const url = new URL(link.href, location.href);
+                    return url.origin === 'https://gemini.google.com'
+                        && /^\/app\/[A-Za-z0-9_-]+\/?$/.test(url.pathname);
+                } catch (_error) {
+                    return false;
+                }
+            };
+            const visible = (element) => {
+                if (!element || element.getClientRects().length === 0) return false;
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    if (style.display === 'none' || style.visibility === 'hidden'
+                        || style.visibility === 'collapse' || Number(style.opacity) === 0) return false;
+                }
+                return true;
+            };
+            const pageText = [];
+            if (document.body) {
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                while (walker.nextNode()) {
+                    const node = walker.currentNode;
+                    const parent = node.parentElement;
+                    if (parent && !chatContent(parent) && visible(parent)) {
+                        pageText.push(node.textContent || '');
+                    }
+                }
+            }
+            const pageTitle = document.querySelector(chatSelector) ? '' : title;
+            const haystack = `${pageTitle}\n${pageText.join(' ')}`.toLowerCase();
             const marker = markers.find((candidate) => haystack.includes(candidate)) || "";
-            const challengeElement = document.querySelector(
+            const challengeElement = [...document.querySelectorAll(
                 'iframe[src*="captcha"], iframe[src*="recaptcha"], [data-sitekey], [id*="captcha"], '
                 + '[class*="captcha"], form[action*="challenge"]'
-            );
+            )].find((element) => !chatContent(element) && visible(element));
             return {
                 detected: Boolean(marker || challengeElement),
                 reason: marker || (challengeElement ? "challenge element" : ""),
@@ -503,6 +539,11 @@ def _wait_for_gemini_ready(
         if time.monotonic() >= ready_deadline:
             break
         last_snapshot = inspect_gemini_session(page)
+        if last_snapshot.get("serviceUnavailable"):
+            raise RuntimeError(
+                "Gemini is currently unavailable in the selected browser. "
+                "Retry after Gemini access recovers."
+            )
         if last_snapshot.get("unsupportedRegion"):
             raise RuntimeError(
                 "Gemini Web is not available in the selected browser's current region."
@@ -696,15 +737,18 @@ def _attach_gemini_conversation_rpc_capture(page) -> list[Any] | None:
     return responses
 
 
-def _decode_gemini_history_rpc_payloads(body_text: str) -> list[list[Any]]:
-    """Decode nested payloads from one Google batchexecute response."""
+def _decode_gemini_history_rpc_payloads(
+    body_text: str,
+    rpc_id: str = GEMINI_HISTORY_RPC_ID,
+) -> list[list[Any]]:
+    """Decode only the requested RPC's payloads from a batchexecute response."""
     payloads: list[list[Any]] = []
 
     def visit(value: Any) -> None:
         if isinstance(value, list):
             if (
                 len(value) >= 3
-                and value[1] == GEMINI_HISTORY_RPC_ID
+                and value[1] == rpc_id
                 and isinstance(value[2], str)
             ):
                 try:
@@ -774,21 +818,22 @@ def _gemini_message_timestamps_from_rpc_payloads(
     payloads: list[list[Any]],
     conversation_id: str,
 ) -> dict[int, str]:
-    """Extract one source timestamp per Gemini turn from the conversation RPC."""
+    """Map newest-first RPC turns to oldest-first rendered conversation turns."""
     timestamps: dict[int, str] = {}
     for payload in payloads:
         if not isinstance(payload, list) or not payload or not isinstance(payload[0], list):
             continue
-        turn_index = 0
-        for entry in payload[0]:
-            if not isinstance(entry, list) or len(entry) < 5:
-                continue
-            if not _contains_gemini_conversation_id(entry[:2], conversation_id):
-                continue
-            timestamp = _normalize_gemini_rpc_timestamp(entry[4])
+        turns = [
+            entry for entry in payload[0]
+            if isinstance(entry, list)
+            and _contains_gemini_conversation_id(entry[:2], conversation_id)
+        ]
+        # Reverse complete turns, including missing timestamps, so missing source
+        # metadata cannot shift a later message onto the wrong rendered turn.
+        for turn_index, entry in enumerate(reversed(turns)):
+            timestamp = _normalize_gemini_rpc_timestamp(entry[4] if len(entry) > 4 else None)
             if timestamp:
                 timestamps.setdefault(turn_index, timestamp)
-            turn_index += 1
     return timestamps
 
 
@@ -803,7 +848,9 @@ def _gemini_message_timestamps_from_captured_responses(
         try:
             if not _is_gemini_conversation_rpc_url(str(getattr(response, "url", ""))):
                 continue
-            payloads = _decode_gemini_history_rpc_payloads(response.text())
+            payloads = _decode_gemini_history_rpc_payloads(
+                response.text(), GEMINI_CONVERSATION_RPC_ID
+            )
         except Exception:
             continue
         timestamps = _gemini_message_timestamps_from_rpc_payloads(payloads, conversation_id)
@@ -904,7 +951,9 @@ def _fetch_gemini_conversation_rpc_payloads(
             },
         )
         chunks.append(str(chunk or ""))
-    return _decode_gemini_history_rpc_payloads("".join(chunks))
+    return _decode_gemini_history_rpc_payloads(
+        "".join(chunks), GEMINI_CONVERSATION_RPC_ID
+    )
 
 
 def _gemini_links_and_cursor_from_rpc_payload(

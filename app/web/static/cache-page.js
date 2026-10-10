@@ -1,4 +1,4 @@
-/* Code version: v1.17.2-codex.0 */
+/* Code version: v1.18.0-claude.0 */
 
 (() => {
     "use strict";
@@ -640,6 +640,18 @@
     });
 
     function updateProgress(data) {
+        if (data.running && data.phase === "queued") {
+            // A queued task has not started, so it has no scan or work-item total to show.
+            renderProgressState({
+                completePercent: 0,
+                auditPercent: 0,
+                isIndeterminate: false,
+                hasMeasuredProgress: false,
+                label: "Queued",
+                detail: "This task starts automatically. Stop removes it from the queue.",
+            });
+            return;
+        }
         const strategy = sourceKey === "grok" && currentCacheContentMode() === "text"
             ? progressStrategies.queue
             : progressStrategies[progressStrategyName] || progressStrategies.queue;

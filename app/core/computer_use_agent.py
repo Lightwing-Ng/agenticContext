@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.84.2-codex.0
+Code version: v3.85.0-claude.0
 """
 
 from __future__ import annotations
@@ -255,6 +255,10 @@ _MODEL_SELECTION_LOG_COUNT_FIELDS = (
 )
 _MAX_MODEL_SELECTION_LOG_COUNT = 100_000
 SAFARI_COMPOSER_AMBIGUITY_GRACE_SECONDS = 5.0
+# Safari providers whose turns carry a visible controller receipt and are read
+# through the atomic provider turn snapshot. Safari ChatGPT keeps its legacy
+# count-and-text contract.
+SAFARI_RECEIPT_TURN_PLATFORMS = frozenset({"grok", "claude"})
 # ChatGPT can report a checked model before React mounts or replaces the
 # corresponding effort slider. Rebind only the already trusted semantic
 # control, with no context attachment or prompt submission during the wait.
@@ -5929,7 +5933,7 @@ def _run_web_action_loop(
             and message.startswith(f"Controller transfer ID: {transfer_marker}\n\n")
         )
         receipt_marker = ""
-        if browser_kind != "safari" or platform == "grok":
+        if browser_kind != "safari" or platform in SAFARI_RECEIPT_TURN_PLATFORMS:
             receipt_marker = (
                 transfer_marker
                 if reuse_chatgpt_transfer_marker
@@ -7090,6 +7094,10 @@ def _wait_for_unique_safari_composer(
                     }
                     return true;
                 };
+                const isClaudeStaticComposer = (element) => (
+                    element.id === 'static-composer-input'
+                    || element.getAttribute('data-testid') === 'static-composer-input'
+                );
                 const isProviderComposer = (element) => {
                     if (!visible(element)
                         || element.disabled
@@ -7098,6 +7106,7 @@ def _wait_for_unique_safari_composer(
                             '[role="dialog"], [role="menu"], [role="listbox"], nav, header, '
                             + '[data-testid*="feedback" i], [class*="feedback" i]'
                         )) return false;
+                    if (platform === 'claude' && isClaudeStaticComposer(element)) return false;
                     const metadata = `${element.getAttribute('aria-label') || ''} `
                         + `${element.getAttribute('placeholder') || ''} `
                         + `${element.getAttribute('data-testid') || ''}`;
@@ -12385,7 +12394,16 @@ def _safari_web_model_snapshot(
                 : (visibleSurfaces.length === 1 ? visibleSurfaces[0] : null);
             const expanded = trigger.getAttribute('aria-expanded') === 'true'
                 || Boolean(surface);
-            const current = labelFor(trigger);
+            const claudeModelLabel = (element) => {
+                const aria = normalize(element.getAttribute('aria-label'));
+                const prefixed = aria.match(/^model:\s*(.+)$/i);
+                return prefixed
+                    ? normalize(prefixed[1])
+                    : normalize(element.innerText || element.textContent) || aria;
+            };
+            const current = platform === 'claude'
+                ? claudeModelLabel(trigger)
+                : labelFor(trigger);
             if (acceptCurrent || !expanded) {
                 return {
                     ok: true,
@@ -12803,12 +12821,20 @@ def _select_web_model(
                     attempted_labels=remote_labels,
                 )
                 return False
+        # Safari verifies Claude's live model selector read-only: Claude Auto
+        # accepts the account's current model instead of switching it with
+        # additional trusted inputs.
+        safari_option = (
+            {**option, "accept_current": True}
+            if platform == "claude"
+            else option
+        )
         executed, selected = _run_browser_action_unless_stopped(
             stop_requested,
             lambda: _select_safari_web_model(
                 page,
                 platform,
-                option,
+                safari_option,
                 remote_labels,
                 observation,
                 stop_requested,
@@ -13746,7 +13772,7 @@ def _submit_and_wait(
             )
         else:
             turn_receipt_marker = ""
-    elif browser_kind != "safari" or platform == "grok":
+    elif browser_kind != "safari" or platform in SAFARI_RECEIPT_TURN_PLATFORMS:
         if not re.fullmatch(r"agent-turn-[0-9a-f]{32}", turn_receipt_marker):
             turn_receipt_marker = f"agent-turn-{secrets.token_hex(16)}"
         submitted_message = _message_with_turn_receipt(
@@ -13757,7 +13783,7 @@ def _submit_and_wait(
     else:
         turn_receipt_marker = ""
     selector = _web_assistant_selector(platform)
-    if browser_kind != "safari" or platform == "grok":
+    if browser_kind != "safari" or platform in SAFARI_RECEIPT_TURN_PLATFORMS:
         def capture_baseline() -> tuple[str, dict[str, Any]]:
             checked_url = session_check(False) if session_check is not None else ""
             snapshot = (
@@ -13896,7 +13922,10 @@ def _submit_and_wait(
                 or (
                     "Reconnecting to the same provider response; the prompt has not been resent."
                     if reconnecting
-                    else "ChatGPT submission attempted; verifying the current controller turn without resending it."
+                    else (
+                        f"{AGENT_PLATFORM_BY_KEY[platform]['label']} submission attempted; "
+                        "verifying the current controller turn without resending it."
+                    )
                     if verifying_delivery
                     else "Provider is generating; waiting for a complete controller action."
                     if generating
@@ -14005,7 +14034,7 @@ def _submit_and_wait(
         def read_response_state() -> dict[str, Any]:
             before_url = str(getattr(page, "url", "") or "").strip()
             checked_session = confirm_response_session()
-            if browser_kind != "safari" or platform == "grok":
+            if browser_kind != "safari" or platform in SAFARI_RECEIPT_TURN_PLATFORMS:
                 snapshot = (
                     _chatgpt_response_snapshot(
                         page,
@@ -14076,7 +14105,7 @@ def _submit_and_wait(
             continue
         response_snapshot = read_state.get("snapshot") or {}
         current_user_receipt_visible = current_user_receipt_seen
-        if browser_kind != "safari" or platform == "grok":
+        if browser_kind != "safari" or platform in SAFARI_RECEIPT_TURN_PLATFORMS:
             response_target_url = checked_response_session or atomic_target_url
             if response_target_url and not _web_target_is_open(
                 platform,
@@ -15325,6 +15354,164 @@ def _submit_chromium_web_prompt(
     )
 
 
+def _fill_safari_claude_composer(
+    page: Any,
+    message: str,
+    *,
+    composer_marker: str,
+    expected_current_url: str,
+) -> Any:
+    """Fill Claude's hydrated editor once and read it back paragraph by paragraph.
+
+    Claude's ProseMirror editor stores every inserted line as its own paragraph,
+    so ``innerText`` doubles line breaks. Assigning ``textContent`` would bypass
+    the editor model, so a mismatch clears the draft and fails closed instead.
+    """
+    return page.evaluate(
+        r"""({value, composerSelector, composerMarker, expectedCurrentUrl}) => {
+            const isVisible = (element) => {
+                if (!element || element.getClientRects().length === 0) return false;
+                for (let current = element; current; current = current.parentElement) {
+                    const style = getComputedStyle(current);
+                    const opacity = Number.parseFloat(style.opacity || '1');
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden'
+                        || style.visibility === 'collapse'
+                        || (Number.isFinite(opacity) && opacity <= 0)) return false;
+                }
+                return true;
+            };
+            if (expectedCurrentUrl && location.href !== expectedCurrentUrl) {
+                return {filled: false, targetMismatch: true, currentUrl: location.href};
+            }
+            const isClaudeComposer = (element) => {
+                if (!isVisible(element)
+                    || element.disabled
+                    || element.getAttribute('aria-disabled') === 'true'
+                    || element.id === 'static-composer-input'
+                    || element.getAttribute('data-testid') === 'static-composer-input'
+                    || element.closest(
+                        '[role="dialog"], [role="menu"], [role="listbox"], nav, header, '
+                        + '[data-testid*="feedback" i], [class*="feedback" i]'
+                    )) return false;
+                const metadata = `${element.getAttribute('aria-label') || ''} `
+                    + `${element.getAttribute('placeholder') || ''} `
+                    + `${element.getAttribute('data-testid') || ''}`;
+                return Boolean(element.closest(
+                    'div.ProseMirror, [data-testid*="composer" i], [data-testid*="message-input" i]'
+                )) || /prompt|message|claude|输入|輸入|提问|提問/i.test(metadata);
+            };
+            const composers = [...document.querySelectorAll(composerSelector)]
+                .filter(isClaudeComposer);
+            document.querySelectorAll('[data-cachelikes-safari-composer]')
+                .forEach((element) => element.removeAttribute('data-cachelikes-safari-composer'));
+            if (composers.length !== 1) {
+                return {filled: false, composerCount: composers.length, reason: 'composer-count'};
+            }
+            const composer = composers[0];
+            const isTextControl = composer.tagName === 'TEXTAREA' || composer.tagName === 'INPUT';
+            const paragraphValue = (element) => {
+                if (isTextControl) return element.value || '';
+                const directNodes = [...element.childNodes];
+                const paragraphs = directNodes.filter((node) => (
+                    node.nodeType === Node.ELEMENT_NODE && node.tagName === 'P'
+                ));
+                const paragraphOnly = paragraphs.length && directNodes.every((node) => (
+                    (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'P')
+                    || (node.nodeType === Node.TEXT_NODE && !(node.textContent || '').trim())
+                ));
+                if (!paragraphOnly) return null;
+                const serialize = (paragraph) => {
+                    const nodes = [...paragraph.childNodes];
+                    if (nodes.length === 1
+                        && nodes[0].nodeType === Node.ELEMENT_NODE
+                        && nodes[0].tagName === 'BR') return '';
+                    let supported = true;
+                    const parts = [];
+                    const visit = (node) => {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            parts.push(node.nodeValue || '');
+                            return;
+                        }
+                        if (node.nodeType !== Node.ELEMENT_NODE
+                            || node.getAttribute('contenteditable') === 'false'
+                            || /^(?:IMG|AUDIO|VIDEO|IFRAME|OBJECT|EMBED)$/.test(node.tagName)) {
+                            supported = false;
+                            return;
+                        }
+                        if (node.tagName === 'BR') {
+                            if (!node.classList.contains('ProseMirror-trailingBreak')) parts.push('\n');
+                            return;
+                        }
+                        [...node.childNodes].forEach(visit);
+                    };
+                    nodes.forEach(visit);
+                    return supported ? parts.join('') : null;
+                };
+                const values = paragraphs.map(serialize);
+                return values.every((item) => item !== null) ? values.join('\n') : null;
+            };
+            const normalize = (text) => String(text || '')
+                .replace(/\r\n?/g, '\n')
+                .replace(/\u00a0/g, ' ');
+            const collapse = (text) => normalize(text).replace(/\s+/g, ' ').trim();
+            const selectAll = () => {
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(composer);
+                selection?.removeAllRanges();
+                selection?.addRange(range);
+            };
+            composer.setAttribute('data-cachelikes-safari-composer', composerMarker);
+            composer.focus();
+            let inserted = false;
+            if (isTextControl) {
+                const setter = Object.getOwnPropertyDescriptor(
+                    composer.tagName === 'TEXTAREA'
+                        ? HTMLTextAreaElement.prototype
+                        : HTMLInputElement.prototype,
+                    'value',
+                )?.set;
+                if (setter) setter.call(composer, value); else composer.value = value;
+                composer.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                inserted = true;
+            } else {
+                selectAll();
+                inserted = Boolean(document.execCommand?.('insertText', false, value));
+            }
+            const readback = paragraphValue(composer);
+            const exact = readback !== null
+                && normalize(readback).trim() === normalize(value).trim();
+            const collapsedMatch = collapse(
+                readback === null ? (composer.innerText || composer.textContent || '') : readback
+            ) === collapse(value);
+            const filled = Boolean(inserted && (exact || collapsedMatch));
+            if (!filled && !isTextControl) {
+                selectAll();
+                document.execCommand?.('delete', false);
+            }
+            return {
+                filled,
+                composerCount: composers.length,
+                tagName: composer.tagName,
+                contentEditable: composer.isContentEditable,
+                inserted,
+                exact,
+                paragraphReadback: readback !== null,
+                readbackLength: readback === null ? -1 : readback.length,
+                expectedLength: value.length,
+                reason: filled ? '' : (inserted ? 'readback-mismatch' : 'insert-rejected'),
+            };
+        }""",
+        {
+            "value": message,
+            "composerSelector": _web_composer_selector("claude"),
+            "composerMarker": composer_marker,
+            "expectedCurrentUrl": expected_current_url,
+        },
+    )
+
+
 def _submit_safari_prompt(
     page: Any,
     message: str,
@@ -15361,6 +15548,13 @@ def _submit_safari_prompt(
     composer_marker = f"safari-composer-{secrets.token_hex(16)}"
 
     def fill_verified_composer() -> Any:
+        if platform == "claude":
+            return _fill_safari_claude_composer(
+                page,
+                message,
+                composer_marker=composer_marker,
+                expected_current_url=current_url,
+            )
         return page.evaluate(
             """({value, platform, composerSelector, composerMarker, expectedCurrentUrl}) => {
             const isVisible = (element) => {
@@ -15467,8 +15661,26 @@ def _submit_safari_prompt(
             "Safari could fill the prompt."
         )
     if not isinstance(fill_result, dict) or not fill_result.get("filled"):
+        fill_details = ""
+        if platform == "claude" and isinstance(fill_result, dict):
+            fill_details = " " + json.dumps(
+                {
+                    key: fill_result.get(key)
+                    for key in (
+                        "reason",
+                        "composerCount",
+                        "paragraphReadback",
+                        "readbackLength",
+                        "expectedLength",
+                    )
+                    if key in fill_result
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         raise RuntimeError(
-            f"Safari did not uniquely fill the {AGENT_PLATFORM_BY_KEY[platform]['label']} composer."
+            f"Safari did not uniquely fill the {AGENT_PLATFORM_BY_KEY[platform]['label']} "
+            f"composer.{fill_details}"
         )
     if should_stop():
         return False
@@ -15482,9 +15694,10 @@ def _submit_safari_prompt(
         if session_check is not None:
             session_check(False)
         checked_url = str(getattr(page, "url", "") or "").strip()
-        if platform == "grok" and checked_url != current_url:
+        if platform in SAFARI_RECEIPT_TURN_PLATFORMS and checked_url != current_url:
             raise RuntimeError(
-                "The selected Grok tab changed before Safari could send the prompt."
+                f"The selected {AGENT_PLATFORM_BY_KEY[platform]['label']} tab changed "
+                "before Safari could send the prompt."
             )
 
         def scan_and_submit() -> Any:
@@ -15552,10 +15765,10 @@ def _submit_safari_prompt(
                         return semanticLabels(button).some((label) => (
                             /^(?:send(?: prompt| message)?|submit|ask grok|发送|傳送|傳送訊息|发送消息|提交|提問|提问)$/i.test(label)
                             && !/attach|upload|share|feedback|copy|附加|上传|上傳/i.test(label)
-                        )) || /^(?:send-button|submit-button|chat-submit)$/i.test(testId);
+                        )) || /^(?:send-button|submit-button|chat-submit|chat-input-send)$/i.test(testId);
                     });
                 let scope = document;
-                if (platform === 'grok') {
+                if (platform === 'grok' || platform === 'claude') {
                     scope = null;
                     for (let candidate = composer.parentElement;
                         candidate && candidate !== document.body;
@@ -16483,6 +16696,18 @@ def _provider_turn_snapshot(
                     if (group.promote) {
                         candidates = candidates.map((element) => element.closest(group.promote));
                     }
+                    if (group.require) {
+                        candidates = candidates.filter((element) => (
+                            element && element.querySelector(group.require)
+                        ));
+                    }
+                    if (group.exclude) {
+                        candidates = candidates.filter((element) => (
+                            element
+                            && !element.matches(group.exclude)
+                            && !element.querySelector(group.exclude)
+                        ));
+                    }
                     const roots = outerRoots(candidates);
                     if (roots.length) return roots;
                 }
@@ -16520,7 +16745,16 @@ def _provider_turn_snapshot(
                             ),
                         },
                     ]
-                    : [{selector: assistantSelector}];
+                    : platform === 'claude'
+                        ? [
+                            {selector: assistantSelector},
+                            {
+                                selector: 'main [role="article"]',
+                                require: '[data-cds="Prose"], .prose',
+                                exclude: '[data-testid="user-message"]',
+                            },
+                        ]
+                        : [{selector: assistantSelector}];
             const userGroups = platform === 'gemini'
                 ? [
                     {selector: 'user-query'},
@@ -16540,7 +16774,12 @@ def _provider_turn_snapshot(
                         },
                         {selector: '[data-testid*="user-message" i]'},
                     ]
-                    : [{selector: userSelector}];
+                    : platform === 'claude'
+                        ? [
+                            {selector: '[data-testid="user-message"]'},
+                            {selector: userSelector},
+                        ]
+                        : [{selector: userSelector}];
             const elements = selectRoots(assistantGroups).sort(documentOrder);
             const users = selectRoots(userGroups).sort(documentOrder);
             const latest = elements.at(-1);

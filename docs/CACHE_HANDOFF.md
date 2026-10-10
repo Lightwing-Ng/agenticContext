@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.14.0-codex.1`
+Documentation version: `v1.17.2-claude.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -24,7 +24,7 @@ Cache is the execution surface. Its canonical source pages are:
 | X | `/cache/x` | Liked-post media | None |
 | Grok | `/cache/grok` | Grok media assets | Grok sessions and messages |
 | ChatGPT | `/cache/chatgpt` | ChatGPT images | ChatGPT sessions and messages |
-| Gemini | `/cache/gemini` | Gemini sessions and messages | Gemini sessions and messages |
+| Gemini | `/cache/gemini` | Rendered Gemini images in Safari | Gemini sessions and messages |
 | Claude | `/cache/claude` | Claude sessions and messages | Claude sessions and messages |
 | Zhihu | `/cache/zhihu` | Upvoted answers or one answerer's answers | One rich-text session per answer plus source links |
 
@@ -78,8 +78,24 @@ as incomplete instead of a complete successful synchronization. Existing files i
 After a cooperative stop, unattempted sessions are pending rather than failed.
 The failure counter includes only attempted mapping requests that failed or were
 rate-limited; incomplete discovery and deferred work remain incomplete.
+ChatGPT throttling (HTTP 429) outlasts the short in-request backoff, so a history-list
+page or mapping request that stays rate-limited enters Stop-aware cooldowns of 60, 120,
+240, and 480 seconds and retries the same item after each one. After any cooldown, the
+remaining list pages or mapping requests of that phase are spaced at least 2 seconds apart,
+doubling per throttle episode up to 64 seconds, and never below the configured scan wait.
+A September 2026 Safari probe showed a burst of about ten mapping requests followed by
+roughly one per minute, with no `Retry-After` header, so a full refresh of thousands of
+sessions can span many hours and accumulates across runs. Only a request still
+rate-limited after the final cooldown defers the remaining sessions to the next run; Safari
+and Chromium page requests share this classification.
 
-Grok has two independent runtimes. This split is intentional:
+Every source registers one runtime per content mode, each with its own task state, worker,
+and Start/Stop. X, ChatGPT, Gemini, and Claude create one service instance per mode; a mode
+that has not run in this process reads its counters from the store when its page is
+requested. Status without `content_mode` keeps each source's original default: Media for X,
+Grok, and ChatGPT, and Text for the others.
+
+Grok's two runtimes are also two implementations. This split is intentional:
 
 | Operation | UI action | Start route | Status route | Implementation |
 | --- | --- | --- | --- | --- |
@@ -140,19 +156,48 @@ and horizontally scroll-contained tables belong to the Agent answer surface and 
 shared Cache or Local resources style.
 
 Claude history is a separate Cache runtime. It opens the authenticated `/chats` page,
-discovers conversation links from rendered DOM, opens each conversation, and stores only
-rendered user/assistant message content, source links, and visible model labels. It does
-not call private Claude endpoints, send prompts, or mutate the provider page. The runtime
-uses `POST /cache/claude/start`, `POST /cache/claude/stop`, and
-`GET /api/cache/claude/status` (with compatibility alias `GET /api/claude/status`).
+discovers conversation links from rendered DOM, and opens each conversation. It does not
+issue its own requests to private Claude endpoints, send prompts, or mutate the provider page.
+The conversation transcript is virtualized: it mounts only rows near the viewport and hides
+older messages behind a `Load earlier messages` control, so a single DOM read caches only part
+of a long session. In Chromium browsers the runtime therefore passively records the conversation
+response that the page itself loads (`/api/organizations/<org>/chat_conversations/<id>`) and stores
+the displayed branch from it: text blocks as the provider's Markdown, citation URLs as source
+links, the conversation model as the model label, and message creation times. Extracted text of
+attachments, such as pasted text, is appended to its message after a `---` separator. Thinking,
+tool, and injected prompt blocks, and uploaded files other than their extracted text, are not stored. Safari pages expose no response events, and a
+Chromium page whose response is not seen within 30 seconds falls back to the rendered transcript:
+the runtime presses `Load earlier messages` until it disappears, then scrolls from top to bottom
+and merges rows by their transcript index. A session that renders nothing is retried and then
+counted as failed instead of being skipped. A Cloudflare or other human verification challenge
+stops the whole run immediately without evaluating, reloading, or retrying the page, because
+those actions restart the challenge. The automation-controlled Edge window can be challenged on
+`/chat/...` pages even when `/chats` loads. The runtime uses `POST /cache/claude/start`,
+`POST /cache/claude/stop`, and `GET /api/cache/claude/status` (with compatibility alias
+`GET /api/claude/status`).
+
+An official Claude data export (claude.ai Settings > Privacy > Export data) is the
+browser-independent backup. Keep its zips under `local_store/llm/claude/exports/<date>/` and import
+`conversations-000.zip` with `python -m app.core.claude_export_import <zip>`. Without `--apply` the
+command only reports counts. With `--apply` it takes the cache maintenance lock, writes
+`local_store/recovery/claude-export-<timestamp>/history.parquet` and `import.json`, and then
+atomically replaces `history.parquet`. Each exported session replaces the cached rows of that
+session through the same conversion as the recorded payload; the export has no current-leaf
+field, so the newest childless message ends the kept branch. Sessions missing from the export are
+kept, and messages without text, such as an interrupted reply, are not stored.
 
 Zhihu is a text-only Cache runtime and defaults to Edge. A blank `Answerer URL` first verifies the
 selected browser through `GET https://www.zhihu.com/api/v4/me`, then follows the signed-in
 account's paginated activity feed and retains only `MEMBER_VOTEUP_ANSWER` targets. An optional
 validated `https://www.zhihu.com/people/<token>` URL switches to complete answerer pagination.
 Both modes deduplicate by answer ID and recheck the newest page before committing. Rows are merged
-cumulatively, so caching another answerer does not remove earlier answers. Local resources renders
-the complete normalized answer text without its generic message-collapse limit. A Zhihu-only
+cumulatively, so caching another answerer does not remove earlier answers. An answerer's Local
+resources detail page starts a newest-answer run of that answerer mode (`latest_only`) through
+`POST /api/browser/zhihu/answerer/refresh` with the cached profile URL, then follows
+`GET /api/zhihu/status` until the shared runtime finishes. That run reads newest-first pages until one
+is entirely cached and never claims completeness; the `Answerer URL` field remains the complete
+run. Local resources renders the complete normalized answer text without its generic
+message-collapse limit. A Zhihu-only
 session list omits the redundant Source column, answer IDs, Projects metric, and Clear filters
 action. Its standard Answerer select is populated from the cached author labels and scopes metrics,
 sessions, search, ordering, and pagination to the selected name. The index shows each literal
@@ -191,8 +236,9 @@ The current persistent cache layout is:
 | `local_store/llm/grok/history.parquet` | Grok Text runtime | Typed Grok messages |
 | `local_store/llm/claude/history.parquet` | Claude Text runtime | Typed Claude messages |
 | `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; rich-text source and source links retained |
-| `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers |
-| `local_store/.cache_task.lock` | Cache runtimes | Cross-process advisory task lock |
+| `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers, or a `media-prompt:` content key for a media prompt whose conversation has no cached text |
+| `local_store/.cache_task.lock` | Cache runtimes | Gate a starting task passes and a backup or history repair holds |
+| `local_store/.cache_task.<resource>.lock` | Cache runtimes | One advisory lock per running task, exclusive browser, or shared store |
 | `logs/cachelikes.log.jsonl` | All runtimes | Structured diagnostics |
 
 The five formal text-history files derive their ordered message fields from one schema builder in
@@ -224,12 +270,48 @@ expectation: Grok history changes whenever new conversations are created or remo
 
 ## 7. Safari cache-window contract
 
+Gemini Text and Media dispatch independent pipelines through the same cooperative worker.
+Media uses a task-owned Safari session to inspect rendered chat images from the observed
+`lh3.googleusercontent.com` host, validates complete JPEG/PNG/GIF/WebP bytes, and commits
+files and a catalog under `local_store/media/gemini/`. It honors size limits, known-file
+hashes, and Local resources deletion exclusions. Videos, external search thumbnails,
+blob URLs, and other attachments are outside this image-only mode. Failed images or
+sessions produce an incomplete status; policy skips do not. Text keeps its Parquet store
+and reports failed sessions as incomplete. Switching modes never displays text-message
+counts as downloaded images. Gemini Media is selectable in Local resources.
+
+Conversation timestamps decode the `hNvQHb` RPC envelope separately from the `MaZiqc`
+history list. Reverse the complete newest-first RPC turn sequence before matching it to
+oldest-first rendered messages, preserving entries with missing timestamps. Bot-check detection
+excludes chat content, same-origin conversation navigation links, and hidden challenge elements;
+the known `/unavailable` route cannot satisfy readiness. Media discovery uses block comments
+because Safari's JavaScript adapter collapses whitespace before execution.
+
+On 29 Sep 2026 Safari access recovered and a live Text run processed 44 of 269 discovered
+sessions, leaving 763 cached sessions and 4,277 messages. That run was stopped after its
+v1.38.0 timestamp mapping was found to reverse multi-turn chronology. A protected backup was
+retained; a verified repair changed only 274 `last_seen_at` values in 25 sessions. Twelve
+independent source re-reads exactly matched the correction, and every other message field and
+the discovery checkpoint remained unchanged. This is partial live acceptance, not a claim that
+all 269 sessions completed.
+
+Source v1.38.1 passes 258 focused checks, including Safari adapter execution, independent
+Text/Media dispatch, media file validation, and desktop/mobile browser checks. The last observed
+8666 process still reported v1.38.0; final runtime adoption requires a native Terminal restart.
+Real image-download acceptance remains pending: the next bounded Safari sample reached Google's
+human-verification page before media discovery. Do not infer downloaded image bytes from Text
+counts or offline tests. The full quality gate also remains blocked by the host's existing
+Streamlit/Pillow dependency conflict; focused success does not make that gate green.
+
 Safari-backed Cache tasks may own exactly one temporary Safari window at a time, and Safari
 is never the default browser for a new Gemini task. The window must remain a standard visible
 window with its native close, minimize, and full screen controls. It may stay behind the user's
 foreground window, but must never be hidden, minimized, moved offscreen, or converted into a
 reusable blank window shell. The shared Safari context captures and restores the user's
-frontmost application whenever it changes Safari window state.
+frontmost application whenever it changes Safari window state. A task may open more tabs inside
+its one window, as ChatGPT Media does for direct project-index downloads, but never a second
+window. The window is bound by its Safari window ID when it is created, so restoring the user's
+front window cannot retarget the task to that window.
 
 This Safari window lifecycle and its AppleScript/`osascript` controller are macOS-only. Windows
 uses the PowerShell controller for approved `.ps1` paths and its Windows process-control path;
@@ -318,9 +400,32 @@ curl -sS 'http://localhost:8666/api/cache/grok/status'
 curl -sS 'http://localhost:8666/api/cache/grok/text/status'
 ```
 
-The Edge session probe must report `logged_in: true`. The media and Text runtimes must
-be idle before starting another task. Only one cache task may hold
-`local_store/.cache_task.lock` across the entire application.
+The Edge session probe must report `logged_in: true`. A mode that is already running or
+queued cannot be started again, but every other source and mode can: see
+[Running several cache tasks](#running-several-cache-tasks).
+
+### Running several cache tasks
+
+Each source and content mode is an independent task. Start X Media, then open ChatGPT Text
+and start it as well; the Text and Media modes of one source are separate tasks too. What
+happens next depends on what the tasks need:
+
+- Different browsers run together. On macOS, two Edge or Chrome tasks also run together,
+  because each clones the selected profile.
+- Safari runs one cache task at a time. A second Safari task is accepted, shows the `queued`
+  phase with the task it waits for, and starts by itself when Safari is free. Its page keeps
+  the cached totals while it waits. On Windows, Edge and Chrome queue the same way.
+- An X Text task and a Safari X Media task both write the liked-text history, so they queue
+  even in different browsers.
+- Stop on a queued task removes it from the queue. Stop on a running task is the usual
+  cooperative stop. Each mode's Stop affects only that mode.
+- While a Safari task runs, another Safari source's account row reads `Not checked` and
+  explains that Start adds the task to the queue. The account is verified when the task runs.
+- A targeted refresh from Local resources does not queue. If its browser or task is busy it
+  is refused with the reason, because its page waits for the result.
+
+The task entry in the lower right of every page lists running tasks first and queued tasks
+after them. `GET /api/cache/activity` returns the same list.
 ### Legacy Grok Text runtime
 
 The legacy Grok Text runtime remains available through its status and start/stop routes
@@ -436,10 +541,15 @@ scrape. The worker clones the selected profile into an isolated temporary contex
 
 ### The task cannot start because another task owns the lock
 
-Query all source status endpoints and inspect the lock metadata:
+A task in this process that needs a busy browser or store is queued, not refused. A refusal
+that names another window means a second application process, a shadow backup, or a history
+repair holds the gate or one of the task's resource locks. Query the active tasks and
+inspect the lock metadata:
 
 ```bash
+curl -sS 'http://localhost:8666/api/cache/activity'
 cat local_store/.cache_task.lock
+ls -a local_store | grep '^\.cache_task\.'
 curl -sS 'http://localhost:8666/api/cache/grok/status'
 curl -sS 'http://localhost:8666/api/cache/grok/text/status'
 curl -sS 'http://localhost:8666/api/chatgpt/status'
@@ -483,12 +593,17 @@ Read these files together before changing Cache behavior:
 - `app/web/cache_sources.py`: source registry and canonical page metadata.
 - `app/web/app.py`: runtime registration, routes, status reconciliation, and redirects.
 - `app/core/grok_history.py`: Grok API traversal, normalization, and Parquet persistence.
-- `app/core/grok_history_service.py`: worker lifecycle and shared task lock.
-- `app/core/claude_history.py`: rendered Claude discovery, extraction, and Parquet persistence.
-- `app/core/claude_history_service.py`: Claude worker lifecycle and shared task lock.
+- `app/core/cache_task_coordinator.py`: task admission, the queue, and resource locks.
+- `app/core/cache_service_support.py`: worker lifecycle shared by every cache service.
+- `app/core/grok_history_service.py`: Grok Text worker lifecycle.
+- `app/core/claude_history.py`: Claude discovery, recorded-payload and rendered-transcript extraction, and Parquet persistence.
+- `app/core/claude_history_service.py`: Claude worker lifecycle, one worker per mode.
+- `app/core/claude_export_import.py`: official Claude export import into Claude history.
 - `app/core/chat_history_browser.py`: source path mapping and Local resources queries.
 - `app/core/resource_persistence.py`: typed Parquet schemas and atomic writes.
 - `tests/test_grok_history.py`: deterministic Grok Text regression coverage.
+- `tests/test_cache_task_coordinator.py` and `tests/test_cache_concurrency_web.py`: concurrent
+  and queued task coverage at the coordinator and route level.
 - `../SHARED_UI_SYNC.md`: shared-component synchronization ledger.
 
 When adding a new LLM source, update the source allowlist, source-specific path map,

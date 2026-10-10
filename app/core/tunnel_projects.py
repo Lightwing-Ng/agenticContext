@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.6.0-codex.0
+Code version: v1.8.1-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -15,11 +15,12 @@ folder such as the Desktop never becomes an implicit project. Registered project
 are writable unless their entry sets ``"writable": false``. Choosing a folder on
 the local Tunnel page registers it as a writable project.
 
-The local Tunnel page keeps a preferred subset of registered projects and selects
-exactly one available member as the *current* project. That preference is stored
+The local Tunnel page defaults to selecting every registered project and chooses
+one available selected project as the *current* project. This preference is stored
 in ``tunnel-selection.json`` beside the registry and carries a revision that
-increases on every change. It never grants or revokes authority: the registry
-alone decides which explicit project ids may be used and whether they are writable.
+increases on every change. The selected subset controls discovery, not authority:
+the registry alone decides which explicit project ids may be used and whether
+they are writable.
 
 A registered root may be temporarily absent on one computer. The registry still
 loads that authority as unavailable so the local page can diagnose it without
@@ -34,13 +35,18 @@ import json
 import logging
 import os
 import re
+import stat
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.core.config import default_settings_path
+from app.core.owner_only_files import ensure_owner_only
+from app.core.platform_lock import lock_file, unlock_file
 from app.core.tunnel_git import is_git_root
 
 LOGGER = logging.getLogger(__name__)
@@ -360,18 +366,34 @@ class ProjectRegistry:
         """Add one folder as a writable project and return it.
 
         An already-registered root returns its existing entry unchanged. When no
-        registry file exists yet, the fallback project is written first so it stays
-        visible. Overlapping roots are rejected by the normal registry validation.
+        registry file exists yet, the fallback project is written first, including
+        when it is the chosen root. Overlapping roots are rejected by the normal
+        registry validation.
         """
         root = _canonical_root(raw_root, "The chosen folder")
         if not root.is_dir():
             raise ProjectRegistryError("The chosen folder does not exist.")
         with self._register_lock:
+            fallback_mode = self.uses_fallback()
             existing = self.projects(fallback_workspace)
             for project in existing:
                 if project.root == root:
-                    return project
-            if self.uses_fallback():
+                    if not fallback_mode:
+                        return project
+                    # Choosing the implicit Git-root fallback is an explicit
+                    # registration, so materialize its existing identity.
+                    self._write_projects(
+                        [
+                            {
+                                "id": item.id,
+                                "root": str(item.root),
+                                "writable": item.writable,
+                            }
+                            for item in existing
+                        ]
+                    )
+                    return self.resolve(project.id, fallback_workspace)
+            if fallback_mode:
                 entries: list[dict[str, Any]] = [
                     {"id": project.id, "root": str(project.root), "writable": project.writable}
                     for project in existing
@@ -441,6 +463,40 @@ class ProjectRegistry:
         raise ProjectRegistryError(
             f"Unknown project: {project_id[:64]}. Registered projects: {known}."
         )
+
+
+@contextmanager
+def project_transaction_lock(registry: ProjectRegistry) -> Iterator[None]:
+    """Serialize registry reads with registry and selection transactions."""
+    lock_path = registry.path.with_name(f".{registry.path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(
+        lock_path,
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOINHERIT", 0),
+        0o600,
+    )
+    with os.fdopen(descriptor, "r+", encoding="ascii") as handle:
+        metadata = os.fstat(handle.fileno())
+        linked = lock_path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or (metadata.st_dev, metadata.st_ino) != (linked.st_dev, linked.st_ino)
+        ):
+            raise OSError("The Tunnel project lock is not a regular file.")
+        ensure_owner_only(lock_path)
+        lock_file(handle)
+        try:
+            linked = lock_path.lstat()
+            if (metadata.st_dev, metadata.st_ino) != (linked.st_dev, linked.st_ino):
+                raise OSError("The Tunnel project lock changed while held.")
+            yield
+        finally:
+            unlock_file(handle)
 
 
 class ProjectSelectionConflict(ProjectRegistryError):
@@ -620,9 +676,8 @@ def selected_projects(
 ) -> tuple[TunnelProject, ...]:
     """Return the registry subset preferred by the local page.
 
-    A legacy selection with no preferred list keeps the pre-checkbox behavior and
-    therefore treats the whole registry as selected until the first multi-select
-    save. This list never changes registry authority.
+    A legacy selection with no preferred list defaults to every registered project
+    until the first checkbox change. This list never changes registry authority.
     """
     if selection.selected_project_ids is None:
         return projects
@@ -670,14 +725,13 @@ def resolve_current_project(
         project = by_id.get(selection.project_id)
         if project is not None and not project_availability(project):
             return CurrentProject(project, selection, "selection")
-        if selection.selected_project_ids is None:
-            return CurrentProject(
-                None,
-                selection,
-                "selection",
-                f"The selected project {selection.project_id} is unavailable or no "
-                "longer registered. Choose an available registered project.",
-            )
+        return CurrentProject(
+            None,
+            selection,
+            "selection",
+            f"The current project {selection.project_id} is unavailable or no "
+            "longer registered. Choose an available registered project.",
+        )
     available = tuple(project for project in selected if not project_availability(project))
     if len(available) == 1:
         return CurrentProject(available[0], selection, "only_selected_project")
@@ -694,21 +748,9 @@ def resolve_current_project(
             ]
             if len(matches) == 1:
                 return CurrentProject(matches[0], selection, "agent_folder")
-    if selection.selected_project_ids is not None and available:
-        # Recover deterministically when the previous current project was removed
-        # or became unavailable. This never changes registry authority.
-        return CurrentProject(available[0], selection, "selected_fallback")
-    if selection.project_id:
-        return CurrentProject(
-            None,
-            selection,
-            "selection",
-            f"The selected project {selection.project_id} is unavailable or no longer "
-            "selected. Choose an available selected project.",
-        )
     return CurrentProject(
         None,
         selection,
         "none",
-        "No current project is selected. Choose one of the selected projects.",
+        "No current project is selected. Choose an available registered project.",
     )

@@ -1,6 +1,6 @@
 """Fixture-only coverage for the formal Zhihu text cache.
 
-Code version: v1.5.0-codex.1
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from app.core.chat_history_browser import query_chat_history
 from app.core.config import CrawlConfig
 from app.core.zhihu_answers import (
     ZhihuArchiveError,
+    normalize_zhihu_answer_payload,
     normalize_zhihu_profile_url,
 )
 from app.core.zhihu_history import (
@@ -102,6 +103,14 @@ def _activity_page(
             f"?offset={1_788_364_960_964 - page_number}&page_num={page_number + 1}"
         )
     return {"data": activities, "paging": paging}
+
+
+def _next_answer_cursor(url: str) -> str:
+    offset = int(parse_qs(urlsplit(url).query)["offset"][0]) + 20
+    return (
+        "https://www.zhihu.com/api/v4/members/fixture-author/answers"
+        f"?offset={offset}&limit=20&sort_by=created"
+    )
 
 
 def _upvote(activity_id: int, answer_id: int) -> dict[str, object]:
@@ -323,6 +332,96 @@ def test_completed_author_sync_queues_only_answers_exposed_by_stable_pagination(
     assert result["reported_answers"] == 2
     assert result["available_answers"] == 1
     assert result["unavailable_answers"] == 1
+
+
+def test_latest_only_author_sync_merges_only_the_newest_answers(tmp_path: Path) -> None:
+    profile = normalize_zhihu_profile_url("https://www.zhihu.com/people/fixture-author")
+    seeded = ZhihuHistoryStore(zhihu_history_path(tmp_path))
+    seeded.merge_answers(
+        tuple(
+            normalize_zhihu_answer_payload(_answer_payload(answer_id), profile)
+            for answer_id in (1, 2)
+        ),
+        "2026-09-11T00:00:00Z",
+    )
+    seeded.save()
+    requested: list[str] = []
+
+    def fetch_page(url: str) -> object:
+        requested.append(url)
+        offset = int(parse_qs(urlsplit(url).query)["offset"][0])
+        answer_ids = (4, 3, 2) if offset == 0 else (1,)
+        return {
+            "data": [_answer_payload(answer_id) for answer_id in answer_ids],
+            "paging": {"totals": 4, "is_end": False, "next": _next_answer_cursor(url)},
+        }
+
+    state = RecordingState()
+    result = sync_zhihu_history(
+        state,
+        CrawlConfig(zhihu_browser="edge"),
+        lambda: False,
+        tmp_path,
+        author_url="https://www.zhihu.com/people/fixture-author",
+        latest_only=True,
+        fetch_page=lambda url: fetch_page(url),
+        account_payload=_account_payload(),
+    )
+
+    assert [int(parse_qs(urlsplit(url).query)["offset"][0]) for url in requested] == [0, 20]
+    assert result["collection_mode"] == "author-latest"
+    assert result["processed_answers"] == 4
+    assert result["reported_answers"] is None
+    assert result["unavailable_answers"] == 0
+    assert (result["added"], result["changed"], result["unchanged"]) == (2, 0, 2)
+    assert result["cached_answers"] == 4
+    assert {row["conversation_id"] for row in ZhihuHistoryStore(zhihu_history_path(tmp_path)).rows} == {
+        "1",
+        "2",
+        "3",
+        "4",
+    }
+    metrics = state.values["performance_metrics"]
+    assert metrics["collection_mode"] == "author-latest"
+    assert metrics["expected_answers"] is None
+    assert metrics["available_answers"] == 4
+    assert metrics["unavailable_answers"] == 0
+    assert state.values["discovered_tweets"] == 4
+    assert any("newer than the cache" in event for event in state.events)
+
+
+def test_latest_only_sync_requires_an_answerer_url_before_opening_any_page(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires an answerer URL"):
+        sync_zhihu_history(
+            RecordingState(),
+            CrawlConfig(zhihu_browser="edge"),
+            lambda: False,
+            tmp_path,
+            latest_only=True,
+            fetch_page=lambda _url: pytest.fail("no page may be requested"),
+            account_payload=_account_payload(),
+        )
+
+
+def test_latest_completion_message_reports_a_bounded_read() -> None:
+    message = _format_completion_message(
+        {
+            "collection_mode": "author-latest",
+            "processed_answers": 40,
+            "pages_processed": 2,
+            "added": 3,
+            "changed": 0,
+            "unchanged": 37,
+            "cached_answers": 1_749,
+            "reported_answers": None,
+            "unavailable_answers": 0,
+        }
+    )
+
+    assert message == (
+        "Finished Zhihu latest-answer update. Checked the newest 40 answers across 2 pages; "
+        "added 3, changed 0, unchanged 37; cached total 1,749."
+    )
 
 
 def test_completion_message_explains_provider_unavailable_answers() -> None:

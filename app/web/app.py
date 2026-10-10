@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.2.1-codex.0
+# Code version: v2.3.0-claude.0
 
 from __future__ import annotations
 
@@ -46,8 +46,12 @@ from app.core.agent import (
 from app.core.foundation import (
     APP_VERSION,
     LOCAL_STORE_ROOT,
+    CacheTaskCoordinator,
+    CacheTaskIdentity,
+    TaskSnapshot,
     TaskState,
     build_initial_snapshot,
+    build_x_text_snapshot,
     configure_logging,
 )
 from app.core.providers import (
@@ -59,8 +63,11 @@ from app.core.providers import (
     GrokHistoryService,
     ZhihuHistoryService,
     build_chatgpt_initial_snapshot,
+    build_chatgpt_text_snapshot,
     build_claude_initial_snapshot,
+    build_claude_media_initial_snapshot,
     build_gemini_initial_snapshot,
+    build_gemini_media_initial_snapshot,
     build_grok_history_snapshot,
     build_grok_initial_snapshot,
     build_zhihu_history_initial_snapshot,
@@ -83,6 +90,7 @@ from app.web.cache_routes import (
     build_reconciled_grok_snapshot,
     register_cache_routes,
 )
+from app.web.cache_sources import get_cache_source_label
 from app.web.config_store import SavedConfigStore
 from app.web.jury_routes import JuryRouteContext, register_jury_routes
 from app.web.local_resource_routes import (
@@ -319,10 +327,31 @@ def create_app(
     app.extensions["agent_source_cache"] = agent_source_cache
     shadow_backup_service = ShadowBackupService(media_catalog.local_store_root)
     app.extensions["shadow_backup_service"] = shadow_backup_service
+    # Every source and content mode is its own task, so each gets its own state and
+    # worker; the coordinator decides which of them may run together.
+    cache_task_coordinator = CacheTaskCoordinator()
+    app.extensions["cache_task_coordinator"] = cache_task_coordinator
+
+    def cache_task(source_key: str, content_mode: str) -> dict[str, Any]:
+        """Name one cache task and hand it the shared coordination services."""
+        return {
+            "shadow_backup_service": shadow_backup_service,
+            "task": CacheTaskIdentity(
+                source_key,
+                content_mode,
+                get_cache_source_label(source_key),
+            ),
+            "coordinator": cache_task_coordinator,
+        }
+
     state = TaskState(version=APP_VERSION)
-    service = CacheLikesService(state, shadow_backup_service=shadow_backup_service)
+    service = CacheLikesService(state, **cache_task("x", "media"))
+    # A source's second mode starts from an empty snapshot. Its page reads the store when
+    # it is requested, so startup does not scan that cache or fail on an unreadable one.
+    x_text_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
+    x_text_service = CacheLikesService(x_text_state, **cache_task("x", "text"))
     grok_state = TaskState(version=APP_VERSION, snapshot_factory=build_grok_initial_snapshot)
-    grok_service = GrokDownloadService(grok_state, shadow_backup_service=shadow_backup_service)
+    grok_service = GrokDownloadService(grok_state, **cache_task("grok", "media"))
     grok_history_state = TaskState(
         version=APP_VERSION,
         snapshot_factory=lambda version: build_grok_history_snapshot(
@@ -333,12 +362,17 @@ def create_app(
     grok_history_service = GrokHistoryService(
         grok_history_state,
         media_catalog.local_store_root,
-        shadow_backup_service=shadow_backup_service,
+        **cache_task("grok", "text"),
     )
     app.extensions["grok_history_service"] = grok_history_service
     chatgpt_state = TaskState(version=APP_VERSION, snapshot_factory=build_chatgpt_initial_snapshot)
-    chatgpt_service = ChatGPTDownloadService(chatgpt_state, shadow_backup_service=shadow_backup_service)
+    chatgpt_service = ChatGPTDownloadService(chatgpt_state, **cache_task("chatgpt", "media"))
     app.extensions["chatgpt_service"] = chatgpt_service
+    chatgpt_text_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
+    chatgpt_text_service = ChatGPTDownloadService(
+        chatgpt_text_state,
+        **cache_task("chatgpt", "text"),
+    )
     gemini_state = TaskState(
         version=APP_VERSION,
         snapshot_factory=lambda version: build_gemini_initial_snapshot(version, media_catalog.local_store_root),
@@ -346,9 +380,15 @@ def create_app(
     gemini_service = GeminiHistoryService(
         gemini_state,
         media_catalog.local_store_root,
-        shadow_backup_service=shadow_backup_service,
+        **cache_task("gemini", "text"),
     )
     app.extensions["gemini_service"] = gemini_service
+    gemini_media_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
+    gemini_media_service = GeminiHistoryService(
+        gemini_media_state,
+        media_catalog.local_store_root,
+        **cache_task("gemini", "media"),
+    )
     claude_state = TaskState(
         version=APP_VERSION,
         snapshot_factory=lambda version: build_claude_initial_snapshot(
@@ -359,9 +399,15 @@ def create_app(
     claude_service = ClaudeHistoryService(
         claude_state,
         media_catalog.local_store_root,
-        shadow_backup_service=shadow_backup_service,
+        **cache_task("claude", "text"),
     )
     app.extensions["claude_history_service"] = claude_service
+    claude_media_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
+    claude_media_service = ClaudeHistoryService(
+        claude_media_state,
+        media_catalog.local_store_root,
+        **cache_task("claude", "media"),
+    )
     zhihu_state = TaskState(
         version=APP_VERSION,
         snapshot_factory=lambda version: build_zhihu_history_initial_snapshot(
@@ -372,7 +418,7 @@ def create_app(
     zhihu_service = ZhihuHistoryService(
         zhihu_state,
         media_catalog.local_store_root,
-        shadow_backup_service=shadow_backup_service,
+        **cache_task("zhihu", "text"),
     )
     app.extensions["zhihu_history_service"] = zhihu_service
     config_store = SavedConfigStore.load()
@@ -474,49 +520,102 @@ def create_app(
     atexit.register(stop_runtime_services)
 
     cache_runtimes = {
-        "x": CacheRuntimeAdapter(
-            state=state,
-            service=service,
-            hydrate_snapshot=lambda: build_initial_snapshot(APP_VERSION),
-        ),
-        "grok": CacheRuntimeAdapter(
-            state=grok_state,
-            service=grok_service,
-            hydrate_snapshot=lambda: build_grok_initial_snapshot(APP_VERSION),
-        ),
-        "chatgpt": CacheRuntimeAdapter(
-            state=chatgpt_state,
-            service=chatgpt_service,
-            hydrate_snapshot=lambda: build_chatgpt_initial_snapshot(
-                APP_VERSION,
-                project_name=config_store.config.chatgpt_project_name,
+        "x": {
+            "media": CacheRuntimeAdapter(
+                state=state,
+                service=service,
+                hydrate_snapshot=lambda: build_initial_snapshot(APP_VERSION),
             ),
-        ),
-        "gemini": CacheRuntimeAdapter(
-            state=gemini_state,
-            service=gemini_service,
-            hydrate_snapshot=lambda: build_gemini_initial_snapshot(
-                APP_VERSION,
-                media_catalog.local_store_root,
+            "text": CacheRuntimeAdapter(
+                state=x_text_state,
+                service=x_text_service,
+                hydrate_snapshot=lambda: build_x_text_snapshot(
+                    APP_VERSION,
+                    media_catalog.local_store_root,
+                ),
             ),
-        ),
-        "claude": CacheRuntimeAdapter(
-            state=claude_state,
-            service=claude_service,
-            hydrate_snapshot=lambda: build_claude_initial_snapshot(
-                APP_VERSION,
-                media_catalog.local_store_root,
+        },
+        "grok": {
+            "media": CacheRuntimeAdapter(
+                state=grok_state,
+                service=grok_service,
+                hydrate_snapshot=lambda: build_grok_initial_snapshot(APP_VERSION),
             ),
-        ),
-        "zhihu": CacheRuntimeAdapter(
-            state=zhihu_state,
-            service=zhihu_service,
-            hydrate_snapshot=lambda: build_zhihu_history_initial_snapshot(
-                APP_VERSION,
-                media_catalog.local_store_root,
+            "text": CacheRuntimeAdapter(
+                state=grok_history_state,
+                service=grok_history_service,
+                hydrate_snapshot=lambda: build_grok_history_snapshot(
+                    version=APP_VERSION,
+                    local_store_root=media_catalog.local_store_root,
+                ),
             ),
-        ),
+        },
+        "chatgpt": {
+            "media": CacheRuntimeAdapter(
+                state=chatgpt_state,
+                service=chatgpt_service,
+                hydrate_snapshot=lambda: build_chatgpt_initial_snapshot(
+                    APP_VERSION,
+                    project_name=config_store.config.chatgpt_project_name,
+                ),
+            ),
+            "text": CacheRuntimeAdapter(
+                state=chatgpt_text_state,
+                service=chatgpt_text_service,
+                hydrate_snapshot=lambda: build_chatgpt_text_snapshot(
+                    APP_VERSION,
+                    media_catalog.local_store_root,
+                ),
+            ),
+        },
+        "gemini": {
+            "text": CacheRuntimeAdapter(
+                state=gemini_state,
+                service=gemini_service,
+                hydrate_snapshot=lambda: build_gemini_initial_snapshot(
+                    APP_VERSION,
+                    media_catalog.local_store_root,
+                ),
+            ),
+            "media": CacheRuntimeAdapter(
+                state=gemini_media_state,
+                service=gemini_media_service,
+                hydrate_snapshot=lambda: build_gemini_media_initial_snapshot(
+                    APP_VERSION,
+                    media_catalog.local_store_root,
+                ),
+            ),
+        },
+        "claude": {
+            "text": CacheRuntimeAdapter(
+                state=claude_state,
+                service=claude_service,
+                hydrate_snapshot=lambda: build_claude_initial_snapshot(
+                    APP_VERSION,
+                    media_catalog.local_store_root,
+                ),
+            ),
+            "media": CacheRuntimeAdapter(
+                state=claude_media_state,
+                service=claude_media_service,
+                hydrate_snapshot=lambda: build_claude_media_initial_snapshot(
+                    APP_VERSION,
+                    media_catalog.local_store_root,
+                ),
+            ),
+        },
+        "zhihu": {
+            "text": CacheRuntimeAdapter(
+                state=zhihu_state,
+                service=zhihu_service,
+                hydrate_snapshot=lambda: build_zhihu_history_initial_snapshot(
+                    APP_VERSION,
+                    media_catalog.local_store_root,
+                ),
+            ),
+        },
     }
+    app.extensions["cache_runtimes"] = cache_runtimes
 
     def is_agent_access_unlocked() -> bool:
         """Allow the host itself to bypass the LAN gate after validating the request network."""
@@ -643,8 +742,8 @@ def create_app(
             computer_use_agent_service=computer_use_agent_service,
             agent_session_pool=agent_session_pool,
             agent_source_cache=agent_source_cache,
-            grok_history_service=grok_history_service,
             cache_runtimes=cache_runtimes,
+            cache_task_coordinator=cache_task_coordinator,
             tunnel_runtime=tunnel_runtime,
             tunnel_mcp_service=tunnel_mcp_service,
             require_trusted_request_network=require_trusted_request_network,
@@ -693,9 +792,7 @@ def create_app(
         cache_runtimes=cache_runtimes,
         config_store=config_store,
         media_catalog=media_catalog,
-        grok_history_state=grok_history_state,
-        grok_history_service=grok_history_service,
-        chatgpt_service=chatgpt_service,
+        cache_task_coordinator=cache_task_coordinator,
         reject_active_safari_agent_for_cache=agent_surface.reject_active_safari_agent_for_cache,
         external_agent_operations_enabled=agent_surface.external_agent_operations_enabled,
         reject_external_agent_operation=agent_surface.reject_external_agent_operation,

@@ -1,6 +1,6 @@
 """Focused tests for Gemini session history Parquet persistence."""
 
-# Code version: v1.11.0-codex.1
+# Code version: v1.11.4-codex.1
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ from urllib.parse import parse_qs, urlencode
 
 import pyarrow.parquet as pq
 import pytest
+from playwright.sync_api import Browser
+
+import test_sidebar_e2e
 
 from app.core.browser_sessions import TRANSIENT_BROWSER_ERROR_MARKERS
 from app.core.gemini_downloader import (
@@ -23,6 +26,7 @@ from app.core.gemini_downloader import (
     _build_gemini_history_rpc_page_request,
     _decode_gemini_history_rpc_payloads,
     _fetch_gemini_conversation_rpc_payloads,
+    _gemini_message_timestamps_from_captured_responses,
     _gemini_message_timestamps_from_rpc_payloads,
     _gemini_links_and_cursor_from_rpc_payload,
     _open_gemini_sidebar,
@@ -35,6 +39,7 @@ from app.core.gemini_downloader import (
     gemini_conversation_id,
     gemini_history_path,
     inspect_gemini_bot_check,
+    inspect_gemini_session,
     is_gemini_conversation_url,
     normalize_gemini_conversation_url,
     load_gemini_discovery_checkpoint,
@@ -46,6 +51,9 @@ from app.core.config import CrawlConfig
 from app.core.state import TaskSnapshot, TaskState
 from app.core.resource_persistence import GEMINI_HISTORY_SCHEMA
 from app.core.safari_automation import SafariPage
+
+
+disposable_browser = test_sidebar_e2e.disposable_browser
 
 
 def test_gemini_navigation_reuses_the_shared_transient_error_contract() -> None:
@@ -156,9 +164,82 @@ def test_gemini_conversation_rpc_response_exposes_source_turn_timestamps() -> No
     timestamps = _gemini_message_timestamps_from_rpc_payloads([payload], "conversation")
 
     assert timestamps == {
-        0: "2026-06-04T06:40:37.050958Z",
-        1: "2026-06-04T06:26:05.682736Z",
+        0: "2026-06-04T06:26:05.682736Z",
+        1: "2026-06-04T06:40:37.050958Z",
     }
+
+
+@pytest.mark.parametrize("missing_timestamp", ([], [None], [["invalid"]]))
+def test_gemini_rpc_turn_order_keeps_missing_timestamp_positions(
+    missing_timestamp: list,
+) -> None:
+    newest = [["c_conversation", "r_newest"], [], [], [], [1_780_555_237, 0]]
+    missing = [["c_conversation", "r_missing"], [], [], [], *missing_timestamp]
+    oldest = [["c_conversation", "r_oldest"], [], [], [], [1_780_554_365, 0]]
+    foreign = [["c_other", "r_other"], [], [], [], [1_780_555_000, 0]]
+
+    timestamps = _gemini_message_timestamps_from_rpc_payloads(
+        [[[newest, missing, foreign, oldest]]], "conversation"
+    )
+
+    assert timestamps == {
+        0: "2026-06-04T06:26:05Z",
+        2: "2026-06-04T06:40:37Z",
+    }
+
+
+def test_captured_conversation_rpc_decodes_the_conversation_envelope() -> None:
+    payload = [[[
+        ["c_conversation", "r_user"],
+        ["c_conversation", "r_assistant"],
+        [["Question"]],
+        [["r_assistant", ["Answer"]]],
+        [1_780_555_237, 50_958_000],
+    ]]]
+    body = json.dumps([["wrb.fr", "hNvQHb", json.dumps(payload)]])
+    response = SimpleNamespace(
+        url="https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=hNvQHb",
+        text=lambda: body,
+    )
+
+    assert _gemini_message_timestamps_from_captured_responses(
+        [response], "conversation"
+    ) == {0: "2026-06-04T06:40:37.050958Z"}
+    assert _decode_gemini_history_rpc_payloads(body) == []
+
+
+def test_safari_conversation_rpc_decodes_its_chunked_response() -> None:
+    payload = [[[
+        ["c_conversation", "r_user"],
+        ["c_conversation", "r_assistant"],
+        [["Question"]],
+        [["r_assistant", ["Answer"]]],
+        [1_780_555_237, 50_958_000],
+    ]]]
+    body = json.dumps([["wrb.fr", "hNvQHb", json.dumps(payload)]])
+
+    class Page(SafariPage):
+        def __init__(self) -> None:
+            self.chunk_reads = 0
+
+        def evaluate(self, expression: str, argument=None):
+            if "({ conversationId, stateKey })" in expression:
+                return {"started": True}
+            if "text.slice(start, start + length)" in expression:
+                self.chunk_reads += 1
+                return body[argument["start"]:argument["start"] + argument["length"]]
+            return {"state": "done", "ok": True, "status": 200, "length": len(body)}
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            return None
+
+    page = Page()
+    conversation = GeminiConversationLink(
+        "conversation", "https://gemini.google.com/app/conversation", "Conversation"
+    )
+    with patch("app.core.gemini_downloader.GEMINI_RPC_RESPONSE_SLICE_CHARS", 40):
+        assert _fetch_gemini_conversation_rpc_payloads(page, conversation) == [payload]
+    assert page.chunk_reads > 1
 
 
 def test_safari_conversation_rpc_uses_current_google_token_and_target_source_path() -> None:
@@ -497,6 +578,50 @@ def test_gemini_bot_check_inspection_uses_page_markers_and_challenge_selectors()
     assert inspect_gemini_bot_check(Page())["detected"]
 
 
+@pytest.mark.parametrize(("document", "detected"), [
+    (
+        '<title>CAPTCHA security check - Google Gemini</title>'
+        '<user-query>Explain CAPTCHA and a security check.</user-query>'
+        '<model-response><p>Verify you are human means solving a CAPTCHA.</p>'
+        '<div class="captcha">An example widget</div></model-response>',
+        False,
+    ),
+    ('<main>Gemini is ready.</main><div hidden class="captcha">Verify you are human</div>', False),
+    ('<main><h1>Verify you are human</h1></main>', True),
+    ('<main><div class="captcha">Continue</div></main>', True),
+    (
+        '<base href="https://gemini.google.com/app">'
+        '<nav><a href="/app/session-one"><span>CAPTCHA security check</span></a></nav>'
+        '<main>Welcome to Gemini</main>',
+        False,
+    ),
+    (
+        '<nav><a href="https://gemini.google.com/app/session-two">Security check</a></nav>'
+        '<main><a href="https://accounts.google.com/challenge">Verify you are human</a></main>',
+        True,
+    ),
+    (
+        '<user-query>What is a CAPTCHA?</user-query>'
+        '<model-response>It is a security check.</model-response>'
+        '<dialog open><p>Verify you are human</p></dialog>',
+        True,
+    ),
+])
+def test_gemini_bot_check_distinguishes_chat_text_from_visible_challenges(
+    disposable_browser: Browser,
+    document: str,
+    detected: bool,
+) -> None:
+    context = disposable_browser.new_context()
+    context.route("**/*", lambda route: route.abort())
+    page = context.new_page()
+    try:
+        page.set_content(document)
+        assert inspect_gemini_bot_check(page)["detected"] is detected
+    finally:
+        context.close()
+
+
 def test_gemini_collection_keeps_virtualized_loading_after_a_scroll_without_pixel_motion() -> None:
     class Page:
         def __init__(self) -> None:
@@ -631,6 +756,33 @@ def test_gemini_ready_gate_rejects_an_authenticated_region_unavailable_page() ->
     ):
         with pytest.raises(RuntimeError, match="not available.*current region"):
             _wait_for_gemini_ready(Page(), timeout_seconds=1)
+
+
+@pytest.mark.parametrize(("path", "unavailable"), [
+    ("/unavailable", True),
+    ("/app/conversation", False),
+])
+def test_gemini_session_recognizes_the_unavailable_route(
+    disposable_browser: Browser,
+    path: str,
+    unavailable: bool,
+) -> None:
+    context = disposable_browser.new_context()
+    context.route("**/*", lambda route: route.fulfill(
+        content_type="text/html",
+        body='<button aria-label="Google Account: Demo">Account</button>'
+        '<main>Gemini is currently on a break.</main>',
+    ))
+    page = context.new_page()
+    try:
+        page.goto(f"https://gemini.google.com{path}")
+        snapshot = inspect_gemini_session(page)
+        assert snapshot["serviceUnavailable"] is unavailable
+        if unavailable:
+            with pytest.raises(RuntimeError, match="Gemini is currently unavailable"):
+                _wait_for_gemini_ready(page, timeout_seconds=1)
+    finally:
+        context.close()
 
 
 def test_gemini_ready_gate_tolerates_one_signed_out_hydration_frame() -> None:

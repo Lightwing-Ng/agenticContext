@@ -1,4 +1,4 @@
-/* Code version: v0.1.0-codex.1 */
+/* Code version: v0.2.0-codex.0 */
 
 const root = document.querySelector("[data-beta-root]");
 if (root) initializeBeta(root);
@@ -9,6 +9,9 @@ function initializeBeta(root) {
     const status = root.querySelector("[data-beta-status]");
     const run = root.querySelector("[data-beta-run]");
     const resultPanel = root.querySelector("[data-beta-result]");
+    const observation = root.querySelector("#beta-guide-observe");
+    const challenge = root.querySelector("#beta-guide-challenge");
+    const emptyResult = root.querySelector("[data-beta-empty]");
     const fileInput = root.querySelector("[data-beta-file]");
     const storageKey = `agenticcontext:beta:v1:draft:${id}`;
     const fields = ["source", "second", "objective", "budget"];
@@ -50,6 +53,14 @@ function initializeBeta(root) {
             source: "Work from three copied conversation excerpts. Preserve source references. Keep the first prototype local and reversible. Use existing UI components.",
             second: "Every proposal cites a source excerpt.\nAt least one assumption has a concrete verification step.\nA user can export and edit the brief.\nExisting Agent and Cache workflows remain unchanged.",
         },
+        "echo-atlas": {
+            objective: "Notice what keeps drawing my attention",
+            source: "Walking home, I noticed how the garden changes after rain.\nA saved conversation asked whether a garden can act as a living notebook.\nAt the museum, tiny labels made ordinary objects feel worth noticing.\nRain changed the sounds outside my window.\nA notebook preserves questions that a photograph misses.\nThe garden has become a place to collect questions.",
+        },
+        "curiosity-trail": {
+            objective: "Find a new way to notice everyday life",
+            source: "A familiar walking route feels different when I notice only its sounds.\nOld conversation notes contain questions I never tried to answer.\nA museum places two ordinary objects together and changes how we see them.\nA plant on the windowsill turns toward the afternoon light.\nA recipe becomes memorable when one ingredient is missing.\nDrawing from memory reveals what I did not notice the first time.",
+        },
     };
 
     function announce(message, state = "") {
@@ -79,6 +90,7 @@ function initializeBeta(root) {
         revision += 1;
         output = null;
         resultPanel.hidden = true;
+        emptyResult.hidden = false;
         announce("");
         window.clearTimeout(saveTimer);
         saveTimer = window.setTimeout(writeDraft, 200);
@@ -112,8 +124,28 @@ function initializeBeta(root) {
             card.append(heading, body);
             return card;
         }));
+        const signals = root.querySelector("[data-beta-signals]");
+        const entries = result.signals || [];
+        const maximum = Math.max(1, ...entries.map((entry) => entry.value));
+        signals.replaceChildren(...entries.map((entry) => {
+            const row = document.createElement("label");
+            const name = document.createElement("span");
+            const meter = document.createElement("meter");
+            const count = document.createElement("span");
+            name.textContent = entry.label;
+            meter.min = 0;
+            meter.max = maximum;
+            meter.value = entry.value;
+            meter.setAttribute("aria-label", `${entry.label}: ${entry.value.toLocaleString("en-US")} distinct lines`);
+            count.textContent = `${entry.value.toLocaleString("en-US")} lines`;
+            row.append(name, meter, count);
+            return row;
+        }));
+        signals.hidden = entries.length === 0;
         output = result;
+        emptyResult.hidden = true;
         resultPanel.hidden = false;
+        observation.open = true;
     }
 
     try {
@@ -144,6 +176,9 @@ function initializeBeta(root) {
         form.reset();
         output = null;
         resultPanel.hidden = true;
+        emptyResult.hidden = false;
+        observation.open = false;
+        challenge.open = false;
         try { window.sessionStorage.removeItem(storageKey); } catch (_error) { /* An in-memory clear remains available. */ }
         root.querySelector("[data-beta-draft-status]").textContent = "Only this experiment";
         announce("This experiment's draft is cleared.");

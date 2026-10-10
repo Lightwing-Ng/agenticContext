@@ -1,6 +1,6 @@
 """Durable local-resource boundary for catalogs, history, and backups."""
 
-# Code version: v1.3.0-codex.0
+# Code version: v1.3.1-claude.0
 
 from ..chat_history_browser import (
     attach_media_references,
@@ -23,7 +23,13 @@ from ..local_media_browser import (
     resolve_browser_media_path,
     resolve_local_media_path,
 )
-from ..prompt_store import PromptPage, PromptStore, SavedPrompt, prompt_pointer_key
+from ..prompt_store import (
+    PromptPage,
+    PromptStore,
+    SavedPrompt,
+    prompt_content_key,
+    prompt_pointer_key,
+)
 from ..shadow_backup import (
     SettingsDirectoryBrowserError,
     SettingsDirectoryListing,
@@ -54,6 +60,7 @@ __all__ = [
     "media_route_relative_path",
     "normalize_browser_filters",
     "open_directory_path",
+    "prompt_content_key",
     "prompt_pointer_key",
     "query_chat_history",
     "resolve_browser_media_path",

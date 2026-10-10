@@ -1,4 +1,4 @@
-"""Isolated Cache activity disclosure coverage. Code version: v1.1.0-codex.0."""
+"""Isolated Cache activity disclosure coverage. Code version: v1.2.0-claude.0."""
 
 from __future__ import annotations
 
@@ -14,6 +14,10 @@ from tests import test_sidebar_e2e
 
 disposable_browser = test_sidebar_e2e.disposable_browser
 sidebar_server_url = test_sidebar_e2e.sidebar_server_url
+QUEUED_COPY = (
+    "Queued. Safari is busy with the Grok · Media cache. "
+    "This task starts automatically when Safari is free."
+)
 
 
 def _task(
@@ -34,6 +38,20 @@ def _task(
         "processed": processed,
         "total": total,
         "unit": unit,
+    }
+
+
+def _queued_task(source: str = "chatgpt", content_mode: str = "text") -> dict:
+    return {
+        "id": f"{source}:{content_mode}",
+        "source": source,
+        "label": {"chatgpt": "ChatGPT", "grok": "Grok"}[source],
+        "content_mode": content_mode,
+        "phase": "queued",
+        "message": QUEUED_COPY,
+        "processed": 0,
+        "total": 0,
+        "unit": "sessions",
     }
 
 
@@ -231,7 +249,7 @@ def test_cache_activity_tracks_all_running_tasks_and_preserves_anchors(
                 .some(animation => animation.effect.getTiming().iterations !== Infinity)""")
         _settle_disclosure(page)
         expect(panel).to_have_attribute("role", "dialog")
-        expect(panel.get_by_role("heading", name="Running cache tasks")).to_be_visible()
+        expect(panel.get_by_role("heading", name="Cache tasks")).to_be_visible()
         rows = panel.locator("[data-cache-activity-task]")
         expect(rows).to_have_count(2)
         expect(rows.nth(0)).to_contain_text("ChatGPT")
@@ -516,5 +534,226 @@ def test_cache_activity_list_scrolls_inside_panel_during_open_sidebar_and_viewpo
             json.dumps(evidence, indent=2) + "\n", encoding="utf-8"
         )
         assert all(method != "POST" for method, _url in requests), requests
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize("motion", ("no-preference", "reduce"))
+def test_cache_activity_lists_queued_tasks_after_running_ones_without_a_meter(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    macos_host,
+    motion: str,
+) -> None:
+    """A queued task explains what it waits for; only running work breathes or measures."""
+    context = disposable_browser.new_context(
+        viewport={"width": 1_006, "height": 791},
+        reduced_motion=motion,
+    )
+    activity = {"tasks": [_task("grok", processed=30, total=120), _queued_task()]}
+    requests = _install_responses(context, activity)
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(f"{sidebar_server_url}/cache/chatgpt/text/safari")
+        host = page.locator("[data-cache-activity]")
+        trigger = page.locator("[data-cache-activity-trigger]")
+        panel = page.locator("[data-cache-activity-panel]")
+        expect(trigger).to_be_visible()
+        expect(trigger).to_have_attribute("aria-label", "Show cache tasks")
+        expect(host).to_have_attribute("data-running", "true")
+        trigger.click()
+        _settle_disclosure(page)
+        expect(trigger).to_have_attribute("aria-label", "Hide cache tasks")
+        expect(panel.locator("[data-cache-activity-count]")).to_have_text("2")
+        rows = panel.locator("[data-cache-activity-task]")
+        expect(rows).to_have_count(2)
+        expect(rows.nth(0)).to_have_attribute("data-task-state", "running")
+        expect(rows.nth(0)).to_contain_text("Grok · Media")
+        _assert_progress_geometry(rows.nth(0), 0.25)
+        queued = rows.nth(1)
+        expect(queued).to_have_attribute("data-task-state", "queued")
+        expect(queued).to_contain_text("ChatGPT · Text")
+        expect(queued).to_contain_text(QUEUED_COPY)
+        expect(queued.get_by_role("progressbar")).to_have_count(0)
+        expect(queued.locator(".cache-activity-progress")).to_be_hidden()
+        expect(panel.get_by_role("progressbar")).to_have_count(1)
+        assert "Waiting for a work-item total." not in queued.inner_text()
+        _assert_panel_geometry(page)
+        queued_handle = queued.element_handle()
+        assert queued_handle is not None
+
+        # The queue reaches the front: the same row becomes a running task with a meter.
+        started = _task(processed=0, total=0, content_mode="text", unit="sessions")
+        started["message"] = "Preparing the cache task."
+        activity["tasks"] = [started]
+        expect(rows).to_have_count(1, timeout=7_000)
+        expect(rows.nth(0)).to_have_attribute("data-task-state", "running")
+        assert queued_handle.evaluate("element => element.isConnected")
+        expect(rows.nth(0).get_by_role("progressbar")).to_be_visible()
+        expect(rows.nth(0)).to_contain_text("Waiting for a work-item total.")
+
+        # With nothing running, the entry stays reachable but its marker does not breathe.
+        activity["tasks"] = [_queued_task()]
+        expect(host).to_have_attribute("data-running", "false", timeout=7_000)
+        expect(rows.nth(0)).to_have_attribute("data-task-state", "queued")
+        assert trigger.locator(".live-marker").evaluate(
+            "element => getComputedStyle(element, '::after').animationName"
+        ) == "none"
+        assert not errors, errors
+        assert all(method != "POST" for method, _url in requests), requests
+    finally:
+        context.close()
+
+
+def _global_entry_geometry(page: Page) -> dict:
+    return page.evaluate("""() => {
+        const rendered = selector => Array.from(document.querySelectorAll(selector)).find(element => {
+            const box = element.getBoundingClientRect();
+            return box.width > 0 && box.height > 0;
+        }) || null;
+        const rect = element => {
+            if (!element) return null;
+            const box = element.getBoundingClientRect();
+            return {left: box.left, top: box.top, right: box.right, bottom: box.bottom,
+                    width: box.width, height: box.height};
+        };
+        return {
+            trigger: rect(document.querySelector('[data-cache-activity-trigger]')),
+            panel: rect(document.querySelector('[data-cache-activity-panel]')),
+            theme: rect(document.querySelector('[data-layout-role="global-theme-anchor"]')),
+            workspace: rect(rendered('.workspace')),
+            pinned: rect(rendered('[data-cache-activity-clearance]')),
+            scrollport: rect(rendered('[data-layout-role="content-scrollport"]')),
+            titleRail: rect(rendered('[data-layout-role="title-rail"]')),
+            viewport: {width: innerWidth, height: innerHeight},
+            overflow: document.documentElement.scrollWidth - innerWidth,
+        };
+    }""")
+
+
+def _assert_global_entry_geometry(geometry: dict, *, composer: bool) -> None:
+    trigger, theme, workspace = geometry["trigger"], geometry["theme"], geometry["workspace"]
+    assert trigger and theme and workspace, geometry
+    assert trigger["width"] == trigger["height"] == theme["width"] == theme["height"], geometry
+    assert abs((trigger["left"] + trigger["right"]) / 2 - (theme["left"] + theme["right"]) / 2) <= 1, geometry
+    gap = max(0, workspace["right"] - theme["right"])
+    limit = workspace["bottom"]
+    if composer:
+        pinned = geometry["pinned"]
+        assert pinned, geometry
+        limit = min(limit, pinned["top"])
+        # The entry never covers the composer or its submit action.
+        assert trigger["bottom"] <= pinned["top"] + 1, geometry
+    else:
+        assert geometry["pinned"] is None, geometry
+    # One clearance: the theme action's distance from the workspace edge, repeated below.
+    assert abs(trigger["bottom"] - (limit - gap)) <= 1, geometry
+    assert trigger["top"] >= workspace["top"] - 1, geometry
+    assert geometry["overflow"] <= 1, geometry
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(("width", "height", "touch"), ((1_006, 791, False), (390, 844, True)))
+@pytest.mark.parametrize(
+    ("path", "composer"),
+    (
+        ("/cache/x/media/safari", False),
+        ("/browser", False),
+        ("/settings", False),
+        ("/settings/style-tokens", False),
+        ("/agent/tunnel/chatgpt", False),
+        ("/agent/edge/chatgpt", True),
+        ("/jury/edge", True),
+        ("/beta", False),
+    ),
+)
+def test_cache_activity_entry_is_available_on_every_application_page(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    macos_host,
+    path: str,
+    composer: bool,
+    width: int,
+    height: int,
+    touch: bool,
+) -> None:
+    """Cache tasks stay reachable from any page without covering that page's own actions."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": height},
+        reduced_motion="reduce",
+        has_touch=touch,
+        is_mobile=touch,
+    )
+    activity = {"tasks": []}
+    requests = _install_responses(context, activity)
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        response = page.goto(f"{sidebar_server_url}{path}")
+        if path == "/beta" and response is not None and response.status == 404:
+            pytest.skip("Beta experiments are disabled in this environment.")
+        assert response is not None and response.status == 200
+        host = page.locator("[data-cache-activity]")
+        trigger = page.locator("[data-cache-activity-trigger]")
+        panel = page.locator("[data-cache-activity-panel]")
+        expect(host).to_have_count(1)
+        expect(host).to_be_hidden()
+
+        activity["tasks"] = [_task("grok", processed=30, total=120), _queued_task()]
+        expect(trigger).to_be_visible(timeout=7_000)
+        closed = _global_entry_geometry(page)
+        _assert_global_entry_geometry(closed, composer=composer)
+
+        trigger.click()
+        expect(trigger).to_have_attribute("aria-expanded", "true")
+        _settle_disclosure(page)
+        expect(panel.get_by_role("heading", name="Cache tasks")).to_be_visible()
+        rows = panel.locator("[data-cache-activity-task]")
+        expect(rows).to_have_count(2)
+        expect(rows.nth(0)).to_contain_text("Grok · Media")
+        expect(rows.nth(0)).to_contain_text("30 / 120 images processed (25%)")
+        expect(rows.nth(1)).to_contain_text(QUEUED_COPY)
+        # The meter carries its own material, so it measures the same on every page.
+        _assert_progress_geometry(rows.nth(0), 0.25)
+        track_style = rows.nth(0).get_by_role("progressbar").evaluate("""element => {
+            const style = getComputedStyle(element);
+            return {height: style.height, borderTopWidth: style.borderTopWidth};
+        }""")
+        assert track_style == {"height": "6px", "borderTopWidth": "0px"}, track_style
+
+        opened = _global_entry_geometry(page)
+        _assert_global_entry_geometry(opened, composer=composer)
+        assert abs(opened["trigger"]["bottom"] - closed["trigger"]["bottom"]) <= 1, (closed, opened)
+        surface = opened["panel"]
+        assert surface["left"] >= -1 and surface["top"] >= -1, opened
+        assert surface["right"] <= opened["viewport"]["width"] + 1, opened
+        assert surface["bottom"] <= opened["viewport"]["height"] + 1, opened
+        assert surface["left"] >= opened["workspace"]["left"] - 1, opened
+        assert abs(surface["bottom"] - opened["trigger"]["bottom"]) <= 1, opened
+        # The open surface stays in the content area: inside the page's scrollport, or
+        # below the title rail on a page whose content does not scroll as a whole.
+        if opened["scrollport"]:
+            assert surface["top"] >= max(opened["scrollport"]["top"], opened["workspace"]["top"]) - 1, opened
+        else:
+            assert opened["titleRail"] and surface["top"] >= opened["titleRail"]["bottom"] - 1, opened
+        if composer:
+            assert opened["scrollport"] is None, opened
+            assert surface["bottom"] <= opened["pinned"]["top"] + 1, opened
+
+        page.keyboard.press("Escape")
+        expect(trigger).to_have_attribute("aria-expanded", "false")
+        expect(trigger).to_be_focused()
+
+        activity["tasks"] = []
+        expect(host).to_be_hidden(timeout=7_000)
+        assert not errors, errors
+        activity_requests = [method for method, url in requests if "/api/cache/activity" in url]
+        assert activity_requests and set(activity_requests) == {"GET"}, requests
     finally:
         context.close()

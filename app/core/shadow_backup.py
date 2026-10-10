@@ -1,6 +1,6 @@
 """One-way shadow cloud backup for the local cache.
 
-Code version: v1.3.0-codex.0
+Code version: v1.4.0-claude.0
 """
 
 from __future__ import annotations
@@ -17,13 +17,17 @@ import tempfile
 from threading import RLock, Thread
 
 from .config import CrawlConfig, is_windows_host
-from .job_lock import CacheTaskLock, SHARED_CACHE_TASK_LOCK
+from .job_lock import (
+    CacheMaintenanceLock,
+    CacheTaskLock,
+    SHARED_CACHE_MAINTENANCE_LOCK,
+    is_cache_task_lock_name,
+)
 from .state import utc_now
 
 
 logger = logging.getLogger(__name__)
 SHADOW_BACKUP_COPY_WORKERS = 4
-SHADOW_BACKUP_RUNTIME_LOCK_NAME = ".cache_task.lock"
 
 
 class ShadowBackupError(RuntimeError):
@@ -228,9 +232,13 @@ def browse_settings_directory(
 class ShadowBackupService:
     """Run manually requested shadow backups without overlapping a cache task."""
 
-    def __init__(self, source_root: Path, task_lock: CacheTaskLock | None = None) -> None:
+    def __init__(
+        self,
+        source_root: Path,
+        task_lock: CacheTaskLock | CacheMaintenanceLock | None = None,
+    ) -> None:
         self._source_root = source_root
-        self._task_lock = task_lock or SHARED_CACHE_TASK_LOCK
+        self._task_lock = task_lock or SHARED_CACHE_MAINTENANCE_LOCK
         self._lifecycle_lock = RLock()
         self._worker: Thread | None = None
         self._owns_task_lock = False
@@ -255,7 +263,7 @@ class ShadowBackupService:
         return bool(self.snapshot()["running"])
 
     def start(self, config: CrawlConfig) -> None:
-        """Start a manual backup task after acquiring the shared cache lock."""
+        """Start a manual backup task once no cache task is writing the store."""
         if not config.shadow_backup_enabled:
             raise ShadowBackupError("Enable shadow cloud backup before starting a sync.")
 
@@ -367,7 +375,8 @@ def _scan_source_tree(source_root: Path) -> tuple[dict[Path, Path], set[Path]]:
     source_files: dict[Path, Path] = {}
     source_directories: set[Path] = set()
     for source_path in sorted(source_root.rglob("*")):
-        if source_path == source_root / SHADOW_BACKUP_RUNTIME_LOCK_NAME:
+        # Cache coordination locks are runtime state, not cached data.
+        if source_path.parent == source_root and is_cache_task_lock_name(source_path.name):
             continue
         relative_path = source_path.relative_to(source_root)
         if source_path.is_symlink():

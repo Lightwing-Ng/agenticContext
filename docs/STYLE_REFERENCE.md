@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.20.2-codex.0`
+Documentation version: `v1.24.0-claude.0`
 
 ## Authority
 
@@ -140,6 +140,12 @@ the same menu material and direction tokens without an OS-specific material over
 Explicitly opaque Cache/source product adapters remain named exceptions. Their
 shared chevrons adopt the same direction and Reduced Motion contract without
 changing product selection, portal placement, or form behavior.
+The Local resources sidebar is the third named exception: its standard filter selects
+(Media type, Sort order, Project, and Answerer) open over the next field's label and
+trigger, which would read through the `62%` layer. `.browser-filter-form .browser-filter-select`
+therefore sets `--shared-select-dropdown-material` to `--frosted-glass-opaque-background`,
+the same base as the adjacent Source menu. Trigger material, blur, border, shadow, radius,
+option geometry, and keyboard behavior are unchanged.
 Only the existing flat Settings content host with a direct
 `[data-settings-content-scrollport]` child disables its own backdrop filter. A
 nested filtered ancestor would prevent the menu's `12px` blur from obscuring local
@@ -228,6 +234,88 @@ and headings wrap within their column without creating horizontal table scrollin
 This is a product-specific table adapter; shared table tokens and financial tables
 retain their existing owners.
 
+### Zhihu answer detail columns
+
+Above the existing 767px card-layout breakpoint, the four-column answer detail
+table assigns No./Time/Question/Answer 5%/15%/25%/55% of the body table width.
+Both the detached header and the body declare this product-specific allocation;
+the shared table controller measures the body cells to keep the header aligned.
+The narrow index and timestamp preserve sufficient space for their labels and
+values, while the long answer receives most of the remaining width. At 767px
+and below, the existing stacked answer cards own the layout instead of column
+percentages. No shared table token or sibling-product table changes are needed.
+
+### Answerer and session actions drawer
+
+The Local resources session-detail actions drawer collapses to one 32px Circular action and expands on
+hover or focus. Its expanded width is derived from `--browser-session-action-count` (three by default)
+rather than a fixed multiple, and each action keeps its own offset of one 42px step (the 32px action
+plus the 10px gap) and a 28ms stagger.
+Zhihu answerer detail adds `Update latest answers from Zhihu` as a fourth action by setting the
+modifier `.browser-session-actions--source-update` (count four); it reuses the local
+`icloud.and.arrow.down.svg` mask that marks the ChatGPT session refresh. While it runs, the wait modal
+covers the page; its unavailable state dims only the icon, so the drawer's hover opacity is unchanged.
+The result reuses the shared `browser-session-refresh-banner` material. This is a product-specific
+adapter; Worthward and neoMe have no equivalent Local resources session drawer.
+
+### ChatGPT Media Sessions index
+
+ChatGPT Media uses the existing semantic `secondary-button browser-session-back-link` anchor
+to enter the Sessions index. Session detail labels it `Back to all sessions` and returns to the
+remembered index page; the flat gallery labels it `All sessions`. The index omits this link
+because it is already the destination, while its Session View button remains available for
+reverse navigation. The link uses the in-project Secondary button material and visible text
+instead of the former `photo.stack.svg` Circular icon toggle and its pressed-state tooltip.
+The index renders one `.browser-session-card` per session inside a `.browser-gallery`
+`.browser-session-gallery`, so the existing four/three/two/one column breakpoints and the shared List
+and Grid dock apply unchanged. Covers are never cropped: the image is drawn whole at the full cover
+width in its own ratio (`width: 100%`, `height: auto`, `object-fit: contain`), with no fixed frame.
+In Grid layout the cover is a flex-grown, centering grid, so every cover in a row takes the tallest
+image's height, shorter images sit centered on `--theme-panel-strong`, and titles stay aligned. The
+catalog's width and height, when recorded, are rendered as `width` and `height` attributes so the
+browser reserves the ratio before lazy loading; a cover without them keeps a 96px minimum only while
+loading or after a failure, for the status pill. List layout is a 112px cover column with the title
+(two lines, then an ellipsis) on the left and the image count and date right-aligned on one line; each
+row is as tall as its image. At 560px and below the list column is 88px, the count and date stack
+under the title, and the grid keeps two columns rather than one.
+
+The cover shell and image use their own `.browser-session-cover` and `.browser-session-cover-media`
+classes. The media gallery's list rules target `.browser-preview` and `.browser-preview-media` with a
+280px minimum height, so reusing those classes would stretch every list cover. Card surface, hover
+lift, and focus ring mirror `.browser-media-card`; the ring appears only for keyboard focus. This is
+a product-specific adapter; Worthward and neoMe have no ChatGPT media surface, and the shared
+Secondary button, Circular button, and view dock primitives are consumed unchanged.
+
+A session detail's `Back to all sessions` link names the session it leaves. The index opens on
+the page that holds that session, whatever page was remembered, marks its card `.is-return-origin`,
+centers it in the content scrollport, and moves keyboard focus to its cover link. The mark is the
+standard blue interaction glow: the `--accent-border-medium` border with the 4px `--accent-focus-ring`
+ring and the 18px `--accent-focus-glow`, layered over the card's resting or hover shadow. It is a
+static shadow on the card itself, so it moves with native scrolling and needs no scroll handler, and
+it stays until the next navigation. While a cover without a recorded size is still loading, the
+script keeps the card centered on gallery size changes until the first wheel, touch, pointer, or key
+input, or four seconds. A sidebar filter change, pagination, and the Dock entry start without an
+origin. Dark mode uses the same tokens, so the glow is subtler there.
+
+### Saved prompt actions
+
+A ChatGPT media card's Prompt heading carries the same `Add as prompt` action as a cached user
+message. It is the standard 32px Circular icon button, placed before the expand control in
+`.browser-media-prompt-actions`. Hovering or focusing within the prompt section reveals it, touch
+keeps it visible, and the saved state stays visible in the success color. Cards that show the same
+prompt of one conversation share the saved state.
+
+Each Saved prompts row ends its remark input line with a Circular save toggle. Its
+`bookmark.slash.fill.svg` state removes the prompt; the row then stays in place at 45% opacity with
+the toggle showing `text.bubble.fill.svg`, which saves the prompt and its remarks again until the
+page reloads. The toggle is hover-revealed on fine pointers like the Copy action and always visible
+on touch. A touch phone column wraps it under the full-width input, while a narrow pointer window
+keeps it beside the input so no empty line is reserved. A prompt whose text is saved more than once
+starts its remark row with a compact warning mark: `rectangle.on.rectangle.svg` and the copy count
+on `--theme-warning-translucent` in `--theme-warning-text`. Both assets are byte-identical copies
+of the Worthward files. These are product-specific adapters; the shared Circular icon button and
+Tag primitives are consumed unchanged.
+
 ### Compact conversation effects
 
 The Local resources conversation scrollport uses 8px padding on all four sides at
@@ -248,8 +336,13 @@ uses layout containment and the shared 48px paint allowance at its sides and
 bottom. Its top clips at the chat pane boundary so scrolling shadows cannot paint
 over the preceding transparent summary metrics. Tall messages do not enlarge
 the document, and shadows can still cross the side and bottom edges. Full card
-rectangles follow scrolling, resizing, content-size changes, and theme updates;
-no message content or interactive control is copied into the effect layer.
+rectangles are placed in scroll-content coordinates and follow resizing,
+content-size changes, and theme updates. A `ScrollTimeline` bound to the message
+scrollport translates their track on the compositor, so shadows move in the same
+frame as native scrolling; never reposition them from a `scroll` handler, which
+trails asynchronous scrolling and visibly detaches shadows from their cards.
+Engines without scroll timelines keep the cards' native, scrollport-clipped
+shadows. No message content or interactive control is copied into the effect layer.
 
 The Local resources search icon keeps its 16px SVG transport and a square slot
 matching the search control's inner height. Its native lens center, rather than
@@ -258,33 +351,58 @@ The shared Local resources search input is 30px high at every breakpoint; its
 existing 1px outer border makes the full pill 32px high. Saved prompt remark
 inputs use the same 30px height and the existing 999px `--radius-pill` token.
 These are local component sizes, not changes to the global form-control tokens.
+Between 601px and 900px the search field takes the shared `--layout-control-width`
+(384px) at the right edge of its toolbar in every Local resources view. The compact
+flow at 600px and below keeps the full row, and the desktop rail keeps its 322px field.
 
 ### Cache activity disclosure
 
-Cache pages reuse the shared Circular icon button and Live marker for a task entry
-point that is hidden when no cache worker is running. The button shares the theme
-action's horizontal center. Its right and bottom clearances are equal relative to
-the Cache content scrollport, measured from that owner's rendered rectangle so the
-compact layout and safe-area insets remain authoritative. The disclosure is outside
-the scrollport and never participates in content layout or scrolling.
+Every application page reuses the shared Circular icon button and Live marker for a
+cache task entry point. It is hidden when no cache task is running or queued, so a
+page without cache work looks as it did before. `_cache_activity.html` and
+`_cache_activity_assets.html` are included by the Cache, Agent, Jury, Local resources,
+Settings, Style tokens, and Beta templates; the locked Agent access page has none.
+
+The button shares the theme action's horizontal center and sits in the lower corner of
+the page's workspace panel. It repeats one clearance below itself: the theme action's
+distance from the workspace panel's right edge. On a Cache page that rectangle is also
+the content scrollport's, so the right and bottom clearances stay equal there. A surface
+pinned to that corner declares `data-cache-activity-clearance`; the Agent and Jury
+composers do, and the entry then sits the same clearance above the composer instead of
+covering its submit action. Geometry is measured from rendered rectangles, so the compact
+layout, a growing composer, and safe-area insets remain authoritative. The disclosure is
+outside the scrollport and never participates in content layout or scrolling.
 The Cache page uses the shared full-width page rectangle; retaining its legacy
 1,560px cap would place the viewport-anchored theme action outside the content owner
 on wider displays and make these two anchor requirements incompatible.
 
 Clicking expands the same glass surface toward the upper left, using the existing
 popover material, soft radius, control-width maximum, and emphasized motion curve.
-The read-only nonmodal dialog contains active providers, known run modes, phase
-descriptions, and work-item counts. Escape restores the trigger's focus; clicking
-outside closes it. Reduced Motion makes expansion immediate and keeps a static live
-marker. Long task lists scroll internally within the content owner's bounds.
+The read-only nonmodal dialog is titled `Cache tasks` and lists running tasks first,
+then queued ones, each named by source and content mode. A running row shows its phase
+description, work-item counts, and a meter. A queued row shows what it waits for and
+has no meter. Escape restores the trigger's focus; clicking outside closes it. Reduced
+Motion makes expansion immediate and keeps a static live marker; the marker is also
+static when every listed task is queued. Long task lists scroll inside the page's content
+scrollport, or below the title rail on a page whose content does not scroll as a whole.
 
-The lightweight `/api/cache/activity` endpoint reads in-memory task snapshots,
-including the independent Grok text worker. It never hydrates caches or probes a
-browser. Unknown run modes are omitted rather than inferred from current settings.
+The meter carries the Cache progress material in `cache-activity.css` rather than the
+Cache page's scoped rules: a 6px borderless track, the positive fill, and the static
+40% segment for an unknown total. It therefore measures the same on every page.
+
+The lightweight `/api/cache/activity` endpoint reads in-memory task snapshots for every
+registered source and content mode. It never hydrates caches or probes a browser. A row's
+mode comes from the runtime it belongs to, and a queued row's reason is worded by the
+task coordinator from registered labels only, never from task output.
 Refresh failure retains the last known list with an explicit stale-status message
 and pauses the breathing animation. Successful empty responses hide the entry point.
-This Cache-specific adapter remains a Candidate review in the shared UI ledger;
-Worthward and neoMe applicability is Pending.
+This adapter remains a Candidate review in the shared UI ledger; Worthward and neoMe
+applicability is Pending.
+
+On a Cache page, a queued task shows the `queued` phase, an empty progress track labeled
+`Queued`, and the Stop action, which removes it from the queue. While another cache task
+owns Safari, the account row reads `Not checked` with the reason and no status glyph, and
+Start stays available because the task waits in the queue.
 
 The product-specific local directory browser reuses the Workspace modal surface, Secondary and
 primary buttons, text-input material, folder asset, radii, typography, and color tokens. Its dialog
@@ -326,17 +444,18 @@ that target. Named icon-free form dialogs inherit the same material while
 preserving their product-specific grid, width, scrolling, and security behavior.
 See tests/test_style_alignment_e2e.py for isolated responsive acceptance checks.
 
-Circular actions use `.circular-icon-button` as the reusable primitive. Its 30px
-desktop control, 18px icon, pill radius, `--circular-icon-button-material` Frosted Glass
+Circular actions use `.circular-icon-button` as the reusable primitive. Its 32px
+control at every viewport width, 18px icon, pill radius, `--circular-icon-button-material` Frosted Glass
 surface, border, shadow, and state colors come from `--circular-icon-button-*`; the former
 `--settings-round-icon-button-*` names are compatibility aliases only. Sidebar,
 global, Browser session, and media actions keep their semantic classes as adapters
 and also expose the canonical class in markup.
-The existing `<=900px` responsive adaptation keeps the 44px touch target. Sidebar
-toggle offsets, title rails, global action reserves, and catalog copy rails derive
-from the current size token; the shared 10px edge gap and vertical centerline do not
-change. Coarse pointers consume the same current size instead of enlarging only
-the toggle while leaving the theme button smaller. The 24px dismiss action, 32px
+Sidebar toggle offsets, title rails, global action reserves, and catalog copy rails
+derive from the same 32px size token; the shared 10px edge gap and vertical
+centerline do not change. Isolated sidebar and global theme actions retain a
+transparent 44px coarse-pointer hit region without changing their painted or
+computed 32px box. Adjacent actions do not gain overlapping hit regions. The
+24px dismiss action, 32px
 Process List marker, and 36px topic icon or Agent session rail remain separate sizes.
 The catalog title and copy rail compensate for the existing 8px compact page pad
 at `<=560px` using the global-anchor-minus-page-pad equation. This preserves their

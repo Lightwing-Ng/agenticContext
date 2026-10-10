@@ -1,6 +1,6 @@
 """Optional browser-local experiments with no service or persistence boundary.
 
-Code version: v0.4.0-codex.1
+Code version: v0.5.0-codex.0
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 from flask import Blueprint, Flask, abort, render_template
 
 
-BETA_VERSION = "v0.4.0"
+BETA_VERSION = "v0.5.0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +82,24 @@ BETA_EXPERIMENTS = (
         icon="style-tokens",
         source_url="https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents",
         source_title="Anthropic: Demystifying evals for AI agents",
+    ),
+    BetaExperiment(
+        id="echo-atlas",
+        title="Echo Atlas",
+        kicker="Follow the words that return",
+        description="Trace recurring words across your notes and revisit the original lines behind each echo.",
+        icon="cloud",
+        source_url="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+        source_title="Anthropic: Effective context engineering for AI agents",
+    ),
+    BetaExperiment(
+        id="curiosity-trail",
+        title="Curiosity Trail",
+        kicker="Take an unexpected turn",
+        description="Follow a question through a familiar fragment, an unexpected contrast, and a small observation to try.",
+        icon="browser",
+        source_url="https://dschool.stanford.edu/tools/design-thinking-bootleg",
+        source_title="Stanford d.school: Design Thinking Bootleg",
     ),
 )
 

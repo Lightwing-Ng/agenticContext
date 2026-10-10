@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.27.15-codex.0
+# Code version: v1.27.16-codex.0
 
 from __future__ import annotations
 
@@ -468,7 +468,13 @@ def _probe_claude_session(
 ) -> dict[str, Any]:
     """Verify a Claude Web composer without reading account or credential data."""
     def inspect(page: Any) -> dict[str, Any]:
+        challenge = _security_verification_status_if_present(page, descriptor.label, "Claude")
+        if challenge is not None:
+            return challenge
         page.wait_for_timeout(2_000)
+        challenge = _security_verification_status_if_present(page, descriptor.label, "Claude")
+        if challenge is not None:
+            return challenge
         try:
             body_text = page.locator("body").inner_text(timeout=5_000)
         except Exception:
@@ -500,6 +506,9 @@ def _probe_claude_session(
         composer_ready = False
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
+            challenge = _security_verification_status_if_present(page, descriptor.label, "Claude")
+            if challenge is not None:
+                return challenge
             try:
                 composer_count = int(claude_composer_snapshot(page).get("count") or 0)
                 if composer_count == 1:
@@ -511,6 +520,9 @@ def _probe_claude_session(
                 pass
             page.wait_for_timeout(250)
         if not composer_ready:
+            challenge = _security_verification_status_if_present(page, descriptor.label, "Claude")
+            if challenge is not None:
+                return challenge
             # Hydration can reveal sign-in UI after the initial body snapshot.
             try:
                 normalized_body = page.locator("body").inner_text(timeout=5_000).casefold()
@@ -563,10 +575,32 @@ def _probe_claude_session(
                 silent=silent,
                 prefer_initialized_debug_profile=prefer_initialized_debug_profile,
             ) as context:
-                page = context.pages[0] if context.pages else context.new_page()
-                goto_with_retry(page, CLAUDE_HOME_URL, attempts=2, timeout_ms=60_000)
+                challenge = context_security_verification_status(
+                    context, descriptor.label, "Claude"
+                )
+                if challenge is not None:
+                    return challenge
+                page = select_provider_tab(
+                    context,
+                    home_url=CLAUDE_HOME_URL,
+                    hosts={"claude.ai", "www.claude.ai"},
+                )
                 challenge = _security_verification_status_if_present(
                     page, descriptor.label, "Claude"
+                )
+                if challenge is not None:
+                    return challenge
+                current_url = str(getattr(page, "url", "") or "").strip().rstrip("/")
+                if current_url != CLAUDE_HOME_URL.rstrip("/"):
+                    goto_with_retry(
+                        page,
+                        CLAUDE_HOME_URL,
+                        attempts=2,
+                        timeout_ms=60_000,
+                        should_stop=lambda: context_shows_security_verification(context),
+                    )
+                challenge = context_security_verification_status(
+                    context, descriptor.label, "Claude"
                 )
                 if challenge is not None:
                     return challenge

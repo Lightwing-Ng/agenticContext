@@ -1,4 +1,4 @@
-/* Code version: v2.156.2-codex.0 */
+/* Code version: v2.159.0-claude.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -323,8 +323,9 @@
     --page-mobile-active-bottom-pad: var(--page-mobile-scroll-bottom-pad-base);
     --sidebar-dock-mobile-bottom-gap: 4px;
     --sidebar-dock-mobile-shadow: 0 -10px 24px var(--theme-glass-border), 0 0 0 1px color-mix(in srgb, var(--theme-glass-highlight) 44%, transparent);
-    --circular-icon-button-size: 30px;
+    --circular-icon-button-size: 32px;
     --circular-icon-button-icon-size: 18px;
+    --circular-icon-button-hit-size: 44px;
     --circular-icon-button-radius: var(--radius-pill);
     --circular-icon-button-material: var(--frosted-glass-background);
     --circular-icon-button-background: var(--circular-icon-button-material);
@@ -6571,7 +6572,6 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 
 @media (max-width: 900px) {
     .page {
-        --circular-icon-button-size: 44px;
         --settings-round-icon-button-size: var(--circular-icon-button-size);
         --workspace-title-rail-control-height: var(--settings-round-icon-button-size);
         --workspace-title-rail-height: calc(var(--workspace-title-rail-pad-block-start) + var(--workspace-title-rail-control-height));
@@ -6775,6 +6775,22 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 
 /* Keep the touch target stationary while the overlay itself transitions. */
 @media (hover: none) and (pointer: coarse) {
+    .page > .sidebar-toggle::before,
+    #global_theme_toggle::before {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: var(--circular-icon-button-hit-size);
+        height: var(--circular-icon-button-hit-size);
+        transform: translate(-50%, -50%);
+    }
+
+    #global_theme_toggle {
+        position: relative;
+        touch-action: manipulation;
+    }
+
     .page > .sidebar-toggle,
     .page > .sidebar-toggle:hover,
     .page > .sidebar-toggle:focus-visible,
@@ -7194,6 +7210,11 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     display: grid;
 }
 
+/* Local resources sidebar menus open over the next filter field; share the Source menu's opaque base. */
+.browser-filter-form .browser-filter-select {
+    --shared-select-dropdown-material: var(--frosted-glass-opaque-background);
+}
+
 .browser-filter-select.is-open .browser-picker-trigger-chevron {
     transform: translateY(-50%) rotate(var(--shared-select-chevron-open-rotation));
 }
@@ -7556,6 +7577,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-session-actions {
+    --browser-session-action-count: 3;
     --browser-session-action-gap: 10px;
     --browser-session-action-step: calc(var(--settings-round-icon-button-size) + var(--browser-session-action-gap));
     position: relative;
@@ -7574,9 +7596,16 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     pointer-events: auto;
 }
 
+.browser-session-actions--source-update {
+    --browser-session-action-count: 4;
+}
+
 .browser-session-actions:hover,
 .browser-session-actions:focus-within {
-    width: calc((var(--settings-round-icon-button-size) * 3) + (var(--browser-session-action-gap) * 2));
+    width: calc(
+        (var(--settings-round-icon-button-size) * var(--browser-session-action-count))
+        + (var(--browser-session-action-gap) * (var(--browser-session-action-count) - 1))
+    );
 }
 
 .browser-session-action-button {
@@ -7642,6 +7671,13 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     transition-delay: 28ms;
 }
 
+.browser-session-actions > .browser-session-source-update-button {
+    right: auto;
+    left: calc(var(--browser-session-action-step) * 3);
+    --browser-session-action-hidden-offset: calc(var(--browser-session-action-step) * -3);
+    transition-delay: 84ms;
+}
+
 .browser-session-actions > .browser-session-full-export-button {
     right: auto;
     left: 0;
@@ -7693,6 +7729,27 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-session-export-icon {
     mask-image: url("/static/images/square.and.arrow.up.svg");
     -webkit-mask-image: url("/static/images/square.and.arrow.up.svg");
+}
+
+.browser-session-source-update-icon {
+    mask-image: url("/static/images/icloud.and.arrow.down.svg");
+    -webkit-mask-image: url("/static/images/icloud.and.arrow.down.svg");
+}
+
+.browser-session-source-update-button:disabled {
+    cursor: default;
+}
+
+.browser-session-source-update-button:disabled .browser-session-source-update-icon {
+    opacity: 0.38;
+}
+
+.browser-session-source-update-button[aria-busy="true"]:disabled {
+    cursor: wait;
+}
+
+.browser-session-source-update-button[aria-busy="true"]:disabled .browser-session-source-update-icon {
+    opacity: 0.62;
 }
 
 .browser-session-page-export-icon {
@@ -7774,6 +7831,13 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     /* Keep scrolling shadows below the summary while preserving side and bottom effects. */
     clip-path: inset(0 calc(-1 * var(--layout-physical-effect-bleed)) calc(-1 * var(--layout-physical-effect-bleed)));
     pointer-events: none;
+}
+
+.browser-chat-effect-track {
+    position: absolute;
+    inset: 0;
+    /* The scroll timeline owns this transform; reduced-motion transitions must not join it. */
+    transition: none;
 }
 
 .browser-chat-effect {
@@ -8269,6 +8333,8 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-session-table-message-shell:focus-within .browser-prompt-add-button,
 .browser-chat-message:hover .browser-prompt-add-button,
 .browser-chat-message:focus-within .browser-prompt-add-button,
+.browser-media-prompt:hover .browser-prompt-add-button,
+.browser-media-prompt:focus-within .browser-prompt-add-button,
 .browser-prompt-add-button:focus-visible {
     opacity: 1;
     pointer-events: auto;
@@ -8710,20 +8776,26 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     }
 }
 
-.browser-session-detail-table.is-zhihu-source .browser-session-col-number {
-    width: 6%;
-}
+@media (min-width: 768px) {
+    .browser-session-detail-table.is-zhihu-source .browser-session-col-number,
+    .browser-session-detail-table.is-zhihu-source tbody > tr > td:nth-child(1) {
+        width: 5%;
+    }
 
-.browser-session-detail-table.is-zhihu-source .browser-session-col-time {
-    width: 17%;
-}
+    .browser-session-detail-table.is-zhihu-source .browser-session-col-time,
+    .browser-session-detail-table.is-zhihu-source tbody > tr > td:nth-child(2) {
+        width: 15%;
+    }
 
-.browser-session-detail-table.is-zhihu-source .browser-session-col-role {
-    width: 29%;
-}
+    .browser-session-detail-table.is-zhihu-source .browser-session-col-role,
+    .browser-session-detail-table.is-zhihu-source tbody > tr > td:nth-child(3) {
+        width: 25%;
+    }
 
-.browser-session-detail-table.is-zhihu-source .browser-session-col-message {
-    width: 48%;
+    .browser-session-detail-table.is-zhihu-source .browser-session-col-message,
+    .browser-session-detail-table.is-zhihu-source tbody > tr > td:nth-child(4) {
+        width: 55%;
+    }
 }
 
 .events-table.browser-session-detail-table.is-zhihu-source thead th.browser-session-col-role,
@@ -8918,6 +8990,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-prompt-remark-editor {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 4px;
     min-width: 0;
 }
@@ -8937,9 +9010,86 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     font-size: var(--font-size-3);
 }
 
+/* The input shares its line with the save toggle, which wraps below it in a narrow column. */
 .browser-prompt-remark-editor input {
-    flex: 1 1 100%;
-    width: 100%;
+    flex: 1 1 96px;
+    width: auto;
+}
+
+.browser-prompt-remark-editor .browser-prompt-unsave-button {
+    margin-inline-start: auto;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.browser-prompt-table tbody tr:hover .browser-prompt-unsave-button,
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-unsave-button,
+.browser-prompt-remark-editor .browser-prompt-unsave-button:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+@media (hover: none) {
+    .browser-prompt-remark-editor .browser-prompt-unsave-button {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+/* A narrow pointer-driven window keeps the hidden toggle beside the input, not on an empty line. */
+@media (hover: hover) and (max-width: 600px) {
+    .browser-prompt-remark-editor input {
+        flex-basis: 0;
+    }
+}
+
+.browser-prompt-unsave-icon {
+    mask: url("/static/images/bookmark.slash.fill.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/bookmark.slash.fill.svg") center/contain no-repeat;
+}
+
+/* A removed prompt stays in its row until the page reloads, and the toggle saves it again. */
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-unsave-icon {
+    mask-image: url("/static/images/text.bubble.fill.svg");
+    -webkit-mask-image: url("/static/images/text.bubble.fill.svg");
+}
+
+.browser-prompt-table tbody tr.is-unsaved .browser-session-table-number,
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-table-content,
+.browser-prompt-table tbody tr.is-unsaved .browser-session-table-id,
+.browser-prompt-table tbody tr.is-unsaved .browser-session-source-mark,
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-remark-editor input,
+.browser-prompt-table tbody tr.is-unsaved .browser-prompt-tags {
+    opacity: 0.45;
+}
+
+/* A prompt whose text is saved more than once carries a compact warning mark beside its remarks. */
+.browser-prompt-duplicate-mark {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border: 1px solid color-mix(in srgb, var(--theme-warning) 48%, transparent);
+    border-radius: var(--radius-pill);
+    background: var(--theme-warning-translucent);
+    color: var(--theme-warning-text);
+    font-size: var(--font-ui-sm);
+    font-weight: var(--font-weight-medium);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.browser-prompt-duplicate-mark[hidden] {
+    display: none;
+}
+
+.browser-prompt-duplicate-icon {
+    width: 14px;
+    height: 12px;
+    mask: url("/static/images/rectangle.on.rectangle.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/rectangle.on.rectangle.svg") center/contain no-repeat;
 }
 
 .browser-prompt-remark-editor input:focus-visible {
@@ -9074,6 +9224,10 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     align-items: center;
     justify-content: flex-end;
     gap: 10px;
+}
+
+.browser-result-controls > .browser-session-back-link {
+    margin-inline-start: 0;
 }
 
 .browser-session-control-button {
@@ -9868,6 +10022,23 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     line-height: 1;
 }
 
+.browser-media-prompt-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+}
+
+/* The save action is the standard Circular icon button; the Text-view adapter bottom-aligns it. */
+.browser-media-prompt-actions .browser-prompt-add-button {
+    align-self: center;
+}
+
+.browser-media-prompt-actions .browser-prompt-add-button.is-added:disabled {
+    cursor: default;
+    opacity: 1;
+}
+
 .browser-media-prompt-expand {
     display: inline-flex;
     flex: 0 0 30px;
@@ -10419,6 +10590,208 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-gallery[data-view="list"] .browser-media-deleted-bar {
     grid-column: 1 / -1;
     grid-row: 4;
+}
+
+/* ChatGPT Media Sessions index: one cover per session, in grid or list layout. */
+.browser-session-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    width: 100%;
+    padding: 0;
+    overflow: visible;
+    border: var(--frosted-glass-border);
+    border-radius: var(--radius-panel);
+    background: var(--workspace-article-background);
+    box-shadow: var(--frosted-glass-shadow);
+    color: var(--theme-text);
+    transition: transform 220ms var(--motion-emphasized), box-shadow 220ms var(--motion-standard), background 220ms var(--motion-standard);
+}
+
+.browser-session-card:hover,
+.browser-session-card:focus-within {
+    z-index: var(--layer-control-affordance);
+    outline: none;
+    transform: translateY(-2px);
+    background: var(--frosted-glass-background-hover);
+    box-shadow: var(--frosted-glass-shadow-hover);
+}
+
+.browser-session-card:has(.browser-session-open:focus-visible) {
+    box-shadow: var(--frosted-glass-shadow-hover), 0 0 0 3px var(--accent-focus-ring);
+}
+
+/* The session the reader just left keeps the standard blue glow until the next navigation. */
+.browser-session-card.is-return-origin {
+    --browser-session-origin-glow: 0 0 0 4px var(--accent-focus-ring), 0 0 18px var(--accent-focus-glow);
+    z-index: var(--layer-raised-control);
+    border-color: var(--accent-border-medium);
+    box-shadow: var(--frosted-glass-shadow), var(--browser-session-origin-glow);
+}
+
+.browser-session-card.is-return-origin:hover,
+.browser-session-card.is-return-origin:focus-within,
+.browser-session-card.is-return-origin:has(.browser-session-open:focus-visible) {
+    z-index: var(--layer-control-affordance);
+    box-shadow: var(--frosted-glass-shadow-hover), var(--browser-session-origin-glow);
+}
+
+.browser-session-card.is-deleted {
+    background: color-mix(in srgb, var(--frosted-glass-background) 78%, var(--theme-muted));
+}
+
+.browser-session-card.is-deleted .browser-session-open {
+    opacity: 0.78;
+}
+
+.browser-session-open {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    border-radius: inherit;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.browser-session-open:focus-visible {
+    outline: none;
+}
+
+/* Covers are never cropped: each image keeps its own ratio at the full cover width. In grid
+   layout the cover grows to the row's tallest image and centers shorter ones, so titles align. */
+.browser-session-cover {
+    position: relative;
+    display: grid;
+    flex: 1 1 auto;
+    place-items: center;
+    width: 100%;
+    min-height: 0;
+    overflow: hidden;
+    border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+    background: var(--theme-panel-strong);
+    isolation: isolate;
+}
+
+/* Keep room for the status pill when no catalog size reserves the image's box. */
+.browser-session-cover:not(.is-ready):has(> .browser-session-cover-media:not([height])),
+.browser-session-cover.is-load-failed {
+    min-height: 96px;
+}
+
+.browser-session-cover.is-load-failed {
+    background: var(--accent-surface-soft);
+}
+
+.browser-session-cover-media {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    object-fit: contain;
+}
+
+.browser-session-card-body {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    padding: 10px 11px 12px;
+}
+
+.browser-session-card-title {
+    display: -webkit-box;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text);
+    font-size: var(--font-ui-md);
+    font-weight: var(--font-weight-semibold);
+    line-height: 1.22;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+}
+
+.browser-session-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 6px;
+    min-width: 0;
+    color: var(--theme-muted);
+    font-size: var(--font-ui-xs);
+    line-height: 1.35;
+}
+
+.browser-session-card-time::before {
+    content: "·";
+    margin-right: 6px;
+}
+
+.browser-session-gallery[data-view="list"] .browser-session-open {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    align-items: stretch;
+}
+
+.browser-session-gallery[data-view="list"] .browser-session-cover {
+    border-radius: var(--radius-panel) 0 0 var(--radius-panel);
+}
+
+.browser-session-gallery[data-view="list"] .browser-session-card-body {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-content: center;
+    align-items: center;
+    column-gap: 24px;
+    padding: 12px 14px;
+}
+
+.browser-session-gallery[data-view="list"] .browser-session-card-meta {
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    gap: 0 18px;
+    font-size: var(--font-ui-sm);
+    white-space: nowrap;
+}
+
+.browser-session-gallery[data-view="list"] .browser-session-card-time::before {
+    content: none;
+}
+
+@media (max-width: 560px) {
+    .browser-session-gallery[data-view="grid"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+    }
+
+    .browser-session-gallery[data-view="grid"] .browser-session-card-body {
+        padding: 8px 9px 10px;
+    }
+
+    .browser-session-gallery[data-view="list"] .browser-session-open {
+        grid-template-columns: 88px minmax(0, 1fr);
+    }
+
+    .browser-session-gallery[data-view="list"] .browser-session-card-body {
+        grid-template-columns: minmax(0, 1fr);
+        row-gap: 6px;
+        padding: 10px 12px;
+    }
+
+    .browser-session-gallery[data-view="list"] .browser-session-card-meta {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        gap: 0 6px;
+        font-size: var(--font-ui-xs);
+    }
+
+    .browser-session-gallery[data-view="list"] .browser-session-card-time::before {
+        content: "·";
+    }
+
 }
 
 @keyframes browser-copy-feedback {

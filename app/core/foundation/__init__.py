@@ -1,8 +1,9 @@
 """Stable foundation boundary for runtime configuration, identity, and task state."""
 
-# Code version: v1.3.0-codex.1
+# Code version: v1.4.0-claude.0
 
 from ..brand import PRODUCT_NAME
+from ..cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from ..config import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -24,7 +25,13 @@ from ..config import (
 )
 from ..logging_setup import configure_logging, get_log_file_path
 from ..job_lock import CacheTaskLock, SHARED_CACHE_TASK_LOCK
-from ..state import TaskState, build_initial_snapshot, utc_now
+from ..state import (
+    TaskSnapshot,
+    TaskState,
+    build_initial_snapshot,
+    build_x_text_snapshot,
+    utc_now,
+)
 from ..version import APP_VERSION
 
 __all__ = [
@@ -42,10 +49,14 @@ __all__ = [
     "MIN_DOWNLOAD_WORKERS",
     "PRODUCT_NAME",
     "CrawlConfig",
+    "CacheTaskCoordinator",
+    "CacheTaskIdentity",
     "CacheTaskLock",
     "SHARED_CACHE_TASK_LOCK",
+    "TaskSnapshot",
     "TaskState",
     "build_initial_snapshot",
+    "build_x_text_snapshot",
     "configure_logging",
     "get_log_file_path",
     "is_macos_host",

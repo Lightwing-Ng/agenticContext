@@ -1,4 +1,4 @@
-"""Search lens alignment on isolated Local resources pages. Code version: v1.0.1-codex.0."""
+"""Search lens alignment on isolated Local resources pages. Code version: v1.1.0-claude.0."""
 
 import pytest
 from playwright.sync_api import Browser, Page, expect
@@ -94,5 +94,42 @@ def test_search_lens_stays_concentric_with_and_without_session_scope(
         expect(page.locator("#browser_search_input")).to_have_value("timestamp")
         _assert_search_lens_center(page)
         assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "control_width"),
+    ((390, None), (600, None), (601, 384), (812, 384), (900, 384), (901, 322), (1_280, 322)),
+)
+def test_header_search_keeps_the_shared_control_width_between_compact_and_desktop(
+    disposable_browser: Browser,
+    seeded_chatgpt_browser_server_url: str,
+    width: int,
+    control_width: int | None,
+) -> None:
+    context = disposable_browser.new_context(viewport={"width": width, "height": 800})
+    page = context.new_page()
+    try:
+        for view in ("text&source=chatgpt&session_view=1", "media", "prompts"):
+            page.goto(
+                f"{seeded_chatgpt_browser_server_url}/browser?view={view}",
+                wait_until="domcontentloaded",
+            )
+            geometry = page.locator(".browser-content-toolbar").evaluate("""toolbar => {
+                const control = toolbar.querySelector('.browser-search-control').getBoundingClientRect();
+                const bounds = toolbar.getBoundingClientRect();
+                return {
+                    width: control.width,
+                    toolbarWidth: bounds.width,
+                    rightInset: bounds.right - control.right,
+                    overflow: document.documentElement.scrollWidth - innerWidth,
+                };
+            }""")
+            # The compact flow keeps the full row; above it the search ends at the toolbar's right edge.
+            expected = control_width or geometry["toolbarWidth"]
+            assert abs(geometry["width"] - expected) <= 1, (view, geometry)
+            assert abs(geometry["rightInset"]) <= 1, (view, geometry)
+            assert geometry["overflow"] <= 1, (view, geometry)
     finally:
         context.close()

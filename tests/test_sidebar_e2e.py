@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.55.1-codex.0
+Code version: v1.55.3-codex.0
 """
 
 from __future__ import annotations
@@ -425,17 +425,22 @@ def _assert_toggle_hit_target(page: Page) -> None:
             const toggle = document.querySelector("#sidebar_toggle");
             if (!(toggle instanceof HTMLElement)) return false;
             const rect = toggle.getBoundingClientRect();
-            if (rect.width < 44 || rect.height < 44) return false;
-            const hit = document.elementFromPoint(
-                rect.left + (rect.width / 2),
-                rect.top + (rect.height / 2),
-            );
+            if (Math.abs(rect.width - 32) > 1 || Math.abs(rect.height - 32) > 1) return false;
+            const points = [
+                [rect.left + (rect.width / 2), rect.top + (rect.height / 2)],
+                [rect.left - 5.5, rect.top + (rect.height / 2)],
+                [rect.right + 5.5, rect.top + (rect.height / 2)],
+                [rect.left + (rect.width / 2), rect.top - 5.5],
+                [rect.left + (rect.width / 2), rect.bottom + 5.5],
+            ];
             const rectKey = [rect.left, rect.top, rect.width, rect.height]
                 .map(value => value.toFixed(3))
                 .join(",");
             const previousRectKey = window.__cachelikesStableToggleRect || "";
             window.__cachelikesStableToggleRect = rectKey;
-            return previousRectKey === rectKey && Boolean(hit?.closest("#sidebar_toggle"));
+            return previousRectKey === rectKey && points.every(([x, y]) =>
+                Boolean(document.elementFromPoint(x, y)?.closest("#sidebar_toggle"))
+            );
         }"""
     )
 
@@ -1071,6 +1076,93 @@ def test_agent_title_rail_stays_aligned_with_global_anchors_across_viewports(
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize(
+    ("width", "height", "touch"),
+    ((1_024, 900, False), (827, 992, False), (827, 992, True),
+     (825, 1_325, False), (825, 1_325, True), (390, 844, True)),
+)
+def test_tunnel_round_actions_keep_32px_geometry_and_coarse_hit_area(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    width: int,
+    height: int,
+    touch: bool,
+) -> None:
+    """Keep the canonical circle compact without shrinking coarse-pointer hit testing."""
+    page, context = _open_page(
+        disposable_browser,
+        f"{sidebar_server_url}/agent/tunnel/chatgpt",
+        width,
+        height,
+        touch=touch,
+    )
+    try:
+        toggle = page.locator("#sidebar_toggle")
+        theme = page.locator("#global_theme_toggle")
+        for button in (toggle, theme):
+            expect(button).to_have_css("width", "32px")
+            expect(button).to_have_css("height", "32px")
+            expect(button.locator(".icon")).to_have_css("width", "18px")
+            expect(button.locator(".icon")).to_have_css("height", "18px")
+
+        geometry = page.evaluate(
+            """() => {
+                const rect = selector => document.querySelector(selector).getBoundingClientRect();
+                const toggle = rect('#sidebar_toggle');
+                const theme = rect('#global_theme_toggle');
+                const heading = rect('[data-agent-heading]');
+                const centerY = box => box.top + box.height / 2;
+                const target = selector => {
+                    const box = rect(selector);
+                    const x = box.left + box.width / 2;
+                    const y = box.top + box.height / 2;
+                    return getComputedStyle(document.querySelector(selector), '::before').width === '44px'
+                        && [[x, y], [box.left - 5.5, y], [box.right + 5.5, y],
+                        [x, box.top - 5.5], [x, box.bottom + 5.5]].every(([px, py]) =>
+                            document.elementFromPoint(px, py)?.closest(selector));
+                };
+                return {
+                    toggleTop: toggle.top,
+                    themeTop: theme.top,
+                    themeRightGap: document.documentElement.clientWidth - theme.right,
+                    headingCenterDelta: Math.abs(centerY(heading) - centerY(toggle)),
+                    themeCenterDelta: Math.abs(centerY(theme) - centerY(toggle)),
+                    touchTargets: matchMedia('(hover: none) and (pointer: coarse)').matches
+                        ? [target('#sidebar_toggle'), target('#global_theme_toggle')]
+                        : null,
+                    horizontalOverflow: document.documentElement.scrollWidth
+                        > document.documentElement.clientWidth,
+                };
+            }"""
+        )
+        assert abs(geometry["toggleTop"] - 20) <= 1, geometry
+        assert abs(geometry["themeTop"] - 20) <= 1, geometry
+        assert abs(geometry["themeRightGap"] - 20) <= 1, geometry
+        assert geometry["themeCenterDelta"] <= 1, geometry
+        if width > 560:
+            assert geometry["headingCenterDelta"] <= 1, geometry
+        assert not geometry["horizontalOverflow"], geometry
+        if touch:
+            assert geometry["touchTargets"] == [True, True], geometry
+
+        if width <= 900:
+            toggle.click()
+            expect(toggle).to_have_attribute("aria-expanded", "true")
+            page.wait_for_function(
+                """() => {
+                    const toggle = document.querySelector('#sidebar_toggle').getBoundingClientRect();
+                    const sidebar = document.querySelector('#agent_sidebar').getBoundingClientRect();
+                    return Math.abs(sidebar.right - toggle.right - 10) <= 1;
+                }"""
+            )
+            if touch:
+                _assert_toggle_hit_target(page)
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(
     ("view", "expected_title"),
     (("text", "Cached text browser"), ("prompts", "Saved prompts")),
 )
@@ -1196,7 +1288,15 @@ def test_text_browser_omits_redundant_per_page_metric(
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("width", "height", "touch"),
-    ((992, 1_203, False), (900, 959, False), (783, 863, False), (390, 844, True)),
+    (
+        (992, 1_203, False),
+        (900, 959, False),
+        (854, 1_218, False),
+        (783, 863, False),
+        (768, 863, False),
+        (767, 863, False),
+        (390, 844, True),
+    ),
 )
 def test_zhihu_text_browser_shows_answerers_and_complete_answers(
     disposable_browser: Browser,
@@ -1231,7 +1331,10 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
         header = page.locator(".browser-session-index-table[data-table-header]")
         expect(table).to_have_count(1)
         expect(header).to_have_count(1)
-        assert header.locator("thead th").all_inner_texts() == [
+        assert [
+            " ".join(label.split())
+            for label in header.locator("thead th").all_inner_texts()
+        ] == [
             "No.",
             "Answerer",
             "Answers",
@@ -1308,6 +1411,49 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
             "Question",
             "Answer",
         ]
+        if width >= 768:
+            page.evaluate("document.fonts.ready")
+            detail_geometry = detail_table.evaluate(
+                """body => {
+                    const shell = body.closest('.browser-session-detail-shell');
+                    const header = shell.querySelector('[data-table-header]');
+                    const scroll = shell.querySelector('[data-table-scroll]');
+                    const bounds = element => element.getBoundingClientRect();
+                    return {
+                        bodyWidth: bounds(body).width,
+                        scrollWidth: scroll.clientWidth,
+                        scrollOverflow: scroll.scrollWidth - scroll.clientWidth,
+                        cells: [...body.rows[0].cells].map(cell => ({
+                            left: bounds(cell).left,
+                            width: bounds(cell).width,
+                        })),
+                        headings: [...header.rows[0].cells].map(cell => ({
+                            left: bounds(cell).left,
+                            width: bounds(cell).width,
+                        })),
+                        documentOverflow: document.documentElement.scrollWidth - innerWidth,
+                    };
+                }"""
+            )
+            assert detail_geometry["bodyWidth"] == pytest.approx(
+                detail_geometry["scrollWidth"], abs=1
+            )
+            assert detail_geometry["scrollOverflow"] <= 1, detail_geometry
+            for cell, percentage in zip(
+                detail_geometry["cells"], (5, 15, 25, 55), strict=True
+            ):
+                assert cell["width"] == pytest.approx(
+                    detail_geometry["bodyWidth"] * percentage / 100, abs=1
+                ), detail_geometry
+            for heading, cell in zip(
+                detail_geometry["headings"], detail_geometry["cells"], strict=True
+            ):
+                assert heading["left"] == pytest.approx(cell["left"], abs=1), detail_geometry
+            assert detail_geometry["documentOverflow"] <= 1, detail_geometry
+        else:
+            assert detail_table.locator("tbody > tr").first.evaluate(
+                "element => getComputedStyle(element).display"
+            ) == "grid"
         assert page.locator(".browser-text-metric-grid .metric-label").all_inner_texts() == [
             "Answerer",
             "Answers",
@@ -2213,12 +2359,12 @@ def test_style_tokens_component_catalog_is_interactive_and_responsive(
         token_control = page.locator(
             '[data-style-token-name="--circular-icon-button-size"]'
         ).first
-        expect(token_control).to_have_attribute("data-style-token-value", "30")
+        expect(token_control).to_have_attribute("data-style-token-value", "32")
         token_control.locator('[data-style-token-stepper="up"]').click()
-        expect(token_control).to_have_attribute("data-style-token-value", "31")
+        expect(token_control).to_have_attribute("data-style-token-value", "33")
         assert page.locator("[data-style-token-shell]").evaluate(
             "element => element.style.getPropertyValue('--circular-icon-button-size')"
-        ) == "31px"
+        ) == "33px"
     finally:
         context.close()
 
@@ -4354,8 +4500,8 @@ def test_overlay_sidebar_is_touch_safe_across_phone_and_ipad_portraits(
                 return {top: rect.top, right: rect.right};
             }"""
         )
-        assert closed_geometry["width"] >= 44, device_name
-        assert closed_geometry["height"] >= 44, device_name
+        assert abs(closed_geometry["width"] - 32) <= 1, device_name
+        assert abs(closed_geometry["height"] - 32) <= 1, device_name
         assert closed_geometry["left"] >= 0, device_name
         assert closed_geometry["top"] >= 0, device_name
         _assert_toggle_hit_target(page)

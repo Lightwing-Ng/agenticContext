@@ -1,6 +1,6 @@
 """Orchestration service for the cache job."""
 
-# Code version: v1.10.0-codex.0
+# Code version: v1.11.0-claude.0
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import logging
 from threading import Thread
 
 from .cache_service_support import CooperativeCacheWorker, append_shadow_backup_completion
+from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .config import CrawlConfig, LOCAL_STORE_ROOT, X_LOCAL_STORE_DIRNAME
 from .downloader import DownloadResult, LocalTweetCacheIndex, download_tweet_media
 from .job_lock import CacheTaskLock
@@ -21,16 +22,22 @@ from .x_text_history import XTextHistoryStore, XTextPost, x_text_history_path
 logger = logging.getLogger(__name__)
 
 
+X_TEXT_HISTORY_RESOURCE = "x-text-history"
+
+
 class CacheLikesService(CooperativeCacheWorker):
-    """Manage a single background cache job."""
+    """Manage one mode-specific X cache job."""
 
     def __init__(
         self,
         state: TaskState,
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
+        *,
+        task: CacheTaskIdentity | None = None,
+        coordinator: CacheTaskCoordinator | None = None,
     ) -> None:
-        super().__init__(state, task_lock)
+        super().__init__(state, task_lock, task=task, coordinator=coordinator)
         self._shadow_backup_service = shadow_backup_service
 
     def start(self, config: CrawlConfig, *, content_mode: str = "media") -> None:
@@ -47,6 +54,13 @@ class CacheLikesService(CooperativeCacheWorker):
             target=self._run,
             args=(config, content_mode),
             thread_factory=Thread,
+            browser=config.x_browser,
+            # Safari media runs also record the liked posts' text, so they share its store.
+            resources=(
+                (X_TEXT_HISTORY_RESOURCE,)
+                if content_mode == "text" or config.x_browser == "safari"
+                else ()
+            ),
         )
 
     def request_stop(self) -> bool:
@@ -140,6 +154,8 @@ class CacheLikesService(CooperativeCacheWorker):
                     shadow_backup_service=self._shadow_backup_service,
                     state=self._state,
                     config=config,
+                    coordinator=self._coordinator,
+                    task=self._task,
                 )
                 self._state.finish_success(completion_message)
                 return
@@ -357,6 +373,8 @@ class CacheLikesService(CooperativeCacheWorker):
                 shadow_backup_service=self._shadow_backup_service,
                 state=self._state,
                 config=config,
+                coordinator=self._coordinator,
+                task=self._task,
             )
             self._state.finish_success(completion_message)
             logger.info(

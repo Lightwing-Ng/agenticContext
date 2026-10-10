@@ -1,6 +1,82 @@
 # Known operating constraints and behavior-change history
 
-Documentation version: `v1.26.3-codex.0`
+Documentation version: `v1.29.1-claude.0`
+
+## Concurrent cache tasks on 30 Sep 2026
+
+- Cache tasks no longer share one lock. Each source and content mode is its own task, and
+  tasks that need different browsers or stores run together. The earlier statement that the
+  cross-workflow task lock is unchanged is superseded by
+  [ARCHITECTURE.md](ARCHITECTURE.md#cache-task-admission-and-queue).
+- Safari still runs one cache task at a time: Safari automation leases a single task-owned
+  window, and that lease was not changed. A second Safari task waits in the queue and starts
+  by itself. With every source set to Safari, tasks therefore finish one after another; choose
+  Edge or Chrome for one source to run it beside a Safari task.
+- On Windows, Edge and Chrome also run one cache task each, because a running browser locks
+  its cookies and tasks attach to one project profile over CDP.
+- The queue lives in the running process. Restarting the console discards queued tasks, and a
+  second application process is refused rather than queued when it needs a held resource.
+- Jury is not part of cache admission. A Safari Jury run and a Safari cache task still meet
+  at Safari's own context lease, where the later one fails with the busy message.
+- Concurrent operation was verified with deterministic workers and disposable browsers. No
+  signed-in Safari, Edge, or Chrome cache run was performed for this change.
+
+## Safari ChatGPT download tabs and task-window binding on 30 Sep 2026
+
+- Safari ChatGPT Media now spreads direct project-index downloads across up to three tabs of its
+  one task-owned window, following `Download workers`; `1` keeps a single tab. For that stage
+  only, this supersedes the 1 Sep statement that Safari serialization is unchanged. Session scans,
+  prompt backfill, and every other Safari collector still use one tab, and Safari still owns one
+  window and one cache task at a time.
+- Tabs are addressed by position. Closing or reordering a tab of the task window during a run
+  fails the transfers on the affected tabs, and those images are reported as failures for the
+  next run. Each poll and slice carries its transfer token, so a shifted tab or an abandoned fetch
+  cannot supply another image's bytes. Closing the whole window still ends the remaining downloads
+  with an error and never opens a replacement window.
+- Media slices grew from 128 KiB to 1 MiB per Apple Event reply. On this Mac an exchange cost
+  about 35 ms plus about 20 ms per MiB, so the old size spent most of a transfer on round trips.
+- Images that were already cached are published as one batch. The previous loop recounted the
+  whole catalog for each one, which cost about 65 ms per cached image at roughly 1,500 entries.
+- A task window is now bound by its window ID when it is created. The creation script used to
+  keep a positional window reference. When Safari was the frontmost application, restoring the
+  user's front window made the script return that user window's ID: the task then navigated tab 1
+  of the user's window, left its own new window open, and failed cleanup with
+  `Safari task window contains an unexpected tab`. One loopback probe on 30 Sep ended in exactly
+  this state; the affected tab was restored with one history step and the leftover probe window
+  was closed.
+- Agent verification used a loopback origin opened in this Mac's Safari, with no provider request:
+  150 parallel transfers across three tabs finished with no error and no content mismatch, three
+  tabs were about 2.5 times faster than one at 0.8 s simulated latency, and the production
+  project-index path cached 24 images in its own window and closed it. The window-binding fix was
+  checked by compiling the script and reading the reference form, not by a run with Safari
+  frontmost.
+- One signed-in ChatGPT Media run, started by the operator on 30 Sep after the change, finished
+  successfully. It reported 1,547 cached images as one batch and attempted the remaining 151
+  across three tabs in about 200 s, about 1.3 s each against about 2.4 s on one tab earlier that
+  day; 14 files were new and none failed. Discovery before the first download (session list,
+  image index, and prompt backfill) still took about 7.8 minutes of that 11.7-minute run and is
+  unchanged.
+
+## Safari Claude Agent execution on 30 Sep 2026
+
+- `/agent/safari/claude` now starts full Agent tasks. This supersedes the 14 Sep source-only
+  contract for Claude; Safari Gemini remains source-only, and Safari Jury still rejects Claude.
+- Claude's composer is a ProseMirror editor that stores every line as its own paragraph. Safari
+  inserts the message once, verifies a paragraph readback, and clears the draft instead of
+  assigning raw text when the readback differs. The pre-hydration `static-composer-input`
+  textarea is never filled.
+- Safari Claude verifies the account's current model label read-only, for example
+  `Opus 5.5 High`, and does not switch it. Choose the model on claude.ai before starting a task
+  when a different model is wanted.
+- Every turn carries a visible controller receipt. The latest user turn is read from
+  `[data-testid="user-message"]`; the broader legacy selector also matched Claude's account menu
+  button. The context file is never uploaded, so context streams on demand.
+- A new Safari task window can show Claude's Cloudflare `Just a moment...` page. The run pauses as
+  human verification and surfaces the window; in one probe the page cleared after about 53 s once
+  the window had focus.
+- Live verification on 30 Sep 2026 used one Claude conversation for all runs. A read-only
+  new-session run and a later recent-session run in that conversation both finished with verified
+  `Opus 5.5 High`, the expected answers, a bound conversation URL, and the task window closed.
 
 ## Tunnel host parity for Windows and macOS on 24 Sep 2026
 

@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.31.0-codex.0`
+Documentation version: `v1.33.0-claude.0`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -20,11 +20,11 @@ provider route does not prove that Gemini created a distinct subconversation.
 The selected Web provider supplies reasoning while a bounded local Computer Use controller
 reads, changes, runs, and verifies only the selected project. This fallback uses no API,
 command-line coding-agent runtime, MCP connection, or third-party agent bridge.
-On macOS, ChatGPT and Grok Agent tasks can execute through Safari without cloning a Chromium
-profile. Safari Gemini and Claude remain valid source-only routes for account checks and Recent
-sessions and Projects browsing, but full Agent execution requires Edge or Chrome. Browser/provider/
-model preferences persist as selected; an unavailable choice fails closed instead of triggering an
-Edge fallback. On macOS, Browser Jury also admits Safari for ChatGPT, Grok, and Gemini in one owned window
+On macOS, ChatGPT, Grok, and Claude Agent tasks can execute through Safari without cloning a
+Chromium profile. Safari Gemini remains a valid source-only route for account checks and Recent
+sessions and Projects browsing, but full Gemini Agent execution requires Edge or Chrome.
+Browser/provider/model preferences persist as selected; an unavailable choice fails closed instead
+of triggering an Edge fallback. On macOS, Browser Jury also admits Safari for ChatGPT, Grok, and Gemini in one owned window
 with one tab per juror; Claude remains optional and is unchecked by default.
 
 The Agent sidebar also offers Jurors, a browser-only fact-checking jury. ChatGPT Latest
@@ -49,7 +49,8 @@ deterministic browser-only tools that process explicit input and keep drafts in 
 The `/cache/zhihu` source is the text-first Zhihu workflow: by default it caches every
 answer found in the signed-in account's vote-up activity, while an optional answerer URL caches all
 answers exposed for that profile. Formal rows are written to `local_store/llm/zhihu/history.parquet`
-and appear in Local resources. The cache isolates the provider's answer-body node, preserves its
+and appear in Local resources, where an answerer's detail page can pull that answerer's newest answers
+from Zhihu in one click. The cache isolates the provider's answer-body node, preserves its
 semantic HTML, and derives portable Markdown for the answerer's complete default export. Rich text
 is sanitized again at render time; remote images are not downloaded or mounted, duplicate fallback
 and lazy-loader nodes collapse to one local SVG placeholder at the original figure position. See
@@ -87,8 +88,8 @@ endpoint through port forwarding, a public tunnel, or a reverse proxy.
 - Playwright Chromium for Chromium-backed X, Grok, and ChatGPT automation
 - `yt-dlp` for X media downloads
 - An authenticated ChatGPT, Gemini, Grok, or Claude Web account for the optional Computer Use Agent
-  workspace; macOS Safari supports ChatGPT and Grok execution plus Gemini and Claude source-only
-  browsing, while full Gemini and Claude execution requires Edge or Chrome
+  workspace; macOS Safari supports ChatGPT, Grok, and Claude execution plus Gemini source-only
+  browsing, while full Gemini execution requires Edge or Chrome
 
 ChatGPT project caching uses up to three isolated Edge workers in parallel. The worker count is
 bounded deliberately because each worker owns a separate authenticated browser context.

@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer history for the formal text cache.
 
-Code version: v1.5.0-codex.1
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from .zhihu_answers import (
     ZhihuProfile,
     ZhihuVerificationRequiredError,
     _browser_fetch_json,
+    collect_zhihu_latest_answers,
     extract_zhihu_resource_links,
     normalize_zhihu_answer_payload,
     normalize_zhihu_profile_url,
@@ -356,6 +357,11 @@ class ZhihuHistoryStore:
 
         return len(self._rows)
 
+    def answer_ids(self) -> frozenset[str]:
+        """Return every cached answer ID, for detecting where a newest-first read catches up."""
+
+        return frozenset(key.removeprefix("answer:") for key in self._rows)
+
     def merge_answers(
         self,
         answers: tuple[ZhihuAnswer, ...],
@@ -456,18 +462,24 @@ def sync_zhihu_history(
     local_store_root: Path | str = LOCAL_STORE_ROOT,
     *,
     author_url: str = "",
+    latest_only: bool = False,
     fetch_page: Callable[[str], object] | None = None,
     account_payload: object | None = None,
 ) -> dict[str, Any]:
-    """Cache signed-in vote-up activity or every answer from one optional author."""
+    """Cache signed-in vote-up activity, or every or only the newest answers of one author."""
 
     descriptor = browser_descriptors(config).get(config.zhihu_browser)
     if descriptor is None or descriptor.engine != "chromium":
         raise ValueError("Zhihu answer caching requires Edge or Chrome.")
     target_profile = normalize_zhihu_profile_url(author_url) if author_url.strip() else None
+    if latest_only and target_profile is None:
+        raise ValueError("Updating the latest Zhihu answers requires an answerer URL.")
     path = zhihu_history_path(local_store_root)
     store = ZhihuHistoryStore(path)
-    collection_mode = "author" if target_profile is not None else "liked"
+    if target_profile is None:
+        collection_mode = "liked"
+    else:
+        collection_mode = "author-latest" if latest_only else "author"
     state.update(
         phase="collecting",
         account_name="Zhihu",
@@ -512,6 +524,18 @@ def sync_zhihu_history(
                 account.profile,
                 active_fetch,
                 should_stop,
+                on_progress=update_progress,
+            )
+
+        if latest_only:
+            state.append_event(
+                f"Checking @{target_profile.author_token} for answers newer than the cache."
+            )
+            return collect_zhihu_latest_answers(
+                target_profile,
+                active_fetch,
+                should_stop,
+                known_answer_ids=store.answer_ids(),
                 on_progress=update_progress,
             )
 

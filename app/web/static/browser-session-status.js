@@ -1,4 +1,4 @@
-/* Code version: v1.13.2-codex.0 */
+/* Code version: v1.14.0-claude.0 */
 
 (() => {
     const SESSION_CACHE_PREFIX = "cachelikes:browser-session:v8:";
@@ -172,6 +172,9 @@
             if (payload?.human_verification) {
                 return "Complete verification now";
             }
+            if (payload?.queue_available) {
+                return "Not checked";
+            }
             if (payload?.can_download) {
                 return accountName && !genericNames.has(accountName.toLowerCase())
                     ? accountName
@@ -304,6 +307,9 @@
             statusCard.removeAttribute("aria-busy");
             root.classList.remove("is-browser-status-loading", "is-browser-status-refreshing");
             const isReady = Boolean(payload.can_download);
+            // The browser is busy with another cache task: the account cannot be checked
+            // now, but Start stays available because the task waits in the queue.
+            const canQueue = !isReady && Boolean(payload.queue_available);
             root.classList.toggle("is-browser-ready", isReady);
             statusAccount.textContent = accountValue(payload);
             if (statusMessage) {
@@ -311,8 +317,9 @@
                 statusMessage.hidden = ((hideReadyMessage || statusCard.classList.contains("browser-session-status-card-compact")) && isReady) || !payload.message;
             }
             if (statusSpinner) statusSpinner.hidden = true;
-            showStatusCheckmark(isReady ? "ready" : "error");
-            setStartButtonReady(isReady);
+            if (canQueue) hideStatusCheckmark();
+            else showStatusCheckmark(isReady ? "ready" : "error");
+            setStartButtonReady(isReady || canQueue);
             setLoginAction(payload, browserId);
             if (recheckButton) recheckButton.hidden = isReady;
             notify(payload, browserId, "ready");
@@ -411,13 +418,16 @@
                     || platform !== requestPlatform
                     || requestRevision !== statusRequestRevision
                 ) return;
-                if (browserStatusCanUseClientCache(payload)) {
-                    writeSessionValue(cacheKey, JSON.stringify({
-                        cached_at: browserStatusCacheTimestamp(payload),
-                        payload,
-                    }));
-                } else {
-                    removeSessionValue(cacheKey);
+                // A busy browser says nothing about the account, so the last check stays cached.
+                if (!payload.queue_available) {
+                    if (browserStatusCanUseClientCache(payload)) {
+                        writeSessionValue(cacheKey, JSON.stringify({
+                            cached_at: browserStatusCacheTimestamp(payload),
+                            payload,
+                        }));
+                    } else {
+                        removeSessionValue(cacheKey);
+                    }
                 }
                 setStatus(payload, browserId);
                 if (payload.human_verification) return;

@@ -1,6 +1,6 @@
 """Browser-rendered Claude history collection and local persistence.
 
-Code version: v1.3.0-codex.0
+Code version: v1.4.0-claude.0
 """
 
 from __future__ import annotations
@@ -50,6 +50,15 @@ CLAUDE_RENDER_SETTLE_MILLISECONDS = 1_000
 CLAUDE_DISCOVERY_ROUND_LIMIT = 12
 CLAUDE_DISCOVERY_STABLE_CHECKS = 3
 CLAUDE_CONVERSATION_RETRY_LIMIT = 3
+CLAUDE_CONVERSATION_PAYLOAD_TIMEOUT_SECONDS = 30.0
+CLAUDE_CONVERSATION_PAYLOAD_PATH = re.compile(
+    r"^/api/organizations/[^/]+/chat_conversations/([A-Za-z0-9_-]+)$"
+)
+CLAUDE_TRANSCRIPT_RENDER_TIMEOUT_SECONDS = 30.0
+CLAUDE_TRANSCRIPT_SCROLL_TIMEOUT_SECONDS = 300.0
+CLAUDE_TRANSCRIPT_STEP_MILLISECONDS = 1_200
+CLAUDE_TRANSCRIPT_IDLE_ROUNDS = 2
+CLAUDE_LOAD_EARLIER_LIMIT = 200
 CLAUDE_HOSTS = frozenset({"claude.ai", "www.claude.ai"})
 CLAUDE_RESTRICTED_MARKERS = (
     "account suspended",
@@ -84,6 +93,23 @@ class ClaudeConversationSync:
 
 class ClaudeNoCacheableMessagesError(RuntimeError):
     """Indicate that a rendered Claude session contains no cacheable messages."""
+
+
+class ClaudeSecurityVerificationError(RuntimeError):
+    """Stop the whole sync because Claude is showing a human verification challenge."""
+
+
+CLAUDE_SECURITY_VERIFICATION_MESSAGE = (
+    "Claude showed a human verification challenge in the task browser. The sync stopped "
+    "without reloading or retrying so the challenge is not restarted."
+)
+
+
+def _raise_if_claude_security_verification(page: Any) -> None:
+    """Abort before any page script runs on a challenge, which would restart it."""
+
+    if page_shows_security_verification(page):
+        raise ClaudeSecurityVerificationError(CLAUDE_SECURITY_VERIFICATION_MESSAGE)
 
 
 def claude_history_path(local_store_root: Path | str = LOCAL_STORE_ROOT) -> Path:
@@ -388,7 +414,12 @@ def extract_claude_conversation_messages(
                 const links = [...contentRoot.querySelectorAll('a[href]')].map((link) => {
                     try { return new URL(link.href, location.href).href; } catch (_) { return ''; }
                 }).filter((link) => /^https?:/i.test(link));
+                const rowIndex = Number.parseInt(
+                    article.closest('[data-testid="transcript-row"]')?.getAttribute('data-index') ?? '',
+                    10,
+                );
                 messages.push({
+                    row_index: Number.isFinite(rowIndex) ? rowIndex : null,
                     conversation_title: title,
                     turn_index: turnIndex,
                     message_index: messages.length,
@@ -408,6 +439,285 @@ def extract_claude_conversation_messages(
     if not isinstance(payload, dict):
         return []
     return [dict(item) for item in payload.get("messages", []) if isinstance(item, dict)]
+
+
+def _number_claude_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Assign contiguous message and turn positions to ordered session messages."""
+
+    numbered: list[dict[str, Any]] = []
+    turn_index = 0
+    for message_index, message in enumerate(messages):
+        if message.get("role") == "user":
+            turn_index += 1
+        numbered.append({**message, "message_index": message_index, "turn_index": turn_index})
+    return numbered
+
+
+def _claude_payload_source_links(block: dict[str, Any]) -> list[str]:
+    """Collect citation URLs from one Claude text block."""
+
+    links: list[str] = []
+    for citation in block.get("citations") or []:
+        if not isinstance(citation, dict):
+            continue
+        links.append(str(citation.get("url") or ""))
+        links.extend(
+            str(source.get("url") or "")
+            for source in citation.get("sources") or []
+            if isinstance(source, dict)
+        )
+    return _safe_http_links(links)
+
+
+def messages_from_claude_payload(
+    payload: dict[str, Any],
+    conversation: ClaudeConversationLink,
+) -> list[dict[str, Any]]:
+    """Convert the conversation payload loaded by the Claude page into ordered messages.
+
+    Only the current branch is kept, which matches what the page displays. Text blocks
+    are stored as the provider's Markdown; thinking and tool blocks are not stored.
+    """
+
+    raw_messages = [item for item in payload.get("chat_messages") or [] if isinstance(item, dict)]
+    by_uuid = {str(item.get("uuid") or ""): item for item in raw_messages if item.get("uuid")}
+    branch: list[dict[str, Any]] = []
+    visited: set[str] = set()
+    current = by_uuid.get(str(payload.get("current_leaf_message_uuid") or ""))
+    if current is None and by_uuid:
+        # Official exports omit the current leaf; the newest childless message ends the branch.
+        parents = {str(item.get("parent_message_uuid") or "") for item in raw_messages}
+        leaves = [
+            (str(item.get("created_at") or ""), position, item)
+            for position, item in enumerate(raw_messages)
+            if item.get("uuid") and str(item["uuid"]) not in parents
+        ]
+        current = max(leaves, key=lambda leaf: leaf[:2])[2] if leaves else None
+    while current is not None and str(current.get("uuid")) not in visited:
+        visited.add(str(current.get("uuid")))
+        branch.append(current)
+        current = by_uuid.get(str(current.get("parent_message_uuid") or ""))
+    branch.reverse()
+    if not branch:
+        branch = sorted(raw_messages, key=lambda item: int(item.get("index") or 0))
+
+    title = str(payload.get("name") or "").strip() or conversation.title
+    model_label = str(payload.get("model") or "").strip()
+    messages: list[dict[str, Any]] = []
+    for item in branch:
+        role = {"human": "user", "assistant": "assistant"}.get(str(item.get("sender") or ""))
+        if role is None:
+            continue
+        text_blocks = [
+            block for block in item.get("content") or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        content_text = "\n\n".join(
+            str(block.get("text") or "").strip() for block in text_blocks
+        ).strip() or str(item.get("text") or "").strip()
+        # Pasted text and text files arrive as attachments with extracted content.
+        attachment_texts = [
+            f"Attachment: {str(attachment.get('file_name') or '').strip() or 'pasted text'}\n\n"
+            f"{str(attachment.get('extracted_content') or '').strip()}"
+            for attachment in item.get("attachments") or []
+            if isinstance(attachment, dict) and str(attachment.get("extracted_content") or "").strip()
+        ]
+        content_text = "\n\n---\n\n".join(part for part in (content_text, *attachment_texts) if part)
+        messages.append({
+            "conversation_title": title,
+            "role": role,
+            "author_label": "You" if role == "user" else "Claude",
+            "content_text": content_text.replace("​", ""),
+            "content_html": "",
+            "source_links": list(dict.fromkeys(
+                link for block in text_blocks for link in _claude_payload_source_links(block)
+            )),
+            "model_label": model_label if role == "assistant" else "",
+            "message_timestamp": str(item.get("created_at") or "").strip(),
+        })
+    return _number_claude_messages(messages)
+
+
+class ClaudeConversationPayloadRecorder:
+    """Passively keep the conversation responses the Claude page loads for itself.
+
+    The recorder never issues a request. It only reads responses that the page
+    already fetched while rendering a conversation, so the virtualized transcript
+    does not limit which messages are cached. Pages without response events, such
+    as Safari automation pages, leave the recorder inactive.
+    """
+
+    def __init__(self, page: Any) -> None:
+        self._responses: dict[str, Any] = {}
+        subscribe = getattr(page, "on", None)
+        self.active = callable(subscribe)
+        if self.active:
+            subscribe("response", self._record)
+
+    def _record(self, response: Any) -> None:
+        try:
+            parsed = urlsplit(str(response.url or ""))
+            if parsed.hostname not in CLAUDE_HOSTS or int(response.status) != 200:
+                return
+            if str(response.request.method or "").upper() != "GET":
+                return
+        except Exception:
+            return
+        match = CLAUDE_CONVERSATION_PAYLOAD_PATH.match(parsed.path)
+        if match:
+            self._responses[match.group(1)] = response
+
+    def forget(self, conversation_id: str) -> None:
+        """Drop any response recorded before the next navigation to a conversation."""
+
+        self._responses.pop(conversation_id, None)
+
+    def wait_for_payload(
+        self,
+        page: Any,
+        conversation_id: str,
+        should_stop: Callable[[], bool],
+        timeout_seconds: float = CLAUDE_CONVERSATION_PAYLOAD_TIMEOUT_SECONDS,
+    ) -> dict[str, Any] | None:
+        """Return the recorded conversation payload, or None when none arrived in time."""
+
+        if not self.active:
+            return None
+        deadline = monotonic() + timeout_seconds
+        while True:
+            response = self._responses.get(conversation_id)
+            if response is not None:
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict) and isinstance(payload.get("chat_messages"), list):
+                    return payload
+                self._responses.pop(conversation_id, None)
+            _raise_if_claude_security_verification(page)
+            if should_stop() or monotonic() >= deadline:
+                return None
+            page.wait_for_timeout(500)
+
+
+def _expand_earlier_claude_messages(page: Any, should_stop: Callable[[], bool]) -> None:
+    """Press the transcript's own load-earlier control until older messages are shown."""
+
+    for _attempt in range(CLAUDE_LOAD_EARLIER_LIMIT):
+        if should_stop():
+            return
+        clicked = page.evaluate(
+            r"""() => {
+                const control = [...document.querySelectorAll('main [role="feed"] button')]
+                    .find((button) => /load earlier messages/i.test(
+                        button.innerText || button.getAttribute('aria-label') || ''
+                    ));
+                if (!control) return false;
+                control.click();
+                return true;
+            }"""
+        )
+        if not clicked:
+            return
+        page.wait_for_timeout(CLAUDE_RENDER_SETTLE_MILLISECONDS)
+
+
+def _scroll_claude_transcript(page: Any, *, to_top: bool = False) -> dict[str, Any]:
+    """Move the transcript scroll owner to its top or down by most of one viewport."""
+
+    result = page.evaluate(
+        r"""({toTop}) => {
+            const feed = document.querySelector('main [role="feed"]');
+            let target = null;
+            for (let current = feed?.parentElement; current; current = current.parentElement) {
+                const style = getComputedStyle(current);
+                if (current.scrollHeight > current.clientHeight + 4
+                    && (style.overflowY === 'auto' || style.overflowY === 'scroll')) {
+                    target = current;
+                    break;
+                }
+            }
+            if (!target) return {moved: false, atBottom: true, scrollTop: 0, scrollHeight: 0};
+            const before = target.scrollTop;
+            target.scrollTop = toTop ? 0 : before + Math.max(240, target.clientHeight * 0.75);
+            target.dispatchEvent(new Event('scroll', {bubbles: true}));
+            return {
+                moved: target.scrollTop !== before,
+                atBottom: target.scrollTop + target.clientHeight >= target.scrollHeight - 4,
+                scrollTop: target.scrollTop,
+                scrollHeight: target.scrollHeight,
+            };
+        }""",
+        {"toTop": to_top},
+    )
+    return dict(result) if isinstance(result, dict) else {}
+
+
+def render_complete_claude_transcript(
+    page: Any,
+    conversation: ClaudeConversationLink,
+    should_stop: Callable[[], bool],
+    timeout_seconds: float = CLAUDE_TRANSCRIPT_RENDER_TIMEOUT_SECONDS,
+) -> list[dict[str, Any]]:
+    """Collect every rendered message from a virtualized Claude transcript.
+
+    The transcript mounts only rows near the viewport and initially hides older
+    messages behind a load-earlier control. Rows are merged by their transcript
+    index while the transcript is scrolled from top to bottom.
+    """
+
+    deadline = monotonic() + timeout_seconds
+    _raise_if_claude_security_verification(page)
+    mounted = extract_claude_conversation_messages(page, conversation)
+    while not mounted:
+        if should_stop() or monotonic() >= deadline:
+            if should_stop():
+                return []
+            raise RuntimeError("Claude session did not render any messages before the timeout.")
+        page.wait_for_timeout(500)
+        _raise_if_claude_security_verification(page)
+        mounted = extract_claude_conversation_messages(page, conversation)
+
+    _expand_earlier_claude_messages(page, should_stop)
+    collected: dict[tuple[int, int], dict[str, Any]] = {}
+
+    def collect() -> int:
+        before = len(collected)
+        for position, message in enumerate(extract_claude_conversation_messages(page, conversation)):
+            row_index = message.get("row_index")
+            key = (0, int(row_index)) if isinstance(row_index, int) else (1, position)
+            collected.setdefault(key, message)
+        return len(collected) - before
+
+    _scroll_claude_transcript(page, to_top=True)
+    page.wait_for_timeout(CLAUDE_RENDER_SETTLE_MILLISECONDS)
+    collect()
+    idle_rounds = 0
+    scroll_deadline = monotonic() + CLAUDE_TRANSCRIPT_SCROLL_TIMEOUT_SECONDS
+    while idle_rounds < CLAUDE_TRANSCRIPT_IDLE_ROUNDS and monotonic() < scroll_deadline:
+        if should_stop():
+            break
+        scroll_state = _scroll_claude_transcript(page)
+        page.wait_for_timeout(CLAUDE_TRANSCRIPT_STEP_MILLISECONDS)
+        added = collect()
+        at_bottom = bool(scroll_state.get("atBottom", not scroll_state.get("moved")))
+        idle_rounds = idle_rounds + 1 if at_bottom and not added else 0
+    return _number_claude_messages([collected[key] for key in sorted(collected)])
+
+
+def load_claude_conversation_messages(
+    page: Any,
+    conversation: ClaudeConversationLink,
+    recorder: ClaudeConversationPayloadRecorder,
+    should_stop: Callable[[], bool],
+) -> tuple[list[dict[str, Any]], str]:
+    """Return every message of one opened session and the source that supplied them."""
+
+    _raise_if_claude_security_verification(page)
+    payload = recorder.wait_for_payload(page, conversation.conversation_id, should_stop)
+    if payload is not None:
+        return messages_from_claude_payload(payload, conversation), "payload"
+    return render_complete_claude_transcript(page, conversation, should_stop), "rendered"
 
 
 class ClaudeHistoryStore:
@@ -608,6 +918,7 @@ def sync_claude_history(
     failed_sessions = 0
     stopped = False
     with _open_claude_history_page(descriptor) as page:
+        recorder = ClaudeConversationPayloadRecorder(page)
         goto_with_retry(page, CLAUDE_HOME_URL, attempts=3, timeout_ms=90_000)
         _wait_for_claude_ready(page)
         conversations = discover_claude_conversations(page, should_stop=should_stop)
@@ -639,10 +950,15 @@ def sync_claude_history(
             last_error: Exception | None = None
             for attempt_index in range(CLAUDE_CONVERSATION_RETRY_LIMIT):
                 try:
+                    recorder.forget(conversation.conversation_id)
                     goto_with_retry(page, conversation.url, attempts=2, timeout_ms=90_000)
-                    page.wait_for_timeout(CLAUDE_RENDER_SETTLE_MILLISECONDS)
-                    _prepare_claude_conversation_for_rendering(page)
-                    messages = extract_claude_conversation_messages(page, conversation)
+                    messages, message_source = load_claude_conversation_messages(
+                        page, conversation, recorder, should_stop,
+                    )
+                    if should_stop():
+                        stopped = True
+                        last_error = None
+                        break
                     captured_at = utc_now_iso()
                     result = store.replace_conversation(conversation, messages, captured_at)
                     store.save()
@@ -652,10 +968,17 @@ def sync_claude_history(
                     unchanged_sessions += result.unchanged_sessions
                     state.append_event(
                         f"Cached Claude session {index:,}/{len(conversations):,}: "
-                        f"{conversation.title} ({result.message_count:,} messages)."
+                        f"{conversation.title} ({result.message_count:,} messages"
+                        f"{'' if message_source == 'payload' else ', from the rendered transcript'})."
                     )
                     last_error = None
                     break
+                except ClaudeSecurityVerificationError:
+                    state.append_event(
+                        f"Claude session {index:,}/{len(conversations):,} showed a human "
+                        "verification challenge; stopping without a retry."
+                    )
+                    raise
                 except ClaudeNoCacheableMessagesError:
                     state.append_event(
                         f"Skipped Claude session {index:,}/{len(conversations):,}: "
@@ -671,6 +994,8 @@ def sync_claude_history(
                             f"after attempt {attempt_index + 1:,}: {str(exc).splitlines()[0][:300]}"
                         )
                         page.wait_for_timeout(CLAUDE_RENDER_SETTLE_MILLISECONDS)
+            if stopped:
+                break
             if last_error is not None:
                 failed_sessions += 1
                 state.append_event(

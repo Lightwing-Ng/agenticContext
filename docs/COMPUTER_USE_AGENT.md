@@ -1,14 +1,14 @@
 # Web Computer Use Agent
 
-Documentation version: `v3.77.3-codex.0`
+Documentation version: `v3.78.0-claude.0`
 
 ## Purpose
 
 The Agent workspace is a browser-mediated fallback for times when the local coding-agent token
 pool is constrained. It uses an already signed-in Web session for ChatGPT, Gemini, Grok, or Claude.
 Edge or Chrome supports all four providers through the background Chromium controller, while macOS
-Safari supports ChatGPT and Grok Agent execution through an owned Apple Events window. Full Gemini
-and Claude Agent execution continues to require Edge or Chrome. macOS Safari Jury supports ChatGPT,
+Safari supports ChatGPT, Grok, and Claude Agent execution through an owned Apple Events window. Full
+Gemini Agent execution continues to require Edge or Chrome. macOS Safari Jury supports ChatGPT,
 Grok, and Gemini under one shared Apple Events window with one tab per juror; Safari Jury rejects
 Claude, which remains optional on Edge and Chrome. Edge remains the default because its Chromium
 controller does not depend on desktop clicks; Chrome uses the same isolated controller.
@@ -18,15 +18,27 @@ runs even when the mutating Apple Event times out, while discovery and response 
 the background. Window cleanup binds the exact task-owned ID and does not click the current front
 Safari window.
 
-Safari Gemini and Claude canonical routes remain available for source-only Recent sessions and
-Project browsing. Their status payload explicitly disables Agent execution, so Ask remains
-unavailable; the selected route and preference persist without silently changing the browser to
-Edge. This source-only contract does not imply that Safari can submit a Gemini or Claude task.
+The Safari Gemini canonical route remains available for source-only Recent sessions and Project
+browsing. Its status payload explicitly disables Agent execution, so Ask remains unavailable; the
+selected route and preference persist without silently changing the browser to Edge. This
+source-only contract does not imply that Safari can submit a Gemini task.
+
+Safari Claude execution uses the same receipt-bearing turn contract as Safari Grok. The controller
+waits for Claude's hydrated ProseMirror editor and ignores the pre-hydration
+`static-composer-input` placeholder. It inserts each message once with the editor's `insertText`
+command and reads it back paragraph by paragraph, because the editor stores every line as its own
+paragraph. A readback mismatch clears that draft and fails closed; the controller never assigns raw
+`textContent` behind the editor model. The trusted Send targets the one enabled send control inside
+the composer's own container. Each turn carries a visible controller receipt that must echo in the
+latest `[data-testid="user-message"]` turn before the reply is attributed. Claude `Auto` is verified
+read-only on Safari: the controller reads the live `model-selector-dropdown` label, such as
+`Opus 5.5 High`, and does not switch the account's model with additional native input. Safari never
+uploads the context file, so context is streamed on demand through controller observations.
 
 The default is a new root-level session. On an execution-capable browser/provider pair, every
 provider can also join one of the 20 most recent sessions or start a session in one of the 20 most
 recent Projects. ChatGPT, Grok, and Claude can also join one of that Project's 20 most recent
-sessions. Safari Gemini and Claude stop at catalog browsing and cannot join or start a task. Gemini
+sessions. Safari Gemini stops at catalog browsing and cannot join or start a task. Gemini
 Notebook session ownership cannot
 be proved from its current Web routes, so Gemini Projects fail closed to `New session in project`.
 For Gemini, that mode starts a receipt-isolated controller task on the selected Notebook surface;
@@ -73,8 +85,7 @@ returned as selectable history.
 
 On `/agent`, ChatGPT, Gemini, Grok, and Claude use an agent-scoped bootstrap request: the selected
 browser context verifies provider-specific authenticated readiness and collects Recent sessions and
-Projects in one launch. Safari Gemini and Claude remain execution-disabled after that catalog is
-returned.
+Projects in one launch. Safari Gemini remains execution-disabled after that catalog is returned.
 For Edge or Chrome with ChatGPT, that same launch also discovers the rendered model catalog and the chosen model's complete live effort
 slider before the user submits a task, so the first-run selector is not limited to a hard-coded
 default.
@@ -235,7 +246,8 @@ within 0.01px of its label. The user-owned service was not restarted.
    from the rendered catalog, then proves that exact model and a trusted live thinking-effort slider; the controller reads its live ARIA
    range and rendered labels instead of assuming a fixed effort vocabulary. Gemini must prove
    `Gemini 3.1 Pro`, Grok must prove the configured `Build` or `Auto` tier, and Claude must prove
-   `Auto`. A missing,
+   `Auto`. On Safari, Claude `Auto` is proved by one unique `model-selector-dropdown` readback of
+   the account's current model rather than by opening the menu. A missing,
    changed, localized, or ambiguous selector fails closed without attaching context or sending a
    prompt. Only exact model labels and explicit model or mode selector wrappers are accepted;
    compound controls such as `Auto-play`, subscription labels such as `SuperGrok Build plan`, and
@@ -965,10 +977,10 @@ removes its temporary profile. A Windows CDP-backed exit disconnects Playwright 
 project browser/profile available. The next Chromium launch removes only abandoned `cachelikes-edge-*` or
 `cachelikes-chrome-*` directories older than 24 hours. Safari uses one shared Apple Events context,
 restores the previous frontmost application after window operations, and closes every task-owned
-window on success, stop, failure, or exception. Safari full execution remains available only for
-ChatGPT's existing session flows and for Grok's strict Agent flow. Gemini and Claude full execution
-require Edge or Chrome, while their source-only Safari routes can browse Recent sessions and
-Projects. The Safari path does not clone a Chromium profile or enter Edge's credential-storage path. If Claude renders an
+window on success, stop, failure, or exception. Safari full execution is available for
+ChatGPT's existing session flows and for the strict receipt-bearing Grok and Claude Agent flows.
+Gemini full execution requires Edge or Chrome, while its source-only Safari route can browse Recent
+sessions and Projects. The Safari path does not clone a Chromium profile or enter Edge's credential-storage path. If Claude renders an
 account suspension, ban, deactivation, or other restricted-state message, the readiness card reports
 that state and does not attempt a login bypass.
 

@@ -1,6 +1,6 @@
 """Regression tests for the one-way shadow cloud backup.
 
-Code version: v1.3.0-codex.0
+Code version: v1.4.0-claude.0
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from app.core.config import CrawlConfig
-from app.core.job_lock import CacheTaskLock
+from app.core.job_lock import CacheMaintenanceLock, CacheTaskLock
 from app.core.shadow_backup import (
     SettingsDirectoryBrowserError,
     ShadowBackupError,
@@ -77,15 +77,24 @@ def test_shadow_backup_copies_changes_and_optionally_mirrors_deletions(tmp_path:
     source_file = source_root / "x" / "demo" / "media.jpg"
     source_file.parent.mkdir(parents=True)
     source_file.write_bytes(b"first-cache-version")
-    (source_root / ".cache_task.lock").write_text("runtime lock", encoding="utf-8")
+    # Cache coordination locks are runtime state; only the store root holds them.
+    runtime_locks = (".cache_task.lock", ".cache_task.task-x-media.lock", ".cache_task.browser-safari.lock")
+    for lock_name in runtime_locks:
+        (source_root / lock_name).write_text("runtime lock", encoding="utf-8")
+    nested_lookalike = source_root / "x" / "demo" / ".cache_task.lock"
+    nested_lookalike.write_text("cached data", encoding="utf-8")
 
     first_result = sync_shadow_backup(source_root, destination_root, mirror_deletions=False)
 
     mirrored_file = destination_root / "x" / "demo" / "media.jpg"
-    assert first_result.copied_files == 1
+    assert first_result.copied_files == 2
     assert first_result.unchanged_files == 0
     assert mirrored_file.read_bytes() == b"first-cache-version"
-    assert not (destination_root / ".cache_task.lock").exists()
+    for lock_name in runtime_locks:
+        assert not (destination_root / lock_name).exists()
+    assert (destination_root / "x" / "demo" / ".cache_task.lock").read_text(encoding="utf-8") == "cached data"
+    nested_lookalike.unlink()
+    (destination_root / "x" / "demo" / ".cache_task.lock").unlink()
 
     second_result = sync_shadow_backup(source_root, destination_root, mirror_deletions=False)
 
@@ -157,3 +166,32 @@ def test_shadow_backup_service_runs_a_manual_sync_with_the_shared_task_lock(tmp_
     assert snapshot["phase"] == "finished"
     assert snapshot["copied_files"] == 1
     assert (destination_root / "media" / "grok" / "asset.png").read_bytes() == b"asset"
+
+
+def test_manual_shadow_backup_is_refused_while_any_cache_task_holds_a_resource(tmp_path: Path) -> None:
+    source_root = tmp_path / "local_store"
+    destination_root = tmp_path / "OneDrive" / "AICaches"
+    source_file = source_root / "media" / "grok" / "asset.png"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_bytes(b"asset")
+    service = ShadowBackupService(
+        source_root,
+        task_lock=CacheMaintenanceLock(CacheTaskLock(source_root / ".cache_task.lock")),
+    )
+    config = CrawlConfig(shadow_backup_enabled=True, shadow_backup_destination=destination_root)
+    running_task = CacheTaskLock(source_root / ".cache_task.task-grok-media.lock")
+    assert running_task.acquire("grok:media")
+
+    try:
+        with pytest.raises(ShadowBackupError, match="A cache task is active"):
+            service.start(config)
+        assert not destination_root.exists()
+    finally:
+        running_task.release()
+
+    service.start(config)
+    assert service._worker is not None
+    service._worker.join(timeout=1)
+    assert service.snapshot()["phase"] == "finished"
+    assert (destination_root / "media" / "grok" / "asset.png").read_bytes() == b"asset"
+    assert not (destination_root / ".cache_task.task-grok-media.lock").exists()

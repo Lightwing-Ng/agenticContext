@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.8.1-codex.0`
+Test-suite version: `v1.12.0-claude.0`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -42,7 +42,25 @@ This is a behavior map, not a claim of complete coverage or a current test-count
   rejection for the collector shared by the formal Zhihu cache.
 - `test_chat_history_browser.py`, `test_local_media_browser.py`, `test_prompt_store.py`, and
   `test_shadow_backup.py`: local resource browsing, prompts, recovery, and filesystem boundaries.
-- `test_job_lock.py`: cache job ownership and contention.
+- `test_chatgpt_media_sessions_e2e.py` and the Sessions index cases in `test_local_media_browser.py`,
+  `test_web_app.py`, and `test_style_tokens.py`: the ChatGPT Media Sessions index (one uncropped
+  latest-image cover per session in grid or list layout), its Session View deep links, its
+  state persistence, and the return origin that the index scrolls to and marks with the standard
+  blue glow. `test_select_keyboard_e2e.py` also covers the opaque Local resources sidebar
+  filter menus.
+- `test_saved_prompts_e2e.py` and the media-prompt, removal, and duplicate cases in
+  `test_prompt_store.py`: saving a prompt from a ChatGPT media card, the Saved prompts duplicate
+  mark, and the row toggle that removes a saved prompt and saves it again.
+  `test_browser_search_geometry_e2e.py` covers the header search width at each breakpoint.
+- `test_job_lock.py`: cache job ownership and contention, per-resource lock files, and the
+  maintenance lock that keeps a backup or history repair away from active tasks.
+- `test_cache_task_coordinator.py`: concurrent admission by browser and store, the
+  arrival-order queue, cancelling a queued task, cross-process refusal, deferred post-task
+  backup, worker queue states, and real worker threads for X Media beside ChatGPT Text.
+- `test_cache_concurrency_web.py`, `test_cache_activity.py`, `test_cache_activity_e2e.py`, and
+  `test_cache_queue_e2e.py`: per-mode Start/Stop and status, queued tasks through the routes,
+  the Safari account check while a Safari task runs, the task entry on every application page
+  with its composer clearance, and the queued state on a Cache page.
 - `test_safari_automation.py`: Safari automation protocol behavior through mocked boundaries.
 - `test_web_app.py`, `test_style_tokens.py`, `test_style_token_registry.py`,
   `test_layout_anchor_contract.py`, and `test_style_alignment_e2e.py`: routes, design contracts,
@@ -55,6 +73,11 @@ This is a behavior map, not a claim of complete coverage or a current test-count
 - `test_zhihu_history.py` and `test_zhihu_web.py`: signed-in vote-up filtering, optional answerer
   mode, cumulative formal Parquet persistence, link-only rich media, Edge login controls, exact
   single-character logo extraction, and Local resources readback without a live provider.
+- `test_zhihu_answerer_refresh_e2e.py`, the answerer-update cases in `test_zhihu_web.py`, and the
+  newest-answer cases in `test_zhihu_answer_collection.py` and `test_zhihu_history.py`: the Local
+  resources `Update latest answers from Zhihu` action, its validated start route, bounded newest-first
+  collection, polling, result banner, failure release, and expanded-drawer geometry over injected
+  provider pages.
 - `test_demo_flight_agentic_crud.py`: controller CRUD in an ephemeral copy of an allowlisted
   local demo fixture; source snapshots are read-only and the original is verified afterward.
 

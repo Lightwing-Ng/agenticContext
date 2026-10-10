@@ -1,13 +1,14 @@
 # Architecture guide
 
-Documentation version: `v1.49.0-codex.0`
+Documentation version: `v1.54.2-claude.0`
 
 ## Runtime flow
 
 ```text
 scripts/run_app.sh or scripts/run_app.ps1
   -> Python 3.13 or newer runtime resolution
-  -> main.py
+  -> main.py (reload supervisor: owns the listening socket, restarts the serving child)
+  -> main.py (serving child, Flask debug mode)
   -> structured logging setup
   -> app.web.app.create_app()
   -> Flask routes and static UI
@@ -16,6 +17,10 @@ scripts/run_app.sh or scripts/run_app.ps1
 
 `main.py` is the only supported application entrypoint. The shell runtime resolver accepts Python
 3.13 or newer and the module itself remains runtime-agnostic before Flask is imported.
+It runs Flask in debug mode behind its own reload supervisor. The supervisor never builds
+services, and it waits for the serving child's browser cleanup on reload, interrupt, and
+termination instead of killing it as Werkzeug's stock supervisor does. See the debug mode
+section of [OPERATIONS.md](OPERATIONS.md).
 `create_app()` builds independent state containers for the X, Grok, and ChatGPT workflows,
 registers the local-media browser, and serves the Flask routes.
 
@@ -87,23 +92,28 @@ subset of the façades; the regression no longer freezes one module's exact faç
 - `app/core/config.py`: runtime defaults, persisted settings, paths, and input normalization.
 - `app/core/state.py`: thread-safe task snapshots and cache-summary hydration.
 - `app/core/service.py`: X Likes collection and yt-dlp orchestration.
-- `app/core/cache_service_support.py`: provider-neutral Cache worker startup, cooperative stop,
-  shared task-lock ownership, logging context, bounded status errors, and post-task shadow-backup
+- `app/core/cache_service_support.py`: provider-neutral Cache worker startup, queued and
+  cooperative stop, logging context, bounded status errors, and post-task shadow-backup
   completion. Provider services retain their own pipelines, result handling, and user-facing copy.
-- `app/core/grok_service.py` and `app/core/chatgpt_service.py`: background sync lifecycle,
-  stop signaling, and shared cache-task exclusion.
+- `app/core/cache_task_coordinator.py` and `app/core/job_lock.py`: admission, the arrival-order
+  queue, and cross-process exclusion for concurrent cache tasks; see
+  [Cache task admission and queue](#cache-task-admission-and-queue).
+- `app/core/grok_service.py` and `app/core/chatgpt_service.py`: background sync lifecycle and
+  stop signaling. Each source registers one worker per content mode.
 - `app/core/grok_history.py` and `app/core/grok_history_service.py`: authenticated Grok Text
   API traversal, normalized message persistence, and the independent Grok Text worker.
 - `app/core/zhihu_answers.py`: strict Zhihu profile normalization, authenticated same-origin API
-  traversal, answer normalization, and stable-snapshot verification shared by the formal cache.
+  traversal, answer normalization, stable-snapshot verification, and the bounded newest-answer
+  read shared by the formal cache.
 - `app/core/zhihu_history.py` and `app/core/zhihu_history_service.py`: signed-in vote-up activity
-  traversal, optional answerer collection, cumulative formal text-history persistence, and the
-  ordinary Zhihu Cache worker.
+  traversal, optional complete or newest-answer answerer collection, cumulative formal text-history
+  persistence, and the ordinary Zhihu Cache worker.
 - `app/core/scraper.py` and `app/core/browser_sessions.py`: X timeline discovery and browser
   session probing for Chrome, Edge, and Safari.
 - `app/core/macos_applescript.py`: one lazy, process-local AppleScript worker shared by Safari
   reads and media transfers. Its AppKit activation policy prohibits Dock presentation and
-  activation. Anonymous pipes carry serialized, identified requests and bounded responses;
+  activation; the worker verifies the resulting policy instead of the setter's return value,
+  because macOS 27 starts `osascript` prohibited and reports re-setting it as a failure. Anonymous pipes carry serialized, identified requests and bounded responses;
   the transport deadline covers writes and reads. Timeout or malformed output kills and reaps
   only this worker without replaying the request. The Safari layer retains its existing
   transient-error retry policy and disables retries for native input. Application exit closes
@@ -118,8 +128,8 @@ subset of the façades; the regression no longer freezes one module's exact faç
 - `app/core/agent_session_sources.py`: the provider-neutral Agent session and Project adapter;
   it maps ChatGPT Projects, Gemini Notebooks, Grok Projects, and Claude Projects into one URL and
   source contract. Gemini, Grok, and Claude catalogs can collect through one owned Chromium or
-  macOS Safari context. Safari Gemini and Claude are catalog-only; Claude source discovery reads
-  rendered links only. All providers share the Parquet cache boundary.
+  macOS Safari context. Safari Gemini is catalog-only; Claude source discovery reads rendered
+  links only. All providers share the Parquet cache boundary.
 - `app/core/agent_source_cache.py`: the shared typed Parquet catalog for Agent recent sessions,
   Projects, and Project sessions. Its cache key isolates provider, browser, source kind, and
   Project URL, while atomic replacement preserves the other providers' entries.
@@ -300,31 +310,47 @@ and the home folder, and a structurally invalid registry fails closed. A syntact
 registration whose root is temporarily absent remains in discovery as unavailable without hiding
 other usable projects; resolution still refuses every filesystem action for that project until its
 root exists and its native identity is bound. When no registry file exists, the Agent's selected
-workspace becomes the only project, and only when it is itself a Git work-tree root; a parent
-folder such as the Desktop never becomes an implicit project.
+workspace is offered as one unregistered compatibility project only when it is itself a Git
+work-tree root; a parent folder such as the Desktop never becomes an implicit project. This
+fallback retains its existing writable authority, but the page does not present it as registered
+or enable the kickoff prompt until the folder is explicitly registered.
 
-The local Tunnel page maintains a preferred subset of registered projects and exactly one current
-project within that subset. Both are persisted separately from the registry with a monotonically
-increasing compare-and-swap revision. Checking or unchecking a project changes discovery
-preference only: it neither registers a path, revokes registry authority for an explicit call, nor
-changes the project's `writable` flag. A removed or unavailable current project falls back
-deterministically to an available preferred project when the explicit preferred-set format is in
-use. The folder browser starts at `Path.home() / "Desktop"` when that directory exists, or at the
-current user's home directory otherwise; this dynamic path is only a browsing start. A folder
-choice changes the current project only when its canonical path exactly matches an existing
-registry root. An unregistered directory therefore cannot become authorized through the picker.
+The local Tunnel page checks every registered project by default. Its concise checkbox list
+persists a preferred discovery subset and exactly one current project within that subset for the
+task prompt. Both are stored separately from the registry with a monotonically increasing
+compare-and-swap revision. Changing a checkbox changes discovery preference, not registry
+authority or a project's write permission: an explicit call may still name any registered project,
+and unregistering is the revocation action. An unavailable or removed current project does
+not silently redirect an existing task to another registered project. Explicit removal of the
+current registration chooses the next remaining registration as the new current project, with
+availability checked before kickoff. The
+`Add project folder` control retains the host-native folder chooser, starting at
+`Path.home() / "Desktop"` when present or the current user's home directory otherwise. This
+dynamic path is only a browsing start. Choosing a canonical path that exactly matches a registered
+root makes it current; choosing a new nonoverlapping root registers it as writable and makes it
+current. Existing registry permissions are unchanged.
+Project registration, switching, removal, and rollback share an owner-only cross-process
+file lock. MCP project resolution and current-project discovery take that lock for their
+short registry reads, so tools cannot adopt a registration before its selection save commits.
+Reconnection occurs after the transaction releases the lock.
 
 The project-less, read-only `current_project` tool returns the current project's id, identity,
-permission, availability, and selection revision, the preferred project ids, and bounded records
-for all other registry-authorized projects with their preferred status; it does not disclose host
-paths. `project_overview` resolves one explicit configured id and returns its identity; every
-subsequent project-scoped tool requires both that id and the returned `project_identity`, failing
-closed if the registry mapping or authority changed. A page selection made later therefore cannot
+permission, availability, and selection revision, the checked ids in the
+`selected_project_ids` field, and bounded records for the other registry-authorized projects;
+it does not disclose host paths. `project_overview` resolves one explicit configured id and returns
+its identity; every subsequent project-scoped tool requires both that id and the returned
+`project_identity`, failing closed if the registry mapping or authority changed. A page selection
+made later therefore cannot
 silently redirect an existing task, while an explicit request may still consult another registered
-read-only reference project. A read-only project
-rejects every mutating tool before the filesystem is touched, and its workspace access is also
-created read-only. Model paths must be project-relative; absolute and `~` paths are refused before resolution, and the
-workspace confinement, symlink, ignored-directory, and credential-file rules then apply to
+read-only reference project. The ChatGPT onboarding prompt remains one precise template for the
+project chosen in the inline selector: its id, identity, and selection revision change only after
+the server confirms the current-project choice, while the editable task body is retained. During
+that switch, the prompt structure remains visible and its copy/open actions stay disabled until
+the confirmed prompt is ready. A
+read-only project rejects every mutating tool before the filesystem is touched, and its workspace
+access is also created read-only. Model paths must be project-relative; absolute and `~` paths are
+refused before resolution, and the workspace confinement, symlink, ignored-directory, and
+credential-file rules then apply to
 the selected root. Each project keeps its own workspace binding, so read receipts, SHA-256 guards,
 edit generations, and verification evidence never cross projects, and a re-registered or replaced
 root rebinds a fresh workspace. A request that detects root replacement fails as `project_changed`;
@@ -350,6 +376,18 @@ After the tokenizer becomes
 available, `recent_usage` counts complete calls in a new recovery window; older unknown
 records remain in the history but are excluded and identified by window metadata. A
 recovered window with no completed calls stays unavailable rather than reporting zero.
+The ChatGPT status also exposes `cumulative_usage`, which sums known completed tool-text
+estimates independently of bounded history. The aggregate counts are atomically saved as an
+owner-only JSON file in the Tunnel runtime root and restored across normal service restarts.
+A neighboring owner-only file lock serializes independent service instances; each writer
+rereads the saved aggregate and merges its unsaved calls before replacement, retaining the
+higher validated baseline if a lower snapshot appeared on disk. The aggregate contains
+no project identity, tool text, or credentials. Invalid or inaccessible
+records are kept and make the metric unavailable rather than silently resetting it. A write
+failure cannot fail a tool call and hides the unsaved total until a later save succeeds. The
+UI can display a labeled lower bound when some calls cannot be estimated without dropping a
+large completed call when that record leaves `recent_calls`. Gemini's credential-generation-
+scoped `recent_usage` remains separate from this saved ChatGPT value.
 Instruction discovery is project-scoped: `project_overview` lists
 root instruction files and nested `AGENTS.md` files inside the project, excluding any nested
 directory that is its own Git repository.
@@ -570,8 +608,43 @@ authenticated X browser session
   -> local_store/x/ and its durable cache catalog
 ```
 
-The service deduplicates URLs, respects a cooperative stop request, shares one cross-workflow
-task lock, and records the resulting summary in `TaskState`.
+The service deduplicates URLs, respects a cooperative stop request, is admitted through the
+shared cache task coordinator, and records the resulting summary in `TaskState`.
+
+### Cache task admission and queue
+
+```text
+Start for one source and content mode
+  -> CooperativeCacheWorker._start_worker -> CacheTaskCoordinator.submit
+       resources: task:<source>:<mode>, browser:<id> when exclusive, store:<name> when shared
+  -> every resource free  -> pass the gate, take one lock file per resource, start the thread
+  -> a resource is busy   -> TaskState phase "queued"; arrival-order queue
+  -> a task finishes      -> release its locks, start every queued task that is now unblocked
+```
+
+Every source and content mode is one task with its own `TaskState`, worker, and lock, so
+X media and ChatGPT text, or the Text and Media modes of one source, are started, queued,
+stopped, and reported independently. Tasks that need different resources run together. A
+task whose resource is held waits behind its holder and behind earlier waiters for the same
+resource, then starts without another request. Stop removes a queued task; a running task
+still stops cooperatively.
+
+Two kinds of resource are exclusive. Safari is one, because Safari automation leases a single
+task-owned window; on Windows, Edge and Chrome are too, because a running browser locks its
+cookies and tasks attach to one project profile over CDP. On macOS, Edge and Chrome tasks each
+clone the profile and run together. The X liked-text history is a shared store: an X Text task
+and a Safari X Media task both write it, so they take turns even in different browsers.
+
+Each resource is also a `local_store/.cache_task.<resource>.lock` file, which keeps a second
+application process off the same task, browser, or store. `local_store/.cache_task.lock` is
+the gate: a starting task passes through it, and a maintenance step holds it for its whole
+run and proceeds only when no resource lock is held. That step is a manual shadow backup or
+the ChatGPT history cleanup command. A post-task shadow backup uses the same rule: it runs at
+once when its task is the only one, and is otherwise deferred until the last task finishes. A
+task submitted during a backup waits in the queue.
+
+A targeted refresh from Local resources passes `allow_queue=False`: its page waits for the
+result, so it is refused with the reason instead of waiting behind a long task.
 
 ### Grok media cache
 
@@ -640,6 +713,25 @@ and pagination; non-Zhihu requests discard it. Each one-answer detail uses its l
 instead of Role and renders without the generic collapsed-message cap. Merges are cumulative across
 default and answerer modes.
 
+The answerer detail's `Update latest answers from Zhihu` action starts the same worker in a bounded
+`author-latest` mode. `browser-session-actions.js` posts the session's cached profile URL to
+`POST /api/browser/zhihu/answerer/refresh` in the Cache blueprint. The route applies the external-
+operations and Safari-conflict guards, validates the URL with `normalize_zhihu_profile_url` through
+the providers facade, and starts the shared `ZhihuHistoryService` with `author_url` and
+`latest_only=True`; a running task or held cache lock returns HTTP 409. `sync_zhihu_history` then calls
+`collect_zhihu_latest_answers`, which follows the newest-first cursor with the same validation, bounds,
+and repeated-page rejection as the complete collector, but stops after the first page whose answers
+are all already cached (the cache's answer IDs come from `ZhihuHistoryStore.answer_ids`). It ignores the
+provider total, so it skips the newest-page recheck and gap enumeration, publishes no unavailable count,
+and returns a cumulative-merge input rather than a snapshot; the merge, atomic save, and readback are
+unchanged. The script polls `GET /api/zhihu/status`, reads `added`, `changed`, and
+`available_answers` (the newest answers read) from the finished snapshot's `performance_metrics`, and
+reloads the page with `answerer_*` query values that render a one-time banner before being removed
+from the address bar. Only `added` leads the banner: a row Zhihu re-serves with different markup,
+such as another image host, is counted as refreshed and qualifies the already-cached count. The
+action is rendered only for Zhihu answerer details, so the shared session drawer keeps three actions
+for every other source.
+
 LLM text (ChatGPT, Gemini, Grok, and Claude) in Local resources reads as conversation cards
 rather than a numbered table, both in a single-session detail and in the ungrouped message list.
 Each card carries the role, message number, timestamp, and the complete rendered Markdown body
@@ -662,6 +754,16 @@ worker owns its Playwright context and recycles its page after a bounded number 
 recoverable page failures receive one retry. Catalog claims and atomic writes prevent duplicate
 workers from corrupting the local index. Only image payloads that pass signature validation are
 retained. The project name is sanitized before it becomes a cache path.
+
+macOS Safari admits one task context, so it replaces the isolated contexts with tabs of its one
+task-owned window. A single worker owns that window and, for direct project-index downloads only,
+opens up to two more tabs and lets every tab draw from one shared queue. Each `SafariPage` holds
+its own transfer lock and its own in-page transfer slot, and every poll and slice carries the
+token of the request that started it, so an abandoned fetch or a tab whose position shifted can
+never supply another transfer's bytes. A tab that cannot be opened is released and the remaining
+tabs finish the queue. Session scans and prompt backfill are unchanged and stay on the primary tab.
+Images that were complete before the run are reported as one batch and do not trigger a catalog
+recount each.
 
 The local visual-signature and dimension stage is separate from browser and network work. At
 ChatGPT sync startup, entries that need visual hydration are read into bounded immutable image
@@ -705,6 +807,29 @@ AppleScript. Its approved `.ps1` verification paths run through PowerShell, and
 the Flask application. The browser route allows only readable supported media below the configured
 cache root. Deleting an item moves it to a recoverable hidden browser-trash area and records a
 tombstone; restoring it moves the retained preview back to its original safe path.
+
+ChatGPT Media offers three views over the same filtered snapshot, selected by `session_view` and
+`session_index` (the latter applies only to `view=media&source=chatgpt`):
+
+- All resources (`session_view=0`) is the flat gallery, sorted by absolute generation time.
+- Session View (`session_view=1`) shows one whole session per page, its images ordered by the sort
+  filter, with sessions themselves ordered by their newest image (`paginate_chatgpt_sessions`).
+- Sessions (`session_index=1`) is an index of every session, 24 per page, in which each session
+  contributes only its newest work as a cover (`paginate_chatgpt_session_index`). Each summary
+  carries the session's title, image count, latest capture time, and `detail_page`. The cover
+  prefers the newest image that is still tracked, then any newest work, and falls back to a deleted
+  preview only when nothing else remains. `sort` orders the sessions by that cover's time or by
+  title. A cover links to Session View with both `session=<page key>` and `page=<detail_page>`.
+  `session_page` remembers the index page for the detail view's semantic
+  `secondary-button browser-session-back-link` anchor labeled `Back to all sessions`.
+
+The flat gallery uses the same anchor labeled `All sessions` to enter the index. The index
+does not render a link to itself; Session View remains available there for reverse navigation.
+
+Both session views group by `_chatgpt_session_page_key`, which is strict per project and
+conversation, so a branch conversation is its own session. The List and Grid dock is client-side
+state shared by the gallery and the index (`cachelikes.browser.mediaView`), and the Local resources
+dock memory carries `session_index` alongside the other filter names.
 
 ### Web Computer Use Agent
 
@@ -804,10 +929,14 @@ isolated-context behavior.
 Agent bootstrap checks use quiet, task-independent browser contexts. Edge and Chrome checks use
 Chromium; ChatGPT source checks remain non-headless because its Cloudflare challenge rejects
 headless clones with HTTP 403. Safari catalog checks for all four providers use the serialized
-macOS Apple Events context. Full Safari Agent execution remains limited to ChatGPT and Grok; Gemini
-and Claude are catalog-only and the backend execution gate rejects them before task admission. Their
-canonical routes and persisted preferences remain valid, Ask stays disabled, and neither selection
-is silently rewritten to Edge. Safari Jury is separate: ChatGPT, Grok, and Gemini share one owned
+macOS Apple Events context. Full Safari Agent execution covers ChatGPT, Grok, and Claude; Gemini is
+catalog-only and the backend execution gate rejects it before task admission. Its canonical route
+and persisted preference remain valid, Ask stays disabled, and the selection is not silently
+rewritten to Edge. Safari Grok and Claude turns carry visible controller receipts read through the
+atomic provider turn snapshot; Safari ChatGPT keeps its count-and-text contract. Safari Claude fills
+its hydrated ProseMirror editor with one `insertText` command, verifies a paragraph readback,
+activates Send inside the composer container with one trusted Return, and reads the current model
+label without switching it. Safari Jury is separate: ChatGPT, Grok, and Gemini share one owned
 window with one tab per juror.
 
 Safari credentialed page requests reject cross-origin targets and redirects before reading a
@@ -826,9 +955,11 @@ model selection requires the provider's checked-state and closed-trigger readbac
 the same one-shot boundary against one unique semantic Stop control and performs read-only
 generation-state confirmation rather than repeating an uncertain native event.
 
-The serialized Safari context is mutually exclusive across workflows: an active Safari Cache task
-blocks Agent admission, and an active Safari Agent task makes Cache admission fail before another
-window or collector is started. Passive Agent catalogs and history serve cached or explicit busy/
+The serialized Safari context is mutually exclusive across workflows: a running or queued Safari
+Cache task blocks Agent admission, judged by the browser the task was started with rather than the
+saved selection, and an active Safari Agent task makes Cache admission fail before another window
+or collector is started. While a Safari Cache task runs, a Cache page's account check is answered
+without opening Safari, so a probe cannot take the context between that task's pages. Passive Agent catalogs and history serve cached or explicit busy/
 unprobed results while a Safari Agent owns the context.
 On macOS, silent probes and executing
 Edge or Chrome task clones the selected profile into one normal, non-offscreen task-owned window so the user can
@@ -869,7 +1000,7 @@ Doctor. The service never replays a local Action or continues automatically.
 | Location | Owner and purpose | Git policy |
 | --- | --- | --- |
 | `local_store/` | User media, source catalogs, queues, manifests, and deletion previews | Ignored except `.gitkeep` |
-| `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability | Ignored except `.gitkeep` |
+| `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability; a media prompt without cached text history keeps a content-derived key | Ignored except `.gitkeep` |
 | `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
 | `logs/` | Local structured JSON-line logs | Ignored except `.gitkeep` |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local configuration | Outside the repository |
@@ -881,7 +1012,11 @@ user-owned locations above.
 
 ## Cross-workflow and safety invariants
 
-- Only one cache job may own the shared `CacheTaskLock` at once, regardless of source.
+- Each source and content mode is one cache task. Tasks run together unless they need the same
+  exclusive browser or shared store; a task that does waits in the arrival-order queue.
+- Safari admits one cache task at a time, and on Windows so do Edge and Chrome.
+- A shadow backup or history repair never runs while a cache task holds a resource lock, and no
+  cache task starts while one of them holds the gate.
 - The shared `download_workers` setting is normalized to `1` through `8` at load, save, and direct
   configuration construction. Provider-specific browser limits remain stricter where required.
 - Local compute process workers and in-flight image payload bytes are independently bounded; compute

@@ -1,6 +1,6 @@
 """Background service for Grok media sync."""
 
-# Code version: v1.3.2-codex.0
+# Code version: v1.4.0-claude.0
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from .cache_service_support import (
     append_shadow_backup_completion,
     summarize_status_error,
 )
+from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .config import CrawlConfig
 from .grok_downloader import sync_grok_media
 from .job_lock import CacheTaskLock
@@ -41,8 +42,11 @@ class GrokDownloadService(CooperativeCacheWorker):
         state: TaskState,
         task_lock: CacheTaskLock | None = None,
         shadow_backup_service: ShadowBackupService | None = None,
+        *,
+        task: CacheTaskIdentity | None = None,
+        coordinator: CacheTaskCoordinator | None = None,
     ) -> None:
-        super().__init__(state, task_lock)
+        super().__init__(state, task_lock, task=task, coordinator=coordinator)
         self._config = CrawlConfig()
         self._shadow_backup_service = shadow_backup_service
 
@@ -61,6 +65,7 @@ class GrokDownloadService(CooperativeCacheWorker):
             target=self._run,
             prepare=prepare,
             thread_factory=Thread,
+            browser=config.grok_browser,
         )
 
     def request_stop(self) -> bool:
@@ -121,6 +126,8 @@ class GrokDownloadService(CooperativeCacheWorker):
                 shadow_backup_service=self._shadow_backup_service,
                 state=self._state,
                 config=self._config,
+                coordinator=self._coordinator,
+                task=self._task,
             )
             self._state.finish_success(completion_message)
             logger.info(

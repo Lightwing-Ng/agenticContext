@@ -1,6 +1,6 @@
 """Cache route admission, mode dispatch, and X counter isolation.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from pathlib import Path
@@ -12,7 +12,7 @@ from app.core.x_text_history import XTextHistoryStore, XTextPost, x_text_history
 from app.web.app import create_app
 
 
-@pytest.mark.parametrize("source", ("chatgpt", "x", "grok", "claude"))
+@pytest.mark.parametrize("source", ("chatgpt", "x", "grok", "claude", "gemini"))
 @pytest.mark.parametrize("mode", ("text", "media"))
 def test_safari_cache_modes_preserve_selection_and_dispatch(tmp_path: Path, macos_host, source: str, mode: str) -> None:
     application = create_app(tmp_path / "local_store")
@@ -21,12 +21,13 @@ def test_safari_cache_modes_preserve_selection_and_dispatch(tmp_path: Path, maco
     assert response.status_code == 200
     body = response.get_data(as_text=True)
     assert 'data-cache-browser="safari"' in body
-    for target in ("chatgpt", "x", "grok", "claude"):
+    for target in ("chatgpt", "x", "grok", "claude", "gemini"):
         assert f'data-cache-source-switcher-path="/cache/{target}/{mode}/safari"' in body
     targets = {
         "chatgpt": "app.core.chatgpt_service.ChatGPTDownloadService.start",
         "x": "app.core.service.CacheLikesService.start",
         "claude": "app.core.claude_history_service.ClaudeHistoryService.start",
+        "gemini": "app.core.gemini_service.GeminiHistoryService.start",
         "grok": (
             "app.core.grok_history_service.GrokHistoryService.start" if mode == "text"
             else "app.core.grok_service.GrokDownloadService.start"
