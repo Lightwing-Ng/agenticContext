@@ -112,7 +112,8 @@ subset of the façades; the regression no longer freezes one module's exact faç
   session probing for Chrome, Edge, and Safari.
 - `app/core/macos_applescript.py`: one lazy, process-local AppleScript worker shared by Safari
   reads and media transfers. Its AppKit activation policy prohibits Dock presentation and
-  activation. Anonymous pipes carry serialized, identified requests and bounded responses;
+  activation; the worker verifies the resulting policy instead of the setter's return value,
+  because macOS 27 starts `osascript` prohibited and reports re-setting it as a failure. Anonymous pipes carry serialized, identified requests and bounded responses;
   the transport deadline covers writes and reads. Timeout or malformed output kills and reaps
   only this worker without replaying the request. The Safari layer retains its existing
   transient-error retry policy and disables retries for native input. Application exit closes

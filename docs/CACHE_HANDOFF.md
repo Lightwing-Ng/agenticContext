@@ -156,11 +156,35 @@ and horizontally scroll-contained tables belong to the Agent answer surface and 
 shared Cache or Local resources style.
 
 Claude history is a separate Cache runtime. It opens the authenticated `/chats` page,
-discovers conversation links from rendered DOM, opens each conversation, and stores only
-rendered user/assistant message content, source links, and visible model labels. It does
-not call private Claude endpoints, send prompts, or mutate the provider page. The runtime
-uses `POST /cache/claude/start`, `POST /cache/claude/stop`, and
-`GET /api/cache/claude/status` (with compatibility alias `GET /api/claude/status`).
+discovers conversation links from rendered DOM, and opens each conversation. It does not
+issue its own requests to private Claude endpoints, send prompts, or mutate the provider page.
+The conversation transcript is virtualized: it mounts only rows near the viewport and hides
+older messages behind a `Load earlier messages` control, so a single DOM read caches only part
+of a long session. In Chromium browsers the runtime therefore passively records the conversation
+response that the page itself loads (`/api/organizations/<org>/chat_conversations/<id>`) and stores
+the displayed branch from it: text blocks as the provider's Markdown, citation URLs as source
+links, the conversation model as the model label, and message creation times. Extracted text of
+attachments, such as pasted text, is appended to its message after a `---` separator. Thinking,
+tool, and injected prompt blocks, and uploaded files other than their extracted text, are not stored. Safari pages expose no response events, and a
+Chromium page whose response is not seen within 30 seconds falls back to the rendered transcript:
+the runtime presses `Load earlier messages` until it disappears, then scrolls from top to bottom
+and merges rows by their transcript index. A session that renders nothing is retried and then
+counted as failed instead of being skipped. A Cloudflare or other human verification challenge
+stops the whole run immediately without evaluating, reloading, or retrying the page, because
+those actions restart the challenge. The automation-controlled Edge window can be challenged on
+`/chat/...` pages even when `/chats` loads. The runtime uses `POST /cache/claude/start`,
+`POST /cache/claude/stop`, and `GET /api/cache/claude/status` (with compatibility alias
+`GET /api/claude/status`).
+
+An official Claude data export (claude.ai Settings > Privacy > Export data) is the
+browser-independent backup. Keep its zips under `local_store/llm/claude/exports/<date>/` and import
+`conversations-000.zip` with `python -m app.core.claude_export_import <zip>`. Without `--apply` the
+command only reports counts. With `--apply` it takes the cache maintenance lock, writes
+`local_store/recovery/claude-export-<timestamp>/history.parquet` and `import.json`, and then
+atomically replaces `history.parquet`. Each exported session replaces the cached rows of that
+session through the same conversion as the recorded payload; the export has no current-leaf
+field, so the newest childless message ends the kept branch. Sessions missing from the export are
+kept, and messages without text, such as an interrupted reply, are not stored.
 
 Zhihu is a text-only Cache runtime and defaults to Edge. A blank `Answerer URL` first verifies the
 selected browser through `GET https://www.zhihu.com/api/v4/me`, then follows the signed-in
@@ -572,8 +596,9 @@ Read these files together before changing Cache behavior:
 - `app/core/cache_task_coordinator.py`: task admission, the queue, and resource locks.
 - `app/core/cache_service_support.py`: worker lifecycle shared by every cache service.
 - `app/core/grok_history_service.py`: Grok Text worker lifecycle.
-- `app/core/claude_history.py`: rendered Claude discovery, extraction, and Parquet persistence.
+- `app/core/claude_history.py`: Claude discovery, recorded-payload and rendered-transcript extraction, and Parquet persistence.
 - `app/core/claude_history_service.py`: Claude worker lifecycle, one worker per mode.
+- `app/core/claude_export_import.py`: official Claude export import into Claude history.
 - `app/core/chat_history_browser.py`: source path mapping and Local resources queries.
 - `app/core/resource_persistence.py`: typed Parquet schemas and atomic writes.
 - `tests/test_grok_history.py`: deterministic Grok Text regression coverage.

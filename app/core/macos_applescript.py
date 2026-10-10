@@ -1,6 +1,6 @@
 """Execute Safari Apple Events through one process-local, UI-prohibited worker.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-claude.0
 """
 
 from __future__ import annotations
@@ -19,7 +19,9 @@ WORKER_SOURCE = r"""
 ObjC.import('Foundation');
 ObjC.import('AppKit');
 const application = $.NSApplication.sharedApplication;
-if (!application.setActivationPolicy(2)) throw new Error('Background policy refused');
+// macOS 27 starts osascript prohibited and reports re-setting the same policy as a failure.
+if (Number(application.activationPolicy) !== 2) application.setActivationPolicy(2);
+if (Number(application.activationPolicy) !== 2) throw new Error('Background policy refused');
 const input = $.NSFileHandle.fileHandleWithStandardInput;
 const output = $.NSFileHandle.fileHandleWithStandardOutput;
 const reset = $.NSAppleScript.alloc.initWithSource('set AppleScript\'s text item delimiters to ""');
