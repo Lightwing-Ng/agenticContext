@@ -1,6 +1,10 @@
-"""Conservatively identify legacy ChatGPT tool traces and repair local history."""
+"""Conservatively identify legacy ChatGPT tool traces and repair local history.
 
-# Code version: v1.2.0-claude.0
+Repairs also render stored interactive-message tokens as Markdown, using the same converter
+as the synchronization path, so existing rows match newly cached rows.
+"""
+
+# Code version: v1.3.0-claude.0
 
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .chatgpt_markdown import normalize_chatgpt_markdown
 from .config import LOCAL_STORE_ROOT
 from .job_lock import CACHE_TASK_LOCK_NAME, CacheMaintenanceLock, CacheTaskLock
 from .resource_persistence import CHATGPT_HISTORY_SCHEMA, read_parquet_rows, write_parquet_rows_atomic
@@ -134,12 +139,72 @@ def clean_history(root: Path, reviewed_ids: set[str], apply: bool = False) -> di
         lock.release()
 
 
+def plan_markdown_normalization(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Render interactive tokens as Markdown, rehashing only messages whose text changed.
+
+    Rows are never removed. The repair changes text but not message structure, so turn and
+    message indexes and each session's stored revision keep matching the cache's skip logic.
+    A message whose only content was a provider token keeps an empty body instead of
+    disappearing, so its session is not refetched and rejected on every run.
+    """
+    normalized: list[dict] = []
+    changed: list[dict] = []
+    for row in rows:
+        original = str(row.get("content_text") or "")
+        content_text = normalize_chatgpt_markdown(original)
+        if content_text == original:
+            normalized.append(dict(row))
+            continue
+        normalized.append({
+            **row,
+            "content_text": content_text,
+            "content_sha256": hashlib.sha256(content_text.encode("utf-8")).hexdigest(),
+        })
+        reason = "markdown-normalized" if content_text else "markdown-empty"
+        changed.append({"message_key": row["message_key"], "reason": reason})
+    return normalized, changed
+
+
+def normalize_history_markdown(root: Path, apply: bool = False) -> dict:
+    """Back up and atomically render stored ChatGPT interactive tokens as Markdown."""
+    lock = CacheMaintenanceLock(CacheTaskLock(root / CACHE_TASK_LOCK_NAME), root)
+    if not lock.acquire("chatgpt-history-markdown"):
+        raise RuntimeError("A cache task is running; history was not modified.")
+    try:
+        path = root / "llm" / "chatgpt" / "history.parquet"
+        original = path.read_bytes()
+        rows = read_parquet_rows(path)
+        if rows is None:
+            raise RuntimeError("ChatGPT history is unreadable; history was not modified.")
+        normalized, changed = plan_markdown_normalization(rows)
+        result = {"before": len(rows), "after": len(normalized), "changed": len(changed), "applied": False}
+        if apply and changed:
+            if path.read_bytes() != original:
+                raise RuntimeError("History changed during review; history was not modified.")
+            backup_dir = root / "recovery" / ("chatgpt-markdown-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"))
+            backup_dir.mkdir(parents=True, exist_ok=False)
+            backup = backup_dir / "history.parquet"
+            backup.write_bytes(original)
+            write_parquet_rows_atomic(path, normalized, CHATGPT_HISTORY_SCHEMA)
+            # The manifest is written after the replacement so it records the outcome that happened.
+            result.update(applied=True, backup=str(backup))
+            (backup_dir / "normalization.json").write_text(json.dumps({**result, "rows": changed}, indent=2))
+        return result
+    finally:
+        lock.release()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=LOCAL_STORE_ROOT)
     parser.add_argument("--remove-message", action="append", default=[])
+    parser.add_argument("--normalize-markdown", action="store_true",
+                        help="Render stored interactive tokens as Markdown instead of removing traces.")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
+    if args.normalize_markdown:
+        print(json.dumps(normalize_history_markdown(args.root, args.apply), indent=2))
+        return
     print(json.dumps(clean_history(args.root, set(args.remove_message), args.apply), indent=2))
 
 
