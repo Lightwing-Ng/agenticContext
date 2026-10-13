@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.17.2-claude.0`
+Documentation version: `v1.18.0-claude.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -88,6 +88,24 @@ roughly one per minute, with no `Retry-After` header, so a full refresh of thous
 sessions can span many hours and accumulates across runs. Only a request still
 rate-limited after the final cooldown defers the remaining sessions to the next run; Safari
 and Chromium page requests share this classification.
+
+ChatGPT's interactive answers embed private-use tokens for citations, entity chips, map and chart
+widgets, math, clarifying questions, and links. `app/core/chatgpt_markdown.py` renders the readable
+parts as Markdown before the text is stored: entity names stay in sentences or become bold lines,
+titled links stay as links when they use plain HTTP(S) addresses, map points become lists, charts
+become tables, math becomes a fenced `latex` block, questions keep their options, and widgets whose
+shape is not recognized, including known keys with changed inner fields, are preserved as fenced JSON. Citation, memory, image-reference, and placeholder markers are dropped
+because they carry no readable text. Citation sources are not stored: the cached text does not
+include the search-result URLs that citation markers refer to. Synchronization hashes the rendered
+text. The schema version is unchanged, so an unchanged session is not refetched merely to pick up
+the new rendering.
+
+Rows written before this rendering existed are repaired locally by
+`python -m app.core.chatgpt_history_cleanup --normalize-markdown`. Without `--apply` the command
+only reports the count. With `--apply` it takes the cache maintenance lock, writes
+`local_store/recovery/chatgpt-markdown-<timestamp>/history.parquet` and `normalization.json`, and then
+atomically replaces `history.parquet`. Rows are never removed: a message whose only content was a provider token keeps
+an empty body, so turn and message indexes and each session's stored revision keep matching the skip logic.
 
 Every source registers one runtime per content mode, each with its own task state, worker,
 and Start/Stop. X, ChatGPT, Gemini, and Claude create one service instance per mode; a mode
@@ -599,6 +617,8 @@ Read these files together before changing Cache behavior:
 - `app/core/claude_history.py`: Claude discovery, recorded-payload and rendered-transcript extraction, and Parquet persistence.
 - `app/core/claude_history_service.py`: Claude worker lifecycle, one worker per mode.
 - `app/core/claude_export_import.py`: official Claude export import into Claude history.
+- `app/core/chatgpt_markdown.py`: ChatGPT interactive-token rendering for Text synchronization and repair.
+- `app/core/chatgpt_history_cleanup.py`: ChatGPT history repair (legacy traces and Markdown rendering).
 - `app/core/chat_history_browser.py`: source path mapping and Local resources queries.
 - `app/core/resource_persistence.py`: typed Parquet schemas and atomic writes.
 - `tests/test_grok_history.py`: deterministic Grok Text regression coverage.

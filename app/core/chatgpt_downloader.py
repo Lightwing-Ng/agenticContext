@@ -26,6 +26,7 @@ from PIL import Image, UnidentifiedImageError
 
 from .cache_timing import wait_for_cache_scan
 from .chatgpt_history_cleanup import is_chatgpt_tool_trace
+from .chatgpt_markdown import normalize_chatgpt_markdown
 from .browser_sessions import browser_descriptors, launch_chromium_context
 from .compute_backend import analyze_image_paths, analyze_image_payload
 from .compute_metrics import PerformanceMetrics
@@ -378,7 +379,7 @@ def _extract_chatgpt_conversation_messages(
         role = str(author.get("role") or "").strip().lower() if isinstance(author, dict) else ""
         if not _chatgpt_message_is_cacheable(message, role):
             continue
-        content_text = _chatgpt_message_text(message)
+        content_text = normalize_chatgpt_markdown(_chatgpt_message_text(message))
         if not content_text:
             continue
         if role == "user":

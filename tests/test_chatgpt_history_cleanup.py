@@ -3,12 +3,18 @@
 # Code version: v1.2.0-claude.0
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
 from app.core.chatgpt_downloader import ChatGPTHistoryStore, _extract_chatgpt_conversation_messages
-from app.core.chatgpt_history_cleanup import clean_history, is_chatgpt_tool_trace, plan_history_cleanup
+from app.core.chatgpt_history_cleanup import (
+    clean_history,
+    is_chatgpt_tool_trace,
+    normalize_history_markdown,
+    plan_history_cleanup,
+)
 from app.core.job_lock import CacheTaskLock
 from app.core.resource_persistence import CHATGPT_HISTORY_SCHEMA, read_parquet_rows, write_parquet_rows_atomic
 
@@ -88,6 +94,52 @@ def test_cleanup_is_locked_backed_up_atomic_and_idempotent(tmp_path: Path):
     assert Path(result["backup"]).read_bytes() == original
     assert [row["content_text"] for row in read_parquet_rows(path)] == ["Prompt", "Final answer"]
     assert clean_history(tmp_path, set(), True)["removed"] == 0
+
+
+def test_markdown_repair_is_locked_backed_up_structure_preserving_and_idempotent(tmp_path: Path):
+    path = tmp_path / "llm/chatgpt/history.parquet"
+    store = ChatGPTHistoryStore(path)
+    store.replace_conversation("https://chatgpt.com/c/fixture", {"mapping": {
+        "user": {"message": {"author": {"role": "user"}, "content": {"parts": ["Prompt"]}}},
+        "answer": {"message": {"author": {"role": "assistant"}, "content": {"parts": ["Answer"]}}},
+    }}, "now")
+    store.save()
+    rows = read_parquet_rows(path)
+    # Legacy rows were written before the converter, so their stored text still carries provider tokens.
+    answer = next(row for row in rows if row["content_text"] == "Answer")
+    answer["content_text"] = "Answer \ue200cite\ue202turn0search1\ue201 with a source."
+    marker = {**answer, "message_key": "fixture:marker", "message_index": 2,
+              "content_text": "\ue200cite\ue202turn0search2\ue201"}
+    rows.append(marker)
+    write_parquet_rows_atomic(path, rows, CHATGPT_HISTORY_SCHEMA)
+    original = path.read_bytes()
+    lock = CacheTaskLock(tmp_path / ".cache_task.lock")
+    assert lock.acquire("test-writer")
+    try:
+        with pytest.raises(RuntimeError, match="running"):
+            normalize_history_markdown(tmp_path, True)
+    finally:
+        lock.release()
+    assert path.read_bytes() == original
+    dry_run = normalize_history_markdown(tmp_path)
+    assert dry_run == {"before": 3, "after": 3, "changed": 2, "applied": False}
+    assert path.read_bytes() == original
+    result = normalize_history_markdown(tmp_path, True)
+    assert result["applied"] is True
+    assert Path(result["backup"]).read_bytes() == original
+    manifest = json.loads((Path(result["backup"]).parent / "normalization.json").read_text())
+    assert manifest["applied"] is True
+    stored = {row["message_key"]: row for row in read_parquet_rows(path)}
+    # Rows are never removed, so message and turn positions and the stored revision still match.
+    assert sorted(stored) == sorted(["fixture:marker", answer["message_key"], rows[0]["message_key"]])
+    assert stored["fixture:marker"]["content_text"] == ""
+    assert stored["fixture:marker"]["message_index"] == 2
+    answer_row = stored[answer["message_key"]]
+    assert answer_row["content_text"] == "Answer with a source."
+    assert answer_row["content_sha256"] == hashlib.sha256(b"Answer with a source.").hexdigest()
+    assert answer_row["message_index"] == answer["message_index"]
+    assert normalize_history_markdown(tmp_path, True) == {"before": 3, "after": 3, "changed": 0, "applied": False}
+    assert len(list((tmp_path / "recovery").iterdir())) == 1
 
 
 @pytest.mark.parametrize("text", [
