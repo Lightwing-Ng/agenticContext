@@ -1,0 +1,9 @@
+# Code version: v1.0.0-claude.0
+#
+# Pin the lint rule set that the quality gate enforces. Ruff 0.16 expanded its
+# built-in default selection from 59 to 413 rules and dropped 18 E/F rules, so
+# relying on the defaults lets a dependency bump silently change the gate.
+# These selectors reproduce the Ruff 0.15 default set. Widen them only in a
+# deliberate change that also brings the codebase into compliance.
+[lint]
+select = ["E4", "E7", "E9", "F"]

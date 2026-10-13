@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.28.0-claude.0`
+Documentation version: `v1.28.1-claude.0`
 
 ## Supported commands
 
@@ -358,7 +358,9 @@ The canonical local and CI quality gate is `scripts/check.sh` on macOS/Linux and
 `scripts/check.ps1` on Windows. The gates run, in order:
 
 1. Installed requirement-version validation, `pip check`, and a local-environment `pip-audit` scan.
-2. Ruff static checks over `main.py`, `app/`, `tests/`, and `scripts/`.
+2. Ruff static checks over `main.py`, `app/`, `tests/`, and `scripts/`. The enforced rule set is
+   pinned in `ruff.toml` so a Ruff upgrade cannot change it; Ruff 0.16 replaced the built-in
+   default selection that the gate previously relied on.
 3. Offline Markdown file, image, and heading links in the repository documentation.
 4. `node --check` for every first-party JavaScript file in `app/web/static/`.
 5. Node unit tests for the shared Agent Optimization and Site tools runtime contract.

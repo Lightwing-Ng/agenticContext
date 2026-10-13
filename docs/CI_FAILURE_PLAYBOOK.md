@@ -1,6 +1,6 @@
 # CI Failure Playbook
 
-Documentation version: `v1.0.4-codex.1`
+Documentation version: `v1.0.5-claude.0`
 
 Established: 21 Aug 2026
 
@@ -137,6 +137,24 @@ thread never reached `DOMContentLoaded`.
 The durable fix removed the self-written data attribute from the observer filter and made all
 attribute and style writes idempotent. The regression test pins the observed attribute set. The
 complete local gate and the pushed GitHub Quality gate must both pass after this class of change.
+
+## Incident record: 13 Oct 2026
+
+### Ruff default rule-set expansion
+
+Dependabot raised Ruff from `0.15.21` to `0.16.8` and then `0.16.10`. Ruff 0.16 replaced its
+built-in default selection, enabling 413 rules instead of 59 and dropping 18 `E` and `F` rules.
+The repository had no Ruff configuration, so the static-check step reported 1,088 diagnostics on
+both runners without any source change. None of them came from the previously enforced rules.
+
+The automated repair suggestion proposed `ruff check --fix` across the repository plus manual
+rewrites of the remainder. That would have rewritten hundreds of files to satisfy a rule set
+nobody had chosen. The durable fix pins the previous selection in `ruff.toml`; under Ruff 0.16.10
+it enables the same 59 rules that Ruff 0.15.21 enabled by default.
+
+Treat a diagnostic-count jump that follows a linter upgrade as a dependency incompatibility.
+Compare the enabled rules before and after the upgrade with `ruff check --show-settings` before
+editing source. Adopting additional rules is a separate, deliberate change.
 
 ## Completion checklist
 
