@@ -1,6 +1,6 @@
 """Provider workflows exposed to the application layer."""
 
-# Code version: v1.8.0-claude.0
+# Code version: v1.9.0-codex.0
 
 from ..chatgpt_agent_sources import (
     fetch_chatgpt_conversation_history,
@@ -19,6 +19,10 @@ from ..chatgpt_downloader import (
     reset_chatgpt_state,
 )
 from ..chatgpt_service import ChatGPTDownloadService
+from ..claude_code_history_service import (
+    ClaudeCodeHistoryService,
+    build_claude_code_initial_snapshot,
+)
 from ..claude_history import build_claude_initial_snapshot
 from ..claude_history_service import ClaudeHistoryService
 from ..claude_media import build_claude_media_initial_snapshot
@@ -38,6 +42,7 @@ __all__ = [
     "CacheLikesService",
     "ChatGPTDownloadService",
     "ClaudeHistoryService",
+    "ClaudeCodeHistoryService",
     "GeminiHistoryService",
     "GrokDownloadService",
     "GrokHistoryService",
@@ -45,6 +50,7 @@ __all__ = [
     "build_chatgpt_initial_snapshot",
     "build_chatgpt_text_snapshot",
     "build_claude_initial_snapshot",
+    "build_claude_code_initial_snapshot",
     "build_claude_media_initial_snapshot",
     "build_gemini_initial_snapshot",
     "build_gemini_media_initial_snapshot",

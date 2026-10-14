@@ -1,4 +1,4 @@
-{# Code version: v1.38.0-claude.0 #}
+{# Code version: v1.39.0-codex.0 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -17,7 +17,7 @@
     <script defer src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.14.0-claude.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.9.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.18.0-claude.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.19.0-codex.0') }}"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -25,7 +25,7 @@
 {% from "_cache_page_components.html" import render_browser_session, render_metric, render_progress_metric %}
 {% set current_phase = snapshot.phase or "idle" %}
 {% set cache_mode = cache_content_mode if cache_content_mode is defined and cache_content_mode in ["text", "media"] else "text" %}
-{% set cache_browser = selected_browser_id if selected_browser_id is defined and selected_browser_id else saved_config|attr(cache_source.browser_config_field) %}
+{% set cache_browser = "" if cache_source.is_local else (selected_browser_id if selected_browser_id is defined and selected_browser_id else saved_config|attr(cache_source.browser_config_field)) %}
 {% if cache_source.show_content_mode and cache_browser %}
 {% set cache_text_href = url_for("cache.cache_source_selected", source_key=cache_source.key, content_mode="text", browser=cache_browser) %}
 {% set cache_media_href = url_for("cache.cache_source_selected", source_key=cache_source.key, content_mode="media", browser=cache_browser) %}
@@ -42,6 +42,7 @@
     data-cache-progress-strategy="{{ cache_source.progress_strategy }}"
     data-cache-page-content-mode="{{ cache_mode }}"
     data-cache-browser="{{ cache_browser }}"
+    data-cache-local="{{ 'true' if cache_source.is_local else 'false' }}"
 >
     <div class="ambient ambient-left" aria-hidden="true"></div>
     <div class="ambient ambient-right" aria-hidden="true"></div>
@@ -167,7 +168,7 @@
                     ></span>
                 </div>
 
-                {{ render_browser_session(cache_source, browser_options) }}
+                {% if not cache_source.is_local %}{{ render_browser_session(cache_source, browser_options) }}{% endif %}
 
                 <form
                     action="{{ url_for('cache.start_cache_source', source_key=cache_source.key) }}"
@@ -177,12 +178,12 @@
                     data-wait-title="{{ cache_source.start_wait_title }}"
                     data-wait-copy="{{ cache_source.start_wait_copy }}"
                 >
-                    <input
+                    {% if not cache_source.is_local %}<input
                         type="hidden"
                         name="{{ cache_source.browser_config_field }}"
                         id="{{ cache_source.browser_input_id }}"
                         value="{{ cache_browser }}"
-                    >
+                    >{% endif %}
                     <input type="hidden" name="cache_content_mode" value="{{ cache_mode }}" data-cache-runtime-mode>
                     {% block source_fields %}{% endblock %}
                 </form>
@@ -271,7 +272,8 @@
 </main>
 
 {% include "_waiting_modal.html" %}
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.25.0-codex.0') }}"></script>
+{% block page_overlays %}{% endblock %}
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.27.0-codex.0') }}"></script>
 {% block tail %}{% endblock %}
 </body>
 </html>

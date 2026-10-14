@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.9.0-codex.0
+# Code version: v1.10.0-codex.0
 
 from __future__ import annotations
 
@@ -45,6 +45,7 @@ class CacheSourceView:
     settings_category: str = ""
     settings_link_label: str = ""
     supported_browsers: tuple[str, ...] = ()
+    is_local: bool = False
 
     @property
     def dock_label(self) -> str:
@@ -85,12 +86,12 @@ class CacheSourceView:
 _CACHE_SOURCE_VIEWS = (
     CacheSourceView(
         key="claude",
-        label="Claude",
+        label="Claude Chat",
         view_endpoint="claude",
         template_name="claude.html",
         icon_filename="images/claude.svg",
-        document_title=f"{PRODUCT_NAME} Claude",
-        overview_title="Claude cache overview",
+        document_title=f"{PRODUCT_NAME} Claude Chat",
+        overview_title="Claude Chat cache overview",
         browser_panel_label="Authorized browser",
         browser_empty_message="No signed-in Claude account detected",
         browser_config_field="claude_browser",
@@ -108,6 +109,32 @@ _CACHE_SOURCE_VIEWS = (
         show_content_mode=True,
         show_progress_value=True,
         show_progress_detail=True,
+    ),
+    CacheSourceView(
+        key="claude_code",
+        label="Claude Code",
+        view_endpoint="cache_source",
+        template_name="claude_code.html",
+        icon_filename="images/claude.svg",
+        document_title=f"{PRODUCT_NAME} Claude Code",
+        overview_title="Claude Code local cache",
+        browser_panel_label="Local transcripts",
+        browser_empty_message="",
+        browser_config_field="",
+        require_browser_ready=False,
+        start_form_id="start_form_claude_code",
+        start_button_label="Read local sessions",
+        start_wait_title="Reading Claude Code sessions",
+        start_wait_copy="Reading saved conversations from the selected local folder.",
+        stop_wait_title="Stopping local import",
+        stop_wait_copy="Finishing the current session before stopping.",
+        progress_strategy="queue",
+        progress_aria_label="Claude Code import progress",
+        group_key="llm",
+        group_label="Chats",
+        show_progress_value=True,
+        show_progress_detail=True,
+        is_local=True,
     ),
     CacheSourceView(
         key="gemini",

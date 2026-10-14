@@ -11,7 +11,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.6.0-claude.0
+# Code version: v1.7.0-codex.0
 
 from __future__ import annotations
 
@@ -311,6 +311,10 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
         cache_content_mode = normalize_cache_content_mode(
             content_mode or request.args.get("content_mode")
         )
+        if cache_source.is_local:
+            browser_options = []
+            selected_browser_id = ""
+            cache_content_mode = "text"
         selected_browser_label = next(
             (
                 option["label"]
@@ -467,10 +471,11 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             defaults=START_DEFAULT_CONTENT_MODES,
         )
         config = parse_form_config(context.config_store.config, preserve_missing_booleans=True)
-        browser_name = getattr(config, cache_source.browser_config_field)
-        busy_response = context.reject_active_safari_agent_for_cache(browser_name)
-        if busy_response is not None:
-            return busy_response
+        browser_name = getattr(config, cache_source.browser_config_field, "")
+        if not cache_source.is_local:
+            busy_response = context.reject_active_safari_agent_for_cache(browser_name)
+            if busy_response is not None:
+                return busy_response
         context.config_store.replace(config)
         runtime_config = config
         if cache_source.require_browser_ready:

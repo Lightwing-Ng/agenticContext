@@ -1,6 +1,6 @@
 """Configuration helpers."""
 
-# Code version: v1.21.0-codex.0
+# Code version: v1.22.0-codex.0
 
 from __future__ import annotations
 
@@ -222,6 +222,19 @@ SETTINGS_PATH = default_settings_path()
 DEFAULT_HOST = resolve_listen_host()
 
 
+def default_claude_code_directory() -> Path:
+    """Prefer Desktop Code metadata when available, otherwise the CLI transcript root."""
+    if is_windows_host():
+        desktop_directory = _windows_app_data_root("APPDATA", "Roaming") / "Claude"
+    elif is_macos_host():
+        desktop_directory = Path.home() / "Library/Application Support/Claude"
+    else:
+        desktop_directory = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "Claude"
+    if (desktop_directory / "claude-code-sessions").is_dir():
+        return desktop_directory
+    return Path.home() / ".claude"
+
+
 @dataclass(slots=True)
 class CrawlConfig:
     """Runtime configuration for a single cache job."""
@@ -237,6 +250,7 @@ class CrawlConfig:
     chatgpt_browser: str = "edge"
     gemini_browser: str = DEFAULT_GEMINI_BROWSER
     claude_browser: str = "edge"
+    claude_code_directory: Path = field(default_factory=default_claude_code_directory)
     zhihu_browser: str = "edge"
     gemini_max_conversations: int = DEFAULT_GEMINI_MAX_CONVERSATIONS
     gemini_scroll_pause_seconds: float = DEFAULT_GEMINI_SCROLL_PAUSE_SECONDS
@@ -259,6 +273,7 @@ class CrawlConfig:
     def __post_init__(self) -> None:
         """Normalize concurrency even when a caller constructs config directly."""
         self.download_workers = normalize_download_workers(self.download_workers)
+        self.claude_code_directory = Path(self.claude_code_directory).expanduser()
 
     def cache_scan_wait(self, provider: str, mode: str) -> float:
         """Read an independent scan interval without changing legacy defaults."""
@@ -332,6 +347,10 @@ def load_saved_config(settings_path: Path | None = None) -> CrawlConfig:
             payload.get("claude_browser", defaults.claude_browser),
             defaults.claude_browser,
         ),
+        claude_code_directory=Path(
+            str(payload.get("claude_code_directory") or defaults.claude_code_directory).strip()
+            or str(defaults.claude_code_directory)
+        ).expanduser(),
         zhihu_browser=normalize_host_browser(
             payload.get("zhihu_browser", defaults.zhihu_browser),
             defaults.zhihu_browser,
@@ -424,6 +443,7 @@ def save_config(config: CrawlConfig, settings_path: Path | None = None) -> None:
     payload["chatgpt_browser"] = config.chatgpt_browser
     payload["gemini_browser"] = config.gemini_browser
     payload["claude_browser"] = config.claude_browser
+    payload["claude_code_directory"] = str(config.claude_code_directory)
     payload["zhihu_browser"] = config.zhihu_browser
     payload["chatgpt_project_url"] = config.chatgpt_project_url
     payload["chatgpt_project_name"] = config.chatgpt_project_name

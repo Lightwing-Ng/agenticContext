@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.55.3-codex.0
+Code version: v1.55.4-codex.0
 """
 
 from __future__ import annotations
@@ -500,7 +500,7 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
     sidebar_server_url: str,
 ) -> None:
     """Verify every cache sidebar exposes the same complete source menu in Chromium."""
-    expected_sources = ["chatgpt", "claude", "gemini", "grok", "x", "zhihu"]
+    expected_sources = ["chatgpt", "claude", "claude_code", "gemini", "grok", "x", "zhihu"]
     page, context = _open_page(
         disposable_browser,
         f"{sidebar_server_url}/cache/chatgpt",
@@ -529,6 +529,7 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
             expected_paths = [
                 "/cache/chatgpt/text/edge",
                 "/cache/claude/text/edge",
+                "/cache/claude_code",
                 "/cache/gemini/text/edge",
                 "/cache/grok/text/edge",
                 "/cache/x/text/chrome",
@@ -609,7 +610,7 @@ def test_cache_source_switcher_menu_has_an_opaque_base(
         )
         assert rendering["backgroundColor"] == rendering["themeBackground"], rendering
         assert rendering["backgroundColor"].startswith("rgb("), rendering
-        assert rendering["optionCount"] == 6, rendering
+        assert rendering["optionCount"] == 7, rendering
         assert all(rendering["hitTests"]), rendering
 
         menu.locator('[data-cache-source-switcher-option="chatgpt"]').focus()
@@ -2522,6 +2523,7 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
     expected_paths = {
         "chatgpt": "/cache/chatgpt/text/edge",
         "claude": "/cache/claude/text/edge",
+        "claude_code": "/cache/claude_code",
         "gemini": "/cache/gemini/text/edge",
         "grok": "/cache/grok/text/edge",
         "x": "/cache/x/text/edge",
@@ -2595,7 +2597,7 @@ def test_cache_sidebars_reuse_the_chatgpt_base_contract(
     try:
         cache_provider_labels = {
             "chatgpt": "ChatGPT",
-            "claude": "Claude",
+            "claude": "Claude Chat",
             "gemini": "Gemini",
             "grok": "Grok",
             "zhihu": "Zhihu",
@@ -2609,7 +2611,7 @@ def test_cache_sidebars_reuse_the_chatgpt_base_contract(
             expect(aside.locator(":scope > .hero")).to_have_count(1)
             expect(aside.locator(":scope > .cache-page-content-mode-section")).to_have_count(1)
             expect(aside.locator("[data-cache-source-switcher]")).to_have_count(1)
-            expect(aside.locator("[data-cache-source-switcher-option]")).to_have_count(6)
+            expect(aside.locator("[data-cache-source-switcher-option]")).to_have_count(7)
             expect(aside.locator("[data-browser-session-panel]")).to_have_count(1)
             expect(aside.locator(".browser-session-panel-label")).to_have_text("Authorized browser")
             expect(aside.locator(".cache-settings-link")).to_have_count(1)
@@ -5454,7 +5456,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         expect(x_source_option).to_be_hidden()
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "gemini", "grok", "x", "zhihu"]
+        ) == ["chatgpt", "claude", "claude_code", "gemini", "grok", "x", "zhihu"]
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_hidden()
@@ -5474,7 +5476,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         assert x_source_option.evaluate("element => !element.hidden")
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "gemini", "grok", "x", "zhihu"]
+        ) == ["chatgpt", "claude", "claude_code", "gemini", "grok", "x", "zhihu"]
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_visible()

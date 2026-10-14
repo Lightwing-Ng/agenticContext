@@ -1,4 +1,4 @@
-<!-- Code version: v1.39.0-claude.0 -->
+<!-- Code version: v1.40.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -161,7 +161,7 @@
                             >
                                 <div class="settings-category-heading">
                                     <h3 id="settings_llm_heading">LLM settings</h3>
-                                    <p>Configure timing and history-scan limits for browser-based LLM cache tasks.</p>
+                                    <p>Configure browser history scans and local coding-session imports.</p>
                                 </div>
                                 <div class="settings-category-fields">
                                     <h4>ChatGPT · Text</h4>
@@ -170,8 +170,25 @@
                                     <h4>ChatGPT · Media</h4>
                                     {{ render_number_field("Startup timeout (s)", "chatgpt_startup_timeout_seconds", saved_config.chatgpt_startup_timeout_seconds, "decimal", "1", "1", "600") }}
                                     {{ render_number_field("Scan wait (s)", "chatgpt_scan_wait_seconds", saved_config.chatgpt_scan_wait_seconds, "decimal", "0.1", "0.1", "5") }}
-                                    <h4>Claude · Text</h4>
+                                    <h4>Claude Chat · Text</h4>
                                     {{ render_number_field("Wait between sessions (s)", "cache_scan_wait_claude_text", saved_config.cache_scan_wait("claude", "text"), "decimal", "0.1", "0", "60") }}
+                                    <h4>Claude Code · Local</h4>
+                                    <label class="field compact-config-field">
+                                        <span>Local session folder</span>
+                                        <span class="settings-directory-control">
+                                            <input class="text-input-control settings-directory-input path-display-input" type="text"
+                                                id="claude_code_directory" name="claude_code_directory"
+                                                value="{{ saved_config.claude_code_directory }}" spellcheck="false" autocomplete="off">
+                                            <button type="button" class="secondary-button settings-directory-choose-button"
+                                                data-settings-directory-picker data-directory-field="claude_code_directory"
+                                                data-directory-input="claude_code_directory" data-directory-label="Claude Code session folder"
+                                                aria-label="Choose Claude Code session folder" title="Choose Claude Code session folder">
+                                                <span class="icon settings-directory-choose-icon" aria-hidden="true"></span>
+                                            </button>
+                                        </span>
+                                        <span class="settings-directory-status" data-directory-picker-status aria-live="polite" hidden></span>
+                                    </label>
+                                    <p class="settings-field-help">Use the Claude app folder for Desktop Code sessions, or <code>~/.claude</code> for all local Code sessions.</p>
                                     <h4>Gemini · Text</h4>
                                     {{ render_number_field("Max sessions", "gemini_max_conversations", saved_config.gemini_max_conversations, minimum="1") }}
                                     {{ render_number_field("Scan wait (s)", "gemini_scroll_pause_seconds", saved_config.gemini_scroll_pause_seconds, "decimal", "0.05", "0.1") }}
@@ -443,7 +460,7 @@
 
 {% include "_waiting_modal.html" %}
 {% include "_settings_directory_browser.html" %}
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.25.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.27.0-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='shadow-backup-settings.js', v='shadow-backup-settings-v1.3.0-codex.2') }}"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-/* Code version: v1.38.0-claude.0 */
+/* Code version: v1.39.0-codex.0 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -114,7 +114,7 @@
         if (mode === "text") {
             formData.set("session_view", "1");
             const selectedSource = String(formData.get("source") || "").trim().toLowerCase();
-            if (!["x", "chatgpt", "claude", "gemini", "grok", "zhihu"].includes(selectedSource)) {
+            if (!["x", "chatgpt", "claude", "claude_code", "gemini", "grok", "zhihu"].includes(selectedSource)) {
                 formData.set("source", "chatgpt");
             }
         }

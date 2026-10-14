@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.3.0-claude.0
+# Code version: v2.6.0-codex.0
 
 from __future__ import annotations
 
@@ -58,6 +58,7 @@ from app.core.providers import (
     CacheLikesService,
     ChatGPTDownloadService,
     ClaudeHistoryService,
+    ClaudeCodeHistoryService,
     GeminiHistoryService,
     GrokDownloadService,
     GrokHistoryService,
@@ -65,6 +66,7 @@ from app.core.providers import (
     build_chatgpt_initial_snapshot,
     build_chatgpt_text_snapshot,
     build_claude_initial_snapshot,
+    build_claude_code_initial_snapshot,
     build_claude_media_initial_snapshot,
     build_gemini_initial_snapshot,
     build_gemini_media_initial_snapshot,
@@ -402,6 +404,13 @@ def create_app(
         **cache_task("claude", "text"),
     )
     app.extensions["claude_history_service"] = claude_service
+    claude_code_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
+    claude_code_service = ClaudeCodeHistoryService(
+        claude_code_state,
+        media_catalog.local_store_root,
+        **cache_task("claude_code", "text"),
+    )
+    app.extensions["claude_code_history_service"] = claude_code_service
     claude_media_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
     claude_media_service = ClaudeHistoryService(
         claude_media_state,
@@ -583,6 +592,15 @@ def create_app(
                 hydrate_snapshot=lambda: build_gemini_media_initial_snapshot(
                     APP_VERSION,
                     media_catalog.local_store_root,
+                ),
+            ),
+        },
+        "claude_code": {
+            "text": CacheRuntimeAdapter(
+                state=claude_code_state,
+                service=claude_code_service,
+                hydrate_snapshot=lambda: build_claude_code_initial_snapshot(
+                    APP_VERSION, media_catalog.local_store_root,
                 ),
             ),
         },

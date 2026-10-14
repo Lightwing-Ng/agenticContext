@@ -1,4 +1,4 @@
-/* Code version: v1.18.0-claude.0 */
+/* Code version: v1.19.0-codex.0 */
 
 (() => {
     "use strict";
@@ -127,6 +127,7 @@
     }
 
     function currentCacheContentMode() {
+        if (page.dataset.cacheLocal === "true") return "text";
         return contentModeFromCacheUrl()
             || cacheSourceSwitcher?.dataset.cacheSourceContentMode
             || readRememberedContentMode();
