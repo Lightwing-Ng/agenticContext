@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.18.0-claude.0`
+Documentation version: `v1.19.0-claude-code.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -25,7 +25,8 @@ Cache is the execution surface. Its canonical source pages are:
 | Grok | `/cache/grok` | Grok media assets | Grok sessions and messages |
 | ChatGPT | `/cache/chatgpt` | ChatGPT images | ChatGPT sessions and messages |
 | Gemini | `/cache/gemini` | Rendered Gemini images in Safari | Gemini sessions and messages |
-| Claude | `/cache/claude` | Claude sessions and messages | Claude sessions and messages |
+| Claude Chat | `/cache/claude` | Browser chat sessions and messages | Claude Chat sessions and messages |
+| Claude Code | `/cache/claude_code` | Local Desktop or CLI transcripts | User and assistant text, separate from Chat |
 | Zhihu | `/cache/zhihu` | Upvoted answers or one answerer's answers | One rich-text session per answer plus source links |
 
 The historical top-level paths `/grok`, `/chatgpt`, `/gemini`, `/claude`, and `/zhihu` are compatibility
@@ -34,7 +35,33 @@ separate Agent route; it resolves into the Cache namespace.
 
 `Local resources` owns `/browser`. It is the review and export surface, not the place
 where a source sync is started. Its text source filter accepts `all`, `chatgpt`,
-`claude`, `gemini`, `grok`, and `zhihu`.
+`claude`, `claude_code`, `gemini`, `grok`, and `zhihu`.
+
+### Claude Code local import
+
+Select `Claude Code` in the Cache source menu, choose `Local session folder`, and
+press `Read local sessions`. The folder is also saved under Settings > LLM settings.
+This text-only source needs no browser authorization and does not acquire a browser
+lease. A remembered Media selection cannot change its import or status mode.
+
+On macOS, an installed Desktop Code registry makes
+`~/Library/Application Support/Claude` the default. Its `claude-code-sessions`
+metadata maps explicit `cliSessionId` values to matching main transcripts under
+`~/.claude/projects`. Choosing `~/.claude`, its `projects` folder, or one project
+folder instead reads the main transcripts within that scope. The desktop registry
+is not a web Chat export. Missing mapped transcripts and malformed records are
+reported as incomplete; existing cached messages are retained.
+
+The importer stores visible user and assistant text, timestamps, model labels,
+and titles in `local_store/llm/claude_code/history.parquet`. It excludes tool
+payloads, internal reasoning, subagents, and metadata-only messages. Source files
+are never modified. Stable message identities support repeat imports without
+duplicates, and an unchanged import leaves the cache file unchanged.
+
+Local resources labels the legacy `claude` source `Claude Chat` and the new
+`claude_code` source `Claude Code`. The latter supports sessions, search, saved
+prompts, and Markdown export, with no fabricated web conversation link. Code
+does not appear among Media sources.
 
 ## 2. Shared Text/Media contract
 
@@ -56,7 +83,7 @@ the top of the Cache sidebar:
   independently of Media asset counters. Responses for a previously selected mode
   are discarded after a mode change.
 - The `all` source view is an aggregate view. It must include the ChatGPT, Gemini, Grok,
-  Claude, and Zhihu history files.
+  Claude Chat, Claude Code, and Zhihu history files.
 
 The control is shared markup in `app/web/templates/_cache_page.html`, behavior in
 `app/web/static/cache-page.js`, and styling in `app/web/static/style.css`. Changes to
@@ -253,6 +280,7 @@ The current persistent cache layout is:
 | `local_store/llm/gemini/history.parquet` | Gemini Text runtime | Typed Gemini messages |
 | `local_store/llm/grok/history.parquet` | Grok Text runtime | Typed Grok messages |
 | `local_store/llm/claude/history.parquet` | Claude Text runtime | Typed Claude messages |
+| `local_store/llm/claude_code/history.parquet` | Local Claude Code runtime | Typed local Code messages, independently cached |
 | `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; rich-text source and source links retained |
 | `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers, or a `media-prompt:` content key for a media prompt whose conversation has no cached text |
 | `local_store/.cache_task.lock` | Cache runtimes | Gate a starting task passes and a backup or history repair holds |

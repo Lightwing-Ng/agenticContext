@@ -1,4 +1,4 @@
-<!-- Code version: v1.85.0-claude.0 -->
+<!-- Code version: v1.86.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -18,7 +18,7 @@
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.38.0-claude.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.39.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.1.0-codex.0') }}"></script>
@@ -335,11 +335,13 @@
                             </nav>
                             <div
                                 class="browser-session-actions browser-session-actions-drawer{% if is_zhihu_text %} browser-session-actions--source-update{% endif %}"
+                                {% if text_page.current_session.source == 'claude_code' %}style="--browser-session-action-count: 2;"{% endif %}
                                 data-browser-session-actions
                                 data-browser-session-actions-drawer
                                 role="group"
                                 aria-label="{{ 'Answerer actions' if is_zhihu_text else 'Session actions' }}"
                             >
+                                {% if text_page.current_session.source != 'claude_code' %}
                                 <button
                                     type="button"
                                     class="browser-session-action-button browser-session-actions-trigger browser-session-open-original-button"
@@ -351,6 +353,7 @@
                                 >
                                     <span class="icon browser-session-safari-icon" aria-hidden="true"></span>
                                 </button>
+                                {% endif %}
                                 <button
                                     type="button"
                                     class="browser-session-action-button browser-session-refresh-button"
@@ -955,7 +958,7 @@
                     {% if text_page.items and not is_zhihu_text %}
                     <div class="browser-chat-pane" data-browser-chat-pane>
                     <div class="browser-chat-effects" data-chat-effects aria-hidden="true" inert></div>
-                    <div class="local-store-pagination-host browser-chat-list" data-chat-scrollport tabindex="0" aria-label="{{ ('Cached ' ~ (text_page.current_session.source|capitalize) ~ ' session messages') if text_page.session_detail else 'Cached messages' }}">
+                    <div class="local-store-pagination-host browser-chat-list" data-chat-scrollport tabindex="0" aria-label="{{ ('Cached ' ~ selected_source.label ~ ' session messages') if text_page.session_detail else 'Cached messages' }}">
                         {% for message in text_page.items %}
                         {% set message_number = ((text_page.current_page - 1) * text_page.page_size) + loop.index %}
                         {% set is_media_response = message.role == "assistant" and message.media_refs and message.content_text.lstrip().startswith("{") %}
@@ -1056,7 +1059,7 @@
                             </thead>
                         </table>
                         <div class="events-table-scroll scrollable-data-table-scroll browser-session-table-scroll" data-table-scroll>
-                            <table class="events-table scrollable-data-table browser-session-table browser-session-detail-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" data-table-body aria-label="{{ ('Cached Zhihu answers by ' ~ text_page.current_session.latest_author_label) if is_zhihu_text and text_page.session_detail else ('Cached ' ~ (text_page.current_session.source|capitalize) ~ ' session messages' if text_page.session_detail else 'Cached messages') }}">
+                            <table class="events-table scrollable-data-table browser-session-table browser-session-detail-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" data-table-body aria-label="{{ ('Cached Zhihu answers by ' ~ text_page.current_session.latest_author_label) if is_zhihu_text and text_page.session_detail else ('Cached ' ~ selected_source.label ~ ' session messages' if text_page.session_detail else 'Cached messages') }}">
                                 <tbody>
                                     {% for message in text_page.items %}
                                     {% set is_media_response = message.role == "assistant" and message.media_refs and message.content_text.lstrip().startswith("{") %}
@@ -1222,7 +1225,7 @@
                                 </thead>
                             </table>
                         <div class="events-table-scroll scrollable-data-table-scroll browser-session-table-scroll" data-table-scroll>
-                            <table class="events-table scrollable-data-table browser-session-table browser-session-index-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" data-table-body aria-label="{{ 'Cached Zhihu answerers' if is_zhihu_text else ('Cached ' ~ (filters.source|capitalize if filters.source != 'all' else 'chat') ~ ' sessions') }}">
+                            <table class="events-table scrollable-data-table browser-session-table browser-session-index-table{% if is_zhihu_text %} is-zhihu-source{% endif %}" data-table-body aria-label="{{ 'Cached Zhihu answerers' if is_zhihu_text else ('Cached ' ~ (selected_source.label if filters.source != 'all' else 'chat') ~ ' sessions') }}">
                                 <tbody>
                                     {% for session in text_page.sessions %}
                                     <tr data-chat-session-id="{{ session.stable_id }}">
@@ -1413,6 +1416,6 @@
 
 {% include "_waiting_modal.html" %}
 <script type="application/json" id="browser_media_data">{{ media_payload|tojson }}</script>
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.25.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.27.0-codex.0') }}"></script>
 </body>
 </html>

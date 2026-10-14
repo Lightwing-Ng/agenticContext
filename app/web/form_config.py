@@ -6,7 +6,7 @@ place. Nothing here reads a service or an application instance; it reads the req
 form and returns a validated configuration.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
@@ -98,6 +98,10 @@ def parse_form_config(
         claude_browser=(request.form.get("claude_browser", source.claude_browser) or source.claude_browser)
         .strip()
         .lower(),
+        claude_code_directory=Path(
+            (request.form.get("claude_code_directory") or str(source.claude_code_directory)).strip()
+            or str(source.claude_code_directory)
+        ).expanduser(),
         zhihu_browser=(request.form.get("zhihu_browser", source.zhihu_browser) or source.zhihu_browser)
         .strip()
         .lower(),

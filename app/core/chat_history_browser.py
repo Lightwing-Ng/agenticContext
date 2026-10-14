@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.21.0-codex.0
+# Code version: v1.22.0-codex.0
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ from .zhihu_answers import normalize_zhihu_rich_text
 CHAT_HISTORY_PAGE_SIZE = 100
 CHAT_HISTORY_SESSION_PAGE_SIZE = 100
 CHAT_HISTORY_SOURCE_VALUES = frozenset(
-    {"all", "x", "chatgpt", "claude", "gemini", "grok", "zhihu"}
+    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "zhihu"}
 )
 CHAT_HISTORY_SORT_VALUES = frozenset({"newest", "oldest", "name"})
 CHATGPT_NO_PROJECT_FILTER = "__no_project__"
@@ -160,6 +160,7 @@ def chat_history_path(local_store_root: Path | str, source: str = "gemini") -> P
         "x": X_HISTORY_FILENAME,
         "chatgpt": CHATGPT_HISTORY_FILENAME,
         "claude": CLAUDE_HISTORY_FILENAME,
+        "claude_code": CLAUDE_HISTORY_FILENAME,
         "gemini": GEMINI_HISTORY_FILENAME,
         "grok": GROK_HISTORY_FILENAME,
         "zhihu": ZHIHU_HISTORY_FILENAME,
@@ -245,7 +246,9 @@ def _message_from_row(row: dict[str, Any], source: str) -> ChatHistoryMessage | 
         stable_id=f"chat-{stable_digest}",
         source=source,
         conversation_id=conversation_id,
-        conversation_url=_safe_external_url(row.get("conversation_url")),
+        conversation_url=(
+            "" if source == "claude_code" else _safe_external_url(row.get("conversation_url"))
+        ),
         conversation_title=str(row.get("conversation_title") or "Untitled session").strip(),
         message_key=message_key,
         message_index=int(row.get("message_index") or 0),
@@ -273,6 +276,7 @@ def load_chat_history_messages(
             ("x", chat_history_path(local_store_root, "x")),
             ("chatgpt", chat_history_path(local_store_root, "chatgpt")),
             ("claude", chat_history_path(local_store_root, "claude")),
+            ("claude_code", chat_history_path(local_store_root, "claude_code")),
             ("gemini", chat_history_path(local_store_root, "gemini")),
             ("grok", chat_history_path(local_store_root, "grok")),
             ("zhihu", chat_history_path(local_store_root, "zhihu")),
@@ -976,7 +980,10 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
     session = page.current_session
     title = " ".join(session.conversation_title.split()) or "Untitled session"
     exported_count = session.message_count if message_count is None else message_count
-    lines = [f"# {title}", "", f"- Source: {session.source.title()}"]
+    source_label = {"claude": "Claude Chat", "claude_code": "Claude Code"}.get(
+        session.source, session.source.title(),
+    )
+    lines = [f"# {title}", "", f"- Source: {source_label}"]
     lines.append(
         f"- {'Answers' if session.source == 'zhihu' else 'Messages'}: {exported_count:,}"
     )
