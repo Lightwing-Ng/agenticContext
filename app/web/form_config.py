@@ -6,7 +6,7 @@ place. Nothing here reads a service or an application instance; it reads the req
 form and returns a validated configuration.
 """
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.3.0-codex.0
 
 from __future__ import annotations
 
@@ -89,6 +89,10 @@ def parse_form_config(
         stale_round_limit=parse_int_field("stale_round_limit", source.stale_round_limit),
         x_browser=(request.form.get("x_browser", source.x_browser) or source.x_browser).strip().lower(),
         grok_browser=(request.form.get("grok_browser", source.grok_browser) or source.grok_browser).strip().lower(),
+        grok_build_directory=Path(
+            (request.form.get("grok_build_directory") or str(source.grok_build_directory)).strip()
+            or str(source.grok_build_directory)
+        ).expanduser(),
         chatgpt_browser=(request.form.get("chatgpt_browser", source.chatgpt_browser) or source.chatgpt_browser)
         .strip()
         .lower(),

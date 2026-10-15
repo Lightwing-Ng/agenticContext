@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.31.0-codex.0
+# Code version: v1.33.0-codex.0
 
 from __future__ import annotations
 
@@ -42,11 +42,11 @@ VIDEO_SUFFIXES = frozenset({".m4v", ".mkv", ".mov", ".mp4", ".webm"})
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt", "claude", "gemini"})
 TEXT_SOURCE_VALUES = frozenset(
-    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "zhihu"}
+    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu"}
 )
 # Text-only providers have no media cache source. Treat a URL naming one in
 # Media mode as the ChatGPT media view instead of silently showing all media.
-TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code"})
+TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code", "grok_build"})
 MEDIA_KIND_VALUES = frozenset({"all", "image", "video"})
 SORT_VALUES = frozenset({"newest", "oldest", "name"})
 VIEW_VALUES = frozenset({"media", "text", "prompts"})

@@ -1,6 +1,6 @@
 """Provider workflows exposed to the application layer."""
 
-# Code version: v1.9.0-codex.0
+# Code version: v1.11.0-codex.0
 
 from ..chatgpt_agent_sources import (
     fetch_chatgpt_conversation_history,
@@ -29,6 +29,10 @@ from ..claude_media import build_claude_media_initial_snapshot
 from ..gemini_downloader import build_gemini_initial_snapshot
 from ..gemini_media import build_gemini_media_initial_snapshot
 from ..gemini_service import GeminiHistoryService
+from ..grok_build_history_service import (
+    GrokBuildHistoryService,
+    build_grok_build_initial_snapshot,
+)
 from ..grok_downloader import build_grok_initial_snapshot, reset_grok_state
 from ..grok_history import build_grok_history_snapshot
 from ..grok_history_service import GrokHistoryService
@@ -46,6 +50,7 @@ __all__ = [
     "GeminiHistoryService",
     "GrokDownloadService",
     "GrokHistoryService",
+    "GrokBuildHistoryService",
     "ZhihuHistoryService",
     "build_chatgpt_initial_snapshot",
     "build_chatgpt_text_snapshot",
@@ -56,6 +61,7 @@ __all__ = [
     "build_gemini_media_initial_snapshot",
     "build_grok_history_snapshot",
     "build_grok_initial_snapshot",
+    "build_grok_build_initial_snapshot",
     "build_zhihu_history_initial_snapshot",
     "chatgpt_conversation_id",
     "chatgpt_history_counts",

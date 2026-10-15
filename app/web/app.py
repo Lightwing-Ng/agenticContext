@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.6.0-codex.0
+# Code version: v2.8.0-codex.0
 
 from __future__ import annotations
 
@@ -62,6 +62,7 @@ from app.core.providers import (
     GeminiHistoryService,
     GrokDownloadService,
     GrokHistoryService,
+    GrokBuildHistoryService,
     ZhihuHistoryService,
     build_chatgpt_initial_snapshot,
     build_chatgpt_text_snapshot,
@@ -72,6 +73,7 @@ from app.core.providers import (
     build_gemini_media_initial_snapshot,
     build_grok_history_snapshot,
     build_grok_initial_snapshot,
+    build_grok_build_initial_snapshot,
     build_zhihu_history_initial_snapshot,
 )
 from app.core.storage import (
@@ -411,6 +413,13 @@ def create_app(
         **cache_task("claude_code", "text"),
     )
     app.extensions["claude_code_history_service"] = claude_code_service
+    grok_build_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
+    grok_build_service = GrokBuildHistoryService(
+        grok_build_state,
+        media_catalog.local_store_root,
+        **cache_task("grok_build", "text"),
+    )
+    app.extensions["grok_build_history_service"] = grok_build_service
     claude_media_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
     claude_media_service = ClaudeHistoryService(
         claude_media_state,
@@ -592,6 +601,15 @@ def create_app(
                 hydrate_snapshot=lambda: build_gemini_media_initial_snapshot(
                     APP_VERSION,
                     media_catalog.local_store_root,
+                ),
+            ),
+        },
+        "grok_build": {
+            "text": CacheRuntimeAdapter(
+                state=grok_build_state,
+                service=grok_build_service,
+                hydrate_snapshot=lambda: build_grok_build_initial_snapshot(
+                    APP_VERSION, media_catalog.local_store_root,
                 ),
             ),
         },

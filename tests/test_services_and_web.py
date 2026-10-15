@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.14-codex.0
+Code version: v1.8.15-codex.0
 """
 
 from __future__ import annotations
@@ -190,7 +190,7 @@ def test_grok_status_error_summary_is_actionable_and_bounded() -> None:
 def test_web_pages_and_status_apis_are_available(client) -> None:
     for path, expected_text in (
             ("/cache/x", b"Execution overview"),
-            ("/cache/grok", b"Grok library overview"),
+            ("/cache/grok", b"Grok Chat library overview"),
             ("/cache/chatgpt", b"ChatGPT cache overview"),
             ("/cache/gemini", b"Gemini cache overview"),
             ("/cache/claude", b"Claude Chat cache overview"),

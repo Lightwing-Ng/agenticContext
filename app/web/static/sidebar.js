@@ -1,4 +1,4 @@
-/* Code version: v1.27.0-codex.0 */
+/* Code version: v1.29.0-codex.0 */
 
 (function initializeSidebar() {
     "use strict";
@@ -14,8 +14,8 @@
     const sidebarMemoryKey = "cachelikes:sidebar-open";
     const dockLocationMemoryPrefix = "cachelikes:dock-location:v1:";
     const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);
-    const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/zhihu"]);
-    const cacheSelectionPathPattern = /^\/cache\/(?:(x|grok|chatgpt|gemini|claude|zhihu)(?:\/(text|media)\/(safari|edge|chrome))?|claude_code)$/;
+    const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/grok_build", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/zhihu"]);
+    const cacheSelectionPathPattern = /^\/cache\/(?:(x|grok|chatgpt|gemini|claude|zhihu)(?:\/(text|media)\/(safari|edge|chrome))?|claude_code|grok_build)$/;
     const reducedMotionMedia = window.matchMedia("(prefers-reduced-motion: reduce)");
     const sidebarGelAnimationNames = new Set([
         "workspace-sidebar-gel-open",

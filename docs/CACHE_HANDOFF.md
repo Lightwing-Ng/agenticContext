@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.19.0-claude-code.0`
+Documentation version: `v1.20.0-grok-build.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -22,7 +22,8 @@ Cache is the execution surface. Its canonical source pages are:
 | Source | Canonical page | Primary payload | Text history |
 | --- | --- | --- | --- |
 | X | `/cache/x` | Liked-post media | None |
-| Grok | `/cache/grok` | Grok media assets | Grok sessions and messages |
+| Grok Chat | `/cache/grok` | Browser Grok media assets | Grok Chat sessions and messages |
+| Grok Build | `/cache/grok_build` | Local CLI transcripts | Visible user and assistant text, separate from Grok Chat |
 | ChatGPT | `/cache/chatgpt` | ChatGPT images | ChatGPT sessions and messages |
 | Gemini | `/cache/gemini` | Rendered Gemini images in Safari | Gemini sessions and messages |
 | Claude Chat | `/cache/claude` | Browser chat sessions and messages | Claude Chat sessions and messages |
@@ -35,7 +36,7 @@ separate Agent route; it resolves into the Cache namespace.
 
 `Local resources` owns `/browser`. It is the review and export surface, not the place
 where a source sync is started. Its text source filter accepts `all`, `chatgpt`,
-`claude`, `claude_code`, `gemini`, `grok`, and `zhihu`.
+`claude`, `claude_code`, `gemini`, `grok`, `grok_build`, and `zhihu`.
 
 ### Claude Code local import
 
@@ -63,6 +64,27 @@ Local resources labels the legacy `claude` source `Claude Chat` and the new
 prompts, and Markdown export, with no fabricated web conversation link. Code
 does not appear among Media sources.
 
+### Grok Build local import
+
+Select `Grok Build` in the Cache source menu, choose `Local session folder`, and
+press `Read local sessions`. The folder defaults to `GROK_HOME` when configured,
+otherwise `~/.grok`, and is also saved under Settings > LLM settings. A selected
+sessions, workspace, or individual session folder narrows the import scope. The
+source is text-only and acquires no browser lease. Grok Chat retains its browser
+Text and Media routes.
+
+The importer reads visible user and assistant messages from the native local
+session records and uses session metadata for titles, model labels, and times.
+It excludes internal reasoning, tool payloads, system context, and subagent
+sessions. Source files stay read only. The independent typed cache is
+`local_store/llm/grok_build/history.parquet`; repeat imports preserve stable
+message identities, and partial or malformed inputs cannot delete cached history.
+
+Local resources exposes Grok Chat and Grok Build separately for session browsing,
+search, saved prompts, and Markdown export. Local transcripts have no fabricated
+web conversation link. The Dock remembers both `/cache/grok_build` and the local
+`source=grok_build` filter across visits to Agent and Settings.
+
 ## 2. Shared Text/Media contract
 
 The Cache pages for ChatGPT, Grok, Gemini, and Claude render the shared blue sliding control at
@@ -82,7 +104,7 @@ the top of the Cache sidebar:
   Grok Text displays session/message counts from its history worker and Parquet file,
   independently of Media asset counters. Responses for a previously selected mode
   are discarded after a mode change.
-- The `all` source view is an aggregate view. It must include the ChatGPT, Gemini, Grok,
+- The `all` source view is an aggregate view. It must include the ChatGPT, Gemini, Grok Chat, Grok Build,
   Claude Chat, Claude Code, and Zhihu history files.
 
 The control is shared markup in `app/web/templates/_cache_page.html`, behavior in
@@ -279,6 +301,7 @@ The current persistent cache layout is:
 | `local_store/llm/chatgpt/history.parquet` | ChatGPT Text runtime | Typed ChatGPT messages |
 | `local_store/llm/gemini/history.parquet` | Gemini Text runtime | Typed Gemini messages |
 | `local_store/llm/grok/history.parquet` | Grok Text runtime | Typed Grok messages |
+| `local_store/llm/grok_build/history.parquet` | Local Grok Build runtime | Typed local Build messages, independently cached |
 | `local_store/llm/claude/history.parquet` | Claude Text runtime | Typed Claude messages |
 | `local_store/llm/claude_code/history.parquet` | Local Claude Code runtime | Typed local Code messages, independently cached |
 | `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; rich-text source and source links retained |
