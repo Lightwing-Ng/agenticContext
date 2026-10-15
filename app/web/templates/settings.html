@@ -1,4 +1,4 @@
-<!-- Code version: v1.40.0-codex.0 -->
+<!-- Code version: v1.42.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -189,13 +189,30 @@
                                         <span class="settings-directory-status" data-directory-picker-status aria-live="polite" hidden></span>
                                     </label>
                                     <p class="settings-field-help">Use the Claude app folder for Desktop Code sessions, or <code>~/.claude</code> for all local Code sessions.</p>
+                                    <h4>Grok Build · Local</h4>
+                                    <label class="field compact-config-field">
+                                        <span>Local session folder</span>
+                                        <span class="settings-directory-control">
+                                            <input class="text-input-control settings-directory-input path-display-input" type="text"
+                                                id="grok_build_directory" name="grok_build_directory"
+                                                value="{{ saved_config.grok_build_directory }}" spellcheck="false" autocomplete="off">
+                                            <button type="button" class="secondary-button settings-directory-choose-button"
+                                                data-settings-directory-picker data-directory-field="grok_build_directory"
+                                                data-directory-input="grok_build_directory" data-directory-label="Grok Build session folder"
+                                                aria-label="Choose Grok Build session folder" title="Choose Grok Build session folder">
+                                                <span class="icon settings-directory-choose-icon" aria-hidden="true"></span>
+                                            </button>
+                                        </span>
+                                        <span class="settings-directory-status" data-directory-picker-status aria-live="polite" hidden></span>
+                                    </label>
+                                    <p class="settings-field-help">Use <code>~/.grok</code> or the folder configured by <code>GROK_HOME</code> for local Grok Build sessions.</p>
                                     <h4>Gemini · Text</h4>
                                     {{ render_number_field("Max sessions", "gemini_max_conversations", saved_config.gemini_max_conversations, minimum="1") }}
                                     {{ render_number_field("Scan wait (s)", "gemini_scroll_pause_seconds", saved_config.gemini_scroll_pause_seconds, "decimal", "0.05", "0.1") }}
                                     {{ render_number_field("Stale scroll limit", "gemini_stale_round_limit", saved_config.gemini_stale_round_limit, minimum="1") }}
-                                    <h4>Grok · Text</h4>
+                                    <h4>Grok Chat · Text</h4>
                                     {{ render_number_field("Wait between sessions (s)", "cache_scan_wait_grok_text", saved_config.cache_scan_wait("grok", "text"), "decimal", "0.1", "0", "60") }}
-                                    <h4>Grok · Media</h4>
+                                    <h4>Grok Chat · Media</h4>
                                     {{ render_number_field("Scan wait (s)", "cache_scan_wait_grok_media", saved_config.cache_scan_wait("grok", "media"), "decimal", "0.1", "0", "60") }}
                                 </div>
                             </section>
@@ -460,7 +477,7 @@
 
 {% include "_waiting_modal.html" %}
 {% include "_settings_directory_browser.html" %}
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.27.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.29.0-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='shadow-backup-settings.js', v='shadow-backup-settings-v1.3.0-codex.2') }}"></script>
 </body>
 </html>

@@ -6,7 +6,7 @@ in ``app.web.form_config``; this module owns validation of what a submitted form
 for Agent settings, shadow backup, and local directories.
 """
 
-# Code version: v1.4.0-codex.0
+# Code version: v1.6.0-codex.0
 
 from __future__ import annotations
 
@@ -184,6 +184,7 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
             return jsonify({"error": "Directory browsing is only available on the local host."}), 403
 
         directory_options = {
+            "grok_build_directory": context.config_store.config.grok_build_directory,
             "claude_code_directory": context.config_store.config.claude_code_directory,
             "chrome_user_data_dir": context.config_store.config.chrome_user_data_dir,
             "shadow_backup_destination": context.config_store.config.shadow_backup_destination,

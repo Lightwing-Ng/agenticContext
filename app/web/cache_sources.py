@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.10.0-codex.0
+# Code version: v1.12.0-codex.0
 
 from __future__ import annotations
 
@@ -137,6 +137,32 @@ _CACHE_SOURCE_VIEWS = (
         is_local=True,
     ),
     CacheSourceView(
+        key="grok_build",
+        label="Grok Build",
+        view_endpoint="cache_source",
+        template_name="grok_build.html",
+        icon_filename="images/grok.svg",
+        document_title=f"{PRODUCT_NAME} Grok Build",
+        overview_title="Grok Build local cache",
+        browser_panel_label="Local transcripts",
+        browser_empty_message="",
+        browser_config_field="",
+        require_browser_ready=False,
+        start_form_id="start_form_grok_build",
+        start_button_label="Read local sessions",
+        start_wait_title="Reading Grok Build sessions",
+        start_wait_copy="Reading saved conversations from the selected local folder.",
+        stop_wait_title="Stopping local import",
+        stop_wait_copy="Finishing the current session before stopping.",
+        progress_strategy="queue",
+        progress_aria_label="Grok Build import progress",
+        group_key="llm",
+        group_label="Chats",
+        show_progress_value=True,
+        show_progress_detail=True,
+        is_local=True,
+    ),
+    CacheSourceView(
         key="gemini",
         label="Gemini",
         view_endpoint="gemini",
@@ -188,12 +214,12 @@ _CACHE_SOURCE_VIEWS = (
     ),
     CacheSourceView(
         key="grok",
-        label="Grok",
+        label="Grok Chat",
         view_endpoint="grok",
         template_name="grok.html",
         icon_filename="images/grok.svg",
-        document_title=f"{PRODUCT_NAME} Grok",
-        overview_title="Grok library overview",
+        document_title=f"{PRODUCT_NAME} Grok Chat",
+        overview_title="Grok Chat library overview",
         browser_panel_label="Authorized browser",
         browser_empty_message="No signed-in account detected",
         browser_config_field="grok_browser",

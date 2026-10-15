@@ -1,6 +1,6 @@
 """Configuration helpers."""
 
-# Code version: v1.22.0-codex.0
+# Code version: v1.24.0-codex.0
 
 from __future__ import annotations
 
@@ -235,6 +235,11 @@ def default_claude_code_directory() -> Path:
     return Path.home() / ".claude"
 
 
+def default_grok_build_directory() -> Path:
+    """Read local Grok Build sessions from the configured Grok home."""
+    return Path(os.environ.get("GROK_HOME") or Path.home() / ".grok").expanduser()
+
+
 @dataclass(slots=True)
 class CrawlConfig:
     """Runtime configuration for a single cache job."""
@@ -247,6 +252,7 @@ class CrawlConfig:
     stale_round_limit: int = 8
     x_browser: str = "chrome"
     grok_browser: str = "edge"
+    grok_build_directory: Path = field(default_factory=default_grok_build_directory)
     chatgpt_browser: str = "edge"
     gemini_browser: str = DEFAULT_GEMINI_BROWSER
     claude_browser: str = "edge"
@@ -274,6 +280,7 @@ class CrawlConfig:
         """Normalize concurrency even when a caller constructs config directly."""
         self.download_workers = normalize_download_workers(self.download_workers)
         self.claude_code_directory = Path(self.claude_code_directory).expanduser()
+        self.grok_build_directory = Path(self.grok_build_directory).expanduser()
 
     def cache_scan_wait(self, provider: str, mode: str) -> float:
         """Read an independent scan interval without changing legacy defaults."""
@@ -335,6 +342,10 @@ def load_saved_config(settings_path: Path | None = None) -> CrawlConfig:
         stale_round_limit=int(payload.get("stale_round_limit", defaults.stale_round_limit)),
         x_browser=normalize_host_browser(payload.get("x_browser", defaults.x_browser), defaults.x_browser),
         grok_browser=normalize_host_browser(payload.get("grok_browser", defaults.grok_browser), defaults.grok_browser),
+        grok_build_directory=Path(
+            str(payload.get("grok_build_directory") or defaults.grok_build_directory).strip()
+            or str(defaults.grok_build_directory)
+        ).expanduser(),
         chatgpt_browser=normalize_host_browser(
             payload.get("chatgpt_browser", defaults.chatgpt_browser),
             defaults.chatgpt_browser,
@@ -440,6 +451,7 @@ def save_config(config: CrawlConfig, settings_path: Path | None = None) -> None:
     payload["download_workers"] = normalize_download_workers(payload.get("download_workers"))
     payload["x_browser"] = config.x_browser
     payload["grok_browser"] = config.grok_browser
+    payload["grok_build_directory"] = str(config.grok_build_directory)
     payload["chatgpt_browser"] = config.chatgpt_browser
     payload["gemini_browser"] = config.gemini_browser
     payload["claude_browser"] = config.claude_browser

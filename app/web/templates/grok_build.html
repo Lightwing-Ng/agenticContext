@@ -1,0 +1,52 @@
+{# Code version: v1.0.0-codex.0 #}
+{% extends "_cache_page.html" %}
+{% from "_cache_page_components.html" import render_metric, render_progress_metric %}
+
+{% block head %}
+<script defer src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.2.1-codex.0') }}"></script>
+{% endblock %}
+
+{% block source_fields %}
+<label class="field compact-config-field">
+    <span>Local session folder</span>
+    <span class="settings-directory-control">
+        <input class="text-input-control settings-directory-input path-display-input" type="text"
+            id="grok_build_directory" name="grok_build_directory"
+            value="{{ saved_config.grok_build_directory }}" spellcheck="false" autocomplete="off"
+            aria-describedby="grok_build_directory_help">
+        <button type="button" class="secondary-button settings-directory-choose-button"
+            data-settings-directory-picker data-directory-field="grok_build_directory"
+            data-directory-input="grok_build_directory" data-directory-label="Grok Build session folder"
+            aria-label="Choose Grok Build session folder" title="Choose Grok Build session folder">
+            <span class="icon settings-directory-choose-icon" aria-hidden="true"></span>
+        </button>
+    </span>
+    <span class="settings-directory-status" data-directory-picker-status aria-live="polite" hidden></span>
+</label>
+<p class="settings-field-help" id="grok_build_directory_help">Choose <code>~/.grok</code> to read saved Grok Build sessions, or select a session folder.</p>
+{% endblock %}
+
+{% block secondary_actions %}
+<a class="secondary-button" href="{{ url_for('local_resources.browser', view='text', source='grok_build', session_view='1', sort='newest') }}">Browse cached sessions</a>
+{% endblock %}
+
+{% block page_overlays %}
+{% include "_settings_directory_browser.html" %}
+{% endblock %}
+
+{% block primary_metrics %}
+{{ render_metric("Sessions discovered", "discovered_tweets", snapshot.discovered_tweets, "discovered_tweets") }}
+{{ render_metric("Sessions cached", "downloaded_posts", snapshot.downloaded_posts, "downloaded_posts") }}
+{{ render_metric("Messages cached", "downloaded_tweets", snapshot.downloaded_tweets, "downloaded_tweets") }}
+{{ render_metric("Unchanged sessions", "skipped_tweets", snapshot.skipped_tweets, "skipped_tweets") }}
+{{ render_metric("Session failures", "failed_tweets", snapshot.failed_tweets, "failed_tweets") }}
+{% endblock %}
+
+{% block source_notice %}
+<p class="settings-field-help">Read saved user and assistant messages from this computer. Grok Build CLI sessions are read from the selected folder. Grok Chat remains a separate source. Source files are read only; tools, internal reasoning, and subagent logs are excluded.</p>
+{% endblock %}
+
+{% block progress_metrics %}
+{{ render_progress_metric("Sessions queued", "queued_tweets", snapshot.queued_tweets, "progress_queued_tweets") }}
+{{ render_progress_metric("Sessions processed", "processed_tweets", snapshot.processed_tweets, "progress_processed_tweets") }}
+{% endblock %}
