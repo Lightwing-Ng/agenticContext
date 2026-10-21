@@ -1,6 +1,6 @@
 """Active and queued Cache tasks remain visible independently of the selected source.
 
-Code version: v1.1.0-claude.0
+Code version: v1.2.0-codex.0
 """
 
 from unittest.mock import Mock, patch
@@ -126,6 +126,40 @@ def test_activity_omits_private_diagnostics_and_reads_only_valid_run_metadata():
     assert task["unit"] == "items"
     assert "private" not in str(task).lower()
     assert "secret" not in str(task)
+    assert dependencies.mock_calls == []
+
+
+def test_activity_reports_prompt_metadata_sessions_with_a_safe_stage_message():
+    application, _context, dependencies = activity_app({
+        "chatgpt": {
+            "media": TaskSnapshot(
+                version="test",
+                running=True,
+                phase="enriching",
+                progress_unit="sessions",
+                processed_tweets=17,
+                queued_tweets=83,
+                message="Reading https://chatgpt.com/c/private-session with private credentials",
+                recent_events=["Private prompt metadata"],
+                last_error="Private API diagnostic",
+            ),
+        },
+    })
+
+    response = application.test_client().get("/api/cache/activity")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"tasks": [{
+        "id": "chatgpt:media",
+        "source": "chatgpt",
+        "label": "ChatGPT",
+        "content_mode": "media",
+        "phase": "enriching",
+        "message": "Completing image prompt metadata.",
+        "processed": 17,
+        "total": 83,
+        "unit": "sessions",
+    }]}
     assert dependencies.mock_calls == []
 
 

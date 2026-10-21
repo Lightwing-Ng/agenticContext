@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.50.1-claude.0
+# Code version: v1.51.0-codex.0
 
 from __future__ import annotations
 
@@ -110,6 +110,7 @@ CHATGPT_RATE_LIMITED_MIN_PACE_SECONDS = 2.0
 CHATGPT_RATE_LIMITED_MAX_PACE_SECONDS = 64.0
 CHATGPT_PROMPT_METADATA_PERSIST_BATCH_SIZE = 25
 CHATGPT_PROMPT_METADATA_WORKER_JOIN_TIMEOUT_SECONDS = 5.0
+CHATGPT_PROMPT_METADATA_TIME_BUDGET_SECONDS = 60.0
 CHATGPT_HISTORY_RELATIVE_DIR = Path("llm") / "chatgpt"
 CHATGPT_RECOVERABLE_PAGE_ERROR_MARKERS = (
     "Page crashed",
@@ -1454,16 +1455,39 @@ def _chatgpt_api_request_headers(request_headers: dict[str, str], referer: str) 
     return headers
 
 
-def _load_chatgpt_session_request_headers(context, referer: str) -> dict[str, str]:
+def _load_chatgpt_session_request_headers(
+    context,
+    referer: str,
+    *,
+    timeout_ms: int = CHATGPT_IMAGE_TIMEOUT_MS,
+    max_attempts: int | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> dict[str, str]:
     """Read a transient ChatGPT access token through the signed-in browser page."""
     cached_headers = getattr(context, "_chatgpt_request_headers", None)
     if isinstance(cached_headers, dict) and cached_headers.get("authorization"):
         return dict(cached_headers)
-    payload = _get_chatgpt_api_json(
-        context,
-        CHATGPT_AUTH_SESSION_URL,
-        {"Accept": "application/json", "Referer": referer},
-    )
+    request_options = {}
+    if timeout_ms != CHATGPT_IMAGE_TIMEOUT_MS or max_attempts is not None or should_stop is not None:
+        request_options = {
+            "timeout_ms": timeout_ms,
+            "max_attempts": max_attempts,
+            "should_stop": should_stop,
+        }
+    if request_options and isinstance(context, SafariContext):
+        payload = _get_chatgpt_api_json_via_page(
+            context.primary_page,
+            CHATGPT_AUTH_SESSION_URL,
+            {"Accept": "application/json", "Referer": referer},
+            **request_options,
+        )
+    else:
+        payload = _get_chatgpt_api_json(
+            context,
+            CHATGPT_AUTH_SESSION_URL,
+            {"Accept": "application/json", "Referer": referer},
+            **request_options,
+        )
     access_token = str(payload.get("accessToken") or "").strip() if isinstance(payload, dict) else ""
     if not access_token:
         raise RuntimeError("ChatGPT browser session is not signed in or did not expose an access token.")
@@ -1496,36 +1520,56 @@ def _get_chatgpt_api_json(
     url: str,
     headers: dict[str, str],
     request_get: Callable[..., object] | None = None,
+    *,
+    timeout_ms: int = CHATGPT_IMAGE_TIMEOUT_MS,
+    max_attempts: int | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, object]:
     """Fetch authenticated ChatGPT JSON with bounded transient-error retries."""
     last_status = 0
     fetch = request_get or context.request.get
     rate_limit_attempts = 0
     attempt_index = 0
-    attempt_limit = CHATGPT_API_RETRY_LIMIT
+    transient_attempt_limit = max(1, max_attempts) if max_attempts is not None else CHATGPT_API_RETRY_LIMIT
+    rate_limit_attempt_limit = max(1, max_attempts) if max_attempts is not None else CHATGPT_API_RATE_LIMIT_RETRY_LIMIT
+    attempt_limit = transient_attempt_limit
+
+    def check_interrupted() -> None:
+        if should_stop is not None and should_stop():
+            raise RuntimeError("ChatGPT API request interrupted.")
+
+    def pause(delay_seconds: float) -> None:
+        if should_stop is None:
+            time.sleep(delay_seconds)
+        elif wait_for_cache_scan(delay_seconds, should_stop):
+            check_interrupted()
+
     while attempt_index < attempt_limit:
+        check_interrupted()
         try:
             response = fetch(
                 url,
-                timeout=CHATGPT_IMAGE_TIMEOUT_MS,
+                timeout=timeout_ms,
                 headers=headers,
             )
         except (PlaywrightError, RuntimeError) as exc:
-            if attempt_index + 1 >= CHATGPT_API_RETRY_LIMIT:
+            check_interrupted()
+            if attempt_index + 1 >= transient_attempt_limit:
                 raise RuntimeError(
                     "ChatGPT API request failed after transient browser connection retries."
                 ) from exc
-            time.sleep(CHATGPT_API_RETRY_DELAY_SECONDS * (attempt_index + 1))
+            pause(CHATGPT_API_RETRY_DELAY_SECONDS * (attempt_index + 1))
             attempt_index += 1
             continue
+        check_interrupted()
         last_status = int(response.status)
         if response.ok:
             try:
                 payload = json.loads(response.text())
             except (AttributeError, TypeError, json.JSONDecodeError) as exc:
-                if attempt_index + 1 >= CHATGPT_API_RETRY_LIMIT:
+                if attempt_index + 1 >= transient_attempt_limit:
                     raise RuntimeError("ChatGPT API returned invalid JSON after retries.") from exc
-                time.sleep(CHATGPT_API_RETRY_DELAY_SECONDS * (attempt_index + 1))
+                pause(CHATGPT_API_RETRY_DELAY_SECONDS * (attempt_index + 1))
                 attempt_index += 1
                 continue
             if isinstance(payload, dict):
@@ -1533,23 +1577,23 @@ def _get_chatgpt_api_json(
             raise RuntimeError("ChatGPT API returned an unexpected JSON payload.")
         if last_status == 429:
             rate_limit_attempts += 1
-            if rate_limit_attempts >= CHATGPT_API_RATE_LIMIT_RETRY_LIMIT:
+            if rate_limit_attempts >= rate_limit_attempt_limit:
                 raise ChatGPTRateLimitError(
                     f"ChatGPT API request returned HTTP {last_status}."
                 )
-            attempt_limit = max(attempt_limit, CHATGPT_API_RATE_LIMIT_RETRY_LIMIT)
+            attempt_limit = max(attempt_limit, rate_limit_attempt_limit)
             retry_after = _chatgpt_retry_after_seconds(response)
             delay_seconds = retry_after or min(
                 CHATGPT_API_RATE_LIMIT_MAX_DELAY_SECONDS,
                 CHATGPT_API_RETRY_DELAY_SECONDS * (2 ** (rate_limit_attempts - 1)),
             )
-            time.sleep(delay_seconds)
+            pause(delay_seconds)
             attempt_index += 1
             continue
         retryable_status = last_status in {408, 429} or 500 <= last_status < 600
-        if not retryable_status or attempt_index + 1 >= CHATGPT_API_RETRY_LIMIT:
+        if not retryable_status or attempt_index + 1 >= transient_attempt_limit:
             break
-        time.sleep(CHATGPT_API_RETRY_DELAY_SECONDS * (attempt_index + 1))
+        pause(CHATGPT_API_RETRY_DELAY_SECONDS * (attempt_index + 1))
         attempt_index += 1
     raise RuntimeError(f"ChatGPT API request returned HTTP {last_status}.")
 
@@ -1616,10 +1660,23 @@ def _widen_chatgpt_rate_limited_pace(pace_seconds: float) -> float:
     )
 
 
-def _get_chatgpt_api_json_via_page(page, url: str, headers: dict[str, str]) -> dict[str, object]:
+def _get_chatgpt_api_json_via_page(
+    page,
+    url: str,
+    headers: dict[str, str],
+    *,
+    timeout_ms: int = CHATGPT_IMAGE_TIMEOUT_MS,
+    max_attempts: int | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> dict[str, object]:
     """Fetch authenticated ChatGPT JSON inside the authorized browser page."""
     page_context = getattr(page, "context", None)
     if isinstance(page_context, SafariContext):
+        transport_options = {}
+        if max_attempts is not None:
+            transport_options["max_attempts"] = max_attempts
+        if should_stop is not None:
+            transport_options["should_stop"] = should_stop
         return _get_chatgpt_api_json(
             page_context,
             url,
@@ -1628,7 +1685,11 @@ def _get_chatgpt_api_json_via_page(page, url: str, headers: dict[str, str]) -> d
                 page,
                 request_url,
                 **kwargs,
+                **transport_options,
             ),
+            timeout_ms=timeout_ms,
+            max_attempts=max_attempts,
+            should_stop=should_stop,
         )
 
     browser_headers = {
@@ -1639,20 +1700,27 @@ def _get_chatgpt_api_json_via_page(page, url: str, headers: dict[str, str]) -> d
     browser_headers["Accept"] = "application/json"
     try:
         result = page.evaluate(
-            """async ({ url, headers }) => {
-                const response = await fetch(url, {
+            """async ({ url, headers, timeoutMs }) => {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                try {
+                    const response = await fetch(url, {
                     credentials: 'include',
                     headers,
-                });
-                let payload = null;
-                try {
-                    payload = await response.json();
-                } catch (_error) {
-                    payload = null;
+                    signal: controller.signal,
+                    });
+                    let payload = null;
+                    try {
+                        payload = await response.json();
+                    } catch (_error) {
+                        payload = null;
+                    }
+                    return { status: response.status, payload };
+                } finally {
+                    clearTimeout(timeoutId);
                 }
-                return { status: response.status, payload };
             }""",
-            {"url": url, "headers": browser_headers},
+            {"url": url, "headers": browser_headers, "timeoutMs": timeout_ms},
         )
     except PlaywrightError as exc:
         raise RuntimeError("ChatGPT browser-page API request failed.") from exc
@@ -1939,10 +2007,20 @@ def enrich_chatgpt_project_index_prompts(
     browser_page=None,
     worker_count: int = 1,
     skip_complete_conversations: bool = False,
+    time_budget_seconds: float | None = None,
 ) -> list[ChatGPTImageCandidate]:
     """Reconcile project-index prompts and titles with complete conversation mappings."""
     if not candidates or not request_headers:
         return candidates
+
+    deadline = (
+        time.monotonic() + max(0.0, time_budget_seconds)
+        if time_budget_seconds is not None
+        else None
+    )
+
+    def metadata_should_stop() -> bool:
+        return should_stop() or (deadline is not None and time.monotonic() >= deadline)
 
     candidates_by_file_id = {candidate.file_id: candidate for candidate in candidates}
     candidate_file_ids_by_conversation: dict[str, list[str]] = {}
@@ -1977,6 +2055,13 @@ def enrich_chatgpt_project_index_prompts(
             )
     if not conversation_urls:
         return candidates
+
+    state.update(
+        phase="enriching",
+        progress_unit="sessions",
+        queued_tweets=len(conversation_urls),
+        processed_tweets=0,
+    )
 
     prompt_count = sum(bool(candidate.prompt_markdown) for candidate in candidates)
     failed_conversations = 0
@@ -2051,6 +2136,8 @@ def enrich_chatgpt_project_index_prompts(
         elif result.payload is not None:
             apply_payload(result.conversation_url, result.payload)
 
+        state.update(processed_tweets=completed_count)
+
         if (
             completed_count == 1
             or completed_count % CHATGPT_PROMPT_METADATA_PERSIST_BATCH_SIZE == 0
@@ -2065,7 +2152,12 @@ def enrich_chatgpt_project_index_prompts(
 
     resolved_worker_count = max(1, min(int(worker_count), len(conversation_urls)))
     page_context = getattr(browser_page, "context", None) if browser_page is not None else None
-    use_parallel_safari = resolved_worker_count > 1 and isinstance(page_context, SafariContext)
+    # A bounded optional pass shares one deadline with each cancellable request.
+    use_parallel_safari = (
+        deadline is None
+        and resolved_worker_count > 1
+        and isinstance(page_context, SafariContext)
+    )
     if use_parallel_safari:
         state.append_event(
             f"Starting {resolved_worker_count:,} parallel Safari prompt metadata workers."
@@ -2089,19 +2181,30 @@ def enrich_chatgpt_project_index_prompts(
                 )
 
     for conversation_index, conversation_url in enumerate(conversation_urls, start=1):
-        if should_stop() or prompt_metadata_deferred:
+        if metadata_should_stop() or prompt_metadata_deferred:
             break
         if conversation_url in processed_conversation_urls:
             continue
         api_url = _chatgpt_conversation_api_url(conversation_url)
         if not api_url:
             continue
+        request_options = {}
+        if deadline is not None:
+            request_options = {
+                "timeout_ms": max(1, min(CHATGPT_IMAGE_TIMEOUT_MS, int((deadline - time.monotonic()) * 1_000))),
+                "max_attempts": 1,
+                "should_stop": metadata_should_stop,
+            }
         try:
             if browser_page is not None:
-                payload = _get_chatgpt_api_json_via_page(browser_page, api_url, request_headers)
+                payload = _get_chatgpt_api_json_via_page(
+                    browser_page, api_url, request_headers, **request_options,
+                )
             else:
-                payload = _get_chatgpt_api_json(context, api_url, api_headers)
+                payload = _get_chatgpt_api_json(context, api_url, api_headers, **request_options)
         except RuntimeError as exc:
+            if metadata_should_stop():
+                break
             result = ChatGPTPromptMetadataWorkResult(
                 conversation_index=conversation_index,
                 conversation_url=conversation_url,
@@ -2117,6 +2220,18 @@ def enrich_chatgpt_project_index_prompts(
             break
 
     persist_pending_updates()
+    if (
+        deadline is not None
+        and time.monotonic() >= deadline
+        and not should_stop()
+        and completed_count < len(conversation_urls)
+        and not prompt_metadata_deferred
+    ):
+        state.append_event(
+            f"ChatGPT prompt metadata reached its {time_budget_seconds:g} s time budget after "
+            f"{completed_count:,}/{len(conversation_urls):,} sessions; deferring the remaining "
+            "metadata to a later sync. Completed images and prompt updates were preserved."
+        )
     if persist_batch is not None and persisted_update_count:
         state.append_event(
             f"Persisted prompt metadata updates for {persisted_update_count:,} ChatGPT catalog entries."
@@ -4209,32 +4324,6 @@ def sync_chatgpt_images(
                     state.append_event(
                         "Refreshing only the supplied ChatGPT session; skipping the global project image index."
                     )
-                if project_index_candidates and not should_stop():
-                    state.append_event(
-                        "Reading complete ChatGPT conversation mappings to backfill image prompts."
-                    )
-                    project_index_candidates = enrich_chatgpt_project_index_prompts(
-                        discovery_context,
-                        project_url,
-                        project_index_candidates,
-                        project_request_headers,
-                        state,
-                        should_stop,
-                        persist_batch=catalog.update_metadata_batch,
-                        browser_page=page,
-                        worker_count=(
-                            1
-                            if descriptor.engine == "safari"
-                            else max(
-                                1,
-                                min(
-                                    int(runtime_config.download_workers),
-                                    CHATGPT_MAX_CONVERSATION_WORKERS,
-                                ),
-                            )
-                        ),
-                        skip_complete_conversations=True,
-                    )
                 state.update(
                     discovered_tweets=len(conversation_urls),
                     discovered_images=len(project_index_candidates),
@@ -4382,6 +4471,61 @@ def sync_chatgpt_images(
                 )
         announce_already_cached_batch()
 
+        if project_index_candidates and not should_stop():
+            state.update(
+                phase="enriching",
+                progress_unit="sessions",
+                queued_tweets=0,
+                processed_tweets=0,
+            )
+            state.append_event(
+                "Direct ChatGPT image downloads finished; reading complete conversation "
+                "mappings to backfill image prompts."
+            )
+            try:
+                with _launch_chatgpt_browser_context(descriptor, project_url) as metadata_context:
+                    if metadata_context is None:
+                        raise RuntimeError("ChatGPT prompt metadata did not receive a browser context.")
+                    metadata_page = _chatgpt_context_page(metadata_context)
+                    open_chatgpt_page(
+                        metadata_page,
+                        project_url,
+                        startup_timeout_seconds=min(
+                            startup_timeout_seconds, CHATGPT_PROMPT_METADATA_TIME_BUDGET_SECONDS,
+                        ),
+                    )
+                    if not should_stop():
+                        metadata_request_headers = _load_chatgpt_session_request_headers(
+                            metadata_context,
+                            project_url,
+                            timeout_ms=int(CHATGPT_PROMPT_METADATA_TIME_BUDGET_SECONDS * 1_000),
+                            max_attempts=1,
+                            should_stop=should_stop,
+                        )
+                        # Prefer unfinished catalog entries on later bounded passes without
+                        # treating a cached prompt as authoritative for the current index.
+                        def has_complete_cached_metadata(candidate: ChatGPTImageCandidate) -> bool:
+                            entry = catalog.entries_by_file_id.get(candidate.file_id)
+                            return bool(entry and entry.prompt_markdown and entry.conversation_title)
+
+                        if not should_stop():
+                            project_index_candidates = enrich_chatgpt_project_index_prompts(
+                                metadata_context,
+                                project_url,
+                                sorted(project_index_candidates, key=has_complete_cached_metadata),
+                                metadata_request_headers,
+                                state,
+                                should_stop,
+                                persist_batch=catalog.update_metadata_batch,
+                                browser_page=metadata_page,
+                                worker_count=1 if descriptor.engine == "safari" else worker_count,
+                                skip_complete_conversations=True,
+                                time_budget_seconds=CHATGPT_PROMPT_METADATA_TIME_BUDGET_SECONDS,
+                            )
+            except RuntimeError:
+                if not should_stop():
+                    raise
+
         if project_index_candidates:
             state.append_event(
                 "ChatGPT's project image index is available; skipping legacy session scans "
@@ -4457,6 +4601,7 @@ def sync_chatgpt_images(
             discovered_images=len(discovered_images),
             queued_tweets=len(project_index_candidates) or len(conversation_urls),
             processed_tweets=indexed_images_processed if project_index_candidates else processed_conversations,
+            progress_unit="images" if project_index_candidates else "sessions",
             discovery_complete=not stopped,
             downloaded_posts=cached_count,
             downloaded_tweets=cached_count,

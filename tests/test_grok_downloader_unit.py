@@ -1,13 +1,13 @@
 """Unit tests for Grok downloader canonical asset handling."""
 
-# Code version: v1.3.3-codex.1
+# Code version: v1.4.0-codex.0
 
 from __future__ import annotations
 
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.core.grok_downloader import (
     GrokCatalogEntry,
@@ -26,6 +26,7 @@ from app.core.grok_downloader import (
     resolve_candidate_from_versions,
     resolve_candidate_from_file_details_page,
 )
+from app.core.safari_automation import SafariContext
 
 
 class BuildCandidateFromVersionsPayloadTests(unittest.TestCase):
@@ -296,6 +297,36 @@ class CatalogRebuildTests(unittest.TestCase):
 
 
 class OpenGrokPageTests(unittest.TestCase):
+    def test_safari_requires_dom_navigation_without_requesting_networkidle(self) -> None:
+        url = "https://grok.com/files?sort=&fileType=&createdBy="
+        page = Mock(context=SafariContext(url))
+        page.wait_for_load_state.side_effect = RuntimeError(
+            "Safari did not reach load state 'networkidle' within 5,000 ms."
+        )
+
+        with patch("app.core.grok_downloader.time.sleep") as sleep:
+            open_grok_page(page, url, settle_seconds=0.0)
+
+        page.goto.assert_called_once_with(url, wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_load_state.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_safari_navigation_failure_propagates_before_optional_waits(self) -> None:
+        url = "https://grok.com/files?sort=&fileType=&createdBy="
+        page = Mock(context=SafariContext(url))
+        failure = RuntimeError("Safari navigation failed.")
+        page.goto.side_effect = failure
+
+        with self.assertRaises(RuntimeError) as raised, patch(
+            "app.core.grok_downloader.time.sleep",
+        ) as sleep:
+            open_grok_page(page, url)
+
+        self.assertIs(raised.exception, failure)
+        page.goto.assert_called_once_with(url, wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_load_state.assert_not_called()
+        sleep.assert_not_called()
+
     def test_uses_domcontentloaded_and_tolerates_networkidle_timeout(self) -> None:
         class FakePage:
             def __init__(self) -> None:

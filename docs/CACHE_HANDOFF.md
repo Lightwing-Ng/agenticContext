@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.20.0-grok-build.0`
+Documentation version: `v1.20.1-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -495,6 +495,16 @@ happens next depends on what the tasks need:
 
 The task entry in the lower right of every page lists running tasks first and queued tasks
 after them. `GET /api/cache/activity` returns the same list.
+
+ChatGPT Media downloads project-index images before its optional prompt-metadata pass. The
+pass reports `enriching` with session counts, checks Stop during Safari response polling and
+body transfer, and limits mapping reads to 60 seconds. Startup and authorization reads are
+also bounded separately. Budget exhaustion saves completed metadata and leaves the image
+sync successful; a later sync prioritizes catalog entries missing a prompt or title. The
+browser lease remains held until the owned context closes, then queued Safari work starts.
+Grok Safari navigation requires DOM readiness and checks the actual library file cards;
+it does not request the unsupported `networkidle` state.
+
 ### Legacy Grok Text runtime
 
 The legacy Grok Text runtime remains available through its status and start/stop routes
