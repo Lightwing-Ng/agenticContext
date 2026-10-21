@@ -1,4 +1,4 @@
-<!-- Code version: v1.88.0-codex.0 -->
+<!-- Code version: v1.88.1-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -1219,7 +1219,7 @@
                                         {% endif %}
                                         <th scope="col" class="browser-session-col-count">{{ "Answers" if is_zhihu_text else "Messages" }}</th>
                                         <th scope="col" class="browser-session-col-updated" aria-sort="{{ 'ascending' if filters.sort == 'oldest' else ('descending' if filters.sort == 'newest' else 'none') }}">
-                                            <a class="browser-session-sort-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=filters.answerer, q=filters.q, sort='newest' if filters.sort == 'oldest' else 'oldest', session_view='1', page=1) }}" aria-label="Last updated: sort {{ 'newest first' if filters.sort == 'oldest' else 'oldest first' }}">Last updated <span aria-hidden="true">{{ '↑' if filters.sort == 'oldest' else '↓' }}</span></a>
+                                            <a class="browser-session-sort-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=filters.answerer, q=filters.q, sort='newest' if filters.sort == 'oldest' else 'oldest', session_view='1', page=1) }}" aria-label="Last updated: sort {{ 'newest first' if filters.sort == 'oldest' else 'oldest first' }}">Last updated</a>
                                         </th>
                                     </tr>
                                 </thead>
