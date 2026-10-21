@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.24.0-codex.0
+# Code version: v1.24.1-codex.0
 
 from __future__ import annotations
 
@@ -73,6 +73,7 @@ class ChatHistoryMessage:
     first_seen_at: str
     last_seen_at: str
     media_refs: tuple[ChatHistoryMediaReference, ...] = ()
+    session_updated_at: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +212,44 @@ def _timestamp_value(value: str) -> float:
     return parsed.timestamp()
 
 
+def _provider_revision_timestamp(value: Any) -> str:
+    """Normalize a verified provider update time without inventing a timezone."""
+    from datetime import UTC, datetime
+    from math import isfinite
+
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return ""
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return ""
+    try:
+        numeric = float(value)
+    except OverflowError:
+        return ""
+    except (TypeError, ValueError):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return ""
+        if parsed.tzinfo is None:
+            return ""
+    else:
+        if not isfinite(numeric) or numeric < 0:
+            return ""
+        try:
+            parsed = datetime.fromtimestamp(numeric, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return ""
+    try:
+        normalized = parsed.astimezone(UTC)
+        if normalized.timestamp() < 0:
+            return ""
+        return normalized.isoformat().replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
 def _message_from_row(row: dict[str, Any], source: str) -> ChatHistoryMessage | None:
     """Convert one persisted history row into a display-safe message."""
     content_text = str(row.get("content_text") or "").replace("\x00", "").strip()
@@ -261,6 +300,11 @@ def _message_from_row(row: dict[str, Any], source: str) -> ChatHistoryMessage | 
         model_label=str(row.get("model_label") or "").strip(),
         first_seen_at=first_seen_at,
         last_seen_at=last_seen_at,
+        session_updated_at=(
+            _provider_revision_timestamp(row.get("provider_revision"))
+            if source == "chatgpt"
+            else ""
+        ),
     )
 
 
@@ -404,6 +448,17 @@ def _build_chat_history_sessions(messages: Iterable[ChatHistoryMessage]) -> tupl
             )
         )
         latest = ordered_messages[-1]
+        last_seen_at = latest.last_seen_at
+        if _source == "chatgpt" and not _provider_revision_timestamp(last_seen_at):
+            last_seen_at = max(
+                (
+                    timestamp
+                    for item in ordered_messages
+                    if (timestamp := _provider_revision_timestamp(item.session_updated_at))
+                ),
+                key=_timestamp_value,
+                default="",
+            )
         source_links = tuple(dict.fromkeys(link for item in ordered_messages for link in item.source_links))
         first_seen_at = min(
             (item.first_seen_at for item in ordered_messages),
@@ -419,7 +474,7 @@ def _build_chat_history_sessions(messages: Iterable[ChatHistoryMessage]) -> tupl
                 conversation_title=latest.conversation_title,
                 message_count=len(ordered_messages),
                 first_seen_at=first_seen_at,
-                last_seen_at=latest.last_seen_at,
+                last_seen_at=last_seen_at,
                 latest_message=latest.content_text,
                 latest_role=latest.role,
                 latest_author_label=latest.author_label,

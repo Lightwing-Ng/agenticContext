@@ -1,4 +1,4 @@
-"""Container-sized cached session column contracts. Code version: v1.0.0-codex.0."""
+"""Container-sized cached session column contracts. Code version: v1.0.1-codex.0."""
 
 from collections.abc import Iterator
 from threading import Thread
@@ -202,8 +202,15 @@ def test_session_columns_fill_container_and_preserve_navigation(
             page.locator("#browser_header_source_filter_options").get_by_role("option", name="Claude", exact=True).click()
             expect(page.locator(".browser-session-source-mark").first).to_have_attribute("aria-label", "Claude")
             _assert_session_columns(page, zhihu=False)
-        page.locator(".browser-session-sort-link").click()
-        expect(page.locator(".browser-session-col-updated")).to_have_attribute("aria-sort", "ascending")
+        updated_header = page.locator(".browser-session-col-updated")
+        sort_link = updated_header.locator(".browser-session-sort-link")
+        expect(updated_header).to_have_attribute("aria-sort", "descending")
+        expect(sort_link).to_have_text("Last updated")
+        expect(sort_link).to_have_attribute("aria-label", "Last updated: sort oldest first")
+        sort_link.click()
+        expect(updated_header).to_have_attribute("aria-sort", "ascending")
+        expect(sort_link).to_have_text("Last updated")
+        expect(sort_link).to_have_attribute("aria-label", "Last updated: sort newest first")
         _assert_session_columns(page, zhihu=source == "zhihu")
         title = page.locator(".browser-session-index-table[data-table-body] .browser-session-table-title").first
         destination = title.get_attribute("href")

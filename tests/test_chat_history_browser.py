@@ -1,13 +1,16 @@
 """Focused tests for the local text-history browser."""
 
-# Code version: v1.10.1-codex.0
+# Code version: v1.11.0-codex.0
 
 from datetime import datetime
 import hashlib
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.core.chat_history_browser import (
+    _provider_revision_timestamp,
     attach_media_references,
     build_chat_history_markdown,
     format_chat_message_timestamp_label,
@@ -15,6 +18,7 @@ from app.core.chat_history_browser import (
 )
 from app.core.local_media_browser import LocalMediaItem
 from app.core.resource_persistence import (
+    CHATGPT_HISTORY_SCHEMA,
     CLAUDE_HISTORY_SCHEMA,
     GEMINI_HISTORY_SCHEMA,
     ZHIHU_HISTORY_SCHEMA,
@@ -336,6 +340,177 @@ def test_chatgpt_capture_fallback_is_unknown_until_source_time_is_refreshed(tmp_
 
     assert page.items[0].last_seen_at == ""
     assert format_chat_message_timestamp_label(page.items[0].last_seen_at) == "Unknown time"
+
+
+@pytest.mark.parametrize(
+    ("revision", "expected"),
+    [
+        ("2026-10-20T00:00:00Z", "2026-10-20T00:00:00Z"),
+        ("2026-10-20T08:00:00+08:00", "2026-10-20T00:00:00Z"),
+        (1_792_454_400, "2026-10-20T00:00:00Z"),
+        (1_792_454_400.125, "2026-10-20T00:00:00.125000Z"),
+        (" 1792454400 ", "2026-10-20T00:00:00Z"),
+        (0, "1970-01-01T00:00:00Z"),
+        ("0", "1970-01-01T00:00:00Z"),
+    ],
+)
+def test_provider_revision_accepts_only_explicit_utc_instants(revision: object, expected: str) -> None:
+    assert _provider_revision_timestamp(revision) == expected
+
+
+@pytest.mark.parametrize(
+    "revision",
+    [
+        True,
+        False,
+        None,
+        {},
+        [],
+        "",
+        "opaque-revision",
+        "2026-10-20",
+        "2026-10-20T08:00:00",
+        -1,
+        "-1",
+        float("nan"),
+        float("inf"),
+        "NaN",
+        "Infinity",
+        "1e309",
+        pytest.param(10 ** 1_000, id="integer-overflow"),
+        "1969-12-31T23:59:59Z",
+        "9999-12-31T23:59:59-23:59",
+    ],
+)
+def test_provider_revision_rejects_ambiguous_or_unrepresentable_times(revision: object) -> None:
+    assert _provider_revision_timestamp(revision) == ""
+
+
+def test_chatgpt_session_uses_latest_provider_time_without_changing_message_clocks(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        dict(
+            _history_row(
+                "legacy", "legacy:user", "First message", message_index=0,
+                first_seen_at="2026-10-21T00:00:00Z", last_seen_at="",
+            ),
+            platform="chatgpt",
+            provider_revision="1792454400",
+        ),
+        dict(
+            _history_row(
+                "legacy", "legacy:assistant", "Second message", role="assistant",
+                message_index=1, first_seen_at="2026-10-21T00:00:00Z", last_seen_at="",
+            ),
+            platform="chatgpt",
+            author_label="ChatGPT",
+            provider_revision="2026-10-19T08:00:00+08:00",
+        ),
+    ]
+    write_parquet_rows_atomic(
+        tmp_path / "llm/chatgpt/history.parquet", rows, CHATGPT_HISTORY_SCHEMA,
+    )
+
+    page = query_chat_history(tmp_path, source="chatgpt", session="chatgpt:legacy")
+
+    assert page.current_session is not None
+    assert page.current_session.last_seen_at == "2026-10-20T00:00:00Z"
+    assert page.current_session.first_seen_at == "2026-10-21T00:00:00Z"
+    assert page.current_session.latest_message == "Second message"
+    assert [item.message_key for item in page.items] == ["legacy:user", "legacy:assistant"]
+    assert [item.content_text for item in page.items] == ["First message", "Second message"]
+    assert [item.session_updated_at for item in page.items] == [
+        "2026-10-20T00:00:00Z", "2026-10-19T00:00:00Z",
+    ]
+    assert all(item.first_seen_at == "2026-10-21T00:00:00Z" for item in page.items)
+    assert all(item.last_seen_at == "" for item in page.items)
+    assert all(format_chat_message_timestamp_label(item.last_seen_at) == "Unknown time" for item in page.items)
+
+
+def test_chatgpt_session_prefers_actual_message_time_over_newer_provider_revision(tmp_path: Path) -> None:
+    rows = [
+        dict(
+            _history_row(
+                "mixed", "mixed:known", "Dated message", message_index=0,
+                first_seen_at="2026-10-21T00:00:00Z", last_seen_at="2026-10-18T12:00:00Z",
+            ),
+            platform="chatgpt",
+            provider_revision="2026-10-20T00:00:00Z",
+        ),
+        dict(
+            _history_row(
+                "mixed", "mixed:unknown", "Undated later message", role="assistant",
+                message_index=1, first_seen_at="2026-10-21T00:00:00Z", last_seen_at="",
+            ),
+            platform="chatgpt",
+            provider_revision="2026-10-21T00:00:00Z",
+        ),
+    ]
+    write_parquet_rows_atomic(
+        tmp_path / "llm/chatgpt/history.parquet", rows, CHATGPT_HISTORY_SCHEMA,
+    )
+
+    page = query_chat_history(tmp_path, source="chatgpt", session="chatgpt:mixed")
+
+    assert page.current_session is not None
+    assert page.current_session.last_seen_at == "2026-10-18T12:00:00Z"
+    assert [item.message_key for item in page.items] == ["mixed:known", "mixed:unknown"]
+    assert [item.last_seen_at for item in page.items] == ["2026-10-18T12:00:00Z", ""]
+
+
+@pytest.mark.parametrize("source", ["claude", "gemini", "claude_code", "grok", "grok_build"])
+def test_other_sources_ignore_chatgpt_provider_revision_for_session_time(tmp_path: Path, source: str) -> None:
+    row = dict(
+        _history_row(
+            "other", "other:0", "Original source message",
+            first_seen_at="2026-10-21T00:00:00Z", last_seen_at="2026-10-18T12:00:00Z",
+        ),
+        platform=source,
+        provider_revision="2026-10-20T00:00:00Z",
+    )
+    write_parquet_rows_atomic(tmp_path / "llm" / source / "history.parquet", [row], CHATGPT_HISTORY_SCHEMA)
+
+    page = query_chat_history(tmp_path, source=source, session_view=True)
+
+    assert page.sessions[0].last_seen_at == "2026-10-18T12:00:00Z"
+    assert page.items[0].last_seen_at == "2026-10-18T12:00:00Z"
+    assert page.items[0].session_updated_at == ""
+
+
+@pytest.mark.parametrize(
+    ("sort", "expected"),
+    [
+        ("newest", ["newer", "older", "unknown"]),
+        ("oldest", ["older", "newer", "unknown"]),
+    ],
+)
+def test_chatgpt_session_provider_times_sort_with_unknown_sessions_last(
+    tmp_path: Path, sort: str, expected: list[str],
+) -> None:
+    rows = [
+        dict(
+            _history_row(
+                identity, f"{identity}:0", f"Synthetic {identity} message",
+                first_seen_at="2026-10-21T00:00:00Z", last_seen_at="",
+            ),
+            platform="chatgpt",
+            provider_revision=revision,
+        )
+        for identity, revision in (
+            ("older", "2026-10-18T12:00:00Z"),
+            ("unknown", "opaque-revision"),
+            ("newer", "2026-10-20T00:00:00Z"),
+        )
+    ]
+    write_parquet_rows_atomic(tmp_path / "llm/chatgpt/history.parquet", rows, CHATGPT_HISTORY_SCHEMA)
+
+    page = query_chat_history(tmp_path, source="chatgpt", session_view=True, sort=sort)
+
+    assert [item.conversation_id for item in page.sessions] == expected
+    assert page.sessions[-1].last_seen_at == ""
+    assert format_chat_message_timestamp_label(page.sessions[-1].last_seen_at) == "Unknown time"
+    assert all(item.last_seen_at == "" for item in page.items)
 
 
 def _claude_capture_fallback_rows() -> list[dict[str, object]]:
