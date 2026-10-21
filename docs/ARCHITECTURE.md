@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.54.2-claude.0`
+Documentation version: `v1.54.3-codex.0`
 
 ## Runtime flow
 
@@ -795,8 +795,12 @@ and never leaves a hidden or blank reusable shell. Window creation, session prob
 X likes collection share this context so failure paths still run exact-window cleanup.
 The context restores the user's previous frontmost application after Safari window work,
 and JavaScript execution is bounded by a macOS-only AppleScript timeout. Conversation rows are
-replaced atomically per session, so a stopped run preserves every previously verified
-session without duplicating messages.
+published atomically. Browser refreshes keep existing rows unless an exact positional prefix
+and reliable source timestamps prove an append-only extension. Short or conflicting snapshots
+leave the cached session intact and report incomplete status. Authoritative replacement remains
+a separate store operation. The offline [Takeout importer](GEMINI_TAKEOUT_IMPORT.md) supplements
+history under the full maintenance lock, preserves raw source and backups, and records uncertain
+alignment rather than inferring missing source facts.
 The Windows path uses the Edge/Chromium controller and does not use a Safari window or
 AppleScript. Its approved `.ps1` verification paths run through PowerShell, and
 `taskkill /T /F` is used for process-tree cleanup where applicable.

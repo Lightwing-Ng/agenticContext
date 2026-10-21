@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.20.1-codex.0`
+Documentation version: `v1.20.2-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -338,6 +338,13 @@ messages and `165` sessions. This baseline is a diagnostic reference, not a hard
 expectation: Grok history changes whenever new conversations are created or removed.
 
 ## 7. Safari cache-window contract
+
+Gemini browser refreshes preserve an existing conversation when the rendered snapshot is shorter,
+conflicting, or cannot prove a complete matching prefix. Such a session is reported as incomplete;
+an equal snapshot is a no-op, and a proven extension appends without changing existing keys.
+For browser-independent recovery from an official My Activity export, see the
+[Gemini Takeout import guide](GEMINI_TAKEOUT_IMPORT.md). Import apply requires the full maintenance
+lock and keeps raw source evidence, backups, and explicitly marked uncertainty.
 
 Gemini Text and Media dispatch independent pipelines through the same cooperative worker.
 Media uses a task-owned Safari session to inspect rendered chat images from the observed
