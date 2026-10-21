@@ -11,7 +11,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.7.0-codex.0
+# Code version: v1.7.1-codex.0
 
 from __future__ import annotations
 
@@ -190,6 +190,7 @@ def build_cache_activity(context: CacheRouteContext) -> dict[str, Any]:
         "starting": "Preparing the cache task.",
         "collecting": "Discovering items to cache.",
         "downloading": "Caching items.",
+        "enriching": "Completing image prompt metadata.",
         "committing": "Saving cached items.",
         "stopping": "Stopping after the current work item.",
     }

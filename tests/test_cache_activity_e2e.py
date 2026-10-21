@@ -1,4 +1,4 @@
-"""Isolated Cache activity disclosure coverage. Code version: v1.2.0-claude.0."""
+"""Isolated Cache activity disclosure coverage. Code version: v1.2.1-codex.0."""
 
 from __future__ import annotations
 
@@ -603,6 +603,84 @@ def test_cache_activity_lists_queued_tasks_after_running_ones_without_a_meter(
         assert trigger.locator(".live-marker").evaluate(
             "element => getComputedStyle(element, '::after').animationName"
         ) == "none"
+        assert not errors, errors
+        assert all(method != "POST" for method, _url in requests), requests
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(("width", "height"), ((841, 1_074), (390, 844)))
+def test_cache_activity_metadata_progress_and_queued_media_handoff(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    macos_host,
+    width: int,
+    height: int,
+) -> None:
+    """Metadata work reports sessions until Safari advances to the queued media task."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": height},
+        reduced_motion="reduce",
+    )
+    metadata = _task(processed=75, total=861, unit="sessions")
+    metadata.update(
+        phase="enriching",
+        message="Completing image prompt metadata.",
+    )
+    queued = _queued_task("grok", content_mode="media")
+    queued["message"] = (
+        "Queued. Safari is busy with the ChatGPT · Media cache. "
+        "This task starts automatically when Safari is free."
+    )
+    activity = {"tasks": [metadata, queued]}
+    requests = _install_responses(context, activity)
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(f"{sidebar_server_url}/cache/chatgpt/text/safari")
+        trigger = page.locator("[data-cache-activity-trigger]")
+        panel = page.locator("[data-cache-activity-panel]")
+        expect(trigger).to_be_visible()
+        trigger.click()
+        _settle_disclosure(page)
+        rows = panel.locator("[data-cache-activity-task]")
+        chatgpt_row = panel.locator('[data-cache-activity-task][data-task-id="chatgpt:media"]')
+        grok_row = panel.locator('[data-cache-activity-task][data-task-id="grok:media"]')
+        expect(rows).to_have_count(2)
+        expect(chatgpt_row).to_contain_text("Completing image prompt metadata.")
+        expect(chatgpt_row.locator(".cache-activity-progress")).to_have_text(
+            "75 / 861 sessions processed (9%)"
+        )
+        expect(panel).not_to_contain_text("1,778 / 1,778 images processed (100%)")
+        expect(chatgpt_row.get_by_role("progressbar")).to_have_attribute(
+            "aria-valuenow", "8.71"
+        )
+        expect(grok_row).to_have_attribute("data-task-state", "queued")
+        expect(grok_row).to_contain_text(queued["message"])
+        expect(grok_row.get_by_role("progressbar")).to_have_count(0)
+        _assert_panel_geometry(page)
+        chatgpt_handle = chatgpt_row.element_handle()
+        queued_handle = grok_row.element_handle()
+        assert chatgpt_handle is not None and queued_handle is not None
+
+        activity["tasks"] = [_task("grok", processed=12, total=48)]
+        expect(rows).to_have_count(1, timeout=7_000)
+        expect(chatgpt_row).to_have_count(0)
+        assert not chatgpt_handle.evaluate("element => element.isConnected")
+        assert queued_handle.evaluate("element => element.isConnected")
+        expect(grok_row).to_have_attribute("data-task-state", "running")
+        expect(grok_row).not_to_contain_text("Queued.")
+        expect(grok_row).not_to_contain_text("Safari is busy")
+        expect(grok_row).to_contain_text("Caching images from the selected project.")
+        expect(grok_row.locator(".cache-activity-progress")).to_have_text(
+            "12 / 48 images processed (25%)"
+        )
+        expect(grok_row.get_by_role("progressbar")).to_have_attribute("aria-valuenow", "25")
+        _assert_progress_geometry(grok_row, 0.25)
+        _assert_panel_geometry(page)
         assert not errors, errors
         assert all(method != "POST" for method, _url in requests), requests
     finally:

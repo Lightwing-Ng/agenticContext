@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.42.1-claude.0
+# Code version: v1.43.0-codex.0
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from queue import Queue
 from threading import Event, Lock
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from PIL import Image
@@ -940,6 +940,146 @@ def test_chatgpt_prompt_rate_limit_defers_metadata_without_blocking_image_sync()
     )
 
 
+def test_chatgpt_prompt_backfill_reports_each_incomplete_session_result() -> None:
+    complete = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_complete",
+        file_id="file_complete",
+        conversation_url="https://chatgpt.com/c/complete",
+        prompt_markdown="Cached prompt",
+        conversation_title="Cached title",
+    )
+    incomplete = [
+        ChatGPTImageCandidate(
+            source_url=f"https://chatgpt.com/backend-api/estuary/content?id=file_pending_{index}",
+            file_id=f"file_pending_{index}",
+            conversation_url=f"https://chatgpt.com/c/pending-{index}",
+        )
+        for index in range(3)
+    ]
+    sibling = replace(incomplete[0], file_id="file_sibling")
+    state = TaskState("test")
+    state.update(progress_unit="images", queued_tweets=1_778, processed_tweets=1_778)
+    observed_progress = []
+
+    def fetch_mapping(_context, url, _headers, **_kwargs):
+        snapshot = state.snapshot()
+        observed_progress.append((
+            snapshot["phase"], snapshot["progress_unit"],
+            snapshot["processed_tweets"], snapshot["queued_tweets"],
+        ))
+        if url.endswith("pending-1"):
+            raise RuntimeError("ChatGPT API request returned HTTP 503.")
+        return {"title": "Recovered title", "mapping": {}}
+
+    with patch(
+        "app.core.chatgpt_downloader._get_chatgpt_api_json", side_effect=fetch_mapping,
+    ) as api_get:
+        enriched = enrich_chatgpt_project_index_prompts(
+            object(),
+            DEFAULT_CHATGPT_PROJECT_URL,
+            [complete, *incomplete, sibling],
+            {"authorization": "Bearer test-token"},
+            state,
+            should_stop=lambda: False,
+            skip_complete_conversations=True,
+        )
+
+    assert observed_progress == [
+        ("enriching", "sessions", 0, 3),
+        ("enriching", "sessions", 1, 3),
+        ("enriching", "sessions", 2, 3),
+    ]
+    snapshot = state.snapshot()
+    assert snapshot["processed_tweets"] == snapshot["queued_tweets"] == 3
+    assert snapshot["failed_tweets"] == 0
+    assert api_get.call_count == 3
+    assert enriched[0] == complete
+    assert enriched[-1].conversation_title == "Recovered title"
+
+
+@pytest.mark.parametrize("completed_before_expiry", [1, 2])
+def test_chatgpt_prompt_budget_defers_remaining_reads_and_persists_partial_metadata(
+    tmp_path: Path, completed_before_expiry: int,
+) -> None:
+    candidates = [
+        ChatGPTImageCandidate(
+            source_url=f"https://chatgpt.com/backend-api/estuary/content?id=file_budget_{index}",
+            file_id=f"file_budget_{index}",
+            conversation_url=f"https://chatgpt.com/c/budget-{index}",
+        )
+        for index in range(3)
+    ]
+    catalog = ChatGPTImageCatalog(tmp_path / "media" / "chatgpt" / "budget-test")
+    for candidate in candidates:
+        assert download_chatgpt_image(_FakeContext(), catalog, catalog.target_dir, candidate)
+    state = TaskState("test")
+    clock = [100.0]
+    fetched_file_ids = []
+
+    def fetch_mapping(_context, url, _headers, **_kwargs):
+        index = int(url.rsplit("-", 1)[1])
+        candidate = candidates[index]
+        fetched_file_ids.append(candidate.file_id)
+        clock[0] += 61.0 if len(fetched_file_ids) == completed_before_expiry else 1.0
+        return {
+            "title": f"Recovered session {index}",
+            "mapping": {
+                "user": {
+                    "parent": None,
+                    "message": {
+                        "author": {"role": "user"},
+                        "content": {"parts": [f"Recovered prompt {index}"]},
+                    },
+                },
+                "assistant": {
+                    "parent": "user",
+                    "message": {
+                        "author": {"role": "assistant"},
+                        "content": {"parts": [{
+                            "asset_pointer": f"sediment://{candidate.file_id}",
+                            "content_type": "image_asset_pointer",
+                        }]},
+                    },
+                },
+            },
+        }
+
+    with patch(
+        "app.core.chatgpt_downloader.time.monotonic", side_effect=lambda: clock[0],
+    ), patch(
+        "app.core.chatgpt_downloader._get_chatgpt_api_json", side_effect=fetch_mapping,
+    ) as api_get:
+        enriched = enrich_chatgpt_project_index_prompts(
+            object(),
+            DEFAULT_CHATGPT_PROJECT_URL,
+            candidates,
+            {"authorization": "Bearer test-token"},
+            state,
+            should_stop=lambda: False,
+            persist_batch=catalog.update_metadata_batch,
+            time_budget_seconds=60.0,
+        )
+
+    assert api_get.call_count == completed_before_expiry
+    rows = read_parquet_rows(catalog.catalog_path)
+    assert rows is not None
+    saved = {row["file_id"]: row for row in rows}
+    for index, candidate in enumerate(enriched):
+        expected_prompt = f"Recovered prompt {index}" if index < completed_before_expiry else ""
+        assert candidate.prompt_markdown == expected_prompt
+        assert saved[candidate.file_id]["prompt_markdown"] == expected_prompt
+    snapshot = state.snapshot()
+    assert snapshot["phase"] == "enriching"
+    assert snapshot["progress_unit"] == "sessions"
+    assert snapshot["processed_tweets"] == completed_before_expiry
+    assert snapshot["queued_tweets"] == len(candidates)
+    assert snapshot["failed_tweets"] == snapshot["task_failures"] == 0
+    assert any(
+        "budget" in event.lower() and "deferring" in event.lower()
+        for event in snapshot["recent_events"]
+    )
+
+
 def test_chatgpt_prompt_metadata_uses_three_isolated_safari_pages_concurrently() -> None:
     context = SafariContext(DEFAULT_CHATGPT_PROJECT_URL)
 
@@ -1063,7 +1203,112 @@ def test_chatgpt_api_retries_rate_limits_with_retry_after() -> None:
     sleep.assert_called_once_with(4.0)
 
 
-def test_chatgpt_browser_page_api_uses_authorized_fetch_headers() -> None:
+@pytest.mark.parametrize(
+    ("error_kind", "error_type", "message"),
+    [
+        ("rate_limit", ChatGPTRateLimitError, "HTTP 429"),
+        ("server_error", RuntimeError, "HTTP 503"),
+        ("browser_error", RuntimeError, "transient browser connection retries"),
+        ("runtime_error", RuntimeError, "transient browser connection retries"),
+        ("invalid_json", RuntimeError, "invalid JSON"),
+    ],
+)
+def test_chatgpt_api_single_attempt_budget_never_retries_or_sleeps(
+    error_kind: str, error_type: type[RuntimeError], message: str,
+) -> None:
+    status = 429 if error_kind == "rate_limit" else 503 if error_kind == "server_error" else 200
+    response = SimpleNamespace(
+        ok=status == 200,
+        status=status,
+        headers={"Retry-After": "4"},
+        text=lambda: "invalid JSON",
+    )
+    error = (
+        PlaywrightError("socket hang up") if error_kind == "browser_error"
+        else RuntimeError("socket hang up") if error_kind == "runtime_error"
+        else None
+    )
+    fetch = Mock(return_value=response, side_effect=error)
+    context = SimpleNamespace(request=SimpleNamespace(get=fetch))
+
+    with patch("app.core.chatgpt_downloader.time.sleep") as sleep, pytest.raises(
+        error_type, match=message,
+    ):
+        _get_chatgpt_api_json(
+            context,
+            "https://chatgpt.com/backend-api/test",
+            {"authorization": "Bearer test-token"},
+            timeout_ms=1_250,
+            max_attempts=1,
+        )
+
+    fetch.assert_called_once_with(
+        "https://chatgpt.com/backend-api/test",
+        timeout=1_250,
+        headers={"authorization": "Bearer test-token"},
+    )
+    sleep.assert_not_called()
+
+
+@pytest.mark.parametrize("stop_before_request", [False, True])
+def test_chatgpt_api_interrupts_before_a_retry_without_sleeping(stop_before_request: bool) -> None:
+    stop = Event()
+    if stop_before_request:
+        stop.set()
+
+    def interrupted_fetch(*_args, **_kwargs):
+        stop.set()
+        raise RuntimeError("socket hang up")
+
+    fetch = Mock(side_effect=interrupted_fetch)
+    context = SimpleNamespace(request=SimpleNamespace(get=fetch))
+    with patch("app.core.chatgpt_downloader.time.sleep") as sleep, patch(
+        "app.core.chatgpt_downloader.wait_for_cache_scan",
+    ) as wait, pytest.raises(RuntimeError, match="request interrupted"):
+        _get_chatgpt_api_json(
+            context, "https://chatgpt.com/backend-api/test", {}, should_stop=stop.is_set,
+        )
+
+    assert fetch.call_count == (0 if stop_before_request else 1)
+    sleep.assert_not_called()
+    wait.assert_not_called()
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_chatgpt_safari_page_api_forwards_timeout_and_optional_retry_controls(bounded: bool) -> None:
+    response = SimpleNamespace(ok=True, status=200, text=lambda: '{"mapping": {}}')
+    fetch = Mock(return_value=response)
+    context = SafariContext(DEFAULT_CHATGPT_PROJECT_URL)
+    context.request = SimpleNamespace(get_from_page=fetch)
+    page = SimpleNamespace(context=context, url=DEFAULT_CHATGPT_PROJECT_URL)
+    def should_stop() -> bool:
+        return False
+    options = {"max_attempts": 1, "should_stop": should_stop} if bounded else {}
+
+    payload = _get_chatgpt_api_json_via_page(
+        page,
+        "https://chatgpt.com/backend-api/conversation/project-first",
+        {"authorization": "Bearer test-token", "cookie": "must-not-be-forwarded"},
+        timeout_ms=1_250,
+        **options,
+    )
+
+    assert payload == {"mapping": {}}
+    fetch.assert_called_once_with(
+        page,
+        "https://chatgpt.com/backend-api/conversation/project-first",
+        timeout=1_250,
+        headers={
+            "authorization": "Bearer test-token",
+            "Accept": "application/json",
+            "Referer": DEFAULT_CHATGPT_PROJECT_URL,
+        },
+        **options,
+    )
+
+
+@pytest.mark.parametrize("timeout_ms", [60_000, 1_250])
+def test_chatgpt_browser_page_api_uses_authorized_fetch_headers(timeout_ms: int) -> None:
     class _AuthorizedPage:
         def __init__(self) -> None:
             self.argument: dict[str, object] = {}
@@ -1081,9 +1326,11 @@ def test_chatgpt_browser_page_api_uses_authorized_fetch_headers() -> None:
             "oai-device-id": "device-id",
             "cookie": "must-not-be-forwarded",
         },
+        timeout_ms=timeout_ms,
     )
 
     assert payload == {"mapping": {"node": {}}}
+    assert page.argument["timeoutMs"] == timeout_ms
     assert page.argument["headers"] == {
         "authorization": "Bearer test-token",
         "oai-device-id": "device-id",
@@ -1117,6 +1364,43 @@ def test_chatgpt_loads_and_reuses_safari_session_authorization() -> None:
     assert first == second == {"authorization": "Bearer test-token"}
     assert len(context.request.calls) == 1
     assert context.request.calls[0][0] == "https://chatgpt.com/api/auth/session"
+
+
+@pytest.mark.parametrize("safari", [False, True])
+def test_chatgpt_session_authorization_forwards_bounded_transport_controls(safari: bool) -> None:
+    context = SafariContext(DEFAULT_CHATGPT_PROJECT_URL) if safari else object()
+    page = object()
+    if safari:
+        context.pages.append(page)
+    def should_stop() -> bool:
+        return False
+    with patch(
+        "app.core.chatgpt_downloader._get_chatgpt_api_json",
+        return_value={"accessToken": "test-token"},
+    ) as api_get, patch(
+        "app.core.chatgpt_downloader._get_chatgpt_api_json_via_page",
+        return_value={"accessToken": "test-token"},
+    ) as page_get:
+        headers = _load_chatgpt_session_request_headers(
+            context,
+            DEFAULT_CHATGPT_PROJECT_URL,
+            timeout_ms=1_250,
+            max_attempts=1,
+            should_stop=should_stop,
+        )
+
+    assert headers == {"authorization": "Bearer test-token"}
+    selected = page_get if safari else api_get
+    unselected = api_get if safari else page_get
+    selected.assert_called_once_with(
+        page if safari else context,
+        "https://chatgpt.com/api/auth/session",
+        {"Accept": "application/json", "Referer": DEFAULT_CHATGPT_PROJECT_URL},
+        timeout_ms=1_250,
+        max_attempts=1,
+        should_stop=should_stop,
+    )
+    unselected.assert_not_called()
 
 
 def test_chatgpt_session_authorization_retries_transient_tls_disconnect() -> None:
@@ -2530,7 +2814,11 @@ def test_chatgpt_sync_uses_the_project_image_index_without_legacy_page_scans(tmp
     ), patch(
         "app.core.chatgpt_downloader._iter_chatgpt_index_image_results",
         return_value=iter([ChatGPTImageDownloadWorkResult(candidate.file_id, skipped=True)]),
-    ), patch("app.core.chatgpt_downloader._iter_chatgpt_conversation_results") as conversation_results:
+    ), patch("app.core.chatgpt_downloader._iter_chatgpt_conversation_results") as conversation_results, patch(
+        "app.core.chatgpt_downloader.open_chatgpt_page",
+    ), patch(
+        "app.core.chatgpt_downloader._load_chatgpt_session_request_headers", return_value={},
+    ):
         result = sync_chatgpt_images(
             state,
             config=CrawlConfig(),
@@ -2544,6 +2832,275 @@ def test_chatgpt_sync_uses_the_project_image_index_without_legacy_page_scans(tmp
     assert snapshot["processed_tweets"] == 1
     assert snapshot["progress_unit"] == "images"
     conversation_results.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "metadata_outcome",
+    [
+        "complete", "stop_after_download", "stop_during_open", "stop_during_auth",
+        "stop_during_auth_error", "stop_during_metadata", "error",
+    ],
+)
+def test_chatgpt_sync_downloads_before_prompt_backfill_and_preserves_saved_work(
+    tmp_path: Path, metadata_outcome: str,
+) -> None:
+    target_dir = tmp_path / "media" / "chatgpt" / "demo-project"
+    known = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_known",
+        file_id="file_known",
+        conversation_url="https://chatgpt.com/c/known-session",
+        prompt_markdown="Previously saved prompt.",
+    )
+    incoming = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_new",
+        file_id="file_new",
+        conversation_url="https://chatgpt.com/c/new-session",
+    )
+    catalog = ChatGPTImageCatalog(target_dir)
+    assert download_chatgpt_image(_FakeContext(), catalog, target_dir, known)
+    known_path = target_dir / "img_file_known.png"
+    new_path = target_dir / "img_file_new.png"
+    indexed_candidates = [replace(known, prompt_markdown=""), incoming]
+    discovery_context = SimpleNamespace(page=object())
+    metadata_context = SimpleNamespace(page=object())
+    fresh_headers = {"authorization": "Bearer refreshed-session"}
+    stop = Event()
+    events: list[str] = []
+    state = TaskState("test")
+
+    def launch_context(_descriptor, _url):
+        if not events:
+            return nullcontext(discovery_context)
+        assert events == ["download"]
+        snapshot = state.snapshot()
+        assert snapshot["phase"] == "enriching"
+        assert snapshot["progress_unit"] == "sessions"
+        assert snapshot["processed_tweets"] == snapshot["queued_tweets"] == 0
+        return nullcontext(metadata_context)
+
+    def collect_sessions(_page, _url, _state, _should_stop, **kwargs):
+        kwargs["request_headers"].update({"authorization": "Bearer discovery-session"})
+        return [known.conversation_url, incoming.conversation_url]
+
+    def open_metadata(*_args, **_kwargs):
+        if metadata_outcome == "stop_during_open":
+            stop.set()
+
+    def load_metadata_headers(*_args, **_kwargs):
+        if metadata_outcome in {"stop_during_auth", "stop_during_auth_error"}:
+            stop.set()
+        if metadata_outcome == "stop_during_auth_error":
+            raise RuntimeError("ChatGPT API request interrupted.")
+        return fresh_headers
+
+    def download_index(candidates, _descriptor, active_catalog, destination, _should_stop, *_args, **_kwargs):
+        for candidate in candidates:
+            downloaded = download_chatgpt_image(_FakeContext(), active_catalog, destination, candidate)
+            if downloaded:
+                events.append("download")
+            yield ChatGPTImageDownloadWorkResult(
+                candidate.file_id,
+                downloaded=downloaded,
+                skipped=not downloaded,
+                already_cached=not downloaded,
+            )
+        if metadata_outcome == "stop_after_download":
+            stop.set()
+
+    def backfill(context, _url, candidates, headers, _state, should_stop, **kwargs):
+        assert events == ["download"]
+        assert new_path.read_bytes() == PNG_PAYLOAD
+        assert context is metadata_context
+        assert headers == fresh_headers
+        assert kwargs["browser_page"] is metadata_context.page
+        assert kwargs["skip_complete_conversations"] is True
+        assert kwargs["time_budget_seconds"] == 60.0
+        snapshot = _state.snapshot()
+        assert snapshot["phase"] == "enriching"
+        assert snapshot["progress_unit"] == "sessions"
+        rows_before = read_parquet_rows(catalog.catalog_path)
+        assert rows_before is not None
+        saved_before = {row["file_id"]: row for row in rows_before}
+        assert saved_before[known.file_id]["prompt_markdown"] == known.prompt_markdown
+        assert saved_before[incoming.file_id]["prompt_markdown"] == ""
+        events.append("backfill")
+        if metadata_outcome == "error":
+            raise RuntimeError("Prompt metadata connection failed.")
+        if metadata_outcome == "stop_during_metadata":
+            stop.set()
+            assert should_stop()
+            return candidates
+        enriched = [
+            replace(
+                candidate,
+                prompt_markdown=f"Complete authoritative prompt for {candidate.file_id}.",
+                prompt_metadata_authoritative=True,
+                conversation_title=f"Authoritative title for {candidate.file_id}",
+            )
+            for candidate in candidates
+        ]
+        assert kwargs["persist_batch"](enriched) == 2
+        return enriched
+
+    expected_outcome = (
+        pytest.raises(RuntimeError, match="Prompt metadata connection failed")
+        if metadata_outcome == "error"
+        else nullcontext()
+    )
+    with patch(
+        "app.core.chatgpt_downloader._launch_chatgpt_browser_context",
+        side_effect=launch_context,
+    ) as launch, patch(
+        "app.core.chatgpt_downloader._chatgpt_context_page", side_effect=lambda context: context.page,
+    ), patch(
+        "app.core.chatgpt_downloader.collect_project_conversation_urls", collect_sessions,
+    ), patch(
+        "app.core.chatgpt_downloader.collect_chatgpt_project_index_images", return_value=indexed_candidates,
+    ), patch(
+        "app.core.chatgpt_downloader._iter_chatgpt_index_image_results", download_index,
+    ), patch(
+        "app.core.chatgpt_downloader.enrich_chatgpt_project_index_prompts", side_effect=backfill,
+    ) as enrich, patch(
+        "app.core.chatgpt_downloader.open_chatgpt_page",
+        side_effect=open_metadata,
+    ) as open_page, patch(
+        "app.core.chatgpt_downloader._load_chatgpt_session_request_headers",
+        side_effect=load_metadata_headers,
+    ) as load_headers, expected_outcome:
+        result = sync_chatgpt_images(
+            state,
+            config=CrawlConfig(chatgpt_startup_timeout_seconds=120.0),
+            target_dir=target_dir,
+            should_stop=stop.is_set,
+        )
+
+    assert known_path.read_bytes() == PNG_PAYLOAD
+    assert new_path.read_bytes() == PNG_PAYLOAD
+    rows = read_parquet_rows(catalog.catalog_path)
+    assert rows is not None
+    saved = {row["file_id"]: row for row in rows}
+    assert set(saved) == {known.file_id, incoming.file_id}
+    if metadata_outcome == "complete":
+        for candidate in indexed_candidates:
+            assert saved[candidate.file_id]["prompt_markdown"] == (
+                f"Complete authoritative prompt for {candidate.file_id}."
+            )
+            assert saved[candidate.file_id]["conversation_title"] == (
+                f"Authoritative title for {candidate.file_id}"
+            )
+    else:
+        assert saved[known.file_id]["prompt_markdown"] == known.prompt_markdown
+        assert saved[incoming.file_id]["prompt_markdown"] == ""
+    if metadata_outcome == "stop_after_download":
+        assert events == ["download"]
+        assert launch.call_count == 1
+        enrich.assert_not_called()
+        open_page.assert_not_called()
+        load_headers.assert_not_called()
+    else:
+        assert launch.call_count == 2
+        open_page.assert_called_once()
+        assert open_page.call_args.kwargs["startup_timeout_seconds"] == 60.0
+        if metadata_outcome == "stop_during_open":
+            assert events == ["download"]
+            load_headers.assert_not_called()
+            enrich.assert_not_called()
+        else:
+            load_headers.assert_called_once_with(
+                metadata_context,
+                DEFAULT_CHATGPT_PROJECT_URL,
+                timeout_ms=60_000,
+                max_attempts=1,
+                should_stop=stop.is_set,
+            )
+            if metadata_outcome in {"stop_during_auth", "stop_during_auth_error"}:
+                assert events == ["download"]
+                enrich.assert_not_called()
+            else:
+                assert events == ["download", "backfill"]
+    if metadata_outcome != "error":
+        assert result.downloaded_count == 1
+        assert result.cached_count == 2
+        assert result.stopped is (metadata_outcome != "complete")
+        snapshot = state.snapshot()
+        assert snapshot["progress_unit"] == "images"
+        assert snapshot["processed_tweets"] == snapshot["queued_tweets"] == 2
+
+
+def test_chatgpt_sync_prioritizes_pending_prompt_metadata_across_bounded_runs(tmp_path: Path) -> None:
+    target_dir = tmp_path / "media" / "chatgpt" / "bounded-runs"
+    candidates = [
+        ChatGPTImageCandidate(
+            source_url=f"https://chatgpt.com/backend-api/estuary/content?id=file_session_{index}",
+            file_id=f"file_session_{index}",
+            conversation_url=f"https://chatgpt.com/c/session-{index}",
+        )
+        for index in range(2)
+    ]
+    context = SimpleNamespace(page=object())
+    metadata_orders = []
+
+    def collect_sessions(_page, _url, _state, _should_stop, **kwargs):
+        kwargs["request_headers"].update({"authorization": "Bearer test-token"})
+        return [candidate.conversation_url for candidate in candidates]
+
+    def download_index(indexed, _descriptor, catalog, destination, *_args, **_kwargs):
+        for candidate in indexed:
+            downloaded = download_chatgpt_image(_FakeContext(), catalog, destination, candidate)
+            yield ChatGPTImageDownloadWorkResult(
+                candidate.file_id, downloaded=downloaded, skipped=not downloaded,
+                already_cached=not downloaded,
+            )
+
+    def bounded_backfill(_context, _url, indexed, _headers, _state, _should_stop, **kwargs):
+        metadata_orders.append([candidate.file_id for candidate in indexed])
+        assert kwargs["time_budget_seconds"] == 0.01
+        first = replace(
+            indexed[0],
+            conversation_title=f"Recovered title for {indexed[0].file_id}",
+            prompt_markdown=f"Recovered prompt for {indexed[0].file_id}",
+            prompt_metadata_authoritative=True,
+        )
+        assert kwargs["persist_batch"]([first]) == 1
+        return [first, *indexed[1:]]
+
+    with patch(
+        "app.core.chatgpt_downloader.CHATGPT_PROMPT_METADATA_TIME_BUDGET_SECONDS", 0.01,
+    ), patch(
+        "app.core.chatgpt_downloader._launch_chatgpt_browser_context",
+        side_effect=lambda *_args, **_kwargs: nullcontext(context),
+    ), patch(
+        "app.core.chatgpt_downloader._chatgpt_context_page", return_value=context.page,
+    ), patch(
+        "app.core.chatgpt_downloader.collect_project_conversation_urls", collect_sessions,
+    ), patch(
+        "app.core.chatgpt_downloader.collect_chatgpt_project_index_images",
+        side_effect=lambda *_args, **_kwargs: list(candidates),
+    ), patch(
+        "app.core.chatgpt_downloader._iter_chatgpt_index_image_results", download_index,
+    ), patch(
+        "app.core.chatgpt_downloader.enrich_chatgpt_project_index_prompts", bounded_backfill,
+    ), patch(
+        "app.core.chatgpt_downloader.open_chatgpt_page",
+    ), patch(
+        "app.core.chatgpt_downloader._load_chatgpt_session_request_headers",
+        return_value={"authorization": "Bearer test-token"},
+    ):
+        for completed_count in (1, 2):
+            result = sync_chatgpt_images(TaskState("test"), config=CrawlConfig(), target_dir=target_dir)
+            assert result.cached_count == 2
+            assert not result.stopped
+            assert result.failed_count == 0
+            catalog = ChatGPTImageCatalog.build(target_dir)
+            assert sum(
+                bool(entry.prompt_markdown and entry.conversation_title)
+                for entry in catalog.entries_by_file_id.values()
+            ) == completed_count
+
+    assert metadata_orders == [
+        [candidates[0].file_id, candidates[1].file_id],
+        [candidates[1].file_id, candidates[0].file_id],
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2598,7 +3155,11 @@ def test_chatgpt_sync_publishes_already_cached_index_images_as_one_batch(
     ), patch(
         "app.core.chatgpt_downloader._iter_chatgpt_index_image_results",
         return_value=result_stream(),
-    ), patch.object(ChatGPTImageCatalog, "summarize", return_value=0) as summarize:
+    ), patch.object(ChatGPTImageCatalog, "summarize", return_value=0) as summarize, patch(
+        "app.core.chatgpt_downloader.open_chatgpt_page",
+    ), patch(
+        "app.core.chatgpt_downloader._load_chatgpt_session_request_headers", return_value={},
+    ):
         sync_chatgpt_images(
             state,
             config=CrawlConfig(),
@@ -2650,7 +3211,11 @@ def test_chatgpt_sync_spreads_safari_index_downloads_across_tabs(
         return_value=iter(()),
     ) as index_results, patch(
         "app.core.chatgpt_downloader._iter_chatgpt_conversation_results"
-    ) as conversation_results:
+    ) as conversation_results, patch(
+        "app.core.chatgpt_downloader.open_chatgpt_page",
+    ), patch(
+        "app.core.chatgpt_downloader._load_chatgpt_session_request_headers", return_value={},
+    ):
         sync_chatgpt_images(
             state,
             config=CrawlConfig(chatgpt_browser="safari", download_workers=download_workers),

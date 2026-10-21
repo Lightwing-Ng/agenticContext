@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.16.0-claude.0
+# Code version: v2.17.0-codex.0
 
 from __future__ import annotations
 
@@ -666,6 +666,151 @@ def test_safari_request_client_recovers_from_suspended_window_fetch_failure() ->
 
     assert response is expected_response
     keep_rendering.assert_called_once_with()
+
+
+@pytest.mark.parametrize("error", ["Load failed", "request state disappeared"])
+def test_safari_request_client_can_disable_transport_retries(error: str) -> None:
+    context = SafariContext("https://chatgpt.com/")
+    page = SafariPage(context, window_id=123)
+
+    with (
+        patch.object(context.request, "_get_once", side_effect=RuntimeError(error)) as get_once,
+        patch.object(page, "wait_for_load_state") as wait_for_load,
+        patch.object(page, "keep_rendering_in_background") as keep_rendering,
+        patch("app.core.safari_automation.time.sleep") as sleep,
+        pytest.raises(RuntimeError, match=error),
+    ):
+        context.request.get_from_page(
+            page,
+            "https://chatgpt.com/backend-api/conversation/demo",
+            timeout=1_000,
+            max_attempts=1,
+        )
+
+    get_once.assert_called_once()
+    wait_for_load.assert_not_called()
+    keep_rendering.assert_not_called()
+    sleep.assert_not_called()
+
+
+def test_safari_request_client_honors_stop_before_starting_a_fetch() -> None:
+    context = SafariContext("https://chatgpt.com/")
+    page = SafariPage(context, window_id=123)
+
+    with patch.object(page, "evaluate") as evaluate, pytest.raises(
+        RuntimeError, match=r"^Safari request interrupted\.$",
+    ):
+        context.request.get_from_page(
+            page,
+            "https://chatgpt.com/backend-api/conversation/demo",
+            timeout=1_000,
+            should_stop=lambda: True,
+        )
+
+    evaluate.assert_not_called()
+
+
+def test_safari_request_client_aborts_a_pending_fetch_when_stopped() -> None:
+    context = SafariContext("https://chatgpt.com/")
+    page = SafariPage(context, window_id=123)
+    stopped = Event()
+    cleanup_scripts: list[str] = []
+
+    def evaluate_request(script, argument=None):
+        if isinstance(argument, dict):
+            return True
+        if argument is not None:
+            stopped.set()
+            return {"state": "pending"}
+        cleanup_scripts.append(script)
+        return True
+
+    with (
+        patch.object(page, "evaluate", side_effect=evaluate_request) as evaluate,
+        patch("app.core.safari_automation.time.sleep"),
+        pytest.raises(RuntimeError, match=r"^Safari request interrupted\.$"),
+    ):
+        context.request.get_from_page(
+            page,
+            "https://chatgpt.com/backend-api/conversation/demo",
+            timeout=60_000,
+            should_stop=stopped.is_set,
+        )
+
+    assert evaluate.call_count == 3
+    assert len(cleanup_scripts) == 1
+    assert "current.controller.abort()" in cleanup_scripts[0]
+    assert "delete window.__cachelikesSafariRequest" in cleanup_scripts[0]
+
+
+def test_safari_request_client_aborts_between_large_response_slices() -> None:
+    context = SafariContext("https://chatgpt.com/")
+    page = SafariPage(context, window_id=123)
+    stopped = Event()
+    slices: list[dict[str, int]] = []
+    cleanup_scripts: list[str] = []
+
+    def evaluate_request(script, argument=None):
+        if isinstance(argument, dict) and "url" in argument:
+            return True
+        if isinstance(argument, int):
+            return {"state": "ready", "status": 200, "bodyLength": 8}
+        if isinstance(argument, dict):
+            slices.append(argument)
+            stopped.set()
+            return {"text": "abcd", "end": 4}
+        cleanup_scripts.append(script)
+        return True
+
+    with (
+        patch.object(page, "evaluate", side_effect=evaluate_request),
+        patch("app.core.safari_automation.SAFARI_RESPONSE_TEXT_SLICE_CHARS", 4),
+        pytest.raises(RuntimeError, match=r"^Safari request interrupted\.$"),
+    ):
+        context.request.get_from_page(
+            page,
+            "https://chatgpt.com/backend-api/conversation/demo",
+            timeout=60_000,
+            should_stop=stopped.is_set,
+        )
+
+    assert slices == [{"start": 0, "end": 4}]
+    assert len(cleanup_scripts) == 1
+    assert "current.controller.abort()" in cleanup_scripts[0]
+    assert "delete window.__cachelikesSafariRequest" in cleanup_scripts[0]
+
+
+@pytest.mark.parametrize("stop_during_load_wait", [False, True])
+def test_safari_request_client_cancels_before_retrying_a_loading_page(
+    stop_during_load_wait: bool,
+) -> None:
+    context = SafariContext("https://chatgpt.com/")
+    page = SafariPage(context, window_id=123)
+    stopped = Event()
+
+    def fail_request(*_args, **_kwargs):
+        if not stop_during_load_wait:
+            stopped.set()
+        raise RuntimeError("Safari request state disappeared while the page was loading.")
+
+    with (
+        patch.object(context.request, "_get_once", side_effect=fail_request) as get_once,
+        patch.object(page, "wait_for_load_state", side_effect=lambda *_args: stopped.set()) as wait_for_load,
+        patch.object(page, "keep_rendering_in_background") as keep_rendering,
+        patch("app.core.safari_automation.time.sleep") as sleep,
+        pytest.raises(RuntimeError, match=r"^Safari request interrupted\.$"),
+    ):
+        context.request.get_from_page(
+            page,
+            "https://chatgpt.com/backend-api/conversation/demo",
+            timeout=1_000,
+            should_stop=stopped.is_set,
+        )
+
+    get_once.assert_called_once()
+    assert wait_for_load.call_count == int(stop_during_load_wait)
+    keep_rendering.assert_not_called()
+    sleep.assert_not_called()
 
 
 def test_safari_page_exposes_shared_readiness_helpers() -> None:

@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.17.0-claude.0
+# Code version: v2.17.1-codex.0
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import secrets
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
@@ -613,14 +614,22 @@ class SafariRequestClient:
         headers: dict[str, str] | None = None,
         *,
         serialize: bool = False,
+        max_attempts: int = 3,
+        should_stop: Callable[[], bool] | None = None,
     ) -> SafariResponse:
         """Fetch through one owned page so separate Safari tabs can run concurrently."""
         if page.context is not self._context:
             raise RuntimeError("Safari request page belongs to a different browser context.")
         last_error: RuntimeError | None = None
-        for attempt_index in range(3):
+        attempt_limit = max(1, int(max_attempts))
+        request_options = {"should_stop": should_stop} if should_stop is not None else {}
+        for attempt_index in range(attempt_limit):
+            if should_stop is not None and should_stop():
+                raise RuntimeError("Safari request interrupted.")
             try:
-                return self._get_once(page, url, timeout, headers or {}, serialize=serialize)
+                return self._get_once(
+                    page, url, timeout, headers or {}, serialize=serialize, **request_options,
+                )
             except RuntimeError as exc:
                 last_error = exc
                 error_text = str(exc).lower()
@@ -633,13 +642,17 @@ class SafariRequestClient:
                         "fetch is aborted",
                     )
                 )
-                if not retryable or attempt_index >= 2:
+                if not retryable or attempt_index + 1 >= attempt_limit:
                     raise
+                if should_stop is not None and should_stop():
+                    raise RuntimeError("Safari request interrupted.") from exc
                 if "request state disappeared" in error_text:
                     page.wait_for_load_state(
                         "domcontentloaded",
                         min(max(1, int(timeout)), 60_000),
                     )
+                if should_stop is not None and should_stop():
+                    raise RuntimeError("Safari request interrupted.") from exc
                 if any(
                     marker in error_text
                     for marker in ("load failed", "failed to fetch", "fetch is aborted")
@@ -648,6 +661,8 @@ class SafariRequestClient:
                     # window render-active in the background, then retry without stealing focus.
                     with contextlib.suppress(RuntimeError):
                         page.keep_rendering_in_background()
+                if should_stop is not None and should_stop():
+                    raise RuntimeError("Safari request interrupted.") from exc
                 time.sleep(SAFARI_APPLESCRIPT_RETRY_DELAY_SECONDS)
         raise last_error or RuntimeError("Safari request failed.")
 
@@ -724,7 +739,9 @@ class SafariRequestClient:
         headers: dict[str, str],
         *,
         serialize: bool,
+        should_stop: Callable[[], bool] | None = None,
     ) -> SafariResponse:
+        request_options = {"should_stop": should_stop} if should_stop is not None else {}
         return self._request_once(
             page,
             url,
@@ -733,6 +750,7 @@ class SafariRequestClient:
             method="GET",
             body=None,
             serialize=serialize,
+            **request_options,
         )
 
     def _request_once(
@@ -745,11 +763,14 @@ class SafariRequestClient:
         method: str,
         body: str | None,
         serialize: bool,
+        should_stop: Callable[[], bool] | None = None,
     ) -> SafariResponse:
         request_headers, referrer = _split_fetch_headers(headers)
         timeout_ms = max(1, int(timeout))
         request_guard = self._context.request_lock if serialize else contextlib.nullcontext()
         with request_guard:
+            if should_stop is not None and should_stop():
+                raise RuntimeError("Safari request interrupted.")
             page.evaluate(
                 """(request) => {
                     let targetUrl;
@@ -836,6 +857,8 @@ class SafariRequestClient:
             cleaned_inline = False
             try:
                 while time.monotonic() < deadline:
+                    if should_stop is not None and should_stop():
+                        raise RuntimeError("Safari request interrupted.")
                     raw_metadata = page.evaluate(
                         """(inlineLimit) => {
                             const current = window.__cachelikesSafariRequest;
@@ -876,6 +899,8 @@ class SafariRequestClient:
                 body_parts: list[str] = [str(metadata.get("bodyText") or "")] if cleaned_inline else []
                 slice_start = 0
                 while not cleaned_inline and slice_start < body_length:
+                    if should_stop is not None and should_stop():
+                        raise RuntimeError("Safari request interrupted.")
                     raw_slice = page.evaluate(
                         """(bounds) => {
                             const text = window.__cachelikesSafariRequest.bodyText || "";

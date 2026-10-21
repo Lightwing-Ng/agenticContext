@@ -1,6 +1,6 @@
 """Grok media sync helpers."""
 
-# Code version: v1.19.4-codex.0
+# Code version: v1.19.5-codex.0
 
 from __future__ import annotations
 
@@ -651,8 +651,10 @@ def resolve_candidate_from_versions(context, fallback_candidate: GrokMediaCandid
 def open_grok_page(page, url: str, settle_seconds: float = 1.0) -> None:
     """Open a Grok page without blocking on long-lived network activity."""
     page.goto(url, wait_until="domcontentloaded", timeout=PAGE_GOTO_TIMEOUT_MS)
-    with contextlib.suppress(PlaywrightError):
-        page.wait_for_load_state("networkidle", timeout=PAGE_IDLE_WAIT_TIMEOUT_MS)
+    # Safari exposes DOM readiness only; the library checks its actual file cards next.
+    if not isinstance(getattr(page, "context", None), SafariContext):
+        with contextlib.suppress(PlaywrightError):
+            page.wait_for_load_state("networkidle", timeout=PAGE_IDLE_WAIT_TIMEOUT_MS)
     if settle_seconds > 0:
         time.sleep(settle_seconds)
 
