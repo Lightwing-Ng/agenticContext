@@ -1,4 +1,4 @@
-/* Code version: v1.41.0-codex.0 */
+/* Code version: v1.42.0-codex.0 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -123,6 +123,7 @@
         if (mode !== "media") {
             targetUrl.searchParams.delete("kind");
             targetUrl.searchParams.delete("session_index");
+            targetUrl.searchParams.delete("media_view");
         }
         if (mode !== "text") targetUrl.searchParams.delete("project");
         renderOptimisticContentModeNavigation(mode);
@@ -390,19 +391,29 @@
         targetUrl.searchParams.set("source", "chatgpt");
         targetUrl.searchParams.set("session_view", isPressed ? "0" : "1");
         targetUrl.searchParams.delete("session_index");
+        targetUrl.searchParams.delete("media_view");
         targetUrl.searchParams.delete("page");
         targetUrl.searchParams.delete("session");
         window.location.assign(targetUrl.toString());
     });
 
+    function rememberMediaView(view) {
+        try {
+            window.localStorage.setItem(mediaViewStorageKey, view);
+        } catch (_error) {
+        }
+    }
+
     function applyMediaView(view, { persist = true } = {}) {
-        if (!mediaGallery || !["grid", "list"].includes(view)) return;
+        if (!mediaGallery || !["grid", "list", "all"].includes(view)) return;
         mediaGallery.dataset.view = view;
         mediaGallery.setAttribute(
             "aria-label",
             view === "list"
                 ? mediaGallery.dataset.galleryListLabel || "Cached media list"
-                : mediaGallery.dataset.galleryGridLabel || "Cached media gallery",
+                : view === "all"
+                    ? "All ChatGPT media"
+                    : mediaGallery.dataset.galleryGridLabel || "Cached media gallery",
         );
         viewButtons.forEach((button) => {
             const isActive = button.dataset.browserView === view;
@@ -410,23 +421,37 @@
             button.setAttribute("aria-pressed", String(isActive));
         });
         window.requestAnimationFrame(updatePromptToggleVisibility);
-        if (!persist) return;
-        try {
-            window.localStorage.setItem(mediaViewStorageKey, view);
-        } catch (_error) {
-        }
+        if (!persist || view === "all") return;
+        rememberMediaView(view);
     }
 
-    let initialMediaView = "grid";
+    const isAllMedia = mediaGallery?.dataset.view === "all";
+    let initialMediaView = isAllMedia ? "all" : "grid";
     try {
         const savedMediaView = window.localStorage.getItem(mediaViewStorageKey);
-        if (["grid", "list"].includes(savedMediaView)) initialMediaView = savedMediaView;
+        if (!isAllMedia && ["grid", "list"].includes(savedMediaView)) initialMediaView = savedMediaView;
     } catch (_error) {
     }
     applyMediaView(initialMediaView, { persist: false });
 
     viewButtons.forEach((button) => {
-        button.addEventListener("click", () => applyMediaView(button.dataset.browserView || "grid"));
+        button.addEventListener("click", () => {
+            const view = button.dataset.browserView || "grid";
+            if ((view === "all") === isAllMedia) {
+                applyMediaView(view);
+                return;
+            }
+            if (view !== "all") rememberMediaView(view);
+            const targetUrl = new URL(window.location.href);
+            targetUrl.searchParams.set("session_view", "1");
+            targetUrl.searchParams.set("session_index", "1");
+            if (view === "all") targetUrl.searchParams.set("media_view", "all");
+            else targetUrl.searchParams.delete("media_view");
+            for (const name of ["page", "session", "session_page", "media_id"]) {
+                targetUrl.searchParams.delete(name);
+            }
+            window.location.assign(targetUrl.toString());
+        });
     });
 
     // Returning from a session: bring its cover back into view under the standard blue glow.

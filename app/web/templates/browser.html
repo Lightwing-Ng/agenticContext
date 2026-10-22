@@ -1,4 +1,4 @@
-<!-- Code version: v1.88.1-codex.0 -->
+<!-- Code version: v1.89.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,7 +9,7 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.159.0-claude.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.159.1-codex.0') }}">
     {% include "_cache_activity_assets.html" %}
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
@@ -18,7 +18,7 @@
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.41.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.42.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.1.0-codex.0') }}"></script>
@@ -37,6 +37,7 @@
 {% set is_no_project = filters.project == no_project_filter %}
 {% set project_search_copy = "Press Enter to search chats without a project." if is_no_project else ("Press Enter to search this project." if filters.project else "Press Enter to search all cached text.") %}
 {% set is_session_index = filters.view == "media" and filters.session_index %}
+{% set is_all_media = is_session_index and filters.media_view == "all" %}
 {# Return to the ChatGPT Sessions index from a media view; a session detail names itself so the index can mark it. #}
 {% set session_index_url = url_for('local_resources.browser', view='media', source='chatgpt', kind=filters.kind, q=filters.q, sort=filters.sort, session_view='1', session_index='1', page=(none if filters.session_page <= 1 else filters.session_page), session=(media_page.current_session_key or none)) if filters.view == "media" and filters.source == "chatgpt" else "" %}
 {% macro render_browser_message_time(value, hide_unknown=false) %}
@@ -148,6 +149,7 @@
                     </div>
                     <input type="hidden" name="session_view" value="{{ '1' if filters.session_view else '0' }}">
                     {% if is_session_index %}<input type="hidden" name="session_index" value="1">{% endif %}
+                    {% if is_all_media %}<input type="hidden" name="media_view" value="all">{% endif %}
                     {# The index keeps its return origin for one arrival only; a filter change drops it. #}
                     {% if filters.session and not is_session_index %}<input type="hidden" name="session" value="{{ filters.session }}">{% endif %}
                     <label class="field browser-filter-field">
@@ -280,11 +282,11 @@
                     </label>
                     {% endif %}
                     <label class="field browser-filter-field">
-                        <span>{{ "Session order" if is_session_index else ("Image order in session" if filters.view == "media" and filters.source == "chatgpt" and filters.session_view else ("Sort prompts" if filters.view == "prompts" else "Sort order")) }}</span>
-                        <select name="sort" class="form-select" aria-label="{{ 'Order ChatGPT sessions' if is_session_index else ('Order images in the current session' if filters.view == 'media' and filters.source == 'chatgpt' and filters.session_view else ('Sort saved prompts' if filters.view == 'prompts' else ('Sort cached media' if filters.view == 'media' else 'Sort cached text'))) }}">
+                        <span>{{ "Sort order" if is_all_media else ("Session order" if is_session_index else ("Image order in session" if filters.view == "media" and filters.source == "chatgpt" and filters.session_view else ("Sort prompts" if filters.view == "prompts" else "Sort order"))) }}</span>
+                        <select name="sort" class="form-select" aria-label="{{ 'Sort cached media' if is_all_media else ('Order ChatGPT sessions' if is_session_index else ('Order images in the current session' if filters.view == 'media' and filters.source == 'chatgpt' and filters.session_view else ('Sort saved prompts' if filters.view == 'prompts' else ('Sort cached media' if filters.view == 'media' else 'Sort cached text')))) }}">
                             <option value="newest" {% if filters.sort == "newest" %}selected{% endif %}>Newest first</option>
                             <option value="oldest" {% if filters.sort == "oldest" %}selected{% endif %}>Oldest first</option>
-                            <option value="name" {% if filters.sort == "name" %}selected{% endif %}>{{ "Session name" if is_session_index else ("File name" if filters.view == "media" else ("Prompt title" if filters.view == "prompts" else ("Question title" if is_zhihu_text and text_page.session_detail else ("Answerer name" if is_zhihu_text else "Session title")))) }}</option>
+                            <option value="name" {% if filters.sort == "name" %}selected{% endif %}>{{ "Session name" if is_session_index and not is_all_media else ("File name" if filters.view == "media" else ("Prompt title" if filters.view == "prompts" else ("Question title" if is_zhihu_text and text_page.session_detail else ("Answerer name" if is_zhihu_text else "Session title")))) }}</option>
                         </select>
                     </label>
                 </form>
@@ -438,8 +440,8 @@
                     </div>
                     {% if filters.view == "media" %}
                     <div
-                        class="metric-grid browser-metric-grid{% if media_page.pagination_unit in ('session', 'session_index') %} browser-session-metric-grid{% endif %}"
-                        aria-label="{{ 'ChatGPT session metrics' if media_page.pagination_unit in ('session', 'session_index') else 'Cached media totals' }}"
+                        class="metric-grid browser-metric-grid{% if is_session_index or media_page.pagination_unit == 'session' %} browser-session-metric-grid{% endif %}"
+                        aria-label="{{ 'ChatGPT session metrics' if is_session_index or media_page.pagination_unit == 'session' else 'Cached media totals' }}"
                     >
                         {% if is_session_index %}
                         <div class="metric-card foundation-metric-card metric-card-accent">
@@ -517,9 +519,9 @@
                     </div>
                     {% endif %}
 
-                    {% if filters.view == "media" and media_page.items %}
-                    <div class="browser-result-summary{% if media_page.pagination_unit in ('session', 'session_index') %} browser-session-controls-row{% endif %}" aria-live="polite">
-                        {% if media_page.pagination_unit in ("session", "session_index") %}
+                    {% if filters.view == "media" and (media_page.items or is_session_index) %}
+                    <div class="browser-result-summary{% if is_session_index or media_page.pagination_unit == 'session' %} browser-session-controls-row{% endif %}" aria-live="polite">
+                        {% if is_session_index or media_page.pagination_unit == "session" %}
                         <div class="browser-result-controls">
                             {% if not is_session_index %}
                             {{ render_session_index_link(session_index_url, "Back to all sessions") }}
@@ -577,14 +579,26 @@
                                 </button>
                                 <button
                                     type="button"
-                                    class="browser-view-dock-item is-active"
+                                    class="browser-view-dock-item{% if not is_all_media %} is-active{% endif %}"
                                     data-browser-view="grid"
                                     data-tooltip="Grid view"
                                     aria-label="Grid view"
-                                    aria-pressed="true"
+                                    aria-pressed="{{ 'false' if is_all_media else 'true' }}"
                                 >
                                     <span class="icon browser-view-icon browser-view-icon-grid" aria-hidden="true"></span>
                                 </button>
+                                {% if is_session_index %}
+                                <button
+                                    type="button"
+                                    class="browser-view-dock-item{% if is_all_media %} is-active{% endif %}"
+                                    data-browser-view="all"
+                                    data-tooltip="All media"
+                                    aria-label="All media"
+                                    aria-pressed="{{ 'true' if is_all_media else 'false' }}"
+                                >
+                                    <span class="icon browser-view-icon browser-view-icon-all" aria-hidden="true"></span>
+                                </button>
+                                {% endif %}
                             </div>
                         </div>
                         {% else %}
@@ -643,7 +657,7 @@
                         {% endif %}
                     </div>
                     {% endif %}
-                    {% if is_session_index %}
+                    {% if is_session_index and not is_all_media %}
                     <div
                         class="browser-gallery browser-session-gallery"
                         data-view="grid"
@@ -699,7 +713,7 @@
                         {% endfor %}
                     </div>
                     {% elif filters.view == "media" %}
-                    <div class="browser-gallery" data-view="grid" aria-label="Cached media gallery">
+                    <div class="browser-gallery" data-view="{{ 'all' if is_all_media else 'grid' }}" aria-label="{{ 'All ChatGPT media' if is_all_media else 'Cached media gallery' }}">
                         {% for item in media_page.items %}
                         <article
                             class="browser-media-card workspace-article-card{% if item.is_deleted %} is-deleted{% endif %}"
@@ -1343,7 +1357,7 @@
                     {% if filters.view == "media" %}
                     {{ render_browser_pagination(
                         media_page,
-                        'ChatGPT sessions' if media_page.pagination_unit == 'session' else ('ChatGPT session pages' if is_session_index else 'Media pages'),
+                        'ChatGPT sessions' if media_page.pagination_unit == 'session' else ('ChatGPT session pages' if is_session_index and not is_all_media else 'Media pages'),
                         'media',
                         filters,
                         'sessions' if media_page.pagination_unit == 'session' else 'pages'
@@ -1416,6 +1430,6 @@
 
 {% include "_waiting_modal.html" %}
 <script type="application/json" id="browser_media_data">{{ media_payload|tojson }}</script>
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.29.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.29.1-codex.0') }}"></script>
 </body>
 </html>

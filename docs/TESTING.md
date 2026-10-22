@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.28.1-claude.0`
+Documentation version: `v1.29.0-codex.0`
 
 ## Supported commands
 
@@ -550,6 +550,14 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   choice persists across reloads, and a sidebar filter, pagination, and dock round trip keep the
   index. Phone cases at 390 px in light and dark themes assert two uncropped grid columns, an 88px
   uncropped list column, and no document-level horizontal overflow. No test contacts ChatGPT.
+- `test_chatgpt_flat_media.py`, `test_chatgpt_flat_media_web.py`, and
+  `test_chatgpt_flat_media_e2e.py` cover the All sessions `All media` view: every
+  session resource expands, exact bytes deduplicate globally before 24-item paging,
+  stale catalog hashes cannot hide distinct files, and unreadable resources remain
+  separate. Tests verify size-based read avoidance, bounded blocked-file handling,
+  hash-cache invalidation, active-file precedence, filter
+  boundaries, stored-byte preservation, accessible dock switching, previews, history
+  navigation, mode persistence, and desktop/phone layouts with synthetic media only.
 - `test_select_keyboard_e2e.py` opens the Local resources Media type and Sort order menus at
   1,280 and 390 px in light and dark themes and asserts an opaque theme-background base, a menu
   that covers the next field at its overlap, option hit targets, and no horizontal overflow. The

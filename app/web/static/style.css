@@ -1,4 +1,4 @@
-/* Code version: v2.159.0-claude.0 */
+/* Code version: v2.159.1-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -9400,6 +9400,10 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     --browser-view-active-shift: var(--browser-view-dock-item-step);
 }
 
+.browser-view-dock:has(> .browser-view-dock-item:nth-child(3).is-active) {
+    --browser-view-active-shift: calc(2 * var(--browser-view-dock-item-step));
+}
+
 .browser-view-dock-item {
     position: relative;
     z-index: var(--layer-surface-content);
@@ -9478,6 +9482,11 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-view-icon-grid {
     mask: url("/static/images/rectangle.grid.3x2.fill.svg") center/contain no-repeat;
     -webkit-mask: url("/static/images/rectangle.grid.3x2.fill.svg") center/contain no-repeat;
+}
+
+.browser-view-icon-all {
+    mask: url("/static/images/rectangle.grid.3x3.fill.svg") center/contain no-repeat;
+    -webkit-mask: url("/static/images/rectangle.grid.3x3.fill.svg") center/contain no-repeat;
 }
 
 .browser-gallery {
