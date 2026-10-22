@@ -1,14 +1,15 @@
 """Focused tests for Gemini session history Parquet persistence."""
 
-# Code version: v1.11.4-codex.1
+# Code version: v1.12.0-codex.0
 
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlencode
 
 import pyarrow.parquet as pq
@@ -22,6 +23,7 @@ from app.core.gemini_downloader import (
     GEMINI_TRANSIENT_NAVIGATION_MARKERS,
     GeminiConversationLink,
     GeminiHistoryStore,
+    GeminiIncompleteSnapshotError,
     GeminiNoCacheableMessagesError,
     _build_gemini_history_rpc_page_request,
     _decode_gemini_history_rpc_payloads,
@@ -44,6 +46,7 @@ from app.core.gemini_downloader import (
     normalize_gemini_conversation_url,
     load_gemini_discovery_checkpoint,
     save_gemini_discovery_checkpoint,
+    sync_gemini_history,
     wait_for_gemini_bot_check_clear,
     collect_gemini_conversation_links,
 )
@@ -391,6 +394,155 @@ def test_gemini_history_store_prefers_source_timestamp_over_capture_time(tmp_pat
     store.replace_conversation(conversation, messages, "2026-08-15T17:38:42Z")
 
     assert {row["last_seen_at"] for row in store.rows} == {"2026-06-04T06:40:37.050958Z"}
+
+
+def _browser_snapshot(*turns: tuple[str, str]) -> list[dict[str, object]]:
+    messages = []
+    for turn, (question, answer) in enumerate(turns):
+        for message in _messages(question, answer):
+            message.update(
+                turn_index=turn,
+                message_index=len(messages),
+                message_timestamp=f"2026-06-04T06:40:{10 + turn:02d}Z",
+            )
+            messages.append(message)
+    return messages
+
+
+@pytest.mark.parametrize("kind", ("short_prefix", "same_length_conflict", "reordered", "shifted_repeat"))
+def test_gemini_browser_snapshot_preserves_conflicting_cached_rows(tmp_path: Path, kind: str) -> None:
+    path = gemini_history_path(tmp_path)
+    conversation = GeminiConversationLink("protected", "https://gemini.google.com/app/protected", "Protected")
+    store = GeminiHistoryStore(path)
+    baseline = _browser_snapshot(("Repeated prompt", "Same answer"), ("Repeated prompt", "Same answer"))
+    store.replace_conversation(conversation, baseline, "2026-08-12T05:00:00Z")
+    other = GeminiConversationLink("other", "https://gemini.google.com/app/other", "Other")
+    store.replace_conversation(other, _messages(), "2026-08-12T05:00:00Z")
+    store.save()
+    before = path.read_bytes()
+    rows = store.rows
+    incoming = [dict(message) for message in baseline]
+    if kind == "short_prefix":
+        incoming = incoming[:2]
+    elif kind == "same_length_conflict":
+        incoming[0]["content_text"] = "Edited question"
+    elif kind == "reordered":
+        incoming[0], incoming[1] = incoming[1], incoming[0]
+        for index, message in enumerate(incoming):
+            message["message_index"] = index
+    else:
+        for message in incoming:
+            message["message_timestamp"] = "2026-06-04T06:41:00Z"
+    reloaded = GeminiHistoryStore(path)
+    with pytest.raises(GeminiIncompleteSnapshotError):
+        reloaded.cache_browser_snapshot(conversation, incoming, "2026-08-12T06:00:00Z")
+    assert reloaded.rows == rows
+    assert path.read_bytes() == before
+
+
+def test_gemini_browser_snapshot_appends_without_rewriting_old_fields(tmp_path: Path) -> None:
+    path = gemini_history_path(tmp_path)
+    conversation = GeminiConversationLink("append", "https://gemini.google.com/app/append", "Original title")
+    store = GeminiHistoryStore(path)
+    original = _browser_snapshot(("Repeated prompt", "Same answer"), ("Repeated prompt", "Same answer"))
+    store.replace_conversation(conversation, original, "2026-08-12T05:00:00Z")
+    store.save()
+    before = store.rows
+    incoming = _browser_snapshot(
+        ("Repeated prompt", "Same answer"), ("Repeated prompt", "Same answer"), ("New question", "New answer"),
+    )
+    for message in incoming:
+        message.update(conversation_title="New title", content_html="<div>Changed rendering</div>")
+    reloaded = GeminiHistoryStore(path)
+    assert reloaded.cache_browser_snapshot(conversation, incoming, "2026-08-12T06:00:00Z") == (2, False)
+    reloaded.save()
+    persisted = GeminiHistoryStore(path).rows
+    assert persisted[:len(before)] == before
+    assert [row["content_text"] for row in persisted[-2:]] == ["New question", "New answer"]
+    assert len(persisted) == 6
+    assert reloaded.cache_browser_snapshot(conversation, incoming, "2026-08-12T07:00:00Z") == (0, True)
+    assert reloaded.rows == persisted
+
+
+@pytest.mark.parametrize("kind", ("old_missing", "new_missing", "capture_fallback", "same_second_turn"))
+def test_gemini_browser_extension_requires_trustworthy_timestamps(tmp_path: Path, kind: str) -> None:
+    path = gemini_history_path(tmp_path)
+    conversation = GeminiConversationLink("time", "https://gemini.google.com/app/time", "Time")
+    original = _browser_snapshot(("Question", "Answer"))
+    if kind == "capture_fallback":
+        for message in original:
+            message.pop("message_timestamp")
+    store = GeminiHistoryStore(path)
+    store.replace_conversation(conversation, original, "2026-08-12T05:00:00Z")
+    before = store.rows
+    incoming = _browser_snapshot(("Question", "Answer"), ("New question", "New answer"))
+    if kind == "old_missing":
+        incoming[0].pop("message_timestamp")
+    elif kind == "new_missing":
+        incoming[-1].pop("message_timestamp")
+    elif kind == "capture_fallback":
+        for message in incoming[:2]:
+            message["message_timestamp"] = "2026-08-12T05:00:00Z"
+    else:
+        for message in incoming[2:]:
+            message["message_timestamp"] = incoming[0]["message_timestamp"]
+    with pytest.raises(GeminiIncompleteSnapshotError):
+        store.cache_browser_snapshot(conversation, incoming, "2026-08-12T06:00:00Z")
+    assert store.rows == before
+
+
+def test_gemini_browser_identical_snapshot_without_time_is_a_noop(tmp_path: Path) -> None:
+    path = gemini_history_path(tmp_path)
+    conversation = GeminiConversationLink("unchanged", "https://gemini.google.com/app/unchanged", "Unchanged")
+    store = GeminiHistoryStore(path)
+    store.replace_conversation(conversation, _messages(), "2026-08-12T05:00:00Z")
+    before = store.rows
+    assert store.cache_browser_snapshot(conversation, _messages(), "2026-08-12T06:00:00Z") == (0, True)
+    assert store.rows == before
+
+
+def test_gemini_browser_new_session_can_be_cached_without_timestamps(tmp_path: Path) -> None:
+    conversation = GeminiConversationLink("new", "https://gemini.google.com/app/new", "New")
+    store = GeminiHistoryStore(gemini_history_path(tmp_path))
+    assert store.cache_browser_snapshot(conversation, _messages(), "2026-08-12T05:00:00Z") == (2, False)
+    assert store.cached_messages == 2
+
+
+def test_gemini_sync_reports_preserved_snapshot_as_incomplete(tmp_path: Path) -> None:
+    path = gemini_history_path(tmp_path)
+    conversation = GeminiConversationLink("long", "https://gemini.google.com/app/long", "Long")
+    store = GeminiHistoryStore(path)
+    messages = _browser_snapshot(("Old question", "Old answer"), ("New question", "New answer"))
+    store.replace_conversation(conversation, messages, "2026-08-12T05:00:00Z")
+    store.save()
+    before = path.read_bytes()
+    page = SimpleNamespace(wait_for_timeout=lambda _milliseconds: None)
+    state = TaskState("test")
+    with patch.multiple(
+        "app.core.gemini_downloader",
+        launch_gemini_browser_context=Mock(return_value=nullcontext((
+            SimpleNamespace(pages=[page]), SimpleNamespace(label="Synthetic browser"),
+        ))),
+        collect_gemini_conversation_links=Mock(return_value=[conversation]),
+        _attach_gemini_conversation_rpc_capture=Mock(return_value=[]),
+        goto_with_retry=Mock(),
+        _prepare_gemini_page_for_rendering=Mock(),
+        wait_for_gemini_bot_check_clear=Mock(return_value=True),
+        _wait_for_gemini_ready=Mock(),
+        _gemini_message_timestamps_from_captured_responses=Mock(return_value={"known": "time"}),
+        extract_gemini_conversation_messages=Mock(return_value=messages[:2]),
+    ), patch.object(GeminiHistoryStore, "save") as save:
+        result = sync_gemini_history(state, CrawlConfig(), lambda: False, tmp_path)
+    assert result.failed_conversations == 1
+    assert result.new_messages == 0
+    assert result.unchanged_conversations == 0
+    assert result.cached_messages == 4
+    assert result.discovered_messages == 2
+    assert path.read_bytes() == before
+    save.assert_not_called()
+    events = state.snapshot()["recent_events"]
+    assert any("Preserved cached Gemini session" in event for event in events)
+    assert not any("Cached Gemini session" in event for event in events)
 
 
 def test_gemini_history_store_preserves_source_timestamp_when_refresh_omits_it(
