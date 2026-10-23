@@ -59,6 +59,13 @@ On Windows:
 $env:AGENTIC_CONTEXT_TEST_MARK_EXPRESSION='integration'; .\scripts\test.ps1
 ```
 
+`tests/test_chatgpt_display.py` and `tests/test_chatgpt_display_web.py` cover the
+display-only adapter for observed ChatGPT component markup and empty citation
+pointers. Known component rows become Markdown tables, diagram text remains
+readable, and unsupported structures keep inert fenced source. Inline, fenced,
+and indented code stay literal. Route checks preserve user messages, other
+providers, stored Parquet bytes, and original Markdown exports.
+
 The default marker expression is `not live`. Run an intentionally manual live check only with an
 explicit override, for example `AGENTIC_CONTEXT_TEST_MARK_EXPRESSION=live ./scripts/test.sh`.
 

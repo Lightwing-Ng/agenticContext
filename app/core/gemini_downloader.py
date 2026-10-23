@@ -1,6 +1,6 @@
 """Browser-backed Gemini session history caching."""
 
-# Code version: v1.11.4-codex.1
+# Code version: v1.12.0-codex.0
 
 from __future__ import annotations
 
@@ -96,6 +96,19 @@ class GeminiSyncResult:
 
 class GeminiNoCacheableMessagesError(RuntimeError):
     """Indicate that a rendered session contains no text rows for the text cache."""
+
+
+class GeminiIncompleteSnapshotError(RuntimeError):
+    """Indicate that a browser snapshot cannot safely extend the cached session."""
+
+
+def _gemini_source_instant(value: Any) -> datetime | None:
+    """Parse an explicit source instant without assuming a missing time zone."""
+    try:
+        instant = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return instant.astimezone(UTC) if instant.tzinfo is not None else None
 
 
 def gemini_history_dir(local_store_root: Path | str = LOCAL_STORE_ROOT) -> Path:
@@ -355,6 +368,92 @@ class GeminiHistoryStore:
         self._rows_by_key = retained_rows
         self._rows_by_key.update(next_rows)
         return new_message_count, unchanged
+
+    def cache_browser_snapshot(
+        self,
+        conversation: GeminiConversationLink,
+        messages: list[dict[str, Any]],
+        captured_at: str,
+    ) -> tuple[int, bool]:
+        """Keep existing rows and accept only an unambiguous append-only snapshot."""
+        previous_rows, _ = partition_conversation_rows(
+            self._rows_by_key,
+            conversation.conversation_id,
+        )
+        if not previous_rows:
+            return self.replace_conversation(conversation, messages, captured_at)
+
+        previous = sort_history_rows(previous_rows.values())
+        cacheable = [
+            message for message in messages
+            if str(message.get("role") or "").strip().lower() in {"user", "assistant"}
+            and str(message.get("content_text") or "").replace("\x00", "").strip()
+        ]
+        if len(cacheable) < len(previous):
+            raise GeminiIncompleteSnapshotError(
+                f"Browser exposed {len(cacheable):,} messages; the cache retains "
+                f"{len(previous):,}."
+            )
+        try:
+            positions = [int(message.get("message_index") or 0) for message in cacheable]
+            turns = [int(message.get("turn_index") or 0) for message in cacheable]
+        except (ValueError, TypeError) as exc:
+            raise GeminiIncompleteSnapshotError("Browser message positions are invalid.") from exc
+        if (
+            positions != list(range(len(cacheable)))
+            or [row["message_index"] for row in previous] != list(range(len(previous)))
+        ):
+            raise GeminiIncompleteSnapshotError("Browser message positions do not match cached history.")
+
+        for row, message, turn in zip(previous, cacheable, turns):
+            if (
+                row["role"] != str(message.get("role") or "").strip().lower()
+                or row["turn_index"] != turn
+                or row["content_text"]
+                != str(message.get("content_text") or "").replace("\x00", "").strip()
+            ):
+                raise GeminiIncompleteSnapshotError("Browser content conflicts with the cached prefix.")
+            source = str(message.get("message_timestamp") or "").strip()
+            if source and (
+                _gemini_source_instant(source) is None
+                or _gemini_source_instant(source)
+                != _gemini_source_instant(row.get("last_seen_at"))
+            ):
+                raise GeminiIncompleteSnapshotError("Browser source timestamps conflict with cached history.")
+
+        if len(cacheable) == len(previous):
+            return 0, True
+
+        times = [_gemini_source_instant(message.get("message_timestamp")) for message in cacheable]
+        for row, instant in zip(previous, times):
+            captured = _gemini_source_instant(row.get("first_seen_at"))
+            if instant is None or captured is None or instant >= captured:
+                raise GeminiIncompleteSnapshotError(
+                    "An extension requires source timestamps distinct from capture times."
+                )
+        if any(instant is None for instant in times):
+            raise GeminiIncompleteSnapshotError("An extension requires every source timestamp.")
+        last_time = max(times[:len(previous)])
+        last_turn = previous[-1]["turn_index"]
+        last_role = previous[-1]["role"]
+        for message, instant, turn in zip(
+            cacheable[len(previous):], times[len(previous):], turns[len(previous):],
+        ):
+            role = str(message.get("role") or "").strip().lower()
+            same_turn_reply = turn == last_turn and last_role == "user" and role == "assistant"
+            next_turn = turn == last_turn + 1 and role == "user"
+            if (
+                instant < last_time
+                or not (same_turn_reply or next_turn)
+                or (next_turn and instant == last_time)
+            ):
+                raise GeminiIncompleteSnapshotError("Browser extension order cannot be established.")
+            last_time, last_turn, last_role = instant, turn, role
+
+        added, _ = self.replace_conversation(conversation, cacheable, captured_at)
+        # Browser rendering may change metadata; only new rows may replace stored state.
+        self._rows_by_key.update(previous_rows)
+        return added, False
 
     def save(self) -> None:
         """Persist all cached messages with schema verification and atomic replacement."""
@@ -1537,7 +1636,7 @@ def sync_gemini_history(
                         turn_timestamps,
                     )
                     captured_at = utc_now()
-                    added_count, unchanged = store.replace_conversation(
+                    added_count, unchanged = store.cache_browser_snapshot(
                         conversation,
                         messages,
                         captured_at,
@@ -1549,6 +1648,15 @@ def sync_gemini_history(
                     state.append_event(
                         f"Cached Gemini session {index:,}/{len(processing_links):,}: "
                         f"{conversation.title} ({len(messages):,} messages)."
+                    )
+                    last_error = None
+                    break
+                except GeminiIncompleteSnapshotError as exc:
+                    failed_conversations += 1
+                    discovered_messages += len(messages)
+                    state.append_event(
+                        f"Preserved cached Gemini session {index:,}/{len(processing_links):,}: "
+                        f"browser snapshot is incomplete or conflicts with cached history. {exc}"
                     )
                     last_error = None
                     break

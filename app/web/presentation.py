@@ -7,7 +7,7 @@ touches a Flask request, a service, or an application instance, so route modules
 import it directly instead of receiving it through the application factory.
 """
 
-# Code version: v1.3.1-codex.0
+# Code version: v1.4.0-codex.0
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from app.core.agent import (
     parse_agent_action,
     render_final_agent_action,
 )
-from app.core.providers import normalize_zhihu_rich_text
+from app.core.providers import format_chatgpt_display_markdown, normalize_zhihu_rich_text
 from app.core.storage import DISPLAY_TIMEZONE
 from app.web.cache_sources import (
     LLM_SWITCHER_SOURCE_VIEWS,
@@ -476,6 +476,7 @@ def render_cached_message(
     content_html: str = "",
     *,
     replace_images: bool = False,
+    provider: str = "",
 ) -> Markup:
     """Render one cached message from sanitized rich text or Markdown fallback."""
     source_html = (
@@ -484,7 +485,12 @@ def render_cached_message(
         else content_html
     )
     rich_text = sanitize_stored_html(source_html, replace_images=replace_images)
-    rendered = rich_text if rich_text else str(render_prompt_markdown(content_text))
+    markdown = (
+        format_chatgpt_display_markdown(content_text)
+        if str(provider or "").strip().lower() == "chatgpt"
+        else content_text
+    )
+    rendered = rich_text if rich_text else str(render_prompt_markdown(markdown))
     return Markup(_wrap_rendered_tables(rendered, aria_label="Scrollable message table"))
 
 
