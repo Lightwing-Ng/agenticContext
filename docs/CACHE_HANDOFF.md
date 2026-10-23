@@ -149,6 +149,16 @@ include the search-result URLs that citation markers refer to. Synchronization h
 text. The schema version is unchanged, so an unchanged session is not refetched merely to pick up
 the new rendering.
 
+Local resources additionally adapts observed ASCII `box/row/text/title/caption`
+components in ChatGPT assistant messages at display time. Two-cell rows become
+Markdown tables, diagram text becomes labeled text, and captions keep their words.
+It never executes JSX, SVG, or stored HTML. Unsupported component structures use
+inert fenced source. Empty provider `Cite ref="turn..."` markers are hidden only
+outside code; ordinary citations and code examples stay literal. This provider
+adapter reuses existing Markdown surfaces without changing shared UI components,
+stored message bodies, content hashes, or original Markdown exports. It does not
+reconstruct the provider's interactive graphics.
+
 Rows written before this rendering existed are repaired locally by
 `python -m app.core.chatgpt_history_cleanup --normalize-markdown`. Without `--apply` the command
 only reports the count. With `--apply` it takes the cache maintenance lock, writes

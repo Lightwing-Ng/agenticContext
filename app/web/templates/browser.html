@@ -1,4 +1,4 @@
-<!-- Code version: v1.88.1-codex.0 -->
+<!-- Code version: v1.88.2-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -963,7 +963,7 @@
                         {% set message_number = ((text_page.current_page - 1) * text_page.page_size) + loop.index %}
                         {% set is_media_response = message.role == "assistant" and message.media_refs and message.content_text.lstrip().startswith("{") %}
                         {% set show_media_previews = is_media_response and ('"size"' in message.content_text or '"n"' in message.content_text) %}
-                        {% set rendered_message = render_cached_message(message.content_text, message.content_html) if not is_media_response else "" %}
+                        {% set rendered_message = render_cached_message(message.content_text, message.content_html, provider=message.source if message.role == "assistant" else "") if not is_media_response else "" %}
                         {% set footer_source_links = cached_message_source_links(message.source_links, rendered_message) %}
                         {% set role_icon = namespace(filename="") %}
                         {% if message.role == "assistant" %}
@@ -1094,7 +1094,7 @@
                                                     id="browser_session_message_{{ message.stable_id }}"
                                                     lang="zh-CN"
                                                     data-browser-session-message-source
-                                                >{{ render_cached_message(message.content_text, message.content_html, replace_images=message.source == "zhihu") }}</div>
+                                                >{{ render_cached_message(message.content_text, message.content_html, replace_images=message.source == "zhihu", provider=message.source if message.role == "assistant" else "") }}</div>
                                                 {% endif %}
                                                 {% if message.source != "zhihu" %}
                                                 <button
