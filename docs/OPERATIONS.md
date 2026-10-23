@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.43.2-claude.0`
+Documentation version: `v1.43.3-codex.0`
 
 ## Launch
 
@@ -963,3 +963,46 @@ Run `./scripts/test.sh` or `./scripts/check.sh` (macOS/Linux) or `.\scripts\test
 `.\scripts\check.ps1` (Windows) for offline validation. Pytest redirects all
 default runtime paths into temporary directories; tests must never be pointed at the production
 cache, Beta archive, log, settings, or browser-profile locations.
+
+## Complete official export archives
+
+Archive tool version: `v1.0.1-codex.0`.
+
+An imported conversation cache does not replace the complete provider export. Preserve its original
+attachments, Pages, Sites, hidden files, and directory structure with the standalone, standard-library
+archive tool. It does not import, rewrite, or delete existing histories, and it has no deletion command.
+Use Python 3.13 or newer; on Windows, replace `python3` with `py -3`.
+
+```bash
+python3 scripts/official_export_archive.py create /path/to/extracted-export /path/to/new-archive
+python3 scripts/official_export_archive.py verify /path/to/new-archive
+python3 scripts/official_export_archive.py restore /path/to/new-archive /path/to/new-restore
+```
+
+Archive and restore destinations must not already exist, and their parent directories must exist.
+An archive cannot be created inside its source, and a restore cannot be created inside its archive.
+Symbolic links and special files are refused rather than followed. All hidden files and empty
+directories are included. No source content is executed.
+
+Creation saves a complete per-file SHA-256 manifest, reads every ZIP member to check both CRC and
+SHA-256, performs a real full extraction into an owned temporary directory, compares the complete
+file and directory sets, and rechecks the original source. It reports `ready_to_delete_source: true`
+only after these checks succeed. A failed or partial archive never authorizes deleting the source.
+
+Keep the entire archive directory: `official-export.zip`, `source-manifest.v1.json`,
+`verification.v1.json`, and `SHA256SUMS`. Verification checks all artifacts and every ZIP member
+without modifying the archive. Restoration validates these checks before creating its destination,
+then verifies every restored file's content, original permissions, extended attributes, and
+nanosecond modification time. ZIP members with unsafe paths, duplicate names, unexpected files,
+or symbolic links are rejected. Original timestamps outside the ZIP date range remain in the
+manifest and are restored from there.
+
+On macOS, creation and extraction use native `ditto` with resource forks, extended attributes,
+quarantine metadata, and ACL preservation enabled. macOS can update quarantine metadata during
+extraction, so restoration reapplies original attribute values from the manifest while retaining
+additional system-generated provenance. ACL preservation is delegated to `ditto` and is not
+independently compared. Other platforms use portable ZIP storage and restore attributes supported
+by their host; if a saved attribute or timestamp cannot be restored exactly, restoration fails
+rather than reporting completeness. Portable ZIP does not preserve macOS resource metadata outside
+the explicit manifest. Completeness refers to the supplied export, not provider records absent
+from that export. Archive data and reports belong in private local storage and must not be committed.
