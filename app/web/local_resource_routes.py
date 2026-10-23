@@ -5,7 +5,7 @@ for a browser, an Agent, or a cache worker. Serialization of one stored item int
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.8.0-codex.0
+# Code version: v1.9.0-codex.0
 
 from __future__ import annotations
 
@@ -158,6 +158,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             answerer=request.args.get("answerer"),
             project=request.args.get("project"),
             session_index=request.args.get("session_index"),
+            media_view=request.args.get("media_view"),
         )
         force_refresh = request.args.get("refresh") == "1"
         prompt_page = None
@@ -226,6 +227,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                 chatgpt_session_key=filters["session"],
                 chatgpt_session_view=filters["session_view"],
                 chatgpt_session_index=filters["session_index"],
+                chatgpt_all_media=filters["media_view"] == "all",
                 media_id=filters["media_id"],
             )
             text_page = None

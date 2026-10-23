@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.33.0-codex.0
+# Code version: v1.34.1-codex.0
 
 from __future__ import annotations
 
@@ -9,12 +9,14 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+from collections import deque
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from threading import Condition, RLock
+from threading import Condition, RLock, Thread
 from time import monotonic
 from typing import Any, Iterable, Iterator, Mapping
 from urllib.parse import unquote, urlsplit
@@ -52,6 +54,9 @@ SORT_VALUES = frozenset({"newest", "oldest", "name"})
 VIEW_VALUES = frozenset({"media", "text", "prompts"})
 PAGE_SIZE = 24
 DEFAULT_TTL_SECONDS = 5.0
+CONTENT_HASH_MAX_READERS = 4
+CONTENT_HASH_MAX_PENDING = 4096
+CONTENT_HASH_WAIT_SECONDS = 1.0
 CHATGPT_TEMPORARY_PROJECT_NAMES = frozenset({"forprompts"})
 _DATE_RE = re.compile(r"^\d{8}$")
 _NUMERIC_RE = re.compile(r"^\d+(?:\.\d+)?$")
@@ -640,6 +645,7 @@ def normalize_browser_filters(
     answerer: str | None = None,
     project: str | None = None,
     session_index: object = None,
+    media_view: object = None,
 ) -> dict[str, Any]:
     """Normalize user-controlled browser filters to safe allowlisted values."""
     normalized_source = str(source or "").strip().lower()
@@ -666,6 +672,11 @@ def normalize_browser_filters(
     normalized_project = str(project or "").replace("\x00", "").strip()[:512]
     if normalized_view != "text" or safe_source != "chatgpt":
         normalized_project = ""
+    is_session_index = (
+        normalized_view == "media"
+        and safe_source == "chatgpt"
+        and normalized_session_index in {"1", "true", "on"}
+    )
     return {
         "source": safe_source,
         "kind": normalized_kind if normalized_kind in MEDIA_KIND_VALUES else "all",
@@ -680,11 +691,8 @@ def normalize_browser_filters(
         ),
         "session_page": _coerce_positive_page(session_page),
         # The cover-per-session index exists only for ChatGPT media.
-        "session_index": (
-            normalized_view == "media"
-            and safe_source == "chatgpt"
-            and normalized_session_index in {"1", "true", "on"}
-        ),
+        "session_index": is_session_index,
+        "media_view": "all" if is_session_index and str(media_view or "").strip().lower() == "all" else "",
         "view": normalized_view,
         "media_id": str(media_id or "").strip()[:96],
         "answerer": normalized_answerer,
@@ -1083,6 +1091,13 @@ class LocalMediaCatalog:
         self._refreshing = False
         self._generation = 0
         self._x_cache_index: LocalTweetCacheIndex | None = None
+        self._content_hash_cache: dict[Path, tuple[tuple[int, ...], str]] = {}
+        self._content_hash_condition = Condition(self._lock)
+        self._content_hash_pending: set[tuple[Path, tuple[int, ...]]] = set()
+        self._content_hash_queue: deque[tuple[Path, tuple[int, ...]]] = deque()
+        self._content_hash_deleted_queue: deque[tuple[Path, tuple[int, ...]]] = deque()
+        self._content_hash_readers = 0
+        self._content_hash_deleted_readers = 0
 
     def snapshot(self, force_refresh: bool = False) -> tuple[LocalMediaItem, ...]:
         """Return a short-lived, thread-safe snapshot of readable local media."""
@@ -1266,6 +1281,144 @@ class LocalMediaCatalog:
         """Return whether a source resource is persistently excluded from downloads."""
         return self._deletion_catalog.is_excluded(source, resource_key)
 
+    @staticmethod
+    def _content_stat_identity(file_info: os.stat_result) -> tuple[int, ...]:
+        """Include replacement and mutation metadata when reusing actual-byte hashes."""
+        return (
+            file_info.st_dev,
+            file_info.st_ino,
+            file_info.st_size,
+            file_info.st_mtime_ns,
+            file_info.st_ctime_ns,
+        )
+
+    def _content_hash_request(self, item: LocalMediaItem) -> tuple[Path, tuple[int, ...]] | None:
+        """Resolve one readable identity without hydrating known cloud placeholders."""
+        media_path = (
+            self.deleted_preview_path(item.stable_id)
+            if item.is_deleted
+            else resolve_local_media_path(self.local_store_root, item.relative_path)
+        )
+        if media_path is None:
+            return None
+        try:
+            file_info = media_path.stat()
+        except OSError:
+            return None
+        if getattr(file_info, "st_flags", 0) & getattr(stat, "SF_DATALESS", 0):
+            return None
+        return media_path, self._content_stat_identity(file_info)
+
+    def _read_content_sha256(self, media_path: Path, file_identity: tuple[int, ...]) -> str:
+        """Read actual bytes only on a bounded daemon reader, never a request thread."""
+        try:
+            with media_path.open("rb") as handle:
+                if self._content_stat_identity(os.fstat(handle.fileno())) != file_identity:
+                    return ""
+                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+                if self._content_stat_identity(os.fstat(handle.fileno())) != file_identity:
+                    return ""
+            if self._content_stat_identity(media_path.stat()) != file_identity:
+                return ""
+        except (OSError, ValueError):
+            return ""
+        return digest
+
+    def _read_content_hash_queue(self) -> None:
+        """Drain pending identities; a stalled file can occupy at most one daemon."""
+        while True:
+            with self._content_hash_condition:
+                is_deleted = False
+                if self._content_hash_queue:
+                    request = self._content_hash_queue.popleft()
+                elif (
+                    self._content_hash_deleted_queue
+                    and self._content_hash_deleted_readers < CONTENT_HASH_MAX_READERS - 1
+                ):
+                    request = self._content_hash_deleted_queue.popleft()
+                    self._content_hash_deleted_readers += 1
+                    is_deleted = True
+                else:
+                    # Retain a reader slot for newly discovered active media.
+                    self._content_hash_readers -= 1
+                    return
+            media_path, file_identity = request
+            try:
+                digest = self._read_content_sha256(media_path, file_identity)
+            except Exception:
+                digest = ""
+            with self._content_hash_condition:
+                if is_deleted:
+                    self._content_hash_deleted_readers -= 1
+                self._content_hash_cache[media_path] = (file_identity, digest)
+                self._content_hash_pending.discard(request)
+                self._content_hash_condition.notify_all()
+
+    def _unique_content_items(self, items: Iterable[LocalMediaItem]) -> tuple[LocalMediaItem, ...]:
+        """Collapse proven duplicates within one total read budget, retaining unknowns."""
+        requests = [(item, self._content_hash_request(item)) for item in items]
+        count_by_size: dict[int, int] = {}
+        for _item, request in requests:
+            if request is not None:
+                content_bytes = request[1][2]
+                count_by_size[content_bytes] = count_by_size.get(content_bytes, 0) + 1
+        # Exact-byte duplicates must have equal actual sizes; do not read singleton sizes.
+        hash_requests = [
+            (item, request)
+            for item, request in requests
+            if request is not None and count_by_size[request[1][2]] > 1
+        ]
+        deadline = monotonic() + CONTENT_HASH_WAIT_SECONDS
+        with self._content_hash_condition:
+            reserved_active_pending = min(CONTENT_HASH_MAX_READERS, max(1, CONTENT_HASH_MAX_PENDING // 2))
+            # Schedule active files first so stalled retained previews cannot monopolize readers.
+            for item, request in sorted(hash_requests, key=lambda entry: entry[0].is_deleted):
+                media_path, file_identity = request
+                cached = self._content_hash_cache.get(media_path)
+                if cached is not None and cached[0] == file_identity:
+                    continue
+                # Reserve admission as well as readers for active work from later queries.
+                deleted_pending = len(self._content_hash_deleted_queue) + self._content_hash_deleted_readers
+                if item.is_deleted and deleted_pending >= CONTENT_HASH_MAX_PENDING - reserved_active_pending:
+                    continue
+                if request not in self._content_hash_pending and len(self._content_hash_pending) < CONTENT_HASH_MAX_PENDING:
+                    self._content_hash_pending.add(request)
+                    queue = self._content_hash_deleted_queue if item.is_deleted else self._content_hash_queue
+                    queue.append(request)
+            new_readers = min(
+                CONTENT_HASH_MAX_READERS - self._content_hash_readers,
+                len(self._content_hash_queue) + len(self._content_hash_deleted_queue),
+            )
+            for _index in range(new_readers):
+                self._content_hash_readers += 1
+                Thread(target=self._read_content_hash_queue, daemon=True, name="media-content-hash").start()
+            relevant_pending = {request for _item, request in hash_requests}
+            while relevant_pending.intersection(self._content_hash_pending):
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                self._content_hash_condition.wait(remaining)
+            digests = {
+                request: self._content_hash_cache.get(request[0])
+                for request in relevant_pending
+            }
+
+        unique: list[LocalMediaItem] = []
+        index_by_digest: dict[str, int] = {}
+        for item, request in requests:
+            cached = digests.get(request) if request is not None else None
+            digest = cached[1] if cached is not None and request is not None and cached[0] == request[1] else ""
+            if not digest:
+                unique.append(item)
+                continue
+            previous_index = index_by_digest.get(digest)
+            if previous_index is None:
+                index_by_digest[digest] = len(unique)
+                unique.append(item)
+            elif unique[previous_index].is_deleted and not item.is_deleted:
+                unique[previous_index] = item
+        return tuple(unique)
+
     def query(
         self,
         *,
@@ -1278,6 +1431,7 @@ class LocalMediaCatalog:
         chatgpt_session_key: str = "",
         chatgpt_session_view: bool = True,
         chatgpt_session_index: bool = False,
+        chatgpt_all_media: bool = False,
         media_id: str = "",
     ) -> LocalMediaPage:
         """Return a safe filtered, sorted, and paginated view of the snapshot."""
@@ -1303,6 +1457,13 @@ class LocalMediaCatalog:
             query=filters["q"],
             media_id=filters["media_id"] or media_id,
         )
+        if filters["source"] == "chatgpt" and chatgpt_all_media:
+            unique_items = self._unique_content_items(filtered)
+            media_page = paginate_media_items(
+                sort_media_items_absolute(unique_items, filters["sort"]),
+                filters["page"],
+            )
+            return replace(media_page, session_count=len(_group_chatgpt_sessions(filtered)))
         if filters["source"] == "chatgpt" and chatgpt_session_index:
             return paginate_chatgpt_session_index(
                 filtered,

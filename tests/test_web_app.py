@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.152.4-codex.0
+# Code version: v1.152.5-codex.0
 
 from __future__ import annotations
 
@@ -911,10 +911,10 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.29.0-codex.0"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.29.1-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
-                    "style-v2.159.0-claude.0"
+                    "style-v2.159.1-codex.0"
                     if page_source == "local-resources"
                     else "style-v2.157.0-codex.0"
                 )
@@ -937,7 +937,7 @@ class WebAppTests(unittest.TestCase):
             'const dockLocationMemoryPrefix = "cachelikes:dock-location:v1:";',
             'const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);',
             'const agentRoutePattern = /^\\/agent\\/(?:safari|edge|chrome)\\/(?:chatgpt|gemini|grok|claude)$/;',
-            'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view", "session_index"];',
+            'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view", "session_index", "media_view"];',
             'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/grok_build", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/zhihu"]);',
             'const cacheSelectionPathPattern = /^\\/cache\\/(?:(x|grok|chatgpt|gemini|claude|zhihu)(?:\\/(text|media)\\/(safari|edge|chrome))?|claude_code|grok_build)$/;',
             'if (targetUrl.pathname === "/browser") return "/cache/chatgpt";',
@@ -5945,10 +5945,10 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.159.0-claude.0", body)
+            self.assertIn("style-v2.159.1-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.41.0-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.42.0-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -6628,7 +6628,7 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, media_script)
         self.assertEqual(media_script.count('targetUrl.searchParams.delete("session_index");'), 2)
-        self.assertIn('"session_view", "session_index"]', sidebar_script)
+        self.assertIn('"session_view", "session_index", "media_view"]', sidebar_script)
         self.assertEqual(pagination_template.count("session_index=('1' if filters.session_index else none)"), 2)
 
     def test_gemini_media_browser_keeps_source_and_excludes_chatgpt_sessions(self) -> None:

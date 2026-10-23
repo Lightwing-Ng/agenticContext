@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.20.2-codex.0`
+Documentation version: `v1.21.0-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -114,6 +114,18 @@ updating its `Cache-page Text/Media control` row. This repository is currently t
 leading implementation and the sibling remains `Pending`.
 
 ## 3. Runtime split: media versus text
+
+Local resources ChatGPT Media offers `All media` as the third view in `All sessions`.
+The `media_view=all` query requires the ChatGPT Media session index and expands its
+session covers into individual resources, using ordinary 24-resource pages. Actual
+file sizes rule out impossible duplicates before bounded readers compute SHA-256 for
+remaining candidates. Verified exact identities deduplicate across the filtered result
+before pagination; similar images remain distinct. Hashes are cached by file stat
+identity. Unreadable or unresolved resources keep separate entries, so a blocked
+retained copy cannot hold the page open. Available files take precedence over matching
+deletion tombstones. The mode reads files without modifying media, catalogs, or history.
+List and Grid return to session covers; filters, pagination, and the Local resources
+Dock preserve the explicit mode.
 
 ChatGPT Text writes `local_store/llm/chatgpt/history.parquet`, independent of the
 Media project directory. Schema v2 adds nullable `provider_revision` metadata.

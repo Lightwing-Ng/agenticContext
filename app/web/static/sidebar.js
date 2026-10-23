@@ -1,4 +1,4 @@
-/* Code version: v1.29.0-codex.0 */
+/* Code version: v1.29.1-codex.0 */
 
 (function initializeSidebar() {
     "use strict";
@@ -37,7 +37,7 @@
         ["/claude", "/cache/claude"],
         ["/zhihu", "/cache/zhihu"],
     ]);
-    const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view", "session_index"];
+    const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view", "session_index", "media_view"];
     const agentRoutePattern = /^\/agent\/(?:safari|edge|chrome)\/(?:chatgpt|gemini|grok|claude)$/;
     const juryRoutePattern = /^\/jury(?:\/(?:edge|chrome))?$/;
     const settingsCategoryPattern = /^#settings-(browser|downloads|llm|chatgpt|cloud|maintenance)$/;
