@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.33.0-claude.0`
+Documentation version: `v1.34.0-codex.0`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -9,6 +9,10 @@ library, and configured ChatGPT projects or sessions. Its formal text caches als
 cover ChatGPT, Gemini, Grok, Claude, and Zhihu. It stores media and text
 history locally and provides a browser for reviewing, deleting, and restoring
 resources.
+
+Preserved OpenClaw conversations have separate provider sources such as `ChatGPT OpenClaw`
+and `Gemini OpenClaw`. Their private archive and parsed histories remain usable after
+OpenClaw is removed. See [OpenClaw preservation](docs/OPENCLAW_MIGRATION.md).
 
 Its Agent workspace uses the selected authenticated Web session for ChatGPT, Gemini, Grok, or Claude.
 The sidebar exposes one provider-neutral Project concept: ChatGPT Projects, Gemini Notebooks, and

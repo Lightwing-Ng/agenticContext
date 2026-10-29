@@ -1,0 +1,22 @@
+{# Code version: v1.0.2-codex.0 #}
+{% extends "_cache_page.html" %}
+{% from "_cache_page_components.html" import render_metric, render_progress_metric %}
+
+{% block primary_metrics %}
+{{ render_metric("Sessions discovered", "discovered_tweets", snapshot.discovered_tweets, "discovered_tweets") }}
+{{ render_metric("Sessions cached", "downloaded_posts", snapshot.downloaded_posts, "downloaded_posts") }}
+{{ render_metric("Messages cached", "downloaded_tweets", snapshot.downloaded_tweets, "downloaded_tweets") }}
+{{ render_metric("Transcript failures", "failed_tweets", snapshot.failed_tweets, "failed_tweets") }}
+{% endblock %}
+
+{% block source_notice %}
+<p class="settings-field-help">Read preserved OpenClaw conversations from this project's archive. Each provider remains a separate source; browser chats and local CLI histories keep their own identities. Original records and attribution evidence remain in the archive. OpenClaw does not need to be installed or running.</p>
+{% if cache_source.key == "unknown_openclaw" %}
+<p class="settings-field-help">Delivery mirrors, gateway notices, and messages without provider evidence remain here without inferred model attribution.</p>
+{% endif %}
+{% endblock %}
+
+{% block progress_metrics %}
+{{ render_progress_metric("Transcripts queued", "queued_tweets", snapshot.queued_tweets, "progress_queued_tweets") }}
+{{ render_progress_metric("Transcripts processed", "processed_tweets", snapshot.processed_tweets, "progress_processed_tweets") }}
+{% endblock %}

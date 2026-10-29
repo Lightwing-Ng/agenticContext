@@ -1,4 +1,4 @@
-<!-- Code version: v1.89.0-codex.0 -->
+<!-- Code version: v1.89.1-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -18,7 +18,7 @@
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.42.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.43.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.1.0-codex.0') }}"></script>
@@ -337,13 +337,13 @@
                             </nav>
                             <div
                                 class="browser-session-actions browser-session-actions-drawer{% if is_zhihu_text %} browser-session-actions--source-update{% endif %}"
-                                {% if text_page.current_session.source in ['claude_code', 'grok_build'] %}style="--browser-session-action-count: 2;"{% endif %}
+                                {% if text_page.current_session.source in ['claude_code', 'grok_build'] or text_page.current_session.source.endswith('_openclaw') %}style="--browser-session-action-count: 2;"{% endif %}
                                 data-browser-session-actions
                                 data-browser-session-actions-drawer
                                 role="group"
                                 aria-label="{{ 'Answerer actions' if is_zhihu_text else 'Session actions' }}"
                             >
-                                {% if text_page.current_session.source not in ['claude_code', 'grok_build'] %}
+                                {% if text_page.current_session.source not in ['claude_code', 'grok_build'] and not text_page.current_session.source.endswith('_openclaw') %}
                                 <button
                                     type="button"
                                     class="browser-session-action-button browser-session-actions-trigger browser-session-open-original-button"
@@ -1430,6 +1430,6 @@
 
 {% include "_waiting_modal.html" %}
 <script type="application/json" id="browser_media_data">{{ media_payload|tojson }}</script>
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.29.1-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.30.0-codex.0') }}"></script>
 </body>
 </html>

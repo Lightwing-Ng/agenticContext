@@ -1,4 +1,4 @@
-/* Code version: v1.42.0-codex.0 */
+/* Code version: v1.43.0-codex.0 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -114,7 +114,7 @@
         if (mode === "text") {
             formData.set("session_view", "1");
             const selectedSource = String(formData.get("source") || "").trim().toLowerCase();
-            if (!["x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu"].includes(selectedSource)) {
+            if (!["x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu"].includes(selectedSource) && !selectedSource.endsWith("_openclaw")) {
                 formData.set("source", "chatgpt");
             }
         }

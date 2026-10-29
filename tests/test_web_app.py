@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.152.5-codex.0
+# Code version: v1.153.0-codex.0
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from app.web.presentation import (
     render_prompt_markdown,
 )
 from app.web.cache_sources import CACHE_SOURCE_VIEWS
+from app.core.openclaw_history import OPENCLAW_SOURCE_LABELS
 
 
 SIDEBAR_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "app/web/static/sidebar.js"
@@ -301,17 +302,25 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(labels, sorted(labels, key=str.casefold))
         self.assertEqual(
-            [source.key for source in CACHE_SOURCE_VIEWS],
-            ["chatgpt", "claude", "claude_code", "gemini", "grok_build", "grok", "x", "zhihu"],
+            {source.key for source in CACHE_SOURCE_VIEWS},
+            {"chatgpt", "claude", "claude_code", "gemini", "grok_build", "grok", "x", "zhihu", *OPENCLAW_SOURCE_LABELS},
         )
-        self.assertEqual(len({source.template_name for source in CACHE_SOURCE_VIEWS}), len(CACHE_SOURCE_VIEWS))
+        regular_sources = [source for source in CACHE_SOURCE_VIEWS if source.key not in OPENCLAW_SOURCE_LABELS]
+        self.assertEqual(len({source.template_name for source in regular_sources}), len(regular_sources))
+        self.assertEqual(
+            {source.template_name for source in CACHE_SOURCE_VIEWS if source.key in OPENCLAW_SOURCE_LABELS},
+            {"openclaw.html"},
+        )
         self.assertEqual(
             {source.start_button_label for source in CACHE_SOURCE_VIEWS if not source.is_local},
             {"Start"},
         )
         self.assertEqual(
             {source.key: source.start_button_label for source in CACHE_SOURCE_VIEWS if source.is_local},
-            {"claude_code": "Read local sessions", "grok_build": "Read local sessions"},
+            {
+                "claude_code": "Read local sessions", "grok_build": "Read local sessions",
+                **dict.fromkeys(OPENCLAW_SOURCE_LABELS, "Read archived sessions"),
+            },
         )
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS if source.show_content_mode},
@@ -911,7 +920,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.29.1-codex.0"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.30.0-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
                     "style-v2.159.1-codex.0"
@@ -938,8 +947,8 @@ class WebAppTests(unittest.TestCase):
             'const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);',
             'const agentRoutePattern = /^\\/agent\\/(?:safari|edge|chrome)\\/(?:chatgpt|gemini|grok|claude)$/;',
             'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view", "session_index", "media_view"];',
-            'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/grok_build", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/zhihu"]);',
-            'const cacheSelectionPathPattern = /^\\/cache\\/(?:(x|grok|chatgpt|gemini|claude|zhihu)(?:\\/(text|media)\\/(safari|edge|chrome))?|claude_code|grok_build)$/;',
+            'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/grok_build", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/zhihu", ...openclawCacheSources.map((source) => `/cache/${source}`)]);',
+            'const cacheSelectionPathPattern = /^\\/cache\\/(?:(x|grok|chatgpt|gemini|claude|zhihu)(?:\\/(text|media)\\/(safari|edge|chrome))?|claude_code|grok_build|(?:chatgpt|gemini|claude|grok|zhipu|doubao|other|unknown)_openclaw)$/;',
             'if (targetUrl.pathname === "/browser") return "/cache/chatgpt";',
             'const legacyCachePathMap = new Map([',
             'window.sessionStorage.getItem(dockLocationMemoryKey(section))',
@@ -986,7 +995,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('data-cache-source-switcher-trigger', heading_markup)
                 self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-session-trigger cache-source-switcher-trigger"', heading_markup)
                 self.assertIn('aria-label="Switch cache source"', heading_markup)
-                expected_source_options = 8
+                expected_source_options = len(CACHE_SOURCE_VIEWS)
                 self.assertEqual(
                     heading_markup.count('data-cache-source-switcher-option='),
                     expected_source_options,
@@ -5948,7 +5957,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("style-v2.159.1-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.42.0-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.43.0-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)

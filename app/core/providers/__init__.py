@@ -1,6 +1,6 @@
 """Provider workflows exposed to the application layer."""
 
-# Code version: v1.11.1-codex.0
+# Code version: v1.12.0-codex.0
 
 from ..chatgpt_agent_sources import (
     fetch_chatgpt_conversation_history,
@@ -38,12 +38,17 @@ from ..grok_downloader import build_grok_initial_snapshot, reset_grok_state
 from ..grok_history import build_grok_history_snapshot
 from ..grok_history_service import GrokHistoryService
 from ..grok_service import GrokDownloadService
+from ..openclaw_history import OPENCLAW_SOURCE_LABELS
+from ..openclaw_history_service import OpenClawHistoryService, build_openclaw_initial_snapshot
 from ..service import CacheLikesService
 from ..zhihu_answers import normalize_zhihu_profile_url, normalize_zhihu_rich_text
 from ..zhihu_history import build_zhihu_history_initial_snapshot
 from ..zhihu_history_service import ZhihuHistoryService
 
 __all__ = [
+    "OPENCLAW_SOURCE_LABELS",
+    "OpenClawHistoryService",
+    "build_openclaw_initial_snapshot",
     "CacheLikesService",
     "ChatGPTDownloadService",
     "ClaudeHistoryService",

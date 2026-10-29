@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.24.1-codex.0
+# Code version: v1.25.0-codex.0
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 from .agent_source_cache import agent_source_cache_path
+from .openclaw_history import OPENCLAW_HISTORY_FILENAME, OPENCLAW_SOURCE_LABELS
 
 from .local_media_browser import (
     LocalMediaItem,
@@ -36,7 +37,7 @@ CHAT_HISTORY_PAGE_SIZE = 100
 CHAT_HISTORY_SESSION_PAGE_SIZE = 100
 CHAT_HISTORY_SOURCE_VALUES = frozenset(
     {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu"}
-)
+) | frozenset(OPENCLAW_SOURCE_LABELS)
 CHAT_HISTORY_SORT_VALUES = frozenset({"newest", "oldest", "name"})
 CHATGPT_NO_PROJECT_FILTER = "__no_project__"
 
@@ -158,6 +159,7 @@ def chat_history_path(local_store_root: Path | str, source: str = "gemini") -> P
     """Return the typed history file for one supported chat source."""
     normalized_source = normalize_chat_history_source(source)
     filename = {
+        **dict.fromkeys(OPENCLAW_SOURCE_LABELS, OPENCLAW_HISTORY_FILENAME),
         "x": X_HISTORY_FILENAME,
         "chatgpt": CHATGPT_HISTORY_FILENAME,
         "claude": CLAUDE_HISTORY_FILENAME,
@@ -287,7 +289,7 @@ def _message_from_row(row: dict[str, Any], source: str) -> ChatHistoryMessage | 
         source=source,
         conversation_id=conversation_id,
         conversation_url=(
-            "" if source in {"claude_code", "grok_build"} else _safe_external_url(row.get("conversation_url"))
+            "" if source in {"claude_code", "grok_build", *OPENCLAW_SOURCE_LABELS} else _safe_external_url(row.get("conversation_url"))
         ),
         conversation_title=str(row.get("conversation_title") or "Untitled session").strip(),
         message_key=message_key,
@@ -326,6 +328,7 @@ def load_chat_history_messages(
             ("grok", chat_history_path(local_store_root, "grok")),
             ("grok_build", chat_history_path(local_store_root, "grok_build")),
             ("zhihu", chat_history_path(local_store_root, "zhihu")),
+            *((source, chat_history_path(local_store_root, source)) for source in OPENCLAW_SOURCE_LABELS),
         )
     )
     messages = tuple(
@@ -1038,6 +1041,7 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
     title = " ".join(session.conversation_title.split()) or "Untitled session"
     exported_count = session.message_count if message_count is None else message_count
     source_label = {
+        **OPENCLAW_SOURCE_LABELS,
         "claude": "Claude Chat",
         "claude_code": "Claude Code",
         "grok": "Grok Chat",

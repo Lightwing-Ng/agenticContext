@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.34.1-codex.0
+# Code version: v1.35.0-codex.0
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from . import config
 from .cache_catalog import LocalTweetCacheIndex
+from .openclaw_history import OPENCLAW_SOURCE_LABELS
 from .resource_persistence import (
     CHATGPT_CATALOG_FILENAME,
     DELETED_MEDIA_FILENAME,
@@ -45,10 +46,10 @@ MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt", "claude", "gemini"})
 TEXT_SOURCE_VALUES = frozenset(
     {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu"}
-)
+) | frozenset(OPENCLAW_SOURCE_LABELS)
 # Text-only providers have no media cache source. Treat a URL naming one in
 # Media mode as the ChatGPT media view instead of silently showing all media.
-TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code", "grok_build"})
+TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code", "grok_build"}) | frozenset(OPENCLAW_SOURCE_LABELS)
 MEDIA_KIND_VALUES = frozenset({"all", "image", "video"})
 SORT_VALUES = frozenset({"newest", "oldest", "name"})
 VIEW_VALUES = frozenset({"media", "text", "prompts"})
