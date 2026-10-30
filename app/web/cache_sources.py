@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.13.0-codex.0
+# Code version: v1.14.0-codex.0
 
 from __future__ import annotations
 
@@ -349,6 +349,22 @@ LLM_SWITCHER_SOURCE_VIEWS = tuple(
 CACHE_SOURCE_BY_KEY = MappingProxyType({source.key: source for source in CACHE_SOURCE_VIEWS})
 
 
+@dataclass(frozen=True, slots=True)
+class LocalTextSourceView:
+    """Describe a read-only text source without registering a Cache execution page."""
+
+    key: str
+    label: str
+    icon_filename: str
+    icon_style: str = "mask"
+
+
+LOCAL_RESOURCE_TEXT_SOURCE_VIEWS = tuple(sorted((
+    *CACHE_SOURCE_VIEWS,
+    LocalTextSourceView("wechat", "WeChat", "images/wechat.svg", icon_style="full-color"),
+), key=lambda source: source.label.casefold()))
+
+
 def cache_source_views_for_group(group_key: str) -> tuple[CacheSourceView, ...]:
     """Return the source switcher options for one dock group."""
     normalized_group = str(group_key or "").strip().lower()
@@ -371,5 +387,7 @@ def get_cache_source_view(source_key: str) -> CacheSourceView | None:
 
 def get_cache_source_label(source_key: str) -> str:
     """Return a registered label with a safe title-cased fallback."""
+    if str(source_key or "").strip().lower() == "wechat":
+        return "WeChat"
     source = get_cache_source_view(source_key)
     return source.label if source is not None else str(source_key or "").title()

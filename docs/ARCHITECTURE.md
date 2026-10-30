@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.54.3-codex.0`
+Documentation version: `v1.55.0-codex.0`
 
 ## Runtime flow
 
@@ -739,6 +739,33 @@ without the collapsed-message cap. Source links wrap as compact `Source N` chips
 footer, so a message with dozens of citations no longer stacks one link per row. The card list is
 the text view's only scroll owner. Zhihu answers keep the answerer table described above.
 
+### WeChat human-message archives
+
+`wechat_archive.py` imports verified, gzip-compressed JSONL text archives into a private
+SQLite snapshot at `local_store/messaging/wechat/history.sqlite3`. Format adapters normalize
+native iOS and exported records. Verified account IDs must match their archive-directory hashes;
+unconfirmed sources remain independent partitions. Conversation and message keys include the
+source partition, so identical display names, peer IDs, or overlapping exports never merge.
+Checksums, decoded sizes, and catalog row counts are verified before atomic publication.
+The private `exclusions.json` sidecar beside the snapshot preserves user-directed source
+exclusions across full imports. Matching partitions are skipped before reading source metadata
+or payloads; their declared row counts remain part of catalog reconciliation. A malformed policy
+fails closed and preserves the previous snapshot. Existing excluded records must be physically
+removed from the current index as a separate, verified source-scoped correction.
+
+The existing `query_chat_history` entrypoint dispatches WeChat to `wechat_history_browser.py`.
+That adapter reuses the shared page/session/message contracts with optional messaging context.
+Queries enforce account and conversation-type scope for both details and exports, and paginate
+directly in read-only SQLite. Passive page reads never import archives or enumerate media.
+The Web layer continues to use the storage facade. Its Local resources source registry includes
+WeChat without adding a Cache execution page or media/prompt source.
+
+`_wechat_browser.html` and `browser-messaging.css` reuse the existing table, select, card,
+collapse, theme, and pagination primitives. Sent/received messages branch by direction, group
+messages retain speaker identities, and uncertain direction/type stays explicit. Text is escaped
+plain text. Source details preserve account, archive, peer/sender IDs, original locators, clock
+limitations, and message IDs. Unknown export clocks never acquire an invented timezone.
+
 ### ChatGPT image cache
 
 ```text
@@ -1005,6 +1032,7 @@ Doctor. The service never replays a local Action or continues automatically.
 | --- | --- | --- |
 | `local_store/` | User media, source catalogs, queues, manifests, and deletion previews | Ignored except `.gitkeep` |
 | `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability; a media prompt without cached text history keeps a content-derived key | Ignored except `.gitkeep` |
+| `local_store/messaging/wechat/history.sqlite3` | Source-separated, text-only human-message index; no media payloads | Ignored |
 | `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
 | `logs/` | Local structured JSON-line logs | Ignored except `.gitkeep` |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local configuration | Outside the repository |

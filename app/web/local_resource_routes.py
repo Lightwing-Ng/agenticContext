@@ -5,7 +5,7 @@ for a browser, an Agent, or a cache worker. Serialization of one stored item int
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.10.0-codex.0
+# Code version: v1.11.0-codex.0
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ from app.core.storage import (
     resolve_browser_media_path,
     reveal_media_path,
 )
-from app.web.cache_sources import CACHE_SOURCE_VIEWS, get_cache_source_label
+from app.web.cache_sources import CACHE_SOURCE_VIEWS, LOCAL_RESOURCE_TEXT_SOURCE_VIEWS, get_cache_source_label
 from app.web.presentation import (
     build_browser_search_suggestions,
     cached_message_source_links,
@@ -159,6 +159,8 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             project=request.args.get("project"),
             session_index=request.args.get("session_index"),
             media_view=request.args.get("media_view"),
+            account=request.args.get("account"),
+            chat_kind=request.args.get("chat_kind"),
         )
         force_refresh = request.args.get("refresh") == "1"
         prompt_page = None
@@ -167,7 +169,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             context.prompt_store.saved_content_keys() if filters["view"] == "media" else frozenset()
         )
         if filters["view"] == "text":
-            media_items = context.media_catalog.snapshot(force_refresh=force_refresh)
+            media_items = () if filters["source"] == "wechat" else context.media_catalog.snapshot(force_refresh=force_refresh)
             text_page = query_chat_history(
                 context.media_catalog.local_store_root,
                 source=filters["source"],
@@ -178,6 +180,8 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                 session=filters["session"],
                 answerer=filters["answerer"],
                 project=filters["project"],
+                account=filters["account"],
+                chat_kind=filters["chat_kind"],
             )
             filters["answerer"] = text_page.selected_answerer
             filters["project"] = text_page.selected_project
@@ -245,8 +249,8 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                 if source.key in {"x", "grok", "chatgpt", "claude", "gemini"}
             ),
             local_resource_text_sources=tuple(
-                source for source in CACHE_SOURCE_VIEWS
-                if source.key in {"x", "grok", "grok_build", "chatgpt", "claude", "claude_code", "gemini", "zhihu"} or source.key.endswith("_openclaw")
+                source for source in LOCAL_RESOURCE_TEXT_SOURCE_VIEWS
+                if source.key in {"x", "grok", "grok_build", "chatgpt", "claude", "claude_code", "gemini", "zhihu", "wechat"} or source.key.endswith("_openclaw")
             ),
             media_page=media_page,
             text_page=text_page,
@@ -288,6 +292,8 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             page_size=100 if page_only else 1_000_000,
             session_view=True,
             session=session_id,
+            account=request.args.get("account", ""),
+            chat_kind=request.args.get("chat_kind", "all"),
         )
         markdown = build_chat_history_markdown(
             text_page,

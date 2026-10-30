@@ -1,4 +1,4 @@
-/* Code version: v1.6.0-codex.0 */
+/* Code version: v1.6.1-codex.0 */
 
 (() => {
     const controllerUrl = new URL("select-controller.js?v=select-controller-v1.0.1", document.currentScript.src);
@@ -61,6 +61,7 @@
             selectedLabel.textContent = option.dataset.browserSourceFilterLabel || "All sources";
             const iconUrl = option.dataset.browserSourceFilterIcon || "";
             selectedIcon.style.setProperty("--cache-source-mark", `url("${iconUrl}")`);
+            selectedIcon.classList.toggle("is-full-color", option.dataset.browserSourceFilterIconStyle === "full-color");
             syncTriggerMetadata(option);
             options.forEach((candidate) => {
                 const isSelected = candidate === option;

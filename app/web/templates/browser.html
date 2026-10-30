@@ -1,10 +1,10 @@
-<!-- Code version: v1.89.1-codex.0 -->
+<!-- Code version: v1.90.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>{{ product_name }} Browser</title>
+    <title>{{ 'WeChat · Local resources' if filters.view == 'text' and filters.source == 'wechat' else product_name ~ ' Browser' }}</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
@@ -14,6 +14,7 @@
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.5-claude.0') }}">
+    {% if filters.view == 'text' and filters.source == 'wechat' %}<link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.2.0-codex.0') }}">{% endif %}
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
@@ -21,10 +22,10 @@
     <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.43.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.1.0-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.1.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.1.1-codex.0') }}"></script>
     <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.6.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.6.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-actions.js', v='browser-session-actions-v1.2.0-codex.0') }}"></script>
 </head>
@@ -33,6 +34,7 @@
 {% from "_pagination.html" import render_browser_pagination %}
 {% from "_notice_banner.html" import render_notice_banner %}
 {% set is_zhihu_text = filters.view == "text" and filters.source == "zhihu" %}
+{% set is_wechat_text = filters.view == "text" and filters.source == "wechat" %}
 {% set no_project_filter = "__no_project__" %}
 {% set is_no_project = filters.project == no_project_filter %}
 {% set project_search_copy = "Press Enter to search chats without a project." if is_no_project else ("Press Enter to search this project." if filters.project else "Press Enter to search all cached text.") %}
@@ -157,7 +159,7 @@
                         {% set source_options = local_resource_media_sources if filters.view == "media" else local_resource_text_sources %}
                         {% set all_source_label = "All sources" %}
                         {% set all_source_icon = "images/photo.stack.svg" %}
-                        {% set selected_source = namespace(label="ChatGPT", icon="images/ChatGPT-Logo.svg") %}
+                        {% set selected_source = namespace(label="ChatGPT", icon="images/ChatGPT-Logo.svg", icon_style="mask") %}
                         {% if filters.view != "text" %}
                             {% set selected_source.label = all_source_label %}
                             {% set selected_source.icon = all_source_icon %}
@@ -166,6 +168,7 @@
                             {% if filters.source == source.key %}
                                 {% set selected_source.label = source.label %}
                                 {% set selected_source.icon = source.icon_filename %}
+                                {% set selected_source.icon_style = source.icon_style|default("mask") %}
                             {% endif %}
                         {% endfor %}
                         <div class="trade-strategy-combobox browser-source-filter-combobox" data-browser-source-filter>
@@ -183,7 +186,7 @@
                                 <span class="browser-session-trigger-leading">
                                     <span class="browser-picker-selected-icon-shell">
                                         <span
-                                            class="cache-source-mark browser-source-filter-mark"
+                                            class="cache-source-mark browser-source-filter-mark{% if selected_source.icon_style == 'full-color' %} is-full-color{% endif %}"
                                             style="--cache-source-mark: url('{{ url_for('static', filename=selected_source.icon) }}');"
                                             aria-hidden="true"
                                             data-browser-source-filter-selected-icon
@@ -226,12 +229,13 @@
                                     data-browser-source-filter-option="{{ source.key }}"
                                     data-browser-source-filter-label="{{ source.label }}"
                                     data-browser-source-filter-icon="{{ url_for('static', filename=source.icon_filename) }}"
+                                    data-browser-source-filter-icon-style="{{ source.icon_style|default('mask') }}"
                                     role="option"
                                     aria-selected="{{ 'true' if filters.source == source.key else 'false' }}"
                                     tabindex="-1"
                                 >
                                     <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
-                                    <span class="cache-source-mark browser-source-filter-mark" style="--cache-source-mark: url('{{ url_for('static', filename=source.icon_filename) }}');" aria-hidden="true"></span>
+                                    <span class="cache-source-mark browser-source-filter-mark{% if source.icon_style|default('mask') == 'full-color' %} is-full-color{% endif %}" style="--cache-source-mark: url('{{ url_for('static', filename=source.icon_filename) }}');" aria-hidden="true"></span>
                                     <span class="trade-strategy-dropdown-text">{{ source.label }}</span>
                                 </button>
                                 {% endfor %}
@@ -251,6 +255,28 @@
                             <option value="{{ no_project_filter }}" {% if is_no_project %}selected{% endif %}>No project</option>
                             {% for project in text_page.project_options %}
                             <option value="{{ project.key }}" {% if filters.project == project.key %}selected{% endif %}>{{ project.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    {% endif %}
+                    {% if is_wechat_text %}
+                    <label class="field browser-filter-field" for="browser_wechat_account">
+                        <span>WeChat account</span>
+                        <select id="browser_wechat_account" name="account" class="form-select" aria-label="Filter by WeChat account">
+                            <option value="">All source accounts</option>
+                            {% if filters.account and filters.account not in text_page.messaging.accounts|map(attribute='key')|list %}
+                            <option value="{{ filters.account }}" selected>Unavailable source account</option>
+                            {% endif %}
+                            {% for account in text_page.messaging.accounts %}
+                            <option value="{{ account.key }}" {% if filters.account == account.key %}selected{% endif %}>{{ account.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label class="field browser-filter-field" for="browser_wechat_kind">
+                        <span>Conversation type</span>
+                        <select id="browser_wechat_kind" name="chat_kind" class="form-select" aria-label="Filter by conversation type">
+                            {% for value, label in [('all', 'All conversations'), ('direct', 'Private chats'), ('group', 'Group chats'), ('unclassified', 'Unclassified')] %}
+                            <option value="{{ value }}" {% if filters.chat_kind == value %}selected{% endif %}>{{ label }}</option>
                             {% endfor %}
                         </select>
                     </label>
@@ -300,6 +326,8 @@
                         <div class="browser-heading-copy">
                             {% if filters.view == "text" and text_page.session_detail %}
                             <h2 class="report-heading" lang="zh-CN">{{ text_page.current_session.conversation_title }}</h2>
+                            {% elif is_wechat_text %}
+                            <h2 class="report-heading">WeChat conversations</h2>
                             {% elif is_zhihu_text %}
                             <h2 class="report-heading">Zhihu answerers</h2>
                             {% else %}
@@ -311,7 +339,7 @@
                 <div class="report-card workspace-content-card browser-content-card{% if filters.view == 'text' %} browser-text-summary-card{% endif %}" data-layout-role="content-scrollport">
                     <div class="browser-content-toolbar">
                         <div class="browser-session-detail-actions browser-local-resources-header-actions{% if filters.view == 'text' and text_page.session_detail %} browser-session-detail-actions--session{% endif %}" data-browser-local-resources-header-actions>
-                            {% if filters.view == "text" and text_page.session_detail %}
+                            {% if filters.view == "text" and text_page.session_detail and not is_wechat_text %}
                             <a class="secondary-button browser-session-back-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">{{ "Back to all answerers" if is_zhihu_text else ("Back to No project" if is_no_project else ("Back to project sessions" if filters.project else "Back to all sessions")) }}</a>
                             <nav class="browser-session-neighbor-nav" aria-label="{{ 'Answerer navigation' if is_zhihu_text else 'Session navigation' }}">
                                 {% if text_page.previous_session %}
@@ -501,6 +529,19 @@
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Answers</span>
                             <strong data-numeric-display-value="{{ '{:,}'.format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}">{{ "{:,}".format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}</strong>
+                        </div>
+                        {% elif is_wechat_text %}
+                        <div class="metric-card foundation-metric-card metric-card-accent">
+                            <span class="metric-label">Conversations</span>
+                            <strong>{{ '{:,}'.format(text_page.conversation_count) }}</strong>
+                        </div>
+                        <div class="metric-card foundation-metric-card metric-card-accent">
+                            <span class="metric-label">Messages</span>
+                            <strong>{{ '{:,}'.format(text_page.messaging.message_count) }}</strong>
+                        </div>
+                        <div class="metric-card foundation-metric-card metric-card-accent">
+                            <span class="metric-label">Account sources</span>
+                            <strong>{{ '{:,}'.format(1 if filters.account else text_page.messaging.accounts|length) }}</strong>
                         </div>
                         {% else %}
                         <div class="metric-card foundation-metric-card metric-card-accent">
@@ -968,6 +1009,8 @@
                             </table>
                         </div>
                     </div>
+                    {% elif is_wechat_text %}
+                    {% include "_wechat_browser.html" %}
                     {% elif filters.view == "text" and (text_page.session_detail or (not filters.session_view and text_page.items)) %}
                     {% if text_page.items and not is_zhihu_text %}
                     <div class="browser-chat-pane" data-browser-chat-pane>
@@ -1191,7 +1234,7 @@
                                 <span class="browser-session-trigger-leading">
                                     <span class="browser-picker-selected-icon-shell">
                                         <span
-                                            class="cache-source-mark browser-source-filter-mark"
+                                            class="cache-source-mark browser-source-filter-mark{% if selected_source.icon_style == 'full-color' %} is-full-color{% endif %}"
                                             style="--cache-source-mark: url('{{ url_for('static', filename=selected_source.icon) }}');"
                                             aria-hidden="true"
                                             data-browser-source-filter-selected-icon
@@ -1217,12 +1260,13 @@
                                     data-browser-source-filter-option="{{ source.key }}"
                                     data-browser-source-filter-label="{{ source.label }}"
                                     data-browser-source-filter-icon="{{ url_for('static', filename=source.icon_filename) }}"
+                                    data-browser-source-filter-icon-style="{{ source.icon_style|default('mask') }}"
                                     role="option"
                                     aria-selected="{{ 'true' if filters.source == source.key else 'false' }}"
                                     tabindex="-1"
                                 >
                                     <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
-                                    <span class="cache-source-mark browser-source-filter-mark" style="--cache-source-mark: url('{{ url_for('static', filename=source.icon_filename) }}');" aria-hidden="true"></span>
+                                    <span class="cache-source-mark browser-source-filter-mark{% if source.icon_style|default('mask') == 'full-color' %} is-full-color{% endif %}" style="--cache-source-mark: url('{{ url_for('static', filename=source.icon_filename) }}');" aria-hidden="true"></span>
                                     <span class="trade-strategy-dropdown-text">{{ source.label }}</span>
                                 </button>
                                 {% endfor %}
