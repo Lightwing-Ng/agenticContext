@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.21.0-codex.0`
+Documentation version: `v1.22.0-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -28,7 +28,13 @@ Cache is the execution surface. Its canonical source pages are:
 | Gemini | `/cache/gemini` | Rendered Gemini images in Safari | Gemini sessions and messages |
 | Claude Chat | `/cache/claude` | Browser chat sessions and messages | Claude Chat sessions and messages |
 | Claude Code | `/cache/claude_code` | Local Desktop or CLI transcripts | User and assistant text, separate from Chat |
+| OpenClaw provider archives | `/cache/chatgpt_openclaw` and each `<provider>_openclaw` source | Preserved local transcripts | Provider-attributed text, separate from browser and CLI histories |
 | Zhihu | `/cache/zhihu` | Upvoted answers or one answerer's answers | One rich-text session per answer plus source links |
+
+The OpenClaw archive's preservation, attribution, source keys, and uninstall-review
+contract are defined in [OpenClaw migration](OPENCLAW_MIGRATION.md). Archive imports
+do not require the OpenClaw runtime. Use the Dock's `Local resources` entry to
+review, search, and export cached conversations.
 
 The historical top-level paths `/grok`, `/chatgpt`, `/gemini`, `/claude`, and `/zhihu` are compatibility
 redirects. Do not introduce new links to them. The legacy `/chatgpt` plan is not a

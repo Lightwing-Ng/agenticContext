@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.12.0-codex.0
+# Code version: v1.13.0-codex.0
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from app.core.foundation import PRODUCT_NAME
+from app.core.providers import OPENCLAW_SOURCE_LABELS
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,7 +298,47 @@ _CACHE_SOURCE_VIEWS = (
 )
 
 
-CACHE_SOURCE_VIEWS = tuple(sorted(_CACHE_SOURCE_VIEWS, key=lambda source: source.label.casefold()))
+_OPENCLAW_ICONS = {
+    "chatgpt_openclaw": "images/ChatGPT-Logo.svg",
+    "gemini_openclaw": "images/Google_Gemini_logo_2025_symbol.svg",
+    "claude_openclaw": "images/claude.svg",
+    "grok_openclaw": "images/grok.svg",
+}
+_OPENCLAW_SOURCE_VIEWS = tuple(
+    CacheSourceView(
+        key=key,
+        label=label,
+        view_endpoint="cache_source",
+        template_name="openclaw.html",
+        icon_filename=_OPENCLAW_ICONS.get(key, "images/favicon.svg"),
+        document_title=f"{PRODUCT_NAME} {label}",
+        overview_title=f"{label} archive",
+        browser_panel_label="Preserved transcripts",
+        browser_empty_message="",
+        browser_config_field="",
+        require_browser_ready=False,
+        start_form_id=f"start_form_{key}",
+        start_button_label="Read archived sessions",
+        start_wait_title=f"Reading {label} archive",
+        start_wait_copy="Reading the preserved local snapshot.",
+        stop_wait_title="Stopping archive import",
+        stop_wait_copy="Finishing the current transcript before stopping.",
+        progress_strategy="queue",
+        progress_aria_label=f"{label} import progress",
+        group_key="llm",
+        group_label="Chats",
+        show_shared_settings_link=False,
+        show_progress_value=True,
+        show_progress_detail=True,
+        preserve_icon_color=key == "gemini_openclaw",
+        is_local=True,
+    )
+    for key, label in OPENCLAW_SOURCE_LABELS.items()
+)
+
+CACHE_SOURCE_VIEWS = tuple(sorted(
+    (*_CACHE_SOURCE_VIEWS, *_OPENCLAW_SOURCE_VIEWS), key=lambda source: source.label.casefold(),
+))
 MEDIA_CACHE_SOURCE_VIEWS = tuple(source for source in CACHE_SOURCE_VIEWS if source.group_key == "media")
 LLM_CACHE_SOURCE_VIEWS = tuple(source for source in CACHE_SOURCE_VIEWS if source.group_key == "llm")
 LLM_SWITCHER_SOURCE_VIEWS = tuple(

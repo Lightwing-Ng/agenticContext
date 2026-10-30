@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.8.0-codex.0
+# Code version: v2.9.0-codex.0
 
 from __future__ import annotations
 
@@ -59,6 +59,8 @@ from app.core.providers import (
     ChatGPTDownloadService,
     ClaudeHistoryService,
     ClaudeCodeHistoryService,
+    OPENCLAW_SOURCE_LABELS,
+    OpenClawHistoryService,
     GeminiHistoryService,
     GrokDownloadService,
     GrokHistoryService,
@@ -68,6 +70,7 @@ from app.core.providers import (
     build_chatgpt_text_snapshot,
     build_claude_initial_snapshot,
     build_claude_code_initial_snapshot,
+    build_openclaw_initial_snapshot,
     build_claude_media_initial_snapshot,
     build_gemini_initial_snapshot,
     build_gemini_media_initial_snapshot,
@@ -651,6 +654,24 @@ def create_app(
             ),
         },
     }
+    for source_key in OPENCLAW_SOURCE_LABELS:
+        archive_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
+        archive_service = OpenClawHistoryService(
+            archive_state,
+            media_catalog.local_store_root,
+            source=source_key,
+            **cache_task(source_key, "text"),
+        )
+        app.extensions[f"{source_key}_history_service"] = archive_service
+        cache_runtimes[source_key] = {
+            "text": CacheRuntimeAdapter(
+                state=archive_state,
+                service=archive_service,
+                hydrate_snapshot=lambda source=source_key: build_openclaw_initial_snapshot(
+                    APP_VERSION, media_catalog.local_store_root, source=source,
+                ),
+            ),
+        }
     app.extensions["cache_runtimes"] = cache_runtimes
 
     def is_agent_access_unlocked() -> bool:
