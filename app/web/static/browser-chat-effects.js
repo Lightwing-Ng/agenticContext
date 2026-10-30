@@ -1,4 +1,4 @@
-/* Code version: v1.1.0-codex.0 */
+/* Code version: v1.1.1-codex.0 */
 
 (function initializeBrowserChatEffects() {
     "use strict";
@@ -65,8 +65,12 @@
                 materialDirty = false;
             }
             const layerBounds = layer.getBoundingClientRect();
-            const scaleX = layerBounds.width / layer.clientWidth || 1;
-            const scaleY = layerBounds.height / layer.clientHeight || 1;
+            // Rounded client dimensions would turn fractional CSS sizes into scroll drift.
+            const layerStyle = window.getComputedStyle(layer);
+            const cssWidth = Number.parseFloat(layerStyle.width);
+            const cssHeight = Number.parseFloat(layerStyle.height);
+            const scaleX = cssWidth > 0 ? layerBounds.width / cssWidth : 1;
+            const scaleY = cssHeight > 0 ? layerBounds.height / cssHeight : 1;
             const scrollTop = scrollport.scrollTop;
             const rectangles = entries.map(({ message }) => message.getBoundingClientRect());
             entries.forEach(({ effect }, index) => {

@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.35.0-codex.0
+# Code version: v1.36.0-codex.0
 
 from __future__ import annotations
 
@@ -45,11 +45,11 @@ VIDEO_SUFFIXES = frozenset({".m4v", ".mkv", ".mov", ".mp4", ".webm"})
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt", "claude", "gemini"})
 TEXT_SOURCE_VALUES = frozenset(
-    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu"}
+    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu", "wechat"}
 ) | frozenset(OPENCLAW_SOURCE_LABELS)
 # Text-only providers have no media cache source. Treat a URL naming one in
 # Media mode as the ChatGPT media view instead of silently showing all media.
-TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code", "grok_build"}) | frozenset(OPENCLAW_SOURCE_LABELS)
+TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code", "grok_build", "wechat"}) | frozenset(OPENCLAW_SOURCE_LABELS)
 MEDIA_KIND_VALUES = frozenset({"all", "image", "video"})
 SORT_VALUES = frozenset({"newest", "oldest", "name"})
 VIEW_VALUES = frozenset({"media", "text", "prompts"})
@@ -647,6 +647,8 @@ def normalize_browser_filters(
     project: str | None = None,
     session_index: object = None,
     media_view: object = None,
+    account: str | None = None,
+    chat_kind: str | None = None,
 ) -> dict[str, Any]:
     """Normalize user-controlled browser filters to safe allowlisted values."""
     normalized_source = str(source or "").strip().lower()
@@ -663,6 +665,8 @@ def normalize_browser_filters(
     source_values = SOURCE_VALUES if normalized_view == "media" else TEXT_SOURCE_VALUES
     default_source = "chatgpt" if normalized_view == "text" else "all"
     if normalized_view == "media" and normalized_source in TEXT_ONLY_SOURCE_VALUES:
+        normalized_source = "chatgpt"
+    if normalized_view == "prompts" and normalized_source == "wechat":
         normalized_source = "chatgpt"
     if normalized_view == "text" and normalized_source == "all":
         normalized_source = default_source
@@ -698,6 +702,8 @@ def normalize_browser_filters(
         "media_id": str(media_id or "").strip()[:96],
         "answerer": normalized_answerer,
         "project": normalized_project,
+        "account": str(account or "").replace("\x00", "").strip()[:160] if normalized_view == "text" and safe_source == "wechat" else "",
+        "chat_kind": str(chat_kind or "all") if normalized_view == "text" and safe_source == "wechat" and chat_kind in {"all", "direct", "group", "unclassified"} else "all",
     }
 
 

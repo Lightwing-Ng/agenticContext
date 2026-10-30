@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.22.0-codex.0`
+Documentation version: `v1.23.0-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -42,7 +42,7 @@ separate Agent route; it resolves into the Cache namespace.
 
 `Local resources` owns `/browser`. It is the review and export surface, not the place
 where a source sync is started. Its text source filter accepts `all`, `chatgpt`,
-`claude`, `claude_code`, `gemini`, `grok`, `grok_build`, and `zhihu`.
+`claude`, `claude_code`, `gemini`, `grok`, `grok_build`, `wechat`, and `zhihu`.
 
 ### Claude Code local import
 
@@ -90,6 +90,48 @@ Local resources exposes Grok Chat and Grok Build separately for session browsing
 search, saved prompts, and Markdown export. Local transcripts have no fabricated
 web conversation link. The Dock remembers both `/cache/grok_build` and the local
 `source=grok_build` filter across visits to Agent and Settings.
+
+### WeChat text archives
+
+Open `/browser?view=text&source=wechat` from Local resources. The account selector separates
+verified native account IDs from unconfirmed export sources. Private chats, group chats, and
+unclassified conversations have separate filters and presentation variants. A spreadsheet's
+`Group Name` column alone does not prove that its conversations are groups. Matching sender
+names or overlapping messages do not establish the export owner's account.
+
+Import only a previously parsed text archive with `catalog.json`, `compression_manifest.json`,
+and per-source `source.json` and `messages.jsonl.gz` files:
+
+```bash
+python3 scripts/import_wechat_archive.py /path/to/text-archive \
+  --local-store /path/to/private/local_store \
+  --report /path/to/private/local_store/messaging/wechat/import-report.json
+```
+
+The importer verifies compressed and decoded SHA-256 values and row counts, then atomically
+replaces the complete SQLite snapshot. Failed imports retain the previous index. An optional
+`--source-kind SOURCE=direct` or `SOURCE=group` requires independent evidence for that source;
+otherwise uncertain exports stay unclassified. This is a complete-snapshot import, so retain
+all intended sources in the input catalog. Counts remain per source, not deduplicated unique
+original-message totals. The source clocks, record locators, and large message IDs remain
+available in Source details and text exports.
+
+User-directed source exclusions live in the private sidecar
+`local_store/messaging/wechat/exclusions.json`. Its schema is
+`{"schema_version": 1, "sources": [{"source_id": "curated-export", "reason": "User request"}]}`.
+The importer reads this policy automatically and skips matching source IDs before opening their
+metadata or compressed payloads, so excluded cloud inputs need not download again. Retained
+message counts plus explicitly excluded catalog row counts must still reconcile with the full
+catalog. Invalid policies fail without replacing the previous index. Recording an exclusion
+prevents future imports; an already indexed source must also be removed from the current snapshot.
+Keep user-specific decisions and removal receipts in private local storage, not tracked code.
+
+The index stays local for offline browsing. Cloud input files can return to online-only after
+successful verification; do not remove cloud originals or evict the index while using the page.
+No original backup, attachment, media, OCR, or external service is read by passive browsing.
+WeChat does not expose a Cache execution page or AI prompt actions. Focused coverage lives in
+`tests/test_wechat_archive.py` and `tests/test_wechat_browser_e2e.py`, using synthetic archives
+and an isolated application instance.
 
 ## 2. Shared Text/Media contract
 

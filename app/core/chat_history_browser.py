@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.25.0-codex.0
+# Code version: v1.26.0-codex.0
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from .zhihu_answers import normalize_zhihu_rich_text
 CHAT_HISTORY_PAGE_SIZE = 100
 CHAT_HISTORY_SESSION_PAGE_SIZE = 100
 CHAT_HISTORY_SOURCE_VALUES = frozenset(
-    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu"}
+    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu", "wechat"}
 ) | frozenset(OPENCLAW_SOURCE_LABELS)
 CHAT_HISTORY_SORT_VALUES = frozenset({"newest", "oldest", "name"})
 CHATGPT_NO_PROJECT_FILTER = "__no_project__"
@@ -75,6 +75,7 @@ class ChatHistoryMessage:
     last_seen_at: str
     media_refs: tuple[ChatHistoryMediaReference, ...] = ()
     session_updated_at: str = ""
+    messaging: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,8 @@ class ChatHistorySession:
     model_label: str
     source_links: tuple[str, ...]
     media_refs: tuple[ChatHistoryMediaReference, ...] = ()
+
+    messaging: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +129,7 @@ class ChatHistoryPage:
     selected_answerer: str = ""
     project_options: tuple[ChatHistoryProjectOption, ...] = ()
     selected_project: str = ""
+    messaging: dict[str, Any] | None = None
 
     @property
     def session_detail(self) -> bool:
@@ -812,9 +816,18 @@ def query_chat_history(
     session: str = "",
     answerer: str = "",
     project: str = "",
+    account: str = "",
+    chat_kind: str = "all",
 ) -> ChatHistoryPage:
     """Read cached text sessions, global search results, or one session's complete history."""
     normalized_source = normalize_chat_history_source(source)
+    if normalized_source == "wechat":
+        from .wechat_history_browser import query_wechat_history
+
+        return query_wechat_history(
+            local_store_root, account=account, chat_kind=chat_kind, query=query,
+            sort=sort, page=page, page_size=page_size, session=session,
+        )
     normalized_query = str(query or "").strip()[:120].casefold()
     query_terms = tuple(normalized_query.split())
     project_count = 0 if normalized_source == "zhihu" else count_cached_projects(
@@ -1049,7 +1062,17 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
     }.get(
         session.source, session.source.title(),
     )
-    lines = [f"# {title}", "", f"- Source: {source_label}"]
+    lines = [f"# {title}", "", f"- Source: {'WeChat' if session.source == 'wechat' else source_label}"]
+    if session.messaging:
+        origin = session.messaging
+        lines.extend((
+            f"- Source account: {origin['account_label']}",
+            f"- Source account ID: {origin['account_id'] or 'Unconfirmed'}",
+            f"- Account identity: {origin['identity_status']}",
+            f"- Conversation type: {origin['kind']}",
+            f"- Conversation ID: {origin['peer_id'] or 'Unavailable in source'}",
+            f"- Archive: {origin['source_label']} / {origin['source_file']}",
+        ))
     lines.append(
         f"- {'Answers' if session.source == 'zhihu' else 'Messages'}: {exported_count:,}"
     )
@@ -1063,7 +1086,7 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
             if session.source == "zhihu"
             else " ".join(message.author_label.split()) or message.role.title() or "Message"
         )
-        timestamp = format_chat_message_timestamp_label(message.last_seen_at)
+        timestamp = message.messaging["timestamp_label"] if message.messaging else format_chat_message_timestamp_label(message.last_seen_at)
         content = message.content_text.strip()
         if session.source == "zhihu" and message.content_html:
             normalized_markdown = normalize_zhihu_rich_text(
@@ -1073,6 +1096,17 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
                 content = normalized_markdown
         content = content or "(empty message)"
         lines.extend((f"### {index}. {role} · {timestamp}", "", content, ""))
+        if message.messaging:
+            context = message.messaging
+            lines.extend((
+                f"- Direction: {context['direction']}",
+                f"- Sender ID: {context['sender_id'] or 'Unavailable in source'}",
+                f"- Time basis: {context['time_basis']}",
+                f"- Source record: {json.dumps(context['provenance'], ensure_ascii=False)}",
+            ))
+            if context['quality_flags']:
+                lines.append(f"- Source limitations: {', '.join(context['quality_flags'])}")
+            lines.append("")
         for link_index, source_link in enumerate(message.source_links, start=1):
             lines.append(f"Source link {link_index}: {source_link}")
         if message.source_links:

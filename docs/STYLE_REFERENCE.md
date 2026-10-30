@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.24.0-claude.0`
+Documentation version: `v1.24.3-codex.0`
 
 ## Authority
 
@@ -343,6 +343,21 @@ frame as native scrolling; never reposition them from a `scroll` handler, which
 trails asynchronous scrolling and visibly detaches shadows from their cards.
 Engines without scroll timelines keep the cards' native, scrollport-clipped
 shadows. No message content or interactive control is copied into the effect layer.
+
+WeChat details reuse this same pane and inert effect layer, including stable card IDs,
+while retaining their directional widths, alignment, human-message padding, and provenance
+controls. No separate shadow implementation or navigation ruler is introduced. Effect geometry
+uses fractional computed CSS dimensions rather than rounded client dimensions when deriving
+ancestor scale, preventing deep-scroll drift on wrapped or fractional-height layouts.
+
+WeChat source disclosures share the message's author/timestamp header row with the existing
+chevron; a closed card has no separate disclosure or footer row. Native summaries keep the
+accessible name `Source details` and the existing Circular icon button minimum hit height.
+The author/timestamp span wraps inside the summary's content column, so the trailing chevron
+cannot cover text on narrow screens. Cards use the shared 8px/12px message padding, a 4px
+header/body gap, and one 12px inter-card gap rather than stacked grid gaps and margins.
+Message direction stays in expandable provenance and text exports. Presentation changes do
+not infer forwarding status or alter unknown source directions.
 
 The Local resources search icon keeps its 16px SVG transport and a square slot
 matching the search control's inner height. Its native lens center, rather than
