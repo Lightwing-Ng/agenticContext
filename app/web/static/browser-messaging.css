@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.0 */
+/* Code version: v1.2.1-codex.0 */
 /* Human-message variants consume the existing Local resources primitives. */
 .wechat-resources {
     display: flex;
@@ -48,10 +48,6 @@
 .wechat-resources .wechat-message--unknown {
     max-width: min(100%, 76ch);
     margin-inline: 0 auto;
-}
-
-.wechat-chat--group .wechat-message--received {
-    border-inline-start: 3px solid color-mix(in srgb, var(--theme-accent-primary) 45%, transparent);
 }
 
 .wechat-message-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }

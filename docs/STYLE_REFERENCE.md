@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.24.3-codex.0`
+Documentation version: `v1.24.4-codex.0`
 
 ## Authority
 
@@ -332,10 +332,13 @@ ruler pitch is 8px; coarse pointers retain the 24px targets.
 `browser-chat-effects.js` paints the shared outer card shadows in an inert,
 pointer-transparent sibling layer. Native cards retain their inset highlights,
 while their content remains inside the original scroll owner. The effect layer
-uses layout containment and the shared 48px paint allowance at its sides and
-bottom. Its top clips at the chat pane boundary so scrolling shadows cannot paint
-over the preceding transparent summary metrics. Tall messages do not enlarge
-the document, and shadows can still cross the side and bottom edges. Full card
+uses layout containment and the shared 48px paint allowance at its sides.
+Its top clips at the chat pane boundary so scrolling shadows cannot paint
+over the preceding transparent summary metrics. A step-end clip animation on the
+same scroll timeline bounds bottom shadows to the scrollport until the list ends,
+preventing a partially visible card from casting a hollow bubble below its content.
+At the end, or when the list does not overflow, the full 48px bottom paint allowance
+remains available. Tall messages do not enlarge the document. Full card
 rectangles are placed in scroll-content coordinates and follow resizing,
 content-size changes, and theme updates. A `ScrollTimeline` bound to the message
 scrollport translates their track on the compositor, so shadows move in the same

@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.1.1-codex.0
 
 from __future__ import annotations
 
@@ -465,6 +465,51 @@ class WechatArchiveRepository:
     def __init__(self, local_store_root: Path | str):
         self.path = wechat_archive_path(local_store_root)
 
+    @staticmethod
+    def _source_snapshots(connection, messages, partition_id):
+        """Read referenced snapshot metadata once, within the current source partition."""
+        identifiers = set()
+        for message in messages:
+            provenance = json.loads(message["provenance"])
+            if not isinstance(provenance, dict):
+                continue
+            identifier = provenance.get("source_snapshot")
+            if type(identifier) is int and 0 < identifier <= 9223372036854775807:
+                identifiers.add(identifier)
+        if (
+            not identifiers
+            or connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_snapshots'"
+            ).fetchone()
+            is None
+        ):
+            return {}
+        snapshots = {}
+        identifiers = sorted(identifiers)
+        for offset in range(0, len(identifiers), 500):
+            batch = identifiers[offset : offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            for row in connection.execute(
+                "SELECT id,snapshot_id,source_id,metadata FROM source_snapshots "
+                f"WHERE source_id=? AND id IN ({placeholders})",
+                [partition_id, *batch],
+            ):
+                try:
+                    metadata = json.loads(row["metadata"])
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    not isinstance(metadata, dict)
+                    or metadata.get("source_id", partition_id) != partition_id
+                ):
+                    continue
+                snapshots[row["id"]] = {
+                    "snapshot_id": row["snapshot_id"],
+                    "source_id": row["source_id"],
+                    "metadata": metadata,
+                }
+        return snapshots
+
     def query(
         self,
         *,
@@ -481,6 +526,7 @@ class WechatArchiveRepository:
             "accounts": [],
             "conversations": [],
             "messages": [],
+            "source_snapshots": {},
             "current": None,
             "count": 0,
             "message_count": 0,
@@ -550,6 +596,9 @@ class WechatArchiveRepository:
                     **empty,
                     "accounts": accounts,
                     "messages": messages,
+                    "source_snapshots": self._source_snapshots(
+                        connection, messages, current["partition_id"]
+                    ),
                     "current": current,
                     "count": total,
                     "message_count": current["message_count"],

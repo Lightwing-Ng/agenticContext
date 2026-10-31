@@ -1,12 +1,14 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.2.2-codex.0
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from .wechat_archive import WechatArchiveRepository
+from .wechat_contacts import WechatContactRepository
 
 
 def query_wechat_history(
@@ -77,17 +79,73 @@ def query_wechat_history(
         )
 
     current = conversation(result["current"]) if result["current"] else None
+    source_snapshots = result.get("source_snapshots", {})
+    contact_requests = []
     items = []
     for row in result["messages"]:
+        provenance = json.loads(row["provenance"])
         metadata = {
             **context(result["current"]),
             "direction": row["direction"],
             "sender_id": row["sender_id"] or "",
             "timestamp_label": row["timestamp_label"],
             "time_basis": row["time_basis"],
-            "provenance": json.loads(row["provenance"]),
+            "provenance": provenance,
             "quality_flags": tuple(json.loads(row["quality_flags"])),
         }
+        source_snapshot = (
+            provenance.get("source_snapshot") if isinstance(provenance, dict) else None
+        )
+        snapshot = (
+            source_snapshots.get(source_snapshot)
+            if type(source_snapshot) is int
+            else None
+        )
+        if snapshot is not None:
+            source = snapshot["metadata"]
+            for key in ("source_file", "source_label", "backup_id"):
+                if isinstance(source.get(key), str) and source[key]:
+                    metadata[key] = source[key]
+            metadata["source_snapshot_id"] = snapshot["snapshot_id"]
+        owner = metadata["account_id"]
+        native_owner = (
+            isinstance(owner, str)
+            and bool(owner)
+            and metadata["partition_id"]
+            == "ios-" + hashlib.md5(owner.encode()).hexdigest()
+        )
+        metadata["sender_identifier_namespace"] = (
+            "native_user_name" if native_owner else "unverified_export_field"
+        )
+        source_record_id = (
+            provenance.get("record_id") if isinstance(provenance, dict) else None
+        )
+        source_locator = (
+            provenance.get("locator") if isinstance(provenance, dict) else None
+        )
+        contact_requests.append(
+            {
+                "id": row["id"],
+                "conversation_id": row["conversation_id"],
+                "sender_id": metadata["sender_id"],
+                "sender_label": row["sender_label"],
+                "source_id": metadata["partition_id"],
+                "source_snapshot_id": metadata.get("source_snapshot_id", ""),
+                "account_id": metadata["account_id"],
+                "peer_id": metadata["peer_id"],
+                "conversation_kind": metadata["kind"],
+                "text_sha256": hashlib.sha256(row["text"].encode()).hexdigest(),
+                "timestamp_value": row["timestamp_value"],
+                "source_record_id": source_record_id
+                if isinstance(source_record_id, str)
+                else "",
+                "source_locator": source_locator
+                if isinstance(source_locator, dict)
+                else {},
+                "is_system": isinstance(provenance, dict)
+                and provenance.get("text_extraction_kind") == "system_text",
+            }
+        )
         items.append(
             ChatHistoryMessage(
                 stable_id=row["id"],
@@ -108,6 +166,11 @@ def query_wechat_history(
                 messaging=metadata,
             )
         )
+    contacts = WechatContactRepository(local_store_root).resolve_messages(
+        contact_requests
+    )
+    for item in items:
+        item.messaging["contact"] = contacts[item.stable_id]
     return ChatHistoryPage(
         items=tuple(items),
         total_count=result["count"],
@@ -125,5 +188,6 @@ def query_wechat_history(
             "chat_kind": result["kind"],
             "requested_session": session,
             "message_count": result["message_count"],
+            "source_snapshots": source_snapshots,
         },
     )

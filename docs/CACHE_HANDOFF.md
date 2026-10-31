@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.23.0-codex.0`
+Documentation version: `v1.24.0-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -132,6 +132,60 @@ No original backup, attachment, media, OCR, or external service is read by passi
 WeChat does not expose a Cache execution page or AI prompt actions. Focused coverage lives in
 `tests/test_wechat_archive.py` and `tests/test_wechat_browser_e2e.py`, using synthetic archives
 and an isolated application instance.
+
+#### Contact identity and name observations
+
+Each utterance carries `messaging.contact`. The optional private
+`messaging/wechat/contacts.sqlite3` sidecar stores canonical native usernames separately from
+source-account remarks, snapshot-specific nicknames, public aliases, and room display names.
+Exact internal usernames share a contact across devices and source accounts; OpenIM identities
+also require their application realm. A contact represents a platform identity, not proof that
+different accounts belong to one person. Source-account partitions remain independent, and case
+and original identifier bytes are preserved.
+
+Only explicit native evidence authorizes a global identity. An export's `WeChat ID` field may
+have ambiguous semantics. Database-local numeric keys require their owning lookup table; MD5
+account directories and chat table names are location hashes. Exporter placeholders remain
+unresolved. Unknown utterances receive separate provisional contacts, retaining original source
+identifiers for review. System identity requires parsed system-message evidence.
+
+Per-message corroboration is an overlay. A binding requires matching source, message ID, UTF-8
+body SHA-256, exact timestamp string, and original record ID. It never rewrites the original
+sender, name, timestamp, body, or account. Clock equality alone does not establish a timezone or
+owner, and message times do not establish name-validity dates. Collapsed metadata and Markdown
+exports retain contact references and the original source display name. Missing or invalid
+sidecars leave text browsing available with provisional objects; the paginated observation API
+retains access to the complete name history when the current profile display is capped.
+
+#### Native text decoding and additive reconciliation
+
+The native helpers are library primitives, not a Finder backup restore tool. Select only textual
+message cells and identity metadata; do not open media or attachment contents. The WCDB decoder
+accepts plaintext on Python 3.13 or newer. Compressed cells require a runtime with
+`compression.zstd`, available in Python 3.14, and the exact application dictionary when required.
+Unavailable dictionaries, invalid frames, and unsupported content must remain deferred with
+original database bytes, raw cells, locators, and reasons retained by the extraction caller.
+Readable-text counts do not prove that every native row has decoded.
+
+The bounded text parser recognizes explicit text types and selected app, forwarded, quoted, and
+system envelopes. It never follows URLs or opens embedded resources. Preserve embedded author
+evidence rather than treating a forwarded statement as the forwarding person's original speech.
+Native identity parsing keeps stable usernames separate from mutable display names.
+
+Use `reconcile_wechat_records` for an additive merge into an existing index; the archive-import
+command above still replaces a complete snapshot. Reconciliation verifies account and conversation
+hashes and honors source exclusions. It preserves existing message and partition evidence, stores
+snapshot provenance, and publishes atomically only after integrity and preservation checks.
+Matching requires a nonzero server ID in the same verified account and conversation, equal text,
+and compatible known sender, direction, and comparable time. Missing IDs do not authorize fuzzy
+deduplication. Conflicts remain separate variants, while exact replay is idempotent. Keep unknown
+owners and clocks unresolved instead of inferring them from names or overlapping text.
+
+Retain and verify source evidence separately from the searchable index. A text-only archive does
+not preserve an iPhone's complete state or guarantee Finder restoration, full decoding, or recovery
+of messages absent from the inputs. Backup deletion and cloud eviction require their own verified
+retention decision; these helpers perform neither operation. Keep production reconciliation
+receipts, account identifiers, and contact databases outside Git.
 
 ## 2. Shared Text/Media contract
 

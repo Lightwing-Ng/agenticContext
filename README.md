@@ -1,6 +1,6 @@
 # agenticContext
 
-Documentation version: `v1.34.0-codex.0`
+Documentation version: `v1.35.0-codex.0`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
@@ -13,6 +13,14 @@ resources.
 Preserved OpenClaw conversations have separate provider sources such as `ChatGPT OpenClaw`
 and `Gemini OpenClaw`. Their private archive and parsed histories remain usable after
 OpenClaw is removed. See [OpenClaw preservation](docs/OPENCLAW_MIGRATION.md).
+
+Local resources also includes a text-only WeChat archive with account-scoped search,
+private/group/unclassified conversations, and provenance-preserving text export.
+Contact identities keep source-specific names separate; native text reconciliation preserves
+existing messages and unresolved evidence. Unconfirmed account sources stay independent.
+Compressed text may require an unavailable application dictionary, so a retained archive does
+not imply complete decoding or a restorable iPhone backup.
+See [WeChat archive import](docs/CACHE_HANDOFF.md#wechat-text-archives).
 
 Its Agent workspace uses the selected authenticated Web session for ChatGPT, Gemini, Grok, or Claude.
 The sidebar exposes one provider-neutral Project concept: ChatGPT Projects, Gemini Notebooks, and

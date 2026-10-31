@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.29.0-codex.0`
+Documentation version: `v1.30.0-codex.0`
 
 ## Supported commands
 
@@ -86,6 +86,24 @@ On Windows:
 ```powershell
 .\scripts\check.ps1
 ```
+
+Run the WeChat contact and native-text checks with synthetic fixtures:
+
+```bash
+./scripts/test.sh tests/test_wechat_contacts.py tests/test_wechat_contact_browser.py \
+  tests/test_wechat_contact_template.py tests/test_wechat_provenance.py \
+  tests/test_wechat_identity.py tests/test_wechat_wcdb.py tests/test_wechat_text.py \
+  tests/test_wechat_reconcile.py
+```
+
+They cover exact native identity, OpenIM realm separation, scoped name observations, unidentified
+speaker isolation, and per-message body/time/record fingerprints. Native checks cover bounded
+metadata parsing, strict plaintext decoding, explicit missing-backend/dictionary failures,
+supported text envelopes, account/hash boundaries, replay, conflicting observations, exclusions,
+and preservation of existing message evidence during additive publication. Real Zstd cases run
+when `compression.zstd` is available; Python 3.13 still exercises the explicit unavailable-backend
+contract. These checks do not read production backups, cloud exports, media, or the local index,
+and passing them does not establish complete recovery of a particular backup.
 
 Run the isolated local-compute benchmark:
 
