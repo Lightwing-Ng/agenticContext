@@ -1,4 +1,4 @@
-{# Code version: v1.2.0-codex.0 #}
+{# Code version: v1.2.2-codex.0 #}
 {% set kind_names = {'direct': 'Private chat', 'group': 'Group chat', 'unclassified': 'Unclassified chat'} %}
 <section class="wechat-resources" aria-label="WeChat text archive" data-wechat-resources>
     {% if text_page.session_detail %}
@@ -36,7 +36,11 @@
                         <dt>Source account</dt><dd>{{ context.account_id or 'Unconfirmed; this source stays separate' }}</dd>
                         <dt>Archive</dt><dd>{{ context.source_file }}</dd>
                         <dt>Conversation ID</dt><dd>{{ context.peer_id or 'Unavailable in source' }}</dd>
-                        <dt>Sender ID</dt><dd>{{ context.sender_id or 'Unavailable in source' }}</dd>
+                        <dt>{{ 'Original export identifier' if context.sender_identifier_namespace == 'unverified_export_field' else 'Sender ID' }}</dt><dd>{{ context.sender_id or 'Unavailable in source' }}</dd>
+                        {% if context.contact %}
+                        <dt>Contact ID</dt><dd>{{ context.contact.id }}</dd>
+                        <dt>Contact identity</dt><dd>{{ context.contact.identity_status|replace('_', ' ') }}</dd>
+                        {% endif %}
                         <dt>Time basis</dt><dd>{{ context.time_basis }}</dd>
                         <dt>Record</dt><dd>{{ context.provenance.locator|tojson }}</dd>
                         {% if context.provenance.server_id %}<dt>Message ID</dt><dd>{{ context.provenance.server_id }}</dd>{% endif %}

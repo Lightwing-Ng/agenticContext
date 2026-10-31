@@ -1,6 +1,6 @@
 """Account and conversation-type filters share desktop and narrow UI contracts.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -202,6 +202,99 @@ def test_filters_pagination_and_human_message_variants(
         page.get_by_role("link", name="All conversations", exact=True).click()
         expect(page.locator("tr[data-chat-session-id]")).to_have_count(1)
         assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1050, 390])
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_partial_message_shadow_does_not_draw_blank_body_below_scrollport(
+    disposable_browser, wechat_server, width, color_scheme
+):
+    """Clipped messages cannot cast a false empty bubble into the pagination rail."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 778},
+        reduced_motion="reduce",
+        color_scheme=color_scheme,
+    )
+    page = context.new_page()
+    try:
+        page.goto(
+            wechat_server
+            + "/browser?view=text&source=wechat&account=account:wxid_account_a&chat_kind=group",
+            wait_until="networkidle",
+        )
+        page.get_by_role("link", name="Same title", exact=True).click()
+        if page.locator("#sidebar_toggle").get_attribute("aria-expanded") == "true":
+            page.locator("#sidebar_toggle").click()
+        page.evaluate("document.fonts.ready")
+        scrollport = page.locator("[data-chat-scrollport]")
+        target = page.locator(".wechat-message--sent").nth(20)
+
+        def below_scrollport_difference():
+            _wait_for_effect_sync(page)
+            _set_effect_layer_visibility(page, "")
+            bounds = scrollport.bounding_box()
+            crop = (
+                max(0, math.floor(bounds["x"] - 12)),
+                math.ceil(bounds["y"] + bounds["height"] + 2),
+                min(width, math.ceil(bounds["x"] + bounds["width"] + 12)),
+                math.floor(bounds["y"] + bounds["height"] + 32),
+            )
+            painted = Image.open(BytesIO(page.screenshot())).convert("RGB")
+            _set_effect_layer_visibility(page, "hidden")
+            try:
+                hidden = Image.open(BytesIO(page.screenshot())).convert("RGB")
+            finally:
+                _set_effect_layer_visibility(page, "")
+            return ImageChops.difference(painted.crop(crop), hidden.crop(crop))
+
+        for position in ("middle", "end", "near-end", "return"):
+            if position == "end":
+                scrollport.evaluate("list => { list.scrollTop = list.scrollHeight; }")
+            elif position == "near-end":
+                scrollport.evaluate("list => { list.scrollTop -= 1; }")
+            else:
+                target.evaluate("""card => {
+                    const list = card.closest('[data-chat-scrollport]');
+                    list.scrollTop += card.getBoundingClientRect().top
+                        - (list.getBoundingClientRect().bottom - 32);
+                }""")
+                assert target.locator(".wechat-message-text").evaluate("""text =>
+                    text.getBoundingClientRect().top
+                        >= text.closest('[data-chat-scrollport]').getBoundingClientRect().bottom
+                """)
+            difference = below_scrollport_difference()
+            page.screenshot(
+                path=f"/tmp/wechat-bottom-{width}-{color_scheme}-{position}.png"
+            )
+            if position == "end":
+                assert (
+                    sum(
+                        max(difference.getpixel((x, y))) >= 1
+                        for x in range(difference.width)
+                        for y in range(difference.height)
+                    )
+                    >= 24
+                )
+            else:
+                assert difference.getbbox() is None, (
+                    position,
+                    difference.getbbox(),
+                )
+
+        page.set_viewport_size({"width": width, "height": 1500})
+        page.get_by_role("link", name="Message page 2", exact=True).click()
+        expect(page.locator(".wechat-message")).to_have_count(6)
+        _wait_for_effect_sync(page)
+        assert scrollport.evaluate("list => list.scrollHeight <= list.clientHeight")
+        _assert_directional_shadow_pixels(page, _chat_geometry(page), "sent")
+        page.set_viewport_size({"width": width, "height": 778})
+        page.wait_for_function("""() => {
+            const list = document.querySelector('[data-chat-scrollport]');
+            return innerHeight === 778 && list.scrollHeight > list.clientHeight;
+        }""")
+        assert below_scrollport_difference().getbbox() is None
     finally:
         context.close()
 

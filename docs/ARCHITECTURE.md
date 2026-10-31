@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.55.0-codex.0`
+Documentation version: `v1.56.0-codex.0`
 
 ## Runtime flow
 
@@ -760,6 +760,48 @@ directly in read-only SQLite. Passive page reads never import archives or enumer
 The Web layer continues to use the storage facade. Its Local resources source registry includes
 WeChat without adding a Cache execution page or media/prompt source.
 
+`wechat_contacts.py` supplies a standard contact object through the separate, read-only
+`contacts.sqlite3` sidecar. Canonical keys hash the exact native internal username, namespace,
+and realm. OpenIM requires its application realm; unqualified observations remain source-scoped.
+A contact denotes a WeChat identity, not an inferred real-world person. Account owners and
+speakers share this identity vocabulary without merging source-account partitions. Nicknames,
+public aliases, account-specific remarks, and room display names remain observations with source,
+snapshot, owner, and room scope. The original message author label stays unchanged; representative
+names do not establish historical name-validity periods.
+
+Sender bindings require native identifier evidence. Ambiguous export identifiers, database-local
+numeric IDs, MD5 location hashes, and exporter placeholders are not global contact keys. Missing
+identity produces a message-specific provisional object. Optional per-message corroboration
+requires exact source/message scope, body SHA-256, timestamp, and original record ID. Conflicting
+or stale evidence leaves the utterance unresolved without assigning an unknown export owner.
+Page reads batch contact lookup and bound displayed observations; `query_observations` paginates
+the complete name history. Identity enrichment does not rewrite messages.
+
+`wechat_wcdb.py` decodes explicitly selected text cells with strict UTF-8, compression-marker,
+frame, and output-size validation. Plaintext works on the supported Python baseline; compressed
+cells require the optional standard-library `compression.zstd` backend available in Python 3.14
+and the matching dictionary when the frame requires one. Missing backends or dictionaries and
+malformed frames raise explicit errors instead of returning replacement or partial text. The
+caller must retain original databases and raw cells for deferred decoding; this decoder does not
+persist those bytes itself. `wechat_identity.py` reads bounded native account/contact metadata
+without treating mutable names or location hashes as account identities.
+
+`wechat_text.py` extracts known plain, app, forwarded, quoted, and system text with bounded XML
+parsing. Unsupported envelopes remain unresolved. Forwarded and quoted text retains its embedded
+source evidence instead of becoming an independent conversation or an asserted original speaker.
+These helpers do not open attachments, media files, thumbnails, or external resources.
+
+`wechat_reconcile.py` adds explicitly classified native text through a temporary SQLite snapshot
+and atomic publication. It verifies owner/directory and peer/table hashes, preserves exclusions,
+and records source snapshots and per-message evidence. A shared nonzero server ID can corroborate
+an existing message only within the same verified account and conversation, with equal text and
+compatible sender, direction, and comparable time. Missing IDs are not fuzzy-matched; conflicts
+remain separate variants. Existing message, partition, and conversation identity fingerprints
+must remain unchanged; conversation aggregates may grow. Source provenance and unknown clock
+semantics remain explicit, and unique original-message totals are not inferred from row counts.
+Neither these primitives nor a text archive establish complete decoding, recovery of absent
+records, or Finder-restorable backup completeness.
+
 `_wechat_browser.html` and `browser-messaging.css` reuse the existing table, select, card,
 collapse, theme, and pagination primitives. Sent/received messages branch by direction, group
 messages retain speaker identities, and uncertain direction/type stays explicit. Text is escaped
@@ -1033,6 +1075,7 @@ Doctor. The service never replays a local Action or continues automatically.
 | `local_store/` | User media, source catalogs, queues, manifests, and deletion previews | Ignored except `.gitkeep` |
 | `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability; a media prompt without cached text history keeps a content-derived key | Ignored except `.gitkeep` |
 | `local_store/messaging/wechat/history.sqlite3` | Source-separated, text-only human-message index; no media payloads | Ignored |
+| `local_store/messaging/wechat/contacts.sqlite3` | Native contact identities, scoped name observations, and pinned speaker corroboration | Ignored |
 | `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
 | `logs/` | Local structured JSON-line logs | Ignored except `.gitkeep` |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local configuration | Outside the repository |

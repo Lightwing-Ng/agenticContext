@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.153.0-codex.0
+# Code version: v1.153.1-codex.0
 
 from __future__ import annotations
 
@@ -5957,7 +5957,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("style-v2.159.1-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.43.0-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.43.1-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)

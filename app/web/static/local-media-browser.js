@@ -1,4 +1,4 @@
-/* Code version: v1.43.0-codex.0 */
+/* Code version: v1.43.1-codex.0 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -114,7 +114,7 @@
         if (mode === "text") {
             formData.set("session_view", "1");
             const selectedSource = String(formData.get("source") || "").trim().toLowerCase();
-            if (!["x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu"].includes(selectedSource) && !selectedSource.endsWith("_openclaw")) {
+            if (!["x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "wechat", "zhihu"].includes(selectedSource) && !selectedSource.endsWith("_openclaw")) {
                 formData.set("source", "chatgpt");
             }
         }
@@ -166,7 +166,7 @@
                 navigateToContentMode(event.target.value);
                 return;
             }
-            if (event.target.matches("select[name='answerer'], select[name='project']")) {
+            if (event.target.matches("select[name='answerer'], select[name='project'], select[name='account'], select[name='chat_kind']")) {
                 for (const name of ["session", "session_page"]) {
                     const field = filterForm.querySelector(`[name="${name}"]`);
                     if (field) field.disabled = true;

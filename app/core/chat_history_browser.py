@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.26.0-codex.0
+# Code version: v1.27.0-codex.0
 
 from __future__ import annotations
 
@@ -1098,12 +1098,31 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
         lines.extend((f"### {index}. {role} · {timestamp}", "", content, ""))
         if message.messaging:
             context = message.messaging
+            identifier_label = (
+                "Original export identifier"
+                if context.get("sender_identifier_namespace") == "unverified_export_field"
+                else "Sender ID"
+            )
             lines.extend((
                 f"- Direction: {context['direction']}",
-                f"- Sender ID: {context['sender_id'] or 'Unavailable in source'}",
+                f"- {identifier_label}: {context['sender_id'] or 'Unavailable in source'}",
                 f"- Time basis: {context['time_basis']}",
                 f"- Source record: {json.dumps(context['provenance'], ensure_ascii=False)}",
             ))
+            contact = context.get("contact")
+            if isinstance(contact, dict) and contact.get("id"):
+                lines.extend((
+                    f"- Contact ID: {contact['id']}",
+                    f"- Contact identity: {contact.get('identity_status', 'unresolved')}",
+                    f"- Source display name: {json.dumps(message.author_label, ensure_ascii=False)}",
+                ))
+            if "source_snapshot_id" in context:
+                lines.extend((
+                    f"- Archive: {context['source_label']} / {context['source_file']}",
+                    f"- Source snapshot: {context['source_snapshot_id']}",
+                ))
+                if context.get("backup_id"):
+                    lines.append(f"- Backup ID: {context['backup_id']}")
             if context['quality_flags']:
                 lines.append(f"- Source limitations: {', '.join(context['quality_flags'])}")
             lines.append("")

@@ -1,4 +1,4 @@
-/* Code version: v1.1.1-codex.0 */
+/* Code version: v1.1.2-codex.0 */
 
 (function initializeBrowserChatEffects() {
     "use strict";
@@ -45,10 +45,17 @@
         layer.append(track);
         // The scroll timeline moves the track in the same compositor frame as the cards.
         let range = 0;
+        const timeline = new window.ScrollTimeline({ source: scrollport, axis: "block" });
         const scrollMotion = track.animate(scrollKeyframes(range), {
-            timeline: new window.ScrollTimeline({ source: scrollport, axis: "block" }),
+            timeline,
             fill: "both",
         });
+        // A partial card must not cast a hollow bubble below the native content clip.
+        // Restore bottom shadow bleed only at the end; an inactive timeline retains CSS bleed.
+        layer.animate([
+            { clipPath: "inset(0 calc(-1 * var(--layout-physical-effect-bleed)) 0)" },
+            { clipPath: "inset(0 calc(-1 * var(--layout-physical-effect-bleed)) calc(-1 * var(--layout-physical-effect-bleed)))" },
+        ], { timeline, fill: "both", easing: "steps(1, end)" });
         let frame = 0;
         let materialDirty = true;
 
