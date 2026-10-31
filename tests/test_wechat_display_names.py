@@ -1,6 +1,6 @@
 """Local display aliases require verified identity and never rewrite source evidence.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -146,6 +146,22 @@ def test_account_alias_requires_exact_owner_key_and_partition(tmp_path, alternat
     assert WechatDisplayNames(tmp_path).account_label(row) == alias + " · " + OWNER[-6:]
     assert row == original
     assert path.read_bytes() == before
+
+
+def test_native_locator_works_when_security_md5_is_disabled(tmp_path, monkeypatch):
+    row = _account()
+    _write(tmp_path, {_canonical(OWNER): "Synthetic Account A"})
+    native_md5 = hashlib.md5
+
+    def restricted_md5(data=b"", *, usedforsecurity=True):
+        if usedforsecurity:
+            raise ValueError("Security-mode MD5 is unavailable in this runtime.")
+        return native_md5(data, usedforsecurity=False)
+
+    monkeypatch.setattr(hashlib, "md5", restricted_md5)
+    assert WechatDisplayNames(tmp_path).account_label(row) == (
+        "Synthetic Account A · " + OWNER[-6:]
+    )
 
 
 @pytest.mark.parametrize(

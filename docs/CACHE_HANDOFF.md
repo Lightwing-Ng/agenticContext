@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.25.0-codex.0`
+Documentation version: `v1.25.1-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -164,6 +164,9 @@ page. Schema version `1` contains a `contacts` object mapping canonical contact 
 literal, single-line viewing names. Only verified contacts receive this projection;
 phone numbers, source labels, and unresolved export identifiers never establish a match.
 The account projection also verifies the owner, account key, and native directory hash.
+The MD5 directory check reproduces WeChat's native archive locator with
+`usedforsecurity=False`. Canonical contact IDs use SHA-256 separately; the directory
+digest supplies archive-format compatibility rather than cryptographic protection.
 
 `viewer_display_name`, `viewer_account_label`, and account-option `viewer_name` are
 separate from original source names and identity keys. Cards and Markdown headings can
