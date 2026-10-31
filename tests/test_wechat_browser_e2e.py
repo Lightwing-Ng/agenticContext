@@ -1,6 +1,6 @@
 """Account and conversation-type filters share desktop and narrow UI contracts.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from __future__ import annotations
@@ -350,7 +350,8 @@ def test_exported_group_messages_align_left_and_reuse_name_metric(
                 bodyAfterHeader: text.top >= summary.bottom,
                 emptyFooter: box.bottom - text.bottom - parseFloat(style.paddingBottom)
                     - parseFloat(style.borderBottomWidth),
-                nextCardGap: card.nextElementSibling.getBoundingClientRect().top - box.bottom,
+                nextCardGap: card.closest('.wechat-message-row').nextElementSibling
+                    .querySelector('.wechat-message').getBoundingClientRect().top - box.bottom,
             };
         }""")
         assert compact["bodyAfterHeader"]
