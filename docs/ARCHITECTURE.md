@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.56.0-codex.0`
+Documentation version: `v1.57.0-codex.0`
 
 ## Runtime flow
 
@@ -807,6 +807,17 @@ collapse, theme, and pagination primitives. Sent/received messages branch by dir
 messages retain speaker identities, and uncertain direction/type stays explicit. Text is escaped
 plain text. Source details preserve account, archive, peer/sender IDs, original locators, clock
 limitations, and message IDs. Unknown export clocks never acquire an invented timezone.
+
+`wechat_forwarded.py` projects source-verified HTML component trees into a closed-by-default
+forwarded transcript. Contact lookup verifies the exact published source snapshot and member
+receipt before trusting an embedded identity binding. Both MesLocalID declarations, the raw and
+resolved trees, the recursive stored envelope, and the primary-text SHA-256 must agree; mixed
+native fields or inconsistent evidence keep the original literal presentation. Embedded messages
+reuse standard Contact objects and private viewing names without creating independent archive
+rows or merging source accounts. Original authors, component order, and source clocks remain
+separate from the outer forwarder and forwarding time. Missing clocks stay unavailable, and
+export clocks never acquire an inferred timezone. The projection reads no media and changes
+neither stored messages nor text exports.
 
 ### ChatGPT image cache
 

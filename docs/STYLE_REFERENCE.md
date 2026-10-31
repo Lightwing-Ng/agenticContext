@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.24.4-codex.0`
+Documentation version: `v1.25.0-codex.0`
 
 ## Authority
 
@@ -353,14 +353,30 @@ controls. No separate shadow implementation or navigation ruler is introduced. E
 uses fractional computed CSS dimensions rather than rounded client dimensions when deriving
 ancestor scale, preventing deep-scroll drift on wrapped or fractional-height layouts.
 
-WeChat source disclosures share the message's author/timestamp header row with the existing
-chevron; a closed card has no separate disclosure or footer row. Native summaries keep the
+WeChat source disclosures share the message's compact author/timestamp header row; a closed
+card has no separate disclosure or footer row. The provenance summary stays keyboard reachable
+with its accessible name while omitting the chevron that would overlap the measured clock rail. Native summaries keep the
 accessible name `Source details` and the existing Circular icon button minimum hit height.
 The author/timestamp span wraps inside the summary's content column, so the trailing chevron
 cannot cover text on narrow screens. Cards use the shared 8px/12px message padding, a 4px
 header/body gap, and one 12px inter-card gap rather than stacked grid gaps and margins.
 Message direction stays in expandable provenance and text exports. Presentation changes do
 not infer forwarding status or alter unknown source directions.
+
+Source-verified HTML forwarding uses reusable `forwarded_conversation` and `message_row`
+macros. A native, default-closed disclosure retains the outer sender and forwarding clock;
+opening it reveals an inset 10px frosted-glass transcript. The same 17px speaker and 15px
+message-text roles apply to ordinary and embedded messages at every viewport, using the
+existing font family without a new breakpoint. Original clocks use the normal timestamp
+role and a measured right rail; nested transcripts measure independently. Unknown clocks
+leave no fabricated time or timezone. Explicit source components and exact stored-body
+validation replace flattened presentation markers only when the evidence agrees.
+
+Nested message cards and transcript surfaces use the existing inert physical-effect layer.
+Closed disclosures contribute no hidden descendant shadows. Native disclosure behavior and
+readable timestamp flow remain available without JavaScript. Escaped source text never
+creates media elements or executable markup. This is a WeChat-specific adapter; shared
+primitive changes in Worthward and neoMe remain subject to the synchronization ledger.
 
 The Local resources search icon keeps its 16px SVG transport and a square slot
 matching the search control's inner height. Its native lens center, rather than
