@@ -1,4 +1,4 @@
-<!-- Code version: v1.91.0-codex.0 -->
+<!-- Code version: v1.91.1-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -268,7 +268,7 @@
                             <option value="{{ filters.account }}" selected>Unavailable source account</option>
                             {% endif %}
                             {% for account in text_page.messaging.accounts %}
-                            <option value="{{ account.key }}" {% if filters.account == account.key %}selected{% endif %}>{{ account.name }}</option>
+                            <option value="{{ account.key }}" {% if filters.account == account.key %}selected{% endif %}>{{ account.viewer_name or account.name }}</option>
                             {% endfor %}
                         </select>
                     </label>

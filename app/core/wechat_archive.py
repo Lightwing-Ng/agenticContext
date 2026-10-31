@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.1.1-codex.0
+# Code version: v1.1.2-codex.0
 
 from __future__ import annotations
 
@@ -547,7 +547,9 @@ class WechatArchiveRepository:
             accounts = [
                 dict(row)
                 for row in connection.execute(
-                    "SELECT account_key AS key,account_label AS name,identity_status FROM partitions ORDER BY account_label COLLATE NOCASE,id"
+                    "SELECT account_key AS key,account_label AS name,identity_status,"
+                    "account_id,id AS partition_id FROM partitions "
+                    "ORDER BY account_label COLLATE NOCASE,id"
                 )
             ]
             where = []

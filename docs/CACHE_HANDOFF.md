@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.24.0-codex.0`
+Documentation version: `v1.25.0-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -156,6 +156,22 @@ owner, and message times do not establish name-validity dates. Collapsed metadat
 exports retain contact references and the original source display name. Missing or invalid
 sidecars leave text browsing available with provisional objects; the paginated observation API
 retains access to the complete name history when the current profile display is capped.
+
+#### Local viewer display names
+
+`wechat_display_names.py` reads private `messaging/wechat/display_names.json` once per
+page. Schema version `1` contains a `contacts` object mapping canonical contact IDs to
+literal, single-line viewing names. Only verified contacts receive this projection;
+phone numbers, source labels, and unresolved export identifiers never establish a match.
+The account projection also verifies the owner, account key, and native directory hash.
+
+`viewer_display_name`, `viewer_account_label`, and account-option `viewer_name` are
+separate from original source names and identity keys. Cards and Markdown headings can
+show the viewing name while raw `author_label`, contact observations, source-account
+labels, and export provenance retain their original values. Removing a preference restores
+the source name on the next request. Missing, malformed, symbolic-link, or oversized
+preferences safely fall back to source names. Preferences stay outside Git and do not
+rewrite either the chat index or contact registry.
 
 #### Native text decoding and additive reconciliation
 

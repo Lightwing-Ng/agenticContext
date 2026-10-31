@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.2.2-codex.0
+# Code version: v1.3.0-codex.0
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 
 from .wechat_archive import WechatArchiveRepository
 from .wechat_contacts import WechatContactRepository
+from .wechat_display_names import WechatDisplayNames
 
 
 def query_wechat_history(
@@ -44,20 +45,25 @@ def query_wechat_history(
         session=session,
     )
 
+    display_names = WechatDisplayNames(local_store_root)
+
     def context(row):
         return {
-            key: row.get(key, "")
-            for key in (
-                "account_key",
-                "account_id",
-                "account_label",
-                "identity_status",
-                "partition_id",
-                "source_label",
-                "source_file",
-                "kind",
-                "peer_id",
-            )
+            "viewer_account_label": display_names.account_label(row),
+            **{
+                key: row.get(key, "")
+                for key in (
+                    "account_key",
+                    "account_id",
+                    "account_label",
+                    "identity_status",
+                    "partition_id",
+                    "source_label",
+                    "source_file",
+                    "kind",
+                    "peer_id",
+                )
+            },
         }
 
     def conversation(row):
@@ -170,7 +176,16 @@ def query_wechat_history(
         contact_requests
     )
     for item in items:
-        item.messaging["contact"] = contacts[item.stable_id]
+        contact = contacts[item.stable_id]
+        name = display_names.contact_name(contact)
+        if name:
+            item.messaging["viewer_display_name"] = name
+            contact = {
+                **contact,
+                "viewer_display_name": name,
+                "viewer_display_name_source": "local_user_preference",
+            }
+        item.messaging["contact"] = contact
     return ChatHistoryPage(
         items=tuple(items),
         total_count=result["count"],
@@ -183,7 +198,10 @@ def query_wechat_history(
         session_id=session if current else "",
         current_session=current,
         messaging={
-            "accounts": tuple(result["accounts"]),
+            "accounts": tuple(
+                {**row, "viewer_name": display_names.account_label(row)}
+                for row in result["accounts"]
+            ),
             "selected_account": account,
             "chat_kind": result["kind"],
             "requested_session": session,
