@@ -1,4 +1,4 @@
-{# Code version: v1.2.2-codex.0 #}
+{# Code version: v1.3.0-codex.0 #}
 {% set kind_names = {'direct': 'Private chat', 'group': 'Group chat', 'unclassified': 'Unclassified chat'} %}
 <section class="wechat-resources" aria-label="WeChat text archive" data-wechat-resources>
     {% if text_page.session_detail %}
@@ -9,7 +9,7 @@
             <strong title="{{ text_page.current_session.conversation_title }}">{{ text_page.current_session.conversation_title }}</strong>
         </div>
         <div class="wechat-conversation-labels">
-            <span class="wechat-account-label">{{ origin.account_label }}</span>
+            <span class="wechat-account-label">{{ origin.viewer_account_label or origin.account_label }}</span>
             <span class="wechat-source-label">{{ origin.identity_status }} · {{ origin.source_label }}</span>
         </div>
         <div class="wechat-conversation-actions">
@@ -26,7 +26,7 @@
             <details class="ui-collapse wechat-provenance">
                 <summary aria-label="Source details">
                     <span class="browser-chat-message-header wechat-message-header">
-                        <span class="wechat-speaker" id="wechat_sender_{{ message.stable_id }}">{{ message.author_label }}</span>
+                        <span class="wechat-speaker" id="wechat_sender_{{ message.stable_id }}">{{ context.viewer_display_name or message.author_label }}</span>
                         <time datetime="{{ message.last_seen_at }}" title="{{ context.time_basis }}">{{ context.timestamp_label }}</time>
                     </span>
                 </summary>
@@ -34,6 +34,7 @@
                     <dl class="wechat-provenance-fields">
                         <dt>Direction</dt><dd>{{ {'sent': 'Sent', 'received': 'Received', 'unknown': 'Unavailable in source export'}[context.direction] }}</dd>
                         <dt>Source account</dt><dd>{{ context.account_id or 'Unconfirmed; this source stays separate' }}</dd>
+                        {% if context.viewer_display_name %}<dt>Source display name</dt><dd>{{ message.author_label }}</dd>{% endif %}
                         <dt>Archive</dt><dd>{{ context.source_file }}</dd>
                         <dt>Conversation ID</dt><dd>{{ context.peer_id or 'Unavailable in source' }}</dd>
                         <dt>{{ 'Original export identifier' if context.sender_identifier_namespace == 'unverified_export_field' else 'Sender ID' }}</dt><dd>{{ context.sender_id or 'Unavailable in source' }}</dd>
@@ -77,7 +78,7 @@
                             <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('local_resources.browser', view='text', source='wechat', account=filters.account, chat_kind=filters.chat_kind, session=session.stable_id, session_page=text_page.current_page, sort=filters.sort) }}">{{ session.conversation_title }}</a>
                             <span class="wechat-source-label">{{ kind_names[session.messaging.kind] }}</span>
                         </td>
-                        <td><span class="wechat-account-label">{{ session.messaging.account_label }}</span><span class="wechat-source-label">{{ session.messaging.source_label }} · {{ session.messaging.identity_status }}</span></td>
+                        <td><span class="wechat-account-label">{{ session.messaging.viewer_account_label or session.messaging.account_label }}</span><span class="wechat-source-label">{{ session.messaging.source_label }} · {{ session.messaging.identity_status }}</span></td>
                         <td>{{ '{:,}'.format(session.message_count) }}</td>
                     </tr>
                     {% endfor %}

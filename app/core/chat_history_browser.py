@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.27.0-codex.0
+# Code version: v1.28.0-codex.0
 
 from __future__ import annotations
 
@@ -1073,6 +1073,10 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
             f"- Conversation ID: {origin['peer_id'] or 'Unavailable in source'}",
             f"- Archive: {origin['source_label']} / {origin['source_file']}",
         ))
+    if session.messaging and session.messaging.get("viewer_account_label"):
+        lines.append(
+            f"- Viewer account label: {json.dumps(session.messaging['viewer_account_label'], ensure_ascii=False)}"
+        )
     lines.append(
         f"- {'Answers' if session.source == 'zhihu' else 'Messages'}: {exported_count:,}"
     )
@@ -1086,6 +1090,8 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
             if session.source == "zhihu"
             else " ".join(message.author_label.split()) or message.role.title() or "Message"
         )
+        if message.messaging and message.messaging.get("viewer_display_name"):
+            role = message.messaging["viewer_display_name"]
         timestamp = message.messaging["timestamp_label"] if message.messaging else format_chat_message_timestamp_label(message.last_seen_at)
         content = message.content_text.strip()
         if session.source == "zhihu" and message.content_html:
