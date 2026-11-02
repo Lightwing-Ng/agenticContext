@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.9.0-codex.0
+# Code version: v2.9.1-codex.0
 
 from __future__ import annotations
 
@@ -495,6 +495,7 @@ def create_app(
         registry=project_registry,
         selection_store=project_selection_store,
         runtime_root=effective_tunnel_runtime_root,
+        local_store_root=media_catalog.local_store_root,
     )
     tunnel_runtime = TunnelRuntime(
         credentials_loader=lambda: load_tunnel_credentials(effective_tunnel_credentials_path),

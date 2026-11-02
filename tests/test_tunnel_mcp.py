@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.14.2-codex.0
+Code version: v2.15.0-codex.0
 """
 
 from __future__ import annotations
@@ -62,7 +62,12 @@ EXPECTED_TOOLS = [
     "stop_check",
     "show_changes",
     "review_changes",
+    "wechat_archive_status",
+    "wechat_find_contacts",
+    "wechat_search_messages",
+    "wechat_get_message_context",
 ]
+WECHAT_TOOLS = EXPECTED_TOOLS[-4:]
 _REQUEST_SEQUENCE = count(1)
 
 
@@ -214,8 +219,13 @@ def test_provider_ingresses_share_tools_but_keep_activity_attribution(
 ) -> None:
     chatgpt_tools = provider_rpc(service, "chatgpt", "tools/list")["result"]["tools"]
     gemini_tools = provider_rpc(service, "gemini", "tools/list")["result"]["tools"]
-    assert gemini_tools == chatgpt_tools
-    assert [tool["name"] for tool in gemini_tools] == EXPECTED_TOOLS
+    assert [tool["name"] for tool in chatgpt_tools] == EXPECTED_TOOLS
+    assert [tool["name"] for tool in gemini_tools] == [
+        name for name in EXPECTED_TOOLS if name not in WECHAT_TOOLS
+    ]
+    assert gemini_tools == [
+        tool for tool in chatgpt_tools if tool["name"] not in WECHAT_TOOLS
+    ]
     assert all("provider" not in tool["inputSchema"]["properties"] for tool in gemini_tools)
 
     provider_rpc(
@@ -362,10 +372,14 @@ def test_tool_list_is_closed_and_project_scoped() -> None:
         schema = tool["inputSchema"]
         assert "action" not in schema.get("properties", {})
         assert schema["additionalProperties"] is False
-        if name == "current_project":
+        if name == "current_project" or name in WECHAT_TOOLS:
             assert "project" not in schema.get("properties", {})
+            assert "path" not in schema.get("properties", {})
         else:
             assert schema["required"][0] == "project", name
+    for name in WECHAT_TOOLS:
+        assert tools[name]["annotations"]["readOnlyHint"] is True
+        assert tools[name]["annotations"]["destructiveHint"] is False
     assert tools["delete_file"]["inputSchema"]["required"] == [
         "project",
         "project_identity",
@@ -433,6 +447,7 @@ def test_every_listed_tool_is_dispatchable_by_its_published_schema(
 def test_every_listed_tool_accepts_a_behavior_valid_call(
     service: TunnelMcpService,
     repo: Path,
+    tmp_path: Path,
 ) -> None:
     (repo / "temporary.txt").write_text("temporary\n")
     results: dict[str, dict] = {
@@ -484,6 +499,26 @@ def test_every_listed_tool_accepts_a_behavior_valid_call(
     results["stop_check"] = call(service, "stop_check", {"job_id": job_id})
     results["show_changes"] = call(service, "show_changes", {"include_patch": True})
     results["review_changes"] = call(service, "review_changes")
+    from tests.test_wechat_mcp_archive import build_wechat_store
+
+    store = build_wechat_store(tmp_path / "wechat-store")
+    service._local_store_root = store["root"]
+    results["wechat_archive_status"] = call(service, "wechat_archive_status", project=None)
+    results["wechat_find_contacts"] = call(
+        service, "wechat_find_contacts", {"query": "Ada"}, project=None
+    )
+    results["wechat_search_messages"] = call(
+        service,
+        "wechat_search_messages",
+        {"contact_id": store["ada_id"], "page_size": 1},
+        project=None,
+    )
+    results["wechat_get_message_context"] = call(
+        service,
+        "wechat_get_message_context",
+        {"message_id": store["message_ids"]["two"]},
+        project=None,
+    )
 
     assert set(results) == set(EXPECTED_TOOLS)
     assert all(not result["isError"] for result in results.values()), results
