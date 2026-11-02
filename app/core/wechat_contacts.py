@@ -1,6 +1,6 @@
 """Resolve WeChat identities while retaining account-specific contact observations.
 
-Code version: v1.1.2-codex.0
+Code version: v1.2.0-codex.0
 
 A contact identifies a platform identity, not an assumed real-world person.
 Syntax classifies identifiers; only explicit native evidence authorizes linking.
@@ -10,10 +10,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 import hashlib
+from itertools import islice
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import posixpath
 import re
 import sqlite3
+from urllib.parse import unquote, urlsplit
 
 
 CANONICAL_AUTHORITIES = frozenset(
@@ -37,6 +40,12 @@ OBSERVATION_KINDS = frozenset(
 MAX_OBSERVATIONS = 64
 MAX_EVIDENCE_BYTES = 64 * 1024
 MESSAGE_BINDING_AUTHORITY = "corroborated_message_sender"
+FORWARDED_BINDING_AUTHORITY = "source_verified_html_forwarded_avatar"
+MAX_FORWARDED_DEPTH = 32
+MAX_FORWARDED_COMPONENTS = 4_096
+MAX_FORWARDED_PAGE_COMPONENTS = 16_384
+MAX_FORWARDED_PARENTS = 1_024
+MAX_FORWARDED_PROOF_BYTES = 16 * 1024**2
 MESSAGE_CONTACT_SCHEMA = """
 CREATE TABLE message_contact_bindings (
  source_id TEXT NOT NULL, message_id TEXT NOT NULL, text_sha256 TEXT NOT NULL,
@@ -405,11 +414,435 @@ def _fallback(message, reason):
     }
 
 
+def _forwarded_safe_path(value, *, canonical=True):
+    if not value or "\\" in value or any(ord(char) < 32 for char in value):
+        raise ValueError("Unsafe ZIP member path.")
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts or re.match(r"^[A-Za-z]:", value):
+        raise ValueError("Unsafe ZIP member path.")
+    if canonical and any(part in {"", "."} for part in value.rstrip("/").split("/")):
+        raise ValueError("Noncanonical ZIP member paths are ambiguous.")
+
+
+def _forwarded_local_reference(member_path, value):
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        return None
+    relative = unquote(parsed.path)
+    try:
+        _forwarded_safe_path(relative, canonical=False)
+    except ValueError:
+        return None
+    resolved = posixpath.normpath(
+        posixpath.join(str(PurePosixPath(member_path).parent), relative)
+    )
+    try:
+        _forwarded_safe_path(resolved)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _forwarded_native_avatar_id(value):
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        return ""
+    decoded = unquote(parsed.path)
+    try:
+        _forwarded_safe_path(decoded, canonical=False)
+    except ValueError:
+        return ""
+    path = PurePosixPath(decoded)
+    if path.parent.name != "Portrait" or path.suffix.lower() != ".jpg":
+        return ""
+    return path.stem
+
+
+def _forwarded_projection(components):
+    """Copy a bounded presentation tree without changing persisted hierarchy evidence."""
+    projected, flat = [], []
+    pending = [(components, projected, (), 1)]
+    while pending:
+        values, target, prefix, depth = pending.pop()
+        if not isinstance(values, list) or depth > MAX_FORWARDED_DEPTH:
+            raise ValueError(
+                "Forwarded component structure exceeds the supported bounds."
+            )
+        for index, value in enumerate(values):
+            if not isinstance(value, dict) or len(flat) >= MAX_FORWARDED_COMPONENTS:
+                raise ValueError(
+                    "Forwarded component structure exceeds the supported bounds."
+                )
+            path = (*prefix, index)
+            item = dict(value)
+            children = []
+            item["forwarded_components"] = children
+            item.pop("contact", None)
+            target.append(item)
+            flat.append((item, value, path))
+            nested = value.get("forwarded_components", [])
+            if not isinstance(nested, list):
+                raise ValueError("Forwarded children must remain a list.")
+            if nested:
+                pending.append((nested, children, path, depth + 1))
+    return projected, flat
+
+
+def _forwarded_source_members(source):
+    members = source.get("selected_text_members")
+    if not isinstance(members, list):
+        raise ValueError("A reviewed HTML source needs selected member receipts.")
+    result = {}
+    for member in members:
+        path = member.get("member_path") if isinstance(member, dict) else None
+        if (
+            not isinstance(path, str)
+            or path in result
+            or not re.fullmatch(r"[0-9a-f]{64}", str(member.get("sha256", "")))
+            or type(member.get("size")) is not int
+            or not 0 <= member["size"] <= MAX_FORWARDED_PROOF_BYTES
+        ):
+            raise ValueError("Invalid selected HTML member evidence.")
+        result[path] = member
+    return result
+
+
+def _forwarded_member_context(source, conversation, locator):
+    path = locator.get("member_path")
+    page = locator.get("page")
+    if (
+        not isinstance(path, str)
+        or type(page) is not int
+        or page < 0
+        or type(locator.get("message_ordinal")) is not int
+        or locator["message_ordinal"] < 1
+        or type(locator.get("page_message_ordinal")) is not int
+        or locator["page_message_ordinal"] < 1
+    ):
+        return None
+    _forwarded_safe_path(path)
+    matches = []
+    for entry in source.get("source_conversation_catalog", []):
+        if not isinstance(entry, dict):
+            raise ValueError("Invalid HTML conversation evidence.")
+        if (
+            entry.get("index_avatar_native_id", "") != conversation["peer_id"]
+            or entry.get("conversation_kind") != conversation["kind"]
+        ):
+            continue
+        main = entry.get("member_path", "")
+        data = entry.get("declared_async_counts", {}).get("data_path", "")
+        data_path = _forwarded_local_reference(main, data) if data else None
+        expected = main if page == 0 else f"{data_path}/msg-{page}.js"
+        if path == expected:
+            matches.append((main, data_path))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _forwarded_native_proof(source, conversation, members, component, parent_context):
+    if component.get("is_system", False) is not False or component.get("text_kind") in {
+        "notice",
+        "system_text",
+    }:
+        return None
+    native = component.get("sender_native_id")
+    if (
+        not isinstance(native, str)
+        or not native
+        or native.endswith("@openim")
+        or component.get("realm", "") != ""
+        or component.get("namespace", "wechat") != "wechat"
+    ):
+        return None
+    # An exporter-generated unknown username is not an identity assertion.
+    canonical = canonical_contact_id(native, authority="native_message_sender")
+    avatar = component.get("avatar_path", "")
+    if not isinstance(avatar, str) or _forwarded_native_avatar_id(avatar) != native:
+        return None
+    locator = component.get("source_locator")
+    if not isinstance(locator, dict) or locator.get("member_path") not in members:
+        return None
+    context = _forwarded_member_context(source, conversation, locator)
+    if context is None or context != parent_context:
+        return None
+    main, data = context
+    portrait = _forwarded_local_reference(main, avatar)
+    resource_root = (
+        PurePosixPath(data).parent
+        if data
+        else PurePosixPath(main)
+        .with_suffix("")
+        .with_name(PurePosixPath(main).stem + "_files")
+    )
+    if portrait is None or PurePosixPath(portrait).parent != resource_root / "Portrait":
+        return None
+    return {
+        "contact_id": canonical,
+        "native_username": native,
+        "authority": FORWARDED_BINDING_AUTHORITY,
+        "source_locator": locator,
+        "selected_member": members[locator["member_path"]],
+        "avatar_path": avatar,
+        "archive_sha256": source["source_sha256"],
+    }
+
+
 class WechatContactRepository:
     """Resolve a page from a read-only identity sidecar without rewriting messages."""
 
     def __init__(self, local_store_root: Path | str):
         self.path = contact_registry_path(local_store_root)
+
+    def resolve_forwarded_components(self, parent_messages: Iterable[dict]) -> dict:
+        """Project canonical nested contacts from exact published HTML evidence only.
+
+        The caller cannot authorize a native hint. Parent PK, source, account,
+        room, snapshot, original tree, member receipt, and avatar must all agree
+        with the read-only history database. Runtime paths address presentation
+        nodes; they do not assert the original immediate forwarding hierarchy.
+        """
+        parents = list(islice(parent_messages, MAX_FORWARDED_PARENTS + 1))
+        if len(parents) > MAX_FORWARDED_PARENTS:
+            return {
+                parent["id"]: {"components": [], "status": "parent_request_limit"}
+                for parent in parents
+            }
+        result, requests, proofs = {}, [], {}
+        history_path = self.path.with_name("history.sqlite3")
+        connection = None
+
+        def file_identity():
+            state = history_path.stat()
+            return (
+                state.st_dev,
+                state.st_ino,
+                state.st_size,
+                state.st_mtime_ns,
+                state.st_ctime_ns,
+            )
+
+        initial = file_identity() if history_path.is_file() else None
+        component_count = 0
+        component_bytes = 0
+        try:
+            if initial is not None and not history_path.is_symlink():
+                connection = sqlite3.connect(
+                    history_path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
+                )
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA query_only=ON")
+            snapshots = {}
+            for parent in parents:
+                identifier = parent.get("id")
+                _identifier(identifier, "parent message ID")
+                try:
+                    tree, flat = _forwarded_projection(
+                        parent.get("forwarded_components", [])
+                    )
+                    component_count += len(flat)
+                    component_bytes += len(
+                        _json(parent.get("forwarded_components", [])).encode()
+                    )
+                    if (
+                        component_bytes > MAX_FORWARDED_PROOF_BYTES
+                        or component_count > MAX_FORWARDED_PAGE_COMPONENTS
+                    ):
+                        raise ValueError("Forwarded proof exceeds the supported size.")
+                except (ValueError, TypeError, RecursionError):
+                    result[identifier] = {
+                        "components": [],
+                        "status": "component_resource_limit",
+                    }
+                    continue
+                result[identifier] = {
+                    "components": tree,
+                    "status": "unverified_source_proof",
+                }
+                scoped = []
+                for item, original, path in flat:
+                    locator = original.get("source_locator", {})
+                    key = _digest(
+                        identifier,
+                        "forwarded",
+                        _json(locator),
+                        str(original.get("export_msgid", "")),
+                        _json(path),
+                    )
+                    request = {
+                        **parent,
+                        "id": key,
+                        "sender_id": original.get("sender_export_id", ""),
+                        "sender_label": original.get("sender_label", ""),
+                        "source_locator": locator,
+                        "is_system": original.get("is_system") is True
+                        or original.get("text_kind") in {"notice", "system_text"},
+                    }
+                    item["contact"] = _fallback(
+                        request, "unverified_forwarded_export_proof"
+                    )
+                    scoped.append((item, original, request))
+                try:
+                    if (
+                        connection is None
+                        or parent.get("is_system") is not False
+                        or parent.get("realm", "") != ""
+                        or parent.get("namespace", "wechat") != "wechat"
+                    ):
+                        continue
+                    source, members, conversation, context = (
+                        self._forwarded_parent_proof(connection, parent, snapshots)
+                    )
+                    for item, original, request in scoped:
+                        try:
+                            proof = _forwarded_native_proof(
+                                source, conversation, members, original, context
+                            )
+                        except (ValueError, TypeError, KeyError):
+                            proof = None
+                        if proof is None or request["is_system"]:
+                            continue
+                        proof["parent_message_id"] = identifier
+                        proof["parent_source_record_id"] = parent["source_record_id"]
+                        proof["parent_text_sha256"] = parent["text_sha256"]
+                        request["_projected_component"] = item
+                        requests.append(request)
+                        proofs[request["id"]] = proof
+                    result[identifier]["status"] = "source_proof_verified"
+                except (
+                    sqlite3.DatabaseError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                    RecursionError,
+                    AttributeError,
+                ):
+                    continue
+            if initial is not None and file_identity() != initial:
+                return {
+                    key: {**value, "status": "history_changed"}
+                    for key, value in result.items()
+                }
+        finally:
+            if connection is not None:
+                connection.close()
+        if requests:
+            registry = None
+            try:
+                if self.path.is_file() and not self.path.is_symlink():
+                    registry = sqlite3.connect(
+                        self.path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
+                    )
+                    registry.row_factory = sqlite3.Row
+                else:
+                    # A transient empty schema supports the same object contract;
+                    # no identity or database file is created in the local store.
+                    registry = sqlite3.connect(":memory:")
+                    registry.row_factory = sqlite3.Row
+                    initialize_contact_registry(registry)
+                registry.execute("PRAGMA query_only=ON")
+                resolved = self._resolve(registry, requests, forwarded_proofs=proofs)
+                for request in requests:
+                    request["_projected_component"]["contact"] = resolved[request["id"]]
+            except (sqlite3.DatabaseError, ValueError, TypeError, KeyError):
+                pass
+            finally:
+                if registry is not None:
+                    registry.close()
+        return result
+
+    @staticmethod
+    def _forwarded_parent_proof(connection, parent, snapshots):
+        row = connection.execute(
+            "SELECT m.*,c.partition_id,c.account_key,c.peer_id,c.kind,p.account_id,p.account_key AS partition_account_key "
+            "FROM messages m JOIN conversations c ON c.id=m.conversation_id "
+            "JOIN partitions p ON p.id=c.partition_id WHERE m.id=?",
+            (parent["id"],),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Published forwarded parent is missing.")
+        for requested, actual in (
+            ("source_id", "partition_id"),
+            ("conversation_id", "conversation_id"),
+            ("account_id", "account_id"),
+            ("peer_id", "peer_id"),
+            ("conversation_kind", "kind"),
+            ("timestamp_value", "timestamp_value"),
+        ):
+            if parent.get(requested) != row[actual]:
+                raise ValueError(
+                    "Forwarded source scope differs from the published parent."
+                )
+        if len(row["provenance"].encode()) > MAX_FORWARDED_PROOF_BYTES or _digest(
+            row["text"]
+        ) != parent.get("text_sha256"):
+            raise ValueError("Forwarded parent content proof differs.")
+        provenance = json.loads(row["provenance"])
+        if (
+            provenance.get("text_extraction_kind") == "system_text"
+            or provenance.get("record_id") != parent.get("source_record_id")
+            or _json(provenance.get("locator")) != _json(parent.get("source_locator"))
+            or _json(provenance.get("forwarded_components", []))
+            != _json(parent.get("forwarded_components", []))
+            or parent["id"] != _digest(row["partition_id"], provenance["record_id"])
+        ):
+            raise ValueError("Forwarded parent or component evidence differs.")
+        snapshot = provenance.get("source_snapshot")
+        if type(snapshot) is not int or snapshot < 1:
+            raise ValueError("A published HTML source snapshot is required.")
+        cache_key = (snapshot, row["partition_id"])
+        if cache_key not in snapshots:
+            stored = connection.execute(
+                "SELECT * FROM source_snapshots WHERE id=? AND source_id=?", cache_key
+            ).fetchone()
+            if stored is None or len(stored["metadata"].encode()) > 8 * 1024**2:
+                raise ValueError("A bounded source snapshot is required.")
+            source = json.loads(stored["metadata"])
+            snapshots[cache_key] = (
+                stored["snapshot_id"],
+                source,
+                _forwarded_source_members(source),
+            )
+        snapshot_id, source, members = snapshots[cache_key]
+        owner = row["account_id"]
+        sha = source.get("source_sha256", "")
+        owner_evidence = source.get("owner_evidence")
+        if (
+            not isinstance(sha, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha) is None
+            or re.fullmatch(
+                r"html-" + sha[:24] + r"(?:-text-completion-v1)?", row["partition_id"]
+            )
+            is None
+            or source.get("source_id") != row["partition_id"]
+            or source.get("source_label") != "HTML export"
+            or source.get("owner_verified") is not True
+            or not isinstance(owner, str)
+            or not owner
+            or source.get("source_account_id") != owner
+            or row["account_key"] != "account:" + owner
+            or row["partition_account_key"] != row["account_key"]
+            or not isinstance(owner_evidence, dict)
+            or owner_evidence.get("native_username") != owner
+            or owner_evidence.get("native_contact_id")
+            != canonical_contact_id(owner, authority="native_account_owner")
+            or snapshot_id != sha
+            or parent.get("source_snapshot_id") != sha
+        ):
+            raise ValueError("HTML source identity or owner proof differs.")
+        locator = provenance["locator"]
+        if not isinstance(locator, dict):
+            raise ValueError("An exact original parent locator is required.")
+        member = members.get(locator.get("member_path"))
+        context = _forwarded_member_context(source, row, locator)
+        if (
+            member is None
+            or locator.get("member") != member
+            or context is None
+            or locator.get("archive_sha256") != sha
+            or provenance["record_id"] != _digest("html-text-v1", sha, _json(locator))
+        ):
+            raise ValueError("HTML parent member proof differs.")
+        return source, members, row, context
 
     def query_observations(
         self,
@@ -520,7 +953,8 @@ class WechatContactRepository:
         finally:
             connection.close()
 
-    def _resolve(self, connection, messages):
+    def _resolve(self, connection, messages, *, forwarded_proofs=None):
+        forwarded_proofs = forwarded_proofs or {}
         bindings = {}
         message_bindings = _message_bindings(connection, messages)
         by_source = {}
@@ -571,6 +1005,18 @@ class WechatContactRepository:
                     snapshot,
                 )
             )
+            proof = forwarded_proofs.get(message["id"])
+            if proof is not None:
+                candidates.append(
+                    {
+                        "contact_id": proof["contact_id"],
+                        "authority": FORWARDED_BINDING_AUTHORITY,
+                        "source_id": message["source_id"],
+                        "source_snapshot": snapshot,
+                        "room_id": room,
+                        "evidence": _json(proof),
+                    }
+                )
             ids = {binding["contact_id"] for binding in candidates}
             if len(ids) == 1:
                 selected[message["id"]] = candidates
@@ -625,6 +1071,31 @@ class WechatContactRepository:
             )
             for row in connection.execute(query, batch):
                 global_names[row["contact_id"]] = row["value"]
+        proof_contacts = {
+            proof["contact_id"]: proof for proof in forwarded_proofs.values()
+        }
+        registered_ids = set(contacts)
+        for identifier, proof in proof_contacts.items():
+            native = proof["native_username"]
+            contacts.setdefault(
+                identifier,
+                {
+                    "id": identifier,
+                    "namespace": "wechat",
+                    "realm": "",
+                    "username": native,
+                    "kind": classify_wechat_identifier(native)["kind"],
+                    "identity_status": "verified",
+                },
+            )
+            identifiers.setdefault(identifier, []).append(
+                {
+                    "namespace": "native_username",
+                    "realm": "",
+                    "value": native,
+                    "authority": FORWARDED_BINDING_AUTHORITY,
+                }
+            )
         result = {}
         preferred_names = {}
         profiles = {}
@@ -652,7 +1123,8 @@ class WechatContactRepository:
                     continue
                 if contact["id"] != expected or any(
                     value["authority"]
-                    not in CANONICAL_AUTHORITIES | {MESSAGE_BINDING_AUTHORITY}
+                    not in CANONICAL_AUTHORITIES
+                    | {MESSAGE_BINDING_AUTHORITY, FORWARDED_BINDING_AUTHORITY}
                     for value in values
                 ):
                     result[message["id"]] = _fallback(
@@ -741,7 +1213,9 @@ class WechatContactRepository:
             evidence_context = (
                 *context,
                 message.get("sender_id"),
-                message["id"] if corroborated else "",
+                message["id"]
+                if corroborated or message["id"] in forwarded_proofs
+                else "",
             )
             if evidence_context not in binding_evidence:
                 binding_evidence[evidence_context] = [
@@ -781,10 +1255,16 @@ class WechatContactRepository:
                 "preferred_name": preferred_names[context]
                 or str(message.get("sender_label") or display),
                 "evidence": binding_evidence[evidence_context],
-                "resolution_reason": MESSAGE_BINDING_AUTHORITY
+                "resolution_reason": FORWARDED_BINDING_AUTHORITY
+                if message["id"] in forwarded_proofs
+                else MESSAGE_BINDING_AUTHORITY
                 if corroborated
                 else "authoritative_identifier"
                 if contact["identity_status"] == "verified"
                 else "source_scoped_identifier",
             }
+            if message["id"] in forwarded_proofs:
+                result[message["id"]]["registry_persisted"] = (
+                    contact["id"] in registered_ids
+                )
         return result

@@ -1,4 +1,4 @@
-/* Code version: v1.1.2-codex.0 */
+/* Code version: v1.2.0-codex.0 */
 
 (function initializeBrowserChatEffects() {
     "use strict";
@@ -33,7 +33,9 @@
         if (!scrollport || !layer || pane.hasAttribute("data-chat-effects-ready")) return;
         const track = document.createElement("div");
         track.className = "browser-chat-effect-track";
-        const entries = Array.from(scrollport.querySelectorAll(".browser-chat-message"), (message) => {
+        const surfaces = Array.from(scrollport.querySelectorAll(".browser-chat-message, [data-chat-physical-surface]"))
+            .filter((message) => message.closest("[data-browser-chat-pane]") === pane);
+        const entries = surfaces.map((message) => {
             const effect = document.createElement("div");
             effect.className = "browser-chat-effect";
             effect.dataset.chatEffectFor = message.id;
@@ -60,6 +62,7 @@
         let materialDirty = true;
 
         function updateEffects() {
+            if (frame) window.cancelAnimationFrame(frame);
             frame = 0;
             if (materialDirty) {
                 const style = window.getComputedStyle(pane);
@@ -82,6 +85,11 @@
             const rectangles = entries.map(({ message }) => message.getBoundingClientRect());
             entries.forEach(({ effect }, index) => {
                 const bounds = rectangles[index];
+                if (entries[index].message.closest("details:not([open])")
+                    || !entries[index].message.getClientRects().length || bounds.width <= 0 || bounds.height <= 0) {
+                    effect.hidden = true;
+                    return;
+                }
                 // Scroll-content coordinates stay valid while the timeline supplies the offset.
                 effect.style.left = `${(bounds.left - layerBounds.left) / scaleX}px`;
                 effect.style.top = `${(bounds.top - layerBounds.top) / scaleY + scrollTop}px`;
@@ -107,9 +115,12 @@
         }
 
         window.addEventListener("resize", scheduleUpdate, { passive: true });
+        // Toggle does not bubble; capture also covers nested native forwarded disclosures.
+        scrollport.addEventListener("toggle", scheduleUpdate, true);
         window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", scheduleMaterialUpdate);
         if (typeof ResizeObserver === "function") {
-            const observer = new ResizeObserver(scheduleUpdate);
+            // Layout springs resize cards before paint; update their shadows in that frame.
+            const observer = new ResizeObserver(updateEffects);
             observer.observe(pane);
             observer.observe(scrollport);
             entries.forEach(({ message }) => observer.observe(message));

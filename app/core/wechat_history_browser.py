@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.3.0-codex.0
+# Code version: v1.4.0-codex.0
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import json
 from .wechat_archive import WechatArchiveRepository
 from .wechat_contacts import WechatContactRepository
 from .wechat_display_names import WechatDisplayNames
+from .wechat_forwarded import project_html_forwarded
 
 
 def query_wechat_history(
@@ -118,7 +119,7 @@ def query_wechat_history(
             isinstance(owner, str)
             and bool(owner)
             and metadata["partition_id"]
-            == "ios-" + hashlib.md5(owner.encode()).hexdigest()
+            == "ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
         )
         metadata["sender_identifier_namespace"] = (
             "native_user_name" if native_owner else "unverified_export_field"
@@ -172,9 +173,27 @@ def query_wechat_history(
                 messaging=metadata,
             )
         )
-    contacts = WechatContactRepository(local_store_root).resolve_messages(
-        contact_requests
-    )
+    contact_repository = WechatContactRepository(local_store_root)
+    contacts = contact_repository.resolve_messages(contact_requests)
+    requests_by_id = {request["id"]: request for request in contact_requests}
+    forwarded_requests = [
+        {
+            **requests_by_id[item.stable_id],
+            "forwarded_components": item.messaging["provenance"][
+                "forwarded_components"
+            ],
+        }
+        for item in items
+        if isinstance(item.messaging["provenance"].get("forwarded_components"), list)
+        and item.messaging["provenance"]["forwarded_components"]
+    ]
+    forwarded = {}
+    for offset in range(0, len(forwarded_requests), 400):
+        forwarded.update(
+            contact_repository.resolve_forwarded_components(
+                forwarded_requests[offset : offset + 400]
+            )
+        )
     for item in items:
         contact = contacts[item.stable_id]
         name = display_names.contact_name(contact)
@@ -186,6 +205,22 @@ def query_wechat_history(
                 "viewer_display_name_source": "local_user_preference",
             }
         item.messaging["contact"] = contact
+        if item.stable_id in forwarded:
+            projection = forwarded[item.stable_id]
+            item.messaging["forwarded_components"] = projection["components"]
+            item.messaging["forwarded_contact_resolution_status"] = projection["status"]
+            record = project_html_forwarded(
+                item.messaging["provenance"],
+                parent_id=item.stable_id,
+                account_id=item.messaging["account_id"],
+                text=item.content_text,
+                components=projection["components"],
+                source_proof_status=projection["status"],
+                display_names=display_names,
+            )
+            if record is not None:
+                item.messaging["forwarded_record"] = record
+                item.messaging["display_text"] = ""
     return ChatHistoryPage(
         items=tuple(items),
         total_count=result["count"],

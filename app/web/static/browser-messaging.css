@@ -1,6 +1,8 @@
-/* Code version: v1.2.1-codex.0 */
+/* Code version: v1.3.1-codex.0 */
 /* Human-message variants consume the existing Local resources primitives. */
 .wechat-resources {
+    --wechat-message-speaker-font-size: 17px;
+    --wechat-message-text-font-size: var(--font-ui-lg);
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -50,13 +52,74 @@
     margin-inline: 0 auto;
 }
 
+.wechat-message-row { position: relative; min-width: 0; }
+.wechat-time-slot {
+    visibility: hidden;
+    flex: 0 0 auto;
+    color: var(--theme-muted);
+    font-size: 0.8em;
+    line-height: 1.35;
+    white-space: nowrap;
+}
+.wechat-message-time {
+    position: absolute;
+    inset-block-start: var(--wechat-time-top);
+    inset-inline-end: var(--wechat-time-inset, 12px);
+    color: var(--theme-muted);
+    font-size: 0.8em;
+    line-height: 1.35;
+    white-space: nowrap;
+}
+
+.wechat-forwarded {
+    --collapse-summary-padding: 2px 0;
+    --collapse-body-padding: 12px;
+    min-width: 0;
+    margin: 0;
+}
+.wechat-forwarded > summary {
+    min-block-size: var(--settings-round-icon-button-size);
+    color: var(--theme-muted);
+    font: inherit;
+    overflow-wrap: anywhere;
+}
+.wechat-forwarded-glass {
+    margin-block-start: 8px;
+    border: var(--frosted-glass-border);
+    border-radius: var(--radius-panel);
+    background: var(--frosted-glass-background);
+    box-shadow: var(--frosted-glass-shadow);
+    backdrop-filter: var(--frosted-glass-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-blur);
+    overflow: visible;
+}
+.browser-chat-pane[data-chat-effects-ready] .wechat-forwarded-glass {
+    box-shadow: var(--browser-chat-inset-shadow);
+}
+.wechat-forwarded-transcript {
+    display: grid;
+    grid-auto-rows: max-content;
+    align-content: start;
+    gap: 12px;
+    min-width: 0;
+}
+.wechat-resources .wechat-message:has(> .wechat-forwarded[open]) {
+    width: 100%;
+    max-width: 100%;
+}
+.wechat-forwarded-unavailable {
+    margin: 0;
+    color: var(--theme-muted);
+    font-size: var(--wechat-message-text-font-size);
+}
+
 .wechat-message-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
-.wechat-speaker { font-weight: 500; overflow-wrap: anywhere; }
+.wechat-speaker { font-size: var(--wechat-message-speaker-font-size); font-weight: 500; overflow-wrap: anywhere; }
 .wechat-message-header time { color: var(--theme-muted); font-size: 0.8em; }
-.wechat-message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wechat-message-text { font-size: var(--wechat-message-text-font-size); white-space: pre-wrap; overflow-wrap: anywhere; }
 .wechat-provenance { --collapse-summary-padding: 0; --collapse-body-padding: 8px 0 0; margin: 0; }
-.wechat-provenance > summary { min-block-size: var(--settings-round-icon-button-size); font: inherit; }
-.wechat-provenance > summary::after { color: var(--theme-muted); }
+.wechat-provenance > summary { grid-template-columns: minmax(0, 1fr); min-block-size: var(--settings-round-icon-button-size); font: inherit; }
+.wechat-provenance > summary::after { display: none; }
 .wechat-provenance > .ui-collapse-body { font-size: 0.8em; color: var(--theme-muted); }
 .wechat-provenance-fields { display: grid; grid-template-columns: minmax(70px, auto) minmax(0, 1fr); gap: 6px 12px; }
 .wechat-provenance-fields dt { font-weight: 500; }

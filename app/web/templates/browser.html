@@ -1,4 +1,4 @@
-<!-- Code version: v1.91.1-codex.0 -->
+<!-- Code version: v1.92.0-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -14,7 +14,8 @@
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.5-claude.0') }}">
-    {% if filters.view == 'text' and filters.source == 'wechat' %}<link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.2.1-codex.0') }}">{% endif %}
+    {% if filters.view == 'text' and filters.source == 'wechat' %}<link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.3.1-codex.0') }}">{% endif %}
+    {% if filters.view == 'text' and filters.source == 'wechat' %}<script defer src="{{ url_for('static', filename='browser-messaging.js', v='browser-messaging-v1.0.0-codex.0') }}"></script>{% endif %}
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
@@ -22,7 +23,7 @@
     <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.43.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.1.0-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.1.2-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.2.0-codex.0') }}"></script>
     <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.6.1-codex.0') }}"></script>
