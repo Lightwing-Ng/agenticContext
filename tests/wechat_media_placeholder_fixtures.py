@@ -229,4 +229,3 @@ def placeholder_store(tmp_path):
         conversation=CONVERSATION,
         text_rows=text_rows,
     )
-
