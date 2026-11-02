@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.26.0-codex.0`
+Documentation version: `v1.26.1-codex.0`
 
 ## Authority
 
@@ -384,6 +384,17 @@ the same non-underlined link role as conversation links. The source disclosure o
 statement cell without adding a separate message footer or changing table column widths.
 Search and pagination replace only the contact content, retaining the surrounding navigation.
 The waiting modal keeps its inline SVG spinner paintable before navigation and while indexing.
+An interrupted status request or temporary non-JSON server/gateway error retries at 2, 4,
+and 8 seconds while retaining that same dialog. A valid indexing response resets the
+consecutive-failure budget. Contact-scope mismatches, malformed successful responses,
+and structured source errors still stop loading; exhausted transport retries expose Refresh.
+Leaving the page cancels pending retries and prevents late responses from changing it.
+
+A verified native account owner's sent messages reuse that account's display alias when
+no local viewing preference exists. The contact ID, sender ID, native partition and
+account owner must agree exactly. Other contacts, unconfirmed exports and received
+messages keep their existing rules. Historical source names remain in source details
+and exports; viewing preferences still take precedence over the account alias.
 
 `disclosure-motion.js` owns the measured 620ms spring used by WeChat source disclosures. Opening
 uses mass 1, stiffness 180, damping 18, and zero initial velocity; closing is critically damped.

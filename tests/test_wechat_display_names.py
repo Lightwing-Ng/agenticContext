@@ -1,6 +1,6 @@
 """Local display aliases require verified identity and never rewrite source evidence.
 
-Code version: v1.4.0-codex.0
+Code version: v1.5.0-codex.0
 """
 
 from __future__ import annotations
@@ -283,6 +283,139 @@ def test_fallback_account_keys_do_not_override_conflicting_primary_fields(tmp_pa
     assert names.account_owner(wrong_partition) == ""
     assert names.account_label(wrong_key) == ""
     assert names.account_label(wrong_partition) == ""
+
+
+@pytest.mark.parametrize("container", [list, tuple])
+@pytest.mark.parametrize(
+    "name", ["Native account nickname", "Native account · preserved suffix"]
+)
+def test_owner_message_name_uses_exact_native_account_anchor_without_mutation(
+    tmp_path, container, name
+):
+    path = _write(tmp_path, {_canonical(OWNER): "Explicit local viewing name"})
+    names = WechatDisplayNames(tmp_path)
+    contact = _contact(id=_canonical(OWNER))
+    context = _account(direction="sent", sender_id=OWNER)
+    anchor = _account(name=name + " · " + OWNER[-6:])
+    anchors = container([anchor])
+    original = deepcopy((contact, context, anchors))
+    before = path.read_bytes()
+
+    assert names.contact_name(contact) == "Explicit local viewing name"
+    assert (
+        names.owner_message_name(contact, context, verified_accounts=anchors) == name
+    )
+    assert (contact, context, anchors) == original
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"id": _canonical(FRIEND)},
+        {"id": OWNER},
+        {"id": "wechat:contact:short"},
+        {"platform": "another_platform"},
+        {"identity_status": "source_scoped"},
+        {"identity_status": "unresolved"},
+        {"identity_status": "Verified"},
+    ],
+)
+def test_owner_message_name_requires_the_exact_verified_owner_contact(tmp_path, changes):
+    names = WechatDisplayNames(tmp_path)
+    contact = _contact(**{"id": _canonical(OWNER), **changes})
+    context = _account(direction="sent", sender_id=OWNER)
+    anchor = _account(name="Native account nickname · " + OWNER[-6:])
+    assert names.owner_message_name(contact, context, verified_accounts=[anchor]) == ""
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"account_id": OTHER_OWNER},
+        {"account_key": "account:" + OTHER_OWNER},
+        {"account_key": "source:synthetic"},
+        {"partition_id": "ios-" + hashlib.md5(OTHER_OWNER.encode()).hexdigest()},
+        {"partition_id": "ios-" + "0" * 32},
+        {"identity_status": "Corroborated export ID"},
+        {"identity_status": "Source account unconfirmed"},
+        {"direction": "received"},
+        {"direction": "unknown"},
+        {"sender_id": FRIEND},
+        {"sender_id": OTHER_OWNER},
+        {"sender_id": OWNER + " "},
+        {"sender_id": None},
+    ],
+)
+def test_owner_message_name_rejects_nonowner_direction_and_forged_context(
+    tmp_path, changes
+):
+    names = WechatDisplayNames(tmp_path)
+    contact = _contact(id=_canonical(OWNER))
+    context = _account(**{"direction": "sent", "sender_id": OWNER, **changes})
+    anchor = _account(name="Native account nickname · " + OWNER[-6:])
+    assert names.owner_message_name(contact, context, verified_accounts=[anchor]) == ""
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"account_id": OTHER_OWNER},
+        {"account_key": "account:" + OTHER_OWNER},
+        {"account_key": "source:synthetic"},
+        {"partition_id": "ios-" + hashlib.md5(OTHER_OWNER.encode()).hexdigest()},
+        {"partition_id": "ios-" + "0" * 32},
+        {"partition_id": "html-synthetic-account"},
+        {"identity_status": "Corroborated export ID"},
+        {"identity_status": "Source account unconfirmed"},
+    ],
+)
+def test_owner_message_name_rejects_forged_or_other_partition_anchors(tmp_path, changes):
+    names = WechatDisplayNames(tmp_path)
+    contact = _contact(id=_canonical(OWNER))
+    context = _account(direction="sent", sender_id=OWNER)
+    anchor = _account(**{"name": "Native account nickname · " + OWNER[-6:], **changes})
+    assert names.owner_message_name(contact, context, verified_accounts=[anchor]) == ""
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        None,
+        "",
+        OWNER,
+        OWNER + " · " + OWNER[-6:],
+        " · " + OWNER[-6:],
+        "Native account nickname",
+        "Native account nickname · " + OTHER_OWNER[-6:],
+        "Native account nickname · " + OWNER[-6:] + " extra",
+    ],
+)
+def test_owner_message_name_requires_a_generated_nonidentifier_account_label(
+    tmp_path, name
+):
+    names = WechatDisplayNames(tmp_path)
+    contact = _contact(id=_canonical(OWNER))
+    context = _account(direction="sent", sender_id=OWNER)
+    anchor = _account(name=name)
+    assert names.owner_message_name(contact, context, verified_accounts=[anchor]) == ""
+
+
+@pytest.mark.parametrize("anchors", [(), [], None, {}, OWNER, [None], ["Native name"]])
+def test_owner_message_name_requires_a_usable_native_anchor(tmp_path, anchors):
+    names = WechatDisplayNames(tmp_path)
+    contact = _contact(id=_canonical(OWNER))
+    context = _account(direction="sent", sender_id=OWNER)
+    assert names.owner_message_name(contact, context, verified_accounts=anchors) == ""
+
+
+def test_owner_message_name_does_not_promote_a_corroborated_export_to_native(tmp_path):
+    names = WechatDisplayNames(tmp_path)
+    contact = _contact(id=_canonical(OWNER))
+    context = _export_account(direction="sent", sender_id=OWNER)
+    anchor = _account(name="Native account nickname · " + OWNER[-6:])
+    assert names.account_owner(context, verified_accounts=[anchor]) == OWNER
+    assert names.owner_message_name(contact, context, verified_accounts=[anchor]) == ""
 
 
 def test_account_alias_uses_the_same_verified_contact_mapping(tmp_path):

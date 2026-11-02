@@ -1,6 +1,6 @@
 """Viewer names project across native identities without rewriting source evidence.
 
-Code version: v1.4.1-codex.0
+Code version: v1.5.0-codex.0
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ OTHER = "wxid_peer"
 ALIAS = "Local <viewer> & 昵称"
 RAW_SPEAKER = "Synthetic source phone label"
 RAW_ACCOUNT = "Synthetic source account · ount_a"
+NATIVE_OWNER_NAME = "Synthetic source account"
 HTML_ONLY_OWNER = "wxid_html_only_owner"
 HTML_ONLY_ACCOUNT = "Synthetic HTML owner · _owner"
 HTML_VARIANT_TEXT = "A completion keeps a separate parent observation."
@@ -346,7 +347,11 @@ def test_viewer_preference_changes_and_clear_are_visible_on_the_next_query(
     } == {"Revised viewer · ount_a"}
     assert first.messaging["viewer_display_name"] == ALIAS
     _write_preference(fixture.store, fixture.contact_id, None)
-    assert not self_message().messaging.get("viewer_display_name")
+    assert self_message().messaging["viewer_display_name"] == NATIVE_OWNER_NAME
+    assert (
+        self_message().messaging["contact"]["viewer_display_name_source"]
+        == "verified_native_account_alias"
+    )
     cleared = _query(fixture, OWNER_A)
     raw_options = [
         row
@@ -363,11 +368,85 @@ def test_viewer_preference_changes_and_clear_are_visible_on_the_next_query(
     )
     display_names_path(fixture.store).unlink()
     assert self_message().author_label == RAW_SPEAKER
-    assert not self_message().messaging.get("viewer_display_name")
+    assert self_message().messaging["viewer_display_name"] == NATIVE_OWNER_NAME
     assert not _query(fixture, OWNER_A).current_session.messaging[
         "viewer_account_label"
     ]
     assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
+
+
+def test_native_owner_alias_unifies_raw_names_across_pages_search_and_export(
+    viewer_archive,
+):
+    fixture = viewer_archive
+    session = fixture.sessions[OWNER_A].stable_id
+    raw_names = (OWNER_A, "Old source nickname", RAW_ACCOUNT)
+    _write_preference(fixture.store, fixture.contact_id, None)
+    with sqlite3.connect(fixture.history) as connection:
+        identifiers = [
+            row[0]
+            for row in connection.execute(
+                "SELECT id FROM messages WHERE conversation_id=? ORDER BY ordinal",
+                (session,),
+            )
+        ]
+        assert len(identifiers) == len(raw_names)
+        for index, (identifier, label) in enumerate(zip(identifiers, raw_names)):
+            text = f"Native owner sample {index}"
+            connection.execute(
+                "UPDATE messages SET sender_id=?,sender_label=?,direction='sent',"
+                "text=?,search_text=? WHERE id=?",
+                (OWNER_A, label, text, text.casefold(), identifier),
+            )
+    before = (
+        fixture.history.read_bytes(),
+        fixture.registry.read_bytes(),
+        display_names_path(fixture.store).read_bytes(),
+    )
+    detail = _query(fixture, OWNER_A)
+    assert len(detail.items) == 3
+    assert {row.author_label for row in detail.items} == set(raw_names)
+    assert {row.messaging["viewer_display_name"] for row in detail.items} == {
+        NATIVE_OWNER_NAME
+    }
+    assert {row.messaging["contact"]["id"] for row in detail.items} == {
+        fixture.contact_id
+    }
+    for page in range(1, 4):
+        paged = query_chat_history(
+            fixture.store,
+            source="wechat",
+            account=f"account:{OWNER_A}",
+            session=session,
+            page=page,
+            page_size=1,
+        )
+        assert len(paged.items) == 1
+        assert paged.items[0].messaging["viewer_display_name"] == NATIVE_OWNER_NAME
+    searched = query_chat_history(
+        fixture.store,
+        source="wechat",
+        account=f"account:{OWNER_A}",
+        session=session,
+        query="Native owner sample 2",
+    )
+    assert len(searched.items) == 1
+    assert searched.items[0].messaging["viewer_display_name"] == NATIVE_OWNER_NAME
+    exported = build_chat_history_markdown(detail)
+    for label in raw_names:
+        assert f'- Source display name: "{label}"' in exported
+    client = _application(fixture).test_client()
+    html = client.get(
+        "/browser",
+        query_string={"source": "wechat", "session": session},
+    ).get_data(as_text=True)
+    names = re.findall(r'class="wechat-speaker[^\"]*"[^>]*>([^<]*)<', html)
+    assert names == [NATIVE_OWNER_NAME] * 3
+    assert before == (
+        fixture.history.read_bytes(),
+        fixture.registry.read_bytes(),
+        display_names_path(fixture.store).read_bytes(),
+    )
 
 
 def _application(fixture):
