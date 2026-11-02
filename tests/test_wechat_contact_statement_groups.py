@@ -1,6 +1,6 @@
 """Unique contact statements preserve independent observations and native identity.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -106,6 +106,7 @@ def test_unique_statement_precedes_search_counts_and_pagination(statement_store,
     exported = list(analysis.export_contact_analysis_items(
         fixture.store, CID, query="Synthetic", sort=sort,
         source_fingerprint=page["source_fingerprint"],
+        source_occurrences=True,
     ))
     assert len(exported) == 2
     assert {origin["statement_id"] for origin in exported} == {item["statement_id"]}

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.58.0-codex.0`
+Documentation version: `v1.58.1-codex.0`
 
 ## Runtime flow
 
@@ -834,6 +834,24 @@ own author, component, body, clock, and conversation evidence. Namesakes, ambigu
 clock conflicts, unknown forwarded origins, and independently authored identical text remain
 separate. A local message ID, component data ID, display name, or equal text alone never
 establishes a global event identity. Conversation events retain their actual receiving context.
+
+Explicitly reviewed copies can also share one contact statement across receiving conversations.
+The local `messaging/wechat/statement_reviews.json` registry pins each complete parent packet's
+text and provenance hashes, one verified receiving account, and a preferred native group source.
+The review adapter requires matching native item sequences, metadata-only resource positions,
+stable authors, literal text, independent clocks, and legacy HTML item suffixes. A same-text or
+same-name pair is insufficient. The preferred receiving group is display context; it does not
+establish the unknown original conversation. All source references remain available in the table
+and exports, without reading media payloads or changing source databases. Review declarations are
+private runtime configuration and must not be committed with source code.
+
+A compact derived journal restores prior statement membership before replaying changed or removed
+reviews. Compatible complete reference caches can upgrade without enumerating source authors;
+source database identities still invalidate reuse. The registry digest invalidates the result when
+review configuration changes. Conversation-event caches validate original input paths before
+normalizing cache keys, so relative and absolute root spellings reuse the same proof.
+Contact CSV streams each preferred statement once in the displayed order; explicit internal
+source-occurrence inspection can still stream every contributing reference.
 
 Contact and conversation CSV downloads stream the complete selected result as Time, Speaker ID,
 and Statement. They retain literal identifier precision, viewing labels with source identifiers,
