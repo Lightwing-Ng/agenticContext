@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.25.0-codex.0`
+Documentation version: `v1.26.0-codex.0`
 
 ## Authority
 
@@ -377,6 +377,23 @@ Closed disclosures contribute no hidden descendant shadows. Native disclosure be
 readable timestamp flow remain available without JavaScript. Escaped source text never
 creates media elements or executable markup. This is a WeChat-specific adapter; shared
 primitive changes in Worthward and neoMe remain subject to the synchronization ledger.
+
+Contact analysis reuses the standard scrollable table, numeric metrics, gray conversation-kind
+badges, source links, pagination, and shared Local resources sidebar. Source-account links use
+the same non-underlined link role as conversation links. The source disclosure occupies the
+statement cell without adding a separate message footer or changing table column widths.
+Search and pagination replace only the contact content, retaining the surrounding navigation.
+The waiting modal keeps its inline SVG spinner paintable before navigation and while indexing.
+
+`disclosure-motion.js` owns the measured 620ms spring used by WeChat source disclosures. Opening
+uses mass 1, stiffness 180, damping 18, and zero initial velocity; closing is critically damped.
+Rapid reversal begins at current geometry. Message cards supply their existing width target;
+contact-table disclosures animate height and source content only. Only the provenance body gets
+the small translation/scale, so message typography is not scaled. Native summary activation,
+keyboard focus, interactive descendants, and no-JavaScript disclosure remain available.
+Reduced Motion, resizing, font changes, detached content, and page exit settle animations and
+restore transient state. Initialization is idempotent after asynchronous content replacement.
+Sibling applicability for this reusable controller remains Pending in the synchronization ledger.
 
 The Local resources search icon keeps its 16px SVG transport and a square slot
 matching the search control's inner height. Its native lens center, rather than

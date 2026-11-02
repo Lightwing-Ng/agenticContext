@@ -1,4 +1,4 @@
-/* Code version: v1.1.0-codex.1 */
+/* Code version: v1.2.0-codex.0 */
 
 (function initializeWaitingModal() {
     "use strict";
@@ -11,6 +11,10 @@
     const closeButton = modal.querySelector("[data-wait-modal-close]");
     const activeWaits = new Map();
     let focusReturnTarget = null;
+    let navigationWait = null;
+    let navigationFrame = 0;
+    let navigationPaintTimer = 0;
+    let navigationFallbackTimer = 0;
 
     function normalizedText(value, fallback) {
         const text = typeof value === "string" ? value.trim() : "";
@@ -92,6 +96,46 @@
 
     window.CacheWaitModal = Object.freeze({ begin, show, hide });
 
+    function clearNavigationTimers() {
+        if (navigationFrame) window.cancelAnimationFrame(navigationFrame);
+        if (navigationPaintTimer) window.clearTimeout(navigationPaintTimer);
+        if (navigationFallbackTimer) window.clearTimeout(navigationFallbackTimer);
+        navigationFrame = navigationPaintTimer = navigationFallbackTimer = 0;
+    }
+
+    function navigateAfterPaint(link, options) {
+        clearNavigationTimers();
+        navigationWait?.finish();
+        navigationWait = show(options);
+        const destination = link.href;
+        let committed = false;
+        const commit = () => {
+            if (committed) return;
+            committed = true;
+            clearNavigationTimers();
+            window.location.assign(destination);
+        };
+        // Match Worthward's optimistic navigation: paint once before leaving.
+        navigationFallbackTimer = window.setTimeout(commit, 120);
+        navigationFrame = window.requestAnimationFrame(() => {
+            navigationFrame = 0;
+            navigationPaintTimer = window.setTimeout(commit, 0);
+        });
+    }
+
+    function resetNavigationWait() {
+        clearNavigationTimers();
+        navigationWait?.finish();
+        navigationWait = null;
+        focusReturnTarget = null;
+        hide();
+    }
+
+    window.addEventListener("pagehide", resetNavigationWait);
+    window.addEventListener("pageshow", (event) => {
+        if (event.persisted) resetNavigationWait();
+    });
+
     closeButton?.addEventListener("click", closeModal);
     document.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && !modal.hidden) {
@@ -118,7 +162,17 @@
             : null;
         const options = optionsFromElement(link);
         if (!options) return;
+        if (link.hasAttribute("download") || !["", "_self"].includes(link.target.toLowerCase())) return;
+        const destination = new URL(link.href, window.location.href);
+        if (destination.origin !== window.location.origin) return;
+        if (destination.href.includes("#") && destination.pathname === window.location.pathname
+            && destination.search === window.location.search) return;
         focusReturnTarget = link;
-        show(options);
+        if (link.hasAttribute("data-wait-navigation")) {
+            event.preventDefault();
+            navigateAfterPaint(link, options);
+        } else {
+            show(options);
+        }
     });
 })();

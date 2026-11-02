@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.57.0-codex.0`
+Documentation version: `v1.58.0-codex.0`
 
 ## Runtime flow
 
@@ -818,6 +818,38 @@ rows or merging source accounts. Original authors, component order, and source c
 separate from the outer forwarder and forwarding time. Missing clocks stay unavailable, and
 export clocks never acquire an inferred timezone. The projection reads no media and changes
 neither stored messages nor text exports.
+
+`wechat_contact_analysis.py` aggregates only verified contact occurrences into a separate
+`contact_activity/` reference index. It stores message IDs, embedded component paths, ordering,
+clock evidence, and statement membership rather than another copy of message bodies. Source
+database identities invalidate stale indices; cloud-only derived indices are rebuilt without
+hydrating their old bodies. One background worker publishes complete indices atomically, while
+the contact page exposes indexing, ready, and failure states through content negotiation.
+The source and contact databases remain read-only throughout browsing and exports.
+
+Verified native server events and complete, scoped source proofs can establish matching
+observations across devices. Preferred native evidence governs a displayed statement while
+every contributing source remains available. Native embedded and HTML copies require their
+own author, component, body, clock, and conversation evidence. Namesakes, ambiguous repeats,
+clock conflicts, unknown forwarded origins, and independently authored identical text remain
+separate. A local message ID, component data ID, display name, or equal text alone never
+establishes a global event identity. Conversation events retain their actual receiving context.
+
+Contact and conversation CSV downloads stream the complete selected result as Time, Speaker ID,
+and Statement. They retain literal identifier precision, viewing labels with source identifiers,
+original bodies, and standard CSV quoting. Detailed clock-basis and provenance fields
+remain available in the source disclosure and Markdown export.
+Message-source routes resolve the original account, conversation, page, and embedded anchor.
+Browser Back restores disclosure, focus, and scroll state. The shared Local resources sidebar
+keeps the browser origin independent of contact-result filters. These routes use the storage
+facade, and templates reuse the existing table, badge, loading, and disclosure primitives.
+
+Optional resource indices store media and file references without payloads. Account-scoped
+Mac mappings can reveal an existing local file or account folder through the loopback-only
+Finder route; unresolved references retain visible placeholders. Quote and system-message
+adapters retain original source bytes and expose missing clocks without inventing a timestamp.
+Private extraction workstations, database snapshots, display preferences, and operational
+storage-cleanup receipts are outside the application source and are never PR inputs.
 
 ### ChatGPT image cache
 

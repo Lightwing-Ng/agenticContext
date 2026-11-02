@@ -1,0 +1,4 @@
+{# Code version: v1.0.0-codex.0 #}
+{% set kind_names = {'direct': 'Private chat', 'group': 'Group chat', 'unclassified': 'Unclassified chat'} %}
+{% macro conversation_kind_label(context) %}{{ context.conversation_kind_label|default(kind_names.get(context.kind, 'Chat')) }}{% endmacro %}
+{% macro conversation_kind_badge(context) %}<span class="wechat-kind-badge">{{ conversation_kind_label(context) }}</span>{% endmacro %}

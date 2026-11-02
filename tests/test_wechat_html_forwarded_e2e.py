@@ -1,6 +1,6 @@
 """Published HTML forwarding reuses the collapsed transcript and message rows.
 
-Code version: v1.0.4-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import re
 import sqlite3
 from threading import Thread
 from types import SimpleNamespace
@@ -29,7 +30,7 @@ from app.core.wechat_display_names import display_names_path
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
-from tests.wechat_forwarded_fixtures import make_forwarded_html_store
+from tests.test_wechat_contacts import _make_forwarded_html_store
 
 
 disposable_browser = test_sidebar_e2e.disposable_browser
@@ -62,7 +63,7 @@ def html_forwarded_server(tmp_path_factory):
     registry.parent.mkdir(parents=True)
     with sqlite3.connect(registry) as connection:
         initialize_contact_registry(connection)
-    fixture = make_forwarded_html_store(store)
+    fixture = _make_forwarded_html_store(store)
     history = fixture["history"]
     request = deepcopy(fixture["request"])
     original = request["forwarded_components"][0]
@@ -208,7 +209,8 @@ def _open_html_forwarded(page, fixture):
     card = page.locator("#wechat_message_" + fixture.parent_id)
     disclosure = card.locator(":scope > details.wechat-forwarded")
     expect(disclosure).to_have_count(1)
-    expect(disclosure.locator(":scope > summary")).to_have_text(TITLE)
+    expect(disclosure.locator(":scope > summary")).to_have_text("Chat history")
+    expect(card.locator(":scope > .wechat-history-source-text")).to_have_text(TITLE)
     return card, disclosure
 
 
@@ -241,9 +243,9 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
     try:
         card, disclosure = _open_html_forwarded(page, fixture)
         expect(disclosure).not_to_have_attribute("open", "")
-        expect(disclosure.locator(".wechat-forwarded-glass")).not_to_be_visible()
+        expect(disclosure.locator(".wechat-forwarded-body")).not_to_be_visible()
         expect(page.locator("[data-chat-message-id]")).to_have_count(1)
-        expect(card.locator(":scope > .wechat-message-text")).to_have_count(0)
+        expect(card.locator(":scope > .wechat-message-text")).to_have_text(TITLE)
         summary = disclosure.locator(":scope > summary")
         summary.focus()
         summary.press("Enter")
@@ -271,6 +273,12 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
         assert set(times.evaluate_all("nodes => nodes.map(node => node.title)")) == {
             "Source clock; timezone unknown"
         }
+        for index in (0, 1):
+            expect(
+                children.nth(index).locator(".wechat-contact-link")
+            ).to_have_attribute(
+                "href", re.compile("/browser/wechat/contacts/" + fixture.contact_id)
+            )
         geometry = disclosure.evaluate(
             """details => {
                 const rows = [...details.querySelectorAll('[data-wechat-embedded-row]')];
@@ -283,26 +291,27 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
                         speakerSize: getComputedStyle(article.querySelector('.wechat-speaker')).fontSize,
                         bodySize: getComputedStyle(article.querySelector('.wechat-message-text')).fontSize};
                 });
-                const style = getComputedStyle(details.querySelector('.wechat-forwarded-glass'));
+                const style = getComputedStyle(details.querySelector('.wechat-forwarded-body'));
                 const port = document.querySelector('[data-chat-scrollport]');
-                const sourceHeaders = [details.closest('.wechat-message-row'), ...rows].map(row => {
-                    const summary = row.querySelector(':scope > article > .wechat-provenance > summary');
-                    const speaker = summary.querySelector('.wechat-speaker').getBoundingClientRect();
-                    const clock = row.querySelector(':scope > time').getBoundingClientRect();
-                    return {chevronDisplay: getComputedStyle(summary, '::after').display,
-                        clockOverlapsSpeaker: clock.left < speaker.right && clock.right > speaker.left
-                            && clock.top < speaker.bottom && clock.bottom > speaker.top};
-                });
-                return {clocks, sourceHeaders, radius: style.borderRadius,
+                return {clocks, radius: style.borderRadius,
+                    background: style.backgroundColor, border: style.borderTopWidth,
+                    shadow: style.boxShadow,
+                    physicalSurface: details.querySelector(':scope > .wechat-forwarded-body').hasAttribute('data-chat-physical-surface'),
+                    referenceRight: details.closest('.wechat-message-row').querySelector(':scope > time').getBoundingClientRect().right,
                     blur: style.backdropFilter || style.webkitBackdropFilter,
                     documentOverflow: document.documentElement.scrollWidth - innerWidth,
                     listOverflow: port.scrollWidth - port.clientWidth};
             }"""
         )
-        assert all(header["chevronDisplay"] == "none" for header in geometry["sourceHeaders"])
-        assert not any(header["clockOverlapsSpeaker"] for header in geometry["sourceHeaders"])
-        assert geometry["radius"] == "10px"
-        assert "blur(" in geometry["blur"]
+        assert geometry["radius"] == "0px"
+        assert geometry["background"] == "rgba(0, 0, 0, 0)"
+        assert geometry["border"] == "0px"
+        assert geometry["shadow"] == geometry["blur"] == "none"
+        assert not geometry["physicalSurface"]
+        assert all(
+            abs(clock["right"] - geometry["referenceRight"]) <= 1
+            for clock in geometry["clocks"]
+        )
         assert geometry["documentOverflow"] == geometry["listOverflow"] == 0
         assert max(clock["topError"] for clock in geometry["clocks"]) <= 1
         assert (
@@ -318,7 +327,7 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
         page.screenshot(path=tmp_path / f"html-forwarded-{width}-{color_scheme}.png")
         summary.press("Space")
         expect(disclosure).not_to_have_attribute("open", "")
-        expect(disclosure.locator(".wechat-forwarded-glass")).not_to_be_visible()
+        expect(disclosure.locator(".wechat-forwarded-body")).not_to_be_visible()
         assert not errors
         _assert_preserved(fixture)
     finally:
@@ -333,9 +342,9 @@ def test_html_forwarded_details_remain_usable_without_javascript(
     page = context.new_page()
     try:
         _, disclosure = _open_html_forwarded(page, fixture)
-        expect(disclosure.locator(".wechat-forwarded-glass")).not_to_be_visible()
+        expect(disclosure.locator(".wechat-forwarded-body")).not_to_be_visible()
         disclosure.locator(":scope > summary").press("Enter")
-        expect(disclosure.locator(".wechat-forwarded-glass")).to_be_visible()
+        expect(disclosure.locator(".wechat-forwarded-body")).to_be_visible()
         children = disclosure.locator("[data-wechat-embedded-row]")
         expect(children).to_have_count(3)
         assert children.locator(".wechat-message-text").all_text_contents() == list(

@@ -1,6 +1,6 @@
 """Extract known WeChat textual envelopes without opening attachments or rendering HTML.
 
-Code version: v1.0.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -17,6 +17,40 @@ MAX_XML_NODES = 20_000
 MAX_FORWARD_DEPTH = 8
 _XML_DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 _CODE = re.compile(r"[0-9]{1,10}")
+_INVITATION_HEADINGS = ("Group Chat Invitation", "邀请你加入群聊", "邀请你加入群组")
+_INVITATION_LABEL = r'(?:"[^\r\n]+"|“[^\r\n]+”|「[^\r\n]+」)'
+_INVITATION_GROUP_LABEL = r'(?:"[^\r\n]*"|“[^\r\n]*”|「[^\r\n]*」)'
+_CHINESE_INVITATION_GROUP = r"(?:" + _INVITATION_GROUP_LABEL + r'|[^"“”「」\r\n]+)'
+_ENGLISH_INVITATION = re.compile(
+    r"Group Chat Invitation[ \t\r\n]+"
+    + _INVITATION_LABEL
+    + r" invited you to join the group chat "
+    + _INVITATION_GROUP_LABEL
+    + r"\. Enter to view details\."
+)
+_CHINESE_INVITATION = re.compile(
+    r"邀请你加入群聊[ \t\r\n]+"
+    + _INVITATION_LABEL
+    + r"邀请你加入群聊"
+    + _CHINESE_INVITATION_GROUP
+    + r"[，,]进入可查看详情[。.]"
+)
+_LEGACY_CHINESE_INVITATION = re.compile(
+    r"邀请你加入群组[ \t\r\n]+"
+    + _INVITATION_LABEL
+    + r"邀请你加入群组"
+    + _INVITATION_LABEL
+    + r"[，,]进入查看详情[。.]"
+)
+
+_FORWARDED_RESOURCES = {
+    2: "image",
+    3: "audio",
+    4: "video",
+    5: "app",
+    6: "app",
+    8: "file",
+}
 
 
 @dataclass
@@ -25,6 +59,7 @@ class _Budget:
 
     xml_bytes: int = 0
     xml_nodes: int = 0
+    forward_depth: int = 0
 
 
 def _parse_xml(raw: str, budget: _Budget) -> ElementTree.Element | None:
@@ -83,6 +118,56 @@ def _usable(value: str) -> bool:
     return bool(value.strip())
 
 
+def is_group_invitation_text(text: str) -> bool:
+    """Recognize complete standard card copy without rewriting it or naming people.
+
+    This is a text-template check, not an identity or native-subtype assertion.
+    Callers still need an independently proven message type and source event.
+    """
+    if not isinstance(text, str) or len(text) > 8192 or "\x00" in text:
+        return False
+    if text.count("Group Chat Invitation") == 1 and _ENGLISH_INVITATION.fullmatch(text):
+        return True
+    return bool(
+        text.count("邀请你加入群聊") == 2
+        and _CHINESE_INVITATION.fullmatch(text)
+        or text.count("邀请你加入群组") == 2
+        and _LEGACY_CHINESE_INVITATION.fullmatch(text)
+    )
+
+
+def _invitation(appmsg: ElementTree.Element) -> dict[str, Any] | None:
+    fields = {}
+    for tag, key in (("title", "title"), ("des", "description"), ("url", "url")):
+        nodes = appmsg.findall(tag)
+        if len(nodes) > 1 or (nodes and len(nodes[0]) != 0):
+            return None
+        if nodes:
+            fields[key] = nodes[0].text or ""
+    title, description = fields.get("title", ""), fields.get("description", "")
+    if title not in _INVITATION_HEADINGS or not is_group_invitation_text(
+        title + "\n" + description
+    ):
+        return None
+    values = [title, description]
+    url = fields.get("url", "")
+    if _usable(url) and url not in values:
+        values.append(url)
+    return _result(
+        49,
+        "\n".join(values),
+        "app_text",
+        subtype=5,
+        flags=["invitation_card_metadata"],
+        invitation_card_fields=fields,
+    )
+
+
+def native_components_text(components: list[dict[str, Any]]) -> str:
+    """Join source text once; metadata-only items never introduce separators."""
+    return "\n\n".join(item["text"] for item in components if _usable(item["text"]))
+
+
 def _result(
     message_type: int,
     text: str,
@@ -90,9 +175,10 @@ def _result(
     *,
     subtype: int | None = None,
     flags: list[str] | None = None,
+    allow_empty: bool = False,
     **metadata: Any,
 ) -> dict[str, Any] | None:
-    if not _usable(text):
+    if not _usable(text) and not allow_empty:
         return None
     return {
         "text": text,
@@ -164,19 +250,56 @@ def _forward_components(
             incomplete = True
             continue
         kind = _code(item.get("datatype", ""))
-        if kind == 1:
+        metadata = {"forwarded_item_path": list(path), **_source_fields(item)}
+        # Only an explicit app envelope establishes quote roles; datadesc stays literal.
+        appmsg = _child(item, "appmsg")
+        wrapped = _child(item, "msg")
+        if appmsg is None and wrapped is not None:
+            appmsg = _child(wrapped, "appmsg")
+        if (
+            kind in {1, 49}
+            and appmsg is not None
+            and _code(_leaf(appmsg, "type")) == 57
+        ):
+            budget.forward_depth += depth
+            try:
+                quoted = _quoted(appmsg, budget)
+            finally:
+                budget.forward_depth -= depth
+            literal = _leaf(item, "datadesc") if kind == 1 else ""
+            if _usable(literal) and (quoted is None or literal != quoted["text"]):
+                # Preserve the previously extracted body when two explicit fields disagree.
+                components.append(
+                    {"kind": "forwarded_text", "text": literal, **metadata}
+                )
+                incomplete = True
+            elif quoted is not None:
+                components.append(
+                    {
+                        "kind": "forwarded_quote",
+                        "text": quoted["text"],
+                        "text_components": quoted["text_components"],
+                        "quoted_reference": quoted["quoted_reference"],
+                        "appmsg_subtype": 57,
+                        "flags": quoted["flags"],
+                        **metadata,
+                    }
+                )
+            else:
+                omitted += 1
+                incomplete = True
+        elif kind == 1:
             text = _leaf(item, "datadesc")
             if _usable(text):
                 components.append(
                     {
                         "kind": "forwarded_text",
                         "text": text,
-                        "forwarded_item_path": list(path),
-                        **_source_fields(item),
+                        **metadata,
                     }
                 )
         elif kind == 17:
-            if depth >= MAX_FORWARD_DEPTH:
+            if depth + budget.forward_depth > MAX_FORWARD_DEPTH:
                 incomplete = True
                 omitted += 1
                 continue
@@ -188,37 +311,97 @@ def _forward_components(
             values, skipped, partial = _forward_components(
                 nested, budget, depth=depth + 1, prefix=path
             )
-            components.extend(values)
+            if values:
+                components.append(
+                    {
+                        "kind": "forwarded_group",
+                        "text": native_components_text(values),
+                        "text_components": values,
+                        "forwarded_record_title": _leaf(item, "datadesc"),
+                        **metadata,
+                    }
+                )
             omitted += skipped
             incomplete = incomplete or partial
         else:
-            omitted += 1
+            # Preserve the occurrence and clock without reading a payload or its title.
+            components.append(
+                {
+                    "kind": "forwarded_resource",
+                    "text": "",
+                    "resource_kind": _FORWARDED_RESOURCES.get(kind, "unknown"),
+                    **({"forwarded_data_type": kind} if kind is not None else {}),
+                    **metadata,
+                }
+            )
     return components, omitted, incomplete
 
 
-def _forwarded(appmsg: ElementTree.Element, budget: _Budget) -> dict[str, Any] | None:
-    root = _record_root(_child(appmsg, "recorditem"), budget)
-    if root is None:
+def _forwarded(
+    appmsg: ElementTree.Element, budget: _Budget, *, allow_metadata: bool = False
+) -> dict[str, Any] | None:
+    if budget.forward_depth > MAX_FORWARD_DEPTH:
         return None
-    components, omitted, incomplete = _forward_components(root, budget)
-    flags = ["forwarded_text_only"]
-    if omitted:
-        flags.append("forwarded_non_text_or_unreadable_items_omitted")
-    if incomplete:
-        flags.append("forwarded_record_partially_unreadable")
-    return _result(
-        49,
-        "\n\n".join(item["text"] for item in components),
-        "forwarded_text",
-        subtype=19,
-        flags=flags,
-        text_components=components,
-        forwarded_record_title=_leaf(appmsg, "title"),
-        omitted_forwarded_items=omitted,
-    )
+    budget.forward_depth += 1
+    try:
+        root = _record_root(_child(appmsg, "recorditem"), budget)
+        if root is None:
+            return None
+        components, omitted, incomplete = _forward_components(root, budget)
+        flags = ["forwarded_text_only"]
+        pending = list(components)
+        while pending:
+            component = pending.pop()
+            if component["kind"] == "forwarded_resource":
+                flags.append("forwarded_resource_metadata_only")
+                break
+            pending.extend(component.get("text_components", []))
+        if omitted:
+            flags.append("forwarded_non_text_or_unreadable_items_omitted")
+        if incomplete:
+            flags.append("forwarded_record_partially_unreadable")
+        return _result(
+            49,
+            native_components_text(components),
+            "forwarded_text",
+            subtype=19,
+            flags=flags,
+            allow_empty=allow_metadata and bool(components),
+            text_components=components,
+            forwarded_record_title=_leaf(appmsg, "title"),
+            omitted_forwarded_items=omitted,
+        )
+    finally:
+        budget.forward_depth -= 1
 
 
-def _quoted(appmsg: ElementTree.Element) -> dict[str, Any] | None:
+def _quoted_forwarded(
+    reference: ElementTree.Element, budget: _Budget
+) -> dict[str, Any] | None:
+    """Read only an explicit forwarded-text app inside a quoted app reference."""
+    content = _child(reference, "content")
+    if content is None:
+        return None
+    if len(content) == 0:
+        root = _parse_xml(content.text or "", budget)
+    elif (
+        len(content) == 1
+        and not (content.text or "").strip()
+        and not (content[0].tail or "").strip()
+    ):
+        # Inline XML was already counted by the outer parser's shared budget.
+        root = content[0]
+    else:
+        return None
+    if root is None or root.tag not in {"msg", "appmsg"}:
+        return None
+    appmsg = root if root.tag == "appmsg" else _child(root, "appmsg")
+    if appmsg is None or _code(_leaf(appmsg, "type")) != 19:
+        return None
+    return _forwarded(appmsg, budget, allow_metadata=True)
+
+
+def _quoted(appmsg: ElementTree.Element, budget: _Budget) -> dict[str, Any] | None:
     components = []
     reply = _leaf(appmsg, "title")
     if _usable(reply):
@@ -239,8 +422,24 @@ def _quoted(appmsg: ElementTree.Element) -> dict[str, Any] | None:
         },
     }
     content = _leaf(reference, "content") if reference_type == 1 else ""
+    forwarded = _quoted_forwarded(reference, budget) if reference_type == 49 else None
     if _usable(content):
         components.append({"kind": "quoted_text", "text": content, **metadata})
+    elif forwarded is not None:
+        # The quote's forwarder and its embedded original authors are different roles.
+        components.append(
+            {
+                "kind": "quoted_forwarded_text",
+                "text": forwarded["text"],
+                **metadata,
+                "appmsg_subtype": 19,
+                "forwarded_record_title": forwarded["forwarded_record_title"],
+                "text_components": forwarded["text_components"],
+                "omitted_forwarded_items": forwarded["omitted_forwarded_items"],
+                "flags": forwarded["flags"],
+            }
+        )
+        flags.extend("quoted_" + flag for flag in forwarded["flags"])
     elif reference_type is not None and reference_type != 1:
         flags.append("quoted_non_text_content_omitted")
     else:
@@ -249,7 +448,7 @@ def _quoted(appmsg: ElementTree.Element) -> dict[str, Any] | None:
         flags.append("reply_text_unavailable")
     return _result(
         49,
-        "\n\n".join(item["text"] for item in components),
+        native_components_text(components),
         "quoted_reply",
         subtype=57,
         flags=flags,
@@ -336,8 +535,10 @@ def extract_wechat_text(message_type: int, raw: str) -> dict[str, Any] | None:
             if _usable(text) and text not in values:
                 values.append(text)
         return _result(49, "\n".join(values), "app_text", subtype=1)
+    if subtype == 5:
+        return _invitation(appmsg)
     if subtype == 19:
         return _forwarded(appmsg, budget)
     if subtype == 57:
-        return _quoted(appmsg)
+        return _quoted(appmsg, budget)
     return None
