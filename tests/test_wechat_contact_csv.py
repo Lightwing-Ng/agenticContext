@@ -1,6 +1,6 @@
 """Contact CSV exposes canonical export time and original statement text.
 
-Code version: v2.1.0-codex.0
+Code version: v2.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 from datetime import datetime
 import io
+import json
 import sqlite3
 from urllib.parse import quote, urlencode
 from urllib.request import urlopen
@@ -269,7 +270,7 @@ def test_csv_keeps_unknown_time_blank_and_exact_headers_for_empty_results(source
     assert closed == [True]
 
 
-def test_two_column_csv_preserves_existing_grouped_source_observations(statement_store):
+def test_two_column_csv_uses_preferred_statements_and_keeps_source_inspection(statement_store):
     fixture = statement_store
     before = fixture.history.read_bytes(), fixture.registry.read_bytes()
     page = query_contact_analysis(fixture.store, statement_groups.CID)
@@ -282,5 +283,41 @@ def test_two_column_csv_preserves_existing_grouped_source_observations(statement
     first = next(items, None)
     body = "".join(contact_csv_chunks(items, first=first)).encode("utf-8")
     rows = _rows(body)
-    assert rows == _expected_rows(page["items"]) * 2
+    assert rows == _expected_rows(page["items"])
+    sources = list(export_contact_analysis_items(
+        fixture.store,
+        statement_groups.CID,
+        source_fingerprint=page["source_fingerprint"],
+        source_occurrences=True,
+    ))
+    assert len(sources) == page["observation_count"] == 2
+    assert {item["id"] for item in sources} == {
+        item["id"] for item in page["items"][0]["observations"]
+    }
+    assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
+
+
+@pytest.mark.parametrize("sort", ["newest", "oldest"])
+def test_identical_csv_values_preserve_distinct_native_events(statement_store, sort):
+    fixture = statement_store
+    with sqlite3.connect(fixture.history) as connection:
+        proof = json.loads(connection.execute(
+            "SELECT provenance FROM messages WHERE id=?", (fixture.rows[1]["id"],)
+        ).fetchone()[0])
+        proof["server_id"] = "7000000000000000002"
+        connection.execute(
+            "UPDATE messages SET provenance=? WHERE id=?",
+            (json.dumps(proof), fixture.rows[1]["id"]),
+        )
+    before = fixture.history.read_bytes(), fixture.registry.read_bytes()
+    page = query_contact_analysis(fixture.store, statement_groups.CID, sort=sort)
+    assert page["total_count"] == page["observation_count"] == 2
+    items = export_contact_analysis_items(
+        fixture.store, statement_groups.CID, sort=sort,
+        source_fingerprint=page["source_fingerprint"],
+    )
+    first = next(items)
+    rows = _rows("".join(contact_csv_chunks(items, first=first)).encode("utf-8"))
+    assert len(rows) == 2
+    assert rows[0] == rows[1]
     assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())

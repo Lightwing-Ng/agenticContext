@@ -1,6 +1,6 @@
 """Retain source occurrences while projecting proven same-session text events.
 
-Code version: v1.0.3-codex.0
+Code version: v1.0.4-codex.0
 """
 
 from __future__ import annotations
@@ -84,7 +84,8 @@ def _inputs(repository, history_identity=None):
             "size": value.st_size,
             "mtime_ns": value.st_mtime_ns,
         }
-    return result
+    # Validate each original path before canonicalizing its cache identity.
+    return {str(Path(path).resolve()): identity for path, identity in result.items()}
 
 
 def _fingerprint(inputs):

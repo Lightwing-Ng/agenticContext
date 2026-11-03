@@ -1,6 +1,6 @@
 """Native embedded author references retain roles, source clocks, and bounded hints.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -1017,6 +1017,7 @@ def test_native_explicit_original_event_links_preserve_all_receiving_observation
     raw = list(analysis.export_contact_analysis_items(
         fixture.store, fixture.target_id, query=QUOTED,
         source_fingerprint=page["source_fingerprint"],
+        source_occurrences=True,
     ))
     assert len(raw) == 3
     assert {item["statement_id"] for item in raw} == {event["statement_id"]}

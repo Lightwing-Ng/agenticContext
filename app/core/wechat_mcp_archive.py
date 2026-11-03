@@ -1,6 +1,6 @@
 """Read-only WeChat archive queries for the Tunnel MCP tools.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 
 The tools address only the configured ``local_store/messaging/wechat`` archive.
 Callers cannot pass a filesystem path. Connections use SQLite ``mode=ro`` and
@@ -44,7 +44,7 @@ from app.core.wechat_contacts import (
 from app.core.wechat_display_names import WechatDisplayNames
 
 
-VERSION = "v1.1.0-codex.0"
+VERSION = "v1.1.1-codex.0"
 QUERY_TIMEOUT_SECONDS = 10.0
 MAX_PAGE_SIZE = 50
 MAX_TEXT_CHARACTERS = 20_000
@@ -418,6 +418,7 @@ def _search_contact(
                 "SELECT COUNT(*) FROM refs r "
                 + (
                     "CROSS JOIN archive.messages m ON m.id=r.parent_message_id "
+                    "JOIN archive.conversations c ON c.id=r.conversation_id "
                     "JOIN archive.partitions p ON p.id=r.source_id "
                     if query
                     else ""
@@ -1087,7 +1088,7 @@ def _reference_filters(query: str, conversation_id: str, start: float | None, en
     if query:
         filters.append(
             "instr(reference_text(m.text,m.provenance,r.component_path,"
-            "p.account_id,r.parent_message_id),?)>0"
+            "p.account_id,r.parent_message_id,c.peer_id),?)>0"
         )
         parameters.append(query.casefold())
     return (" WHERE " + " AND ".join(filters)) if filters else "", parameters

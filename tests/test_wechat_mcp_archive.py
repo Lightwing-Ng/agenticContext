@@ -1,6 +1,6 @@
 """Read-only WeChat Tunnel tools stay inside the configured archive.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 import hashlib
@@ -15,7 +15,9 @@ from app.core.tunnel_projects import ProjectRegistry
 from app.core.wechat_archive import _SCHEMA as HISTORY_SCHEMA
 from app.core.wechat_contact_analysis import (
     INDEX_VERSION,
+    NATIVE_EMBEDDED_VERSION,
     _REFERENCE_SCHEMA,
+    _cache_ready,
     _sources,
     contact_analysis_cache_path,
 )
@@ -217,6 +219,10 @@ def build_wechat_store(root: Path) -> dict:
     indexed.executescript(_REFERENCE_SCHEMA)
     indexed.execute("INSERT INTO info VALUES('fingerprint',?)", (fingerprint,))
     indexed.execute("INSERT INTO info VALUES('version',?)", (INDEX_VERSION,))
+    indexed.execute(
+        "INSERT INTO info VALUES('native_embedded_version',?)",
+        (NATIVE_EMBEDDED_VERSION,),
+    )
     for ordinal, label in enumerate(("one", "two", "three", "undated"), start=1):
         timestamp = messages[label][0]
         known = bool(timestamp)
@@ -239,8 +245,15 @@ def build_wechat_store(root: Path) -> dict:
                 timestamp,
             ),
         )
+    # These top-level references have no embedded author projection to migrate.
+    assert indexed.execute(
+        "SELECT id,component_path FROM refs ORDER BY id"
+    ).fetchall() == sorted(
+        (ids[label], "[]") for label in ("one", "two", "three", "undated")
+    )
     indexed.commit()
     indexed.close()
+    assert _cache_ready(cache, fingerprint)
     return {
         "root": root,
         "ada_id": ada,

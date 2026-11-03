@@ -1,6 +1,6 @@
 """Verified transcript chains keep one native original and all receiving evidence.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from __future__ import annotations
@@ -404,7 +404,8 @@ def _update_proof(fixture, parent, mutate):
 def _export(fixture, page):
     return list(
         analysis.export_contact_analysis_items(
-            fixture.store, CID, source_fingerprint=page["source_fingerprint"]
+            fixture.store, CID, source_fingerprint=page["source_fingerprint"],
+            source_occurrences=True,
         )
     )
 

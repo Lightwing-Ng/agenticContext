@@ -1,6 +1,6 @@
 """Aggregate one verified contact's text occurrences without merging namesakes.
 
-Code version: v1.8.0-codex.0
+Code version: v1.9.1-codex.0
 """
 
 from __future__ import annotations
@@ -38,13 +38,24 @@ from .wechat_contacts import (
     contact_registry_path,
 )
 from .wechat_display_names import WechatDisplayNames
-from .wechat_contact_embedded import native_candidate_ids, native_detail, native_details
+from .wechat_contact_embedded import (
+    VERSION as NATIVE_EMBEDDED_VERSION,
+    native_candidate_ids,
+    native_detail,
+    native_details,
+)
 from .wechat_forwarded import project_html_forwarded
 from .wechat_forwarded_origins import link_forwarded_origins
+from .wechat_statement_reviews import (
+    StatementReviewSourceChanged,
+    apply_reviewed_packet_groups,
+    restore_reviewed_groups,
+    reviews_digest,
+)
 
 
-VERSION = "v1.8.0-codex.0"
-INDEX_VERSION = "v1.8.0-codex.0"
+VERSION = "v1.9.1-codex.0"
+INDEX_VERSION = "v1.9.0-codex.0"
 _LEGACY_REFERENCE_VERSION = "v1.1.1-codex.0"
 _CONTACT_ID = re.compile(r"wechat:contact:[0-9a-f]{64}")
 _MESSAGE_KEY = re.compile(
@@ -129,7 +140,14 @@ def _sources(root):
         )
     identities = {str(path.resolve()): _identity(path) for path in (history, contacts)}
     fingerprint = hashlib.sha256(
-        _json([INDEX_VERSION, identities]).encode()
+        _json(
+            [
+                INDEX_VERSION,
+                identities,
+                reviews_digest(root),
+                {"native_embedded_version": NATIVE_EMBEDDED_VERSION},
+            ]
+        ).encode()
     ).hexdigest()
     return history, contacts, fingerprint
 
@@ -205,6 +223,7 @@ def _cache_ready(path, fingerprint):
         return (
             info.get("fingerprint") == fingerprint
             and info.get("version") == INDEX_VERSION
+            and info.get("native_embedded_version") == NATIVE_EMBEDDED_VERSION
             and {"refs", "statement_groups", "statement_members"} <= tables
         )
     except (ContactAnalysisSourceChanged, OSError, ValueError, sqlite3.DatabaseError):
@@ -322,7 +341,12 @@ def _native_embedded_values(connection, rows, username):
         ):
             continue
         provenance = json.loads(row["provenance"])
-        for detail in native_details(provenance, parent_id=row["id"], account_id=owner):
+        for detail in native_details(
+            provenance,
+            parent_id=row["id"],
+            account_id=owner,
+            peer_id=row["peer_id"] or "",
+        ):
             if detail["sender_id"] == username:
                 yield _reference_values(row, detail=detail)
 
@@ -756,6 +780,7 @@ def _copy_legacy_references(target, output, history, contacts):
                     "v1.7.0-codex.0",
                 }
                 or info.get("fingerprint") != expected
+                or info.get("native_embedded_version") != NATIVE_EMBEDDED_VERSION
                 or old_fields != new_fields
             ):
                 return False
@@ -791,8 +816,20 @@ def _copy_complete_event_index(target, output, history, contacts):
             }
             version = info.get("version")
             expected = hashlib.sha256(_json([version, identities]).encode()).hexdigest()
+            retained_inputs = info.get("source_inputs")
+            compatible = (
+                version in {"v1.7.1-codex.0", "v1.8.0-codex.0"}
+                and info.get("fingerprint") == expected
+            ) or (
+                version == INDEX_VERSION
+                and retained_inputs
+                == hashlib.sha256(_json(identities).encode()).hexdigest()
+            )
             tables = ("refs", "statement_groups", "statement_members")
-            if version != "v1.7.1-codex.0" or info.get("fingerprint") != expected:
+            if (
+                not compatible
+                or info.get("native_embedded_version") != NATIVE_EMBEDDED_VERSION
+            ):
                 return False
             for table in tables:
                 old_fields = [
@@ -812,6 +849,7 @@ def _copy_complete_event_index(target, output, history, contacts):
                 output.executemany(
                     f"INSERT INTO {table} VALUES({marks})", [tuple(row) for row in rows]
                 )
+        restore_reviewed_groups(retained, output)
         if _identity(target) != initial:
             raise ContactAnalysisSourceChanged("The retained contact grouping changed.")
     return True
@@ -1226,6 +1264,7 @@ def _link_native_references(source, output, contact_id):
                     json.loads(reference["component_path"]),
                     parent_id=row["id"],
                     account_id=row["account_id"] or "",
+                    peer_id=row["peer_id"] or "",
                 )
                 if (
                     detail is None
@@ -1273,6 +1312,26 @@ def _build_index(root, contact_id, fingerprint):
                 "The contact sources changed before indexing."
             )
         history, contacts, _ = paths
+        review_digest = reviews_digest(root)
+        identities = {
+            str(path.resolve()): _identity(path) for path in (history, contacts)
+        }
+        if (
+            hashlib.sha256(
+                _json(
+                    [
+                        INDEX_VERSION,
+                        identities,
+                        review_digest,
+                        {"native_embedded_version": NATIVE_EMBEDDED_VERSION},
+                    ]
+                ).encode()
+            ).hexdigest()
+            != fingerprint
+        ):
+            raise ContactAnalysisSourceChanged(
+                "The statement-review sources changed before indexing."
+            )
         target = contact_analysis_cache_path(root, contact_id)
         if _cache_ready(target, fingerprint):
             return
@@ -1375,9 +1434,35 @@ def _build_index(root, contact_id, fingerprint):
                             )
                     _group_statements(source, output, contact_id)
                 _apply_conversation_events(root, source, output, contact_id)
+                try:
+                    reviewed = apply_reviewed_packet_groups(
+                        root,
+                        source,
+                        output,
+                        contact_id,
+                        row_select=_ROW_SELECT,
+                        prepare_rows=_requests,
+                        native_thread_key=_native_conversation_key,
+                        expected_digest=review_digest,
+                    )
+                except StatementReviewSourceChanged as error:
+                    raise ContactAnalysisSourceChanged(str(error)) from error
+                identities = {
+                    str(path.resolve()): _identity(path) for path in (history, contacts)
+                }
                 output.executemany(
                     "INSERT INTO info VALUES(?,?)",
-                    [("version", INDEX_VERSION), ("fingerprint", fingerprint)],
+                    [
+                        ("version", INDEX_VERSION),
+                        ("fingerprint", fingerprint),
+                        ("native_embedded_version", NATIVE_EMBEDDED_VERSION),
+                        (
+                            "source_inputs",
+                            hashlib.sha256(_json(identities).encode()).hexdigest(),
+                        ),
+                        ("statement_reviews_digest", review_digest),
+                        ("statement_reviews", _json(reviewed)),
+                    ],
                 )
                 output.commit()
             current = _sources(root)
@@ -1412,7 +1497,7 @@ def _empty(contact, fingerprint, *, status, error=""):
     }
 
 
-def _reference_text(text, raw_provenance, raw_path, account_id, parent_id):
+def _reference_text(text, raw_provenance, raw_path, account_id, parent_id, peer_id=""):
     try:
         provenance = json.loads(raw_provenance)
         path = json.loads(raw_path)
@@ -1420,7 +1505,11 @@ def _reference_text(text, raw_provenance, raw_path, account_id, parent_id):
             return ""
         if path and isinstance(path[0], str):
             detail = native_detail(
-                provenance, path, parent_id=parent_id, account_id=account_id or ""
+                provenance,
+                path,
+                parent_id=parent_id,
+                account_id=account_id or "",
+                peer_id=peer_id or "",
             )
             return detail["text"] if detail else ""
         if path:
@@ -1439,7 +1528,7 @@ def _attach_reference_archive(connection, history):
     )
     connection.create_function(
         "reference_text",
-        5,
+        6,
         lambda *values: _reference_text(*values).casefold(),
         deterministic=True,
     )
@@ -1449,7 +1538,7 @@ def _attach_reference_archive(connection, history):
 def _reference_query_parts(query):
     where = (
         " WHERE instr(reference_text(m.text,m.provenance,r.component_path,"
-        "p.account_id,r.parent_message_id),?)>0"
+        "p.account_id,r.parent_message_id,c.peer_id),?)>0"
         if query
         else ""
     )
@@ -1523,6 +1612,7 @@ def _project_reference_rows(connection, rows, contact, names, verified_accounts)
             row["component_path"],
             row["account_id"],
             row["parent_message_id"],
+            row["peer_id"],
         )
         row["id"] = row.pop("reference_id")
         row["component_path"] = component_path
@@ -1539,6 +1629,7 @@ def _project_reference_rows(connection, rows, contact, names, verified_accounts)
                 component_path,
                 parent_id=row["parent_message_id"],
                 account_id=row["account_id"] or "",
+                peer_id=row["peer_id"] or "",
             )
             if detail is None:
                 raise ContactAnalysisSourceChanged(
@@ -1634,9 +1725,10 @@ def _statement_matches(connection, query):
         "INSERT INTO contact_statement_matches SELECT g.id FROM statement_groups g "
         "JOIN refs r ON r.id=g.reference_id "
         "CROSS JOIN archive.messages m ON m.id=r.parent_message_id "
+        "JOIN archive.conversations c ON c.id=r.conversation_id "
         "JOIN archive.partitions p ON p.id=r.source_id "
         "WHERE instr(reference_text(m.text,m.provenance,r.component_path,"
-        "p.account_id,r.parent_message_id),?)>0",
+        "p.account_id,r.parent_message_id,c.peer_id),?)>0",
         (query.casefold(),),
     )
     return (
@@ -1651,6 +1743,29 @@ def _statement_rows_query(where, sort):
         "SELECT g.id AS statement_id,"
         + _STATEMENT_COLUMNS
         + "FROM statement_groups g JOIN refs r ON r.id=g.reference_id "
+        "CROSS JOIN archive.messages m ON m.id=r.parent_message_id "
+        "JOIN archive.conversations c ON c.id=r.conversation_id "
+        "JOIN archive.partitions p ON p.id=r.source_id"
+        + where
+        + " ORDER BY r.has_time DESC,r.time_sort "
+        + direction
+        + ",r.ordinal "
+        + direction
+        + ",r.id "
+        + direction
+    )
+
+
+def _statement_export_rows_query(where, sort, *, has_time=None):
+    """Stream preferred references in index order before reading source bodies."""
+    if has_time is not None:
+        where += (" AND " if where else " WHERE ") + "r.has_time=?"
+    direction = "ASC" if sort == "oldest" else "DESC"
+    return (
+        "SELECT g.id AS statement_id,"
+        + _STATEMENT_COLUMNS
+        + "FROM refs r INDEXED BY refs_time "
+        "CROSS JOIN statement_groups g ON g.reference_id=r.id "
         "CROSS JOIN archive.messages m ON m.id=r.parent_message_id "
         "JOIN archive.conversations c ON c.id=r.conversation_id "
         "JOIN archive.partitions p ON p.id=r.source_id"
@@ -1991,8 +2106,9 @@ def export_contact_analysis_items(
     query="",
     sort="newest",
     source_fingerprint,
+    source_occurrences=False,
 ):
-    """Stream a ready contact projection without copying or rebuilding its sources."""
+    """Stream preferred statements; explicit source inspection retains every reference."""
     cache = contact_analysis_cache_path(local_store_root, contact_id)
     root = Path(local_store_root).expanduser()
     history, registry, _ = _check_reference_sources(root, source_fingerprint)
@@ -2005,6 +2121,9 @@ def export_contact_analysis_items(
     names = WechatDisplayNames(root)
     with closing(_readonly(cache, derived_cache=True)) as connection:
         verified_accounts = _attach_reference_archive(connection, history)
+        group_where = (
+            "" if source_occurrences else _statement_matches(connection, text)[0]
+        )
         # Pin the leading index key so oldest exports reverse-scan time and ordinal.
         groups = (
             [
@@ -2018,7 +2137,11 @@ def export_contact_analysis_items(
         )
         for has_time in groups:
             _check_reference_sources(root, source_fingerprint)
-            sql, parameters = _reference_rows_query(text, sort, has_time=has_time)
+            if source_occurrences:
+                sql, parameters = _reference_rows_query(text, sort, has_time=has_time)
+            else:
+                sql = _statement_export_rows_query(group_where, sort, has_time=has_time)
+                parameters = [] if has_time is None else [has_time]
             with closing(connection.execute(sql, parameters)) as cursor:
                 while True:
                     _check_reference_sources(root, source_fingerprint)
@@ -2075,6 +2198,7 @@ def message_source_location(local_store_root, message_id, *, page_size=100):
                         provenance,
                         parent_id=parent_id,
                         account_id=row["account_id"] or "",
+                        peer_id=row["peer_id"] or "",
                     )
                     if value["id"] == message_id
                 ),

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.58.0-codex.0`
+Documentation version: `v1.58.2-codex.0`
 
 ## Runtime flow
 
@@ -827,6 +827,16 @@ hydrating their old bodies. One background worker publishes complete indices ato
 the contact page exposes indexing, ready, and failure states through content negotiation.
 The source and contact databases remain read-only throughout browsing and exports.
 
+Native quote references support both observed author/chat field arrangements.
+When `source_sender_id` contains a room and `source_chat_id` contains a native
+author, the room must match the independently validated original conversation.
+Nested references use their enclosing source conversation, never the receiving
+room. The projection resolves the author and original chat together while leaving
+raw fields and unknown clocks unchanged. Author hints are non-authoritative;
+contact indexes pin the embedded-parser version and rebuild incompatible caches.
+`test_wechat_contact_quote_roles.py` and `test_wechat_contact_quote_role_integration.py`
+cover this boundary, including immutable evidence and cache migration.
+
 Verified native server events and complete, scoped source proofs can establish matching
 observations across devices. Preferred native evidence governs a displayed statement while
 every contributing source remains available. Native embedded and HTML copies require their
@@ -834,6 +844,24 @@ own author, component, body, clock, and conversation evidence. Namesakes, ambigu
 clock conflicts, unknown forwarded origins, and independently authored identical text remain
 separate. A local message ID, component data ID, display name, or equal text alone never
 establishes a global event identity. Conversation events retain their actual receiving context.
+
+Explicitly reviewed copies can also share one contact statement across receiving conversations.
+The local `messaging/wechat/statement_reviews.json` registry pins each complete parent packet's
+text and provenance hashes, one verified receiving account, and a preferred native group source.
+The review adapter requires matching native item sequences, metadata-only resource positions,
+stable authors, literal text, independent clocks, and legacy HTML item suffixes. A same-text or
+same-name pair is insufficient. The preferred receiving group is display context; it does not
+establish the unknown original conversation. All source references remain available in the table
+and exports, without reading media payloads or changing source databases. Review declarations are
+private runtime configuration and must not be committed with source code.
+
+A compact derived journal restores prior statement membership before replaying changed or removed
+reviews. Compatible complete reference caches can upgrade without enumerating source authors;
+source database identities still invalidate reuse. The registry digest invalidates the result when
+review configuration changes. Conversation-event caches validate original input paths before
+normalizing cache keys, so relative and absolute root spellings reuse the same proof.
+Contact CSV streams each preferred statement once in the displayed order; explicit internal
+source-occurrence inspection can still stream every contributing reference.
 
 Contact and conversation CSV downloads stream the complete selected result as Time, Speaker ID,
 and Statement. They retain literal identifier precision, viewing labels with source identifiers,
