@@ -1,6 +1,6 @@
 """Reviewed packet preferences upgrade retained references without rescanning sources.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import pytest
 
 from app.core import wechat_archive as archive
 from app.core import wechat_contact_analysis as analysis
+from app.core import wechat_mcp_archive as mcp_archive
 from app.core import wechat_statement_reviews as reviews
 from app.core.wechat_contacts import contact_registry_path, initialize_contact_registry
 from app.web.wechat_contact_csv import contact_csv_chunks
@@ -288,6 +289,51 @@ def test_review_upgrade_prefers_native_group_in_table_and_csv_without_rescan(
     assert fixture.preserved == (
         fixture.history.read_bytes(),
         fixture.registry.read_bytes(),
+    )
+
+
+def test_reviewed_statements_keep_all_source_occurrences_readable_through_mcp(
+    retained_review_store,
+):
+    fixture = retained_review_store
+    page = analysis.query_contact_analysis(fixture.store, CONTACT)
+    assert page["status"] == "ready"
+    assert page["total_count"] == 3
+    assert page["observation_count"] == 12
+    exported = iter(
+        analysis.export_contact_analysis_items(
+            fixture.store,
+            CONTACT,
+            source_fingerprint=page["source_fingerprint"],
+        )
+    )
+    csv_text = "".join(contact_csv_chunks(exported, first=next(exported)))
+    csv_rows = list(csv.reader(io.StringIO(csv_text.lstrip("\ufeff"))))
+    assert csv_rows[0] == ["Time", "Statement"]
+    assert len(csv_rows) == 4
+    assert {row[1] for row in csv_rows[1:]} == {
+        item["content_text"] for item in page["items"]
+    }
+    published = (
+        fixture.history.read_bytes(),
+        fixture.registry.read_bytes(),
+        fixture.cache.read_bytes(),
+    )
+    result = mcp_archive.search_messages(
+        fixture.store, contact_id=CONTACT, page_size=20
+    )
+    assert result["ok"] is True
+    assert result["total_count"] == 12
+    assert result["total_pages"] == 1
+    identifiers = [item["id"] for item in result["messages"]]
+    assert len(identifiers) == len(set(identifiers)) == 12
+    assert set(identifiers) == {row[0] for row in fixture.baseline["refs"]}
+    assert set(fixture.group_refs) <= set(identifiers)
+    assert fixture.preserved == published[:2]
+    assert published == (
+        fixture.history.read_bytes(),
+        fixture.registry.read_bytes(),
+        fixture.cache.read_bytes(),
     )
 
 
