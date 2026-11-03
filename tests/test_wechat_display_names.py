@@ -1,6 +1,6 @@
 """Local display aliases require verified identity and never rewrite source evidence.
 
-Code version: v1.5.0-codex.0
+Code version: v1.5.1-codex.0
 """
 
 from __future__ import annotations
@@ -243,6 +243,35 @@ def test_account_alias_requires_exact_owner_key_and_partition(tmp_path, alternat
     names = WechatDisplayNames(tmp_path)
     assert names.account_owner(row) == OWNER
     assert names.account_label(row) == alias + " · " + OWNER[-6:]
+    assert row == original
+    assert path.read_bytes() == before
+
+
+def test_native_owner_partition_compatibility_when_security_md5_is_disabled(
+    tmp_path, monkeypatch
+):
+    alias = "Synthetic Account A"
+    path = _write(tmp_path, {_canonical(OWNER): alias})
+    row = _account()
+    wrong_partition = _account(partition_id=_account(OTHER_OWNER)["partition_id"])
+    wrong_owner = _account(account_id=OTHER_OWNER)
+    original = deepcopy(row)
+    before = path.read_bytes()
+    names = WechatDisplayNames(tmp_path)
+    original_md5 = hashlib.md5
+
+    def restricted_md5(data=b"", *, usedforsecurity=True):
+        if usedforsecurity:
+            raise ValueError("MD5 is disabled for security use.")
+        return original_md5(data, usedforsecurity=False)
+
+    monkeypatch.setattr("app.core.wechat_display_names.hashlib.md5", restricted_md5)
+
+    assert names.account_owner(row) == OWNER
+    assert names.account_label(row) == alias + " · " + OWNER[-6:]
+    assert names.account_owner(wrong_partition) == ""
+    assert names.account_label(wrong_partition) == ""
+    assert names.account_owner(wrong_owner) == ""
     assert row == original
     assert path.read_bytes() == before
 

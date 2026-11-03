@@ -1,6 +1,6 @@
 """Project local viewing names without changing WeChat identity or source evidence.
 
-Code version: v1.6.0-codex.0
+Code version: v1.6.1-codex.0
 """
 
 from __future__ import annotations
@@ -166,8 +166,10 @@ class WechatDisplayNames:
                 if self.account_owner(candidate) == owner:
                     return owner
             return ""
+        # Reproduce the archive's legacy locator; this is not a security digest.
         if (
-            partition != "ios-" + hashlib.md5(owner.encode()).hexdigest()
+            partition
+            != "ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
             or row.get("identity_status") != "Verified archive ID"
         ):
             return ""
