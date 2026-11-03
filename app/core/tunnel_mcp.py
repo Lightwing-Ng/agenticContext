@@ -1,6 +1,6 @@
 """Shared MCP endpoint reached through authenticated provider transports.
 
-Code version: v2.14.0-codex.0
+Code version: v2.15.0-codex.0
 
 ChatGPT and Gemini call the same tool catalog through separate authenticated
 transports. Every project-scoped
@@ -83,6 +83,14 @@ from app.core.token_usage import (
     openai_agentic_token_encoding,
 )
 from app.core.version import APP_VERSION
+from app.core.wechat_contact_analysis import ContactAnalysisSourceChanged
+from app.core.wechat_mcp_archive import (
+    WechatArchiveQueryError,
+    archive_status as wechat_archive_status,
+    find_contacts as wechat_find_contacts,
+    message_context as wechat_message_context,
+    search_messages as wechat_search_messages,
+)
 from app.core.workspace import (
     MAX_FILE_READ_CHARS,
     MAX_WORKSPACE_FILE_BYTES,
@@ -210,6 +218,10 @@ def _integer(description: str, *, minimum: int, maximum: int) -> dict[str, Any]:
 
 def _boolean(description: str) -> dict[str, Any]:
     return {"type": "boolean", "description": description}
+
+
+def _choice(description: str, values: tuple[str, ...]) -> dict[str, Any]:
+    return {"type": "string", "enum": list(values), "description": description}
 
 
 def _object(properties: dict[str, Any], *required: str) -> dict[str, Any]:
@@ -514,15 +526,106 @@ TUNNEL_TOOLS: tuple[TunnelTool, ...] = (
         "still the current files.",
         read_only=True,
     ),
+    TunnelTool(
+        "wechat_archive_status",
+        "",
+        "WeChat archive status",
+        "Read the configured local WeChat archive publication: source-time coverage from "
+        "published conversation summaries, schema version, source partitions, message "
+        "counts, and file update times. Coverage preserves source time bases and states "
+        "its limits. Takes no path; does not scan message bodies or modify the archive.",
+        read_only=True,
+        schema=_object({}),
+        project_scoped=False,
+        project_lock=False,
+    ),
+    TunnelTool(
+        "wechat_find_contacts",
+        "",
+        "Find WeChat contacts",
+        "Find contacts in the configured archive by an exact display name, username, or "
+        "other recorded identifier. match=contains also returns substring name overlaps. "
+        "Each contact_id is a separate identity; do not merge equal names. The result "
+        "includes identity_match, identifier authorities, and bounded evidence. Takes no path.",
+        read_only=True,
+        schema=_object(
+            {
+                "query": _string("Display name, username, or recorded identifier.", maximum=200, minimum=1),
+                "match": _choice("exact matches only, or substring name overlaps.", ("exact", "contains")),
+                "limit": _integer("Maximum contacts to return.", minimum=1, maximum=50),
+            },
+            "query",
+        ),
+        project_scoped=False,
+        project_lock=False,
+    ),
+    TunnelTool(
+        "wechat_search_messages",
+        "",
+        "Search WeChat messages",
+        "Page messages for one verified contact_id or one conversation_id. Optional keyword, "
+        "ISO not_before/not_after bounds, and newest or oldest order. Duplicate imports, "
+        "forwards, and quotes stay separate and keep their source and quality fields. "
+        "A missing or stale contact index is an error, not an empty page. Takes no path.",
+        read_only=True,
+        schema=_object(
+            {
+                "contact_id": _string(
+                    "Canonical wechat:contact:<64 hex> id from wechat_find_contacts.",
+                    maximum=80,
+                    minimum=16,
+                ),
+                "conversation_id": _string("Archive conversation id.", maximum=200, minimum=1),
+                "query": _string("Optional keyword matched within the selected scope.", maximum=200),
+                "not_before": _string("Inclusive ISO timestamp lower bound.", maximum=40, minimum=1),
+                "not_after": _string("Inclusive ISO timestamp upper bound.", maximum=40, minimum=1),
+                "sort": _choice("Page order.", ("newest", "oldest")),
+                "page": _integer("One-based page.", minimum=1, maximum=10_000),
+                "page_size": _integer("Messages per page.", minimum=1, maximum=50),
+            }
+        ),
+        project_scoped=False,
+        project_lock=False,
+    ),
+    TunnelTool(
+        "wechat_get_message_context",
+        "",
+        "WeChat message context",
+        "Return one archive message id plus the neighboring messages in that conversation. "
+        "before and after are each limited to 20. Use parent_message_id from a search result "
+        "when a reference id is not itself an archive message id. Takes no path.",
+        read_only=True,
+        schema=_object(
+            {
+                "message_id": _string("64-character archive message id.", maximum=64, minimum=64),
+                "before": _integer("Earlier messages to include.", minimum=0, maximum=20),
+                "after": _integer("Later messages to include.", minimum=0, maximum=20),
+            },
+            "message_id",
+        ),
+        project_scoped=False,
+        project_lock=False,
+    ),
 )
 TUNNEL_TOOLS_BY_NAME = {tool.name: tool for tool in TUNNEL_TOOLS}
 
+WECHAT_TOOL_NAMES = frozenset(
+    tool.name for tool in TUNNEL_TOOLS if tool.name.startswith("wechat_")
+)
+WECHAT_ARCHIVE_INSTRUCTIONS = (
+    "WeChat archive tools read only the configured local archive and accept no filesystem "
+    "path. Call wechat_find_contacts before reading messages. The same display name can "
+    "match several contact ids; do not merge them. Page a verified contact with "
+    "wechat_search_messages, then use wechat_get_message_context for the surrounding "
+    "conversation. Preserve source, time-basis, and quality fields. These tools are read-only."
+)
+
 
 SERVER_INSTRUCTIONS = (
-    "These tools work directly in explicitly registered local projects on the user's "
-    "computer. If the user did not name a project id, call current_project first to get "
+    "The coding tools work directly in explicitly registered local projects on the user's "
+    "computer. For coding tasks, if the user did not name a project id, call current_project first to get "
     "the project selected on the local AgenticContext page, then call project_overview "
-    "for that id and follow the instruction files it lists. Every other tool names its "
+    "for that id and follow the instruction files it lists. Every other coding tool names its "
     "project and requires its identity; keep both fixed for the whole task. Paths are "
     "relative to that project's "
     "root, and read-only projects (such as reference repositories) cannot be changed. "
@@ -1075,8 +1178,12 @@ class TunnelMcpService:
         registry: ProjectRegistry | None = None,
         selection_store: ProjectSelectionStore | None = None,
         runtime_root: Path | None = None,
+        local_store_root: Path | None = None,
     ) -> None:
         self._settings_provider = settings_provider
+        self._local_store_root = (
+            None if local_store_root is None else Path(local_store_root).expanduser()
+        )
         self._registry = registry or ProjectRegistry()
         if selection_store is None:
             selection_store = ProjectSelectionStore(
@@ -1497,7 +1604,7 @@ class TunnelMcpService:
                 ),
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": _server_info(),
-                "instructions": SERVER_INSTRUCTIONS,
+                "instructions": self._server_instructions(provider),
             }
         if method == "server/discover":
             return {
@@ -1508,12 +1615,15 @@ class TunnelMcpService:
                     *MCP_LEGACY_PROTOCOL_VERSIONS,
                 ],
                 "capabilities": {"tools": {"listChanged": False}},
-                "instructions": SERVER_INSTRUCTIONS,
+                "instructions": self._server_instructions(provider),
             }
         if method == "ping":
             return {}
         if method == "tools/list":
-            result: dict[str, Any] = {"tools": tunnel_tool_definitions()}
+            definitions = tunnel_tool_definitions()
+            if provider != "chatgpt":
+                definitions = [tool for tool in definitions if tool["name"] not in WECHAT_TOOL_NAMES]
+            result: dict[str, Any] = {"tools": definitions}
             if stateless:
                 result.update({"ttlMs": 0, "cacheScope": "private"})
             return result
@@ -1528,6 +1638,11 @@ class TunnelMcpService:
         raise McpRequestError(-32601, f"Method not found: {method}")
 
     # Tools --------------------------------------------------------------
+
+    def _server_instructions(self, provider: str) -> str:
+        if provider == "chatgpt":
+            return f"{SERVER_INSTRUCTIONS} {WECHAT_ARCHIVE_INSTRUCTIONS}"
+        return SERVER_INSTRUCTIONS
 
     def _call_tool(
         self,
@@ -1553,7 +1668,7 @@ class TunnelMcpService:
             }
 
         tool = TUNNEL_TOOLS_BY_NAME.get(name)
-        if tool is None:
+        if tool is None or (name in WECHAT_TOOL_NAMES and provider != "chatgpt"):
             raise McpRequestError(-32602, f"Unknown tool: {name or '[missing]'}")
 
         started = time.monotonic()
@@ -2030,6 +2145,31 @@ class TunnelMcpService:
 
     def _tool_current_project(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         return self.current_project_record()
+
+    def _wechat(self, function, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._local_store_root is None:
+            raise ToolFailure(
+                "archive_unavailable",
+                "WeChat archive reading is not configured on this Tunnel.",
+            )
+        try:
+            return function(self._local_store_root, **arguments)
+        except WechatArchiveQueryError as exc:
+            raise ToolFailure(exc.code, exc.message, **exc.detail) from exc
+        except ContactAnalysisSourceChanged as exc:
+            raise ToolFailure("source_changed", str(exc)) from exc
+
+    def _tool_wechat_archive_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self._wechat(wechat_archive_status, arguments)
+
+    def _tool_wechat_find_contacts(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self._wechat(wechat_find_contacts, arguments)
+
+    def _tool_wechat_search_messages(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self._wechat(wechat_search_messages, arguments)
+
+    def _tool_wechat_get_message_context(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self._wechat(wechat_message_context, arguments)
 
     def _tool_project_overview(self, project: TunnelProject, _arguments: dict[str, Any]) -> dict[str, Any]:
         listing = self._execute_action(project, "list", {"path": ".", "depth": 1})

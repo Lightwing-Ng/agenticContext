@@ -1,9 +1,10 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.3.0-codex.0
+# Code version: v1.5.0-codex.0
 
 from __future__ import annotations
 
+from contextlib import closing
 import gzip
 import hashlib
 import json
@@ -23,6 +24,16 @@ WECHAT_KINDS = ("all", "direct", "group", "unclassified")
 _DISPLAY_ZONE = timezone(timedelta(hours=8))
 _RESOURCE_CACHE_LOCK = RLock()
 _RESOURCE_CACHE = {}
+
+
+class WechatTimelineProjectionError(ValueError):
+    """Refuse a strict timeline whose retained metadata cannot be projected."""
+
+    def __init__(self, status: str) -> None:
+        super().__init__("The scoped WeChat timeline is incomplete.")
+        self.status = status
+
+
 _SCHEMA = """
 CREATE TABLE partitions (
  id TEXT PRIMARY KEY, account_key TEXT NOT NULL, account_id TEXT,
@@ -491,7 +502,7 @@ class WechatArchiveRepository:
         self.path = wechat_archive_path(local_store_root)
 
     @staticmethod
-    def _validate_resource_conversations(connection):
+    def _validate_resource_conversations(connection, *, conversation_id=None):
         """Check source boundaries and cache corrected statistics, never main content."""
         columns = (
             "id",
@@ -521,17 +532,24 @@ class WechatArchiveRepository:
                 and row["account_key"] == "account:" + owner
             ):
                 native[row["id"]] = row["account_key"]
+        scope = " WHERE id=?" if conversation_id is not None else ""
+        parameters = (conversation_id,) if conversation_id is not None else ()
         original = {
             row["id"]: dict(row)
-            for row in connection.execute("SELECT * FROM main.conversations")
+            for row in connection.execute("SELECT * FROM main.conversations" + scope, parameters)
         }
         resources = {
             row["id"]: dict(row)
-            for row in connection.execute("SELECT * FROM resource_index.conversations")
+            for row in connection.execute(
+                "SELECT * FROM resource_index.conversations" + scope, parameters
+            )
         }
         counts = dict(
             connection.execute(
-                "SELECT conversation_id,COUNT(*) FROM resource_index.messages GROUP BY conversation_id"
+                "SELECT conversation_id,COUNT(*) FROM resource_index.messages"
+                + (" WHERE conversation_id=?" if conversation_id is not None else "")
+                + " GROUP BY conversation_id",
+                parameters,
             )
         )
         if set(counts) - set(resources):
@@ -599,7 +617,10 @@ class WechatArchiveRepository:
                 "json_type(m.provenance,'$.resource_reference') IS NOT 'object' OR "
                 "json_extract(m.provenance,'$.resource_reference.account_id') IS NOT p.account_id OR "
                 "json_extract(m.provenance,'$.resource_reference.peer_id') IS NOT c.peer_id "
-                "ELSE 1 END LIMIT 1"
+                "ELSE 1 END"
+                + (" AND m.conversation_id=?" if conversation_id is not None else "")
+                + " LIMIT 1",
+                parameters,
             ).fetchone()
             is not None
         ):
@@ -613,8 +634,17 @@ class WechatArchiveRepository:
         has_duplicates = (
             connection.execute(
                 "SELECT 1 FROM resource_index.messages r "
-                "INDEXED BY sqlite_autoindex_messages_1 CROSS JOIN main.messages m "
-                "WHERE m.id=r.id LIMIT 1"
+                "INDEXED BY "
+                + (
+                    "message_conversation_time"
+                    if conversation_id is not None
+                    else "sqlite_autoindex_messages_1"
+                )
+                + " CROSS JOIN main.messages m "
+                "WHERE m.id=r.id"
+                + (" AND r.conversation_id=?" if conversation_id is not None else "")
+                + " LIMIT 1",
+                parameters,
             ).fetchone()
             is not None
         )
@@ -622,7 +652,10 @@ class WechatArchiveRepository:
             dict(
                 connection.execute(
                     "SELECT r.conversation_id,COUNT(*) FROM resource_index.messages r "
-                    "JOIN main.messages m ON m.id=r.id GROUP BY r.conversation_id"
+                    "JOIN main.messages m ON m.id=r.id"
+                    + (" WHERE r.conversation_id=?" if conversation_id is not None else "")
+                    + " GROUP BY r.conversation_id",
+                    parameters,
                 )
             )
             if has_duplicates
@@ -653,7 +686,70 @@ class WechatArchiveRepository:
             tuple(row[column] for column in columns) for row in resources.values()
         )
 
-    def _timeline_tables(self, connection, history_identity):
+    def _timeline_conversation_id(self, connection, message_id):
+        """Locate a candidate scope; strict timeline validation still precedes its use."""
+        if not isinstance(message_id, str) or re.fullmatch(r"[0-9a-f]{64}", message_id) is None:
+            raise ValueError("A timeline message ID must be a canonical archive identifier.")
+        row = connection.execute(
+            "SELECT conversation_id FROM main.messages WHERE id=?", (message_id,)
+        ).fetchone()
+        if row is not None:
+            return row[0]
+        resource_path = self.path.with_name("resource_references.sqlite3")
+        if resource_path.exists() or resource_path.is_symlink():
+            if (
+                resource_path.is_symlink()
+                or not resource_path.is_file()
+                or resource_path.resolve().parent != self.path.resolve().parent
+            ):
+                raise WechatTimelineProjectionError("invalid")
+            if not getattr(resource_path.stat(), "st_flags", 0) & 0x40000000:
+                identity = _file_identity(resource_path)
+                with closing(
+                    sqlite3.connect(
+                        resource_path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
+                    )
+                ) as resource:
+                    ordinary = resource.execute(
+                        "SELECT type,sql FROM sqlite_master WHERE name='messages'"
+                    ).fetchone()
+                    if ordinary is None or ordinary[0] != "table" or "VIRTUAL" in str(ordinary[1]).upper():
+                        raise WechatTimelineProjectionError("invalid")
+                    row = resource.execute(
+                        "SELECT conversation_id FROM messages WHERE id=?", (message_id,)
+                    ).fetchone()
+                if _file_identity(resource_path) != identity:
+                    raise WechatTimelineProjectionError("stale")
+                if row is not None:
+                    return row[0]
+        from .wechat_media_placeholders import media_placeholder_conversation
+
+        try:
+            return media_placeholder_conversation(self.path, message_id)
+        except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
+            raise WechatTimelineProjectionError("invalid") from exc
+
+    def _timeline_tables(
+        self, connection, history_identity, *, conversation_id=None, strict=False
+    ):
+        """Share source-bound metadata placeholders across browsing and export."""
+        from .wechat_media_placeholders import attach_media_placeholders
+
+        conversations, messages, status = self._resource_timeline_tables(
+            connection, history_identity, conversation_id=conversation_id
+        )
+        conversations, messages, placeholder_status = attach_media_placeholders(
+            connection,
+            self.path,
+            conversations,
+            messages,
+            conversation_id=conversation_id,
+        )
+        if strict and placeholder_status not in {"ready", "absent"}:
+            raise WechatTimelineProjectionError(placeholder_status)
+        return conversations, messages, status
+
+    def _resource_timeline_tables(self, connection, history_identity, *, conversation_id=None):
         """Attach an optional pinned index and expose one chronological query surface."""
         resource_path = self.path.with_name("resource_references.sqlite3")
         if not resource_path.exists():
@@ -730,10 +826,17 @@ class WechatArchiveRepository:
                 tuple(history_identity.items()),
                 str(resource_path.resolve()),
                 tuple(resource_identity.items()),
+                conversation_id,
             )
             with _RESOURCE_CACHE_LOCK:
                 if key not in _RESOURCE_CACHE:
-                    corrected = self._validate_resource_conversations(connection)
+                    corrected = (
+                        self._validate_resource_conversations(connection)
+                        if conversation_id is None
+                        else self._validate_resource_conversations(
+                            connection, conversation_id=conversation_id
+                        )
+                    )
                     if len(_RESOURCE_CACHE) >= 4:
                         _RESOURCE_CACHE.pop(next(iter(_RESOURCE_CACHE)))
                     _RESOURCE_CACHE[key] = corrected
@@ -751,9 +854,21 @@ class WechatArchiveRepository:
                 "INSERT INTO resource_conversations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 corrected,
             )
+            resource_scope = ""
+            if conversation_id is not None:
+                if not isinstance(conversation_id, str) or not conversation_id:
+                    raise ValueError("A scoped resource timeline needs a conversation ID.")
+                # A TEMP scope table keeps the view's identity value parameterized.
+                connection.execute("CREATE TEMP TABLE resource_timeline_scope(id TEXT PRIMARY KEY)")
+                connection.execute(
+                    "INSERT INTO resource_timeline_scope VALUES(?)", (conversation_id,)
+                )
+                resource_scope = "r.conversation_id=(SELECT id FROM temp.resource_timeline_scope) AND "
             connection.execute(
                 "CREATE TEMP VIEW timeline_messages AS SELECT * FROM main.messages UNION ALL "
-                "SELECT r.* FROM resource_index.messages r WHERE NOT EXISTS("
+                "SELECT r.* FROM resource_index.messages r WHERE "
+                + resource_scope
+                + "NOT EXISTS("
                 "SELECT 1 FROM main.messages m WHERE m.id=r.id)"
             )
             resource_first = (

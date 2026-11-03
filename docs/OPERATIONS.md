@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.43.3-codex.0`
+Documentation version: `v1.44.0-codex.0`
 
 ## Launch
 
@@ -540,6 +540,33 @@ Runtime behavior:
   validated against published closed schemas, so unknown fields fail. Removed compatibility names
   such as `read_file`, `replace_in_file`, `create_file`, `call_runtime_tool`, `list_projects`,
   `git_log`, and `git_diff_hunks` are not dispatchable.
+- ChatGPT additionally discovers four read-only WeChat archive tools:
+  `wechat_archive_status`, `wechat_find_contacts`, `wechat_search_messages`, and
+  `wechat_get_message_context`. They read only the configured
+  `local_store/messaging/wechat` archive and accept no filesystem path. Gemini retains
+  the project-tool catalog. Generic file and write tools still reject `local_store`.
+  A serving-process restart loads changed Python code; reconnecting the Tunnel alone
+  does not. Refresh an older ChatGPT catalog at Settings → Apps → AgenticContext →
+  Refresh/Scan Tools. The archive interface reports `v1.1.0-codex.0`.
+  Coverage comes from published history conversation summaries and indexed endpoint
+  metadata, preserving source timestamps, time bases, and endpoint quality flags.
+  Undated conversations remain explicit; optional resource/media overlays are excluded
+  from those coverage counts. Unknown-time message and anomaly totals are not invented.
+  Persistent database connections remain URI read-only. Controlled timeline projections
+  use connection-local memory tables before `query_only` is enabled. Context locates the
+  target conversation before validation and uses indexed chronological neighbors with a
+  stable message-ID tie break and a separate unknown-time tail. SQL connections have a
+  ten-second execution budget: interrupted work returns `query_timeout`, and incomplete
+  source proofs return `index_incomplete`, never an empty success.
+  Sender resolution retains each reference's own ID and original untruncated proof.
+  Embedded HTML authors require existing source/member/avatar evidence; hints alone stay
+  unresolved. Contact IDs identify platform accounts, not assumed real-world people.
+  Missing or stale contact indexes are explicit errors; these tools never build indexes.
+  Reference indexes are version-bound to the installed contact-analysis stack. After an
+  upgrade, open the affected contact in Local resources to publish its derived index if
+  necessary. The MCP tools do not accept an unknown index version, rebuild a cache, or
+  migrate original archives. Never relabel a cache from a different stack or bypass
+  the publication fingerprint checks.
 - Batch reads distinguish `all_succeeded`, `partial`, and `all_failed`; a top-level success never
   hides an item failure. Their combined model-facing file content is bounded, and a single long
   line can be continued with the returned `next_start_line` and `next_start_character`. Every
