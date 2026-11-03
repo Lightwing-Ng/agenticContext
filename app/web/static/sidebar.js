@@ -1,4 +1,4 @@
-/* Code version: v1.30.0-codex.0 */
+/* Code version: v1.31.0-codex.0 */
 
 (function initializeSidebar() {
     "use strict";
@@ -413,6 +413,7 @@
 
     window.addEventListener("hashchange", rememberCurrentDockLocation);
     window.addEventListener("popstate", rememberCurrentDockLocation);
+    window.addEventListener("pagehide", rememberCurrentDockLocation);
 
     sidebarToggle.addEventListener("click", () => {
         applySidebarStateWithMotion(!isSidebarOpen, { animate: true });

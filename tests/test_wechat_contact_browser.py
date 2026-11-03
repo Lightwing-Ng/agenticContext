@@ -1,6 +1,6 @@
 """Contact references preserve source names, account scopes, and exact snapshot context.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from app.core.wechat_contacts import (
     initialize_contact_registry,
 )
 from tests.test_wechat_archive import make_archive
+from tests.test_wechat_contacts import _make_forwarded_html_store
 
 
 @pytest.fixture
@@ -32,6 +33,44 @@ def contact_store(tmp_path):
     store = tmp_path / "store"
     import_wechat_archive(archive, store)
     return store
+
+
+def test_html_forwarded_contacts_are_projected_without_changing_provenance_or_content(
+    tmp_path,
+):
+    store = tmp_path / "store"
+    contacts = contact_registry_path(store)
+    contacts.parent.mkdir(parents=True)
+    with sqlite3.connect(contacts) as connection:
+        initialize_contact_registry(connection)
+    fixture = _make_forwarded_html_store(store)
+    history_before = fixture["history"].read_bytes()
+    contacts_before = contacts.read_bytes()
+    request = fixture["request"]
+    page = query_chat_history(
+        store,
+        source="wechat",
+        session=request["conversation_id"],
+        account="account:wxid_owner_a",
+    )
+    message = page.items[0]
+    projected = message.messaging["forwarded_components"][0]
+    original = message.messaging["provenance"]["forwarded_components"][0]
+    assert projected["contact"]["id"] == canonical_contact_id(
+        "wxid_forwarded", authority="native_message_sender"
+    )
+    assert projected["contact"]["registry_persisted"] is False
+    assert "contact" not in original
+    assert {
+        key: value for key, value in projected.items() if key != "contact"
+    } == original
+    assert projected["raw_timestamp"] == "2021-08-08 12:34:56"
+    assert (
+        projected["text_completion_parent_context"]["immediate_parent_known"] is False
+    )
+    assert message.content_text.endswith("Original child text")
+    assert fixture["history"].read_bytes() == history_before
+    assert contacts.read_bytes() == contacts_before
 
 
 def _session(store, account="account:wxid_account_a"):

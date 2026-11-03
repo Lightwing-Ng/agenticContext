@@ -1,0 +1,185 @@
+/* Code version: v1.5.0-codex.0 */
+/* Contact statements adapt the shared shell, metrics, and scrollable table. */
+.wechat-contact-workspace .browser-heading-copy {
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 8px;
+}
+
+.wechat-contact-content {
+    gap: 12px;
+}
+
+.wechat-contact-content .browser-pagination:not(.is-animated) .local-store-page-button.is-active {
+    background: var(--local-store-pagination-indicator-background);
+    box-shadow: var(--local-store-pagination-indicator-shadow);
+}
+
+.wechat-contact-content .browser-pagination .wechat-contact-page-long {
+    font-size: var(--font-ui-xs);
+}
+
+.wechat-contact-toolbar {
+    flex-wrap: wrap;
+}
+
+.wechat-contact-search {
+    flex: 1 1 240px;
+    min-width: 0;
+    margin: 0 0 0 auto;
+}
+
+.wechat-contact-search .browser-search-control {
+    width: 100%;
+}
+
+.wechat-contact-scope-name,
+.wechat-contact-username,
+.wechat-contact-account-label,
+.wechat-contact-cell-note {
+    display: block;
+    overflow-wrap: anywhere;
+}
+
+.wechat-contact-scope-name {
+    font-weight: 500;
+}
+
+.wechat-contact-username,
+.wechat-contact-cell-note,
+.wechat-contact-source-note {
+    color: var(--theme-muted);
+    font-size: 0.85em;
+}
+
+.wechat-contact-source-note {
+    margin: 0;
+}
+
+.wechat-contact-content > .browser-text-metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 0;
+}
+
+.wechat-contact-table-shell {
+    flex: 1 1 auto;
+    min-height: 0;
+    --scrollable-data-table-min-width: 100%;
+}
+
+.wechat-contact-table-scroll {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+}
+
+.wechat-contact-table {
+    --wechat-contact-number-width: 10%;
+    --wechat-contact-time-width: 20%;
+    --wechat-contact-statement-width: 40%;
+    --wechat-contact-conversation-width: 15%;
+    --wechat-contact-account-width: 15%;
+    width: 100%;
+    min-width: 100%;
+    table-layout: fixed;
+}
+
+.wechat-contact-table[data-table-header] {
+    /* The shared controller measures the body after any scrollbar gutter. */
+    min-width: 0;
+}
+
+.wechat-contact-col-number,
+.wechat-contact-table > tbody > tr > td:nth-child(1) {
+    width: var(--wechat-contact-number-width);
+}
+
+.wechat-contact-col-time,
+.wechat-contact-table > tbody > tr > td:nth-child(2) {
+    width: var(--wechat-contact-time-width);
+}
+
+.wechat-contact-col-statement,
+.wechat-contact-table > tbody > tr > td:nth-child(3) {
+    width: var(--wechat-contact-statement-width);
+}
+
+.wechat-contact-col-conversation,
+.wechat-contact-table > tbody > tr > td:nth-child(4) {
+    width: var(--wechat-contact-conversation-width);
+}
+
+.wechat-contact-col-account,
+.wechat-contact-table > tbody > tr > td:nth-child(5) {
+    width: var(--wechat-contact-account-width);
+}
+
+.wechat-contact-table > thead > tr > th:first-child,
+.wechat-contact-table > tbody > tr > td:first-child {
+    text-align: center;
+}
+
+.wechat-contact-table td {
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.wechat-contact-statement {
+    white-space: pre-wrap;
+}
+
+.wechat-contact-statement-entry {
+    position: relative;
+}
+
+.wechat-contact-table .wechat-contact-statement-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.wechat-contact-statement-entry.has-sources > .wechat-contact-statement-link {
+    padding-inline-end: 20px;
+}
+
+.wechat-contact-table .wechat-contact-statement-link:hover,
+.wechat-contact-table .wechat-contact-statement-link:focus-visible {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.wechat-contact-table .wechat-contact-statement-link:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+    border-radius: var(--radius-soft);
+}
+
+.wechat-contact-table .wechat-contact-sources > summary {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-end: 0;
+    grid-template-columns: 0 var(--collapse-icon-size);
+    column-gap: 0;
+    justify-content: center;
+    inline-size: 20px;
+    min-block-size: 20px;
+    padding: 0;
+    font: inherit;
+}
+
+.wechat-contact-table .wechat-contact-sources > .ui-collapse-body {
+    display: grid;
+    gap: 8px;
+    padding: 8px 0 0;
+}
+
+.wechat-contact-table .wechat-kind-badge {
+    max-inline-size: 100%;
+    white-space: normal;
+}
+
+.wechat-contact-status {
+    flex: 1 1 auto;
+}

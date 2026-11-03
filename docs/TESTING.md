@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.30.0-codex.0`
+Documentation version: `v1.31.0-codex.0`
 
 ## Supported commands
 
@@ -104,6 +104,35 @@ and preservation of existing message evidence during additive publication. Real 
 when `compression.zstd` is available; Python 3.13 still exercises the explicit unavailable-backend
 contract. These checks do not read production backups, cloud exports, media, or the local index,
 and passing them does not establish complete recovery of a particular backup.
+
+Contact analysis, reference grouping, source navigation, and CSV checks use synthetic archives:
+
+```bash
+./scripts/test.sh tests/test_wechat_contact_analysis.py tests/test_wechat_contact_analysis_routes.py \
+  tests/test_wechat_contact_statement_groups.py tests/test_wechat_contact_csv.py \
+  tests/test_wechat_session_csv.py tests/test_wechat_native_html_precedence.py \
+  tests/test_wechat_forwarded_original_precedence.py
+```
+
+They verify exact author and account scope, distinct-event multiplicity, preferred native
+observations, complete source retention, literal server-ID precision, clock conflicts, bounded
+reference indices, stale-source rejection, idempotency, and unchanged primary database bytes.
+CSV checks cover all pages, chronological ordering, supported source-clock formatting, literal
+speaker IDs, streaming, Unicode, and CSV quoting.
+
+The related browser checks exercise disposable profiles and synthetic sidecars only:
+
+```bash
+./scripts/test.sh tests/test_wechat_contact_analysis_e2e.py \
+  tests/test_wechat_contact_loading_e2e.py tests/test_wechat_contact_sidebar_e2e.py \
+  tests/test_wechat_contact_statement_navigation_e2e.py tests/test_wechat_contact_disclosure_e2e.py \
+  tests/test_wechat_disclosure_e2e.py
+```
+
+Desktop/narrow Light/Dark cases cover contact and source links, asynchronous loading,
+same-tab navigation, Browser Back, pagination, actual spring overshoot, stable table columns,
+keyboard activation, rapid reversal, Reduced Motion, and cleanup after content replacement.
+These checks do not use real chat databases, backups, cloud payloads, or authenticated profiles.
 
 Run the isolated local-compute benchmark:
 

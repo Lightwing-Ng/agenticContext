@@ -1,14 +1,16 @@
-{# Code version: v1.4.0-codex.0 #}
-{% set kind_names = {'direct': 'Private chat', 'group': 'Group chat', 'unclassified': 'Unclassified chat'} %}
+{# Code version: v1.18.0-codex.0 #}
+{% from "_wechat_conversation_kind.html" import conversation_kind_label, conversation_kind_badge %}
 {% macro forwarded_conversation(record, key) %}
+{% set source_title = record.source_title|default(record.title if record.title not in ['Forwarded conversation', 'Chat history'] else '') %}
+{% if source_title %}<div class="wechat-message-text wechat-history-source-text" lang="zh-CN">{{ source_title }}</div>{% endif %}
 <details class="ui-collapse wechat-forwarded" data-wechat-forwarded{% if record.authority %} data-wechat-forwarded-authority="{{ record.authority }}"{% endif %}>
-    <summary>{{ record.title or 'Forwarded conversation' }}</summary>
-    <div class="ui-collapse-body wechat-forwarded-glass" id="wechat_forwarded_{{ key }}" data-chat-physical-surface>
-        <div class="wechat-forwarded-transcript" data-wechat-transcript aria-label="Forwarded conversation messages">
+    <summary>Chat history</summary>
+    <div class="ui-collapse-body wechat-forwarded-body" id="wechat_forwarded_{{ key }}">
+        <div class="wechat-forwarded-transcript" data-wechat-transcript aria-label="Chat history messages">
             {% for child in record['items'] %}
             {{ message_row(child, true, key ~ '_forwarded_' ~ loop.index) }}
             {% else %}
-            <p class="wechat-forwarded-unavailable">Original forwarded content is unavailable.</p>
+            <p class="wechat-forwarded-unavailable">Original chat history is unavailable.</p>
             {% endfor %}
         </div>
     </div>
@@ -17,12 +19,36 @@
 {% macro message_row(message, embedded=false, dom_key='') %}
 {% set context = message.messaging %}
 {% set key = dom_key or message.stable_id %}
+{% set display_text = context.display_text if context.display_text is defined else message.content_text %}
+{% if context.is_system_notice %}
+{% set has_system_time = context.timestamp_label and message.last_seen_at %}
+<div class="wechat-system-message-row" id="wechat_message_{{ key }}"{% if not embedded %} data-chat-message-id="{{ message.stable_id }}" data-wechat-source-message-id="{{ message.stable_id }}"{% endif %} role="note" aria-label="System message"{% if has_system_time %} aria-describedby="wechat_time_{{ key }}"{% else %} title="{{ context.time_basis or 'Source timestamp unavailable' }}"{% endif %}>
+    {% if has_system_time %}<time class="wechat-message-time" id="wechat_time_{{ key }}" datetime="{{ message.last_seen_at }}" title="{{ context.time_basis }}">{{ context.timestamp_label }}</time>{% endif %}
+    <p class="wechat-system-notice" lang="zh-CN">{{ display_text }}</p>
+</div>
+{% elif display_text or context.resource or context.forwarded_record or context.quoted_reply %}
 <div class="wechat-message-row"{% if embedded %} data-wechat-embedded-row{% endif %}>
-<article class="browser-chat-message wechat-message wechat-message--{{ context.direction }}" id="wechat_message_{{ key }}"{% if not embedded %} data-chat-message-id="{{ message.stable_id }}"{% endif %} data-wechat-direction="{{ context.direction }}" aria-labelledby="wechat_sender_{{ key }}"{% if context.timestamp_label %} aria-describedby="wechat_time_{{ key }}"{% endif %}>
+<article class="browser-chat-message wechat-message wechat-message--{{ context.direction }}" id="wechat_message_{{ key }}"{% if not embedded %} data-chat-message-id="{{ message.stable_id }}"{% endif %} data-wechat-direction="{{ context.direction }}" data-wechat-show-sender="{{ 'false' if context.show_sender_name is defined and not context.show_sender_name else 'true' }}" aria-labelledby="wechat_sender_{{ key }}"{% if context.timestamp_label %} aria-describedby="wechat_time_{{ key }}"{% endif %}>
+    {% for observation in context.source_observations|default([]) if observation.id != message.stable_id %}
+    <span hidden id="wechat_message_{{ observation.id }}" data-wechat-source-alias aria-hidden="true"></span>
+    {% endfor %}
+    {% if context.quoted_reply %}
+    {% if context.quoted_reply.forwarded_record %}
+    {{ forwarded_conversation(context.quoted_reply.forwarded_record, key ~ '_quote') }}
+    {% else %}
+    <blockquote class="wechat-message-quote" aria-label="Quoted message">
+        <p class="wechat-quoted-speaker">{{ context.quoted_reply.speaker }}</p>
+        <p class="wechat-quoted-text" lang="zh-CN">{{ context.quoted_reply.text }}</p>
+    </blockquote>
+    {% endif %}
+    <hr class="wechat-quote-separator" aria-hidden="true">
+    {% endif %}
     <details class="ui-collapse wechat-provenance">
         <summary aria-label="Source details">
             <span class="browser-chat-message-header wechat-message-header">
-                <span class="wechat-speaker" id="wechat_sender_{{ key }}">{{ context.viewer_display_name or message.author_label }}</span>
+                {% set contact_url = wechat_contact_analysis_url(context.contact, key) if wechat_contact_analysis_url is defined else '' %}
+                {% set speaker_tag = 'a' if contact_url else 'span' %}
+                <{{ speaker_tag }} class="wechat-speaker{% if contact_url %} wechat-contact-link{% endif %}" id="wechat_sender_{{ key }}"{% if contact_url %} href="{{ contact_url }}" data-wechat-contact-link title="Analyze contact"{% endif %}>{{ context.viewer_display_name or message.author_label }}</{{ speaker_tag }}>
                 {% if context.timestamp_label %}<time id="wechat_time_{{ key }}" datetime="{{ message.last_seen_at }}" title="{{ context.time_basis }}">{{ context.timestamp_label }}</time>{% endif %}
             </span>
         </summary>
@@ -32,6 +58,9 @@
                 <dt>Source account</dt><dd>{{ context.account_id or 'Unconfirmed; this source stays separate' }}</dd>
                 {% if context.viewer_display_name %}<dt>Source display name</dt><dd>{{ message.author_label }}</dd>{% endif %}
                 <dt>Archive</dt><dd>{{ context.source_file }}</dd>
+                {% if context.source_observations %}
+                <dt>Source observations</dt><dd>{% for observation in context.source_observations %}<div>{{ observation.source_label }} · {{ observation.source_snapshot_id }}<br>{{ observation.id }}</div>{% endfor %}</dd>
+                {% endif %}
                 <dt>Conversation ID</dt><dd>{{ context.peer_id or 'Unavailable in source' }}</dd>
                 <dt>{{ 'Original export identifier' if context.sender_identifier_namespace == 'unverified_export_field' else 'Sender ID' }}</dt><dd>{{ context.sender_id or 'Unavailable in source' }}</dd>
                 {% if context.contact %}
@@ -39,7 +68,10 @@
                 <dt>Contact identity</dt><dd>{{ context.contact.identity_status|replace('_', ' ') }}</dd>
                 {% endif %}
                 <dt>Time basis</dt><dd>{{ context.time_basis }}</dd>
-                <dt>Record</dt><dd>{{ context.provenance.locator|default({})|tojson }}</dd>
+                {% if context.text_observation %}<dt>Additional evidence</dt><dd>{{ context.text_observation.label }}</dd>{% endif %}
+                {% if context.context_evidence %}<dt>Additional evidence</dt><dd>Compatible retained native text observation.</dd>{% endif %}
+                {% if context.context_link_proof %}<dt>Additional text source</dt><dd>Completed from a retained text record in the same original export.</dd>{% endif %}
+                <dt>Record</dt><dd>{{ context.provenance.locator|default({})|pprint }}</dd>
                 {% if context.provenance.server_id %}<dt>Message ID</dt><dd>{{ context.provenance.server_id }}</dd>{% endif %}
                 {% if context.provenance.source_time %}<dt>Source clock</dt><dd>{{ context.provenance.source_time }}</dd>{% endif %}
                 {% if context.quality_flags %}<dt>Source limitations</dt><dd>{% for flag in context.quality_flags %}{{ flag|replace('_', ' ') }}{% if not loop.last %}; {% endif %}{% endfor %}</dd>{% endif %}
@@ -48,32 +80,48 @@
     </details>
     {% if context.forwarded_record %}
     {{ forwarded_conversation(context.forwarded_record, key) }}
+    {% elif context.resource %}
+    {% set resource = context.resource %}
+    {% set resource_can_reveal = resource.can_reveal and not embedded %}
+    {% set resource_tag = 'button' if resource_can_reveal else 'div' %}
+    <{{ resource_tag }} class="wechat-resource" data-wechat-resource-kind="{{ resource.kind }}" data-wechat-resource-status="{{ resource.status }}" {% if resource_can_reveal %}type="button" data-wechat-resource-reveal="{{ url_for('local_resources.reveal_wechat_resource', message_id=message.stable_id) }}" title="{{ resource.action_label }}" aria-label="{{ resource.label }}: {{ resource.action_label }}"{% endif %}>
+        <span class="wechat-resource-icon" aria-hidden="true"></span>
+        <span class="wechat-resource-copy"><span class="wechat-resource-label">{{ resource.label }}</span><span class="wechat-resource-status" data-wechat-resource-feedback aria-live="polite">{{ resource.status_label }}</span></span>
+        {% if resource_can_reveal %}<span class="browser-media-reveal-icon" aria-hidden="true"></span>{% endif %}
+    </{{ resource_tag }}>
     {% else %}
-    <div class="wechat-message-text" lang="zh-CN">{{ context.display_text if context.display_text is defined else message.content_text }}</div>
+    <div class="wechat-message-text" lang="zh-CN">{{ display_text }}</div>
     {% endif %}
 </article>
 </div>
+{% endif %}
+{% for notice in context.system_notices %}
+<p class="wechat-system-notice" id="{{ 'wechat_notice_' ~ key ~ '_' ~ loop.index if display_text or not loop.first else 'wechat_message_' ~ key }}"{% if not embedded %} data-wechat-source-message-id="{{ message.stable_id }}"{% endif %} data-wechat-source-start="{{ notice.source_start }}" data-wechat-source-end="{{ notice.source_end }}" role="note" aria-label="System message" lang="zh-CN">{{ notice.text }}</p>
+{% endfor %}
 {% endmacro %}
-<section class="wechat-resources" aria-label="WeChat text archive" data-wechat-resources>
+<section class="wechat-resources" aria-label="WeChat text archive" data-wechat-resources{% if text_page.messaging is defined and text_page.messaging and text_page.messaging.event_projection is defined and text_page.messaging.event_projection.count_delta|default(0) %} data-wechat-event-projection="true"{% endif %}>
+    {% if text_page.messaging and text_page.messaging.resource_index_status in ['stale', 'invalid'] %}
+    <p class="wechat-source-note" role="status">Media and file references need refreshing after the archive changed.</p>
+    {% endif %}
     {% if text_page.session_detail %}
     {% set origin = text_page.current_session.messaging %}
     <header class="wechat-conversation-context" data-wechat-conversation-kind="{{ origin.kind }}">
-        <div class="metric-card foundation-metric-card metric-card-accent wechat-conversation-name">
-            <span class="metric-label">{{ kind_names[origin.kind] }}</span>
-            <strong title="{{ text_page.current_session.conversation_title }}">{{ text_page.current_session.conversation_title }}</strong>
-        </div>
         <div class="wechat-conversation-labels">
+            {{ conversation_kind_badge(origin) }}
             <span class="wechat-account-label">{{ origin.viewer_account_label or origin.account_label }}</span>
             <span class="wechat-source-label">{{ origin.identity_status }} · {{ origin.source_label }}</span>
+            {% if origin.mac_account_mapping and origin.mac_account_mapping.status == 'mapped' %}<span class="wechat-source-label">Mac account linked</span>{% endif %}
         </div>
+        {% if text_page.messaging and text_page.messaging.resource_index_accounts is defined and text_page.messaging.resource_index_accounts is not none and origin.account_id and origin.account_id not in text_page.messaging.resource_index_accounts %}
+        <p class="wechat-source-note" role="status">Media and file references are unavailable in this source archive.</p>
+        {% endif %}
         <div class="wechat-conversation-actions">
-            <a class="secondary-button" href="{{ url_for('local_resources.browser', view='text', source='wechat', account=filters.account, chat_kind=filters.chat_kind, sort=filters.sort, page=filters.session_page) }}">All conversations</a>
-            <a class="secondary-button" href="{{ url_for('local_resources.browser_session_export', session_id=text_page.current_session.stable_id, source='wechat', account=filters.account, chat_kind=filters.chat_kind) }}">Export text</a>
+            <a class="circular-icon-button browser-session-control-button browser-session-neighbor-button" href="{{ url_for('local_resources.browser', view='text', source='wechat', account=filters.account, chat_kind=filters.chat_kind, sort=filters.sort, page=filters.session_page) }}" aria-label="All conversations" title="Back to all conversations"><span class="icon browser-session-neighbor-prev-icon" aria-hidden="true"></span></a>
         </div>
     </header>
     <div class="browser-chat-pane" data-browser-chat-pane>
     <div class="browser-chat-effects" data-chat-effects aria-hidden="true" inert></div>
-    <div class="browser-chat-list local-store-pagination-host wechat-message-list wechat-chat--{{ origin.kind }}" data-chat-scrollport tabindex="0" aria-label="{{ kind_names[origin.kind] }} messages">
+    <div class="browser-chat-list local-store-pagination-host wechat-message-list wechat-chat--{{ origin.kind }}" data-chat-scrollport tabindex="0" aria-label="{{ conversation_kind_label(origin) }} messages">
         {% for message in text_page.items %}
         {{ message_row(message) }}
         {% else %}
@@ -97,10 +145,10 @@
                 <tbody>
                     {% for session in text_page.sessions %}
                     <tr data-chat-session-id="{{ session.stable_id }}" data-wechat-conversation-kind="{{ session.messaging.kind }}" data-wechat-account="{{ session.messaging.account_key }}">
-                        <td>{{ '{:,}'.format((text_page.current_page - 1) * text_page.page_size + loop.index) }}</td>
+                        <td>{{ (text_page.current_page - 1) * text_page.page_size + loop.index }}</td>
                         <td>
                             <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('local_resources.browser', view='text', source='wechat', account=filters.account, chat_kind=filters.chat_kind, session=session.stable_id, session_page=text_page.current_page, sort=filters.sort) }}">{{ session.conversation_title }}</a>
-                            <span class="wechat-source-label">{{ kind_names[session.messaging.kind] }}</span>
+                            <span class="wechat-conversation-kind">{{ conversation_kind_badge(session.messaging) }}</span>
                         </td>
                         <td><span class="wechat-account-label">{{ session.messaging.viewer_account_label or session.messaging.account_label }}</span><span class="wechat-source-label">{{ session.messaging.source_label }} · {{ session.messaging.identity_status }}</span></td>
                         <td>{{ '{:,}'.format(session.message_count) }}</td>

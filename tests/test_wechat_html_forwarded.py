@@ -1,6 +1,6 @@
 """HTML forwarding uses explicit source trees and preserves literal evidence.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -504,7 +504,10 @@ def test_existing_message_macro_renders_safe_collapsed_children_exactly_once():
     assert document.embedded == 3
     assert document.open_details == 0
     assert document.active_media == []
+    assert text.count("Chat history") == 1
     assert text.count(PRIMARY) == 1
+    assert "wechat-history-source-text" in rendered
+    assert 'aria-label="Chat history messages"' in rendered
     assert [text.count(body) for body in (FIRST_TEXT, SECOND_TEXT, THIRD_TEXT)] == [
         1,
         1,
@@ -512,3 +515,26 @@ def test_existing_message_macro_renders_safe_collapsed_children_exactly_once():
     ]
     assert "[Forwarded text:" not in text
     assert "Retained complete raw source text" not in text
+
+
+@pytest.mark.parametrize("literal", ["Forwarded conversation", "Chat history"])
+def test_real_source_text_is_visible_even_when_it_matches_a_generated_label(literal):
+    record = _project()
+    record["source_title"] = literal
+    environment = Environment(
+        loader=FileSystemLoader(Path(__file__).parents[1] / "app/web/templates"),
+        autoescape=select_autoescape(("html", "xml")),
+    )
+    module = environment.get_template("_wechat_browser.html").make_module(
+        {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=())}
+    )
+    rendered = str(module.forwarded_conversation(record, PARENT))
+    document = _RenderedElements()
+    document.feed(rendered)
+    text = "".join(document.text)
+    assert text.count(literal) == (2 if literal == "Chat history" else 1)
+    assert text.count("Chat history") == (2 if literal == "Chat history" else 1)
+    assert PRIMARY not in text
+    assert "wechat-history-source-text" in rendered
+    assert document.forwarded == 1
+    assert document.open_details == 0

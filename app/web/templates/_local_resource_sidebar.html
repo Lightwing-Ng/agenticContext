@@ -1,0 +1,215 @@
+{# Code version: v1.0.0-codex.0 #}
+{% set is_wechat_text = filters.view == 'text' and filters.source == 'wechat' %}
+{% set is_zhihu_text = filters.view == 'text' and filters.source == 'zhihu' %}
+{% set is_session_index = filters.view == 'media' and filters.session_index %}
+{% set is_all_media = is_session_index and filters.media_view == 'all' %}
+{% set no_project_filter = '__no_project__' %}
+{% set is_no_project = filters.project == no_project_filter %}
+        <aside class="panel sidebar browser-sidebar" id="browser_sidebar" data-layout-role="sidebar-shell">
+            <section class="hero" data-layout-role="sidebar-title">
+                <h1>Local resources</h1>
+            </section>
+            <section class="sidebar-section">
+                <form
+                    action="{{ url_for('local_resources.browser') }}"
+                    method="get"
+                    class="sidebar-form browser-filter-form"
+                    id="browser_filter_form"
+                    data-wait-title="Updating Local resources"
+                    data-wait-copy="Applying the selected filters to the local cache."
+                >
+                    <div class="segmented-control browser-content-mode-control" role="radiogroup" aria-label="Cache content type" data-option-count="3" data-segmented-active-index="{{ {'text': 0, 'media': 1, 'prompts': 2}[filters.view] }}" style="--segmented-option-count: 3; --segmented-active-index: {{ {'text': 0, 'media': 1, 'prompts': 2}[filters.view] }};">
+                        <label class="segmented-control-option browser-content-mode-option" for="browser_view_text">
+                            <input id="browser_view_text" name="view" type="radio" value="text" {% if filters.view == "text" %}checked{% endif %}>
+                            <span>Text</span>
+                        </label>
+                        <label class="segmented-control-option browser-content-mode-option" for="browser_view_media">
+                            <input id="browser_view_media" name="view" type="radio" value="media" {% if filters.view == "media" %}checked{% endif %}>
+                            <span>Media</span>
+                        </label>
+                        <label class="segmented-control-option browser-content-mode-option" for="browser_view_prompts">
+                            <input id="browser_view_prompts" name="view" type="radio" value="prompts" {% if filters.view == "prompts" %}checked{% endif %}>
+                            <span>Prompts</span>
+                        </label>
+                    </div>
+                    <input type="hidden" name="session_view" value="{{ '1' if filters.session_view else '0' }}">
+                    {% if is_session_index %}<input type="hidden" name="session_index" value="1">{% endif %}
+                    {% if is_all_media %}<input type="hidden" name="media_view" value="all">{% endif %}
+                    {# The index keeps its return origin for one arrival only; a filter change drops it. #}
+                    {% if filters.session and not is_session_index %}<input type="hidden" name="session" value="{{ filters.session }}">{% endif %}
+                    <label class="field browser-filter-field">
+                        <span>{{ "Source" if filters.view == "media" else "Text source" }}</span>
+                        {% set source_options = local_resource_media_sources if filters.view == "media" else local_resource_text_sources %}
+                        {% set all_source_label = "All sources" %}
+                        {% set all_source_icon = "images/photo.stack.svg" %}
+                        {% if selected_source is not defined %}{% set selected_source = namespace(label="ChatGPT", icon="images/ChatGPT-Logo.svg", icon_style="mask") %}{% endif %}
+                        {% if filters.view != "text" %}
+                            {% set selected_source.label = all_source_label %}
+                            {% set selected_source.icon = all_source_icon %}
+                        {% endif %}
+                        {% for source in source_options %}
+                            {% if filters.source == source.key %}
+                                {% set selected_source.label = source.label %}
+                                {% set selected_source.icon = source.icon_filename %}
+                                {% set selected_source.icon_style = source.icon_style|default("mask") %}
+                            {% endif %}
+                        {% endfor %}
+                        <div class="trade-strategy-combobox browser-source-filter-combobox" data-browser-source-filter>
+                            <input type="hidden" name="source" value="{{ filters.source }}" data-browser-source-filter-input>
+                            <button
+                                type="button"
+                                class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"
+                                    data-browser-source-filter-trigger
+                                    aria-haspopup="listbox"
+                                    aria-expanded="false"
+                                    aria-controls="browser_source_filter_options"
+                                    aria-label="Source: {{ selected_source.label }}"
+                                title="{{ selected_source.label }}"
+                            >
+                                <span class="browser-session-trigger-leading">
+                                    <span class="browser-picker-selected-icon-shell">
+                                        <span
+                                            class="cache-source-mark browser-source-filter-mark{% if selected_source.icon_style == 'full-color' %} is-full-color{% endif %}"
+                                            style="--cache-source-mark: url('{{ url_for('static', filename=selected_source.icon) }}');"
+                                            aria-hidden="true"
+                                            data-browser-source-filter-selected-icon
+                                        ></span>
+                                    </span>
+                                    <span class="trade-strategy-trigger-label browser-session-trigger-label" data-browser-source-filter-selected-label>{{ selected_source.label }}</span>
+                                </span>
+                                <span class="browser-picker-trigger-chevron" aria-hidden="true"></span>
+                            </button>
+                            <div
+                                class="trade-strategy-dropdown backtest-shared-select-dropdown browser-session-dropdown browser-source-filter-dropdown"
+                                id="browser_source_filter_options"
+                                data-browser-source-filter-menu
+                                role="listbox"
+                                aria-label="Filter by source"
+                                hidden
+                            >
+                                {% if filters.view != "text" %}
+                                <button
+                                    type="button"
+                                    id="browser_source_filter_option_all"
+                                    class="trade-strategy-dropdown-option browser-source-filter-option{% if filters.source == 'all' %} is-selected is-active{% endif %}"
+                                    data-browser-source-filter-option="all"
+                                    data-browser-source-filter-label="{{ all_source_label }}"
+                                    data-browser-source-filter-icon="{{ url_for('static', filename=all_source_icon) }}"
+                                    role="option"
+                                    aria-selected="{{ 'true' if filters.source == 'all' else 'false' }}"
+                                    tabindex="-1"
+                                >
+                                    <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+                                    <span class="cache-source-mark browser-source-filter-mark{% if filters.view == 'text' %} is-full-color{% endif %}" style="--cache-source-mark: url('{{ url_for('static', filename=all_source_icon) }}');" aria-hidden="true"></span>
+                                    <span class="trade-strategy-dropdown-text">{{ all_source_label }}</span>
+                                </button>
+                                {% endif %}
+                                {% for source in source_options %}
+                                <button
+                                    type="button"
+                                    id="browser_source_filter_option_{{ source.key }}"
+                                    class="trade-strategy-dropdown-option browser-source-filter-option{% if filters.source == source.key %} is-selected is-active{% endif %}"
+                                    data-browser-source-filter-option="{{ source.key }}"
+                                    data-browser-source-filter-label="{{ source.label }}"
+                                    data-browser-source-filter-icon="{{ url_for('static', filename=source.icon_filename) }}"
+                                    data-browser-source-filter-icon-style="{{ source.icon_style|default('mask') }}"
+                                    role="option"
+                                    aria-selected="{{ 'true' if filters.source == source.key else 'false' }}"
+                                    tabindex="-1"
+                                >
+                                    <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+                                    <span class="cache-source-mark browser-source-filter-mark{% if source.icon_style|default('mask') == 'full-color' %} is-full-color{% endif %}" style="--cache-source-mark: url('{{ url_for('static', filename=source.icon_filename) }}');" aria-hidden="true"></span>
+                                    <span class="trade-strategy-dropdown-text">{{ source.label }}</span>
+                                </button>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </label>
+                    {% if filters.view == "text" and filters.source == "chatgpt" %}
+                    <label class="field browser-filter-field" for="browser_project_filter">
+                        <span>Project</span>
+                        <select
+                            id="browser_project_filter"
+                            name="project"
+                            class="form-select"
+                            aria-label="Filter by project"
+                        >
+                            <option value="">All projects</option>
+                            <option value="{{ no_project_filter }}" {% if is_no_project %}selected{% endif %}>No project</option>
+                            {% for project in text_page.project_options %}
+                            <option value="{{ project.key }}" {% if filters.project == project.key %}selected{% endif %}>{{ project.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    {% endif %}
+                    {% if is_wechat_text %}
+                    <label class="field browser-filter-field" for="browser_wechat_account">
+                        <span>WeChat account</span>
+                        {% set wechat_account_options = text_page.messaging.account_options|default(text_page.messaging.accounts) %}
+                        <select id="browser_wechat_account" name="account" class="form-select" aria-label="Filter by WeChat account">
+                            <option value="">All source accounts</option>
+                            {% if filters.account and filters.account not in wechat_account_options|map(attribute='key')|list %}
+                            {% set retained_account = text_page.messaging.accounts|selectattr('key', 'equalto', filters.account)|first %}
+                            {% if retained_account %}
+                            <option value="{{ filters.account }}" hidden selected>{{ retained_account.viewer_name or retained_account.name }}</option>
+                            {% else %}
+                            <option value="{{ filters.account }}" selected>Unavailable source account</option>
+                            {% endif %}
+                            {% endif %}
+                            {% for account in wechat_account_options %}
+                            <option value="{{ account.key }}" {% if filters.account == account.key %}selected{% endif %}>{{ account.viewer_name or account.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label class="field browser-filter-field" for="browser_wechat_kind">
+                        <span>Conversation type</span>
+                        <select id="browser_wechat_kind" name="chat_kind" class="form-select" aria-label="Filter by conversation type">
+                            {% for value, label in [('all', 'All conversations'), ('direct', 'Private chats'), ('group', 'Group chats'), ('unclassified', 'Unclassified')] %}
+                            <option value="{{ value }}" {% if filters.chat_kind == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    {% endif %}
+                    {% if is_zhihu_text %}
+                    <label class="field browser-filter-field" for="browser_answerer_filter">
+                        <span>Answerer</span>
+                        <select
+                            id="browser_answerer_filter"
+                            name="answerer"
+                            class="form-select"
+                            aria-label="Filter by answerer"
+                        >
+                            <option value="">All answerers</option>
+                            {% for answerer in text_page.answerer_options %}
+                            <option value="{{ answerer }}" {% if filters.answerer == answerer %}selected{% endif %}>{{ answerer }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    {% endif %}
+                    {% if filters.view == "media" %}
+                    <label class="field browser-filter-field">
+                        <span>Media type</span>
+                        <select name="kind" class="form-select" aria-label="Filter by media type">
+                            <option value="all" {% if filters.kind == "all" %}selected{% endif %}>All media</option>
+                            <option value="image" {% if filters.kind == "image" %}selected{% endif %}>Images</option>
+                            <option value="video" {% if filters.kind == "video" %}selected{% endif %}>Videos</option>
+                        </select>
+                    </label>
+                    {% endif %}
+                    {% if contact_filters is defined %}
+                    <input type="hidden" name="q" value="{{ filters.q }}">
+                    <input type="hidden" name="sort" value="{{ filters.sort }}">
+                    {% endif %}
+                    <label class="field browser-filter-field">
+                        <span>{{ "Sort order" if is_all_media else ("Session order" if is_session_index else ("Image order in session" if filters.view == "media" and filters.source == "chatgpt" and filters.session_view else ("Sort prompts" if filters.view == "prompts" else "Sort order"))) }}</span>
+                        <select name="sort" class="form-select" {% if contact_filters is defined %}id="wechat_contact_sort" form="wechat_contact_filter_form" data-shared-select-auto aria-label="Sort contact statements"{% else %}aria-label="{{ 'Sort cached media' if is_all_media else ('Order ChatGPT sessions' if is_session_index else ('Order images in the current session' if filters.view == 'media' and filters.source == 'chatgpt' and filters.session_view else ('Sort saved prompts' if filters.view == 'prompts' else ('Sort cached media' if filters.view == 'media' else 'Sort cached text')))) }}"{% endif %}>
+                            <option value="newest" {% if (contact_filters.sort if contact_filters is defined else filters.sort) == "newest" %}selected{% endif %}>Newest first</option>
+                            <option value="oldest" {% if (contact_filters.sort if contact_filters is defined else filters.sort) == "oldest" %}selected{% endif %}>Oldest first</option>
+                            {% if contact_filters is not defined %}
+                            <option value="name" {% if filters.sort == "name" %}selected{% endif %}>{{ "Session name" if is_session_index and not is_all_media else ("File name" if filters.view == "media" else ("Prompt title" if filters.view == "prompts" else ("Question title" if is_zhihu_text and text_page.session_detail else ("Answerer name" if is_zhihu_text else "Session title")))) }}</option>
+                            {% endif %}
+                        </select>
+                    </label>
+                </form>
+            </section>
+        </aside>

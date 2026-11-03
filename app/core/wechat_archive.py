@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.1.2-codex.0
+# Code version: v1.3.0-codex.0
 
 from __future__ import annotations
 
@@ -14,12 +14,15 @@ import sqlite3
 import tempfile
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Any, Protocol
 
 
 WECHAT_SOURCE = "wechat"
 WECHAT_KINDS = ("all", "direct", "group", "unclassified")
 _DISPLAY_ZONE = timezone(timedelta(hours=8))
+_RESOURCE_CACHE_LOCK = RLock()
+_RESOURCE_CACHE = {}
 _SCHEMA = """
 CREATE TABLE partitions (
  id TEXT PRIMARY KEY, account_key TEXT NOT NULL, account_id TEXT,
@@ -53,6 +56,28 @@ def wechat_archive_path(local_store_root: Path | str) -> Path:
         / WECHAT_SOURCE
         / "history.sqlite3"
     )
+
+
+def wechat_history_partition_fingerprint(connection: sqlite3.Connection) -> str:
+    """Identify the exact source-account partitions shared by a resource index."""
+    rows = [
+        tuple(row)
+        for row in connection.execute(
+            "SELECT id,account_key,account_id FROM partitions ORDER BY id"
+        )
+    ]
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _file_identity(path: Path) -> dict[str, int]:
+    state = path.stat()
+    return {
+        "dev": state.st_dev,
+        "inode": state.st_ino,
+        "size": state.st_size,
+        "mtime_ns": state.st_mtime_ns,
+    }
 
 
 def _identifier(*parts: str) -> str:
@@ -466,8 +491,368 @@ class WechatArchiveRepository:
         self.path = wechat_archive_path(local_store_root)
 
     @staticmethod
+    def _validate_resource_conversations(connection):
+        """Check source boundaries and cache corrected statistics, never main content."""
+        columns = (
+            "id",
+            "partition_id",
+            "account_key",
+            "peer_id",
+            "title",
+            "kind",
+            "message_count",
+            "first_sort",
+            "last_sort",
+            "first_time",
+            "last_time",
+            "latest_text",
+        )
+        native = {}
+        for row in connection.execute(
+            "SELECT id,account_key,account_id FROM partitions"
+        ):
+            owner = row["account_id"]
+            if (
+                isinstance(owner, str)
+                and owner
+                and row["id"]
+                == "ios-"
+                + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
+                and row["account_key"] == "account:" + owner
+            ):
+                native[row["id"]] = row["account_key"]
+        original = {
+            row["id"]: dict(row)
+            for row in connection.execute("SELECT * FROM main.conversations")
+        }
+        resources = {
+            row["id"]: dict(row)
+            for row in connection.execute("SELECT * FROM resource_index.conversations")
+        }
+        counts = dict(
+            connection.execute(
+                "SELECT conversation_id,COUNT(*) FROM resource_index.messages GROUP BY conversation_id"
+            )
+        )
+        if set(counts) - set(resources):
+            raise ValueError("Resource messages need their own scoped conversation.")
+        for identifier, row in resources.items():
+            if (
+                native.get(row["partition_id"]) != row["account_key"]
+                or row["kind"] not in WECHAT_KINDS[1:]
+                or type(row["message_count"]) is not int
+                or row["message_count"] < 1
+                or row["message_count"] != counts.get(identifier, 0)
+            ):
+                raise ValueError(
+                    "Resource conversation statistics or account do not match."
+                )
+            if identifier in original:
+                source = original[identifier]
+                if any(
+                    row[key] != source[key]
+                    for key in ("partition_id", "account_key", "peer_id", "kind")
+                ):
+                    raise ValueError(
+                        "Resource conversations cannot change an existing scope."
+                    )
+            elif row["peer_id"]:
+                if not isinstance(
+                    row["peer_id"], str
+                ) or identifier != "wechat:" + _identifier(
+                    row["partition_id"], row["peer_id"]
+                ):
+                    raise ValueError(
+                        "Resource-only conversations need a native peer identity."
+                    )
+            else:
+                tables = [
+                    item[0]
+                    for item in connection.execute(
+                        "SELECT DISTINCT json_extract(provenance,'$.locator.table') "
+                        "FROM resource_index.messages WHERE conversation_id=?",
+                        (identifier,),
+                    )
+                ]
+                match = (
+                    re.fullmatch(r"Chat_([0-9a-f]{32})", tables[0])
+                    if len(tables) == 1 and isinstance(tables[0], str)
+                    else None
+                )
+                if (
+                    row["peer_id"] != ""
+                    or row["kind"] != "unclassified"
+                    or match is None
+                    or identifier
+                    != "wechat:" + _identifier(row["partition_id"], match.group(1))
+                ):
+                    raise ValueError(
+                        "Unidentified peers must retain one exact native table hash."
+                    )
+        if (
+            connection.execute(
+                "SELECT 1 FROM resource_index.messages m "
+                "JOIN resource_index.conversations c ON c.id=m.conversation_id "
+                "JOIN main.partitions p ON p.id=c.partition_id WHERE CASE "
+                "WHEN json_valid(m.provenance) AND json_valid(m.quality_flags) THEN "
+                "json_type(m.quality_flags) IS NOT 'array' OR "
+                "json_type(m.provenance,'$.resource_reference') IS NOT 'object' OR "
+                "json_extract(m.provenance,'$.resource_reference.account_id') IS NOT p.account_id OR "
+                "json_extract(m.provenance,'$.resource_reference.peer_id') IS NOT c.peer_id "
+                "ELSE 1 END LIMIT 1"
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError(
+                "Resource references must retain their exact account and peer scope."
+            )
+
+        # Sorted covering-ID probes avoid random primary-index reads in the common
+        # disjoint case. Keep the original grouped correction when overlap exists.
+        # A missing required ID index fails closed through the caller's SQL guard.
+        has_duplicates = (
+            connection.execute(
+                "SELECT 1 FROM resource_index.messages r "
+                "INDEXED BY sqlite_autoindex_messages_1 CROSS JOIN main.messages m "
+                "WHERE m.id=r.id LIMIT 1"
+            ).fetchone()
+            is not None
+        )
+        duplicates = (
+            dict(
+                connection.execute(
+                    "SELECT r.conversation_id,COUNT(*) FROM resource_index.messages r "
+                    "JOIN main.messages m ON m.id=r.id GROUP BY r.conversation_id"
+                )
+            )
+            if has_duplicates
+            else {}
+        )
+        for identifier in duplicates:
+            rows = connection.execute(
+                "SELECT r.time_sort,r.timestamp_value,r.text FROM resource_index.messages r "
+                "WHERE r.conversation_id=? AND NOT EXISTS("
+                "SELECT 1 FROM main.messages m WHERE m.id=r.id) "
+                "ORDER BY (r.time_sort=0),r.time_sort,r.ordinal,r.id",
+                (identifier,),
+            ).fetchall()
+            if not rows:
+                resources.pop(identifier)
+                continue
+            first = next((row for row in rows if row["time_sort"]), rows[0])
+            last = max(rows, key=lambda row: row["time_sort"])
+            resources[identifier].update(
+                message_count=len(rows),
+                first_sort=first["time_sort"],
+                first_time=first["timestamp_value"],
+                last_sort=last["time_sort"],
+                last_time=last["timestamp_value"],
+                latest_text=last["text"][:300],
+            )
+        return tuple(
+            tuple(row[column] for column in columns) for row in resources.values()
+        )
+
+    def _timeline_tables(self, connection, history_identity):
+        """Attach an optional pinned index and expose one chronological query surface."""
+        resource_path = self.path.with_name("resource_references.sqlite3")
+        if not resource_path.exists():
+            return "main.conversations", "main.messages", "absent"
+        if (
+            resource_path.is_symlink()
+            or not resource_path.is_file()
+            or resource_path.resolve().parent != self.path.resolve().parent
+        ):
+            return "main.conversations", "main.messages", "invalid"
+        try:
+            if getattr(resource_path.stat(), "st_flags", 0) & 0x40000000:
+                # Text queries must not download an optional cloud-only resource index.
+                return "main.conversations", "main.messages", "absent"
+            resource_identity = _file_identity(resource_path)
+            connection.execute(
+                "ATTACH DATABASE ? AS resource_index",
+                (resource_path.resolve().as_uri() + "?mode=ro&immutable=1",),
+            )
+            metadata = dict(
+                connection.execute("SELECT key,value FROM resource_index.archive_info")
+            )
+            if metadata.get("schema_version") != "1":
+                raise ValueError("Unsupported resource index schema.")
+            expected_identity = json.loads(
+                metadata.get("history_file_identity", "null")
+            )
+            if (
+                not isinstance(expected_identity, dict)
+                or set(expected_identity) != {"dev", "inode", "size", "mtime_ns"}
+                or any(type(value) is not int for value in expected_identity.values())
+            ):
+                raise ValueError(
+                    "Resource indices need a complete pinned history identity."
+                )
+            fingerprint = metadata.get("history_partitions_sha256", "")
+            if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+                raise ValueError(
+                    "Resource indices need a source-partition fingerprint."
+                )
+            if (
+                expected_identity != history_identity
+                or _file_identity(self.path) != history_identity
+            ):
+                return "main.conversations", "main.messages", "stale"
+            if fingerprint != wechat_history_partition_fingerprint(connection):
+                return "main.conversations", "main.messages", "stale"
+            for table in ("messages", "conversations"):
+                expected = [
+                    row[1]
+                    for row in connection.execute(f"PRAGMA main.table_info({table})")
+                ]
+                actual = [
+                    row[1]
+                    for row in connection.execute(
+                        f"PRAGMA resource_index.table_info({table})"
+                    )
+                ]
+                ordinary = connection.execute(
+                    "SELECT type,sql FROM resource_index.sqlite_master WHERE name=?",
+                    (table,),
+                ).fetchone()
+                if (
+                    expected != actual
+                    or ordinary is None
+                    or ordinary[0] != "table"
+                    or "VIRTUAL" in str(ordinary[1]).upper()
+                ):
+                    raise ValueError(
+                        "Resource table columns differ from the archive contract."
+                    )
+            key = (
+                str(self.path.resolve()),
+                tuple(history_identity.items()),
+                str(resource_path.resolve()),
+                tuple(resource_identity.items()),
+            )
+            with _RESOURCE_CACHE_LOCK:
+                if key not in _RESOURCE_CACHE:
+                    corrected = self._validate_resource_conversations(connection)
+                    if len(_RESOURCE_CACHE) >= 4:
+                        _RESOURCE_CACHE.pop(next(iter(_RESOURCE_CACHE)))
+                    _RESOURCE_CACHE[key] = corrected
+                corrected = _RESOURCE_CACHE[key]
+            if (
+                _file_identity(self.path) != history_identity
+                or _file_identity(resource_path) != resource_identity
+            ):
+                return "main.conversations", "main.messages", "stale"
+            connection.execute(
+                "CREATE TEMP TABLE resource_conversations AS "
+                "SELECT * FROM resource_index.conversations WHERE 0"
+            )
+            connection.executemany(
+                "INSERT INTO resource_conversations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                corrected,
+            )
+            connection.execute(
+                "CREATE TEMP VIEW timeline_messages AS SELECT * FROM main.messages UNION ALL "
+                "SELECT r.* FROM resource_index.messages r WHERE NOT EXISTS("
+                "SELECT 1 FROM main.messages m WHERE m.id=r.id)"
+            )
+            resource_first = (
+                "r.first_sort>0 AND (c.first_sort=0 OR r.first_sort<c.first_sort)"
+            )
+            resource_last = "r.last_sort>=c.last_sort"
+            connection.execute(
+                "CREATE TEMP VIEW timeline_conversations AS "
+                "SELECT c.id,c.partition_id,c.account_key,c.peer_id,c.title,c.kind,"
+                "c.message_count+COALESCE(r.message_count,0) AS message_count,"
+                f"CASE WHEN {resource_first} THEN r.first_sort ELSE c.first_sort END AS first_sort,"
+                f"CASE WHEN {resource_last} THEN r.last_sort ELSE c.last_sort END AS last_sort,"
+                f"CASE WHEN {resource_first} THEN r.first_time ELSE c.first_time END AS first_time,"
+                f"CASE WHEN {resource_last} THEN r.last_time ELSE c.last_time END AS last_time,"
+                f"CASE WHEN {resource_last} THEN r.latest_text ELSE c.latest_text END AS latest_text "
+                "FROM main.conversations c LEFT JOIN temp.resource_conversations r ON r.id=c.id "
+                "UNION ALL SELECT r.* FROM temp.resource_conversations r WHERE NOT EXISTS("
+                "SELECT 1 FROM main.conversations c WHERE c.id=r.id)"
+            )
+            return "timeline_conversations", "timeline_messages", "ready"
+        except (OSError, sqlite3.Error, TypeError, ValueError):
+            return "main.conversations", "main.messages", "invalid"
+
+    def resource_message(self, message_id):
+        """Resolve one indexed reference by identity, never by a browser-provided path."""
+        if (
+            not isinstance(message_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", message_id) is None
+        ):
+            return None
+        if not self.path.is_file():
+            return None
+        history_identity = _file_identity(self.path)
+        connection = sqlite3.connect(
+            self.path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            _conversations, _messages, status = self._timeline_tables(
+                connection, history_identity
+            )
+            if status != "ready":
+                return None
+            row = connection.execute(
+                "SELECT r.*,p.account_id,c.peer_id FROM resource_index.messages r "
+                "JOIN resource_index.conversations c ON c.id=r.conversation_id "
+                "JOIN main.partitions p ON p.id=c.partition_id WHERE r.id=? "
+                "AND NOT EXISTS(SELECT 1 FROM main.messages m WHERE m.id=r.id)",
+                (message_id,),
+            ).fetchone()
+            if row is None or _file_identity(self.path) != history_identity:
+                return None
+            return dict(row)
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _resource_index_accounts(connection):
+        """Read optional coverage metadata without making it an access decision."""
+        try:
+            row = connection.execute(
+                "SELECT value FROM resource_index.archive_info WHERE key='report'"
+            ).fetchone()
+            report = json.loads(row[0]) if row is not None else None
+            if not isinstance(report, dict) or not isinstance(
+                report.get("accounts"), list
+            ):
+                return None
+            native = set()
+            for partition in connection.execute(
+                "SELECT id,account_key,account_id FROM partitions"
+            ):
+                owner = partition["account_id"]
+                if (
+                    isinstance(owner, str)
+                    and owner
+                    and partition["account_key"] == "account:" + owner
+                    and partition["id"]
+                    == "ios-"
+                    + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
+                ):
+                    native.add(owner)
+            accounts = []
+            for item in report["accounts"]:
+                if not isinstance(item, dict) or not isinstance(
+                    item.get("account_id"), str
+                ):
+                    return None
+                owner = item["account_id"]
+                if owner not in native or owner in accounts:
+                    return None
+                accounts.append(owner)
+            return tuple(sorted(accounts))
+        except (sqlite3.Error, TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _source_snapshots(connection, messages, partition_id):
-        """Read referenced snapshot metadata once, within the current source partition."""
+        """Read local checkpoints, proving any native source routed into this container."""
         identifiers = set()
         for message in messages:
             provenance = json.loads(message["provenance"])
@@ -491,8 +876,8 @@ class WechatArchiveRepository:
             placeholders = ",".join("?" for _ in batch)
             for row in connection.execute(
                 "SELECT id,snapshot_id,source_id,metadata FROM source_snapshots "
-                f"WHERE source_id=? AND id IN ({placeholders})",
-                [partition_id, *batch],
+                f"WHERE id IN ({placeholders})",
+                batch,
             ):
                 try:
                     metadata = json.loads(row["metadata"])
@@ -500,13 +885,62 @@ class WechatArchiveRepository:
                     continue
                 if (
                     not isinstance(metadata, dict)
-                    or metadata.get("source_id", partition_id) != partition_id
+                    or metadata.get("source_id", row["source_id"]) != row["source_id"]
                 ):
                     continue
+                routed = {}
+                if row["source_id"] != partition_id:
+                    from .wechat_contact_analysis import _routed_native_source
+
+                    native = connection.execute(
+                        "SELECT * FROM partitions WHERE id=?", (row["source_id"],)
+                    ).fetchone()
+                    if native is None:
+                        continue
+                    for message in messages:
+                        provenance = json.loads(message["provenance"])
+                        if provenance.get("source_snapshot") != row["id"]:
+                            continue
+                        container = connection.execute(
+                            "SELECT c.*,p.account_id,p.account_label,p.identity_status,"
+                            "p.source_label,p.source_file,p.account_key AS container_account_key "
+                            "FROM conversations c JOIN partitions p ON p.id=c.partition_id "
+                            "WHERE c.id=? AND c.partition_id=?",
+                            (message["conversation_id"], partition_id),
+                        ).fetchone()
+                        if container is None:
+                            continue
+                        context = {
+                            **dict(container),
+                            **dict(message),
+                            "source_id": partition_id,
+                        }
+                        try:
+                            _routed_native_source(context, provenance, row, native)
+                        except (ValueError, TypeError, KeyError):
+                            continue
+                        routed[message["id"]] = {
+                            key: context[key]
+                            for key in (
+                                "source_id",
+                                "account_key",
+                                "account_id",
+                                "account_label",
+                                "identity_status",
+                                "source_label",
+                                "source_file",
+                                "peer_id",
+                                "kind",
+                            )
+                        }
+                        routed[message["id"]]["partition_id"] = context["source_id"]
+                    if not routed:
+                        continue
                 snapshots[row["id"]] = {
                     "snapshot_id": row["snapshot_id"],
                     "source_id": row["source_id"],
                     "metadata": metadata,
+                    **({"routed_messages": routed} if routed else {}),
                 }
         return snapshots
 
@@ -536,14 +970,25 @@ class WechatArchiveRepository:
             "page_size": page_size,
             "account": account,
             "kind": kind,
+            "resource_index_status": "absent",
+            "resource_index_accounts": None,
         }
         if not self.path.is_file():
             return empty
+        history_identity = _file_identity(self.path)
         connection = sqlite3.connect(
             self.path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
         )
         connection.row_factory = sqlite3.Row
         try:
+            conversation_table, message_table, resource_status = self._timeline_tables(
+                connection, history_identity
+            )
+            empty["resource_index_status"] = resource_status
+            if resource_status == "ready":
+                empty["resource_index_accounts"] = self._resource_index_accounts(
+                    connection
+                )
             accounts = [
                 dict(row)
                 for row in connection.execute(
@@ -560,7 +1005,7 @@ class WechatArchiveRepository:
             if kind != "all":
                 where.append("c.kind=?")
                 params.append(kind)
-            join = " FROM conversations c JOIN partitions p ON p.id=c.partition_id "
+            join = f" FROM {conversation_table} c JOIN partitions p ON p.id=c.partition_id "
             filters = " WHERE " + " AND ".join(where) if where else " WHERE 1=1"
             current = None
             terms = str(query or "").casefold().split()[:12]
@@ -575,22 +1020,50 @@ class WechatArchiveRepository:
                 if row is None:
                     return {**empty, "accounts": accounts}
                 current = dict(row)
+                from .wechat_conversation_events import (
+                    canonical_message_table,
+                    conversation_events,
+                )
+
+                events = conversation_events(
+                    self, connection, session, current, message_table, history_identity
+                )
+                source_message_table = message_table
+                message_table = canonical_message_table(
+                    connection, message_table, events
+                )
+                current["message_count"] -= events["count_delta"]
+                connection.execute(
+                    "CREATE TEMP TABLE conversation_event_links("
+                    "id TEXT PRIMARY KEY,preferred_id TEXT NOT NULL) WITHOUT ROWID"
+                )
+                connection.executemany(
+                    "INSERT INTO temp.conversation_event_links VALUES(?,?)",
+                    events["preferred_by_id"].items(),
+                )
                 message_where = " WHERE m.conversation_id=?"
                 message_params = [session]
                 for term in terms:
-                    message_where += " AND instr(m.search_text,?)>0"
-                    message_params.append(term)
+                    message_where += (
+                        " AND (instr(m.search_text,?)>0 OR EXISTS("
+                        "SELECT 1 FROM temp.conversation_event_links l JOIN "
+                        + source_message_table
+                        + " observed ON observed.id=l.id WHERE l.preferred_id=m.id "
+                        "AND instr(observed.search_text,?)>0))"
+                    )
+                    message_params.extend((term, term))
                 total = connection.execute(
-                    "SELECT COUNT(*) FROM messages m" + message_where, message_params
+                    f"SELECT COUNT(*) FROM {message_table} m" + message_where,
+                    message_params,
                 ).fetchone()[0]
                 pages = max(1, math.ceil(total / page_size))
                 safe_page = min(pages, max(1, int(page)))
                 messages = [
                     dict(row)
                     for row in connection.execute(
-                        "SELECT m.* FROM messages m"
+                        f"SELECT m.* FROM {message_table} m"
                         + message_where
-                        + " ORDER BY (m.time_sort=0),m.time_sort,m.ordinal LIMIT ? OFFSET ?",
+                        + " ORDER BY (m.time_sort=0),m.time_sort,m.ordinal,m.id LIMIT ? OFFSET ?",
                         [*message_params, page_size, (safe_page - 1) * page_size],
                     )
                 ]
@@ -602,14 +1075,27 @@ class WechatArchiveRepository:
                         connection, messages, current["partition_id"]
                     ),
                     "current": current,
+                    "event_projection": events,
                     "count": total,
                     "message_count": current["message_count"],
                     "conversation_count": 1,
                     "page": safe_page,
                     "pages": pages,
                 }
+            from .wechat_conversation_events import cache_only_summaries
+
+            summaries = cache_only_summaries(self, history_identity)
+            connection.execute(
+                "CREATE TEMP TABLE conversation_event_counts("
+                "session_id TEXT PRIMARY KEY,delta INTEGER NOT NULL) WITHOUT ROWID"
+            )
+            connection.executemany(
+                "INSERT INTO temp.conversation_event_counts VALUES(?,?)",
+                summaries.items(),
+            )
+            join += " LEFT JOIN temp.conversation_event_counts e ON e.session_id=c.id "
             for term in terms:
-                filters += " AND (instr(lower(c.title),?)>0 OR EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND instr(m.search_text,?)>0))"
+                filters += f" AND (instr(lower(c.title),?)>0 OR EXISTS(SELECT 1 FROM {message_table} m WHERE m.conversation_id=c.id AND instr(m.search_text,?)>0))"
                 params.extend((term, term))
             total = connection.execute(
                 "SELECT COUNT(*)" + join + filters, params
@@ -635,8 +1121,13 @@ class WechatArchiveRepository:
                     [*params, page_size, (safe_page - 1) * page_size],
                 )
             ]
+            for conversation in conversations:
+                conversation["message_count"] -= summaries.get(conversation["id"], 0)
             message_count = connection.execute(
-                "SELECT COALESCE(SUM(c.message_count),0)" + join + filters, params
+                "SELECT COALESCE(SUM(c.message_count-COALESCE(e.delta,0)),0)"
+                + join
+                + filters,
+                params,
             ).fetchone()[0]
             return {
                 **empty,
