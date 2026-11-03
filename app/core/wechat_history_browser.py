@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.25.0-codex.0
+# Code version: v1.25.1-codex.0
 
 from __future__ import annotations
 
@@ -834,6 +834,11 @@ def query_wechat_history(
                     break
         name = display_names.contact_name(contact)
         name_source = "local_user_preference"
+        if not name:
+            name = display_names.owner_message_name(
+                contact, item.messaging, verified_accounts=account_rows
+            )
+            name_source = "verified_native_account_alias"
         if (
             not name
             and item.messaging.get("source_observations")

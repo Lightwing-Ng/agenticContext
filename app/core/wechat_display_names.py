@@ -1,6 +1,6 @@
 """Project local viewing names without changing WeChat identity or source evidence.
 
-Code version: v1.5.0-codex.0
+Code version: v1.6.1-codex.0
 """
 
 from __future__ import annotations
@@ -166,8 +166,10 @@ class WechatDisplayNames:
                 if self.account_owner(candidate) == owner:
                     return owner
             return ""
+        # Reproduce the archive's legacy locator; this is not a security digest.
         if (
-            partition != "ios-" + hashlib.md5(owner.encode()).hexdigest()
+            partition
+            != "ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
             or row.get("identity_status") != "Verified archive ID"
         ):
             return ""
@@ -209,3 +211,33 @@ class WechatDisplayNames:
         identifier = canonical_contact_id(owner, authority="native_account_owner")
         name = self.names.get(identifier, "")
         return f"{name} · {owner[-6:]}" if name else ""
+
+    def owner_message_name(self, contact, context, *, verified_accounts=()) -> str:
+        """Reuse a native owner's account alias without rewriting source labels."""
+        owner = self.account_owner(context)
+        if (
+            not owner
+            or context.get("direction") != "sent"
+            or context.get("sender_id") != owner
+            or contact.get("platform") != "wechat"
+            or contact.get("identity_status") != "verified"
+            or contact.get("id")
+            != canonical_contact_id(owner, authority="native_account_owner")
+            or not isinstance(verified_accounts, (tuple, list))
+        ):
+            return ""
+        for account in verified_accounts:
+            if (
+                not isinstance(account, dict)
+                or account.get("partition_id", account.get("id"))
+                != context.get("partition_id", context.get("id"))
+                or self.account_owner(account) != owner
+            ):
+                continue
+            label = account.get("name")
+            suffix = " · " + owner[-6:]
+            if not isinstance(label, str) or not label.endswith(suffix):
+                return ""
+            name = label.removesuffix(suffix)
+            return name if name and name != owner else ""
+        return ""

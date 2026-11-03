@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.0 */
+/* Code version: v1.2.1-codex.0 */
 
 (function initializeContactStatementNavigation() {
     "use strict";
@@ -80,6 +80,7 @@
     let controller = null;
     let wait = null;
     let previousFocus = null;
+    let transientFailures = 0;
 
     function syncModalState() {
         const blocked = busy && !modal.hidden;
@@ -163,6 +164,7 @@
     async function poll(requestGeneration) {
         if (!current(requestGeneration)) return;
         controller = new AbortController();
+        let retryableFailure = true;
         try {
             const response = await window.fetch(window.location.href, {
                 headers: { Accept: "application/json" },
@@ -171,10 +173,14 @@
                 signal: controller.signal,
             });
             if (!current(requestGeneration)) return;
+            retryableFailure = [500, 502, 503, 504].includes(response.status);
             const payload = await response.json();
             if (!current(requestGeneration)) return;
+            // Parsed source/protocol failures must not be hidden by transport retries.
+            retryableFailure = false;
             if (payload.contact_id !== contactId) throw new Error("Contact scope changed.");
             if (response.status === 202 && payload.status === "indexing") {
+                transientFailures = 0;
                 timer = window.setTimeout(() => poll(requestGeneration), 2000);
                 return;
             }
@@ -186,6 +192,11 @@
             throw new Error("Contact statements unavailable.");
         } catch (_) {
             if (!current(requestGeneration)) return;
+            if (retryableFailure && transientFailures < 3) {
+                const delay = 2000 * (2 ** transientFailures++);
+                timer = window.setTimeout(() => poll(requestGeneration), delay);
+                return;
+            }
             running = false;
             renderNetworkError();
             finishWaiting();
@@ -196,6 +207,7 @@
         if (running || content.dataset.contactAnalysisState !== "indexing") return;
         running = true;
         busy = true;
+        transientFailures = 0;
         const requestGeneration = ++generation;
         previousFocus = document.activeElement;
         modalObserver.observe(modal, { attributes: true, attributeFilter: ["hidden"] });
