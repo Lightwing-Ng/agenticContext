@@ -1,6 +1,6 @@
 """Apply pinned, user-reviewed transcript copies without changing source records.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from .wechat_forwarded_origins import (
 from .wechat_html_export import normalize_html_clock
 
 
-VERSION = "v1.0.1-codex.0"
+VERSION = "v1.0.2-codex.0"
 MAX_REVIEWS = 64
 MAX_PARENTS = 256
 MAX_REGISTRY_BYTES = 1024 * 1024
@@ -318,7 +318,10 @@ def _native(row, proof, snapshots, native_thread_key):
     details = {
         tuple(item["path"]): item
         for item in native_details(
-            proof, parent_id=row["id"], account_id=row["account_id"]
+            proof,
+            parent_id=row["id"],
+            account_id=row["account_id"],
+            peer_id=row["peer_id"] or "",
         )
     }
     shapes, leaves, constraints, identifiers = [], [], [], []

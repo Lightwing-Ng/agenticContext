@@ -1,6 +1,6 @@
 """Reference literal native authors without copying text or inventing conversations.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from .wechat_forwarded import forwarded_component_clock, project_native_forwarde
 from .wechat_reconcile import native_text_metadata
 
 
-VERSION = "v1.1.0-codex.0"
-CANDIDATE_INDEX_VERSION = "v1.0.0-codex.0"
+VERSION = "v1.2.0-codex.0"
+CANDIDATE_INDEX_VERSION = "v1.1.0-codex.0"
 _LOCK = Lock()
 
 
@@ -65,6 +65,11 @@ def _authors(value):
             sender = node.get("source_sender_id")
             if isinstance(sender, str) and sender:
                 yield sender
+                # Reversed quote roles are hints until the detail proves its room.
+                if sender.endswith("@chatroom"):
+                    roles = native_quote_roles(node, peer_id=sender)
+                    if roles:
+                        yield roles[0]
             pending.extend(
                 item for item in node.values() if isinstance(item, (dict, list))
             )
@@ -190,12 +195,40 @@ def _path_key(parent_id, position):
     )
 
 
-def _quote_detail(component, *, parent_id, number, position=()):
+def native_quote_roles(reference, *, peer_id=""):
+    """Resolve native quote roles without changing their original source fields.
+
+    A room-valued sender requires an independently supplied matching room and
+    a native internal author ID. Ordinary native usernames keep their assertions.
+    """
+    if not isinstance(reference, dict):
+        return None
+    sender = reference.get("source_sender_id", "")
+    chat = reference.get("source_chat_id", "")
+    if not isinstance(sender, str) or not sender or not isinstance(chat, str):
+        return None
+    if sender.endswith("@chatroom"):
+        if (
+            not isinstance(peer_id, str)
+            or sender != peer_id
+            or re.fullmatch(r"[1-9][0-9]*@chatroom", sender) is None
+            or re.fullmatch(r"wxid_[A-Za-z0-9_]{1,100}", chat) is None
+        ):
+            return None
+        return chat, sender
+    return sender, chat
+
+
+def _quote_detail(component, *, parent_id, number, position=(), peer_id=""):
     original_type = component.get("original_message_type")
     if original_type is not None and (
         type(original_type) is not int or original_type != 1
     ):
         return None
+    roles = native_quote_roles(component, peer_id=peer_id)
+    if roles is None:
+        return None
+    sender, chat = roles
     if (
         component.get("kind") != "quoted_text"
         or not component.get("source_sender_id")
@@ -212,7 +245,7 @@ def _quote_detail(component, *, parent_id, number, position=()):
         "id": anchor + "_quoted_" + str(number),
         "anchor_id": "wechat_message_" + anchor,
         "text": component["text"],
-        "sender_id": component["source_sender_id"],
+        "sender_id": sender,
         "sender_label": component.get("source_sender_label", ""),
         "direction": "unknown",
         "timestamp_value": timestamp,
@@ -222,13 +255,13 @@ def _quote_detail(component, *, parent_id, number, position=()):
         "quality_flags": list(flags),
         "source_ids": component.get("source_ids", {}),
         "original_message_type": original_type,
-        "original_chat_id": component.get("source_chat_id", ""),
+        "original_chat_id": chat,
         "reference_kind": "quoted_text",
-        "original_conversation_unknown": not bool(component.get("source_chat_id")),
+        "original_conversation_unknown": not bool(chat),
     }
 
 
-def native_details(provenance, *, parent_id, account_id):
+def native_details(provenance, *, parent_id, account_id, peer_id=""):
     """Expose source assertions, keeping quotes and forwarded authors distinct."""
     if (
         not isinstance(provenance, dict)
@@ -269,7 +302,11 @@ def native_details(provenance, *, parent_id, account_id):
             elif kind == "forwarded_quote":
                 for number, part in enumerate(component.get("text_components", []), 1):
                     quoted = _quote_detail(
-                        part, parent_id=parent_id, number=number, position=position
+                        part,
+                        parent_id=parent_id,
+                        number=number,
+                        position=position,
+                        peer_id=component.get("source_chat_id", ""),
                     )
                     if quoted:
                         yield quoted
@@ -308,12 +345,14 @@ def native_details(provenance, *, parent_id, account_id):
     if provenance.get("text_extraction_kind") != "quoted_reply":
         return
     for number, component in enumerate(metadata.get("text_components", []), 1):
-        detail = _quote_detail(component, parent_id=parent_id, number=number)
+        detail = _quote_detail(
+            component, parent_id=parent_id, number=number, peer_id=peer_id
+        )
         if detail:
             yield detail
 
 
-def native_detail(provenance, path, *, parent_id, account_id):
+def native_detail(provenance, path, *, parent_id, account_id, peer_id=""):
     if (
         not isinstance(path, list)
         or len(path) < 2
@@ -331,7 +370,10 @@ def native_detail(provenance, path, *, parent_id, account_id):
         (
             item
             for item in native_details(
-                provenance, parent_id=parent_id, account_id=account_id
+                provenance,
+                parent_id=parent_id,
+                account_id=account_id,
+                peer_id=peer_id,
             )
             if item["path"] == path
         ),
