@@ -1,6 +1,6 @@
 """Link complete, corroborated transcript copies to their native event origins.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from .wechat_contact_embedded import native_details
 from .wechat_contacts import MAX_FORWARDED_COMPONENTS, canonical_contact_id
 
 
-VERSION = "v1.0.2-codex.0"
+VERSION = "v1.0.3-codex.0"
 _DATA_ID = re.compile(r"[0-9a-f]{32}")
 _POSITIVE = re.compile(r"[1-9][0-9]*")
 _SERVER_KEYS = {"svrid", "srcMsgSvrId", "dataitemsource/svrid"}
@@ -97,7 +97,7 @@ def _native_scope(row, proof, snapshots, native_thread_key):
     return row["source_id"], proof["source_snapshot"], owner
 
 
-def _native_packet(proof, parent_id, owner):
+def _native_packet(proof, parent_id, owner, peer_id=""):
     if (
         proof.get("message_type") != 49
         or proof.get("text_extraction_kind") != "forwarded_text"
@@ -125,7 +125,9 @@ def _native_packet(proof, parent_id, owner):
                 plain += 1
             elif kind != "forwarded_resource":
                 return None
-    details = list(native_details(proof, parent_id=parent_id, account_id=owner))
+    details = list(
+        native_details(proof, parent_id=parent_id, account_id=owner, peer_id=peer_id)
+    )
     return details if plain and len(details) == plain else None
 
 
@@ -318,7 +320,7 @@ def link_forwarded_origins(
             proof = _object(row["provenance"])
             scope = _native_scope(row, proof, snapshots, native_thread_key)
             if scope:
-                details = _native_packet(proof, row["id"], scope[2])
+                details = _native_packet(proof, row["id"], scope[2], row["peer_id"] or "")
                 if (
                     details
                     and row["kind"] == "direct"

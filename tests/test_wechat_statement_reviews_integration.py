@@ -1,6 +1,6 @@
 """Reviewed packet preferences upgrade retained references without rescanning sources.
 
-Code version: v1.0.3-codex.0
+Code version: v1.0.4-codex.0
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _snapshot(cache):
 
 @pytest.fixture
 def retained_review_store(reviewed_store):
-    """Materialize accepted references as a complete pre-review v1.8.0 cache."""
+    """Keep current author references with pre-review v1.8.0 grouping metadata."""
     fixture = reviewed_store
     store = fixture.root
     history = archive.wechat_archive_path(store)
@@ -206,11 +206,33 @@ def retained_review_store(reviewed_store):
             str(path.resolve()): analysis._identity(path)
             for path in (history, registry)
         }
+        for row in flat_rows:
+            if not row["source_id"].startswith("ios-"):
+                continue
+            projected = {
+                detail["id"]
+                for detail in analysis.native_details(
+                    json.loads(row["provenance"]),
+                    parent_id=row["id"],
+                    account_id=row["account_id"],
+                    peer_id=row["peer_id"],
+                )
+                if detail["sender_id"] == review_fixtures.AUTHOR
+            }
+            retained = {
+                item[0]
+                for item in connection.execute(
+                    "SELECT id FROM refs WHERE parent_message_id=?", (row["id"],)
+                )
+            }
+            assert retained == projected
+        # Only grouping is old; the accepted author membership was proved above.
         connection.executemany(
             "INSERT INTO info VALUES(?,?)",
             [
                 ("version", "v1.8.0-codex.0"),
                 ("fingerprint", _hash(analysis._json(["v1.8.0-codex.0", identities]))),
+                ("native_embedded_version", analysis.NATIVE_EMBEDDED_VERSION),
                 ("source_inputs", _hash(analysis._json(identities))),
             ],
         )

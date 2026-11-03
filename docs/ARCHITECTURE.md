@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.58.1-codex.0`
+Documentation version: `v1.58.2-codex.0`
 
 ## Runtime flow
 
@@ -826,6 +826,16 @@ database identities invalidate stale indices; cloud-only derived indices are reb
 hydrating their old bodies. One background worker publishes complete indices atomically, while
 the contact page exposes indexing, ready, and failure states through content negotiation.
 The source and contact databases remain read-only throughout browsing and exports.
+
+Native quote references support both observed author/chat field arrangements.
+When `source_sender_id` contains a room and `source_chat_id` contains a native
+author, the room must match the independently validated original conversation.
+Nested references use their enclosing source conversation, never the receiving
+room. The projection resolves the author and original chat together while leaving
+raw fields and unknown clocks unchanged. Author hints are non-authoritative;
+contact indexes pin the embedded-parser version and rebuild incompatible caches.
+`test_wechat_contact_quote_roles.py` and `test_wechat_contact_quote_role_integration.py`
+cover this boundary, including immutable evidence and cache migration.
 
 Verified native server events and complete, scoped source proofs can establish matching
 observations across devices. Preferred native evidence governs a displayed statement while
