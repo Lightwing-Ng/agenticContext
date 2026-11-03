@@ -1,11 +1,12 @@
 """Contact loading keeps one stable shared dialog and never refreshes the document.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 import json
 from threading import Event, Lock
 from unittest.mock import patch
@@ -375,7 +376,7 @@ def test_contact_loading_error_closes_the_spinner_and_offers_a_working_retry(
                 and "application/json" in route.request.headers.get("accept", "")
             ):
                 route.fulfill(
-                    status=500,
+                    status=200,
                     content_type="text/plain",
                     body="Synthetic untrusted error",
                 )
@@ -407,6 +408,247 @@ def test_contact_loading_error_closes_the_spinner_and_offers_a_working_retry(
             retry.click()
             expect(page.locator("tr[data-contact-message-id]")).to_have_count(50)
             expect(page.locator("#cache_wait_modal")).to_be_hidden()
+    finally:
+        controlled.release.set()
+        context.close()
+
+
+def _install_contact_poll_clock(page):
+    """Observe actual fetches and advance retry delays without wall-clock sleeps."""
+    page.clock.install()
+    page.clock.pause_at(datetime.now(UTC) + timedelta(seconds=1))
+    page.add_init_script(
+        """(() => {
+            const probe = window.__contactPollProbe = { attempts: 0, delays: [] };
+            const fetch = window.fetch.bind(window);
+            window.fetch = (input, options) => {
+                if (String(input).includes('/browser/wechat/contacts/')
+                    && new Headers(options?.headers).get('Accept') === 'application/json') {
+                    probe.attempts++;
+                }
+                return fetch(input, options);
+            };
+            const timeout = window.setTimeout.bind(window);
+            window.setTimeout = (callback, delay, ...args) => {
+                if ([2000, 4000, 8000].includes(delay)) probe.delays.push(delay);
+                return timeout(callback, delay, ...args);
+            };
+        })();"""
+    )
+
+
+def _advance_contact_poll_delays(page, delays):
+    for index, delay in enumerate(delays, 1):
+        page.wait_for_function(
+            "count => window.__contactPollProbe.delays.length >= count", arg=index
+        )
+        assert page.evaluate("window.__contactPollProbe.delays.at(-1)") == delay
+        expect(page.locator("#cache_wait_modal")).to_be_visible()
+        page.clock.run_for(delay)
+
+
+def _assert_contact_poll_ready(page):
+    expect(page.locator("tr[data-contact-message-id]")).to_have_count(50)
+    page.evaluate("() => document.fonts.ready")
+    page.clock.run_for(100)
+    expect(page.locator("#cache_wait_modal")).to_be_hidden()
+    expect(page.locator("[data-contact-analysis]")).to_have_attribute(
+        "data-contact-analysis-state", "ready"
+    )
+    assert not page.evaluate("document.querySelector('main').inert")
+    assert page.get_by_text("Statements could not be loaded.", exact=True).count() == 0
+
+
+class ContactPollScenario:
+    """Keep the real loading page and ready response around selected transport faults."""
+
+    def __init__(self, controlled, actions, *, repeat_last=False):
+        self.controlled = controlled
+        self.actions = actions
+        self.repeat_last = repeat_last
+        self.requests = []
+
+    def __call__(self, route):
+        if "application/json" not in route.request.headers.get("accept", ""):
+            route.continue_()
+            return
+        self.requests.append(route.request.url)
+        offset = len(self.requests) - 1
+        action = (
+            self.actions[min(offset, len(self.actions) - 1)]
+            if self.repeat_last
+            else self.actions[offset]
+            if offset < len(self.actions)
+            else "ready"
+        )
+        if action == "abort":
+            route.abort("connectionreset")
+        elif isinstance(action, int):
+            route.fulfill(
+                status=action,
+                content_type="text/html",
+                body="<h1>Synthetic temporary reload response</h1>",
+            )
+        elif action == "indexing":
+            route.fulfill(
+                status=202,
+                json={
+                    "status": "indexing",
+                    "contact_id": self.controlled.ready["contact"]["id"],
+                },
+            )
+        elif action == "wrong-contact":
+            route.fulfill(
+                status=200,
+                json={
+                    "status": "ready",
+                    "contact_id": "wechat:contact:" + "0" * 64,
+                    "html": "<p>Synthetic wrong contact content</p>",
+                },
+            )
+        else:
+            self.controlled.release.set()
+            route.continue_()
+
+
+@pytest.mark.parametrize(
+    ("faults", "delays"),
+    [(("abort",), (2000,)), (("abort", "abort"), (2000, 4000)), ((503,), (2000,))],
+    ids=["one-connection-reset", "two-connection-resets", "temporary-html-503"],
+)
+def test_contact_poll_recovers_after_transient_transport_failures_without_refresh(
+    disposable_browser, contact_analysis_server, faults, delays
+):
+    fixture = contact_analysis_server
+    controlled = ControlledContactResults(fixture)
+    scenario = ContactPollScenario(controlled, faults)
+    context = disposable_browser.new_context(
+        viewport={"width": 390, "height": 1000}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    _install_contact_poll_clock(page)
+    page.route("**/browser/wechat/contacts/**", scenario)
+    url = _contact_url(fixture) + "?sort=oldest&return_to=%2Fbrowser%3Fsource%3Dwechat"
+    documents = []
+    page.on(
+        "request",
+        lambda value: documents.append(value.url)
+        if value.resource_type == "document"
+        else None,
+    )
+    try:
+        with patch(
+            "app.core.wechat_contact_analysis.query_contact_analysis",
+            side_effect=controlled,
+        ):
+            page.goto(url, wait_until="domcontentloaded")
+            _advance_contact_poll_delays(page, delays)
+            _assert_contact_poll_ready(page)
+            assert len(scenario.requests) == len(faults) + 1
+            assert all(value == url for value in scenario.requests)
+            assert documents == [url]
+            expect(page).to_have_url(url)
+            assert fixture.before == (
+                fixture.history.read_bytes(),
+                fixture.registry.read_bytes(),
+            )
+    finally:
+        controlled.release.set()
+        context.close()
+
+
+def test_contact_poll_stops_after_bounded_failures_and_refresh_still_works(
+    disposable_browser, contact_analysis_server
+):
+    fixture = contact_analysis_server
+    controlled = ControlledContactResults(fixture)
+    scenario = ContactPollScenario(controlled, ["abort"], repeat_last=True)
+    context = disposable_browser.new_context(
+        viewport={"width": 390, "height": 1000}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    _install_contact_poll_clock(page)
+    page.route("**/browser/wechat/contacts/**", scenario)
+    try:
+        with patch(
+            "app.core.wechat_contact_analysis.query_contact_analysis",
+            side_effect=controlled,
+        ):
+            page.goto(_contact_url(fixture), wait_until="domcontentloaded")
+            _advance_contact_poll_delays(page, [2000, 4000, 8000])
+            expect(
+                page.get_by_text("Statements could not be loaded.", exact=True)
+            ).to_be_visible()
+            expect(page.locator("#cache_wait_modal")).to_be_hidden()
+            assert not page.evaluate("document.querySelector('main').inert")
+            assert len(scenario.requests) == 4
+            page.clock.run_for(30000)
+            assert len(scenario.requests) == 4
+            controlled.release.set()
+            page.unroute("**/browser/wechat/contacts/**", scenario)
+            page.get_by_role("link", name="Refresh", exact=True).click()
+            expect(page.locator("tr[data-contact-message-id]")).to_have_count(50)
+            expect(page.locator("#cache_wait_modal")).to_be_hidden()
+    finally:
+        controlled.release.set()
+        context.close()
+
+
+def test_contact_poll_rejects_scope_mismatch_without_retrying(
+    disposable_browser, contact_analysis_server
+):
+    fixture = contact_analysis_server
+    controlled = ControlledContactResults(fixture)
+    scenario = ContactPollScenario(controlled, ["wrong-contact"])
+    context = disposable_browser.new_context(
+        viewport={"width": 1280, "height": 1000}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    _install_contact_poll_clock(page)
+    page.route("**/browser/wechat/contacts/**", scenario)
+    try:
+        with patch(
+            "app.core.wechat_contact_analysis.query_contact_analysis",
+            side_effect=controlled,
+        ):
+            page.goto(_contact_url(fixture), wait_until="domcontentloaded")
+            expect(
+                page.get_by_text("Statements could not be loaded.", exact=True)
+            ).to_be_visible()
+            assert page.get_by_text("Synthetic wrong contact content", exact=True).count() == 0
+            page.clock.run_for(30000)
+            assert len(scenario.requests) == 1
+            assert page.evaluate("window.__contactPollProbe.delays") == []
+            expect(page.locator("#cache_wait_modal")).to_be_hidden()
+    finally:
+        controlled.release.set()
+        context.close()
+
+
+def test_pending_response_resets_the_consecutive_contact_retry_budget(
+    disposable_browser, contact_analysis_server
+):
+    fixture = contact_analysis_server
+    controlled = ControlledContactResults(fixture)
+    scenario = ContactPollScenario(
+        controlled,
+        ["abort", "abort", "abort", "indexing", "abort", "abort", "abort"],
+    )
+    context = disposable_browser.new_context(
+        viewport={"width": 390, "height": 1000}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    _install_contact_poll_clock(page)
+    page.route("**/browser/wechat/contacts/**", scenario)
+    try:
+        with patch(
+            "app.core.wechat_contact_analysis.query_contact_analysis",
+            side_effect=controlled,
+        ):
+            page.goto(_contact_url(fixture), wait_until="domcontentloaded")
+            _advance_contact_poll_delays(page, [2000, 4000, 8000, 2000, 2000, 4000, 8000])
+            _assert_contact_poll_ready(page)
+            assert len(scenario.requests) == 8
     finally:
         controlled.release.set()
         context.close()
